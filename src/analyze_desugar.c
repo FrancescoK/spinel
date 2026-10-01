@@ -2547,6 +2547,119 @@ static const char *engine_written(NodeTable *nt, int id) {
   return t >= 0 ? nt_str(nt, t, "name") : nt_str(nt, id, "name");
 }
 
+/* Is `id` inside the body of a class, module or singleton class (other than
+   the one it is)? Such a node's constant lookups and writes start from that
+   namespace, not Object. */
+static int engine_lexically_nested(NodeTable *nt, int id) {
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (n == id || (k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode)) continue;
+    if (subtree_has(nt, nt_ref(nt, n, "body"), id)) return 1;
+  }
+  return 0;
+}
+
+/* The namespace a constant path's parent names is Object itself (`::X`,
+   `Object::X`), or anything else. */
+static int engine_parent_is_object(NodeTable *nt, int path) {
+  int par = nt_ref(nt, path, "parent");
+  if (par < 0) return 1;
+  return nt_kind(nt, par) == NK_ConstantReadNode && nt_str(nt, par, "name") &&
+         sp_streq(nt_str(nt, par, "name"), "Object");
+}
+
+/* Writer `id` (an engine_written node) provably defines a constant of some
+   namespace other than Object: written inside a class/module body that is not
+   Object/Kernel/BasicObject (whose constants Object's lookup reaches), or
+   through a path qualified by another namespace (`module A::X`, `A::X = 1`). */
+static int engine_writer_qualified(NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  int path = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, id, "constant_path") :
+             k == NK_ConstantPathTargetNode ? id : nt_ref(nt, id, "target");
+  if (path >= 0 && (nt_kind(nt, path) == NK_ConstantPathNode || nt_kind(nt, path) == NK_ConstantPathTargetNode))
+    return !engine_parent_is_object(nt, path);
+  /* the innermost enclosing body owns the constant */
+  int inner = -1;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind nk = nt_kind(nt, n);
+    if (n == id || (nk != NK_ClassNode && nk != NK_ModuleNode && nk != NK_SingletonClassNode)) continue;
+    if (!subtree_has(nt, nt_ref(nt, n, "body"), id)) continue;
+    if (inner < 0 || subtree_has(nt, nt_ref(nt, inner, "body"), n)) inner = n;
+  }
+  if (inner < 0 || nt_kind(nt, inner) == NK_SingletonClassNode) return 0;  /* `class << obj`: whose? */
+  const char *on = nt_str(nt, nt_ref(nt, inner, "constant_path"), "name");
+  if (!on || sp_streq(on, "Object") || sp_streq(on, "Kernel") || sp_streq(on, "BasicObject")) return 0;
+  /* `K = Kernel; module K` reopens Kernel: a namespace name that is also
+     assigned as a value could be Object's chain */
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind wk = nt_kind(nt, w);
+    if (wk == NK_ClassNode || wk == NK_ModuleNode) continue;
+    const char *wn = engine_written(nt, w);
+    if (wn && sp_streq(wn, on)) return 0;
+  }
+  return 1;
+}
+
+/* Does the program mix a module into Object (a top-level `include M`,
+   `Object.include M`, ...)? Then a module's constants are Object's too, and
+   the namespace test above is off. */
+static int engine_object_mixes_in(NodeTable *nt) {
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int mix = sp_streq(nm, "include") || sp_streq(nm, "prepend");
+    if (!mix && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) {
+      int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
+      const char *s = ac < 1 ? NULL : nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                      nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+      /* a computed method name could be either */
+      mix = ac < 1 || !s || sp_streq(s, "include") || sp_streq(s, "prepend");
+    }
+    if (!mix) continue;
+    int r = nt_ref(nt, id, "receiver");
+    /* receiverless: top-level self is main, whose include is Object's */
+    if (r < 0) { if (!engine_lexically_nested(nt, id)) return 1; continue; }
+    if (nt_kind(nt, r) == NK_SelfNode) { if (!engine_lexically_nested(nt, id)) return 1; continue; }
+    /* a named class or module other than Object's chain keeps it; anything
+       computed could be Object */
+    const char *rn = nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    if (!rn || sp_streq(rn, "Object") || sp_streq(rn, "Kernel") || sp_streq(rn, "BasicObject")) return 1;
+  }
+  return 0;
+}
+
+/* Does `id` sit where it can run more than once -- in a loop, a block, a
+   method or a lambda? */
+static int engine_may_rerun(NodeTable *nt, int id) {
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (n == id || (k != NK_WhileNode && k != NK_UntilNode && k != NK_ForNode && k != NK_BlockNode &&
+                    k != NK_DefNode && k != NK_LambdaNode)) continue;
+    if (subtree_has(nt, n, id)) return 1;
+  }
+  return 0;
+}
+
+/* Are `a` and `b` in different arms of one if/unless that runs at most once?
+   Then at most one of them runs. A file a program requires under two
+   conditions is inlined under each (ffi-yajl's `if FORCE == "ffi" ... else
+   begin ... rescue LoadError ... end`), so the copy in the other arm is no
+   writer the guard in this one can observe. */
+static int engine_exclusive_arms(NodeTable *nt, int a, int b) {
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k != NK_IfNode && k != NK_UnlessNode) continue;
+    int th = nt_ref(nt, n, "statements");
+    int el = nt_ref(nt, n, k == NK_UnlessNode ? "else_clause" : "subsequent");
+    if (th < 0 || el < 0) continue;
+    if (!((subtree_has(nt, th, a) && subtree_has(nt, el, b)) ||
+          (subtree_has(nt, el, a) && subtree_has(nt, th, b)))) continue;
+    return !engine_may_rerun(nt, n);
+  }
+  return 0;
+}
+
 static const char *engine_body_class(NodeTable *nt, int stmt) {
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) continue;
@@ -2606,8 +2719,14 @@ static int engine_absent(NodeTable *nt, int e, int in) {
   }
   if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
       is_builtin_exception_name(x)) return -1;
+  /* A top-level `defined?(X)` looks X up in Object alone, so a same-named
+     constant some module or class owns (ffi-yajl's FFI_Yajl::FFI beside the
+     `require "ffi" unless defined?(FFI)` guard) is not the one it asks about. */
+  int top = nt_kind(nt, e) == NK_DefinedNode && !engine_lexically_nested(nt, e) &&
+            !engine_object_mixes_in(nt);
   for (int id = 0; id < nt->count; id++)
-    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id)) return -1;
+    if (engine_written(nt, id) && sp_streq(engine_written(nt, id), x) && !subtree_has(nt, in, id) &&
+        !(top && engine_writer_qualified(nt, id)) && !engine_exclusive_arms(nt, in, id)) return -1;
   return 1;
 }
 
