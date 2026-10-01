@@ -2668,6 +2668,55 @@ static void qc_free_reverse_flags(void) {
   free(qc_cpath_parent); qc_cpath_parent = NULL;
   free(qc_def_cpath); qc_def_cpath = NULL;
 }
+/* The leaf name a superclass or an included module is written with. */
+static const char *qc_const_leaf(const NodeTable *nt, int n) {
+  if (n < 0) return NULL;
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(nt, n, "name") : NULL;
+}
+/* The colliding write of `nm` made directly in a class or module named
+   `owner` (its last path segment), or -1. */
+static int qc_write_in(const char *owner, const char *nm, QCWrite *ws, int wn) {
+  for (int i = 0; i < wn; i++)
+    if (ws[i].depth > 0 && sp_streq(ws[i].name, nm) && sp_streq(ws[i].path[ws[i].depth - 1], owner)) return i;
+  return -1;
+}
+/* A read of `nm` that no enclosing module defines is looked up in the
+   ancestors of the innermost one, `cls`: the modules it includes, the one
+   included last first, then its superclass and so on up. Classes and modules
+   are matched by their leaf name. Without this, a constant a superclass
+   defines, where another class defines the same name, read as undefined. */
+static int qc_ancestor_write(Compiler *c, const char *cls, const char *nm, QCWrite *ws, int wn) {
+  const NodeTable *nt = c->nt;
+  const char *cur = cls;
+  for (int guard = 0; cur && guard < 32; guard++) {
+    if (guard > 0) { int m = qc_write_in(cur, nm, ws, wn); if (m >= 0) return m; }
+    const char *sup = NULL;
+    for (int pass = 0; pass < 2; pass++) {
+      NT_FOREACH_KIND(nt, pass ? NK_ModuleNode : NK_ClassNode, k) {
+        const char *kn = qc_const_leaf(nt, nt_ref(nt, k, "constant_path"));
+        if (!kn || !sp_streq(kn, cur)) continue;
+        if (!pass && !sup) sup = qc_const_leaf(nt, nt_ref(nt, k, "superclass"));
+        int body = nt_ref(nt, k, "body");
+        int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+        for (int q = n - 1; q >= 0; q--) {
+          if (nt_kind(nt, st[q]) != NK_CallNode || nt_ref(nt, st[q], "receiver") >= 0) continue;
+          const char *cn = nt_str(nt, st[q], "name");
+          if (!cn || !sp_streq(cn, "include")) continue;
+          int args = nt_ref(nt, st[q], "arguments");
+          int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+          for (int a = 0; a < an; a++) {
+            const char *in = qc_const_leaf(nt, av[a]);
+            int m = in ? qc_write_in(in, nm, ws, wn) : -1;
+            if (m >= 0) return m;
+          }
+        }
+      }
+    }
+    cur = sup;
+  }
+  return -1;
+}
 void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
                              QCWrite *ws, int wn) {
   const NodeTable *nt = c->nt;
@@ -2692,21 +2741,23 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
       int involved = 0;
       for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, nm)) { involved = 1; break; }
       if (involved) {
-        for (int pref = depth; pref >= 0; pref--) {
-          int matched = -1;
+        /* the enclosing modules innermost-first, then the ancestors of the
+           innermost one, then the top level, as Ruby looks a constant up */
+        int matched = -1;
+        for (int pref = depth; pref >= 1 && matched < 0; pref--) {
           for (int i = 0; i < wn && matched < 0; i++) {
             if (!sp_streq(ws[i].name, nm) || ws[i].depth != pref) continue;
             int ok = 1;
             for (int j = 0; j < pref && ok; j++) if (!sp_streq(ws[i].path[j], path[j])) ok = 0;
             if (ok) matched = i;
           }
-          if (matched >= 0) {
-            if (ws[matched].depth > 0) {
-              char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[matched]);
-              nt_set_str((NodeTable *)nt, node, "name", qn);
-            }
-            break;
-          }
+        }
+        if (matched < 0 && depth > 0) matched = qc_ancestor_write(c, path[depth - 1], nm, ws, wn);
+        for (int i = 0; i < wn && matched < 0; i++)
+          if (sp_streq(ws[i].name, nm) && ws[i].depth == 0) matched = i;
+        if (matched >= 0 && ws[matched].depth > 0) {
+          char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[matched]);
+          nt_set_str((NodeTable *)nt, node, "name", qn);
         }
       }
     }
