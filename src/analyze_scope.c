@@ -343,6 +343,36 @@ void topup_forwarding_arity(Compiler *c) {
   }
 }
 
+/* initialize is emitted as a void C function (method_is_void), so `super`
+   in a subclass's initialize has no value to give when the parent's
+   initialize is one the program wrote: `c = super` assigned the void call.
+   CRuby answers the parent's last value. A super whose value is used --
+   anything holding it but a statement list -- is refused rather than
+   compiled into C that does not build. */
+void refuse_super_init_value(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int p = 0; p < nt->count; p++) {
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_StatementsNode) continue;
+    int nr = nt_num_refs(nt, p), na = nt_num_arrs(nt, p);
+    for (int i = 0; i < nr + na; i++) {
+      int n = 1, one = i < nr ? nt_ref_at(nt, p, i) : -1;
+      const int *kids = i < nr ? &one : nt_arr_at(nt, p, i - nr, &n);
+      for (int j = 0; kids && j < n; j++) {
+        int v = kids[j];
+        if (v < 0 || (nt_kind(nt, v) != NK_SuperNode && nt_kind(nt, v) != NK_ForwardingSuperNode)) continue;
+        Scope *s = comp_scope_of(c, v);
+        if (!s || s->is_cmethod || s->class_id < 0 || !s->name || !sp_streq(s->name, "initialize")) continue;
+        int par = comp_super_parent(c, s->class_id, 0);
+        if (par < 0 || comp_method_in_chain(c, par, "initialize", NULL) < 0) continue;
+        unsupported_feature(c, v, "unsupported value of `super` in initialize: initialize is compiled to "
+                                  "return nothing, so the parent's last value is not there to answer "
+                                  "(see docs/limitations.md)");
+      }
+    }
+  }
+}
+
 /* `super(...)` in a Struct or Data initialize reaches the built-in one that
    sets the members, which has no method scope to forward into. Spell the
    forward out from the synthesized params, `super(__fwd_0, .., k: k)`, so it
