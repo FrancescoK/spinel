@@ -16830,7 +16830,10 @@ static int dyn_any_appender(Compiler *c) {
       }
       continue;
     }
-    if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method")) continue;
+    /* an UnboundMethod names its method too (`instance_method(:m).bind(o)`,
+       then `to_proc.curry`, an open site) */
+    if (!sp_streq(nm, "method") && !sp_streq(nm, "public_method") &&
+        !sp_streq(nm, "instance_method") && !sp_streq(nm, "public_instance_method")) continue;
     for (int mi = dyn_scopes_named(c, method_sym_arg(c, n)); mi >= 0 && !g_dyn.any; mi = g_dyn.snext[mi])
       if (dyn_meth_bits(c, mi) & 0xffffu) g_dyn.any = 1;
   }
