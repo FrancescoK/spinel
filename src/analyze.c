@@ -15981,6 +15981,16 @@ static int promote_shared_stored_strings(Compiler *c) {
       for (int e = 0; e < en && !var; e++) var = nt_kind(nt, el[e]) == NK_LocalVariableReadNode;
       if (!var) continue;
     }
+    /* a builtin's Array over a container's own Strings (`h.values.each`,
+       `a.select { .. }.each`, `a.dup.each`): the stores walked are the
+       container's, as for the element reads strbuf_elem_sharing_call
+       follows */
+    if (!lit4 && nt_kind(nt, recv4) == NK_CallNode) {
+      int rr4 = nt_ref(nt, recv4, "receiver");
+      TyKind rrt4 = rr4 >= 0 ? infer_type(c, rr4) : TY_UNKNOWN;
+      if (!ty_is_array(rrt4) && !ty_is_hash(rrt4)) continue;
+      lit4 = 1;
+    }
     if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
