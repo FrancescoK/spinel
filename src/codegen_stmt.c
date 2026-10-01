@@ -13318,13 +13318,18 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       int user_shl = 0;
       for (int k = 0; k < c->nclasses && !user_shl; k++)
         if (comp_poly_arm_defines_n(c, k, "<<", 1)) user_shl = 1;
-      if (slot != recv && !user_shl) {
-        /* A real chain: one step at a time, each storing back before the
-           next argument runs, so a raise there keeps the appends done so far
-           (CRuby has them in the String already). The next step appends to
-           what the last answered, as the chain does. */
-        int steps[64], ns = 0;
-        for (int n = id; n != slot && ns < 64; n = nt_ref(nt, n, "receiver")) steps[ns++] = n;
+      int ns = 0;
+      for (int n = id; n != slot; n = nt_ref(nt, n, "receiver")) ns++;
+      int *steps = slot != recv && !user_shl ? malloc(sizeof(int) * (size_t)ns) : NULL;
+      if (steps) {
+        /* A real chain, every link of it: one step at a time, each storing
+           back before the next argument runs, so a raise there keeps the
+           appends done so far (CRuby has them in the String already). The
+           next step appends to what the last answered, as the chain does.
+           The single call below stays where a user class may own <<, or
+           where the list can't be allocated. */
+        ns = 0;
+        for (int n = id; n != slot; n = nt_ref(nt, n, "receiver")) steps[ns++] = n;
         emit_indent(b, indent);
         buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, slot, b);
         buf_printf(b, "; sp_RbVal _t%d = _t%d;", got, was);
@@ -13335,6 +13340,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
           buf_printf(b, " = _t%d;", got);
         }
         buf_puts(b, " }\n");
+        free(steps);
         return 1;
       }
       emit_indent(b, indent);
