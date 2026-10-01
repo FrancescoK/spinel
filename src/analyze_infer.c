@@ -1914,6 +1914,64 @@ const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
   return op;
 }
 
+static int infer_ivar_reflection(Compiler *c, int id, int recv, TyKind rt,
+                                 const char *name, int argc, const int *argv, TyKind *result) {
+  const NodeTable *nt = c->nt;
+  /* instance_variable_get(:@x) on a POLY receiver: unify @x's declared type
+     across every instantiated class that has the slot (all the same concrete
+     type -> that type; mixed or none -> poly). Without this the call fell
+     through to an unrelated rule and inferred a bogus type, so the whole
+     chain was silently dropped. Codegen dispatches on cls_id per class. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
+      const char *sym = sp_streq(a0ty, "SymbolNode")
+                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+      if (sym && sym[0] == '@') {
+        TyKind uni = TY_UNKNOWN;
+        for (int ci = 0; ci < c->nclasses; ci++) {
+          if (!c->classes[ci].instantiated) continue;
+          int iv = comp_ivar_index(&c->classes[ci], sym);
+          if (iv < 0) continue;
+          TyKind t = c->classes[ci].ivar_types[iv];
+          if (uni == TY_UNKNOWN) uni = t;
+          else if (uni != t) { uni = TY_POLY; break; }
+        }
+        /* a bare Object can hold any value there (sp_Object_ivar_get) */
+        if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
+        { *result = uni == TY_UNKNOWN ? TY_POLY : uni; return 1; }
+      }
+      { *result = TY_POLY; return 1; }
+    }
+  }
+  /* instance_variable_defined? and instance_variables on a POLY receiver:
+     answered per class, a bare Object from its own table */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *result = TY_BOOL; return 1; }
+  }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
+      nt_ref(nt, id, "block") < 0)
+    { *result = TY_POLY_ARRAY; return 1; }
+  /* the same on a builtin value, which holds none: nil, false, [] (the
+     codegen twin), and a set raises, answering its value's type */
+  if (recv >= 0 && ty_builtin_ivar_less(rt) && nt_ref(nt, id, "block") < 0) {
+    if (sp_streq(name, "instance_variable_get") && argc == 1) { *result = TY_NIL; return 1; }
+    if (sp_streq(name, "instance_variable_defined?") && argc == 1) { *result = TY_BOOL; return 1; }
+    if (sp_streq(name, "instance_variables") && argc == 0) { *result = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "instance_variable_set") && argc == 2) { *result = infer_type(c, argv[1]); return 1; }
+  }
+
+  /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
+     codegen twin stores it per class) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *result = TY_POLY; return 1; }
+  }
+
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   if (g_plan_check && id >= 0 && id < c->node_cap) c->bop_inf[id] = NULL;
@@ -4525,49 +4583,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* instance_variable_get(:@x) on a POLY receiver: unify @x's declared type
-     across every instantiated class that has the slot (all the same concrete
-     type -> that type; mixed or none -> poly). Without this the call fell
-     through to an unrelated rule and inferred a bogus type, so the whole
-     chain was silently dropped. Codegen dispatches on cls_id per class. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
-      const char *sym = sp_streq(a0ty, "SymbolNode")
-                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-      if (sym && sym[0] == '@') {
-        TyKind uni = TY_UNKNOWN;
-        for (int ci = 0; ci < c->nclasses; ci++) {
-          if (!c->classes[ci].instantiated) continue;
-          int iv = comp_ivar_index(&c->classes[ci], sym);
-          if (iv < 0) continue;
-          TyKind t = c->classes[ci].ivar_types[iv];
-          if (uni == TY_UNKNOWN) uni = t;
-          else if (uni != t) { uni = TY_POLY; break; }
-        }
-        /* a bare Object can hold any value there (sp_Object_ivar_get) */
-        if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
-        return uni == TY_UNKNOWN ? TY_POLY : uni;
-      }
-      return TY_POLY;
-    }
-  }
-  /* instance_variable_defined? and instance_variables on a POLY receiver:
-     answered per class, a bare Object from its own table */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) return TY_BOOL;
-  }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0)
-    return TY_POLY_ARRAY;
-
-  /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
-     codegen twin stores it per class) */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) return TY_POLY;
-  }
+  { TyKind ivt; if (infer_ivar_reflection(c, id, recv, rt, name, argc, argv, &ivt)) return ivt; }
 
   /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && rt == TY_ENUMERATOR)

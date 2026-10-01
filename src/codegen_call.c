@@ -27653,6 +27653,78 @@ static void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+static int emit_ivar_reflection(Compiler *c, int id, int recv, TyKind rt,
+                                const char *name, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* The ivar reflection on a builtin value (a String, an Integer, an Array,
+     nil, ...): it holds no ivar Spinel lays out, so a get answers nil, the
+     list is empty and none is defined, as in CRuby for one nothing was set
+     on. A set raises FrozenError on a frozen kind, as CRuby does; on a
+     String, an Array or a Hash it would create an ivar Spinel has no slot
+     for, and is refused. The receiver and the arguments run first. */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && ty_builtin_ivar_less(rt) &&
+      ((sp_streq(name, "instance_variable_get") && argc == 1) ||
+       (sp_streq(name, "instance_variable_defined?") && argc == 1) ||
+       (sp_streq(name, "instance_variables") && argc == 0) ||
+       (sp_streq(name, "instance_variable_set") && argc == 2))) {
+    int is_set = sp_streq(name, "instance_variable_set");
+    int frozen_kind = rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_NIL || rt == TY_SYMBOL ||
+                      rt == TY_BIGINT || rt == TY_RANGE;
+    if (is_set && !frozen_kind)
+      unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
+                                 "instance variables for a builtin value, so the variable has no slot to live in");
+    const char *a0ty = argc >= 1 ? nt_type(nt, argv[0]) : NULL;
+    const char *sym = a0ty && sp_streq(a0ty, "SymbolNode") ? nt_str(nt, argv[0], "value")
+                    : a0ty && sp_streq(a0ty, "StringNode") ? nt_str(nt, argv[0], "content") : NULL;
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+    for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+    /* a literal name with no `@` is NameError before anything else */
+    if (argc >= 1 && sym && sym[0] != '@')
+      buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
+    if (is_set)
+      buf_printf(b, "sp_raise_frozen_obj(_t%d, sp_str_concat((&(\"\\xff\" \"can't modify frozen \")[1]), "
+                    "sp_poly_class_name(_t%d))); ", tv, tv);
+    if (sp_streq(name, "instance_variables")) buf_puts(b, "sp_PolyArray_new(); })");
+    else if (sp_streq(name, "instance_variable_defined?")) buf_puts(b, "(sp_bool)0; })");
+    else if (is_set) {
+      TyKind st = comp_ntype(c, id);
+      const char *nv = nil_value(st);
+      buf_printf(b, "%s; })", nv ? nv : default_value(st));
+    }
+    else {
+      TyKind gt = comp_ntype(c, id);
+      const char *nv = nil_value(gt);
+      buf_printf(b, "%s; })", nv ? nv : default_value(gt));
+    }
+    return 1;
+  }
+  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
+     the layout answers at compile time */
+  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      ty_is_object(rt) && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    int dcid = ty_object_class(rt);
+    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
+    /* one nothing has set yet is not defined (ivar_set_kind) */
+    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
+      int tro = ++g_tmp;
+      char ex[160], tb[256];
+      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
+      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
+      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
+      return 1;
+    }
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
+    return 1;
+  }
+
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -43104,27 +43176,7 @@ else {
     buf_puts(b, "), stdout))");
     return;
   }
-  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
-     the layout answers at compile time */
-  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      ty_is_object(rt) && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
-                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    int dcid = ty_object_class(rt);
-    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
-    /* one nothing has set yet is not defined (ivar_set_kind) */
-    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
-      int tro = ++g_tmp;
-      char ex[160], tb[256];
-      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
-      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
-      return;
-    }
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
-    return;
-  }
+  if (emit_ivar_reflection(c, id, recv, rt, name, argc, argv, b)) return;
 
   if (emit_or_take_back(c, id, b, emit_poly_call)) return;
 

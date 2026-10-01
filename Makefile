@@ -1211,6 +1211,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
+	t=test/reject/builtin_value_ivar_set.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bvi.c" >"$$tmp/bvi.out" 2>&1; then \
+	  echo "reject-test: FAIL (instance_variable_set on a String compiled)"; ok=0; \
+	else grep -q "instance_variable_set on a String, an Array or a Hash" "$$tmp/bvi.out" || \
+	  { echo "reject-test: FAIL (instance_variable_set on a String rejected without saying why)"; sed -n 1,5p "$$tmp/bvi.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
