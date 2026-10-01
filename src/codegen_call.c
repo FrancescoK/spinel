@@ -25818,6 +25818,14 @@ static int file_block_param_poly(Compiler *c, int id, const char *pname) {
   return lv && lv->type == TY_POLY;
 }
 
+/* an argument of `raise` that is one value: not a splat, keywords, a block
+   or a `...` forward, any of which may add nothing */
+static int raise_plain_arg(const NodeTable *nt, int node) {
+  const char *t = nt_type(nt, node);
+  return !(t && (sp_streq(t, "SplatNode") || sp_streq(t, "KeywordHashNode") ||
+                 sp_streq(t, "BlockArgumentNode") || sp_streq(t, "ForwardingArgumentsNode")));
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -32619,8 +32627,73 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* record that cause: was given (so cause: nil suppresses the implicit
          cause), then evaluate it -- a nil literal / value carries as NULL (#2990) */
       int cause_is_nil = nt_type(nt, cause_node) && sp_streq(nt_type(nt, cause_node), "NilNode");
-      buf_puts(b, "(sp_explicit_cause_set = 1, sp_explicit_cause = (void *)(");
-      if (cause_is_nil) buf_puts(b, "0");
+      /* The cause must be an exception or nil: one the program can be known
+         to hold as anything else is CRuby's TypeError, raised once the first
+         argument is known to be raisable (a wrong first argument is the
+         first error) and before the exception. Its value is not staged. A
+         cause that is a literal, or of a type that has no nil, raises after
+         the message operands ran, in place of the exception; one that may
+         hold nil at run time (a String or an object read from a container)
+         raises only when it is not nil, and before the operands. */
+      TyKind ckt = comp_ntype(c, cause_node);
+      const char *cty0 = nt_type(nt, cause_node);
+      int cause_lit = cty0 && (sp_streq(cty0, "StringNode") || sp_streq(cty0, "InterpolatedStringNode") ||
+                               sp_streq(cty0, "IntegerNode") || sp_streq(cty0, "FloatNode") ||
+                               sp_streq(cty0, "SymbolNode") || sp_streq(cty0, "TrueNode") ||
+                               sp_streq(cty0, "FalseNode") || sp_streq(cty0, "ArrayNode") ||
+                               sp_streq(cty0, "HashNode") || sp_streq(cty0, "RangeNode") ||
+                               sp_streq(cty0, "RationalNode") || sp_streq(cty0, "ImaginaryNode"));
+      int cause_never_nil = cause_lit || ckt == TY_FLOAT || ckt == TY_BOOL || ckt == TY_SYMBOL ||
+                            ckt == TY_CLASS || ckt == TY_RANGE;
+      int cause_exc = cause_is_nil || (!cause_lit && (ckt == TY_NIL || ckt == TY_EXCEPTION || ckt == TY_POLY || ckt == TY_UNKNOWN ||
+                      (ty_is_object(ckt) && class_is_exc_subclass(c, ty_object_class(ckt)))));
+      int first_const = ac > 0 && nt_type(nt, av[0]) &&
+                        (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"));
+      const char *first_cn = first_const ? nt_str(nt, av[0], "name") : NULL;
+      int first_xc = first_cn ? comp_class_index(c, first_cn) : -1;
+      TyKind first_ty = ac > 0 && !first_const ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+      /* a class of the program with its own initialize is built before the
+         cause is judged, which this path does not do: it keeps the old one.
+         A first argument typed as an exception may hold nil at run time
+         (`raise $!`), and nil is the first error: it is tested here, after
+         the operands ran, and only for a cause that cannot hold nil. */
+      int first_exc_val = !first_const && ac > 0 &&
+                          (first_ty == TY_EXCEPTION ||
+                           (ty_is_object(first_ty) && class_is_exc_subclass(c, ty_object_class(first_ty))));
+      int first_ok = first_const ? (first_xc >= 0 ? (class_is_exc_subclass(c, first_xc) &&
+                                                       comp_method_in_chain(c, first_xc, "initialize", NULL) < 0)
+                                                  : (first_cn && is_exc_name(first_cn)))
+                   : (ac == 1 && first_ty == TY_STRING) || (first_exc_val && cause_never_nil);
+      int cause_bad = !cause_exc && first_ok;
+      if (cause_bad && cause_never_nil) {
+        /* the operands run once, here, and the TypeError is the whole answer */
+        if (first_exc_val) {
+          int tf = ++g_tmp;
+          buf_printf(b, "({ void *_t%d = (void *)(", tf); emit_expr(c, av[0], b); buf_puts(b, ");");
+          if (ac > 1) { buf_puts(b, " (void)("); emit_boxed(c, av[1], b); buf_puts(b, ");"); }
+          buf_puts(b, " (void)("); emit_boxed(c, cause_node, b); buf_puts(b, ");");
+          buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"exception class/object expected\");", tf);
+          buf_puts(b, " sp_raise_cls(\"TypeError\", \"exception object expected\"); })");
+          return;
+        }
+        buf_puts(b, "(");
+        if (ac > 0 && !first_const) { buf_puts(b, "(void)("); emit_expr(c, av[0], b); buf_puts(b, "), "); }
+        if (ac > 1) { buf_puts(b, "(void)("); emit_boxed(c, av[1], b); buf_puts(b, "), "); }
+        buf_puts(b, "(void)("); emit_boxed(c, cause_node, b); buf_puts(b, "), ");
+        buf_puts(b, "sp_raise_cls(\"TypeError\", \"exception object expected\"))");
+        return;
+      }
+      buf_puts(b, "(");
+      if (cause_bad) {
+        int tc = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tc); emit_boxed(c, cause_node, b);
+        buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) sp_raise_cls(\"TypeError\", \"exception object expected\"); }), ", tc);
+      }
+      else if (!cause_exc) {
+        buf_puts(b, "(void)("); emit_boxed(c, cause_node, b); buf_puts(b, "), ");
+      }
+      buf_puts(b, "sp_explicit_cause_set = 1, sp_explicit_cause = (void *)(");
+      if (cause_is_nil || !cause_exc) buf_puts(b, "0");
       else emit_expr(c, cause_node, b);
       buf_puts(b, "), ");
     }
@@ -32765,6 +32838,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
            pointer smuggled into the message slot (which emitted a C
            warning and raised garbage). Evaluate the operand for effect. */
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
+      }
+      else if (at == TY_STRING && ac >= 2 && raise_plain_arg(nt, av[1])) {
+        /* a String and then anything is not an exception class and message:
+           both operands run, then CRuby's TypeError. A splat or keywords may
+           be empty, so they keep the path below */
+        buf_puts(b, "((void)("); emit_expr(c, av[0], b);
+        buf_puts(b, "), (void)("); emit_boxed(c, av[1], b);
         buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
       }
       else if (at == TY_STRING) {
