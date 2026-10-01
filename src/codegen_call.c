@@ -21250,6 +21250,12 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
         else { buf_puts(b, "({ (void)("); emit_expr(c, ir, b); buf_puts(b, "); "); }
         if (sp_streq(badc, "nil"))
           buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion from nil to integer\"); ");
+        else if (sp_streq(badc, "Boolean")) {
+          /* The Bool type contains two Ruby values. Evaluate the index and
+             let the scalar conversion name the actual true/false value. */
+          int bic = 0; const int *biv = call_args(nt, id, &bic);
+          buf_puts(b, "(void)("); emit_int_expr(c, biv[0], b); buf_puts(b, "); ");
+        }
         else
           buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Integer\"); ", badc);
         buf_printf(b, "%s; })", dv5 ? dv5 : "0");
