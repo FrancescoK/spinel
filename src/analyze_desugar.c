@@ -11711,6 +11711,73 @@ static int ca_attr_call(NodeTable *nt, int recv, const char *name, int arg) {
   nt_node_set_ref(nt, cl, "block", -1);
   return cl;
 }
+/* `recv&.a op= v` (and `||=`, `&&=`) is nil when recv is: the read, the
+   operator and the write all happen only for a receiver that is not nil.
+   The op-write lowerings below take the receiver as present, so a nil one
+   was called (a segfault through a writer with a body, a refusal for an
+   accessor in value position). Before any of them runs it becomes
+
+     (__snw_N = recv).nil? ? nil : __snw_N.a op= v
+
+   with the receiver evaluated once, as CRuby does. The `if` stands where
+   the op-write stood, so a statement stays a statement and its write is
+   emitted as one. */
+int desugar_safe_nav_attr_write(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !(sp_streq(ty, "CallOperatorWriteNode") || sp_streq(ty, "CallOrWriteNode") ||
+                 sp_streq(ty, "CallAndWriteNode"))) continue;
+    const char *cop = nt_str(nt, id, "call_operator");
+    int recv = nt_ref(nt, id, "receiver");
+    const char *rn = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    if (!cop || !sp_streq(cop, "&.") || recv < 0 || !rn || v < 0) continue;
+    const char *bop = nt_str(nt, id, "binary_operator");
+    char tyb[32], bopb[16];
+    snprintf(tyb, sizeof tyb, "%s", ty);
+    snprintf(bopb, sizeof bopb, "%s", bop ? bop : "");
+    char rnb[256]; snprintf(rnb, sizeof rnb, "%s", rn);
+    char tname[48]; snprintf(tname, sizeof tname, "__snw_%d", id);
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    int pw = nt_new_node(nt, "ParenthesesNode");
+    int pws = nt_new_node(nt, "StatementsNode");
+    int r2 = nt_new_node(nt, "LocalVariableReadNode");
+    int nq = nt_new_node(nt, "CallNode");
+    int nil_n = nt_new_node(nt, "NilNode");
+    int ts = nt_new_node(nt, "StatementsNode");
+    int op = nt_new_node(nt, tyb);
+    int es = nt_new_node(nt, "StatementsNode");
+    int eln = nt_new_node(nt, "ElseNode");
+    if (w < 0 || pw < 0 || pws < 0 || r2 < 0 || nq < 0 || nil_n < 0 || ts < 0 || op < 0 || es < 0 ||
+        eln < 0) break;
+    nt_node_set_str(nt, w, "name", tname); nt_node_set_int(nt, w, "depth", 0);
+    nt_node_set_ref(nt, w, "value", recv);
+    nt_node_set_arr(nt, pws, "body", &w, 1);
+    nt_node_set_ref(nt, pw, "body", pws);
+    nt_node_set_str(nt, r2, "name", tname); nt_node_set_int(nt, r2, "depth", 0);
+    nt_node_set_str(nt, nq, "name", "nil?");
+    nt_node_set_ref(nt, nq, "receiver", pw);
+    nt_node_set_ref(nt, nq, "arguments", -1); nt_node_set_ref(nt, nq, "block", -1);
+    nt_node_set_arr(nt, ts, "body", &nil_n, 1);
+    /* the op-write itself, on the bound receiver, with a plain `.` */
+    nt_node_set_ref(nt, op, "receiver", r2);
+    nt_node_set_str(nt, op, "name", rnb);
+    if (bopb[0]) nt_node_set_str(nt, op, "binary_operator", bopb);
+    nt_node_set_ref(nt, op, "value", v);
+    nt_node_set_arr(nt, es, "body", &op, 1);
+    nt_node_set_ref(nt, eln, "statements", es);
+    nt_node_reset(nt, id, "IfNode");
+    nt_node_set_ref(nt, id, "predicate", nq);
+    nt_node_set_ref(nt, id, "statements", ts);
+    nt_node_set_ref(nt, id, "subsequent", eln);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_const_attr_op_assign(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;

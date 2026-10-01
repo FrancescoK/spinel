@@ -24246,6 +24246,7 @@ void analyze_program(Compiler *c) {
   desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
   desugar_rest_param_writes(c);          /* `args = args.first` on a *args param -> a fresh local */
   desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
+  desugar_safe_nav_attr_write(c);        /* r&.a op= v -> (t = r; t.nil? ? nil : t.a op= v) */
   desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
   desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */

@@ -384,6 +384,7 @@ int desugar_rest_param_writes(Compiler *c);
 int desugar_yield_in_closure(Compiler *c);
 int desugar_index_assign_user_recv(Compiler *c);
 int desugar_const_attr_op_assign(Compiler *c);
+int desugar_safe_nav_attr_write(Compiler *c);
 int desugar_body_self_call(Compiler *c);
 int desugar_body_module_eval(Compiler *c);
 int desugar_extend_self(Compiler *c);
