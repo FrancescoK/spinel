@@ -13738,16 +13738,36 @@ static int an_strbuf_alias_leaves(Compiler *c, int v, int *out, int cap, int dep
    LocalVariableTargetNode among its `lefts`): `t, u = s, 1` makes t another
    name for s, element for target, when the value is an Array literal with no
    splat. -1 for anything else. */
-static int an_masgn_alias_source(Compiler *c, int mw, int t) {
+static int an_masgn_alias_in(Compiler *c, int lhs, int value, int t, int depth) {
   const NodeTable *nt = c->nt;
-  int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
-  int value = nt_ref(nt, mw, "value");
-  if (value < 0 || nt_kind(nt, value) != NK_ArrayNode) return -1;
+  if (value < 0 || nt_kind(nt, value) != NK_ArrayNode || depth > 8) return -1;
+  int ln = 0; const int *lefts = nt_arr(nt, lhs, "lefts", &ln);
   int en = 0; const int *els = nt_arr(nt, value, "elements", &en);
   for (int i = 0; i < en; i++) if (nt_kind(nt, els[i]) == NK_SplatNode) return -1;
-  for (int i = 0; i < ln && i < en; i++)
+  for (int i = 0; i < ln && i < en; i++) {
     if (lefts[i] == t) return an_strbuf_alias_source(c, els[i]);
+    /* `(t, u), v = [s, 1], 2`: a nested target list takes an element that
+       is an Array literal the same way */
+    if (nt_kind(nt, lefts[i]) == NK_MultiTargetNode) {
+      int r = an_masgn_alias_in(c, lefts[i], els[i], t, depth + 1);
+      if (r >= 0) return r;
+    }
+  }
   return -1;
+}
+static int an_masgn_alias_source(Compiler *c, int mw, int t) {
+  return an_masgn_alias_in(c, mw, c->nt ? nt_ref(c->nt, mw, "value") : -1, t, 0);
+}
+/* The local targets of multiple assignment `mw`, its nested target lists'
+   too, into out (at most cap); answers the count. */
+static int an_masgn_targets(const NodeTable *nt, int lhs, int *out, int cap, int depth) {
+  int ln = 0, n = 0; const int *lefts = nt_arr(nt, lhs, "lefts", &ln);
+  for (int i = 0; i < ln && n < cap; i++) {
+    if (nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode) out[n++] = lefts[i];
+    else if (nt_kind(nt, lefts[i]) == NK_MultiTargetNode && depth < 8)
+      n += an_masgn_targets(nt, lefts[i], out + n, cap - n, depth + 1);
+  }
+  return n;
 }
 /* The aliasing writes (`b = a`, `b = a << x`) of every scope, collected in
    one walk of the table. Asked once per call site of a lent parameter, a
@@ -13807,9 +13827,8 @@ static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
     Scope *ws = comp_scope_of(c, mw);
     int si = ws ? (int)(ws - c->scopes) : -1;
     if (si < 0 || si >= c->nscopes) continue;
-    int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+    int lefts[64], ln = an_masgn_targets(nt, mw, lefts, 64, 0);
     for (int i = 0; i < ln; i++) {
-      if (nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) continue;
       int sv = an_masgn_alias_source(c, mw, lefts[i]);
       if (sv >= 0) an_local_aliases_add(t, &cap, si, nt_str(nt, lefts[i], "name"), nt_str(nt, sv, "name"));
     }
@@ -15183,12 +15202,23 @@ static int promote_local_alias_pairs(Compiler *c) {
   /* `t, u = s, 1` names s as t, as `t = s` does (an_masgn_alias_source) */
   for (int mw = comp_kind_first(c, NK_MultiWriteNode); mw >= 0; mw = comp_kind_next(c, mw)) {
     if (nt_kind(nt, mw) != NK_MultiWriteNode) continue;
-    int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+    int lefts[64], ln = an_masgn_targets(nt, mw, lefts, 64, 0);
+    Scope *ws = comp_scope_of(c, mw);
     for (int i = 0; i < ln; i++) {
-      if (nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) continue;
       int sv = an_masgn_alias_source(c, mw, lefts[i]);
-      if (sv >= 0)
-        changed |= promote_local_alias_pair(c, comp_scope_of(c, mw), nt_str(nt, sv, "name"), nt_str(nt, lefts[i], "name"));
+      if (sv < 0) continue;
+      const char *srcn = nt_str(nt, sv, "name"), *tgtn = nt_str(nt, lefts[i], "name");
+      changed |= promote_local_alias_pair(c, ws, srcn, tgtn);
+      /* A nested list binds its targets out of a boxed Array, so a target
+         is boxed and the pair rule leaves it: the source takes the handle
+         instead, the Array literal holds it (the container rule), and the
+         target's box is the handle its mutation reaches. */
+      LocalVar *sl = ws && srcn ? scope_local(ws, srcn) : NULL;
+      LocalVar *tl = ws && tgtn ? scope_local(ws, tgtn) : NULL;
+      if (sl && tl && tl->type == TY_POLY && strbuf_mut_kind(c, tgtn, ws) == 1 &&
+          strbuf_slot_eligible(c, srcn, ws, sl) && (sl->type != TY_STRBUF || !sl->str_shared)) {
+        sl->type = TY_STRBUF; sl->str_shared = 1; changed = 1;
+      }
     }
   }
   return changed;
