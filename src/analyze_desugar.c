@@ -10529,8 +10529,14 @@ static int scg_body_privatizes(const NodeTable *nt, int cls, const char *cname) 
 }
 
 /* Does a class or module named `nm` (any of its bodies) define `cname` as a
-   public constant, or any module one of those bodies includes? */
-static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cname, int n0) {
+   public constant, or any module one of those bodies includes? Names match
+   by their last segment, so `Ns::X` including `Y` that includes `X` reads as
+   a cycle: a name already walked (`seen`) is not walked again. */
+typedef struct { const char *nm[64]; int n; } ScgSeen;
+static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cname, int n0, ScgSeen *seen) {
+  for (int q = 0; q < seen->n; q++) if (sp_streq(seen->nm[q], nm)) return 0;
+  if (seen->n >= 64) return 0;
+  seen->nm[seen->n++] = nm;
   for (int m = 0; m < n0; m++) {
     NodeKind mk = nt_kind(nt, m);
     if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
@@ -10548,7 +10554,7 @@ static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cn
       int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int a = 0; a < an; a++) {
         const char *in = nt_kind(nt, av[a]) == NK_ConstantReadNode ? nt_str(nt, av[a], "name") : NULL;
-        if (in && !sp_streq(in, nm) && scg_named_defines(nt, in, cname, n0)) return 1;
+        if (in && scg_named_defines(nt, in, cname, n0, seen)) return 1;
       }
     }
   }
@@ -10560,7 +10566,8 @@ static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cn
 static int scg_ancestor_defines(const NodeTable *nt, int cls, const char *cname, int n0) {
   int cp = nt_ref(nt, cls, "constant_path");
   const char *own = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-  if (own && scg_named_defines(nt, own, cname, n0)) return 1;
+  ScgSeen seen = {{0}, 0};
+  if (own && scg_named_defines(nt, own, cname, n0, &seen)) return 1;
   const char *nm = own;
   for (int depth = 0; nm && depth < 32; depth++) {
     const char *sup = NULL;
@@ -10572,7 +10579,7 @@ static int scg_ancestor_defines(const NodeTable *nt, int cls, const char *cname,
       if (mn && sp_streq(mn, nm) && sc >= 0 && nt_kind(nt, sc) == NK_ConstantReadNode) sup = nt_str(nt, sc, "name");
     }
     if (!sup) return 0;
-    if (scg_named_defines(nt, sup, cname, n0)) return 1;
+    if (scg_named_defines(nt, sup, cname, n0, &seen)) return 1;
     nm = sup;
   }
   return 0;
@@ -10669,8 +10676,10 @@ int desugar_self_const_get(Compiler *c) {
        leaves the name to its subclasses (an abstract `self::KEYBYTES`), where
        a reader of a constant defined nowhere would only raise. A name it
        inherits, from a superclass or an included module, is not one it
-       leaves: the lookup finds it there. */
-    if (!others || scg_ancestor_defines(nt, owner, cname, n0)) scg_add_def(nt, owner, cname, id);
+       leaves: the lookup finds it there. `const_get` reads the class's own
+       private constant too, which `self::` does not. */
+    if (!others || scg_ancestor_defines(nt, owner, cname, n0) ||
+        (!cpath && scg_body_defines(nt, owner, cname))) scg_add_def(nt, owner, cname, id);
     else scg_add_def_body(nt, owner, cname, id, 1);
     char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
     if (cpath) {
