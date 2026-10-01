@@ -119,6 +119,10 @@ for n in names:
             print(f"- C diff, the base's side: {cbase}")
     if ("scale", n, 0) in jobs:
         d = jobs[("scale", n, 0)]
+        spin = read(os.path.join(d, "spin.txt")).strip()
+        if spin:
+            print(f"- {spin}" + ("" if spin.endswith("pass") else "\n" + "\n".join(
+                f"  - `{l.strip()}`" for l in read(os.path.join(d, "spin.log")).splitlines()[-8:])))
         for tag, f in (("head", "scale.log"), ("base", "scale-base.log")):
             lines = [l.strip() for l in read(os.path.join(d, f)).splitlines() if l.startswith("scale-test")]
             print(f"- scale-test ({tag}):")

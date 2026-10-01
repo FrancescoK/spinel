@@ -329,6 +329,8 @@ jobs:
           scale)
             make -j"$(nproc)" build/spinel-work > /dev/null 2>&1 || true
             make scale-test > "$out/scale.log" 2>&1 || true
+            # spin's own end-to-end check, which matz runs (#6179)
+            { make spin-check > "$out/spin.log" 2>&1 && echo "spin-check: pass" || echo "spin-check: FAIL (rc $?)"; } > "$out/spin.txt"
             b="$RUNNER_TEMP/base"
             if [ -d "$b" ]; then (cd "$b" && make -j"$(nproc)" build/spinel-work > /dev/null 2>&1; make scale-test > "$out/scale-base.log" 2>&1 || true); fi
             ;;
