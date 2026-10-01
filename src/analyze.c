@@ -16244,6 +16244,8 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   return 0;
 }
 
+int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap);
+static int dyn_pull_arg(Compiler *c, int a, int mark_read);
 static int convert_byref_handle_params(Compiler *c,
                                        const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
@@ -16295,7 +16297,15 @@ static int convert_byref_handle_params(Compiler *c,
       for (int e = hat->head[mi2]; e >= 0; e = hat->enext[e]) {
         int u = hat->enode[e];
         int ua = arg_layout_param_node(c, m2, u, pj, NULL);
-        if (ua < 0) continue;
+        if (ua < 0) {
+          /* filled from a splat's elements or gathered into the rest: a
+             String there that is the handle makes the parameter one, since
+             a lent slot cannot ride in the Array the call builds */
+          int sr[32], sd[32];
+          int ns = spread_string_reads(c, m2, u, pj, sr, sd, 32);
+          for (int i = 0; i < ns && !saw_handle; i++) if (an_arg_is_shared_handle(c, sr[i])) saw_handle = 1;
+          continue;
+        }
         if (an_arg_is_shared_handle(c, ua)) saw_handle = 1;
         /* an ALIASED plain-local argument also demands the handle: the
            callee's mutation must stay visible through the caller's alias
@@ -16325,7 +16335,12 @@ static int convert_byref_handle_params(Compiler *c,
       for (int e = hat->head[mi2]; e >= 0; e = hat->enext[e]) {
         int u = hat->enode[e];
         int an2 = arg_layout_param_node(c, m2, u, pj, NULL);
-        if (an2 < 0) continue;
+        if (an2 < 0) {
+          int sr[32], sd[32];
+          int ns = spread_string_reads(c, m2, u, pj, sr, sd, 32);
+          for (int i = 0; i < ns; i++) if (dyn_pull_arg(c, sr[i], sd[i])) changed = 1;
+          continue;
+        }
         if (nt_kind(nt, an2) == NK_LocalVariableReadNode) {
           const char *vn2 = nt_str(nt, an2, "name");
           Scope *vs2 = vn2 ? comp_scope_of(c, an2) : NULL;
@@ -17965,7 +17980,9 @@ static int ctor_pull_args(Compiler *c) {
           /* An element of a splatted Array literal (`C.new(*[s, 1])`) rides
              the Array the splat builds: a boxed one holds the handle once the
              read is marked, as a dynamic call's splat does (#5957's container
-             rule). A String-only Array holds bytes, and the emitter refuses. */
+             rule). A String-only Array holds bytes until
+             promote_spread_string_args marks the element a parameter that
+             appends is placed on; the emitter refuses what is left. */
           int sx = ak == NK_LocalVariableReadNode ? ctor_arg_in_splat(c, u, a) : -1;
           if (sx >= 0) {
             if (comp_ntype(c, sx) == TY_POLY_ARRAY) changed |= dyn_pull_arg(c, a, 1);
@@ -18382,6 +18399,207 @@ static int promote_default_alias_params(Compiler *c) {
       }
     }
   }
+  return changed;
+}
+
+/* ---- A String bound through a splat or a gather (#6179, PR 3) ----------
+
+   A parameter a call fills from a splat's elements (`m(*e, v)`, `m(*s)`
+   over `s = [v]`) or gathers into a rest (`def g(*r)` called `g(v)`) has
+   no argument of its own to lend: the call builds an Array of the values
+   and the method reads its parameter back out of it. The Array held a copy
+   of a plain String, and a method appending to the parameter (or to the
+   rest's element) grew the copy, where CRuby grows the caller's String.
+   Such a String variable becomes the shared handle, so the Array holds the
+   handle and the method appends through it in place; a parameter lent a
+   slot (byref) takes the handle instead, since a slot cannot ride in an
+   Array (convert_byref_handle_params). Only a call with a splat or a
+   gather into such a parameter is touched. */
+
+/* Does method mi append to the elements of its rest parameter: `r[i] << x`,
+   `r.first.concat(x)`, or a mutator on the element an iterator over `r`
+   binds (`r.each { |x| x << y }`)? */
+static int rest_elems_mutated_walk(Compiler *c, int node, const char *rn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_CallNode) {
+    const char *un = nt_str(nt, node, "name");
+    int ur = nt_ref(nt, node, "receiver");
+    if (un && an_str_mutator_name(un) && ur >= 0 && nt_kind(nt, ur) == NK_CallNode) {
+      const char *en = nt_str(nt, ur, "name");
+      int er = nt_ref(nt, ur, "receiver");
+      if (en && (sp_streq(en, "[]") || sp_streq(en, "first") || sp_streq(en, "last") || sp_streq(en, "fetch")) &&
+          er >= 0 && nt_kind(nt, er) == NK_LocalVariableReadNode && nt_str(nt, er, "name") &&
+          sp_streq(nt_str(nt, er, "name"), rn)) return 1;
+    }
+    int blk = nt_ref(nt, node, "block");
+    if (un && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && strbuf_elem_first_iterator(un) &&
+        ur >= 0 && nt_kind(nt, ur) == NK_LocalVariableReadNode && nt_str(nt, ur, "name") &&
+        sp_streq(nt_str(nt, ur, "name"), rn)) {
+      const char *bp = block_param_name(c, blk, 0);
+      if (bp && strbuf_mut_kind(c, bp, comp_scope_of(c, blk)) == 1) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (rest_elems_mutated_walk(c, nt_ref_at(nt, node, i), rn, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (rest_elems_mutated_walk(c, ids[j], rn, depth + 1)) return 1;
+  }
+  return 0;
+}
+static int rest_elems_mutated(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (m->rest_idx < 0 || !m->pnames[m->rest_idx] || m->body < 0) return 0;
+  return rest_elems_mutated_walk(c, m->body, m->pnames[m->rest_idx], 0);
+}
+
+/* The String variable reads call `call` can bind to parameter pj of m where
+   its layout places none: pj is filled from a splat's elements, or pj is
+   the rest a gather fills. They are the positional arguments from the
+   first splat on (or the ones the rest gathers), and the elements of each
+   splatted Array literal or local every write of which is one. direct[i] is
+   1 for an argument written in the call, which the call boxes itself, and 0
+   for an element of a local Array, which the container rule turns into the
+   handle (promote_shared_stored_strings). Answers the count. */
+int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int pos = ac, fs = -1;
+  if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
+  for (int k = 0; k < pos; k++) {
+    if (nt_type(nt, av[k]) && sp_streq(nt_type(nt, av[k]), "ForwardingArgumentsNode")) return 0;
+    if (nt_kind(nt, av[k]) == NK_SplatNode && fs < 0) fs = k;
+  }
+  int lo, hi;
+  if (fs >= 0) {
+    int an = arg_layout_param_node(c, m, call, pj, NULL);
+    if (an >= 0) {
+      /* A splat of Array literals alone has a layout, and it places the
+         parameter on an element: the literal the call builds holds that
+         element, so it has to hold the handle (`new(*[t, t])`). An argument
+         written in the call is the static binders' own. */
+      for (int k = fs; k < pos; k++) {
+        if (nt_kind(nt, av[k]) != NK_SplatNode) continue;
+        int op = nt_ref(nt, av[k], "expression"), en = 0;
+        const int *ev = op >= 0 && nt_kind(nt, op) == NK_ArrayNode ? nt_arr(nt, op, "elements", &en) : NULL;
+        for (int e = 0; e < en; e++) {
+          if (ev[e] != an || nt_kind(nt, an) != NK_LocalVariableReadNode || cap < 1) continue;
+          TyKind et = comp_ntype(c, an);
+          if (et != TY_STRING && et != TY_STRBUF) return 0;
+          out[0] = an; direct[0] = 1;
+          return 1;
+        }
+      }
+      return 0;
+    }
+    lo = fs; hi = pos;
+  }
+  else {
+    if (pj != m->rest_idx) return 0;
+    lo = m->rest_idx; hi = pos - m->npost_rest;
+  }
+  int n = 0;
+  for (int k = lo; k < hi && n < cap; k++) {
+    int x = av[k];
+    if (nt_kind(nt, x) == NK_SplatNode) {
+      int op = nt_ref(nt, x, "expression");
+      int lits[16], nl = 0, inline_lit = 0;
+      if (op >= 0 && nt_kind(nt, op) == NK_ArrayNode) { lits[nl++] = op; inline_lit = 1; }
+      else if (op >= 0 && nt_kind(nt, op) == NK_LocalVariableReadNode) {
+        const char *on = nt_str(nt, op, "name");
+        Scope *os = on ? comp_scope_of(c, op) : NULL;
+        for (int w = os ? comp_lvw_first_sc(c, (int)(os - c->scopes), on) : -1; w >= 0 && nl < 16;
+             w = comp_lvw_next_sc(c, w)) {
+          if (comp_scope_of(c, w) != os || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), on)) continue;
+          int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+          if (wv < 0 || nt_kind(nt, wv) != NK_ArrayNode) { nl = 0; break; }
+          lits[nl++] = wv;
+        }
+      }
+      for (int l = 0; l < nl; l++) {
+        int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+        for (int e = 0; e < en && n < cap; e++) {
+          if (nt_kind(nt, ev[e]) != NK_LocalVariableReadNode) continue;
+          TyKind et = comp_ntype(c, ev[e]);
+          if (et != TY_STRING && et != TY_STRBUF && et != TY_UNKNOWN) continue;
+          out[n] = ev[e]; direct[n] = inline_lit; n++;
+        }
+      }
+      continue;
+    }
+    if (nt_kind(nt, x) != NK_LocalVariableReadNode) continue;
+    TyKind xt = comp_ntype(c, x);
+    if (xt != TY_STRING && xt != TY_STRBUF) continue;
+    out[n] = x; direct[n] = 1; n++;
+  }
+  return n;
+}
+
+/* Does method mi append to parameter pj, or (for its rest) to the rest's
+   elements? The dynamic-call analysis's answer for a required positional
+   (it follows a hand-on), the syntactic one otherwise. */
+static int spread_param_appended(Compiler *c, int mi, int pj) {
+  Scope *m = &c->scopes[mi];
+  if (pj == m->rest_idx) return rest_elems_mutated(c, mi);
+  LocalVar *q = m->pnames[pj] ? scope_local(m, m->pnames[pj]) : NULL;
+  if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared))) return 1;
+  if (pj < dyn_method_nreq(c, m) && pj < DYN_ARGS) return (dyn_meth_bits(c, mi) >> pj) & 1u;
+  return an_param_mutated_in_place(c, mi, pj);
+}
+
+/* Run in the fixpoint beside promote_dyncall_string_args, so the container
+   rule widens a splatted local Array with the handle it now holds, and
+   after it beside convert_byref_handle_params. The targets are every
+   method of the call's name (a splat's positions are the run time's, and a
+   group member that only reads pulls nothing), and a class's initialize
+   for its `new`: bound by value, that one is refused still
+   (refuse_string_copies), since `new` does not share a String yet. */
+static int promote_spread_string_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  dyn_memo_reset(c);
+  /* per scope, the parameters it appends to (bit 31: answered), asked once
+     a pass: every call of a name visits every method of it */
+  unsigned *app = (unsigned *)calloc((size_t)c->nscopes + 1, sizeof(unsigned));
+  if (!app) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    int a = nt_ref(nt, n, "arguments");
+    if (!nm || a < 0) continue;
+    /* without a splat, only a rest gathers the call's arguments */
+    int ac = 0, splat = 0;
+    const int *av = nt_arr(nt, a, "arguments", &ac);
+    for (int k = 0; k < ac && !splat; k++) splat = nt_kind(nt, av[k]) == NK_SplatNode;
+    /* `C.new(*s)` binds C's initialize */
+    int ctor = -1, r = nt_ref(nt, n, "receiver");
+    if (sp_streq(nm, "new") && r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
+      int ci = nt_str(nt, r, "name") ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
+      ctor = ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
+    }
+    for (int mi = ctor >= 0 ? ctor : dyn_scopes_named(c, nm); mi >= 0; mi = ctor >= 0 ? -1 : g_dyn.snext[mi]) {
+      Scope *m = &c->scopes[mi];
+      if (!splat && m->rest_idx < 0) continue;
+      if (!(app[mi] & 0x80000000u)) {
+        app[mi] = 0x80000000u;
+        for (int pj = 0; pj < m->nparams && pj < 31; pj++)
+          if (spread_param_appended(c, mi, pj)) app[mi] |= 1u << pj;
+      }
+      for (int pj = 0; pj < m->nparams && pj < 31; pj++) {
+        if (!(app[mi] & (1u << pj)) || (!splat && pj != m->rest_idx)) continue;
+        int out[32], direct[32];
+        int k = spread_string_reads(c, m, n, pj, out, direct, 32);
+        for (int i = 0; i < k; i++) changed |= dyn_pull_arg(c, out[i], direct[i]);
+      }
+    }
+  }
+  free(app);
+  dyn_memo_stale();
   return changed;
 }
 
@@ -22831,6 +23049,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_multiwrite_const_types(c);
     ch |= promote_shared_stored_strings(c);
     ch |= promote_dyncall_string_args(c);
+    ch |= promote_spread_string_args(c);
     ch |= promote_append_accumulators(c);
     ch |= infer_ivar_types(c);
     ch |= infer_cvar_types(c);
@@ -23035,6 +23254,7 @@ void analyze_program(Compiler *c) {
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
         { int _w = promote_shared_stored_strings(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_dyncall_string_args(c); ch |= _w; ch_other |= _w; }
+        { int _w = promote_spread_string_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
         { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
         { int _w = infer_cvar_types(c); ch |= _w; ch_other |= _w; }
@@ -24940,6 +25160,7 @@ void analyze_program(Compiler *c) {
     handle_arg_tab_free(&hat);
     if (promote_local_alias_pairs(c)) ch = 1;
     if (promote_dyncall_string_args(c)) ch = 1;
+    if (promote_spread_string_args(c)) ch = 1;
     if (promote_default_alias_params(c)) ch = 1;
     if (!ch) break;
   }
