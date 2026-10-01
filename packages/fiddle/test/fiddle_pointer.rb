@@ -44,7 +44,7 @@ end
 # what a bad access raises
 n = Fiddle::Pointer.new(0)
 [proc { n[0] }, proc { n[0, 4] }, proc { n[0] = 1 }, proc { n[0, 1] = "a" },
- proc { m[0] = "x" }, proc { m[0] = nil }, proc { m[0, -1] },
+ proc { m[0] = "x" }, proc { m[0] = nil }, proc { m[0, 1] = nil }, proc { m[0, -1] },
  proc { m.to_s(-1) }, proc { m.size = "x" }, proc { m + "x" },
  proc { Fiddle::Pointer.new(1, "x") }, proc { Fiddle::Handle.new(5) }].each do |bad|
   begin
