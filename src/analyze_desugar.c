@@ -8622,6 +8622,11 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!", "reject!", NULL };
   *hash_pair = 0;
   *elem = TY_UNKNOWN;
+  /* tap, then and yield_self yield the receiver, whatever it is */
+  if ((sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self")) && argc == 0) {
+    *elem = rt;
+    return rt == TY_UNKNOWN ? 0 : 1;
+  }
   if (sp_streq(nm, "each_with_index") && argc == 0) return 2;
   if (sp_streq(nm, "each_with_object") && argc == 1) return 2;
   if (ty_is_hash(rt)) {
@@ -8633,6 +8638,23 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     if (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") || sp_streq(nm, "map!") ||
         sp_streq(nm, "collect!")) return 0;
     for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *hash_pair = 1; return 1; }
+    return 0;
+  }
+  /* A boxed receiver is known only at run time; the names only an Array
+     (or only a Hash) answers yield what the Array's (the Hash's) do. The
+     element walks are left alone: over an Enumerator one step may yield
+     several values. */
+  if (rt == TY_POLY) {
+    if ((sp_streq(nm, "combination") || sp_streq(nm, "repeated_combination") ||
+         sp_streq(nm, "repeated_permutation") || sp_streq(nm, "zip")) && argc == 1) {
+      *elem = TY_POLY_ARRAY; return 1;
+    }
+    if ((sp_streq(nm, "permutation") && argc <= 1) || (sp_streq(nm, "product") && argc >= 1)) {
+      *elem = TY_POLY_ARRAY; return 1;
+    }
+    if ((sp_streq(nm, "each_key") || sp_streq(nm, "each_value")) && argc == 0) {
+      *elem = TY_POLY; return 1;
+    }
     return 0;
   }
   if (rt == TY_INT) {
@@ -8674,6 +8696,15 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
       return 1;
     }
     if (sp_streq(nm, "sort_by!") && argc == 0) { *elem = et; return 1; }
+    /* one Array per step: a tuple of the receiver's own kind, and product's
+       and zip's of boxed values */
+    if ((sp_streq(nm, "combination") || sp_streq(nm, "repeated_combination") ||
+         sp_streq(nm, "repeated_permutation")) && argc == 1) { *elem = rt; return 1; }
+    if (sp_streq(nm, "permutation") && argc <= 1) { *elem = rt; return 1; }
+    if ((sp_streq(nm, "product") && argc >= 1) || (sp_streq(nm, "zip") && argc == 1)) {
+      *elem = TY_POLY_ARRAY;
+      return 1;
+    }
   }
   if (argc != 0) return 0;
   if (rt == TY_RANGE && (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") ||
@@ -8702,6 +8733,24 @@ static int bs_binds_rest(TyKind rt, const char *nm, int argc) {
   if (sp_streq(nm, "map") || sp_streq(nm, "collect") || sp_streq(nm, "select") ||
       sp_streq(nm, "filter") || sp_streq(nm, "reject")) return 1;
   return arr && (sp_streq(nm, "each") || sp_streq(nm, "each_entry") || sp_streq(nm, "reverse_each"));
+}
+
+/* Does the emitter of builtin iterator `nm` spread the one Array a step
+   yields across `np` plain requireds itself, as CRuby's block does (`|a, b|`
+   over [1, 2] binds 1 and 2)? The element walks do (emit_poly_auto_splat,
+   the typed destructure of a row, emit_row_param_bind), and so do the
+   builtins/enumerable.rb methods, and product's tuple (emit_tuple_block_params).
+   These bind the whole value to the first and leave the others nil (a boxed
+   Hash's each_key and each_value spread the pair instead), and zip its two
+   values only to two. */
+static int bs_spreads(const char *nm, int np) {
+  static const char *const whole[] = {
+    "combination", "permutation", "repeated_combination", "repeated_permutation",
+    "tap", "then", "yield_self", "select!", "filter!", "keep_if", "delete_if", "reject!",
+    "map!", "collect!", "each_key", "each_value", NULL };
+  if (sp_streq(nm, "zip")) return np == 2;
+  for (int k = 0; whole[k]; k++) if (sp_streq(nm, whole[k])) return 0;
+  return 1;
 }
 
 /* bs_yield_count for a call on an Enumerator. with_index / with_object yield
@@ -9042,18 +9091,36 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int bp = nt_ref(nt, blk, "parameters");
-    if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
-    int pn = nt_ref(nt, bp, "parameters");
-    if (pn < 0) continue;
+    if (bp < 0) continue;
+    /* `_1, _2` take the values as `|_1, _2|` would; a lone `_1` or `it`
+       never spreads one */
+    int numbered = nt_kind(nt, bp) == NK_NumberedParametersNode;
+    if (numbered && nt_int(nt, bp, "maximum", 0) < 2) continue;
+    if (!numbered && nt_kind(nt, bp) != NK_BlockParametersNode) continue;
+    int pn = numbered ? -1 : nt_ref(nt, bp, "parameters");
+    if (!numbered && pn < 0) continue;
     BsShape s;
-    s.pre = nt_arr(nt, pn, "requireds", &s.P);
-    s.opt = nt_arr(nt, pn, "optionals", &s.O);
-    s.post = nt_arr(nt, pn, "posts", &s.Q);
-    s.rest = nt_ref(nt, pn, "rest");
-    if (s.rest >= 0 && nt_kind(nt, s.rest) != NK_RestParameterNode) s.rest = -1;
-    int kn = 0; nt_arr(nt, pn, "keywords", &kn);
-    int has_kw = kn || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0;
-    if (s.O == 0 && s.Q == 0 && s.rest < 0 && !has_kw) continue;
+    int npre[9];
+    memset(&s, 0, sizeof s);
+    s.rest = -1;
+    if (numbered) {
+      s.P = (int)nt_int(nt, bp, "maximum", 0);
+      if (s.P > 9) continue;
+      s.pre = npre;
+    }
+    else {
+      s.pre = nt_arr(nt, pn, "requireds", &s.P);
+      s.opt = nt_arr(nt, pn, "optionals", &s.O);
+      s.post = nt_arr(nt, pn, "posts", &s.Q);
+      s.rest = nt_ref(nt, pn, "rest");
+      if (s.rest >= 0 && nt_kind(nt, s.rest) != NK_RestParameterNode) s.rest = -1;
+    }
+    int kn = 0; if (pn >= 0) nt_arr(nt, pn, "keywords", &kn);
+    int has_kw = pn >= 0 && (kn || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0);
+    /* leading requireds alone are bound by every emitter, but for the
+       spreading of one Array across them, settled once the yield is known
+       (bs_spreads) */
+    if (s.O == 0 && s.Q == 0 && s.rest < 0 && !has_kw && s.P < 2) continue;
     int bad = 0;
     const char *cop = nt_str(nt, id, "call_operator");
     if (cop && sp_streq(cop, "&.")) bad = 1;
@@ -9065,6 +9132,10 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     }
     if (bad) continue;
     TyKind rt = infer_type(c, recv);
+    /* a program's own tap or then, on any receiver, yields what it likes,
+       and so does its own method of the name on a boxed receiver */
+    if ((rt == TY_POLY || sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self")) &&
+        def_exists_by_name(nt, nm)) continue;
     TyKind elem; int hash_pair;
     int m = bs_enum_yield_count(c, recv, nm, argc, &elem);
     int via_enum = m != 0;
@@ -9084,13 +9155,14 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     if (has_kw) {
       if (!bs_strip_keywords(c, blk, bp, pn)) continue;
       changed = 1;
-      if (s.O == 0 && s.Q == 0 && s.rest < 0) continue;
       s.pre = nt_arr(nt, pn, "requireds", &s.P);
       s.opt = nt_arr(nt, pn, "optionals", &s.O);
       s.post = nt_arr(nt, pn, "posts", &s.Q);
     }
+    int plain = s.O == 0 && s.Q == 0 && s.rest < 0;
+    if (plain && (m != 1 || s.P < 2 || hash_pair || via_enum || bs_spreads(nm, s.P))) continue;
     bad = s.P + s.O + s.Q > 12;
-    for (int i = 0; i < s.P; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
+    for (int i = 0; i < s.P && !numbered; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
     for (int i = 0; i < s.Q; i++) if (nt_kind(nt, s.post[i]) != NK_RequiredParameterNode) bad = 1;
     if (bad) continue;
     int slots = s.P + s.O + s.Q;
@@ -9114,9 +9186,17 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       int rest_bound = !(rn && *rn) || bs_binds_rest(rt, nm, argc);
       if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum && rest_bound) continue;
       if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn && rest_bound) continue; }
+    /* a value that does not spread leaves the requireds past the first
+       unbound */
+    if (plain && !dyn) continue;
 
     BsB b = { nt, 1 };
     int base = nt->count;
+    if (numbered)
+      for (int i = 0; i < s.P; i++) {
+        npre[i] = bs_new(&b, "RequiredParameterNode");
+        if (npre[i] >= 0) nt_node_set_str(nt, npre[i], "name", numbered_param_name(c, bp, i));
+      }
     char names[2][64];
     const char *argn[2];
     int reqs[2];
@@ -9143,6 +9223,11 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     int npn = bs_new(&b, "ParametersNode");
     if (!b.ok || npn < 0 || nbody < 0) return changed;
     nt_node_set_arr(nt, npn, "requireds", reqs, m);
+    if (numbered) {
+      bp = bs_new(&b, "BlockParametersNode");
+      if (bp < 0) return changed;
+      nt_node_set_ref(nt, blk, "parameters", bp);
+    }
     nt_node_set_ref(nt, bp, "parameters", npn);
     nt_node_set_ref(nt, blk, "body", nbody);
     comp_grow_node_arrays(c);

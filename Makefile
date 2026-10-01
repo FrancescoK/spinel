@@ -1095,11 +1095,6 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
 	else grep -q "singleton method that needs a self, on a receiver that is not one user-class instance" "$$tmp/r.out" || \
 	  { echo "reject-test: FAIL (rejected without saying why)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; fi; \
-	t=test/reject/combination_block_two_params.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cbt.c" >"$$tmp/cbt.out" 2>&1; then \
-	  echo "reject-test: FAIL (a combination block taking two parameters compiled)"; ok=0; \
-	else grep -q "a block taking more than one parameter on combination" "$$tmp/cbt.out" || \
-	  { echo "reject-test: FAIL (a combination block taking two parameters rejected without saying why)"; sed -n 1,5p "$$tmp/cbt.out"; ok=0; }; fi; \
 	t=test/reject/new_receiver_class_method_still_reached.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/nrc.c" >"$$tmp/nrc.out" 2>&1; then \
 	  echo "reject-test: FAIL (a called class method's provable NoMethodError compiled)"; ok=0; \
@@ -1110,11 +1105,6 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
 	else grep -q "redo in this block" "$$tmp/rui.out" || \
 	  { echo "reject-test: FAIL (a redo with no label rejected without saying why)"; sed -n 1,5p "$$tmp/rui.out"; ok=0; }; fi; \
-	t=test/reject/product_block_rest_param.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/pbr.c" >"$$tmp/pbr.out" 2>&1; then \
-	  echo "reject-test: FAIL (a product block with a rest parameter compiled)"; ok=0; \
-	else grep -q "a block with a rest, optional or post parameter" "$$tmp/pbr.out" || \
-	  { echo "reject-test: FAIL (a product block with a rest parameter rejected without saying why)"; sed -n 1,5p "$$tmp/pbr.out"; ok=0; }; fi; \
 	t=test/reject/instance_exec_default_ivar_write.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/idw.c" >"$$tmp/idw.out" 2>&1; then \
 	  echo "reject-test: FAIL (an ivar written in a block default on a value with no ivars compiled)"; ok=0; \
