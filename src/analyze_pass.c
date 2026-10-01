@@ -8028,14 +8028,18 @@ int infer_catch_block_params(Compiler *c) {
     if (!nm || !sp_streq(nm, "catch") || nt_ref(nt, id, "receiver") >= 0) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
-    if (args >= 0) nt_arr(nt, args, "arguments", &an);
-    if (an > 0) continue;                       /* explicit tag: no block param */
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an > 1) continue;
     int blk = nt_ref(nt, id, "block");
     const char *bp0 = blk >= 0 ? block_param_name(c, blk, 0) : NULL;
     if (!bp0) continue;
     LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bp0);
     lv->is_block_param = 1;   /* survives the write-types reset */
-    if (lv->type != TY_STRING) { lv->type = TY_STRING; changed = 1; }
+    /* an explicit tag is the block's parameter too */
+    TyKind want = an == 1 ? infer_type(c, av[0]) : TY_STRING;
+    if (want == TY_UNKNOWN) continue;
+    if (an == 1 && lv->type != TY_UNKNOWN && lv->type != want) want = TY_POLY;
+    if (lv->type != want) { lv->type = want; changed = 1; }
   }
   return changed;
 }
@@ -11894,15 +11898,13 @@ int infer_block_params(Compiler *c) {
     if (!rn || !sp_streq(rn, "Hash")) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
-    int pn = nt_ref(nt, blk, "parameters");
-    if (pn < 0) continue;
-    int inner = nt_ref(nt, pn, "parameters");
-    int pnode = inner >= 0 ? inner : pn;
-    int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
+    /* by block_param_name, which names `_1, _2` too: read off the
+       requireds, a numbered block's hash went untyped while the default
+       proc declared it the hash */
     Scope *bs = comp_scope_of(c, blk);
-    for (int k = 0; k < rnp; k++) {
-      const char *p = nt_str(nt, reqs[k], "name");
-      if (!p) continue;
+    for (int k = 0; ; k++) {
+      const char *p = block_param_name(c, blk, k);
+      if (!p) break;
       TyKind want = (k == 0) ? TY_POLY_POLY_HASH : TY_POLY;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (lv->type != want) { lv->type = want; changed = 1; }
