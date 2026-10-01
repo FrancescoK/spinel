@@ -24148,6 +24148,104 @@ static void an_heap_captured_classes(Compiler *c) {
   }
 }
 
+/* Can boxed value `v` be a Method: a read out of an Array or Hash literal
+   that holds one (`[method(:len), 1][i]`, `{ a: method(:a) }[k]`), out of a
+   local or an instance variable that holds such a literal or has a Method
+   stored into it (`h[k] = method(:m)`, `a << method(:m)`), or a local
+   written from such a read? A Method called through `[]` or `===` there
+   takes its arguments as `.call` does, so the evidence for its parameters
+   has to count the call (below). The containers a Method is stored into
+   are found once (an_method_holders_build): a local by its scope and name,
+   an instance variable by its name. */
+typedef struct { int n, cap; int *scope; const char **name; } AnMethodHolders;
+static void an_method_holders_add(AnMethodHolders *h, int scope, const char *name) {
+  if (!name) return;
+  if (h->n == h->cap) {
+    h->cap = h->cap ? h->cap * 2 : 8;
+    h->scope = (int *)realloc(h->scope, sizeof(int) * (size_t)h->cap);
+    h->name = (const char **)realloc(h->name, sizeof(char *) * (size_t)h->cap);
+    if (!h->scope || !h->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  h->scope[h->n] = scope; h->name[h->n++] = name;
+}
+static int an_method_holders_has(const AnMethodHolders *h, int scope, const char *name) {
+  for (int i = 0; name && i < h->n; i++)
+    if (h->scope[i] == scope && sp_streq(h->name[i], name)) return 1;
+  return 0;
+}
+static int an_poly_may_be_method(Compiler *c, const AnMethodHolders *mh, int v, int depth);
+static int an_container_holds_method(Compiler *c, const AnMethodHolders *mh, int a, int depth) {
+  const NodeTable *nt = c->nt;
+  if (a < 0 || depth > 4) return 0;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_ArrayNode) {
+    int en = 0; const int *ev = nt_arr(nt, a, "elements", &en);
+    for (int e = 0; e < en; e++) if (an_poly_may_be_method(c, mh, ev[e], depth + 1)) return 1;
+    return 0;
+  }
+  if (k == NK_HashNode || k == NK_KeywordHashNode) {
+    int en = 0; const int *ev = nt_arr(nt, a, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, ev[e]) == NK_AssocNode && an_poly_may_be_method(c, mh, nt_ref(nt, ev[e], "value"), depth + 1))
+        return 1;
+    return 0;
+  }
+  if (k == NK_InstanceVariableReadNode) return an_method_holders_has(mh, -1, nt_str(nt, a, "name"));
+  if (k == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, a, "name");
+    Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+    if (!vs) return 0;
+    int vsi = (int)(vs - c->scopes);
+    if (an_method_holders_has(mh, vsi, vn)) return 1;
+    for (int w = comp_lvw_first_sc(c, vsi, vn); w >= 0; w = comp_lvw_next_sc(c, w))
+      if (nt_kind(nt, w) == NK_LocalVariableWriteNode &&
+          an_container_holds_method(c, mh, nt_ref(nt, w, "value"), depth + 1)) return 1;
+  }
+  return 0;
+}
+static int an_poly_may_be_method(Compiler *c, const AnMethodHolders *mh, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) return 0;
+  if (c->ntype[v] == TY_METHOD) return 1;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, v, "name");
+    Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+    for (int w = vs ? comp_lvw_first_sc(c, (int)(vs - c->scopes), vn) : -1; w >= 0; w = comp_lvw_next_sc(c, w))
+      if (nt_kind(nt, w) == NK_LocalVariableWriteNode && an_poly_may_be_method(c, mh, nt_ref(nt, w, "value"), depth + 1))
+        return 1;
+    return 0;
+  }
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm || !(sp_streq(nm, "[]") || sp_streq(nm, "fetch") || sp_streq(nm, "dig") || sp_streq(nm, "at") ||
+               sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))) return 0;
+  return an_container_holds_method(c, mh, nt_ref(nt, v, "receiver"), depth + 1);
+}
+static void an_method_holders_build(Compiler *c, AnMethodHolders *mh) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    if (!nm || r < 0 || !(sp_streq(nm, "[]=") || sp_streq(nm, "<<") || sp_streq(nm, "push") ||
+                          sp_streq(nm, "append") || sp_streq(nm, "unshift") || sp_streq(nm, "prepend") ||
+                          sp_streq(nm, "insert") || sp_streq(nm, "store"))) continue;
+    NodeKind rk = nt_kind(nt, r);
+    if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) continue;
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    int holds = 0;
+    for (int k = 0; k < an && !holds; k++) holds = c->ntype[av[k]] == TY_METHOD;
+    if (!holds) continue;
+    Scope *rs = rk == NK_LocalVariableReadNode ? comp_scope_of(c, r) : NULL;
+    if (rk == NK_LocalVariableReadNode && !rs) continue;
+    an_method_holders_add(mh, rs ? (int)(rs - c->scopes) : -1, nt_str(nt, r, "name"));
+  }
+  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, id)
+    if (an_container_holds_method(c, mh, nt_ref(nt, id, "value"), 0))
+      an_method_holders_add(mh, -1, nt_str(nt, id, "name"));
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -26233,10 +26331,13 @@ void analyze_program(Compiler *c) {
   int dyn_seen[16];
   for (int k = 0; k < 16; k++) { dyn_arg[k] = TY_UNKNOWN; dyn_seen[k] = 0; }
   if (msym_n > 0) {
+    AnMethodHolders mholders = {0};
+    an_method_holders_build(c, &mholders);
     for (int id = 0; id < c->nt->count; id++) {
       if (nt_kind(c->nt, id) != NK_CallNode) continue;
       const char *nm = nt_str(c->nt, id, "name");
-      if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]"))) continue;
+      if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]") &&
+                  !sp_streq(nm, "==="))) continue;
       int r = nt_ref(c->nt, id, "receiver");
       if (r < 0) continue;
       TyKind rt = c->ntype[r];
@@ -26244,17 +26345,21 @@ void analyze_program(Compiler *c) {
       int a = nt_ref(c->nt, id, "arguments");
       int an = 0; const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
       /* `[]` on a boxed value is mostly a Hash or Array read (`h[:k]`,
-         `row["name"]`), which is no evidence about a Method: count it only
-         with numeric arguments, the shape a dispatch table is called in
-         (`@store[addr][addr, value]`). A Method called through `[]` with
-         another kind is not seen here and keeps the int default. */
-      if (sp_streq(nm, "[]") && rt != TY_METHOD) {
-        int numeric = an > 0;
+         `row["name"]`), and `===` a case comparison, which are no evidence
+         about a Method: count `[]` with numeric arguments, the shape a
+         dispatch table is called in (`@store[addr][addr, value]`), and
+         either with any argument on a value that can be a Method read out
+         of a literal (an_poly_may_be_method). A String into
+         `[method(:len), 1][i]["abc"]` kept the int default, and the call
+         raised TypeError where `.call` answered (#6179). */
+      if (sp_streq(nm, "===") && an != 1) continue;
+      if ((sp_streq(nm, "[]") || sp_streq(nm, "===")) && rt != TY_METHOD) {
+        int numeric = an > 0 && sp_streq(nm, "[]");
         for (int k = 0; k < an && numeric; k++) {
           TyKind at = c->ntype[av[k]];
           if (at != TY_INT && at != TY_FLOAT) numeric = 0;
         }
-        if (!numeric) continue;
+        if (!numeric && !an_poly_may_be_method(c, &mholders, r, 0)) continue;
       }
       int splat = 0;
       for (int k = 0; k < an; k++) {
@@ -26273,6 +26378,7 @@ void analyze_program(Compiler *c) {
         dyn_seen[k] = 1;
       }
     }
+    free(mholders.scope); free(mholders.name);
   }
   int msym_pinned = 0;
   for (int s = 0; s < c->nscopes; s++) {

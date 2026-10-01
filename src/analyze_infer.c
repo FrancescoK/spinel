@@ -2920,9 +2920,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      or string result to garbage). A boxed slot may hold a Proc regardless
      of whether some user class defines `call` (the poly dispatch's callable
      pre-arm routes it through the callable machinery), so the result stays
-     dynamic even then; the user methods' return type must not constrain it. */
+     dynamic even then; the user methods' return type must not constrain it.
+     Proc#yield is the same call. */
   if (recv >= 0 && rt == TY_POLY &&
-      (sp_streq(name, "call") || sp_streq(name, "()")))
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield")))
     return TY_POLY;
 
   /* strftime on a poly value that is really a Time formats to a String. A

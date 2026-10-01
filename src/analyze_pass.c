@@ -7389,8 +7389,10 @@ int infer_param_types(Compiler *c) {
 
     /* <method>.call(args): bind the call-site arg types to the target
        method's params (the Method ABI is the only call site for a method
-       reached solely via method(:sym)). */
-    if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
+       reached solely via method(:sym)). Method#=== is a call too: left
+       out, `method(:len) === "abc"` handed a String to an Integer slot. */
+    if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()") ||
+                              sp_streq(name, "===")) &&
         infer_type(c, recv) == TY_METHOD) {
       /* a local re-written to several Methods calls whichever it holds:
          each target takes the arguments */

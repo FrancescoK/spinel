@@ -8620,8 +8620,10 @@ static sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b) {
     if (n >= 1 && n <= 9) return sp_box_nullable_str(sp_re_captures[n]);
     return sp_box_nil();
   }
+  /* a Method's [] too: its arguments of any kind are the call's, where
+     sp_poly_slice took a String for an index and raised TypeError (#6179) */
   if (v.tag == SP_TAG_OBJ && v.v.p &&
-      (v.cls_id == SP_BUILTIN_PROC || v.cls_id == SP_BUILTIN_CURRY)) {
+      (v.cls_id == SP_BUILTIN_PROC || v.cls_id == SP_BUILTIN_CURRY || v.cls_id == SP_BUILTIN_METHOD)) {
     _sp_proc_poly_args[0] = a;
     _sp_proc_poly_args[1] = b;
     sp_int slots[16];
