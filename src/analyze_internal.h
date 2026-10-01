@@ -80,6 +80,7 @@ typedef struct { int node; char path[QC_MAXDEPTH][64]; int depth; char name[128]
 int is_builtin_class_name(const char *n);
 int is_builtin_module_name(const char *n);
 int is_builtin_exception_name(const char *n);
+const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int is_handler_proc_block(Compiler *c, int id);

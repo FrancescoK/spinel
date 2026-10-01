@@ -7889,12 +7889,7 @@ int class_is_exc_subclass(Compiler *c, int ci) {
   for (int k = ci, guard = 0; k >= 0 && guard < 256; guard++) {
     int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
     const char *sn = sc >= 0 ? nt_str(c->nt, sc, "name") : NULL;
-    if (sc >= 0) {
-      const char *sty = nt_type(c->nt, sc);
-      if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")) &&
-          is_exc_name(sn))
-        return 1;
-    }
+    if (superclass_builtin_exc_name(c->nt, sc)) return 1;
     int next = c->classes[k].parent;
     /* The parent links are not resolved yet when the rescue-arm specialization
        asks, so a two-level chain (`class B < A; class A < StandardError`) ended
@@ -8044,11 +8039,8 @@ int obj_str_ret_poly(Compiler *c, int cid, int want_inspect) {
 const char *exc_builtin_parent(Compiler *c, int ci) {
   for (int k = ci; k >= 0; k = c->classes[k].parent) {
     int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
-    if (sc < 0) continue;
-    const char *sty = nt_type(c->nt, sc);
-    const char *sn = nt_str(c->nt, sc, "name");
-    if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")) && is_exc_name(sn))
-      return sn;
+    const char *sn = superclass_builtin_exc_name(c->nt, sc);
+    if (sn) return sn;
   }
   return "StandardError";
 }
@@ -12669,6 +12661,22 @@ int class_builtin_superclass(Compiler *c, int i) {
   return builtin_par;
 }
 
+/* The name of the builtin exception directly above user class `i` when that
+   exception has no builtin cls_id (LoadError, SystemCallError, Errno::*, ...),
+   else NULL. class_builtin_superclass has no id to answer for those and says
+   Object; the runtime knows them by name (sp_exc_parent_of_name carries their
+   chain), so the generated superclass table names them instead, and every
+   walk that goes through it -- #superclass, #ancestors, is_a?, Module#<,
+   Module#=== -- continues up the real exception chain. */
+const char *class_builtin_superclass_name(Compiler *c, int i) {
+  if (c->classes[i].is_struct) return NULL;
+  int sc_node = nt_ref(c->nt, c->classes[i].def_node, "superclass");
+  if (sc_node < 0) return NULL;
+  const char *sc_nm = superclass_builtin_exc_name(c->nt, sc_node);
+  if (!sc_nm || builtin_class_id(sc_nm) != 0) return NULL;
+  return errno_canonical_name(sc_nm);
+}
+
 /* The builtin class above the whole user chain of `cid`: walk the user
    superclasses to the root and answer that root's builtin superclass. */
 int class_builtin_parent(Compiler *c, int cid) {
@@ -14107,6 +14115,10 @@ char *codegen_program(const NodeTable *nt) {
       if (par >= 0) {
         buf_printf(&b, "  case %d: return ((sp_Class){%d});\n", i, par);
       }
+      else if (class_builtin_superclass_name(c, i)) {
+        buf_printf(&b, "  case %d: return ((sp_Class){-1, SPL(\"%s\")});\n", i,
+                   class_builtin_superclass_name(c, i));
+      }
       else {
         buf_printf(&b, "  case %d: return ((sp_Class){%d});\n", i, class_builtin_superclass(c, i));
       }
@@ -14125,10 +14137,13 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "  sp_Class cur = desc;\n");
     int depth = c->nclasses + 40;
     buf_printf(&b, "  for(int _i=0;_i<%d;_i++){\n", depth);
-    buf_puts(&b, "    if(cur.cls_id==anc.cls_id)return 1;\n");
+    /* sp_class_eq, not the ids: a name-backed class (an id-less builtin
+       exception such as LoadError or Errno::ENOENT) carries cls_id -1 with
+       its name, so every two of them would compare equal by id */
+    buf_puts(&b, "    if(sp_class_eq(cur,anc))return 1;\n");
     buf_puts(&b, "    if(cur.cls_id==-117)break;\n"); /* BasicObject: root */
     buf_puts(&b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
-    buf_puts(&b, "    if(next.cls_id==cur.cls_id)break;\n");
+    buf_puts(&b, "    if(sp_class_eq(next,cur))break;\n");
     buf_puts(&b, "    cur=next;\n");
     buf_puts(&b, "  }\n");
     buf_puts(&b, "  return 0;\n}\n");
@@ -14143,7 +14158,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "  sp_Class cur = {cls, NULL};\n");
     buf_printf(&b, "  for(int _i=0;_i<%d;_i++){\n", depth);
     buf_puts(&b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
-    buf_puts(&b, "    if(next.cls_id==cur.cls_id||next.cls_id==-116||next.cls_id==-117)return 0;\n");
+    buf_puts(&b, "    if(sp_class_eq(next,cur)||next.cls_id==-116||next.cls_id==-117)return 0;\n");
     buf_puts(&b, "    const char *s=sp_class_to_s(next);\n");
     buf_puts(&b, "    if(s&&s[0]&&!strcmp(s,cn))return 1;\n");
     buf_puts(&b, "    cur=next;\n");
@@ -14230,7 +14245,7 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "  case -117: return SP_CLASS_NIL;\n");
   buf_puts(&b, "  default: return ((sp_Class){-116});\n  }\n}\n");
 
-  buf_puts(&b, "static int sp_class_lt(sp_Class a,sp_Class b){return a.cls_id!=b.cls_id&&sp_class_is_ancestor(b,a);}\n");
+  buf_puts(&b, "static int sp_class_lt(sp_Class a,sp_Class b){return !sp_class_eq(a,b)&&sp_class_is_ancestor(b,a);}\n");
   buf_puts(&b, "static int sp_class_le(sp_Class a,sp_Class b){return sp_class_is_ancestor(b,a);}\n");
   /* the runtime archive's view of the same question, by id (sp_class_le_id_fn) */
   buf_puts(&b, "static int sp_class_le_ids(int a,int b){return sp_class_is_ancestor((sp_Class){b},(sp_Class){a});}\n");
@@ -14247,11 +14262,11 @@ char *codegen_program(const NodeTable *nt) {
      Macros so `sp_class_le` resolves at the call site to whichever version is
      in effect there -- the module-aware sp_class_le_mod when the program mixes
      in modules (Integer < Comparable), the plain chain walk otherwise. */
-  buf_puts(&b, "#define sp_class_lt3(A,B) ({ sp_Class _cx=(A),_cy=(B); _cx.cls_id==_cy.cls_id?sp_box_bool(0):(sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil())); })\n");
+  buf_puts(&b, "#define sp_class_lt3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_bool(0):(sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil())); })\n");
   buf_puts(&b, "#define sp_class_le3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil()); })\n");
   buf_puts(&b, "#define sp_class_gt3(A,B) sp_class_lt3(B,A)\n");
   buf_puts(&b, "#define sp_class_ge3(A,B) sp_class_le3(B,A)\n");
-  buf_puts(&b, "#define sp_class_cmp3(A,B) ({ sp_Class _cx=(A),_cy=(B); _cx.cls_id==_cy.cls_id?sp_box_int(0):(sp_class_le(_cx,_cy)?sp_box_int(-1):(sp_class_le(_cy,_cx)?sp_box_int(1):sp_box_nil())); })\n");
+  buf_puts(&b, "#define sp_class_cmp3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_int(0):(sp_class_le(_cx,_cy)?sp_box_int(-1):(sp_class_le(_cy,_cx)?sp_box_int(1):sp_box_nil())); })\n");
   /* module-aware versions (replace after sp_class_ancestors is defined) */
   /* sp_class_includes_<i>: static array of included module cls_ids per class */
   /* Also update sp_class_is_ancestor to walk includes. */
@@ -14403,10 +14418,14 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
     buf_puts(&b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
     buf_puts(&b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
+    /* a name-backed exception class's modules (IO::EAGAINWaitReadable
+       includes IO::WaitReadable), as the rescue match reads them */
+    buf_puts(&b, "        if(cur.name){const char*const*_m=sp_exc_modules_of_name(cur.name);"
+                 "for(int _k=0;_m&&_m[_k];_k++)sp_PolyArray_push(a,sp_box_class_name(_m[_k]));}\n");
     buf_puts(&b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
     /* the root (BasicObject) yields the nil class: that terminates the walk.
        Chain end used to be marked by a self-reference, so keep that check too. */
-    buf_puts(&b, "        if(sp_class_nil_p(bn)||bn.cls_id==cur.cls_id)break;\n");
+    buf_puts(&b, "        if(sp_class_nil_p(bn)||sp_class_eq(bn,cur))break;\n");
     buf_puts(&b, "        cur=bn;\n");
     buf_puts(&b, "      }\n");
     buf_puts(&b, "      break;\n    }\n");
@@ -14446,7 +14465,7 @@ char *codegen_program(const NodeTable *nt) {
        BasicObject to both. */
     buf_puts(&b, "    if(sp_class_is_module_val(cur))break;\n");
     buf_puts(&b, "    sp_Class next=sp_class_superclass(cur);\n");
-    buf_puts(&b, "    if(next.cls_id==cur.cls_id)break;\n");
+    buf_puts(&b, "    if(sp_class_eq(next,cur))break;\n");
     buf_puts(&b, "    cur=next;\n");
     buf_puts(&b, "  }\n");
     buf_puts(&b, "  return a;\n}\n\n");
@@ -14469,15 +14488,15 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "  sp_PolyArray *ancs=sp_class_ancestors(a);\n");
     buf_puts(&b, "  for(sp_int _i=0;_i<sp_PolyArray_length(ancs);_i++){\n");
     buf_puts(&b, "    sp_RbVal v=sp_PolyArray_get(ancs,_i);\n");
-    buf_puts(&b, "    if(v.tag==7&&(int)v.cls_id==b.cls_id)return 1;\n");
+    buf_puts(&b, "    if(v.tag==7&&sp_class_eq(sp_unbox_class(v),b))return 1;\n");
     buf_puts(&b, "  }\n");
     /* User-class sp_class_ancestors stops before builtin parents.
        If the target is a builtin, fall back to the chain-walking check. */
     buf_puts(&b, "  if(b.cls_id<0)return sp_class_is_ancestor(b,a);\n");
     buf_puts(&b, "  return 0;\n}\n");
     buf_puts(&b, "#undef sp_class_le\n#define sp_class_le sp_class_le_mod\n");
-    buf_puts(&b, "#undef sp_class_lt\n#define sp_class_lt(a,b) ((a).cls_id!=(b).cls_id&&sp_class_le_mod(a,b))\n");
-    buf_puts(&b, "#undef sp_class_gt\n#define sp_class_gt(a,b) ((a).cls_id!=(b).cls_id&&sp_class_le_mod(b,a))\n");
+    buf_puts(&b, "#undef sp_class_lt\n#define sp_class_lt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(a,b))\n");
+    buf_puts(&b, "#undef sp_class_gt\n#define sp_class_gt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(b,a))\n");
     buf_puts(&b, "#undef sp_class_ge\n#define sp_class_ge(a,b) sp_class_le_mod(b,a)\n");
     /* sp_poly_get_class: maps a poly value to its sp_Class for dynamic is_a? */
     buf_puts(&b,
@@ -14578,6 +14597,9 @@ char *codegen_program(const NodeTable *nt) {
           const char *sty = nt_type(c->nt, sc);
           if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")))
             par = nt_str(c->nt, sc, "name");
+          /* a builtin exception by its whole path (Errno::ENOENT) */
+          const char *bpar = superclass_builtin_exc_name(c->nt, sc);
+          if (bpar) par = bpar;
         }
         if (!par && c->classes[i].parent >= 0)
           par = c->classes[c->classes[i].parent].name;

@@ -912,6 +912,8 @@ int builtin_class_parent_id(int id);   /* analyze_util.c */
 int is_builtin_class_name(const char *n);
 int is_builtin_module_name(const char *n);
 int is_builtin_exception_name(const char *n);
+const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
+const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 int class_inherits_builtin_exception(Compiler *c, int ci);  /* analyze_util.c */
 /* The class name a runtime match (is_a?/===/when) should test against: the
    QUALIFIED path name when it names a known builtin (exception) class --
@@ -1316,6 +1318,7 @@ void emit_array_elem_sure(TyKind at, int tmp, int elem_idx, Buf *b);
 void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx, Compiler *c, int argv_from, int pos_argc, const int *argv, Buf *b);
 int is_descendant(Compiler *c, int k, int anc);
 int class_builtin_superclass(Compiler *c, int i);   /* codegen.c */
+const char *class_builtin_superclass_name(Compiler *c, int i);   /* codegen.c */
 int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */

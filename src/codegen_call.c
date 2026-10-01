@@ -28669,7 +28669,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     for (int ki = 0; tcn && CRUBY_KNOWN[ki]; ki++)
       if (sp_streq(tcn, CRUBY_KNOWN[ki])) { cruby_known = 1; break; }
     if (tcn && !cruby_known && comp_class_index(c, tcn) < 0 &&
-        !is_builtin_class_name(tcn) && !comp_const(c, tcn)) {
+        !is_builtin_class_name(tcn) && !is_builtin_exception_name(tcn) &&
+        !comp_const(c, tcn)) {
       buf_puts(b, "((void)(");
       emit_expr(c, recv, b);
       buf_printf(b, "), sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), 0)", tcn);
@@ -36111,17 +36112,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (ci >= 0) {
       int par = c->classes[ci].parent;
       if (par >= 0) { buf_printf(b, "((sp_Class){%d})", par); return; }
-      /* Check if the class has a builtin superclass via AST. */
-      int sc_nd = nt_ref(nt, c->classes[ci].def_node, "superclass");
-      /* a Struct/Data-generated class sits under the Struct/Data builtin */
-      int bpar = c->classes[ci].is_struct ? (c->classes[ci].is_data ? -146 : -145)
-                                          : -116;  /* Object */
-      if (sc_nd >= 0) {
-        const char *sc_ty2 = nt_type(nt, sc_nd);
-        const char *sc_nm2 = (sc_ty2 && (sp_streq(sc_ty2, "ConstantReadNode") || sp_streq(sc_ty2, "ConstantPathNode"))) ? nt_str(nt, sc_nd, "name") : NULL;
-        if (sc_nm2) { int bid2 = builtin_class_id(sc_nm2); if (bid2 != 0) bpar = bid2; }
-      }
-      buf_printf(b, "((sp_Class){%d})", bpar);
+      /* the builtin above it: the row the generated sp_class_superclass
+         table carries, by name for an id-less exception (LoadError) */
+      const char *bpn = class_builtin_superclass_name(c, ci);
+      if (bpn) buf_printf(b, "((sp_Class){-1, SPL(\"%s\")})", bpn);
+      else buf_printf(b, "((sp_Class){%d})", class_builtin_superclass(c, ci));
       return;
     }
   }
