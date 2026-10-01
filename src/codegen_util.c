@@ -530,9 +530,11 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
 
 /* A no-arg builtin method whose return type follows the receiver's type,
    called on a yield: yield.abs on an Integer block returns Integer; on a
-   Float block, Float.  Like yield_operator_site_type, only covers the set
-   that analyze_infer.c's YU_RECEIVER arm widens to TY_POLY; extend both
-   in tandem. */
+   Float block, Float.  Unary minus on a String block is the deduplicated
+   frozen String, so a String site answers String for `-@`; a String has no
+   abs, and that site keeps the cached type. Like yield_operator_site_type,
+   only covers the set that analyze_infer.c's YU_RECEIVER arm widens to
+   TY_POLY; extend both in tandem. */
 static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
@@ -546,7 +548,7 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   if (!sp_streq(op, "abs") && !sp_streq(op, "-@")) return 0;
   TyKind rt;
   if (!sp_yield_site_type(c, recv, &rt)) return 0;
-  if (rt != TY_INT && rt != TY_FLOAT) return 0;
+  if (rt != TY_INT && rt != TY_FLOAT && !(rt == TY_STRING && sp_streq(op, "-@"))) return 0;
   *out = rt;
   return 1;
 }
