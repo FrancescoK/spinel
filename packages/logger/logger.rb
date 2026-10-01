@@ -136,12 +136,14 @@ class Logger
   def reopen(logdev = nil)
     return self if @logdev.nil? || logdev.nil?
 
-    close
     if logdev.is_a?(String)
-      @logdev = File.open(logdev.to_s, "a")
-      @logdev.sync = true
+      new_logdev = File.open(logdev.to_s, "a")
+      new_logdev.sync = true
+      close
+      @logdev = new_logdev
       @own = true
     else
+      close
       @logdev = logdev
       @own = false
     end
