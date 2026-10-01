@@ -13086,7 +13086,7 @@ static void emit_hash_store_val(Compiler *c, int val, TyKind rt, Buf *b) {
   if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_hval_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_hval_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_hval_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else { store_check(c, val, hvt, "a Hash element store", b); emit_expr(c, val, b); }
+  else emit_coerce(c, val, hvt, CO_HOLD, "a Hash element store", b);
 }
 
 /* The receiver of a statement-position String mutator that it reassigns:
@@ -13949,7 +13949,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
-    else { store_check(c, argv[1], et, "an Array element store", b); emit_expr(c, argv[1], b); }
+    else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
@@ -14046,7 +14046,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         buf_puts(b, "), (&(\"\\xff\")[1]))");
       }
       else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], et, b);   /* a raise token, a void call */
-      else { store_check(c, argv[a], et, "an Array push", b); emit_expr(c, argv[a], b); }
+      else emit_coerce(c, argv[a], et, CO_HOLD, "an Array push", b);
       buf_puts(b, ");\n");
     }
     if (has_splat) { emit_indent(b, indent); buf_puts(b, "}\n"); }
