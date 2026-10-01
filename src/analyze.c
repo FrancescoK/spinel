@@ -20453,6 +20453,47 @@ static int spread_rest_from(Compiler *c, int *rf, int mi) {
   return r;
 }
 
+/* An ivar among the elements a splat hands on (of an Array literal, or of
+   any Array literal written to the local it splats), or written after the
+   splat: its slot takes the handle, as a container store's does
+   (strbuf_demand_store_leaf), so the gathered Array holds it. Another
+   write of the local does not clear a literal one, which the local may
+   still hold at the call. */
+static int spread_demand_ivar(Compiler *c, int r) {
+  if (nt_kind(c->nt, r) != NK_InstanceVariableReadNode || c->strbuf_box[r]) return 0;
+  TyKind it = infer_type(c, r);
+  return it == TY_STRING || it == TY_STRBUF ? strbuf_demand_store_leaf(c, r, 0) : 0;
+}
+static int spread_demand_ivar_elems(Compiler *c, const int *av, int ac) {
+  const NodeTable *nt = c->nt;
+  int changed = 0, fs = 0;
+  for (int i = 0; i < ac; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    /* one written after the splat is boxed into the same Array */
+    if (ak != NK_SplatNode) { if (fs) changed |= spread_demand_ivar(c, av[i]); continue; }
+    fs = 1;
+    int x = nt_ref(nt, av[i], "expression"), lits[16], nl = 0;
+    if (x >= 0 && nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
+    else if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode) {
+      const char *xn = nt_str(nt, x, "name");
+      Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+      for (int w = xs ? comp_lvw_first_sc(c, (int)(xs - c->scopes), xn) : -1; w >= 0 && nl < 16;
+           w = comp_lvw_next_sc(c, w)) {
+        if (comp_scope_of(c, w) != xs || nt_kind(nt, w) != NK_LocalVariableWriteNode ||
+            !sp_streq(nt_str(nt, w, "name"), xn)) continue;
+        int wv = nt_ref(nt, w, "value");
+        if (wv >= 0 && nt_kind(nt, wv) == NK_ArrayNode) lits[nl++] = wv;
+      }
+    }
+    for (int l = 0; l < nl; l++) {
+      int en = 0; const int *ev = nt_arr(nt, lits[l], "elements", &en);
+      for (int e = 0; e < en; e++) changed |= spread_demand_ivar(c, ev[e]);
+    }
+  }
+  return changed;
+}
+
 static int promote_spread_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -20497,6 +20538,7 @@ static int promote_spread_string_args(Compiler *c) {
         int out[32], direct[32];
         int k = spread_string_reads(c, m, n, pj, out, direct, 32);
         for (int i = 0; i < k; i++) changed |= dyn_pull_arg(c, out[i], direct[i]);
+        if (splat) changed |= spread_demand_ivar_elems(c, av, ac);
         /* a splatted local Array the program changes holds what was stored */
         for (int i = 0; splat && i < ac; i++)
           if (nt_kind(nt, av[i]) == NK_SplatNode) changed |= spread_demand_changed_local(c, av[i]);
