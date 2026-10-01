@@ -11225,7 +11225,14 @@ else {
             emit_indent(b, indent);
             char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
             buf_printf(b, "%s = ", iv_lhs);
-            if (ivt != TY_POLY) {
+            /* a scalar slot another write typed takes an element of its own
+               kind (or nil) and refuses any other (sp_slot_*_ck), rather
+               than reading the other kind's bits as its own */
+            const char *ck = ivt == TY_INT ? "sp_slot_int_ck" : ivt == TY_FLOAT ? "sp_slot_float_ck"
+                           : ivt == TY_STRING ? "sp_slot_str_ck" : ivt == TY_BOOL ? "sp_slot_bool_ck"
+                           : ivt == TY_SYMBOL ? "sp_slot_sym_ck" : NULL;
+            if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
+            else if (ivt != TY_POLY) {
               Buf bx; memset(&bx, 0, sizeof bx);
               emit_unbox_text(c, ivt, get_expr, &bx);
               buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);

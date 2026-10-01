@@ -3132,6 +3132,44 @@ static SP_NOINLINE sp_int sp_poly_arg_int_chk_slow(sp_RbVal v) {
 static SP_NOINLINE SP_NORETURN void sp_bm_arg_mismatch(sp_RbVal v, const char *want) {
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected %s)", sp_poly_class_name(v), want));
 }
+/* An element destructured from a boxed value (`@a, @b = boxed`) into an
+   instance variable whose slot another write typed: the slot takes it when
+   it is of that kind (or nil, which the slot spells as its sentinel), and
+   anything else is a TypeError rather than the other kind's bits read as
+   this one's. CRuby has no slot types and stores any value; this is where
+   Spinel refuses. */
+static SP_NOINLINE SP_NORETURN void sp_slot_store_mismatch(sp_RbVal v, const char *ivar, const char *want) {
+  sp_raise_cls("TypeError", sp_sprintf("cannot store %s into %s, which Spinel typed %s",
+                                       sp_poly_class_name(v), ivar, want));
+}
+static SP_INLINE sp_int sp_slot_int_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
+  sp_slot_store_mismatch(v, ivar, "Integer");
+  return 0;
+}
+static SP_INLINE sp_float sp_slot_float_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_NIL) return sp_float_nil();
+  sp_slot_store_mismatch(v, ivar, "Float");
+  return 0.0;
+}
+static SP_INLINE const char *sp_slot_str_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) return sp_poly_unbox_s(v);
+  if (v.tag == SP_TAG_NIL) return NULL;
+  sp_slot_store_mismatch(v, ivar, "String");
+  return NULL;
+}
+static SP_INLINE sp_bool sp_slot_bool_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_BOOL) return v.v.b;
+  sp_slot_store_mismatch(v, ivar, "true or false");
+  return FALSE;
+}
+static SP_INLINE sp_int sp_slot_sym_ck(sp_RbVal v, const char *ivar) {
+  if (v.tag == SP_TAG_SYM) return v.v.i;
+  sp_slot_store_mismatch(v, ivar, "Symbol");
+  return 0;
+}
 static SP_INLINE sp_int sp_bm_arg_int(sp_RbVal v) {
   if (v.tag == SP_TAG_INT && v.v.i != SP_INT_NIL) return v.v.i;
   sp_bm_arg_mismatch(v, "Integer");

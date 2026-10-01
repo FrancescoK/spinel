@@ -2555,6 +2555,20 @@ static int masgn_unify_elem(Compiler *c, Scope *ms, const int *tgts, int n, TyKi
   return changed;
 }
 
+/* An instance variable target of a multiple assignment from a boxed value
+   whose slot nothing else has typed yet (unknown, or only nil): it takes the
+   boxed elements. A slot another write already types (optcarrot's int
+   @io_addr) keeps its type, so a boxed right side alone does not widen it. */
+static int masgn_ivar_untyped(Compiler *c, Scope *ms, int tgt) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, tgt) != NK_InstanceVariableTargetNode || !ms || ms->class_id < 0) return 0;
+  const char *ivnm = nt_str(nt, tgt, "name");
+  int iv = ivnm ? comp_ivar_index(&c->classes[ms->class_id], ivnm) : -1;
+  if (iv < 0) return 0;
+  TyKind t = c->classes[ms->class_id].ivar_types[iv];
+  return t == TY_UNKNOWN || t == TY_NIL || t == TY_POLY;
+}
+
 /* The slots under a nested (a, *b, c) target of a multiple assignment take
    elements of a boxed value (emit_massign_poly_target): each target widens
    to poly, and a splat target to a poly array. */
@@ -2984,7 +2998,7 @@ int infer_write_types(Compiler *c) {
               if (mg_p != lv_p->type) { lv_p->type = mg_p; if (lv_p->rbs_seeded) changed = 1; }
             }
             else if (sp_streq(lty_p, "GlobalVariableTargetNode") || sp_streq(lty_p, "ClassVariableTargetNode") ||
-                     sp_streq(lty_p, "InstanceVariableTargetNode"))
+                     masgn_ivar_untyped(c, ms_poly, lefts[i]))
               changed |= masgn_unify_elem(c, ms_poly, &lefts[i], 1, TY_POLY);
           }
           int rn_p = 0;
@@ -2992,7 +3006,7 @@ int infer_write_types(Compiler *c) {
           for (int j = 0; j < rn_p; j++) {
             const char *rty_p = nt_type(nt, rights_p[j]) ? nt_type(nt, rights_p[j]) : "";
             if (sp_streq(rty_p, "GlobalVariableTargetNode") || sp_streq(rty_p, "ClassVariableTargetNode") ||
-                sp_streq(rty_p, "InstanceVariableTargetNode"))
+                masgn_ivar_untyped(c, ms_poly, rights_p[j]))
               changed |= masgn_unify_elem(c, ms_poly, &rights_p[j], 1, TY_POLY);
           }
           int rest_p = nt_ref(nt, id, "rest");
