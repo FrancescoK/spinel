@@ -23724,6 +23724,16 @@ int nullable_int_value(Compiler *c, int v) {
     LocalVar *rv = rs ? scope_local(rs, rn) : NULL;
     return rv && rv->nullable_int && !nn_read_nonnil(v);
   }
+  /* `x &&= v` answers x's nil when x is nil, and `x ||= v` answers v when
+     x is nil, so the value can be nil as the local or v can */
+  if (nt_kind(nt, v) == NK_LocalVariableAndWriteNode) {
+    const char *rn = nt_str(nt, v, "name");
+    Scope *rs = rn ? comp_scope_of(c, v) : NULL;
+    LocalVar *rv = rs ? scope_local(rs, rn) : NULL;
+    return rv && (rv->type == TY_INT || rv->type == TY_FLOAT) && rv->nullable_int;
+  }
+  if (nt_kind(nt, v) == NK_LocalVariableOrWriteNode)
+    return nullable_int_value(c, nt_ref(nt, v, "value"));
   return 0;
 }
 
