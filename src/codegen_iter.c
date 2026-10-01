@@ -5161,6 +5161,60 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
        fell to the runtime dispatch, which has no zip arm at all. */
     int recv_poly = !ty_is_array(rt);
     const char *k = recv_poly ? "Poly" : array_iter_kind(rt);
+    int zsplat = 0;
+    for (int j = 0; j < zargc; j++) if (nt_kind(nt, zargv[j]) == NK_SplatNode) zsplat = 1;
+    if (k && (zargc != 1 || zsplat)) {
+      int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, te = ++g_tmp;
+      emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tr);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tr);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", to, to);
+      for (int j = 0; j < zargc; j++) {
+        emit_indent(b, indent);
+        if (nt_kind(nt, zargv[j]) == NK_SplatNode) {
+          int ts = ++g_tmp, tj = ++g_tmp;
+          buf_printf(b, "{ sp_RbVal _t%d = sp_splat_to_array(", ts);
+          emit_boxed(c, nt_ref(nt, zargv[j], "expression"), b);
+          buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++)"
+                        " sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d)); }\n",
+                     ts, tj, tj, ts, tj, to, ts, tj);
+        }
+        else {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
+          emit_boxed(c, zargv[j], b); buf_puts(b, ");\n");
+        }
+      }
+      /* Operands are captured before yielding. The receiver is read again
+         per row, so the block can change its later elements. */
+      int tj = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " sp_PolyArray_set(_t%d, _t%d, sp_zip_block_arg(_t%d->data[_t%d]));\n",
+                 tj, tj, to, tj, to, tj, to, tj);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_int _t%d = sp_poly_arr_len(_t%d);\n", tn, tr);
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_RbVal _t%d = sp_zip_block_row(_t%d, _t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
+                 te, tr, to, ti, te);
+      if (block_param_name(c, block, 1)) emit_poly_auto_splat(c, block, te, b, indent);
+      else if (block_lone_rest(c, block)) {
+        char src[32]; snprintf(src, sizeof src, "_t%d", te);
+        emit_iter_bind_rest(c, block, 0, TY_POLY, src, b, indent + 1);
+      }
+      else if (p0) {
+        Scope *zs = comp_scope_of(c, block);
+        LocalVar *lv = zs ? scope_local(zs, block_param_name(c, block, 0)) : NULL;
+        char src[32]; snprintf(src, sizeof src, "_t%d", te);
+        emit_indent(b, indent + 1);
+        emit_block_param_from_boxed(c, p0, lv ? lv->type : TY_POLY, src, b);
+      }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     if (k && zargc == 1 && zargv) {
       TyKind a0t = comp_ntype(c, zargv[0]);
       const char *k2 = ty_is_array(a0t) ? array_iter_kind(a0t) : NULL;
