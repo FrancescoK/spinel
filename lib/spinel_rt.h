@@ -2429,6 +2429,24 @@ static inline sp_Rational sp_poly_as_rational(sp_RbVal v) {
   if (sp_poly_is_rational(v) && v.v.p) return *(sp_Rational *)v.v.p;
   return sp_rational_new(sp_poly_to_i(v), 1);
 }
+/* A Complex where a real is wanted. #to_f takes only an exactly-zero
+   imaginary part (an Integer 0, not 0.0); #to_r, which Kernel#Rational
+   uses, takes a Float 0.0 too, as Complex.rectangular and .polar do for
+   each component (sp_complex_real_chk). Each raise names what CRuby names. */
+static SP_NOINLINE sp_float sp_complex_to_f(sp_Complex c) {
+  if (c.im != 0.0 || (c.fl & SP_CPLX_IM_F))
+    sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Float", sp_complex_to_s(c)));
+  return c.re;
+}
+static SP_NOINLINE sp_Rational sp_complex_to_r(sp_Complex c) {
+  if (c.im != 0.0)
+    sp_raise_cls("RangeError", sp_sprintf("can't convert %s into Rational", sp_complex_to_s(c)));
+  return sp_float_to_rational(c.re);
+}
+static SP_INLINE sp_Complex sp_complex_real_chk(sp_Complex c) {
+  if (c.im != 0.0) sp_raise_cls("TypeError", "not a real");
+  return c;
+}
 /* Kernel#Rational on a boxed argument: a Rational passes through exactly, a
    Float converts to its exact value the way Rational(2.5) does, a String
    parses, and anything else reads as an integer. */
@@ -2436,6 +2454,9 @@ static inline sp_Rational sp_poly_kernel_rational(sp_RbVal v) {
   if (sp_poly_is_rational(v) && v.v.p) return *(sp_Rational *)v.v.p;
   if (v.tag == SP_TAG_FLT) return sp_float_to_rational(v.v.f);
   if (v.tag == SP_TAG_STR) return sp_str_to_r(v.v.s ? v.v.s : sp_str_empty);
+  /* a boxed Complex is its #to_r, where it read as the integer 0 */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p)
+    return sp_complex_to_r(*(sp_Complex *)v.v.p);
   /* An sp_Rational is a pair of sp_ints and cannot hold a big one, so a
      Bignum operand read through here was truncated to its low word:
      `Rational([2**70, nil][0], 1)` answered (0/1), where the same call with
