@@ -2387,11 +2387,13 @@ const char *default_value(TyKind t) {
 /* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
    kinds hold nil as a sentinel (default_value), which C reads as true. */
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b) {
-  if (t == TY_INT)         buf_printf(b, "(%s != SP_INT_NIL)", ref);
-  else if (t == TY_FLOAT)  buf_printf(b, "(!sp_float_is_nil(%s))", ref);
-  else if (t == TY_SYMBOL) buf_printf(b, "(%s != (sp_sym)-1)", ref);
-  else if (t == TY_POLY)   buf_printf(b, "(sp_poly_truthy(%s))", ref);
-  else                     buf_printf(b, "(%s)", ref);
+  switch (t) {
+  case TY_INT:    buf_printf(b, "(%s != SP_INT_NIL)", ref); break;
+  case TY_FLOAT:  buf_printf(b, "(!sp_float_is_nil(%s))", ref); break;
+  case TY_SYMBOL: buf_printf(b, "(%s != (sp_sym)-1)", ref); break;
+  case TY_POLY:   buf_printf(b, "(sp_poly_truthy(%s))", ref); break;
+  default:        buf_printf(b, "(%s)", ref); break;
+  }
 }
 /* Hold a nullable Integer or Float operand in a fresh temp -- `sp_int _tN =
    <node>; ` -- so a read that has to ask for its sentinel (emit_slot_truthy)
