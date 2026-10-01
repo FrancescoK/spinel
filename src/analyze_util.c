@@ -2826,9 +2826,10 @@ int io_family_class(Compiler *c, int k) {
 }
 /* A typed IO's kind is only known at run time. Its reopened method is looked
    up as a File's first (File, then IO), then as a socket's. */
-/* Set while a typed IO's call is re-emitted as the builtin it overrides:
-   the reopenings are out of sight then. */
-int g_io_skip_reopen = 0;
+/* Set while a typed IO's call (g_io_skip_node) is re-emitted as the
+   builtin it overrides: the reopenings are out of sight for that call
+   alone, not for the calls in its arguments. */
+int g_io_skip_reopen = 0, g_io_skip_node = -1;
 int io_reopen_class(Compiler *c, const char *name) {
   if (!name || g_io_skip_reopen) return -1;
   for (int i = 0; io_family[i]; i++) {

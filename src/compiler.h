@@ -1029,7 +1029,7 @@ int        io_family_name(const char *n);
 int        io_family_class(Compiler *c, int k);
 /* The reopened IO-family class whose method `name` a typed IO calls, or -1. */
 int        io_reopen_class(Compiler *c, const char *name);
-extern int g_io_skip_reopen;
+extern int g_io_skip_reopen, g_io_skip_node;
 int        io_reopen_leaves_builtin(Compiler *c, const char *name);
 int        io_reopen_defs(Compiler *c, const char *name, int public_only, int *ks, int max);
 int        io_reopen_ret_mixed(Compiler *c, const char *name);

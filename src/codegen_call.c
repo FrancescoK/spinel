@@ -961,15 +961,22 @@ static void emit_io_vis_msg(int vis, const char *name, const char *handle, Buf *
    types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
 static int io_builtin_name(const char *m);
+static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty);
+static void unhoist_dispatch_args(Compiler *c, int n, int *sv, TyKind *ty);
 /* The builtin's own emission of typed IO call `id` on the handle in _r<tv>,
    with the reopenings out of sight, or NULL when it does not fit the call's
    slot or does not emit. */
 static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   if (g_n_argov + 1 > MAX_ARG_OVERRIDE) return NULL;
-  g_io_skip_reopen = 1;
+  /* this may run inside another call's re-emission (an argument's call) */
+  int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
+  g_io_skip_reopen = 1; g_io_skip_node = id;
   TyKind bt = an_builtin_answer(c, id);
   TyKind ct = comp_ntype(c, id);
-  if (bt == TY_UNKNOWN || (bt != ct && ct != TY_POLY)) { g_io_skip_reopen = 0; return NULL; }
+  if (bt == TY_UNKNOWN || (bt != ct && ct != TY_POLY)) {
+    g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
+    return NULL;
+  }
   int slot = g_n_argov++;
   g_argov_node[slot] = recv;
   snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_r%d", tv);
@@ -989,14 +996,18 @@ static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   g_unsup_probe = sv_probe; g_pre = sv_gpre;
   c->ntype[id] = sv_ty;
   g_n_argov = slot;
-  g_io_skip_reopen = 0;
-  /* a statement the emission hoisted cannot ride inside the ternary arm */
-  if (!ok || !nb->p || (pb->p && pb->len) || strncmp(nb->p, "sp_raise", 8) == 0) {
+  g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
+  /* a statement the emission hoisted runs inside the arm, unless it roots
+     a temp: that root would outlive the arm's scope */
+  int pre = pb->p && pb->len;
+  if (!ok || !nb->p || (pre && strstr(pb->p, "SP_GC_ROOT")) || strncmp(nb->p, "sp_raise", 8) == 0) {
     free(nb->p); free(nb); free(pb->p); free(pb); return NULL;
   }
   Buf out; memset(&out, 0, sizeof out);
+  if (pre) buf_printf(&out, "({ %s ", pb->p);
   if (ct == TY_POLY && bt != TY_POLY) emit_boxed_text(c, bt, nb->p, &out);
   else buf_puts(&out, nb->p);
+  if (pre) buf_puts(&out, "; })");
   free(nb->p); free(nb); free(pb->p); free(pb);
   return out.p;
 }
@@ -1027,6 +1038,9 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     return;
   }
   int boxed = comp_ntype(c, id) == TY_POLY;
+  /* every arm, and the builtin's, reads the arguments evaluated once */
+  int *hsv = NULL; TyKind *hty = NULL;
+  int hn = hoist_dispatch_args(c, args, &hsv, &hty);
   int tv = ++g_tmp;
   char h[32];
   snprintf(h, sizeof h, "_r%d", tv);
@@ -1072,6 +1086,7 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     free(vb.p);
   }
   buf_puts(b, "; })");
+  unhoist_dispatch_args(c, hn, hsv, hty);
 }
 static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b) {
   emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
@@ -19926,6 +19941,12 @@ sp_builtin_arity_spec_tbl[] = {
 static int io_builtin_name(const char *m) {
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
     if (sp_streq(r->cls, "File") && sp_streq(r->m, m)) return 1;
+  /* the table leaves out these */
+  static const char *const more[] = {
+    "print", "puts", "write", "syswrite", "gets", "readline", "readlines", NULL
+  };
+  for (int i = 0; more[i]; i++)
+    if (sp_streq(more[i], m)) return 1;
   return 0;
 }
 

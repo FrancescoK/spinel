@@ -2110,9 +2110,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        two answer different types */
     if (emi >= 0 && rt == TY_IO && io_reopen_leaves_builtin(c, name)) {
       TyKind ur = method_call_ret(c, emi, id);
-      g_io_skip_reopen = 1;
+      int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
+      g_io_skip_reopen = 1; g_io_skip_node = id;
       TyKind bt = an_builtin_answer(c, id);
-      g_io_skip_reopen = 0;
+      g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
       if (bt != TY_UNKNOWN && ur != TY_UNKNOWN && bt != ur) return TY_POLY;
       return ur;
     }
@@ -8968,6 +8969,12 @@ static int why_node_origin(Compiler *c, int id, TyKind t) {
 
 TyKind infer_type(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
+  if (g_io_skip_reopen && id != g_io_skip_node) {
+    g_io_skip_reopen = 0;
+    TyKind t = infer_type(c, id);
+    g_io_skip_reopen = 1;
+    return t;
+  }
   /* The face re-inference (infer_call's last resort, and codegen's re-entry)
      asks what one call would be with this receiver pinned to one concrete
      kind (the face table in types.h). Only that receiver node, only for the

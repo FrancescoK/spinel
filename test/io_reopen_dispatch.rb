@@ -95,3 +95,24 @@ rp, wp = IO.pipe
 wp.write("piped")
 wp.close
 p rp.read, $stdout.sync, File.open(__FILE__).sync
+
+# an argument's own reopened call keeps its dispatch, and the arguments run
+# once whichever arm the kind picks
+class File
+  def getbyte = 66
+  def putc(c) = "file-putc"
+  def print(s) = "file-print"
+  def write(s) = "file-write"
+  def gets = "file-gets"
+end
+fg = File.open(__FILE__)
+calls = 0
+arg = -> { calls += 1; "x" }
+rp2, wp2 = IO.pipe
+wp2.putc(fg.getbyte)
+wp2 << fg.getbyte
+wp2.print(fg.getbyte.to_s + arg.call)
+wp2.write(arg.call)
+wp2.write("\n")
+wp2.close
+p rp2.gets, calls, fg.print("z"), fg.gets
