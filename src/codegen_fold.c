@@ -956,7 +956,15 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = _t%d.last - _t%d.excl;\n", thi, tr, tr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = SP_INT_NIL;\n", tres);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tlo, thi);
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d + (_t%d - _t%d) / 2;\n", tmid, tlo, thi, tlo);
+  /* A beginless or endless range spans most of sp_int, so the width and the
+     step past the probe are taken unsigned or guarded: `hi - lo` and `mid +
+     1` overflowed, which is undefined, and gcc compiled the loop into one
+     that never ended. */
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_int _t%d = _t%d + (sp_int)(((uint64_t)_t%d - (uint64_t)_t%d) >> 1);\n", tmid, tlo, thi, tlo);
+  char right[128], left[128];
+  snprintf(right, sizeof right, "{ if (_t%d == _t%d) break; _t%d = _t%d + 1; }", tmid, thi, tlo, tmid);
+  snprintf(left, sizeof left, "{ if (_t%d == _t%d) break; _t%d = _t%d - 1; }", tmid, tlo, thi, tmid);
   if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tmid); }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int save = g_indent; g_indent++;
@@ -968,13 +976,13 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     /* an Integer block that also answers nil is the combined dispatch: nil
        searches right (see the Array form) */
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "if (_t%d == SP_INT_NIL) { _t%d = _t%d + 1; }\n", tcmp, tlo, tmid);
+    buf_printf(g_pre, "if (_t%d == SP_INT_NIL) %s\n", tcmp, right);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "else if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "else if (_t%d > 0) { _t%d = _t%d + 1; }\n", tcmp, tlo, tmid);
+    buf_printf(g_pre, "else if (_t%d > 0) %s\n", tcmp, right);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
+    buf_printf(g_pre, "else %s\n", left);
   }
   else if (comp_ntype(c, bb[bn - 1]) == TY_POLY) {
     /* a mixed block (int-or-nil ternary) is CRuby's combined dispatch: an
@@ -988,19 +996,18 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 2);
     buf_printf(g_pre, "if (_t%d.v.i == 0) { _t%d = _t%d; break; }\n", tv, tres, tmid);
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "else if (_t%d.v.i > 0) { _t%d = _t%d + 1; }\n", tv, tlo, tmid);
+    buf_printf(g_pre, "else if (_t%d.v.i > 0) %s\n", tv, right);
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
+    buf_printf(g_pre, "else %s\n", left);
     emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; _t%d = _t%d - 1; }\n",
-               tv, tres, tmid, thi, tmid);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+    buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; %s }\n", tv, tres, tmid, left);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else %s\n", right);
   }
   else {
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+    buf_printf(g_pre, "if (%s) { _t%d = _t%d; %s }\n", cb.p ? cb.p : "0", tres, tmid, left);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else %s\n", right);
   }
   free(cb.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
