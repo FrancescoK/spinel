@@ -11252,6 +11252,29 @@ static void mark_empty_literal_tails(Compiler *c) {
     if (has_ret && sc && has_ret[(int)(sc - c->scopes)]) continue;
     MARK_EMPTY_TAIL(bs);
   }
+  /* A block whose tail is `next v` hands back v as its value, so an empty
+     `[]` / `{}` there is the value just as a tail one is: left unmarked it
+     took another block's type, and `next []` beside `next 1` went into an
+     sp_int. A `next []` before some other tail is left alone: it is built at
+     the kind that tail gives the block's value (#3978). */
+  NT_FOREACH_KIND(nt, NK_BlockNode, nblk) {
+    int bs = nt_ref(nt, nblk, "body");
+    int bn = 0; const int *bb = bs >= 0 && nt_kind(nt, bs) == NK_StatementsNode ? nt_arr(nt, bs, "body", &bn) : NULL;
+    if (bn < 1 || nt_kind(nt, bb[bn - 1]) != NK_NextNode) continue;
+    int na = nt_ref(nt, bb[bn - 1], "arguments");
+    int an = 0; const int *av = na >= 0 ? nt_arr(nt, na, "arguments", &an) : NULL;
+    int v = an == 1 ? unwrap_parens(c, av[0]) : -1;   /* `next({})` */
+    if (v < 0 || v >= c->node_cap) continue;
+    int en = 0;
+    if (nt_kind(nt, v) == NK_ArrayNode) {
+      nt_arr(nt, v, "elements", &en);
+      if (en == 0) c->empty_arr_recv[v] = 1;
+    }
+    else if (nt_kind(nt, v) == NK_HashNode) {
+      nt_arr(nt, v, "elements", &en);
+      if (en == 0) c->empty_hash_recv[v] = 1;
+    }
+  }
   #undef MARK_EMPTY_TAIL
   free(has_ret);
 }
