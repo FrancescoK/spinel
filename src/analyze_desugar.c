@@ -1633,6 +1633,18 @@ static int mrv_no_scope(const NodeTable *nt, int root, int depth) {
   return 1;
 }
 static int mrv_is_string(TyKind t) { return t == TY_STRING || t == TY_STRBUF; }
+/* Does a value leave instead of answering one (`return`, `break`, `next`,
+   `redo`, `retry`, also inside a paren)? The call moved onto it would be a
+   call on no value, so such an arm keeps the call where it was. */
+static int mrv_jumps(const NodeTable *nt, int v) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ParenthesesNode) {
+    int b = nt_ref(nt, v, "body"), bn = 0;
+    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    return bn > 0 && mrv_jumps(nt, bb[bn - 1]);
+  }
+  return k == NK_ReturnNode || k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode || k == NK_RetryNode;
+}
 /* Does the subtree under `root` write a variable -- any, or the one named
    `vn` when it is given? Past the depth it follows, it answers that it may. */
 static int mrv_writes(const NodeTable *nt, int root, const char *vn, int depth) {
@@ -1845,7 +1857,10 @@ int desugar_mutator_receiver_value(Compiler *c) {
     if (!mrv_is_string(infer_type(c, r)) || !mrv_no_scope(nt, args, 0)) continue;
     int arms[64], na = 0;
     int orl = -1;
-    if (rk == NK_OrNode) orl = nt_ref(nt, r, "left");
+    if (rk == NK_OrNode) {
+      orl = nt_ref(nt, r, "left");
+      if (mrv_jumps(nt, nt_ref(nt, r, "right"))) continue;
+    }
     else {
       na = mrv_arms(nt, r, arms, 64);
       if (na == 0) continue;
@@ -1853,6 +1868,12 @@ int desugar_mutator_receiver_value(Compiler *c) {
       int big = 0;
       for (int k = 0; k < na && !big; k++) { int bn = 0; nt_arr(nt, arms[k], "body", &bn); big = bn > 255; }
       if (big) continue;
+      int jumps = 0;
+      for (int k = 0; k < na && !jumps; k++) {
+        int bn = 0; const int *bb = nt_arr(nt, arms[k], "body", &bn);
+        jumps = mrv_jumps(nt, bb[bn - 1]);
+      }
+      if (jumps) continue;
       if (rk == NK_ParenthesesNode) {
         int bn = 0; const int *bb = nt_arr(nt, arms[0], "body", &bn);
         if (!mrv_paren_value(nt, bb[bn - 1])) continue;

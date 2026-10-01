@@ -1130,6 +1130,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
+	t=test/reject/string_mutator_jump_arm.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mja.c" >"$$tmp/mja.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String mutator on a conditional with a returning arm compiled)"; ok=0; \
+	else grep -q "unsupported expression" "$$tmp/mja.out" || \
+	  { echo "reject-test: FAIL (a returning arm under a String mutator rejected without saying why)"; sed -n 1,5p "$$tmp/mja.out"; ok=0; }; fi; \
 	t=test/reject/string_global_handle_param.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ghp.c" >"$$tmp/ghp.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global run first into a handle parameter compiled)"; ok=0; \
