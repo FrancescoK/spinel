@@ -8758,9 +8758,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else if (sp_streq(name, "num_waiting")) qf = "sp_box_int(sp_Queue_num_waiting((sp_queue *)_t%d.v.p))";
         else if (sp_streq(name, "closed?")) qf = "sp_box_bool(sp_Queue_closed((sp_queue *)_t%d.v.p))";
         else if (sp_streq(name, "max")) qf = "sp_box_int(sp_Queue_max((sp_queue *)_t%d.v.p))";
+        /* close answers the queue itself */
+        else if (sp_streq(name, "close")) qf = "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d)";
         if (qf) {
           char qv[120];
-          snprintf(qv, sizeof qv, qf, tv);
+          snprintf(qv, sizeof qv, qf, tv, tv);
           buf_printf(b, " case SP_BUILTIN_QUEUE: _t%d = ", tr);
           if (ret == TY_POLY) buf_puts(b, qv);
           else emit_unbox_text(c, ret, qv, b);
@@ -8788,6 +8790,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else
           buf_printf(b, "_t%d = sp_File_flush((sp_File *)_t%d.v.p);", tr, tv);
         buf_puts(b, " break;");
+      }
+      /* and close, for an IO or a Dir in the same slot: they answer nil
+         (a Queue's arm above answers the queue) */
+      if (argc == 0 && sp_streq(name, "close")) {
+        buf_printf(b, " case SP_BUILTIN_IO: sp_File_close((sp_File *)_t%d.v.p); _t%d = ", tv, tr);
+        emit_unbox_text(c, ret, "sp_box_nil()", b);
+        buf_printf(b, "; break; case SP_BUILTIN_DIR: sp_Dir_close((sp_Dir *)_t%d.v.p); _t%d = ", tv, tr);
+        emit_unbox_text(c, ret, "sp_box_nil()", b);
+        buf_puts(b, "; break;");
       }
       /* And once more for `__enum_to_a`, which is not a name a user writes:
          the Enumerable desugar puts it in front of `obj.map { }` when the
@@ -31087,13 +31098,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tdr);
         if (qname) {
           buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE ? ", tdr, tdr);
-          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), (sp_int)0) : ", tdr);
+          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d) : ", tdr, tdr);
           else buf_printf(b, "sp_Queue_closed((sp_queue *)_t%d.v.p) : ", tdr);
         }
         if (dirfn) {
           buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ", tdr, tdr);
-          /* close answers the IO arm's sp_int: the Dir's nil is dropped */
-          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), (sp_int)0) : ", tdr);
+          if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), sp_box_nil()) : ", tdr);
           else buf_printf(b, "%s((sp_Dir *)_t%d.v.p) : ", dirfn, tdr);
         }
       }
@@ -31303,7 +31313,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_io_wait(c, name, argc, argv, tr, b);
         buf_puts(b, "; })");
       }
-      else if (sp_streq(name, "close")) buf_printf(b, "sp_File_close(_t%d); })", tio2);
+      else if (sp_streq(name, "close")) buf_printf(b, "(void)sp_File_close(_t%d); sp_box_nil(); })", tio2);
       else if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); })", tio2);
       else buf_printf(b, "sp_File_fileno(_t%d); })", tio2);
       if (tdr) buf_puts(b, "; })");
