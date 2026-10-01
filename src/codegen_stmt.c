@@ -1175,6 +1175,7 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 }
 
 static int str_append_chain_base(Compiler *c, int id);
+static int str_alias_chain_base(Compiler *c, int id);
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -1332,7 +1333,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
       /* a value-position append chain over a shared base: run the chain (it
          appends in place), then alias the BASE handle -- wrapping the cstr
          would fork a second buffer and break the alias (#3307 family) */
-      int cb9 = str_append_chain_base(c, v);
+      int cb9 = str_alias_chain_base(c, v);
       char srefC9[1024];
       if (cb9 != v && lv->str_shared &&
           strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
@@ -11889,6 +11890,19 @@ static int str_append_chain_base(Compiler *c, int id) {
     int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
     if (cac != 1) return cur;
     cur = crecv;
+  }
+}
+
+/* The same walk for an aliasing write (`t = s << x`, `t = s.to_s`): it also
+   steps through a String call whose value is its receiver (str_self_call), as
+   the analysis's an_strbuf_alias_source does, so the local the write shares
+   with is the one the chain ran on. */
+static int str_alias_chain_base(Compiler *c, int id) {
+  int cur = id;
+  for (;;) {
+    cur = str_append_chain_base(c, cur);
+    if (!str_self_call(c->nt, cur)) return cur;
+    cur = nt_ref(c->nt, cur, "receiver");
   }
 }
 

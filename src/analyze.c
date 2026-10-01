@@ -13192,18 +13192,37 @@ static int an_ivar_owner(Compiler *c, int node) {
 }
 /* The ivar node a local write's value hands over as the slot's own object:
    a read, or a plain / or / and write of it (the value of the write is the
-   slot), through single-statement parentheses. -1 for anything else. */
+   slot), through single-statement parentheses. A read is also reached
+   through the calls whose value is their receiver -- `+@s` (the slot's own
+   String unless it is frozen), an append chain `@s << x`, and the String
+   methods str_self_call names (`@s.to_s`, `@s.insert(i, x)`) -- since the
+   local then names the slot's object as `l = @s` does. -1 for anything else. */
 int strbuf_ivar_alias_value(const NodeTable *nt, int v) {
-  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
-    int body = nt_ref(nt, v, "body");
-    int n = 0;
-    const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode
-                    ? nt_arr(nt, body, "body", &n) : NULL;
-    if (!st || n != 1) return -1;
-    v = st[0];
+  int stepped = 0;
+  for (;;) {
+    while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+      int body = nt_ref(nt, v, "body");
+      int n = 0;
+      const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode
+                      ? nt_arr(nt, body, "body", &n) : NULL;
+      if (!st || n != 1) return -1;
+      v = st[0];
+    }
+    if (v < 0 || nt_kind(nt, v) != NK_CallNode) break;
+    const char *cn = nt_str(nt, v, "name");
+    int cr = nt_ref(nt, v, "receiver");
+    int ca = nt_ref(nt, v, "arguments"); int cac = 0;
+    if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
+    if (!cn || cr < 0 || nt_ref(nt, v, "block") >= 0) return -1;
+    if (!((cac == 1 && (sp_streq(cn, "<<") || sp_streq(cn, "concat"))) ||
+          (cac == 0 && sp_streq(cn, "+@")) || str_self_call(nt, v))) return -1;
+    v = cr; stepped = 1;
   }
   if (v < 0) return -1;
   NodeKind k = nt_kind(nt, v);
+  /* a write under such a call runs inside the call's own value, which the
+     write-handle emitter would skip */
+  if (stepped) return k == NK_InstanceVariableReadNode ? v : -1;
   return k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
          k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ? v : -1;
 }
@@ -13306,6 +13325,7 @@ static const char *an_reader_ivar_of(Compiler *c, int node, int *defc,
    value IS its base object). Parens unwrap. -1 when the shape is neither. */
 static int an_strbuf_alias_source(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
+  int via_self = 0;
   for (int depth = 0; v >= 0 && depth < 64; depth++) {
     const char *vt = nt_type(nt, v);
     if (!vt) return -1;
@@ -13315,7 +13335,16 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
       if (bn != 1) return -1;
       v = bb[0]; continue;
     }
-    if (sp_streq(vt, "LocalVariableReadNode")) return v;
+    /* `to_s` and the rest are any class's names: only a String's answer is
+       the String itself */
+    if (sp_streq(vt, "LocalVariableReadNode")) {
+      if (via_self) {
+        Scope *vs = comp_scope_of(c, v);
+        LocalVar *vl = vs ? scope_local(vs, nt_str(nt, v, "name")) : NULL;
+        if (!vl || (vl->type != TY_STRING && vl->type != TY_STRBUF)) return -1;
+      }
+      return v;
+    }
     /* a chained assignment (`u = t = s`): its value is t's object, and the
        write node names t as a read does */
     if (sp_streq(vt, "LocalVariableWriteNode")) return v;
@@ -13328,6 +13357,8 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
           cr >= 0 && cac == 1) { v = cr; continue; }
       /* +s is s itself unless s is frozen (sp_String_uplus decides) */
       if (cn && sp_streq(cn, "+@") && cr >= 0 && cac == 0) { v = cr; continue; }
+      /* the String methods whose value is their receiver (str_self_call) */
+      if (str_self_call(nt, v)) { v = cr; via_self = 1; continue; }
       return -1;
     }
     return -1;
