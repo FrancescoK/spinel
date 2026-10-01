@@ -3111,7 +3111,7 @@ int desugar_dynamic_send(Compiler *c) {
           int kept = 0;
           for (int k = 0; k < nown; k++) {
             size_t ol = strlen(own[k]);
-            if (ol > pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
+            if (ol >= pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
                 (!sl || strcmp(own[k] + ol - sl, suf) == 0)) kept++;
           }
           /* none of that shape: the dispatch keeps its arms and raises
@@ -3120,7 +3120,7 @@ int desugar_dynamic_send(Compiler *c) {
             int w = 0;
             for (int k = 0; k < nown; k++) {
               size_t ol = strlen(own[k]);
-              if (ol > pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
+              if (ol >= pl + sl && (!pl || strncmp(own[k], pre, pl) == 0) &&
                   (!sl || strcmp(own[k] + ol - sl, suf) == 0)) own[w++] = own[k];
               else free(own[k]);
             }
