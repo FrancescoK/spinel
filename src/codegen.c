@@ -13610,7 +13610,30 @@ static int exc_text_method(Compiler *c, int i, int want_message, int *dcls, cons
   return -1;
 }
 
+/* Does the text call sp_poly_is_a? Its definition and its prototype are
+   not calls. */
+static int calls_poly_is_a(const char *t) {
+  for (const char *q = t ? strstr(t, "sp_poly_is_a(") : NULL; q; q = strstr(q + 1, "sp_poly_is_a(")) {
+    if (q > t && (q[-1] == '_' || isalnum((unsigned char)q[-1]))) continue;
+    if (q - t >= 4 && !strncmp(q - 4, "int ", 4)) continue;
+    return 1;
+  }
+  return 0;
+}
+
+/* Insert `s` into `b` at offset `at`. */
+static void buf_splice(Buf *b, size_t at, const char *s) {
+  char *tail = strdup(b->p + at);
+  b->len = at;
+  b->p[at] = 0;
+  buf_puts(b, s);
+  buf_puts(b, tail);
+  free(tail);
+}
+
 char *codegen_program(const NodeTable *nt) {
+  char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
+  size_t isa_ext_at = 0;
   Compiler *c = comp_new(nt);
   analyze_program(c);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
@@ -14516,7 +14539,32 @@ char *codegen_program(const NodeTable *nt) {
       "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
       "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
-      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n"
+      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
+    /* a class value is also an instance of the modules it (or a superclass)
+       extends, its singleton's ancestors: one arm per such class. The arms
+       are spliced in here at the end, and only when the program calls
+       sp_poly_is_a: most programs that extend a module never do. */
+    { int any_ext = 0;
+      for (int k = 0; k < c->nclasses && !any_ext; k++) if (comp_class_extends_any(c, k)) any_ext = 1;
+      if (any_ext) {
+        Buf eb; memset(&eb, 0, sizeof eb);
+        buf_puts(&eb, "  if (obj.tag == SP_TAG_CLASS) switch (sp_unbox_class(obj).cls_id) {\n");
+        for (int k = 0; k < c->nclasses; k++) {
+          if (!comp_class_extends_any(c, k)) continue;
+          buf_printf(&eb, "  case %d: if (", k);
+          int any = 0;
+          for (int m = 0; m < c->nclasses; m++)
+            if (comp_class_is_module(c, &c->classes[m]) && comp_class_singleton_has_module(c, k, m)) {
+              buf_printf(&eb, "%sklass.cls_id == %d", any ? " || " : "", m);
+              any = 1;
+            }
+          buf_puts(&eb, any ? ") return 1; break;\n" : "0) return 1; break;\n");
+        }
+        buf_puts(&eb, "  default: break;\n  }\n");
+        isa_ext = eb.p;
+        isa_ext_at = b.len;
+      } }
+    buf_puts(&b,
       "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
     /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
        answer of sp_class_lt3 and friends, TypeError for a non-class operand
@@ -15470,6 +15518,12 @@ char *codegen_program(const NodeTable *nt) {
   emit_regex_section(c, &b);
   { const char *pdt[3] = { g_procs.p, body->p, b.p };
     pd_emit_used(pdt, 3, &g_pd_protos, &g_pd_defs); }
+  if (isa_ext) {
+    if (calls_poly_is_a(b.p + isa_ext_at) || calls_poly_is_a(g_procs.p) ||
+        calls_poly_is_a(body->p) || calls_poly_is_a(g_pd_defs.p))
+      buf_splice(&b, isa_ext_at, isa_ext);
+    free(isa_ext);
+  }
   if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
   if (g_pd_protos.len) { buf_puts(&b, g_pd_protos.p); buf_puts(&b, "\n"); }
   if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }

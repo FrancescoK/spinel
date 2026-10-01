@@ -22952,6 +22952,14 @@ static int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int ex
        for it, as for a builtin with no entry */
     if (cid >= 0 && is_builtin_reopen(cn) && builtin_class_id(cn) != 0) cid = -1;
     if (cid >= 0) {
+      /* a class value is an instance of the modules it, or a superclass,
+         extends: `[K, N].map { |k| k.is_a?(M) }` */
+      int ext = !exact && comp_class_is_module(c, &c->classes[cid]);
+      if (ext) {
+        ext = 0;
+        for (int k = 0; k < c->nclasses && !ext; k++) if (comp_class_singleton_has_module(c, k, cid)) ext = 1;
+      }
+      if (ext) buf_puts(b, "(");
       buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", v);
       int first = 1;
       /* a module is an ancestor of every class that includes it: an
@@ -22963,6 +22971,16 @@ static int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int ex
         }
       if (first) buf_puts(b, "0");
       buf_puts(b, "))");
+      if (ext) {
+        buf_printf(b, " || (%s.tag == SP_TAG_CLASS && (", v);
+        int any = 0;
+        for (int k = 0; k < c->nclasses; k++)
+          if (comp_class_singleton_has_module(c, k, cid)) {
+            buf_printf(b, "%ssp_unbox_class(%s).cls_id == %d", any ? " || " : "", v, k);
+            any = 1;
+          }
+        buf_puts(b, ")))");
+      }
     }
     /* a builtin ancestor not covered above (Object/BasicObject/Kernel hold
        for every value but a BasicObject.new, which is only a BasicObject;
@@ -36811,8 +36829,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_printf(b, "1; })");
         }
         else {
-          /* Unknown target: emit 0 with side effect */
-          buf_printf(b, "((void)_cl%d, 0); })", _clt);
+          /* A module a class extends is among its singleton's ancestors, and
+             so are the modules that module includes and the ones the
+             superclasses extend: `Klass.is_a?(M)` is true for exactly those
+             classes. Any other target answers false. */
+          int mcid = comp_class_index(c, cn2);
+          int any = 0;
+          buf_puts(b, "(");
+          if (mcid >= 0 && comp_class_is_module(c, &c->classes[mcid]) && !exact)
+            for (int k = 0; k < c->nclasses; k++)
+              if (comp_class_singleton_has_module(c, k, mcid)) {
+                buf_printf(b, "%s_cl%d.cls_id == %d", any ? " || " : "", _clt, k);
+                any = 1;
+              }
+          if (!any) buf_printf(b, "(void)_cl%d, 0", _clt);
+          buf_puts(b, "); })");
         }
         return;
       }
