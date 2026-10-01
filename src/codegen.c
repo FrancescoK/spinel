@@ -14506,7 +14506,27 @@ char *codegen_program(const NodeTable *nt) {
       "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
       "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
-      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n"
+      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
+    /* a class value is also an instance of the modules it (or a superclass)
+       extends, its singleton's ancestors: one arm per such class */
+    { int any_ext = 0;
+      for (int k = 0; k < c->nclasses && !any_ext; k++) if (comp_class_extends_any(c, k)) any_ext = 1;
+      if (any_ext) {
+        buf_puts(&b, "  if (obj.tag == SP_TAG_CLASS) switch (sp_unbox_class(obj).cls_id) {\n");
+        for (int k = 0; k < c->nclasses; k++) {
+          if (!comp_class_extends_any(c, k)) continue;
+          buf_printf(&b, "  case %d: if (", k);
+          int any = 0;
+          for (int m = 0; m < c->nclasses; m++)
+            if (comp_class_is_module(c, &c->classes[m]) && comp_class_singleton_has_module(c, k, m)) {
+              buf_printf(&b, "%sklass.cls_id == %d", any ? " || " : "", m);
+              any = 1;
+            }
+          buf_puts(&b, any ? ") return 1; break;\n" : "0) return 1; break;\n");
+        }
+        buf_puts(&b, "  default: break;\n  }\n");
+      } }
+    buf_puts(&b,
       "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
     /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
        answer of sp_class_lt3 and friends, TypeError for a non-class operand
