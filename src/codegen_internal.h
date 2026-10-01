@@ -201,6 +201,7 @@ int call_is_field_read(Compiler *c, int id, int *allocates);
    hc_mark is the text a write's or a safepoint's slow path appends, after
    which the cached headers are read again ("" outside such a loop). */
 int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, size_t cap);
+int hc_index_in_range(Compiler *c, int recv, int idx);
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
 const char *hc_mark(void);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */

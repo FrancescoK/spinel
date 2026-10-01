@@ -5889,7 +5889,8 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
    nor the ivar. */
 enum { HC_INT, HC_FLOAT, HC_STR };
 typedef struct { char recv[200]; int kind; } HcEntry;
-typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32]; } HcRegion;
+typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32];
+                 char bi[64], ba[64]; } HcRegion;  /* bi/ba: see hc_bounded_index */
 static HcRegion *g_hc = NULL;
 /* the loops' own numbering: drawn from g_tmp, it would renumber every temp
    after a loop that qualifies and then caches nothing */
@@ -6083,6 +6084,74 @@ int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap) {
 
 const char *hc_mark(void) { return g_hc ? g_hc->mark : ""; }
 
+/* The statement emit_stmts is emitting and the one before it in the same list,
+   for a loop that needs to see what ran just ahead of it (hc_bounded_index). */
+int g_stmt_cur = -1, g_stmt_prev = -1;
+
+/* A loop of the shape
+     i = <a literal >= 0>
+     while i < a.length      # or a.size
+       ... a[i] ...
+       i += 1
+     end
+   reads a[i] in range on every pass, so the read needs no bounds test: i
+   starts non-negative and only counts up, the predicate has just checked it
+   against the array's current length, and nothing before the closing
+   `i += 1` writes it. The array cannot shrink inside the loop -- a loop the
+   cache takes runs no code that could (hc_node_ok) -- and every write that
+   grows it refreshes the cached header. Records i and a in the region, or
+   leaves it as it was. */
+static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion *r) {
+  const NodeTable *nt = c->nt;
+  if (prev < 0 || pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return;
+  const char *op = nt_str(nt, pred, "name");
+  int iv = nt_ref(nt, pred, "receiver");
+  int pa = nt_ref(nt, pred, "arguments"), pac = 0;
+  const int *pav = pa >= 0 ? nt_arr(nt, pa, "arguments", &pac) : NULL;
+  if (!op || !sp_streq(op, "<") || pac != 1 || iv < 0 || nt_kind(nt, iv) != NK_LocalVariableReadNode) return;
+  const char *in = nt_str(nt, iv, "name");
+  int len = pav[0];
+  if (!in || comp_ntype(c, iv) != TY_INT || nt_kind(nt, len) != NK_CallNode) return;
+  const char *ln = nt_str(nt, len, "name");
+  int av = nt_ref(nt, len, "receiver");
+  int la = nt_ref(nt, len, "arguments"), lac = 0;
+  if (la >= 0) nt_arr(nt, la, "arguments", &lac);
+  if (!ln || (!sp_streq(ln, "length") && !sp_streq(ln, "size")) || lac != 0 || av < 0 ||
+      nt_kind(nt, av) != NK_LocalVariableReadNode) return;
+  const char *an = nt_str(nt, av, "name");
+  TyKind at = comp_ntype(c, av);
+  if (!an || (at != TY_INT_ARRAY && at != TY_FLOAT_ARRAY) || nameset_has(&r->wl, an)) return;
+  /* i = <literal >= 0>, the statement just ahead of the loop */
+  if (nt_kind(nt, prev) != NK_LocalVariableWriteNode || !nt_str(nt, prev, "name") ||
+      !sp_streq(nt_str(nt, prev, "name"), in)) return;
+  int pv = nt_ref(nt, prev, "value");
+  if (pv < 0 || nt_kind(nt, pv) != NK_IntegerNode || nt_str(nt, pv, "bigval") || nt_int(nt, pv, "value", -1) < 0) return;
+  /* `i += 1` closes the body, and is its only write of i */
+  if (nt_kind(nt, body) != NK_StatementsNode) return;
+  int bn = 0;
+  const int *bs = nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return;
+  int inc = bs[bn - 1];
+  if (nt_kind(nt, inc) != NK_LocalVariableOperatorWriteNode || !nt_str(nt, inc, "name") ||
+      !sp_streq(nt_str(nt, inc, "name"), in) || !nt_str(nt, inc, "binary_operator") ||
+      !sp_streq(nt_str(nt, inc, "binary_operator"), "+")) return;
+  int one = nt_ref(nt, inc, "value");
+  if (one < 0 || nt_kind(nt, one) != NK_IntegerNode || nt_int(nt, one, "value", 0) != 1) return;
+  for (int k = 0; k < bn - 1; k++) if (subtree_mutates_local(c, bs[k], in)) return;
+  if (subtree_mutates_local(c, pred, in)) return;
+  snprintf(r->bi, sizeof r->bi, "%s", in);
+  snprintf(r->ba, sizeof r->ba, "%s", an);
+}
+
+/* Is `recv[idx]` the read hc_bounded_index proved in range for this loop? */
+int hc_index_in_range(Compiler *c, int recv, int idx) {
+  const NodeTable *nt = c->nt;
+  if (!g_hc || !g_hc->bi[0] || recv < 0 || idx < 0) return 0;
+  return nt_kind(nt, recv) == NK_LocalVariableReadNode && nt_kind(nt, idx) == NK_LocalVariableReadNode &&
+         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), g_hc->ba) &&
+         nt_str(nt, idx, "name") && sp_streq(nt_str(nt, idx, "name"), g_hc->bi);
+}
+
 /* The loop's text, with the declarations and the refresh ahead of it when
    anything was cached, and each slow path's mark turned into a refresh (or
    dropped: a loop that cached nothing is emitted as it always was). */
@@ -6127,6 +6196,7 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
 
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
+  int prev_stmt = g_stmt_cur == id ? g_stmt_prev : -1;
   int pred = nt_ref(nt, id, "predicate");
   int body = nt_ref(nt, id, "statements");
   /* PM_LOOP_FLAGS_BEGIN_MODIFIER (bit 2 == 4): `begin..end while cond` is a
@@ -6185,6 +6255,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   Buf *hob = b;
   int use_hc = !sv_hc && hc_node_ok(c, pred, 0, &hcr) && hc_node_ok(c, body, 1, &hcr);
   if (use_hc) {
+    if (!is_until) hc_bounded_index(c, prev_stmt, pred, body, &hcr);
     hcr.id = ++g_hc_seq;
     snprintf(hcr.mark, sizeof hcr.mark, "/*@HCR%d@*/", hcr.id);
     g_hc = &hcr; b = &hlb;
@@ -12460,6 +12531,7 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
     int n = 0;
     const int *body = nt_arr(nt, id, "body", &n);
     for (int k = 0; k < n; k++) {
+      g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
       emit_stmt(c, body[k], b, indent);
       if (stmt_is_folded_return(c, body[k])) break;
     }
@@ -12479,6 +12551,7 @@ int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts) {
   int n = 0;
   const int *body = nt_arr(c->nt, id, "body", &n);
   for (int k = 0; k < n; k++) {
+    g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
     emit_stmt(c, body[k], b, indent);
     cuts[k] = b->len;
     if (stmt_is_folded_return(c, body[k])) return k + 1;
@@ -12494,6 +12567,7 @@ void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
     int n = 0;
     const int *body = nt_arr(nt, id, "body", &n);
     for (int k = 0; k < n; k++) {
+      g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
       if (k == n - 1) emit_stmt_tail(c, body[k], b, indent);
       else {
         emit_stmt(c, body[k], b, indent);
