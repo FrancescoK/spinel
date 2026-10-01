@@ -12798,6 +12798,20 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     }
     char srefC[1024];
     if (nchain > 0 && strbuf_slot_ref(c, cur, srefC, sizeof srefC)) {
+      /* a handle that can be nil (a parameter, a block parameter a yield
+         hands nil, a local written nil) is NULL then, and appending to it
+         is NoMethodError on nil, as in CRuby: sp_String_append_bin skips a
+         NULL handle, and the append was lost without a word (#6179) */
+      { const char *hn = strbuf_local_name(c, cur);
+        LocalVar *hl = hn ? scope_local(comp_scope_of(c, cur), hn) : NULL;
+        if (hl && (hl->is_param || hl->dyn_handle || strbuf_local_may_be_nil(c, cur, hl))) {
+          int inner = unwrap_parens(c, id);
+          while (nt_kind(nt, inner) == NK_CallNode && unwrap_parens(c, nt_ref(nt, inner, "receiver")) != cur)
+            inner = unwrap_parens(c, nt_ref(nt, inner, "receiver"));
+          const char *inm = nt_kind(nt, inner) == NK_CallNode ? nt_str(nt, inner, "name") : name;
+          emit_indent(b, indent);
+          buf_printf(b, "if (!%s) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n", srefC, inm ? inm : name);
+        } }
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);

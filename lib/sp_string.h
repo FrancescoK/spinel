@@ -208,7 +208,11 @@ static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
   sp_str_lcache_drop(s->data);
   return s;
 }
-static inline const char*sp_String_cstr(sp_String*s){return s->data;}
+/* A NULL handle is nil (a nil written to a shared-handle local, or yielded
+   to a block parameter that is one): its bytes are the nil String, NULL,
+   which the String operations take as nil, where reading through it
+   crashed (#6179). */
+static inline const char*sp_String_cstr(sp_String*s){return s?s->data:NULL;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */

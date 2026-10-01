@@ -1347,6 +1347,27 @@ static void emit_engine_const_str(const char *var, const char *lit, Buf *b) {
   buf_printf(b, "((const char *)%s.d)", var);
 }
 
+/* Can shared-handle local `lv`, read at node `id`, be nil? A nil makes the
+   handle NULL: a block parameter a yield hands nil, or fewer arguments
+   than it has; a local a write gives nil (`s = nil`, `t = nil if c`) or a
+   value of another kind, or that a write not of the plain form rebinds (a
+   multiple assignment, `||=`). A plain read of it
+   then took a copy of a NULL handle's bytes and crashed (#6179). A local
+   only ever written a String keeps the unguarded read. */
+int strbuf_local_may_be_nil(Compiler *c, int id, LocalVar *lv) {
+  const NodeTable *nt = c->nt;
+  if (lv->is_block_param) return 1;
+  const char *vn = nt_str(nt, id, "name");
+  Scope *vs = vn ? comp_scope_of(c, id) : NULL;
+  if (!vs) return 1;
+  for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 1;
+    TyKind wt = comp_ntype(c, nt_ref(nt, w, "value"));
+    if (wt != TY_STRING && wt != TY_STRBUF) return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -1676,8 +1697,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
          or `def run(cmd, text: nil)` whose block appends to it: nil is a NULL
          handle, and reads as nil. So is a local's (`q = nil; q = +"x" if c`
-         with `q.tap { |w| w << "!" if w }` making q the handle). */
-      if (slv->dyn_handle || slv->is_param || slv->str_shared) {
+         with `q.tap { |w| w << "!" if w }` making q the handle), and a block
+         parameter or a local written nil (strbuf_local_may_be_nil). */
+      if (slv->dyn_handle || slv->is_param || slv->str_shared || strbuf_local_may_be_nil(c, id, slv)) {
         buf_puts(b, ", ");
         emit_local_ref(c, id, lrn, b);
         buf_puts(b, " ? sp_str_concat(sp_String_cstr(");

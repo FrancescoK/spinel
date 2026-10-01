@@ -1,0 +1,21 @@
+102
+"zP"
+nil
+nil
+[false, false, "zP", "<zP>", 2, 1, "zP"]
+[true, true, "", "<>", nil, 0, "d"]
+[true, true, "", "<>", nil, 0, "d"]
+"undefined method '<<' for nil"
+"undefined method '<<' for nil"
+"undefined method 'concat' for nil"
+"undefined method 'concat' for nil"
+102
+2
+nil
+true
+""
+"d"
+"undefined method '<<' for nil"
+"undefined method 'upcase' for nil"
+"undefined method 'upcase' for nil"
+"undefined method 'upcase' for nil"
