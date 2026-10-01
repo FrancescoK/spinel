@@ -11764,7 +11764,7 @@ int desugar_const_attr_op_assign(Compiler *c) {
  * around it behave as in CRuby. `attach_variable :name, ...` gets the reader
  * and writer the gem defines the same way. */
 
-/* `extend FFI::Library` (or `extend ::FFI::Library`, which an earlier pass
+/* `extend FFI::Library` or `extend Fiddle::Importer` (or `extend ::FFI::Library`, which an earlier pass
    has already made relative) among a module or class body's statements. */
 static int body_extends_ffi_library(const NodeTable *nt, int body) {
   int n = 0;
@@ -11782,6 +11782,7 @@ static int body_extends_ffi_library(const NodeTable *nt, int body) {
       int par = nt_ref(nt, av[j], "parent");
       const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
       if (leaf && pn && sp_streq(leaf, "Library") && sp_streq(pn, "FFI")) return 1;
+      if (leaf && pn && sp_streq(leaf, "Importer") && sp_streq(pn, "Fiddle")) return 1;
     }
   }
   return 0;
