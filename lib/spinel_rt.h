@@ -9389,6 +9389,19 @@ static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
     v.v.s = d;
     return v;
   }
+  /* String#dup/#clone on a boxed shared handle (#6179): a new handle over a
+     copy of the bytes, its ASCII-8BIT tag kept and its frozen flag only for
+     clone. Its cls_id is a builtin's, so the user-object copy below skipped
+     it and the handle itself came back: an append to the "copy" landed in
+     the original, and `clone(freeze: false)` of a frozen String stayed
+     frozen. */
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_STRBUF) {
+    sp_String *h = (sp_String *)v.v.p; SP_GC_ROOT(h);
+    sp_String *n = sp_String_new_unfrozen(sp_String_cstr(h));
+    if (keep_frozen && sp_String_is_frozen(h)) sp_String_freeze(n);
+    v.v.p = n;
+    return v;
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT)) {
     sp_gc_hdr *h = (sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr));

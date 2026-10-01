@@ -35740,6 +35740,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {
       /* clone preserves the frozen state; dup always returns an unfrozen copy. */
       /* sp_str_dup, not dup_external: byte_len-aware, carries embedded NULs. */
+      /* A shared String handle keeps its frozen flag on the handle, and reads
+         back as a fresh copy that never carries it: clone asks the handle,
+         as frozen? does, or the clone of a frozen String came back unfrozen. */
+      char clref[1024];
+      if (sp_streq(name, "clone") && strbuf_slot_ref(c, recv, clref, sizeof clref)) {
+        int th = ++g_tmp, tcl = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = _t%d ? sp_str_dup(sp_String_cstr(_t%d)) : NULL;"
+                      " _t%d && sp_String_is_frozen(_t%d) ? sp_str_freeze_val(_t%d) : _t%d; })",
+                   th, clref, tcl, th, th, tcl, th, tcl, tcl);
+        return;
+      }
       buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup");
       emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
