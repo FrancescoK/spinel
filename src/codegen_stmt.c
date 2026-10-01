@@ -5338,7 +5338,7 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
     /* `when 1.0..3.0`: float range membership via sp_frange_cover */
     int tr = ++g_tmp;
     buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, cond, b);
-    if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_frange_cover(_t%d, sp_poly_to_f(_t%d)); })", t, tr, t);
+    if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover_poly(_t%d, _t%d); })", tr, t);
     else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
   }
   else if (comp_ntype(c, cond) == TY_CLASS) {
