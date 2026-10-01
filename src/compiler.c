@@ -992,7 +992,7 @@ int comp_is_wellknown_const(const char *cn) {
   for (int bi = 0; wellknown[bi]; bi++) if (sp_streq(cn, wellknown[bi])) return 1;
   return 0;
 }
-static int const_name_resolves_top_level(Compiler *c, const char *cn) {
+int const_name_resolves_top_level(Compiler *c, const char *cn) {
   if (!cn) return 0;
   if (comp_is_wellknown_const(cn)) return 1;
   return const_top_level_walk(c, c->nt->root_id, cn, 0);
