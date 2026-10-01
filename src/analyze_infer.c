@@ -2080,11 +2080,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   /* respond_to? on a boxed receiver is the compile-time fold
-     (emit_call_body), which answers for builtin values too and does not
-     dispatch to a class's own respond_to?: a Boolean, whatever an override
-     answers. Typed by the poly dispatch's union with that override, the
-     call read the fold's Boolean as a boxed value. */
-  if (recv >= 0 && rt == TY_POLY && argc >= 1 && name && sp_streq(name, "respond_to?")) return TY_BOOL;
+     (emit_call_body) unless a class that can be the value overrides it
+     (respond_to_user_defined: an instantiated class with respond_to? in its
+     chain), when the dispatch has that override's arm and its answer is the
+     call's. Without such a class the fold answers, a Boolean; typed by the
+     union with a class's override that is never made, the call read the
+     fold's Boolean as a boxed value. */
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && name && sp_streq(name, "respond_to?")) {
+    int own = 0;
+    for (int k = 0; k < c->nclasses && !own; k++)
+      if (c->classes[k].instantiated && comp_method_in_chain(c, k, name, NULL) >= 0) own = 1;
+    if (!own) return TY_BOOL;
+  }
   /* A read marked to hand out the shared handle (a reader call a mutation
      reaches through, `c.name.setbyte(0, 90)`) is still a String receiver:
      the handle is only its storage. Left as TY_STRBUF it matched none of the
