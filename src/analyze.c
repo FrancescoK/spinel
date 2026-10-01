@@ -24009,6 +24009,53 @@ static int mark_nullable_params_of_call(Compiler *c, int id, int mi) {
    nil rather than as INTPTR_MIN. Boxing every int through the nil check costs
    ~8% on optcarrot -- every pixel goes through it -- so the marking is static
    and the hot path keeps the plain box. */
+/* The locals a program only ever writes nil to (`nl = nil`), boxed, as the
+   marking below asks of a value: written to an Integer or Float local, such
+   a read is the sentinel there (the write unboxes it through
+   sp_poly_to_i_or_nil), but nullable_int_value answers no for it, since it
+   is no number that may be nil. A parameter is left out: its value comes
+   from the call. */
+typedef struct { LocalVar **v; int n, cap; } NilOnlyLocals;
+static int nil_only_has(const NilOnlyLocals *s, const LocalVar *lv) {
+  for (int i = 0; i < s->n; i++) if (s->v[i] == lv) return 1;
+  return 0;
+}
+static void nil_only_locals(Compiler *c, NilOnlyLocals *s) {
+  const NodeTable *nt = c->nt;
+  s->n = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int v = nt_ref(nt, id, "value");
+    const char *ln = nt_str(nt, id, "name");
+    Scope *sc = ln ? comp_scope_of(c, id) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
+    if (!lv || lv->type != TY_POLY || lv->is_param || lv->is_block_param ||
+        v < 0 || nt_kind(nt, v) != NK_NilNode || nil_only_has(s, lv)) continue;
+    if (s->n == s->cap) { s->cap = s->cap ? s->cap * 2 : 8; s->v = realloc(s->v, sizeof(LocalVar *) * (size_t)s->cap); }
+    s->v[s->n++] = lv;
+  }
+  /* any other write, or a write of anything but nil, makes it something else */
+  for (int id = 0; id < nt->count && s->n; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode &&
+        k != NK_LocalVariableOperatorWriteNode && k != NK_LocalVariableTargetNode) continue;
+    if (k == NK_LocalVariableWriteNode) {
+      int v = nt_ref(nt, id, "value");
+      if (v >= 0 && nt_kind(nt, v) == NK_NilNode) continue;
+    }
+    const char *ln = nt_str(nt, id, "name");
+    Scope *sc = ln ? comp_scope_of(c, id) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
+    for (int i = 0; lv && i < s->n; ) { if (s->v[i] == lv) s->v[i] = s->v[--s->n]; else i++; }
+  }
+}
+static int nil_only_read(Compiler *c, const NilOnlyLocals *s, int v) {
+  if (v < 0 || nt_kind(c->nt, v) != NK_LocalVariableReadNode || !s->n) return 0;
+  const char *ln = nt_str(c->nt, v, "name");
+  Scope *sc = ln ? comp_scope_of(c, v) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
+  return lv && nil_only_has(s, lv);
+}
+
 static void mark_nullable_int_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* An --rbs `Integer?` return is the seeded form of the same property the
@@ -24050,6 +24097,8 @@ static void mark_nullable_int_locals(Compiler *c) {
   long rounds_max = c->nscopes + 2 + c->ngvars;
   for (int s = 0; s < c->nscopes; s++) rounds_max += c->scopes[s].nlocals;
   int converged = 0;
+  NilOnlyLocals nilonly = {0};
+  nil_only_locals(c, &nilonly);
   block_sites_index(c);   /* the block arm reads each method's yields */
   for (long round = 0; round < rounds_max; round++) {
     int changed = 0;
@@ -24076,7 +24125,9 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (nullable_int_value(c, id)) { s->ret_nullable_int = 1; changed = 1; }
     }
     for (int id = 0; id < nt->count; id++) {
-      if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+      NodeKind wk = nt_kind(nt, id);
+      if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableAndWriteNode &&
+          wk != NK_LocalVariableOrWriteNode) continue;
       int v = nt_ref(nt, id, "value");
       const char *ln = nt_str(nt, id, "name");
       if (v < 0 || !ln) continue;
@@ -24084,8 +24135,11 @@ static void mark_nullable_int_locals(Compiler *c) {
       LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
       if (!lv || (lv->type != TY_INT && lv->type != TY_FLOAT) || lv->nullable_int) continue;
       /* An outright `i = nil` on a slot the other writes make an int leaves
-         the sentinel in it just as a search miss does. */
-      if (nullable_int_value(c, v)) { lv->nullable_int = 1; changed = 1; }
+         the sentinel in it just as a search miss does, and so does a local
+         only nil is written to, here or through `&&=` / `||=` */
+      if ((wk == NK_LocalVariableWriteNode && nullable_int_value(c, v)) || nil_only_read(c, &nilonly, v)) {
+        lv->nullable_int = 1; changed = 1;
+      }
     }
     /* A global written from such a value carries it to every reader, just as
        a local does: `$g = a[i]` boxed the sentinel as a number (a Float's
@@ -24484,6 +24538,7 @@ static void mark_nullable_int_locals(Compiler *c) {
      predicate whatever the program (the bound counts the flags themselves), so
      this firing means a marking arm that is not monotone -- worth a bug
      report. */
+  free(nilonly.v);
   if (!converged) {
     fprintf(stderr, "spinel: internal: nilable-scalar marking did not converge in "
                     "%ld rounds; refusing to emit (a nil sentinel would box as an "
