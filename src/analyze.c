@@ -18738,11 +18738,16 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
        is the shared handle it is the read to follow: a lent parameter takes
        the handle, or the append lands in the slot's copy and the String's
        other name misses it. Any other String there stays lent as before,
-       so a call that hands over no shared String keeps its slots. */
+       so a call that hands over no shared String keeps its slots. An
+       optional parameter there is filled the same way unless required
+       parameters follow the rest: those take the last arguments first, so
+       a short splat moves the lead argument onto them
+       (`def g2(a = nil, b = 1, *r)`). */
     if (an < 0 && pj < fs && pj < m->nparams && pj != m->rest_idx) {
       for (int k = 0; k <= pj; k++)
         if (!m->pnames[k] || k == m->rest_idx || k == m->kwrest_idx ||
-            (m->pdefault && m->pdefault[k] >= 0) || callee_param_is_declared_kwarg(c, m, m->pnames[k]))
+            (m->pdefault && m->pdefault[k] >= 0 && m->npost_rest > 0) ||
+            callee_param_is_declared_kwarg(c, m, m->pnames[k]))
           return 0;
       if (cap < 1 || !an_arg_is_shared_handle(c, av[pj])) return 0;
       out[0] = av[pj]; direct[0] = 1;
