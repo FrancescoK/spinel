@@ -24782,8 +24782,16 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (masgn_tuple_rhs(nt, v)) nt_arr(nt, v, "elements", &supply);
       else if (v >= 0 && nt_kind(nt, v) != NK_NilNode && !ty_is_array(infer_type(c, v))) supply = 1;
       int tn2 = 0; const int *tv2 = nt_arr(nt, id, "lefts", &tn2);
+      int en2 = 0; const int *ev2 = masgn_tuple_rhs(nt, v) ? nt_arr(nt, v, "elements", &en2) : NULL;
       for (int k = 0; tv2 && k < tn2; k++) {
-        if (k < supply || nt_kind(nt, tv2[k]) != NK_LocalVariableTargetNode) continue;
+        if (nt_kind(nt, tv2[k]) != NK_LocalVariableTargetNode) continue;
+        /* A target the right side supplies takes that value, which can be
+           the sentinel as a plain write's can: `a, b = z, 0` with z an
+           Integer that may be nil left `a >= 0` comparing it as a number. */
+        if (k < supply) {
+          int sv2 = ev2 ? (k < en2 ? ev2[k] : -1) : v;
+          if (sv2 < 0 || !nullable_int_value(c, sv2)) continue;
+        }
         const char *tn = nt_str(nt, tv2[k], "name");
         Scope *ts = tn ? comp_scope_of(c, tv2[k]) : NULL;
         LocalVar *tl = ts ? scope_local(ts, tn) : NULL;
