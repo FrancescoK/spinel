@@ -8079,6 +8079,9 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Array"))   return TY_POLY;
     if (sp_streq(cn, "Hash"))    return TY_POLY;
     if (sp_streq(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
+    /* a Numeric reopen is called on any number -- an Integer, a Float --
+       and takes self boxed, the arithmetic on it dispatching on the value */
+    if (sp_streq(cn, "Numeric")) return TY_POLY;
     if (sp_streq(cn, "Range"))   return TY_RANGE;
     if (sp_streq(cn, "Time"))    return TY_TIME;
     if (sp_streq(cn, "Thread"))  return TY_THREAD;
