@@ -33,5 +33,9 @@ v = +"a"; s = [v]; Ini.new(*s); p v.size            # new, into initialize
 v = +"a"; Box.new(*[1, v]); p v.size                 # a literal holding the String
 v = +"a"; Box.new(*[v, v]); p v.size                 # one holding only Strings
 v = +"a"; p rd(v), v.size                            # a reader
+wa = +"b"; sa = [+"a"]; sa << wa; Box.new(*sa); p wa.size   # an Array changed after its literal
+f2 = ->(x, y) { y << X }
+wb = +"b"; sb = [+"a"]; sb << wb; f2.call(*sb); p wb.size
+sc = [+"a"]; sc.clear; sc << +"z"; C.new.send(:m, *sc); p sc[0].size
 fz = "fr".freeze; begin; m1(*e, fz); rescue FrozenError => ex; p ex.class; end
 v = +"a\0b"; g1(v); p v.size, v.bytes.first(4)
