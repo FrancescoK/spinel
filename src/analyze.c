@@ -2948,6 +2948,12 @@ void qualify_colliding_classes(Compiler *c) {
        refusal is never reached. A builtin MODULE's name (Comparable, Math)
        reopens at any depth and is left alone. */
     if (!collide && ws[i].depth > 0 && is_builtin_class_name(ws[i].name) && !is_builtin_module_name(ws[i].name)) collide = 1;
+    /* ... and the builtin exceptions the id table carries without a class
+       id (LoadError, SystemCallError): builtins/gem.rb's
+       `module Gem; class LoadError < ::LoadError` took the builtin's name, so
+       a top-level `rescue LoadError` named Gem's class (and, once a builtin
+       exception's reopening adds to the runtime's class, lost its C type). */
+    if (!collide && ws[i].depth > 0 && is_builtin_exception_name(ws[i].name)) collide = 1;
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
