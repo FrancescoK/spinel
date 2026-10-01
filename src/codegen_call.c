@@ -11823,6 +11823,17 @@ static void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
   }
 }
 
+static int time_hhmm_offset(const char *sv, long *off) {
+  if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
+      sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
+      sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
+    return 0;
+  *off = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
+         ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
+  if (sv[0] == '-') *off = -*off;
+  return 1;
+}
+
 /* Civil-argument Time constructor forms, shared by `Time.new(...)` (via the
    generic constant-new path) and Time.local/mktime/utc/gm. Up to 6 civil
    fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
@@ -11890,14 +11901,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
       long koff = 0; int khave = 0;
       const char *ity = nt_type(nt, inv);
       if (ity && sp_streq(ity, "StringNode")) {
-        const char *sv = nt_str(nt, inv, "content");
-        if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
-            sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
-            sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
-          return 0;
-        koff = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
-               ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
-        if (sv[0] == '-') koff = -koff;
+        if (!time_hhmm_offset(nt_str(nt, inv, "content"), &koff)) return 0;
         khave = 1;
       }
       else if (comp_ntype(c, inv) != TY_INT) return 0;
@@ -11930,14 +11934,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
     /* utc_offset: an Integer-second expression, or a literal "+HH:MM" */
     const char *oty = nt_type(nt, argv[6]);
     if (oty && sp_streq(oty, "StringNode")) {
-      const char *sv = nt_str(nt, argv[6], "content");
-      if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
-          sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
-          sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
-        return 0;
-      lit_off = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
-                ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
-      if (sv[0] == '-') lit_off = -lit_off;
+      if (!time_hhmm_offset(nt_str(nt, argv[6], "content"), &lit_off)) return 0;
       have_lit_off = 1;
     }
 else {
