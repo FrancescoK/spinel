@@ -3,7 +3,8 @@
 # closes it however the block leaves (break, return, raise). The separator,
 # limit and chomp: arguments mean what they mean to each_line; another keyword
 # (mode:) keeps the readlines form, and so does the blockless Enumerator.
-path = "/tmp/sp_file_foreach_streams.txt"
+require "tmpdir"
+path = File.join(Dir.tmpdir, "sp_file_foreach_streams_#{Process.pid}.txt")
 File.write(path, "one\ntwo\n\nthree;four\nfive")
 a = []; p File.foreach(path) { |l| a << l }; p a
 b = []; File.foreach(path, chomp: true) { |l| b << l }; p b

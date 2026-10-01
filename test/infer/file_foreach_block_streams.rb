@@ -1,5 +1,6 @@
 # File.foreach's block form streams: no readlines in the emitted C (infer-test).
-path = "/tmp/sp_infer_file_foreach_block_streams.txt"
+require "tmpdir"
+path = File.join(Dir.tmpdir, "sp_infer_file_foreach_block_streams_#{Process.pid}.txt")
 File.write(path, "a\nbb\n")
 n = 0
 File.foreach(path) { |l| n += l.size }
