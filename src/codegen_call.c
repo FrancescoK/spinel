@@ -11199,6 +11199,25 @@ static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Bu
   buf_printf(b, " if (_t%d) { _t%d.is_utc = 1; _t%d.utc_off = 0; } _t%d; })", tu, tt, tt, tt);
 }
 
+/* The tail of Time.at(..., in: zone) and Time.now(in: zone): re-read the
+   instant in temp _t<ts> in the zone the keyword names -- a name, an Integer
+   offset or an offset string, whatever their types; nil keeps local time
+   (#3696, #3698). Closes the statement expression the caller opened. */
+static void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
+  TyKind zt = comp_ntype(c, zone);
+  if (zt == TY_STRING) { buf_printf(b, " sp_time_in_zone_s(_t%d, ", ts); emit_expr(c, zone, b); buf_puts(b, "); })"); }
+  else if (zt == TY_INT) { buf_printf(b, " sp_time_in_zone_i(_t%d, ", ts); emit_int_expr(c, zone, b); buf_puts(b, "); })"); }
+  else {
+    int tz = ++g_tmp;
+    buf_printf(b, " sp_RbVal _t%d = ", tz); emit_boxed(c, zone, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_time_in_zone_s(_t%d, _t%d.v.s)"
+                  " : _t%d.tag == SP_TAG_INT ? sp_time_in_zone_i(_t%d, _t%d.v.i)"
+                  " : _t%d.tag == SP_TAG_NIL ? _t%d"
+                  " : (sp_raise_cls(\"ArgumentError\", \"invalid time zone\"), _t%d); })",
+               tz, ts, tz, tz, ts, tz, tz, ts, ts);
+  }
+}
+
 /* Civil-argument Time constructor forms, shared by `Time.new(...)` (via the
    generic constant-new path) and Time.local/mktime/utc/gm. Up to 6 civil
    fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
@@ -38273,6 +38292,17 @@ else {
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time")) {
     if ((sp_streq(name, "now") || sp_streq(name, "new")) && argc == 0) { buf_puts(b, "sp_time_now()"); return; }
+    /* Time.now(in: zone): the current instant in the zone the keyword names,
+       read as Time.at's `in:` is. With no arm here the call fell through to
+       the run-time NoMethodError. */
+    if (sp_streq(name, "now") && argc == 1 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+        struct_kwarg_value(c, argv[0], "in") >= 0) {
+      int ts = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = sp_time_now();", ts);
+      emit_time_in_zone(c, ts, struct_kwarg_value(c, argv[0], "in"), b);
+      return;
+    }
     if (sp_streq(name, "at") && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_TIME) { emit_expr(c, argv[0], b); return; }  /* value copy */
@@ -38349,18 +38379,7 @@ else {
         emit_int_expr(c, argv[1], b);
         buf_puts(b, ")) * 1000);");
       }
-      TyKind zt = comp_ntype(c, inv);
-      if (zt == TY_STRING) { buf_printf(b, " sp_time_in_zone_s(_t%d, ", ts); emit_expr(c, inv, b); buf_puts(b, "); })"); }
-      else if (zt == TY_INT) { buf_printf(b, " sp_time_in_zone_i(_t%d, ", ts); emit_int_expr(c, inv, b); buf_puts(b, "); })"); }
-      else {
-        int tz = ++g_tmp;
-        buf_printf(b, " sp_RbVal _t%d = ", tz); emit_boxed(c, inv, b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_time_in_zone_s(_t%d, _t%d.v.s)"
-                      " : _t%d.tag == SP_TAG_INT ? sp_time_in_zone_i(_t%d, _t%d.v.i)"
-                      " : _t%d.tag == SP_TAG_NIL ? _t%d"
-                      " : (sp_raise_cls(\"ArgumentError\", \"invalid time zone\"), _t%d); })",
-                   tz, ts, tz, tz, ts, tz, tz, ts, ts);
-      }
+      emit_time_in_zone(c, ts, inv, b);
       return;
     }
     /* Time.at(sec, num, :unit): the third argument names the second one's

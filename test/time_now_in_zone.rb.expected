@@ -1,0 +1,13 @@
+18000
+-12600
+-32401
+32400
+3600
+[true, 0, "UTC"]
+[true, "UTC"]
+true
+3600
+9000
+[nil, "+0500", true]
+ArgumentError
+"utc_offset out of range"
