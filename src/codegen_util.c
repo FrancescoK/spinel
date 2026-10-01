@@ -2284,6 +2284,11 @@ void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, 
 TyKind store_value_kind(Compiler *c, int node) {
   if (node < 0) return TY_UNKNOWN;
   TyKind t = yield_site_type(c, node);
+  /* a parenthesized value, `case ({})`, is rendered as its one statement */
+  if (t == TY_UNKNOWN && nt_kind(c->nt, node) == NK_ParenthesesNode) {
+    int in = unwrap_parens(c, node);
+    if (in != node) return store_value_kind(c, in);
+  }
   NodeKind k = nt_kind(c->nt, node);
   if (t == TY_UNKNOWN && (k == NK_ArrayNode || k == NK_HashNode)) {
     int n = 0;
