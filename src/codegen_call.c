@@ -35616,14 +35616,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       return;
     }
     const char *cn = NULL;
-    if (rt == TY_INT) cn = "Integer";
-    else if (rt == TY_FLOAT) cn = "Float";
-    else if (rt == TY_STRING) cn = "String";
-    else if (rt == TY_SYMBOL) cn = "Symbol";
-    else if (rt == TY_RANGE) cn = "Range";
-    else if (rt == TY_TIME) cn = "Time";
-    else if (rt == TY_FIBER) cn = "Fiber";
-    else if (rt == TY_ENUMERATOR) {
+    switch (rt) {
+    case TY_INT: cn = "Integer"; break;
+    case TY_FLOAT: cn = "Float"; break;
+    case TY_STRING: cn = "String"; break;
+    case TY_SYMBOL: cn = "Symbol"; break;
+    case TY_RANGE: cn = "Range"; break;
+    case TY_TIME: cn = "Time"; break;
+    case TY_FIBER: cn = "Fiber"; break;
+    case TY_ENUMERATOR: {
       /* a chain built by Enumerable#chain / Enumerator#+ reports as
          Enumerator::Chain, and a product Enumerator::Product; every other
          enumerator is an Enumerator (#2545) */
@@ -35634,13 +35635,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                     " : ((sp_Class){(sp_int)-1, SPL(\"Enumerator\")}); })", te, te, te, te);
       return;
     }
-    else if (rt == TY_DIR) cn = "Dir";
-    else if (rt == TY_ADDRINFO) cn = "Addrinfo";
-    else if (rt == TY_SOCKOPT) cn = "Socket::Option";
-    else if (rt == TY_OPENSTRUCT) cn = "OpenStruct";
-    else if (rt == TY_TMS) cn = "Process::Tms";
-    else if (rt == TY_THREAD) cn = "Thread";
-    else if (rt == TY_QUEUE) {
+    case TY_DIR: cn = "Dir"; break;
+    case TY_ADDRINFO: cn = "Addrinfo"; break;
+    case TY_SOCKOPT: cn = "Socket::Option"; break;
+    case TY_OPENSTRUCT: cn = "OpenStruct"; break;
+    case TY_TMS: cn = "Process::Tms"; break;
+    case TY_THREAD: cn = "Thread"; break;
+    case TY_QUEUE: {
       /* Queue and SizedQueue share one runtime object, so the name comes from
          the bound rather than the static type -- a SizedQueue reported itself
          as Thread::Queue (#3466). */
@@ -35650,9 +35651,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                  builtin_class_id("Queue"), tq2);
       return;
     }
-    else if (rt == TY_MUTEX) cn = "Thread::Mutex";
-    else if (rt == TY_CONDVAR) cn = "Thread::ConditionVariable";
-    else if (rt == TY_IO) {
+    case TY_MUTEX: cn = "Thread::Mutex"; break;
+    case TY_CONDVAR: cn = "Thread::ConditionVariable"; break;
+    case TY_IO: {
       /* a stat handle is a File::Stat (#2841); a path-backed handle is a
          File; a raw stream (STDOUT, pipe end) is an IO (#2797) */
       /* The handle kind names its class; sp_io_kind_name is the single
@@ -35676,16 +35677,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "((sp_Class){(sp_int)-1, _k%d}); })", tio);
       return;
     }
-    else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
-    else if (rt == TY_NIL) cn = "NilClass";
-    else if (rt == TY_METHOD) cn = method_expr_is_unbound(c, recv) ? "UnboundMethod" : "Method";
-    else if (rt == TY_MATCHDATA) cn = "MatchData";
-    else if (rt == TY_REGEX) cn = "Regexp";
-    else if (rt == TY_PROC) cn = "Proc";
-    else if (rt == TY_CURRY) cn = "Proc";  /* a curried proc is a Proc (#2651) */
-    else if (rt == TY_COMPLEX) cn = "Complex";
-    else if (rt == TY_RATIONAL) cn = "Rational";
-    else if (ty_is_array(rt)) cn = "Array";
+    case TY_ARGF: cn = "ARGF.class"; break;  /* ARGF's singleton class name (CRuby) */
+    case TY_NIL: cn = "NilClass"; break;
+    case TY_METHOD: cn = method_expr_is_unbound(c, recv) ? "UnboundMethod" : "Method"; break;
+    case TY_MATCHDATA: cn = "MatchData"; break;
+    case TY_REGEX: cn = "Regexp"; break;
+    case TY_PROC: case TY_CURRY: cn = "Proc"; break;  /* a curried proc is a Proc (#2651) */
+    case TY_COMPLEX: cn = "Complex"; break;
+    case TY_RATIONAL: cn = "Rational"; break;
+    default: break;
+    }
+    if (ty_is_array(rt)) cn = "Array";
     else if (ty_is_hash(rt)) cn = "Hash";
     else if (ty_is_object(rt)) {
       /* user object: .class returns a TY_CLASS value */
