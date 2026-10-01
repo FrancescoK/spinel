@@ -58,9 +58,12 @@ static void emit_int_array_delete(Compiler *c, const char *arr, int arg, int nil
     buf_puts(b, "({ ");
     if (!held) { buf_printf(b, "sp_RbVal %s = ", tvn); emit_boxed(c, arg, b); buf_puts(b, "; "); }
     buf_printf(b, "%s.tag == SP_TAG_INT ? sp_IntArray_delete(%s, %s.v.i) : ", nd, arr, nd);
-    /* a Float that is a whole number equals the Integer element (2.0 == 2) */
+    /* a Float that is a whole number equals the Integer element (2.0 == 2).
+       The bounds are sp_int's, which is 32 bits on the -m32 and wasm32
+       builds, so the cast is never out of range; the lower one is exclusive
+       because INTPTR_MIN is SP_INT_NIL, the nil element. */
     if (held)
-      buf_printf(b, "(%s.tag == SP_TAG_FLT && %s.v.f >= -9223372036854775808.0 && %s.v.f < 9223372036854775808.0 && %s.v.f == (sp_float)(sp_int)%s.v.f) ? sp_IntArray_delete(%s, (sp_int)%s.v.f) : ",
+      buf_printf(b, "(%s.tag == SP_TAG_FLT && %s.v.f > (sp_float)INTPTR_MIN && %s.v.f < -(sp_float)INTPTR_MIN && %s.v.f == (sp_float)(sp_int)%s.v.f) ? sp_IntArray_delete(%s, (sp_int)%s.v.f) : ",
                  nd, nd, nd, nd, nd, arr, nd);
     if (nil_elems) buf_printf(b, "%s.tag == SP_TAG_NIL ? sp_IntArray_delete(%s, SP_INT_NIL) : ", nd, arr);
     buf_puts(b, "SP_INT_NIL; })");
