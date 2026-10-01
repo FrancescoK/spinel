@@ -1421,6 +1421,8 @@ int block_param_wants_alias(Compiler *c, int blk, int k, int n);
 int block_kw_wants_alias(Compiler *c, int blk, const char *key);
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al);
+int block_binds_gathered(Compiler *c, int blk);
+int emit_boxed_step_binds(Compiler *c, int blk, const char *vals, Buf *b, int indent, int as_expr);
 void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr);
 int emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig, const char *p0_ren, TyKind src_type, const char *src_expr, Buf *b, int indent);
