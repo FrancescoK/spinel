@@ -941,6 +941,9 @@ int a_block_is_lifted(Compiler *c, int id) {
      cells exactly like any other escaping block */
   if ((sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
       recv >= 0 && infer_type(c, recv) == TY_PROC) return 1;
+  /* so is Fiber.blocking { }'s, which sp_Fiber_blocking_proc calls */
+  if (sp_streq(name, "blocking") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Fiber")) return 1;
   int mi = -1;
   if (recv < 0) {
     mi = comp_method_index(c, name);
@@ -1386,6 +1389,19 @@ void mark_proc_captures(Compiler *c) {
             erlv->rbs_seeded = 1;
           }
         }
+      }
+    }
+    /* Fiber.blocking { |fiber| } passes the running fiber */
+    {
+      const char *fbn = nt_str(nt, id, "name");
+      int fbr = nt_ref(nt, id, "receiver");
+      if (fbn && sp_streq(fbn, "blocking") && fbr >= 0 && nt_kind(nt, fbr) == NK_ConstantReadNode &&
+          nt_str(nt, fbr, "name") && sp_streq(nt_str(nt, fbr, "name"), "Fiber")) {
+        int frn = 0; const int *freqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &frn) : NULL;
+        Scope *fbs = frn > 0 ? comp_scope_of(c, id) : NULL;
+        const char *fpn = fbs ? nt_str(nt, freqs[0], "name") : NULL;
+        LocalVar *flv = fpn ? scope_local_intern(fbs, fpn) : NULL;
+        if (flv && flv->type == TY_UNKNOWN) { flv->type = TY_FIBER; flv->rbs_seeded = 1; }
       }
     }
     /* a named &block param binds an sp_Proc* from the block side-channel:

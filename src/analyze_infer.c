@@ -3808,6 +3808,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) return TY_BOOL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
+      /* Fiber.blocking? (1 or false), Fiber.blocking { } (the block's value),
+         and the scheduler, which is always nil */
+      if (cn2 && sp_streq(cn2, "Fiber") &&
+          (sp_streq(name, "blocking?") || sp_streq(name, "blocking") ||
+           sp_streq(name, "scheduler") || sp_streq(name, "current_scheduler"))) return TY_POLY;
       /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
          / Random.rand->float */
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand")) {
@@ -3831,6 +3836,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
     if (sp_streq(name, "storage") && argc == 0) return TY_POLY;   /* a Hash copy, or nil */
     if (sp_streq(name, "storage=") && argc == 1) return TY_POLY;
+    if (sp_streq(name, "blocking?") && argc == 0) return TY_BOOL;
   }
 
   /* Object's identity protocol on the native kinds: typed from the same
@@ -5896,6 +5902,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         return an_poly_concrete(c, name, TY_POLY);
       if (sp_streq(name, "num_waiting") && argc == 0) return an_poly_concrete(c, name, TY_INT);
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
+          (sp_streq(name, "blocking?") && argc == 0) ||
           sp_streq(name, "eof?") || sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
           sp_streq(name, "sync") || sp_streq(name, "sync="))
         return an_poly_concrete(c, name, TY_BOOL);
