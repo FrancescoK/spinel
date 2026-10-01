@@ -13515,6 +13515,23 @@ static int an_ivar_owner(Compiler *c, int node) {
   if (cs->class_id >= 0) return cs->class_id;
   return comp_class_index(c, "Toplevel");
 }
+/* Is the ivar read at `rd` ever written straight from a local (`@v = x`)?
+   It then names that local's String, which may be the caller's, rather than
+   a String of its own. */
+static int ivar_written_from_local(Compiler *c, int rd) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, rd, "name");
+  int cid = an_ivar_owner(c, rd);
+  if (!nm || cid < 0) return 0;
+  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, nm) || an_ivar_owner(c, w) != cid) continue;
+    int v = nt_ref(nt, w, "value");
+    if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode) return 1;
+  }
+  return 0;
+}
 /* The ivar node a local write's value hands over as the slot's own object:
    a read, or a plain / or / and write of it (the value of the write is the
    slot), through single-statement parentheses. A read is also reached
@@ -15468,7 +15485,19 @@ static int promote_shared_stored_strings(Compiler *c) {
      Promote the ivar to the shared handle, the same conclusion the external
      reader-mutation rule above reaches for `expr.reader << x`, and mark the
      argument's read so it hands out the handle rather than a safe copy. */
-  for (int cu = comp_kind_first(c, NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
+  /* ...and the same through `super(...)`, whose callee is the method it
+     lands on */
+  for (int pass = 0; pass < 2; pass++)
+  for (int cu = comp_kind_first(c, pass ? NK_SuperNode : NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
+    int cmi = -1;
+    if (pass) {
+      if (nt_kind(nt, cu) != NK_SuperNode) continue;
+      Scope *sus = comp_scope_of(c, cu);
+      if (!sus || sus->class_id < 0 || !sus->name) continue;
+      cmi = a_super_target(c, sus);
+      if (cmi < 0) continue;
+    }
+    else {
     if (nt_kind(nt, cu) != NK_CallNode) continue;
     /* only a call we can pin to one body: the callee is what says whether the
        argument is mutated, and a receiver we cannot resolve has no single one */
@@ -15479,8 +15508,9 @@ static int promote_shared_stored_strings(Compiler *c) {
     }
     const char *cun = nt_str(nt, cu, "name");
     if (!cun) continue;
-    int cmi = an_any_scope_by_name(c, cun);
+    cmi = an_any_scope_by_name(c, cun);
     if (cmi < 0) continue;
+    }
     for (int j = 0; j < c->scopes[cmi].nparams; j++) {
       if (!an_param_mutated_in_place(c, cmi, j)) continue;
       /* the argument parameter j binds, a keyword's by name. One that comes
@@ -15525,6 +15555,16 @@ static int promote_shared_stored_strings(Compiler *c) {
         defc5 = ty_object_class(rt5);
         ivn5 = an_reader_ivar_of(c, an5, &defc5, ivb5, sizeof ivb5);
         box_node = an5;
+      }
+      /* A bare `@buf` the ivar ALIASES another String in: lending its slot
+         would carry the appends into the ivar alone, and the String it was
+         written from -- the caller's, through `@v = x` -- would keep its
+         bytes. The ivar and that String have to be one handle, as they are
+         when the ivar is appended to directly. */
+      else if (nt_kind(nt, an5) == NK_InstanceVariableReadNode &&
+               ivar_written_from_local(c, an5)) {
+        ivn5 = nt_str(nt, an5, "name");
+        defc5 = an_ivar_owner(c, an5);
       }
       if (!ivn5 || defc5 < 0) continue;
       if (strbuf_ivar_mut_kind(c, defc5, ivn5) < 0) continue;
