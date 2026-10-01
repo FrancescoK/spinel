@@ -1082,6 +1082,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a BasicObject instance method reached a top-level included module method)"; ok=0; \
 	else grep -q "unsupported call: node [0-9]* (CallNode \`hello\`)" "$$tmp/bo.out" || \
 	  { echo "reject-test: FAIL (BasicObject bare call rejected without naming it)"; sed -n 1,5p "$$tmp/bo.out"; ok=0; }; fi; \
+	t=test/reject/super_init_value.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/siv.c" >"$$tmp/siv.out" 2>&1; then \
+	  echo "reject-test: FAIL (the value of super in initialize compiled)"; ok=0; \
+	else grep -q "unsupported value of \`super\` in initialize" "$$tmp/siv.out" || \
+	  { echo "reject-test: FAIL (the value of super in initialize rejected without saying why)"; sed -n 1,5p "$$tmp/siv.out"; ok=0; }; fi; \
 	t=test/reject/forwarding_super_yielding_optional.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fy.c" >"$$tmp/fy.out" 2>&1; then \
 	  echo "reject-test: FAIL (super(...) into a yielding parent with an optional compiled)"; ok=0; \
