@@ -1,0 +1,6 @@
+[5, 6, nil]
+ArgumentError
+[1.5, nil]
+["b", nil]
+[7, nil]
+true

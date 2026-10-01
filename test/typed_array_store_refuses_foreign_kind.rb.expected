@@ -19,6 +19,12 @@ concat: TypeError: cannot store String into an Array[Integer]: a typed array hol
 [1]
 fill: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 [0, 0]
+<< value: TypeError: cannot store Float into an Array[Integer]: a typed array holds one kind of element
+[1]
+push value: TypeError: cannot store Integer into an Array[String]: a typed array holds one kind of element
+["a"]
+<< value str: TypeError: cannot store String into an Array[Float]: a typed array holds one kind of element
+[0.5]
 method push: TypeError: cannot store String into an Array[Integer]: a typed array holds one kind of element
 [1, 2]
 [1, 2, 3]
