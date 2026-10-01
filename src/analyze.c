@@ -20051,29 +20051,6 @@ static int promote_dyncall_string_args(Compiler *c) {
       changed |= dyn_pull_arg(c, av[k], 1);
     }
   }
-  /* the open sites: a boxed callable, a curried proc, bind_call */
-  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
-    int shift;
-    if (!dyn_open_site(c, n, &shift)) continue;
-    int a = nt_ref(nt, n, "arguments"), ac = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    for (int k = shift; k < ac && k < DYN_ARGS; k++) {
-      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
-      if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
-      TyKind at = comp_ntype(c, av[k]);
-      if (at != TY_STRING && at != TY_STRBUF) continue;
-      const char *vn = nt_str(nt, av[k], "name");
-      Scope *vs = vn ? comp_scope_of(c, av[k]) : NULL;
-      LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!(lv && lv->type == TY_STRBUF && lv->str_shared)) {
-        DynReach r; memset(&r, 0, sizeof r);
-        if (shift) dyn_reach_value(c, nt_ref(nt, n, "receiver"), k - shift, 0, &r);
-        else r.unknown = 1;
-        if (!r.app && !(r.unknown && dyn_any_appender(c))) continue;
-      }
-      changed |= dyn_pull_arg(c, av[k], 1);
-    }
-  }
   dyn_memo_stale();
   return changed | yh;
 }
