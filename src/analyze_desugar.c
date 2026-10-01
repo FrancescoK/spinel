@@ -3753,7 +3753,7 @@ int desugar_call_op_write(Compiler *c) {
     snprintf(wname, sizeof wname, "%s=", attr);
     int has_def_writer = 0;
     for (int k = 0; k < c->nclasses && !has_def_writer; k++)
-      if (comp_method_in_chain(c, k, wname, NULL) >= 0) has_def_writer = 1;
+      if (comp_method_in_chain(c, k, wname, NULL) >= 0 || comp_method_in_chain(c, k, attr, NULL) >= 0) has_def_writer = 1;
     char aname[300]; snprintf(aname, sizeof aname, "%s", attr);
     if (!has_def_writer) {                         /* attr_writer: keep the store */
       if (simple) cow_tail_reread(c, id, recv, aname);
