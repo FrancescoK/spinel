@@ -8449,6 +8449,11 @@ static int desugar_to_enum(Compiler *c) {
        method symbol, keeps any trailing args). */
     int is_builtin = ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING ||
                      rt == TY_RANGE || rt == TY_INT;
+    /* A boxed receiver (an Array read out of a container) takes the same
+       blockless form, which its own arms answer an Enumerator for, unless
+       the program defines the method itself. Left alone, `h[:k].to_enum`
+       typed nothing and its `.each { }` raised NoMethodError. */
+    if (rt == TY_POLY && !an_user_defines_or_reads(c, m)) is_builtin = 1;
     if (is_builtin && recv >= 0 && to_enum_builtin_method(m)) {
       int args = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
