@@ -37,7 +37,7 @@ jobs:
           # "base" names the base's tree and its jobs
           assert all(name != "base" for name, _ in heads), "a head may not be called base"
           # the rubyspec gate in shards of suites (the Run step's case)
-          rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3)] if "rubyspec" in legs else []
+          rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3, 4, 5)] if "rubyspec" in legs else []
           jobs = []
           for leg in ("cb", "vf"):
               if leg in legs:
@@ -286,8 +286,9 @@ jobs:
             ;;
           rubyspec)
             # `make gate`'s rubyspec leg, which `make test` does not run, in
-            # three shards of the tree's own RUBYSPEC_SUITES, balanced by
-            # expected-PASS examples (792 | 834 | 830 on master); a suite
+            # five shards of the tree's own RUBYSPEC_SUITES, balanced by
+            # expected-PASS examples (792 | 834 | 830 | 506 | 707 with the
+            # core waves); a suite
             # the list below does not name goes to shard 3, so the shards
             # together run what the tree's gate runs. The base's shards are
             # jobs of their own. spinel builds each example at its default
@@ -297,9 +298,11 @@ jobs:
             case "$SHARD" in
             1) mine="language" ;;
             2) mine="core/string core/integer" ;;
+            4) mine="core/set core/matchdata core/time core/math" ;;
+            5) mine="core/symbol core/float core/proc core/rational core/regexp core/exception core/complex core/struct core/random core/nil core/true core/false" ;;
             *) mine="core/array core/hash core/range" ;;
             esac
-            named=" language core/string core/integer core/array core/hash core/range "
+            named=" language core/string core/integer core/array core/hash core/range core/set core/matchdata core/time core/math core/symbol core/float core/proc core/rational core/regexp core/exception core/complex core/struct core/random core/nil core/true core/false "
             all=$(sed -n 's/^RUBYSPEC_SUITES *:*= *//p' Makefile)
             suites=""
             for s in $all; do
