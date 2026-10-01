@@ -92,3 +92,26 @@ p defined?(SIDES)                        # top level: Shapes is not in scope
 module Shapes
   p defined?(SIDES)
 end
+
+class Holder
+  class << self
+    class Nested < Base                  # a class written in `class << self`
+      def depth = DEPTH                  # finds Base::DEPTH through its superclass
+    end
+    def nested = Nested
+  end
+end
+p Holder.nested.new.depth
+
+class FromAnon < Class.new(Base)         # superclass: the anonymous class, then Base
+  def depth = DEPTH
+end
+p FromAnon.new.depth
+
+class FromData < Data.define(:n)
+  include Colors
+  def blue = BLUE
+end
+p FromData.new(n: 1).blue
+
+p defined?(SIDES::X)                     # nil, as the head SIDES is unreachable

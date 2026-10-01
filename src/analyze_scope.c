@@ -6996,7 +6996,8 @@ int infer_ivar_types(Compiler *c) {
    `const_missing`, does something spinel cannot see. A `defined?(X)` answers
    nil instead, as CRuby does. Anything the model cannot follow -- an include
    of a computed module, an include into an unknown receiver, a builtin
-   ancestor that carries constants of its own -- leaves the reference as it
+   ancestor that carries constants of its own, a class written in `class <<`,
+   a namespace reopened through a constant alias -- leaves the reference as it
    was rather than guess. Names defined at the top level, and the builtins',
    are never touched: Object is always in the lookup. */
 
@@ -7045,6 +7046,8 @@ typedef struct {
   BcSet unknown_set;     /* names const_set on a receiver the model cannot name */
   BcSet unknown_inc;     /* modules included into a receiver the model cannot name */
   BcSet builtin_held;    /* leaf names the program defines in a builtin class */
+  BcSet written;         /* constants assigned a value other than an anonymous class */
+  BcSet written_leaf;    /* ... the leaf names of those assigned where the cref is unknown */
   BcMod *mods; int nmods;
   int *modix; unsigned modcap;
   int global_unknown;    /* a computed module included into an unknown receiver */
@@ -7232,7 +7235,9 @@ static int bc_lookup(Bc *b, const char *n, char **hit) {
   const char *top = b->cref[b->ncref - 1];
   BcSet seen = {0};
   int r;
-  if (top[0] == '#') {
+  /* a class written inside `class << D` ("#<Class:D>::Foo") is not a
+     singleton: it takes the general branch, where bc_anc leaves it unsure */
+  if (top[0] == '#' && !strstr(top, ">::")) {
     /* `class << D`: the singleton's ancestors are D's extends, then the
        singleton classes up D's superclass chain, then Class, Module, Object */
     r = 0;
@@ -7348,6 +7353,40 @@ static int bc_anon_class_call(const NodeTable *nt, int id, int *is_module) {
          (sp_streq(nm, "define") && sp_streq(rn, "Data"));
 }
 
+/* The superclass an anonymous class expression `v` creates: 1 with *out the
+   resolved name (NULL = Object), 0 when it is not one or cannot be told. */
+static int bc_anon_super(Bc *b, int v, char **out) {
+  const NodeTable *nt = b->nt;
+  int am = 0;
+  *out = NULL;
+  if (!bc_anon_class_call(nt, v, &am) || am) return 0;
+  const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
+  if (rn && sp_streq(rn, "Data")) { *out = strdup("Data"); return 1; }
+  if (rn && sp_streq(rn, "Struct")) { *out = strdup("Struct"); return 1; }
+  int args = nt_ref(nt, v, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (ac == 0) return 1;                              /* Class.new: Object */
+  if (ac == 1 && bc_is_const_node(nt, av[0])) { *out = bc_resolve(b, av[0]); return *out != NULL; }
+  return 0;
+}
+
+/* `Al = A::B` then `class Al` / `Al.include M` / `Al::Z = 1`: the body or
+   constant lands in A::B, which the model would credit to Al. A namespace
+   named through an assigned constant (or under one) is not followed: the
+   whole pass gives up. */
+static void bc_check_alias(Bc *b, const char *full) {
+  if (!full || full[0] == '?' || full[0] == '#') return;
+  char buf[600];
+  snprintf(buf, sizeof buf, "%s", full);
+  for (;;) {                                /* buf, then each enclosing prefix */
+    char *cut = NULL;
+    for (char *q = buf; (q = strstr(q, "::")); q += 2) cut = q;
+    if (bc_has(&b->written, buf) || bc_has(&b->written_leaf, cut ? cut + 2 : buf)) { b->give_up = 1; return; }
+    if (!cut) return;
+    *cut = 0;
+  }
+}
+
 static void bc_walk(Bc *b, int id, const char *self, int mode);
 
 static void bc_walk_kids(Bc *b, int id, const char *self, int mode) {
@@ -7433,6 +7472,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     }
     if (!full) full = strdup("?");
     bc_own(b, full);
+    if (mode == 1) bc_check_alias(b, full);
     if (full[0] != '?') {
       if (mode == 0 && *full) {
         bc_define(b, full);
@@ -7445,11 +7485,10 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
         bc_walk(b, sc, self, mode);
         if (mode == 1 && *full) {
           BcMod *m = bc_mod(b, full, 1);
-          int am = 0;
-          char *s = bc_is_const_node(nt, sc) ? bc_resolve(b, sc) :
-                    (bc_anon_class_call(nt, sc, &am) && !am) ? strdup("Struct") : NULL;
-          if (!s) m->super_unknown = 1;
-          else if (!m->super) m->super = s;
+          char *s = NULL;
+          int known = bc_is_const_node(nt, sc) ? (s = bc_resolve(b, sc)) != NULL : bc_anon_super(b, sc, &s);
+          if (!known) m->super_unknown = 1;
+          else if (s && !m->super) m->super = s;
           else free(s);
         }
       }
@@ -7494,25 +7533,24 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     else if (mode == 0 && full) bc_add(&b->defs, full);   /* a singleton class's own */
     int v = nt_ref(nt, id, "value");
     int am = 0;
-    if (full && bc_anon_class_call(nt, v, &am)) {
+    int anon = bc_anon_class_call(nt, v, &am);
+    if (mode == 0 && !anon) {
+      if (full) bc_add(&b->written, full);
+      else if (nm) bc_add(&b->written_leaf, nm);
+    }
+    if (full && anon) {
       /* X = Class.new(S) do .. end: the block's self is X (its cref is not) */
       char *own = bc_own(b, full);
       full = NULL;
       if (mode == 1) {
         BcMod *m = bc_mod(b, own, 1);
         m->is_module = am;
-        const char *vn = nt_str(nt, v, "name");
-        int args = nt_ref(nt, v, "arguments");
-        int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-        int rv = nt_ref(nt, v, "receiver");
-        const char *rn = nt_str(nt, rv, "name");
-        if (rn && sp_streq(rn, "Class") && vn && sp_streq(vn, "new")) {
-          if (ac >= 1) {
-            char *s = bc_is_const_node(nt, av[0]) ? bc_resolve(b, av[0]) : NULL;
-            if (!s) m->super_unknown = 1; else if (!m->super) m->super = s; else free(s);
-          }
+        char *s = NULL;
+        if (!am) {
+          if (!bc_anon_super(b, v, &s)) m->super_unknown = 1;
+          else if (s && !m->super) m->super = s;
+          else free(s);
         }
-        else if (!am && !m->super) m->super = strdup("Struct");
       }
       bc_walk(b, nt_ref(nt, v, "receiver"), self, mode);
       bc_walk(b, nt_ref(nt, v, "arguments"), self, mode);
@@ -7526,9 +7564,17 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
   if (strncmp(ty, "ConstantPath", 12) == 0 && !sp_streq(ty, "ConstantPathNode")) {
     /* A::X = v / A::X ||= v / a ConstantPathTargetNode */
     int tg = sp_streq(ty, "ConstantPathTargetNode") ? id : nt_ref(nt, id, "target");
-    if (mode == 0 && tg >= 0) {
+    if (mode != 2 && tg >= 0) {
       char *full = bc_resolve(b, tg);
-      if (full && *full) bc_define(b, full);
+      int vv = tg == id ? -1 : nt_ref(nt, id, "value"), am = 0;
+      if (mode == 0 && full && *full) bc_define(b, full);
+      if (mode == 0 && full && *full && !bc_anon_class_call(nt, vv, &am)) bc_add(&b->written, full);
+      if (mode == 1 && full) {
+        char *par = strdup(full), *cut = NULL;
+        for (char *q = par; (q = strstr(q, "::")); q += 2) cut = q;
+        if (cut) { *cut = 0; bc_check_alias(b, par); }
+        free(par);
+      }
       free(full);
     }
     if (tg == id) { bc_walk(b, nt_ref(nt, id, "parent"), self, mode); return; }
@@ -7540,6 +7586,16 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     int v = nt_ref(nt, id, "value");
     const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
     if (mode == 2 && vt && sp_streq(vt, "ConstantReadNode")) { bc_check(b, v, 1); return; }
+    if (mode == 2 && vt && sp_streq(vt, "ConstantPathNode")) {
+      /* defined?(X::Y) is nil, not NameError, when the head X is unreachable */
+      int head = v;
+      while (head >= 0 && nt_type(nt, head) && sp_streq(nt_type(nt, head), "ConstantPathNode"))
+        head = nt_ref(nt, head, "parent");
+      if (head >= 0 && nt_type(nt, head) && sp_streq(nt_type(nt, head), "ConstantReadNode")) {
+        bc_check(b, head, 1);
+        return;
+      }
+    }
     bc_walk_kids(b, id, self, mode);
     return;
   }
@@ -7578,12 +7634,17 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
       else if (target_known) bc_mod(b, target, 1)->dyn_consts = 1;
       else b->global_unknown = 1;
     }
+    if (mode == 1 && target_known && *target && m2 &&
+        (sp_streq(m2, "include") || sp_streq(m2, "prepend") || sp_streq(m2, "extend") || sp_streq(m2, "const_set") ||
+         sp_streq(m2, "class_eval") || sp_streq(m2, "module_eval") || sp_streq(m2, "class_exec") ||
+         sp_streq(m2, "module_exec")))
+      bc_check_alias(b, target);
     if (mode == 1 && m2 && (sp_streq(m2, "include") || sp_streq(m2, "prepend") || sp_streq(m2, "extend"))) {
       int ext = sp_streq(m2, "extend");
       for (int i = a0; i < ac; i++) {
         char *mn = bc_is_const_node(nt, av[i]) ? bc_resolve(b, av[i]) : NULL;
         if (target_known) {
-          int sing = target[0] == '#';
+          int sing = target[0] == '#' && !strstr(target, ">::");
           char inner[600];
           snprintf(inner, sizeof inner, "%s", sing ? target + 8 : target);
           if (sing) { size_t il = strlen(inner); if (il && inner[il - 1] == '>') inner[il - 1] = 0; }
@@ -7648,6 +7709,7 @@ void refuse_unreachable_bare_constants(Compiler *c) {
   }
   bc_set_free(&b->defs); bc_set_free(&b->nested);
   bc_set_free(&b->unknown_set); bc_set_free(&b->unknown_inc); bc_set_free(&b->builtin_held);
+  bc_set_free(&b->written); bc_set_free(&b->written_leaf);
   for (int i = 0; i < b->nmods; i++) {
     BcMod *m = &b->mods[i];
     free(m->name); free(m->super);
