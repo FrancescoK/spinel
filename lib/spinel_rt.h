@@ -2071,6 +2071,7 @@ static inline sp_File *sp_poly_to_file(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO) return (sp_File *)v.v.p;
   return NULL;
 }
+static const char *sp_enum_class_name(void *e);   /* fwd: a boxed enumerator's #class (below) */
 /* Class name of a boxed value, for `x.class` where x is poly. Returns a
    .rodata or names-table string (never GC-managed). */
 static const char *sp_poly_class_name(sp_RbVal v) {
@@ -2115,7 +2116,9 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_CURRY: return SPL("Proc");
         case SP_BUILTIN_METHOD:
           return ((sp_BoundMethod *)v.v.p)->unbound ? SPL("UnboundMethod") : SPL("Method");   /* (#3692) */
-        case SP_BUILTIN_ENUMERATOR: return SPL("Enumerator");
+        /* a chain and a product report their own class, as the typed
+           #class does */
+        case SP_BUILTIN_ENUMERATOR: return sp_enum_class_name(v.v.p);
         case SP_BUILTIN_IO: {
           /* the handle kind names the class, through the same authority the
              typed .class emit uses -- a boxed socket must not report plain IO */
@@ -13940,6 +13943,13 @@ sp_Enumerator *sp_enum_of_one(sp_RbVal v, const char *meth);
 /* Enumerable#chain(*others) / Enumerator#+ : the sources are materialized and
    concatenated by the caller (the desugar builds `recv.to_a + other.to_a ...`),
    so the chain is a snapshot enumerator that reports as Enumerator::Chain. */
+/* #class of an enumerator carried boxed: a chain and a product report their
+   own class, as the typed #class does */
+static const char *sp_enum_class_name(void *p) {
+  sp_Enumerator *e = (sp_Enumerator *)p;
+  return e && e->is_chain ? SPL("Enumerator::Chain")
+       : e && e->is_product ? SPL("Enumerator::Product") : SPL("Enumerator");
+}
 static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) SP_UNUSED;
 static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);
@@ -14378,6 +14388,8 @@ static const char *sp_enum_inspect(sp_Enumerator *e) {
   if (e->gen || e->gen_label)
     return sp_sprintf("#<Enumerator: #<Enumerator::Generator:0x%016llx>:each>",
                       (unsigned long long)(uintptr_t)e);
+  /* a product shows its factors, as CRuby's Enumerator::Product does */
+  if (e->is_product) return sp_sprintf("#<Enumerator::Product: %s>", sp_poly_inspect(e->source));
   sp_RbVal src = (e->has_src || e->source.tag != SP_TAG_NIL) ? e->source
                : sp_box_poly_array(e->items ? e->items : sp_PolyArray_new());
   return sp_sprintf("#<Enumerator: %s:%s>", sp_poly_inspect(src), e->meth ? e->meth : "each");
@@ -14388,33 +14400,59 @@ static const char *sp_enum_inspect_boxed(sp_RbVal v) { return sp_enum_inspect((s
    has run to completion. A resume that ends the body terminates the fiber and
    returns the body value, which is discarded in favor of StopIteration. */
 sp_RbVal sp_enum_gen_pull(sp_Enumerator *e);
-/* Enumerator.product(a, b[, c]): an Enumerator over the cartesian product,
-   materialized as poly-array tuples in row-major order (#2484). */
-static sp_Enumerator *sp_Enumerator_product2(sp_RbVal a, sp_RbVal b) {
-  sp_int na = sp_poly_length(a), nb = sp_poly_length(b);
-  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  for (sp_int i = 0; i < na; i++)
-    for (sp_int j = 0; j < nb; j++) {
-      sp_PolyArray *t = sp_PolyArray_new();
-      sp_PolyArray_push(t, sp_poly_arr_get(a, i));
-      sp_PolyArray_push(t, sp_poly_arr_get(b, j));
-      sp_PolyArray_push(out, sp_box_poly_array(t));
-    }
-  return sp_Enumerator_new_from(sp_box_poly_array(out));
+/* Enumerator.product(*enums) / Enumerator::Product.new(*enums): an
+   Enumerator over the cartesian product, materialized as poly-array tuples in
+   row-major order (#2484), as Enumerable#chain is (sp_enum_chain_new). CRuby
+   walks each factor with each_entry, the later ones again for every prefix of
+   the earlier ones; so does this, through sp_enum_items_from, which re-runs
+   an Enumerator's generator each time: a factor that yields once (it keeps
+   its own state) gives its items under the first prefix only, as in CRuby.
+   No factors is the one empty tuple. An endless Range cannot be laid out,
+   and raises as its to_a does. */
+static void sp_enum_product_rec(sp_PolyArray *out, const sp_RbVal *fs, sp_int n,
+                                sp_int k, sp_PolyArray *prefix) {
+  if (k == n) {
+    sp_PolyArray *t = sp_PolyArray_new(); SP_GC_ROOT(t);
+    for (sp_int i = 0; i < prefix->len; i++) sp_PolyArray_push(t, prefix->data[i]);
+    sp_PolyArray_push(out, sp_box_poly_array(t));
+    return;
+  }
+  sp_RbVal f = fs[k];
+  if (f.tag == SP_TAG_OBJ && f.cls_id == SP_BUILTIN_RANGE && f.v.p &&
+      ((sp_Range *)f.v.p)->last == INTPTR_MAX)
+    sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  sp_PolyArray *items = sp_enum_items_from(f); SP_GC_ROOT(items);
+  for (sp_int i = 0; i < items->len; i++) {
+    sp_PolyArray_push(prefix, items->data[i]);
+    sp_enum_product_rec(out, fs, n, k + 1, prefix);
+    prefix->len--;
+  }
 }
-static sp_Enumerator *sp_Enumerator_product3(sp_RbVal a, sp_RbVal b, sp_RbVal cc) {
-  sp_int na = sp_poly_length(a), nb = sp_poly_length(b), nc = sp_poly_length(cc);
+/* `factors` is the caller's fresh array of the boxed factors, in order */
+static sp_Enumerator *sp_enum_product_new(sp_PolyArray *factors) SP_UNUSED;
+static sp_Enumerator *sp_enum_product_new(sp_PolyArray *factors) {
+  SP_GC_ROOT(factors);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-  for (sp_int i = 0; i < na; i++)
-    for (sp_int j = 0; j < nb; j++)
-      for (sp_int k = 0; k < nc; k++) {
-        sp_PolyArray *t = sp_PolyArray_new();
-        sp_PolyArray_push(t, sp_poly_arr_get(a, i));
-        sp_PolyArray_push(t, sp_poly_arr_get(b, j));
-        sp_PolyArray_push(t, sp_poly_arr_get(cc, k));
-        sp_PolyArray_push(out, sp_box_poly_array(t));
-      }
-  return sp_Enumerator_new_from(sp_box_poly_array(out));
+  sp_PolyArray *prefix = sp_PolyArray_new(); SP_GC_ROOT(prefix);
+  sp_enum_product_rec(out, factors->data, factors->len, 0, prefix);
+  sp_Enumerator *e = sp_Enumerator_new_from_items(out);
+  e->is_product = TRUE;
+  e->source = sp_box_poly_array(factors); e->has_src = TRUE;
+  return e;
+}
+/* Enumerator.product takes no keywords: the keyword hash a call passes
+   (boxed, any hash kind) raises CRuby's `unknown keyword: :k` /
+   `unknown keywords: :k, "s"`, each key inspected, once the arguments are
+   evaluated. An empty `**{}` passes nothing. */
+static void sp_enum_product_kw_check(sp_RbVal kw) SP_UNUSED;
+static void sp_enum_product_kw_check(sp_RbVal kw) {
+  if (kw.tag != SP_TAG_OBJ) return;
+  SP_GC_ROOT_RBVAL(kw);
+  sp_PolyArray *ks = sp_poly_keys(kw); SP_GC_ROOT(ks);
+  if (ks->len == 0) return;
+  char list[256]; int n = 0, cnt = 0; list[0] = 0;
+  for (sp_int i = 0; i < ks->len; i++) sp_kwargs_list_add(list, &n, &cnt, sp_poly_inspect(ks->data[i]));
+  sp_raise_kw_error("unknown", cnt, list);
 }
 sp_RbVal sp_Enumerator_next(sp_Enumerator *e);
 sp_RbVal sp_Enumerator_peek(sp_Enumerator *e);

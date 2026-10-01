@@ -30485,13 +30485,39 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* Enumerator.product(a, b[, c]) -> an Enumerator over the cartesian product. */
+  /* Enumerator.product(*enums) (and Enumerator::Product.new, desugared to
+     it) -> an Enumerator::Product over the cartesian product of any number
+     of factors (sp_enum_product_new). The factors are boxed into one rooted
+     array in order, a splat contributing its elements. Product takes no
+     keywords: the keyword hash, the last argument, is checked at run time
+     (sp_enum_product_kw_check), so a `**h` and a String key are named as
+     CRuby names them. */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Enumerator") &&
-      sp_streq(name, "product") && (argc == 2 || argc == 3)) {
-    buf_printf(b, "sp_Enumerator_product%d(", argc);
-    for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
-    buf_puts(b, ")");
+      sp_streq(name, "product")) {
+    int tf = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tf, tf);
+    for (int i = 0; i < argc; i++) {
+      if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) {
+        buf_puts(b, " sp_enum_product_kw_check("); emit_boxed(c, argv[i], b); buf_puts(b, ");");
+      }
+      else if (nt_kind(nt, argv[i]) == NK_SplatNode) {
+        int sx = nt_ref(nt, argv[i], "expression");
+        int tsp = ++g_tmp, tsi = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = sp_enum_items_from(", tsp);
+        if (sx >= 0) emit_boxed(c, sx, b); else buf_puts(b, "sp_box_nil()");
+        buf_printf(b, "); SP_GC_ROOT(_t%d);"
+                      " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                      " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); }",
+                   tsp, tsi, tsi, tsp, tsi, tf, tsp, tsi);
+      }
+      else {
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", tf);
+        emit_boxed(c, argv[i], b);
+        buf_puts(b, ");");
+      }
+    }
+    buf_printf(b, " sp_enum_product_new(_t%d); })", tf);
     return;
   }
 
@@ -34654,11 +34680,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     else if (rt == TY_FIBER) cn = "Fiber";
     else if (rt == TY_ENUMERATOR) {
       /* a chain built by Enumerable#chain / Enumerator#+ reports as
-         Enumerator::Chain; every other enumerator is an Enumerator (#2545) */
+         Enumerator::Chain, and a product Enumerator::Product; every other
+         enumerator is an Enumerator (#2545) */
       int te = ++g_tmp;
       buf_printf(b, "({ sp_Enumerator *_t%d = ", te); emit_expr(c, recv, b);
       buf_printf(b, "; (_t%d && _t%d->is_chain) ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Chain\")})"
-                    " : ((sp_Class){(sp_int)-1, SPL(\"Enumerator\")}); })", te, te);
+                    " : (_t%d && _t%d->is_product) ? ((sp_Class){(sp_int)-1, SPL(\"Enumerator::Product\")})"
+                    " : ((sp_Class){(sp_int)-1, SPL(\"Enumerator\")}); })", te, te, te, te);
       return;
     }
     else if (rt == TY_DIR) cn = "Dir";

@@ -6777,31 +6777,44 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
-    /* Enumerator.product(a, b) { blk } iterates the pairs and answers nil; the
-       constructor arm builds the Enumerator, so drive it with #each (#3589) */
+    /* Enumerator::Product.new(*enums) is Enumerator.product(*enums) without
+       a block: Product.new takes none, and ignores one given */
+    if (nm && sp_streq(nm, "new")) {
+      int prv = nt_ref(nt, id, "receiver");
+      int ppar = prv >= 0 && nt_kind(nt, prv) == NK_ConstantPathNode ? nt_ref(nt, prv, "parent") : -1;
+      if (ppar >= 0 && nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Product") &&
+          nt_kind(nt, ppar) == NK_ConstantReadNode && nt_str(nt, ppar, "name") &&
+          sp_streq(nt_str(nt, ppar, "name"), "Enumerator")) {
+        nt_node_set_ref(nt, id, "receiver", ppar);
+        nt_node_set_str(nt, id, "name", "product");
+        nt_node_set_ref(nt, id, "block", -1);
+        changed = 1;
+        continue;
+      }
+    }
+    /* Enumerator.product(*enums) { blk } iterates the tuples and answers nil;
+       the constructor arm builds the Enumerator, so drive it with #each
+       (#3589) */
     if (nm && sp_streq(nm, "product") && nt_ref(nt, id, "block") >= 0) {
       int prv = nt_ref(nt, id, "receiver");
       if (prv >= 0 && nt_type(nt, prv) && sp_streq(nt_type(nt, prv), "ConstantReadNode") &&
           nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Enumerator")) {
         int pargs = nt_ref(nt, id, "arguments");
-        int pn2 = 0; if (pargs >= 0) nt_arr(nt, pargs, "arguments", &pn2);
-        if (pn2 == 2 || pn2 == 3) {
-          int inner = nt_new_node(nt, "CallNode");
-          if (inner >= 0) {
-            nt_node_set_str(nt, inner, "name", "product");
-            nt_node_set_ref(nt, inner, "receiver", prv);
-            nt_node_set_ref(nt, inner, "arguments", pargs);
-            nt_node_set_ref(nt, inner, "block", -1);
-            nt_node_set_ref(nt, id, "receiver", inner);
-            nt_node_set_str(nt, id, "name", "each");
-            nt_node_set_ref(nt, id, "arguments", -1);
-            /* the block form answers nil, not the enumerator #each hands back */
-            nt_node_set_int(nt, id, "nil_result", 1);
-            comp_grow_node_arrays(c);
-            c->nscope[inner] = c->nscope[id];
-            changed = 1;
-            continue;
-          }
+        int inner = nt_new_node(nt, "CallNode");
+        if (inner >= 0) {
+          nt_node_set_str(nt, inner, "name", "product");
+          nt_node_set_ref(nt, inner, "receiver", prv);
+          nt_node_set_ref(nt, inner, "arguments", pargs);
+          nt_node_set_ref(nt, inner, "block", -1);
+          nt_node_set_ref(nt, id, "receiver", inner);
+          nt_node_set_str(nt, id, "name", "each");
+          nt_node_set_ref(nt, id, "arguments", -1);
+          /* the block form answers nil, not the enumerator #each hands back */
+          nt_node_set_int(nt, id, "nil_result", 1);
+          comp_grow_node_arrays(c);
+          c->nscope[inner] = c->nscope[id];
+          changed = 1;
+          continue;
         }
       }
     }
