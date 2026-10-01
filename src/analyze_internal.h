@@ -393,6 +393,7 @@ int desugar_reopen_implicit_self(Compiler *c);
 int desugar_handle_attr_accessor(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
+int desugar_static_class_eval(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_method_curry(Compiler *c);
 int desugar_curry_arity_to_int(Compiler *c);

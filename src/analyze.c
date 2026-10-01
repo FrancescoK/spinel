@@ -23516,6 +23516,7 @@ void analyze_program(Compiler *c) {
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
+  desugar_static_class_eval(c);          /* class_eval "<text known now>" -> that code, grafted into the body */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);

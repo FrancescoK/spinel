@@ -649,3 +649,34 @@ int nt_call_args_plain(const NodeTable *nt, int id) {
   }
   return 1;
 }
+
+/* Copy the subtree at `root` of `src` into `dst` (every field, children
+   recursively); the new root's id in dst, or -1. A desugar parses a snippet
+   into its own table and grafts the result into the program's. */
+int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root) {
+  if (!dst || !src || root < 0 || root >= src->count) return -1;
+  const SpNode *sn = &src->nodes[root];
+  int id = nt_new_node(dst, sn->type ? sn->type : "");
+  if (id < 0) return -1;
+  if (sn->content) { SpNode *dn = &dst->nodes[id]; dn->content = strdup(sn->content); }
+  for (int j = 0; j < sn->ns; j++) {
+    char *v = (char *)malloc(sn->s[j].val_len + 1);
+    if (!v) return -1;
+    memcpy(v, sn->s[j].val, sn->s[j].val_len); v[sn->s[j].val_len] = 0;
+    node_add_str(&dst->nodes[id], sn->s[j].key, strlen(sn->s[j].key), v, sn->s[j].val_len);
+  }
+  for (int j = 0; j < sn->ni; j++) nt_node_set_int(dst, id, sn->i[j].key, sn->i[j].val);
+  for (int j = 0; j < sn->nr; j++) {
+    int ch = sn->r[j].ref >= 0 ? nt_import_subtree(dst, src, sn->r[j].ref) : -1;
+    nt_node_set_ref(dst, id, sn->r[j].key, ch);
+  }
+  for (int j = 0; j < sn->na; j++) {
+    int n = sn->a[j].n;
+    int *ids = (int *)malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+    if (!ids) return -1;
+    for (int q = 0; q < n; q++) ids[q] = sn->a[j].ids[q] >= 0 ? nt_import_subtree(dst, src, sn->a[j].ids[q]) : -1;
+    nt_node_set_arr(dst, id, sn->a[j].key, ids, n);
+    free(ids);
+  }
+  return id;
+}

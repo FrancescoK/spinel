@@ -273,6 +273,8 @@ void nt_free(NodeTable *nt);
    Appends nodes and grows nt->count -- parallel per-node arrays must be
    resized to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root);
+/* Copy the subtree at root of src into dst; the new root's id, or -1. */
+int nt_import_subtree(NodeTable *dst, const NodeTable *src, int root);
 /* Are a call's arguments all positional -- no splat, no block argument? (A
    braceless trailing hash is one positional argument to the builtin surface.)
    The face table's rows describe positional calls, and the two halves that

@@ -8,6 +8,7 @@
    this file split. */
 #include "analyze_internal.h"
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 
 /* Required-param count of a forwarded callable expression `ex`, or -1 if it
@@ -12533,5 +12534,201 @@ int desugar_def_unless_method_defined(Compiler *c) {
     if (touched) nt_node_set_arr(nt, body, "body", out, no);
     free(out);
   }
+  return changed;
+}
+
+/* ---- a string class_eval whose text is known at compile time ----
+   `class_eval <<-RUBY ... RUBY` in a class or module body, either plain or
+   stamped out per element of a literal array:
+     METHODS = %w[a b]
+     METHODS.each do |m|
+       class_eval <<-RUBY, __FILE__, __LINE__ + 1
+         def #{m}(...) = dispatch(:#{m}, ...)
+       RUBY
+     end
+   is the code it spells, so the text is built per element (an
+   interpolation must be the loop variable, or its to_s / upcase /
+   downcase / capitalize), parsed as a snippet and grafted into the body in
+   place of the statement. The __FILE__ / __LINE__ arguments are ignored;
+   the grafted nodes carry the site's line and file. Anything else stays a
+   runtime eval, which is refused as before. */
+char *sp_parse_snippet_to_text(const char *src);
+static int sce_is_eval_name(const char *nm) {
+  return nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval"));
+}
+/* the class_eval call's string argument node, or -1 */
+static int sce_eval_string(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return -1;
+  int rcv = nt_ref(nt, st, "receiver");
+  if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) return -1;
+  if (!sce_is_eval_name(nt_str(nt, st, "name"))) return -1;
+  int an = 0; int args = nt_ref(nt, st, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1 || !av) return -1;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k != NK_StringNode && k != NK_InterpolatedStringNode) return -1;
+  return av[0];
+}
+static void sce_append(char **buf, size_t *len, size_t *cap, const char *t) {
+  size_t tl = strlen(t);
+  if (*len + tl + 1 > *cap) { *cap = (*len + tl + 1) * 2 + 64; *buf = (char *)realloc(*buf, *cap); }
+  memcpy(*buf + *len, t, tl); *len += tl; (*buf)[*len] = 0;
+}
+/* the string's text with `var` (a block parameter) read as `elem`; NULL
+   when an interpolation is anything else */
+static char *sce_text(const NodeTable *nt, int str, const char *var, const char *elem) {
+  char *buf = NULL; size_t len = 0, cap = 0;
+  sce_append(&buf, &len, &cap, "");
+  if (nt_kind(nt, str) == NK_StringNode) {
+    const char *t = nt_str(nt, str, "content");
+    if (!t) { free(buf); return NULL; }
+    sce_append(&buf, &len, &cap, t);
+    return buf;
+  }
+  int pn = 0; const int *parts = nt_arr(nt, str, "parts", &pn);
+  for (int i = 0; i < pn; i++) {
+    NodeKind k = nt_kind(nt, parts[i]);
+    if (k == NK_StringNode) {
+      const char *t = nt_str(nt, parts[i], "content");
+      if (!t) { free(buf); return NULL; }
+      sce_append(&buf, &len, &cap, t);
+      continue;
+    }
+    if (k != NK_EmbeddedStatementsNode || !var) { free(buf); return NULL; }
+    int stmts = nt_ref(nt, parts[i], "statements");
+    int sn = 0; const int *ss = stmts >= 0 ? nt_arr(nt, stmts, "body", &sn) : NULL;
+    if (sn != 1) { free(buf); return NULL; }
+    int e = ss[0];
+    const char *conv = NULL;
+    if (nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "arguments") < 0 && nt_ref(nt, e, "block") < 0) {
+      conv = nt_str(nt, e, "name"); e = nt_ref(nt, e, "receiver");
+      if (!conv || (!sp_streq(conv, "to_s") && !sp_streq(conv, "upcase") && !sp_streq(conv, "downcase") &&
+                    !sp_streq(conv, "capitalize"))) { free(buf); return NULL; }
+    }
+    if (e < 0 || nt_kind(nt, e) != NK_LocalVariableReadNode) { free(buf); return NULL; }
+    const char *nm = nt_str(nt, e, "name");
+    if (!nm || !sp_streq(nm, var)) { free(buf); return NULL; }
+    char *v = strdup(elem);
+    if (conv && !sp_streq(conv, "to_s")) {
+      for (size_t q = 0; v[q]; q++) {
+        if (sp_streq(conv, "upcase")) v[q] = (char)toupper((unsigned char)v[q]);
+        else if (sp_streq(conv, "downcase")) v[q] = (char)tolower((unsigned char)v[q]);
+        else if (sp_streq(conv, "capitalize")) v[q] = q == 0 ? (char)toupper((unsigned char)v[q]) : (char)tolower((unsigned char)v[q]);
+      }
+    }
+    sce_append(&buf, &len, &cap, v);
+    free(v);
+  }
+  return buf;
+}
+/* parse `text` and graft its statements into nt with the site's line/file;
+   the count, or -1 when it does not parse */
+static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  char *ast = sp_parse_snippet_to_text(text);
+  if (!ast) return -1;
+  NodeTable *tmp = nt_load_text(ast);
+  free(ast);
+  if (!tmp) return -1;
+  int prog = tmp->root_id;
+  int stmts = prog >= 0 ? nt_ref(tmp, prog, "statements") : -1;
+  int sn = 0; const int *ss = stmts >= 0 ? nt_arr(tmp, stmts, "body", &sn) : NULL;
+  long long line = nt_int(nt, site, "node_line", -1), file = nt_int(nt, site, "node_file", -1);
+  int base = nt->count;
+  for (int i = 0; i < sn; i++) {
+    int id = nt_import_subtree(nt, tmp, ss[i]);
+    if (id < 0) { nt_free(tmp); return -1; }
+    xc_push(out, n, id);
+  }
+  if (line >= 0)
+    for (int id = base; id < nt->count; id++) {
+      nt_node_set_int(nt, id, "node_line", line);
+      if (file >= 0) nt_node_set_int(nt, id, "node_file", file);
+    }
+  nt_free(tmp);
+  return sn;
+}
+/* the literal array `name` is assigned, searched in `body` first: its
+   element texts (strings or symbols) */
+static int sce_const_elems(const NodeTable *nt, int body, const char *name, const char ***out) {
+  int w = -1;
+  int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+  for (int i = 0; i < bn && w < 0; i++)
+    if (nt_kind(nt, bb[i]) == NK_ConstantWriteNode && nt_str(nt, bb[i], "name") && sp_streq(nt_str(nt, bb[i], "name"), name)) w = bb[i];
+  if (w < 0) {
+    NtKindIter it = nt_kind_iter_begin(nt, NK_ConstantWriteNode);
+    while (nt_kind_iter_next(&it)) {
+      const char *cn = nt_str(nt, it.id, "name");
+      if (cn && sp_streq(cn, name)) { w = it.id; break; }
+    }
+    nt_kind_iter_close(&it);
+  }
+  if (w < 0) return -1;
+  int v = nt_ref(nt, w, "value");
+  if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return -1;
+  int en = 0; const int *els = nt_arr(nt, v, "elements", &en);
+  const char **res = (const char **)malloc(sizeof(char *) * (size_t)(en > 0 ? en : 1));
+  if (!res) return -1;
+  for (int i = 0; i < en; i++) {
+    NodeKind k = nt_kind(nt, els[i]);
+    const char *t = k == NK_StringNode ? nt_str(nt, els[i], "content") : k == NK_SymbolNode ? nt_str(nt, els[i], "value") : NULL;
+    if (!t) { free(res); return -1; }
+    res[i] = t;
+  }
+  *out = res;
+  return en;
+}
+int desugar_static_class_eval(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ModuleNode && k != NK_ClassNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
+    if (!bb) continue;
+    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    int *nb = NULL, nbn = 0, any = 0;
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      int *ins = NULL, nins = 0, ok = 0;
+      int str = sce_eval_string(nt, st);
+      if (str >= 0) {
+        char *text = sce_text(nt, str, NULL, NULL);
+        if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
+      }
+      else if (nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") && sp_streq(nt_str(nt, st, "name"), "each") &&
+               nt_ref(nt, st, "arguments") < 0) {
+        /* CONST.each do |v| class_eval "..." end */
+        int recv = nt_ref(nt, st, "receiver"), blk = nt_ref(nt, st, "block");
+        const char *cname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+        int bbody = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+        int pn = blk >= 0 ? nt_ref(nt, blk, "parameters") : -1;
+        int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
+        int rn = 0; const int *reqs = inner >= 0 ? nt_arr(nt, inner, "requireds", &rn) : NULL;
+        const char *var = rn == 1 && reqs ? nt_str(nt, reqs[0], "name") : NULL;
+        int sn = 0; const int *ss = bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode ? nt_arr(nt, bbody, "body", &sn) : NULL;
+        int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
+        const char **elems = NULL; int ne = cname ? sce_const_elems(nt, body, cname, &elems) : -1;
+        if (var && estr >= 0 && ne >= 0) {
+          ok = 1;
+          for (int e = 0; e < ne && ok; e++) {
+            char *text = sce_text(nt, estr, var, elems[e]);
+            if (!text || sce_graft(c, text, ss[0], &ins, &nins) < 0) ok = 0;
+            free(text);
+          }
+        }
+        free(elems);
+      }
+      if (ok) { for (int j = 0; j < nins; j++) xc_push(&nb, &nbn, ins[j]); any = 1; }
+      else xc_push(&nb, &nbn, st);
+      free(ins);
+    }
+    if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
+    free(nb); free(bb);
+  }
+  if (changed) comp_grow_node_arrays(c);
   return changed;
 }
