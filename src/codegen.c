@@ -8198,15 +8198,19 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
     const char *iv = iv_c(ci->ivars[i] + 1);
-    if (t == TY_STRING) buf_printf(b, "  sp_mark_string(o->iv_%s);\n", iv);
-    else if (t == TY_POLY) buf_printf(b, "  sp_mark_rbval(o->iv_%s);\n", iv);
+    switch (t) {
+    case TY_STRING: buf_printf(b, "  sp_mark_string(o->iv_%s);\n", iv); break;
+    case TY_POLY: buf_printf(b, "  sp_mark_rbval(o->iv_%s);\n", iv); break;
     /* a by-value struct the walker cannot follow: mark what it carries */
-    else if (t == TY_STR_RANGE) {
+    case TY_STR_RANGE:
       buf_printf(b, "  sp_mark_string(o->iv_%s.first);\n", iv);
       buf_printf(b, "  sp_mark_string(o->iv_%s.last);\n", iv);
+      break;
+    default:
+      if (needs_root(t))
+        buf_printf(b, "  if (o->iv_%s) sp_gc_mark((void *)o->iv_%s);\n", iv, iv);
+      break;
     }
-    else if (needs_root(t))
-      buf_printf(b, "  if (o->iv_%s) sp_gc_mark((void *)o->iv_%s);\n", iv, iv);
   }
   buf_puts(b, "}\n");
 }
