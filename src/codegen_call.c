@@ -1038,14 +1038,20 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
     return;
   }
   int boxed = comp_ntype(c, id) == TY_POLY;
-  /* every arm, and the builtin's, reads the arguments evaluated once */
+  /* the receiver first, then the arguments, each evaluated once: every
+     arm, and the builtin's, reads them from temps */
+  int trv = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_File *_t%d = %s; SP_GC_ROOT(_t%d);\n", trv, rb.p ? rb.p : "NULL", trv);
+  free(rb.p);
   int *hsv = NULL; TyKind *hty = NULL;
   int hn = hoist_dispatch_args(c, args, &hsv, &hty);
   int tv = ++g_tmp;
   char h[32];
   snprintf(h, sizeof h, "_r%d", tv);
-  buf_printf(b, "({ sp_File *_r%d = ", tv);
-  emit_expr(c, recv, b);
+  buf_printf(b, "({ sp_File *_r%d = _t%d", tv, trv);
   buf_printf(b, "; int _k%d = ", tv);
   emit_io_pick_of(c, h, name, 0, b);
   buf_puts(b, "; ");

@@ -49,3 +49,5 @@ false
 2
 "file-print"
 "file-gets"
+"o"
+[:recv, :arg]

@@ -116,3 +116,12 @@ wp2.write(arg.call)
 wp2.write("\n")
 wp2.close
 p rp2.gets, calls, fg.print("z"), fg.gets
+
+# the receiver runs before the arguments
+$order = []
+def io_of(x) = ($order << :recv; x)
+def arg_of(s) = ($order << :arg; s)
+rp3, wp3 = IO.pipe
+io_of(wp3).write(arg_of("o"))
+wp3.close
+p rp3.read, $order
