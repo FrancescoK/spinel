@@ -4140,6 +4140,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if ((sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "freeze") || sp_streq(name, "itself")) return TY_ENUMERATOR;
+    /* a blockless #each answers the Enumerator itself, as CRuby's does */
+    if (sp_streq(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "feed") && argc == 1) return TY_NIL;   /* #feed returns nil */
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */

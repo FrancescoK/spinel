@@ -31950,6 +31950,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
       return;
     }
+    /* a blockless #each is the Enumerator itself; it had no arm, so the call
+       had no value and `e.each.to_a` raised NoMethodError for unknown */
+    if (sp_streq(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      emit_expr(c, recv, b); return;
+    }
     if (sp_streq(name, "next") && argc == 0) {
       buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
