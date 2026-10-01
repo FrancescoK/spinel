@@ -2119,6 +2119,15 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       TyKind bt = bl ? bl->type : TY_UNKNOWN;
       TyKind et = ty_array_elem(splat_at);
+      /* a parameter that takes the handle (block_splat_pull_args), bound
+         from a gathered Array of plain Strings: no value there was pulled
+         into the handle (`yield(*[a[0]])`), so the block would append to
+         a copy */
+      if (bt == TY_STRBUF && et == TY_STRING)
+        unsupported_feature(c, yargs && yc > 0 ? yargs[0] : blk,
+                            "a String is passed through a splat into a yield to a block parameter the block "
+                            "appends to, from a value that is not a String variable: the block would append "
+                            "to a copy. Return the String from the block and assign it, or append to it in the caller");
       Buf eb; memset(&eb, 0, sizeof eb);
       int sure = k < splat_sure;
       if (sure) emit_array_elem_sure(splat_at, splat_tmp, k, &eb);

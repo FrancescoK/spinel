@@ -1115,6 +1115,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an ivar written in a block default on a value with no ivars compiled)"; ok=0; \
 	else grep -q "on a value with no instance variable layout" "$$tmp/idw.out" || \
 	  { echo "reject-test: FAIL (an ivar written in a block default rejected without saying why)"; sed -n 1,5p "$$tmp/idw.out"; ok=0; }; fi; \
+	t=test/reject/yield_splat_elem_append.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/yse.c" >"$$tmp/yse.out" 2>&1; then \
+	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
+	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
+	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
