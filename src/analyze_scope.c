@@ -4441,10 +4441,11 @@ void resolve_parents(Compiler *c) {
 }
 
 /* An alias of a method this class only INHERITS names the ancestor's body: a
-   redefinition later in the same class must not capture it. Record where the
-   lookup resumes, now that superclasses are wired (they are not at the point
-   the alias itself is registered). The same-class case -- a definition earlier
-   in this very body -- is already handled by renaming that definition. */
+   redefinition later in the same class, by a def or by another alias, must
+   not capture it. Record where the lookup resumes, now that superclasses are
+   wired (they are not at the point the alias itself is registered). The
+   same-class case -- a definition earlier in this very body -- is already
+   handled by renaming that definition. */
 void resolve_inherited_aliases(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cls = &c->classes[ci];
@@ -4459,9 +4460,16 @@ void resolve_inherited_aliases(Compiler *c) {
         if (sc->def_node >= 0 && sc->def_node < cls->alias_node[a]) { own = 1; break; }
         later = 1;
       }
+      for (int b = 0; !own && !later && b < cls->naliases; b++)
+        if (b != a && cls->alias_node[b] > cls->alias_node[a] && sp_streq(cls->alias_new[b], od)) later = 1;
       if (own || !later) continue;
+      /* the table holds `class << self` aliases too: an ancestor's class
+         method is the body such an alias took */
       for (int p = c->classes[ci].parent; p >= 0; p = c->classes[p].parent)
-        if (comp_method_in_class(c, p, od) >= 0) { cls->alias_cls[a] = p; break; }
+        if (comp_method_in_class(c, p, od) >= 0 || comp_cmethod_in_class(c, p, od) >= 0) {
+          cls->alias_cls[a] = p;
+          break;
+        }
     }
   }
 }

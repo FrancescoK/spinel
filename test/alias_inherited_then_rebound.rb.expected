@@ -1,0 +1,8 @@
+[:quux, [:b, :a]]
+[:b, :a]
+[:quux, [:b, :a]]
+[:bar, [:b, :a]]
+[:b, :a]
+[:quux, [:cb, :ca]]
+[:cb, :ca]
+[:f, [:b, :a]]
