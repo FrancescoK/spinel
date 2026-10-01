@@ -1291,6 +1291,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b);
    argument sits deeper than the call that takes the argument. */
 int g_expr_depth = 0;
 
+/* defined?'s answer: a frozen String, as CRuby's are ("method".frozen?) */
+static void emit_defined_label(Buf *b, const char *label) {
+  emit_str_literal_n(b, label, strlen(label), 1);
+}
+
 void emit_expr(Compiler *c, int id, Buf *b) {
   /* an argument of a call re-emitted as its builtin sees the reopenings */
   if (g_io_skip_reopen && id != g_io_skip_node) {
@@ -3033,8 +3038,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         if (cid >= 0 && cnm) cid = comp_cvar_owner(c, cid, cnm);
         if (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0) cid = -1;
         if (cid >= 0 && cnm)
-          buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
-                     c->classes[cid].name, cnm + 2);
+        { buf_printf(b, "(cvar_%s_%s__set ? ", c->classes[cid].name, cnm + 2);
+          emit_defined_label(b, "class variable"); buf_puts(b, " : NULL)"); }
         else buf_puts(b, "NULL");
         return;
       }
@@ -3103,7 +3108,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         }
         buf_printf(b, "(%s(", g.p ? g.p : "");
         emit_cond(c, nt_ref(nt, id, "method_cond"), b);
-        buf_puts(b, ") ? SPL(\"method\") : NULL)");
+        buf_puts(b, ") ? "); emit_defined_label(b, "method"); buf_puts(b, " : NULL)");
         free(g.p);
         return;
       }
@@ -3159,14 +3164,15 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
       /* $& / $~ / $` / $' / $+ are defined only after a successful match;
          the backing slot is NULL before one. */
-      buf_puts(b, "(sp_re_match_str ? SPL(\"global-variable\") : NULL)");
+      buf_puts(b, "(sp_re_match_str ? "); emit_defined_label(b, "global-variable"); buf_puts(b, " : NULL)");
       return;
     }
     if (!res && vt && sp_streq(vt, "NumberedReferenceReadNode")) {
       int refn = (int)nt_int(nt, v, "number", 0);
       if (refn >= 1 && refn <= 9) {
         /* value reads use sp_re_captures[n] directly ($N = captures[N]) */
-        buf_printf(b, "(sp_re_captures[%d] ? SPL(\"global-variable\") : NULL)", refn);
+        buf_printf(b, "(sp_re_captures[%d] ? ", refn);
+        emit_defined_label(b, "global-variable"); buf_puts(b, " : NULL)");
         return;
       }
     }
@@ -3175,17 +3181,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
        An inlined yielding scope statically has a block; a lowered scope tests
        its runtime __yblk__ parameter; any other scope has no block. */
     if (!res && vt && sp_streq(vt, "YieldNode")) {
-      if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return; }
+      if (g_block_id >= 0) { emit_defined_label(b, "yield"); return; }
       if (g_current_scope_is_lowered) {
         buf_puts(b, "(");
         emit_yblk_ref(b);
-        buf_puts(b, " != NULL ? SPL(\"yield\") : NULL)");
+        buf_puts(b, " != NULL ? "); emit_defined_label(b, "yield"); buf_puts(b, " : NULL)");
         return;
       }
       buf_puts(b, "NULL");
       return;
     }
-    if (res) buf_printf(b, "SPL(\"%s\")", res);
+    if (res) emit_defined_label(b, res);
     else buf_puts(b, "NULL");
     return;
   }
