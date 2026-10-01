@@ -228,7 +228,8 @@ int block_param_wants_alias(Compiler *c, int blk, int k) {
 }
 static int block_param_wants_alias_at(Compiler *c, int blk, int k, int depth) {
   if (blk < 0 || depth > SP_INLINE_DEPTH_MAX) return 0;
-  const char *bp = block_param_name(c, blk, k);
+  /* an optional the position binds too (emit_block_binds aliases it) */
+  const char *bp = block_lead_param_name(c, blk, k);
   return bp && block_local_wants_alias_at(c, blk, bp, depth);
 }
 /* The same for any of the block's own parameters by name, a keyword one
@@ -2001,6 +2002,38 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     int dv = block_opt_default(c, blk, oi);
     int yi = P + oi;
     const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value(ot);
+    /* An optional the block appends to, bound from a yield of a plain
+       String variable: alias the variable, as a required parameter is
+       aliased above, or the append lands in the optional's copy (#6179).
+       A variable that is the shared handle has no slot to lend, and the
+       optional does not take the handle: refused, as a keyword is. */
+    int opt_alias = al && ol && poly_splat_tmp < 0 && splat_tmp < 0 && oi < ot_static && yi < yc &&
+                    nt_kind(nt, yargs[yi]) == NK_LocalVariableReadNode &&
+                    block_local_wants_alias(c, blk, op);
+    if (opt_alias && (local_is_handle(c, yargs[yi]) || comp_ntype(c, yargs[yi]) == TY_STRBUF)) {
+      char msg[512], onb[160];
+      snprintf(msg, sizeof msg,
+               "a String is passed to a block's optional parameter `%s` through a yield, which the block "
+               "appends to: this yield hands the block a copy, so the append would not reach the caller's "
+               "String (a String is not yet shared by reference through a `yield` into an optional block "
+               "parameter from a variable that is also shared with a proc or method). Return the String "
+               "from the block and assign it, or append to it in the caller.", block_kw_key(op, onb, sizeof onb));
+      unsupported_feature(c, yargs[yi], msg);
+    }
+    if (opt_alias && comp_ntype(c, yargs[yi]) == TY_STRING && !local_is_handle(c, yargs[yi]) &&
+        al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+      refuse_alias_of_snapshot(c, yargs[yi], op);
+      if (!as_expr) emit_indent(b, indent);
+      if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
+      buf_printf(b, "const char **_cell_%s = &(", opr);
+      emit_expr(c, yargs[yi], b);
+      buf_puts(b, ")");
+      buf_puts(b, as_expr ? "; " : ";\n");
+      al->lv[al->n++] = ol;
+      ol->inline_alias++;
+      ol->is_cell = 1;
+      continue;
+    }
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", opr);
     if (splat_tmp >= 0) {
@@ -2020,7 +2053,10 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       free(eb.p);
     }
     else if (oi < ot_static) {
-      emit_block_arg_coerced(c, yargs[yi], ot, b);
+      /* an optional that is the shared handle takes a handle yielded to it
+         itself (yield_splice_handles), as a required one does */
+      if (!(ol && ol->type == TY_STRBUF && ol->str_shared && emit_handle_var_ref(c, yargs[yi], b)))
+        emit_block_arg_coerced(c, yargs[yi], ot, b);
     }
     else if (dv >= 0) {
       bi_block_side(bi); emit_block_arg_coerced(c, dv, ot, b); bi_method_side(bi);
