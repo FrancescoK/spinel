@@ -457,28 +457,20 @@ static long sp_time_offset_sec(sp_Time t) {
   return (long)sp_time_local_offset((time_t)t.tv_sec);
 }
 
-/* A year as Ruby's strftime writes %Y: zero-padded to four digits with the
-   sign in front ("0012", "-0012", "10000"). An explicit width counts the
-   sign ("%3Y" of -12 is "-12", "%5Y" is "-0012"); the `_` flag pads with
-   spaces ahead of the sign and `-` does not pad. C's %Y is not portable
-   here: glibc does not pad it at all, and macOS pads a negative year inside
-   the sign ("-012"). Returns the length written, as snprintf does. */
-static int sp_time_year_field(char *buf, size_t cap, long yr, int width, int nopad, int padsp) {
+/* A year as Ruby writes it: zero-padded to four digits with the sign in
+   front ("0012", "-0012", "10000"); a positive `width` is the whole field,
+   sign included, as in "%4Y" ("-012"). C's %Y is not portable here: glibc
+   does not pad it at all, and macOS pads a negative year inside the sign
+   ("-012" for "-0012"). Returns the length written, as snprintf does. */
+static int sp_time_year_field(char *buf, size_t cap, long yr, int width) {
   const char *sign = yr < 0 ? "-" : "";
   unsigned long mag = yr < 0 ? 0UL - (unsigned long)yr : (unsigned long)yr;
-  int w = width > 0 ? width : 4 + (yr < 0);
-  if (nopad) return snprintf(buf, cap, "%s%lu", sign, mag);
-  if (padsp) {
-    char num[32];
-    snprintf(num, sizeof num, "%s%lu", sign, mag);
-    return snprintf(buf, cap, "%*s", w, num);
-  }
-  int digits = w - (yr < 0);
+  int digits = width > 0 ? width - (yr < 0) : 4;
   return snprintf(buf, cap, "%s%0*lu", sign, digits > 0 ? digits : 1, mag);
 }
 
 static int sp_time_year_str(char *buf, size_t cap, long yr) {
-  return sp_time_year_field(buf, cap, yr, -1, 0, 0);
+  return sp_time_year_field(buf, cap, yr, -1);
 }
 
 /* buf <- the year, then C strftime of `rest` (fields that carry no year).
@@ -577,9 +569,21 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
        the year (%F, %c, %v) take it from the same place, and the century
        and two-digit year round toward minus infinity, as Integer#div and
        #% do: -12 is century -1, year 88. */
-    else if (d == 'Y') {
-      sp_time_year_field(val, sizeof val, (long)tmv.tm_year + 1900, width, nopad, padsp);
-      width = -1; nopad = 0;   /* padded already, flags included */
+    else if (d == 'Y' || d == 'G') {
+      long yr = (long)tmv.tm_year + 1900;
+      if (d == 'G') {
+        /* the ISO 8601 week-based year: C computes it, Ruby formats it */
+        char gb[32];
+        if (strftime(gb, sizeof gb, "%G", &tmv)) yr = strtol(gb, NULL, 10);
+      }
+      /* the bare directive pads to four digits; a width, `_` or `-` takes
+         the signed number and the padding below sizes it (the sign counts
+         toward the width, and zeros go after it) */
+      if (width > 0 || padsp || nopad) {
+        snprintf(val, sizeof val, "%ld", yr);
+        if (width <= 0 && padsp) width = 4 + (yr < 0);
+      }
+      else sp_time_year_str(val, sizeof val, yr);
     }
     else if (d == 'F') sp_time_year_then(val, sizeof val, &tmv, "-%m-%d");
     else if (d == 'C' || d == 'y' || d == 'x' || d == 'D') {
@@ -598,14 +602,14 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
       /* "%e-%^b-%4Y": the year four wide, sign included */
       size_t n = strftime(val, sizeof val, "%e-%b-", &tmv);
       for (size_t k = 0; k < n; k++) val[k] = (char)toupper((unsigned char)val[k]);
-      if (n) sp_time_year_field(val + n, sizeof val - n, (long)tmv.tm_year + 1900, 4, 0, 0);
+      if (n) sp_time_year_field(val + n, sizeof val - n, (long)tmv.tm_year + 1900, 4);
     }
-    else if (d == 'G' || d == 'g') {
-      /* the ISO 8601 week-based year: C computes it, Ruby formats it */
+    else if (d == 'g') {
+      /* the ISO week-based year's last two digits, rounded as %y is */
       char gb[32];
       long gy = strftime(gb, sizeof gb, "%G", &tmv) ? strtol(gb, NULL, 10) : (long)tmv.tm_year + 1900;
-      if (d == 'G') { sp_time_year_field(val, sizeof val, gy, width, nopad, padsp); width = -1; nopad = 0; }
-      else { long gc = gy >= 0 ? gy / 100 : -((-gy + 99) / 100); snprintf(val, sizeof val, "%02ld", gy - gc * 100); }
+      long gc = gy >= 0 ? gy / 100 : -((-gy + 99) / 100);
+      snprintf(val, sizeof val, "%02ld", gy - gc * 100);
     }
     else if (strchr("aAbBcCdDeFgGhHIjklmMnprRSTtuUvVwWxXyYzZ", d)) {
       /* a standard Ruby directive: format the bare `%X` (we redo width/case
@@ -650,13 +654,16 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
         else for (size_t k = 0; k < z; k++) val[k] = ' ';
       }
     }
-    size_t vl = strlen(val);
+    size_t vl = strlen(val), v0 = 0;
     if (width > 0 && !nopad && vl < (size_t)width) {
       char pc = padsp ? ' ' : '0';
+      /* zeros go after a sign, as CRuby pads "%10s" of -5 to "-000000005";
+         spaces go before it */
+      if (pc == '0' && val[0] == '-' && oi < sizeof(out) - 2) { out[oi++] = '-'; v0 = 1; }
       for (size_t k = vl; k < (size_t)width && oi < sizeof(out) - 2; k++) out[oi++] = pc;
     }
     (void)tok;
-    for (size_t k = 0; k < vl && oi < sizeof(out) - 2; k++) out[oi++] = val[k];
+    for (size_t k = v0; k < vl && oi < sizeof(out) - 2; k++) out[oi++] = val[k];
   }
   out[oi] = 0;
   return sp_str_dup_external(out);
