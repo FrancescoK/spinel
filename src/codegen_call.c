@@ -33125,6 +33125,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_int _t%d = %s; sp_bool _t%d = %s;",
                    ls, esep.p, ls, ll, elim.p, lc, echomp.p);
         free(esep.p); free(elim.p); free(echomp.p);
+        /* an Integer argument is the limit (gets_sep_arg_texts), and 0 is
+           CRuby's ArgumentError, where sp_File_gets_sep reads it as none */
+        for (int k = 0; k < argc; k++)
+          if (comp_ntype(c, argv[k]) == TY_INT) {
+            buf_printf(b, " if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\");", ll);
+            break;
+          }
       }
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_File_gets_sep(_t%d, _t%d, _t%d, _t%d)) != NULL) {",

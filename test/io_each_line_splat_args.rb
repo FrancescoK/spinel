@@ -49,4 +49,19 @@ p lines(path) { |f, o| f.each(*a, **k) { |l| o << l } }
     p [e.class, e.message]
   end
 end
+
+# a limit of 0 written out raises as the spread one does
+zero = 0
+[-> { lines(path) { |f, o| f.each_line(0) { |l| o << l } } },
+ -> { lines(path) { |f, o| f.each_line(zero) { |l| o << l } } },
+ -> { lines(path) { |f, o| f.each_line("o", 0) { |l| o << l } } },
+ -> { lines(path) { |f, o| f.each_line(nil, 0, chomp: true) { |l| o << l } } },
+ -> { lines(path) { |f, o| f.each(*[0]) { |l| o << l } } },
+ -> { lines(path) { |f, o| f.each_line(-1) { |l| o << l } } }].each do |call|
+  begin
+    p call.call
+  rescue ArgumentError => e
+    p [e.class, e.message]
+  end
+end
 File.delete(path)
