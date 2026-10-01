@@ -12012,6 +12012,14 @@ static int emit_new_arity_check(Compiler *c, int ci, int argc,
   if (argc >= lo && argc <= hi) return 0;
   char am[128];
   arity_message(am, sizeof am, argc, lo, hi, NULL);
+  /* the arguments run first, as CRuby runs them before `new` counts them:
+     `S.new(rows)` with `rows` undefined raises NameError, not this */
+  for (int a = 0; a < argc; a++) {
+    Buf ab; memset(&ab, 0, sizeof ab);
+    emit_expr(c, argv[a], &ab);
+    buf_printf(pre, "(void)(%s);\n", ab.p ? ab.p : "0");
+    free(ab.p);
+  }
   buf_printf(pre, "sp_raise_cls(\"ArgumentError\", \"%s\");\n", am);
   return 1;
 }
@@ -22837,11 +22845,23 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             }
             else snprintf(gmsg, sizeof gmsg, "\"undefined method '%s' for %s\"", nm ? nm : "?", rdesc);
           }
+          /* A receiver that is not side-effect-free still runs, first, as
+             CRuby runs it before it finds no method: `Styler.new(rows).render`
+             raised NoMethodError for render where `rows` raises NameError.
+             Held in a boxed temp, it is the error's receiver as a staged one
+             is. */
+          int recv_run = recv >= 0 && !recv_stageable;
+          int rrt = recv_run ? ++g_tmp : -1;
+          if (recv_run) {
+            buf_printf(b, "({ sp_RbVal _t%d = ", rrt); emit_boxed(c, recv, b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", rrt);
+            recv_stageable = 1;
+          }
           #define EMIT_GATE_MSG() do { \
             const char *_stagefn = gstage ? "sp_stage_recv_args_msg" : "sp_stage_recv_msg"; \
             if (recv_stageable) { \
               buf_printf(b, "%s(%s, ", _stagefn, gmsg); \
-              emit_boxed(c, recv, b); \
+              if (recv_run) buf_printf(b, "_t%d", rrt); else emit_boxed(c, recv, b); \
               if (gstage) { \
                 buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
                 for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
@@ -22868,6 +22888,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             EMIT_GATE_MSG();
             buf_printf(b, "), %s)", dflt);
           }
+          if (recv_run) buf_puts(b, "; })");
           #undef EMIT_GATE_MSG
           #undef EMIT_GATE_ARGS
         }
