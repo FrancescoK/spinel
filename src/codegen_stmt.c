@@ -1274,7 +1274,7 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       buf_printf(b, "if (%s%s%s) ", is_unless ? "!(" : "", cnd.p ? cnd.p : "0", is_unless ? ")" : "");
       free(cnd.p);
       emit_strbuf_cond_arm(c, lv, nt_ref(nt, v, "statements"), dst, b, depth + 1);
-      buf_puts(b, " else ");
+      buf_puts(b, "\nelse ");
       emit_strbuf_cond_arm(c, lv, sub, dst, b, depth + 1);
       buf_puts(b, "\n");
       return;
@@ -1291,7 +1291,7 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
         buf_printf(b, "if (%s) ", cnd.p ? cnd.p : "0");
         free(cnd.p);
         emit_strbuf_cond_arm(c, lv, nt_ref(nt, v, "right"), dst, b, depth + 1);
-        buf_printf(b, " else %s = NULL;\n", dst);
+        buf_printf(b, "\nelse %s = NULL;\n", dst);
         return;
       }
       emit_strbuf_cond_value(c, lv, l, dst, b, depth + 1);
