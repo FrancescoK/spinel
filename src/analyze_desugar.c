@@ -10519,6 +10519,75 @@ static int scg_stmts_define(const NodeTable *nt, int body, const char *cname, in
   return 0;
 }
 
+/* Does the body make `cname` a private constant (`private_constant :cname`)?
+   Read through a scope, `self::cname`, such a constant raises NameError. */
+static int scg_body_privatizes(const NodeTable *nt, int cls, const char *cname) {
+  int body = nt_ref(nt, cls, "body");
+  int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    if (nt_kind(nt, st[k]) != NK_CallNode || nt_ref(nt, st[k], "receiver") >= 0) continue;
+    const char *cn = nt_str(nt, st[k], "name");
+    if (!cn || !sp_streq(cn, "private_constant")) continue;
+    int args = nt_ref(nt, st[k], "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      const char *v = sym_or_str_literal(nt, av[a]);
+      if (v && sp_streq(v, cname)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Does a class or module named `nm` (any of its bodies) define `cname` as a
+   public constant, or any module one of those bodies includes? */
+static int scg_named_defines(const NodeTable *nt, const char *nm, const char *cname, int n0) {
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!mn || !sp_streq(mn, nm)) continue;
+    if (scg_body_defines(nt, m, cname)) return !scg_body_privatizes(nt, m, cname);
+    int body = nt_ref(nt, m, "body");
+    int n = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      if (nt_kind(nt, st[k]) != NK_CallNode || nt_ref(nt, st[k], "receiver") >= 0) continue;
+      const char *cn = nt_str(nt, st[k], "name");
+      if (!cn || !sp_streq(cn, "include")) continue;
+      int args = nt_ref(nt, st[k], "arguments");
+      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      for (int a = 0; a < an; a++) {
+        const char *in = nt_kind(nt, av[a]) == NK_ConstantReadNode ? nt_str(nt, av[a], "name") : NULL;
+        if (in && !sp_streq(in, nm) && scg_named_defines(nt, in, cname, n0)) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* Does an ancestor of class `cls` -- a superclass, or a module it or one of
+   them includes -- define `cname`? Then `self::cname` finds it there. */
+static int scg_ancestor_defines(const NodeTable *nt, int cls, const char *cname, int n0) {
+  int cp = nt_ref(nt, cls, "constant_path");
+  const char *own = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+  if (own && scg_named_defines(nt, own, cname, n0)) return 1;
+  const char *nm = own;
+  for (int depth = 0; nm && depth < 32; depth++) {
+    const char *sup = NULL;
+    for (int m = 0; m < n0 && !sup; m++) {
+      if (nt_kind(nt, m) != NK_ClassNode) continue;
+      int mcp = nt_ref(nt, m, "constant_path");
+      const char *mn = mcp >= 0 ? nt_str(nt, mcp, "name") : NULL;
+      int sc = nt_ref(nt, m, "superclass");
+      if (mn && sp_streq(mn, nm) && sc >= 0 && nt_kind(nt, sc) == NK_ConstantReadNode) sup = nt_str(nt, sc, "name");
+    }
+    if (!sup) return 0;
+    if (scg_named_defines(nt, sup, cname, n0)) return 1;
+    nm = sup;
+  }
+  return 0;
+}
+
 int desugar_self_const_get(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -10587,8 +10656,10 @@ int desugar_self_const_get(Compiler *c) {
     }
     /* the method's own class answers through its lexical scope -- unless it
        leaves the name to its subclasses (an abstract `self::KEYBYTES`), where
-       a reader of a constant defined nowhere would only raise */
-    if (!others || scg_body_defines(nt, owner, cname)) scg_add_def(nt, owner, cname, id);
+       a reader of a constant defined nowhere would only raise. A name it
+       inherits, from a superclass or an included module, is not one it
+       leaves: the lookup finds it there. */
+    if (!others || scg_ancestor_defines(nt, owner, cname, n0)) scg_add_def(nt, owner, cname, id);
     else scg_add_def_body(nt, owner, cname, id, 1);
     char mname[256]; snprintf(mname, sizeof mname, "__spinel_cg_%s", cname);
     if (cpath) {
