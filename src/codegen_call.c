@@ -17776,15 +17776,50 @@ static void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *
    MODULE object answers everything here except `new`, which its callers gate).
    One list, so a core class object and a user one answer alike (#3494). */
 static int class_object_universal_method(const char *qm) {
+  /* Class's public instance methods beyond Object's, from ruby 4.0.1 */
   static const char *const cls_uni[] = {
-    "new",
-    "name", "instance_methods", "public_instance_methods",
-    "private_instance_methods", "protected_instance_methods",
-    "instance_method", "method_defined?", "superclass", "ancestors",
-    "include?", "const_get", "const_set", "const_defined?",
-    "define_method", "allocate", "<", "<=", ">", ">=", NULL };
+    "new", "allocate", "attached_object", "subclasses", "superclass",
+    "<", "<=", ">", ">=", "alias_method", "ancestors", "attr", "attr_accessor",
+    "attr_reader", "attr_writer", "autoload", "autoload?", "class_eval", "class_exec",
+    "class_variable_defined?", "class_variable_get", "class_variable_set",
+    "class_variables", "const_defined?", "const_get", "const_missing", "const_set",
+    "const_source_location", "constants", "define_method", "deprecate_constant",
+    "include", "include?", "included_modules", "instance_method", "instance_methods",
+    "method_defined?", "module_eval", "module_exec", "name", "prepend",
+    "private_class_method", "private_constant", "private_instance_methods",
+    "private_method_defined?", "protected_instance_methods", "protected_method_defined?",
+    "public_class_method", "public_constant", "public_instance_method",
+    "public_instance_methods", "public_method_defined?", "refinements",
+    "remove_class_variable", "remove_method", "set_temporary_name", "singleton_class?",
+    "undef_method", "undefined_instance_methods", NULL };
   for (int u = 0; cls_uni[u]; u++) if (sp_streq(qm, cls_uni[u])) return 1;
   return 0;
+}
+/* The ones a module object does not have: they are Class's own. */
+static int class_only_method(const char *qm) {
+  return sp_streq(qm, "new") || sp_streq(qm, "allocate") || sp_streq(qm, "attached_object") ||
+         sp_streq(qm, "subclasses") || sp_streq(qm, "superclass");
+}
+/* Class's or Module's private instance methods beyond Object's, which a
+   class object answers only to respond_to?(name, true). Not
+   ruby2_keywords, which spinel refuses (docs/limitations.md): code guarded
+   by respond_to?(:ruby2_keywords, true) skips it. */
+static int class_object_private_method(const char *qm, int is_module) {
+  static const char *const both[] = {
+    "const_added", "extended", "included", "method_added", "method_removed",
+    "method_undefined", "prepended", "private", "protected", "public", "remove_const",
+    "using", NULL };
+  static const char *const module_only[] = {
+    "append_features", "extend_object", "module_function", "prepend_features", "refine", NULL };
+  for (int u = 0; both[u]; u++) if (sp_streq(qm, both[u])) return 1;
+  if (!is_module) return sp_streq(qm, "inherited");
+  for (int u = 0; module_only[u]; u++) if (sp_streq(qm, module_only[u])) return 1;
+  return 0;
+}
+static int class_is_module(Compiler *c, int ci) {
+  int dn = c->classes[ci].def_node;
+  const char *dt = dn >= 0 ? nt_type(c->nt, dn) : NULL;
+  return dt && sp_streq(dt, "ModuleNode");
 }
 
 static int class_responds_to(Compiler *c, int ci, const char *qm) {
@@ -17808,10 +17843,9 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
      already matched above. Its plain `def m` are instance methods, which the
      module object itself does NOT respond to -- answering true for those made
      `Greeter.respond_to?(:greet)` disagree with CRuby (#3467). */
-  /* builtin Class/Module methods every class object inherits */
-  if (class_object_universal_method(qm) && !sp_streq(qm, "new")) return 1;
-  /* `new`: a class responds, a module does not */
-  if (sp_streq(qm, "new")) return !is_module;
+  /* builtin Class/Module methods every class object inherits; a module
+     lacks Class's own (`new`, `superclass`, ...) */
+  if (class_object_universal_method(qm)) return !(is_module && class_only_method(qm));
   /* A Struct or Data CLASS object carries the member list the same way its
      instances do; the instance arm of the respond_to? fold already answered
      these, so the class object saying false about its own `members` was the
@@ -27184,7 +27218,7 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
          excludes it. */
       if (!resolved && rcn && ci < 0 && builtin_class_id(rcn) != 0 &&
           class_object_universal_method(qm) &&
-          !(sp_streq(qm, "new") && is_builtin_module_name(rcn))) { resolved = 1; yes = 1; }
+          !(class_only_method(qm) && is_builtin_module_name(rcn))) { resolved = 1; yes = 1; }
       /* Symbol's own class method */
       else if (!resolved && rcn && ci < 0 && sp_streq(rcn, "Symbol") &&
                sp_streq(qm, "all_symbols")) { resolved = 1; yes = 1; }
@@ -27200,12 +27234,17 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
         /* a private/protected class method answers only to include_all */
         if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
           yes = include_all;
+        /* as do Class's and Module's private ones (ruby2_keywords, ...) */
+        if (!yes && foldable && include_all && class_object_private_method(qm, class_is_module(c, ci)))
+          yes = 1;
       }
       /* A core class or module (String, Integer, Comparable, Thread) has no
          user class entry, and stopping here left the call unresolved -- it
          then raised NoMethodError, or was rejected outright by the front
          end. The synthesized probes answer it from the real resolver, the
          same way they do for a primitive receiver (#3467). */
+      /* a core module (Comparable, Kernel) has none of Class's own */
+      else if (rcn && ci < 0 && is_builtin_module_name(rcn) && class_only_method(qm)) { resolved = 1; yes = 0; }
       else if (rt_probe_answer(c, id, &yes)) resolved = 1;
     }
     else if (recv >= 0 && ty_is_object(rt)) {
@@ -27260,6 +27299,8 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
           yes = class_responds_to(c, cid, qm);
           if (yes && foldable && comp_cmethod_vis_declared(c, cid, qm, NULL) != SP_VIS_PUBLIC)
             yes = include_all;
+          if (!yes && foldable && include_all && class_object_private_method(qm, class_is_module(c, cid)))
+            yes = 1;
         }
         else {
           int found = ((comp_method_in_chain(c, cid, qm, NULL) >= 0 &&
@@ -27277,6 +27318,18 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
             /* else: private/protected + runtime include_all -> unresolved */
           }
         }
+      }
+      /* in a class body, self is the class object: as in a class method
+         (`ruby2_keywords(:m) if respond_to?(:ruby2_keywords, true)`) */
+      else if (ss && c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) {
+        int cid = c->node_cbody[id];
+        resolved = 1;
+        yes = class_responds_to(c, cid, qm);
+        if (yes && foldable && comp_cmethod_vis_declared(c, cid, qm, NULL) != SP_VIS_PUBLIC)
+          yes = include_all;
+        if (!yes && foldable && include_all && class_object_private_method(qm, class_is_module(c, cid)))
+          yes = 1;
+        if (!foldable && !yes) resolved = 0;
       }
     }
     /* a poly receiver with no user class owning the name still has the
