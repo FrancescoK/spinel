@@ -45120,13 +45120,15 @@ else {
       if (oc_ci3 >= 0) {
         int oc_mi3 = comp_method_in_chain(c, oc_ci3, name, NULL);
         /* a yielding one takes the call's block through its proc form
-           (#5779): it has no symbol of its own, being spliced where it can */
+           (#5779): it has no symbol of its own, being spliced where it can.
+           A call with no block hands the clone none: block_given? answers
+           false there, and a yield raises LocalJumpError. */
         int pf3 = oc_mi3 >= 0 && c->scopes[oc_mi3].yields ? scope_proc_form_of(c, oc_mi3) : -1;
-        int cblk3 = pf3 >= 0 && nt_ref(nt, id, "block") >= 0
-                    ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
-        if (cblk3 >= 0) {
+        int blk3 = nt_ref(nt, id, "block");
+        int cblk3 = pf3 >= 0 && blk3 >= 0 ? resolve_forwarded_block(c, blk3) : -1;
+        if (cblk3 >= 0 || (pf3 >= 0 && blk3 < 0)) {
           Buf pb3; memset(&pb3, 0, sizeof pb3);
-          if (!emit_forwarded_proc_arg(c, cblk3, &pb3)) emit_proc_literal(c, cblk3, &pb3);
+          if (cblk3 >= 0 && !emit_forwarded_proc_arg(c, cblk3, &pb3)) emit_proc_literal(c, cblk3, &pb3);
           int tp3 = ++g_tmp;
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp3, pb3.p ? pb3.p : "NULL", tp3);

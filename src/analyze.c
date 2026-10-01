@@ -21301,15 +21301,25 @@ static int pf_wanted(Compiler *c, const char *name) {
     /* a Class value known only at run time dispatches the same way */
     if (recv >= 0 && infer_type(c, recv) == TY_CLASS && class_recv_is_dynamic(c, recv) &&
         nt_ref(nt, id, "block") >= 0) return 1;
-    /* a method the program adds to Object, called with a block on an object
-       whose class chain stops short of Object (#5779): the call reaches it
-       through the clone, since it cannot be spliced in on that class */
-    if (recv >= 0 && nt_ref(nt, id, "block") >= 0) {
+    /* a method the program adds to Object, called on an object whose class
+       chain stops short of Object (#5779): the call reaches it through the
+       clone, since it cannot be spliced in on that class. Without a block
+       too: the clone is given none, and its yield raises LocalJumpError. */
+    if (recv >= 0) {
       TyKind rt = infer_type(c, recv);
       int obj = comp_class_index(c, "Object");
       if (obj >= 0 && ty_is_object(rt) && ty_object_class(rt) != obj &&
           comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
           comp_method_in_class(c, obj, name) >= 0) return 1;
+      /* so, too, on a builtin receiver whose class has no method of that
+         name (`5.wrap { }`): the emitter's reopened-Object fallback takes
+         the clone; without one it dropped the block and named a function
+         that was never written */
+      const char *bcls = builtin_class_of_type(rt);
+      int bci = bcls ? comp_class_index(c, bcls) : -1;
+      if (obj >= 0 && bcls && rt != TY_CLASS && comp_method_in_class(c, obj, name) >= 0 &&
+          !builtin_method_known(bcls, name) && !builtin_object_method_known(name) &&
+          (bci < 0 || comp_method_in_chain(c, bci, name, NULL) < 0)) return 1;
     }
   }
   return 0;
