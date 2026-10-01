@@ -5212,7 +5212,30 @@ static int extend_class_with(Compiler *c, int ci, int mod_id) {
        `include` of the same module had made, with the class object cast
        to an instance pointer (#4648). */
     if (src->class_id != mod_id || (src->is_cmethod && !src->is_module_function) || !src->name) continue;
-    if (comp_cmethod_in_class(c, ci, src->name) >= 0) continue;
+    int own = comp_cmethod_in_class(c, ci, src->name);
+    if (own >= 0 && !c->scopes[own].is_extend_copy) continue;   /* the class's own */
+    if (own >= 0) {
+      /* An earlier extend put this name here. The later module comes first
+         among the singleton's ancestors, so it supersedes: the earlier copy
+         takes a shadow name, carrying its own super target with it, and a
+         super in this module's copy reaches it, as include does (#3731). */
+      ClassInfo *cif = &c->classes[ci];
+      char shadow[256], key[320];
+      snprintf(shadow, sizeof shadow, "__inc %d %s", cif->prep_shadow_count++, src->name);
+      snprintf(key, sizeof key, "self.%s", src->name);
+      for (int kk = 0; kk < cif->nprep_chain; kk++)
+        if (sp_streq(cif->prep_from[kk], key)) {
+          free(cif->prep_from[kk]);
+          snprintf(key, sizeof key, "self.%s", shadow);
+          cif->prep_from[kk] = strdup(key);
+          break;
+        }
+      free(c->scopes[own].name);
+      c->scopes[own].name = strdup(shadow);
+      if (scope_body_has_super(c, ms)) comp_cprep_chain_add(cif, src->name, shadow);
+      else c->scopes[own].reachable = 0;   /* nothing can reach it now */
+      src = &c->scopes[ms];
+    }
     /* Always a clone re-walked against `ci`, as include does: a shared
        body kept the module's attribution, so `self`, the block and the
        parameter types resolved against the module, not the class.
@@ -5237,6 +5260,8 @@ static int extend_class_with(Compiler *c, int ci, int mod_id) {
             comp_ivar_intern(&c->classes[ci], nt_str(nt2, ivid, "name")); }
     specialize_cmethod_for(c, ms, mod_id, ci);
     src = &c->scopes[ms];  /* realloc-safe */
+    { int cp = comp_cmethod_in_class(c, ci, src->name);
+      if (cp >= 0) c->scopes[cp].is_extend_copy = 1; }
     did_clone = 1;
     /* a module_function stays callable on the module itself
        (`Coordinates.countdown(1)`), so its source is not dead */
@@ -5305,7 +5330,8 @@ void register_extends(Compiler *c) {
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      for (int j = 0; j < an; j++) {
+      /* `extend A, B` extends B first, so A ends up in front */
+      for (int j = an - 1; j >= 0; j--) {
         const char *aty = nt_type(nt, args[j]);
         const char *mname = NULL;
         if (aty && sp_streq(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");

@@ -1991,6 +1991,20 @@ void comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to) {
   ci->nprep_chain++;
 }
 
+const char *comp_super_shadow(Compiler *c, const Scope *s) {
+  if (!s || !s->name) return NULL;
+  if (!s->is_cmethod) return comp_prep_chain_target(c, s->class_id, s->name);
+  char key[320];
+  snprintf(key, sizeof key, "self.%s", s->name);
+  return comp_prep_chain_target(c, s->class_id, key);
+}
+
+void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to) {
+  char key[320];
+  snprintf(key, sizeof key, "self.%s", from);
+  comp_prep_chain_add(ci, key, to);
+}
+
 const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name) {
   if (class_id < 0 || class_id >= c->nclasses || !name) return NULL;
   ClassInfo *ci = &c->classes[class_id];
@@ -2025,7 +2039,7 @@ int comp_super_is_class_new(Compiler *c, int id) {
   Scope *s = comp_scope_of(c, id);
   if (!s || !s->is_cmethod || s->class_id < 0 || !s->name) return 0;
   if (!sp_streq(comp_prep_user_name(s->name), "new")) return 0;
-  if (comp_prep_chain_target(c, s->class_id, s->name)) return 0;
+  if (comp_super_shadow(c, s)) return 0;
   int p = c->classes[s->class_id].parent;
   return p < 0 || comp_cmethod_in_chain(c, p, "new", NULL) < 0;
 }

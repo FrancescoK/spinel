@@ -8666,9 +8666,10 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;
-    const char *shadow = comp_prep_chain_target(c, s->class_id, s->name);
+    const char *shadow = comp_super_shadow(c, s);
     if (shadow) {
-      int mi = comp_method_in_class(c, s->class_id, shadow);
+      int mi = s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                             : comp_method_in_class(c, s->class_id, shadow);
       return mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
     }
     /* Class#new: an instance of the receiving class, which is this one or,
