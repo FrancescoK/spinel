@@ -6081,8 +6081,14 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ty_is_hash(rt)) {
     /* compare_by_identity? is always false for a value-keyed hash; the mutating
        compare_by_identity cannot be honored (keys are compared by value) and is
-       rejected loudly rather than silently no-op'd. */
-    if (sp_streq(name, "compare_by_identity?") && argc == 0) { buf_puts(b, "0"); return 1; }
+       rejected loudly rather than silently no-op'd. The receiver is still
+       evaluated, as CRuby evaluates it: a bare `0` dropped the call, so
+       `g.compare_by_identity?` never ran g -- its side effects and any
+       exception it raised were lost. */
+    if (sp_streq(name, "compare_by_identity?") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      return 1;
+    }
     /* compact!: drop nil-valued pairs in place; self when changed, nil
        when a no-op (only the poly-valued variants can hold nil) */
     if (sp_streq(name, "compact!") && argc == 0 &&
