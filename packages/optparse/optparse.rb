@@ -132,7 +132,8 @@ class OptionParser
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
         cut = a.index(/[= ]/) || (a[1] == "-" ? a.length : 2)
-        arg_text = a[cut..]
+        text = a[cut..]
+        arg_text = text unless text.empty?
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
