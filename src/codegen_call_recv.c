@@ -606,6 +606,8 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
   else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
 }
 
+static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
+
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
    literal. */
 static int fetch_operand_is_inert(Compiler *c, int n) {
@@ -3388,6 +3390,11 @@ else {
           int bval = bn > 0 ? bb[bn - 1] : -1;
           buf_puts(b, " ({ ");
           emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
+          /* a `next <v>` answers the block's value, as in the Hash arm */
+          if (emit_blk_value_via_next(c, blk, boxed ? TY_POLY : et, b)) {
+            buf_puts(b, "; }); })");
+            return 1;
+          }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
           if (bval >= 0) {
             if (boxed && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
@@ -5351,6 +5358,10 @@ else {
           int bval = bn > 0 ? bb[bn - 1] : -1;
           buf_puts(b, " ({ ");
           emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
+          if (emit_blk_value_via_next(c, blk, TY_POLY, b)) {
+            buf_puts(b, "; }); })");
+            return 1;
+          }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
           if (bval >= 0) {
             if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
