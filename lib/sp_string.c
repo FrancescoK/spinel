@@ -34,9 +34,10 @@ int sp_fd_grow_inline(sp_String *s, int64_t need){
 void sp_String_chill(sp_String*r,const char*s){
   if(sp_str_is_chilled(s))r->chilled=(unsigned)(sp_str_chilled_sym(s)+1);
 }
-/* Such a handle is chilled while its bytes are still the symbol's name: the
-   first mutation makes it plain for good (CRuby's str_modify), which is read
-   here, at +@, instead of on every mutation. */
+/* Such a handle is chilled until its first mutation, which makes it plain
+   for good (CRuby's str_modify): sp_fd_publish clears the flag. A path that
+   changes the bytes without publishing is caught here, at +@, by the bytes
+   no longer being the symbol's name. */
 int sp_String_chilled_now(sp_String*h){
   const char*nm=sp_sym_name_fn?sp_sym_name_fn((sp_sym)(h->chilled-1)):NULL;
   size_t n=nm?sp_str_byte_len(nm):0;

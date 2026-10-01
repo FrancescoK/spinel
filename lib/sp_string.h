@@ -20,6 +20,9 @@
    and a mutated one is an ordinary String, as CRuby's is. A GC allocation is
    zeroed, so every other handle starts at 0 with no store. */
 typedef struct { char *data; int64_t len; int64_t cap; unsigned binary; unsigned chilled; } sp_String;
+/* sp_fd_publish reads `binary` and `chilled` as one word */
+_Static_assert(offsetof(sp_String, chilled) == offsetof(sp_String, binary) + 4 && sizeof(unsigned) == 4,
+               "sp_String.binary and .chilled are adjacent 32-bit fields");
 
 /* Per-mutable-string freeze flag rides in the GC header alongside `marked`. */
 static inline sp_bool sp_String_is_frozen(sp_String*s){if(!s)return TRUE;sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));return h->frozen;}
@@ -55,7 +58,15 @@ static inline void sp_fd_publish(sp_String *s){
   sp_str_hdr *h = (sp_str_hdr *)sp_fd_base(s->data);
   h->len = (uint32_t)s->len; h->hash = 0;
   h->size &= ~SP_STR_SIZE_ASCII7;   /* the bytes just changed */
-  if (s->binary) h->size |= SP_STR_SIZE_BINARY;
+  /* Both flags are rare and read as one word, so a plain handle pays the one
+     load and branch the binary tag alone did. A mutation makes a chilled
+     handle plain for good, as CRuby's str_modify does, even one that leaves
+     the bytes the symbol's name again (`m << "!"; m.chop!`). */
+  uint64_t fl; memcpy(&fl, &s->binary, sizeof fl);
+  if (SP_EXPECT(fl != 0, 0)) {
+    if (s->binary) h->size |= SP_STR_SIZE_BINARY;
+    s->chilled = 0;
+  }
   sp_str_lcache_drop(s->data);
 }
 /* A handle whose payload sits inside its own GC object, right after the
