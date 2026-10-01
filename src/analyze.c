@@ -2771,27 +2771,26 @@ static int qc_write_in(char (*path)[64], int n, const char *nm, QCWrite *ws, int
   return -1;
 }
 /* A read of `nm` that no enclosing body defines is looked up in the
-   ancestors of the innermost one, at `path`: the modules it includes, the one
-   included last first, and theirs in turn, then its superclass and on up.
-   Each superclass and module is resolved from the body that names it, by its
-   whole path, so `B` inside `Outer` is `Outer::B` where there is one. The
-   walk is bounded, so an include cycle ends. Without this, a constant a superclass
-   defines, where another class defines the same name, read as undefined. */
+   ancestors of the innermost one, at `path`: the modules it prepends, the
+   modules it includes, the one prepended or included last first, and theirs
+   in turn, then its superclass and on up. A prepended module comes before
+   the body's own constants. Each superclass and module is resolved from the
+   body that names it, by its whole path, so `B` inside `Outer` is
+   `Outer::B` where there is one. The walk is bounded, so an include cycle
+   ends. Without this, a constant a superclass defines, where another class
+   defines the same name, read as undefined. */
 static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, const char *nm,
-                              QCWrite *ws, int wn, int own, int depth) {
-  if (n <= 0 || depth > 32) return -1;
-  if (!own) { int m = qc_write_in(path, n, nm, ws, wn); if (m >= 0) return m; }
-  char sup[QC_MAXDEPTH][64];
-  int supn = 0;
+                              QCWrite *ws, int wn, int own, int depth);
+static int qc_mixin_lookup(const NodeTable *nt, char (*path)[64], int n, const char *mixer,
+                           const char *nm, QCWrite *ws, int wn, int depth) {
   for (int d = qc_ndefs - 1; d >= 0; d--) {
     if (!qc_path_eq(qc_defs[d].path, qc_defs[d].depth, path, n)) continue;
-    int dn = qc_defs[d].node;
-    int body = nt_ref(nt, dn, "body");
+    int body = nt_ref(nt, qc_defs[d].node, "body");
     int bn = 0; const int *st = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int q = bn - 1; q >= 0; q--) {
       if (nt_kind(nt, st[q]) != NK_CallNode || nt_ref(nt, st[q], "receiver") >= 0) continue;
       const char *cn = nt_str(nt, st[q], "name");
-      if (!cn || !sp_streq(cn, "include")) continue;
+      if (!cn || !sp_streq(cn, mixer)) continue;
       int args = nt_ref(nt, st[q], "arguments");
       int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int a = 0; a < an; a++) {
@@ -2802,7 +2801,22 @@ static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, cons
         if (m >= 0) return m;
       }
     }
-    if (!supn && nt_kind(nt, dn) == NK_ClassNode)
+  }
+  return -1;
+}
+static int qc_ancestor_lookup(const NodeTable *nt, char (*path)[64], int n, const char *nm,
+                              QCWrite *ws, int wn, int own, int depth) {
+  if (n <= 0 || depth > 32) return -1;
+  int m = qc_mixin_lookup(nt, path, n, "prepend", nm, ws, wn, depth);
+  if (m >= 0) return m;
+  if (!own && (m = qc_write_in(path, n, nm, ws, wn)) >= 0) return m;
+  if ((m = qc_mixin_lookup(nt, path, n, "include", nm, ws, wn, depth)) >= 0) return m;
+  char sup[QC_MAXDEPTH][64];
+  int supn = 0;
+  for (int d = qc_ndefs - 1; d >= 0 && !supn; d--) {
+    if (!qc_path_eq(qc_defs[d].path, qc_defs[d].depth, path, n)) continue;
+    int dn = qc_defs[d].node;
+    if (nt_kind(nt, dn) == NK_ClassNode)
       supn = qc_resolve_ref(nt, nt_ref(nt, dn, "superclass"), path, n - 1, sup);
   }
   return supn > 0 ? qc_ancestor_lookup(nt, sup, supn, nm, ws, wn, 0, depth + 1) : -1;
