@@ -1,0 +1,41 @@
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid second option"]
+[ArgumentError, "invalid second option"]
+[ArgumentError, "too many options"]
+[ArgumentError, "too many options"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "too many options"]
+[ArgumentError, "invalid second option"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+[FrozenError, "can't modify frozen String: \"ABC\""]
+[ArgumentError, "option :fold only allowed for downcasing"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+["abc", :abc, "def"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+"abc"
+"ABC"
+"abc"
+"AbC"
+"Abc"
+"ABC"
+:AbC
+"abc"
+[ArgumentError, "invalid option"]
+[ArgumentError, "invalid option"]
+"ABC"
+"ABC"
+:xy
+2
+"AbC"
+3
