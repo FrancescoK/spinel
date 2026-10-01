@@ -9474,20 +9474,23 @@ else {
     int v = nt_ref(nt, id, "value");
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
     TyKind t = lv ? lv->type : TY_UNKNOWN;
-    const char *en = rename_local(nm);
-    char lhs[300]; snprintf(lhs, sizeof lhs, "lv_%s", en);
+    /* the local as every other write names it: a captured one lives in its
+       cell (`(*_cell_x)`), an inlined one under its renamed C name */
+    char lhs[300];
+    { Buf lr; memset(&lr, 0, sizeof lr); emit_local_ref(c, id, nm, &lr);
+      snprintf(lhs, sizeof lhs, "%s", lr.p ? lr.p : ""); free(lr.p); }
     char cond[400];
     if (t == TY_POLY) {
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(lv_%s)", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 1, cond, lhs, 0, indent, b);
     }
     else if (t == TY_BOOL) {
-      snprintf(cond, sizeof cond, "%slv_%s", is_or ? "!" : "", en);
+      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
       emit_orw_guard(c, v, 0, cond, lhs, 0, indent, b);
     }
     else if (t == TY_SYMBOL) {
       /* nilable symbol: (sp_sym)-1 is the nil sentinel */
-      snprintf(cond, sizeof cond, "lv_%s %s= (sp_sym)-1", en, is_or ? "=" : "!");
+      snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
       emit_orw_guard(c, v, 0, cond, lhs, 0, indent, b);
     }
     else if (!is_or) {
