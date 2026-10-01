@@ -20503,6 +20503,87 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* String#upcase / downcase / capitalize / swapcase, their `!` forms and
+   Symbol's take case-mapping options, which CRuby checks before it maps or,
+   for a `!` form, checks frozen (check_case_options): :ascii alone, :turkic
+   and :lithuanian alone or together, :fold for downcasing only. Any other
+   option, or a combination, is ArgumentError; spinel mapped regardless, or
+   raised FrozenError for a `!` on a frozen String. The call is emitted
+   behind sp_case_opts_check, unless its options are valid as written (a
+   Symbol literal combination), which keeps its C. A receiver that is not a
+   plain read is evaluated into a temp first, as CRuby evaluates it before
+   the method checks its options. */
+static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) {
+  const char *a[2] = { NULL, NULL };
+  if (argc > 2) return 0;
+  for (int i = 0; i < argc; i++) {
+    if (nt_kind(c->nt, av[i]) != NK_SymbolNode || !(a[i] = nt_str(c->nt, av[i], "value"))) return 0;
+  }
+  if (argc == 1)
+    return sp_streq(a[0], "ascii") || sp_streq(a[0], "turkic") || sp_streq(a[0], "lithuanian") ||
+           (down && sp_streq(a[0], "fold"));
+  return (sp_streq(a[0], "turkic") && sp_streq(a[1], "lithuanian")) ||
+         (sp_streq(a[0], "lithuanian") && sp_streq(a[1], "turkic"));
+}
+static int g_case_opts_node = -1;
+static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (g_case_opts_node == id) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0) return 0;
+  size_t ln = strlen(name);
+  char base[16];
+  if (ln >= sizeof base) return 0;
+  memcpy(base, name, ln + 1);
+  if (ln && base[ln - 1] == '!') base[ln - 1] = 0;
+  if (!(sp_streq(base, "upcase") || sp_streq(base, "downcase") || sp_streq(base, "capitalize") ||
+        sp_streq(base, "swapcase"))) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF && rt != TY_SYMBOL) return 0;
+  int anode = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
+  if (argc == 0 || nt_ref(nt, id, "block") >= 0 || user_defines_or_reads(c, name)) return 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+  }
+  int down = sp_streq(base, "downcase");
+  if (case_opts_valid_lits(c, av, argc, down)) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  int plain = rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
+              rk == NK_ConstantReadNode || rk == NK_StringNode || rk == NK_SymbolNode;
+  if (!plain && g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  int tv = 0;
+  if (plain) buf_puts(b, "(");
+  else {
+    tv = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, rt, b);
+    buf_printf(b, " _t%d = ", tv);
+    emit_expr(c, recv, b);
+    buf_puts(b, "; ");
+    if (rt != TY_SYMBOL) buf_printf(b, "SP_GC_ROOT(_t%d); ", tv);
+  }
+  buf_printf(b, "sp_case_opts_check(%d, (sp_RbVal[]){", argc);
+  for (int i = 0; i < argc; i++) {
+    if (i) buf_puts(b, ", ");
+    emit_boxed(c, av[i], b);
+  }
+  buf_printf(b, "}, %d)%s ", down, plain ? "," : ";");
+  if (!plain) {
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
+    g_n_argov++;
+  }
+  int sv = g_case_opts_node; g_case_opts_node = id;
+  emit_call(c, id, b);
+  g_case_opts_node = sv;
+  if (!plain) g_n_argov--;
+  buf_puts(b, plain ? ")" : "; })");
+  return 1;
+}
+
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b) {
   char exp[32]; int eval_recv;
   if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 0;
@@ -26707,6 +26788,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_builtin_arity_guard(c, id, b)) return;
   /* ...and on a boxed receiver, for the classes that reject the count */
   if (emit_poly_arity_guard(c, id, b)) return;
+  /* String#upcase and friends' case-mapping options (defined above) */
+  if (emit_case_opts_guard(c, id, b)) return;
   /* An argument whose static class the method cannot take (defined above). */
   if (emit_arg_type_guards(c, id, b)) return;
   /* A local receiver its own argument reassigns (defined above). */
