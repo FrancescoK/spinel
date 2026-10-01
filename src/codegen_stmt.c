@@ -6853,7 +6853,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         int ta = ++g_tmp;
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
         for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
-        buf_printf(b, " %s = _t%d; ", g_method_pr_var, ta);
+        buf_printf(b, g_ret_type == TY_POLY ? " %s = sp_box_poly_array(_t%d); " : " %s = _t%d; ", g_method_pr_var, ta);
       }
       else if (n == 1) {
         buf_printf(b, "%s = ", g_method_pr_var);
@@ -6967,7 +6967,8 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
       for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
       buf_puts(b, " ");
       emit_frame_unwind(b, 0, NULL);
-      buf_printf(b, " return _t%d; }\n", ta);
+      /* a method answering other values too returns the Array boxed */
+      buf_printf(b, g_ret_type == TY_POLY ? " return sp_box_poly_array(_t%d); }\n" : " return _t%d; }\n", ta);
       return;
     }
     int tr = ++g_tmp;
@@ -6993,7 +6994,8 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
       emit_boxed(c, a[k], b);
       buf_puts(b, ");");
     }
-    buf_printf(b, " return _t%d; }\n", ta);
+    /* a method answering other values too returns the Array boxed */
+    buf_printf(b, g_ret_type == TY_POLY ? " return sp_box_poly_array(_t%d); }\n" : " return _t%d; }\n", ta);
   }
   else if (n > 0 && g_ret_type == TY_VOID) {
     /* void function: a `return <expr>` (typically `return nil`) discards its
