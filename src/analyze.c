@@ -13486,6 +13486,67 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
   }
   return -1;
 }
+/* The local reads a write's value may hand over as the written object: the
+   one an_strbuf_alias_source finds, or each arm's of a conditional (`h = c ?
+   x : g`, `if`/`unless`, `g || d`, the right of `a && g`, each `when` and
+   `else` of a `case`), an arm that is another value being a fresh String
+   the write wraps. Each such read is a second name for the target on the
+   path that takes it, so it joins the target's alias set
+   (promote_local_alias_pairs), and the write emits the handle per arm
+   (emit_strbuf_cond_value). Answers the count written to `out` (at most
+   `cap`). */
+static int an_strbuf_alias_leaves(Compiler *c, int v, int *out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || cap <= 0 || depth > 8) return 0;
+  int one = an_strbuf_alias_source(c, v);
+  if (one >= 0) { out[0] = one; return 1; }
+  switch (nt_kind(nt, v)) {
+    case NK_ParenthesesNode:
+      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "body"), out, cap, depth + 1);
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
+      return n > 0 ? an_strbuf_alias_leaves(c, b[n - 1], out, cap, depth + 1) : 0;
+    }
+    case NK_ElseNode:
+      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
+    case NK_IfNode: case NK_UnlessNode: {
+      /* a missing arm is nil */
+      int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+      int n = an_strbuf_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
+      return n + an_strbuf_alias_leaves(c, sub, out + n, cap - n, depth + 1);
+    }
+    case NK_OrNode: {
+      int n = an_strbuf_alias_leaves(c, nt_ref(nt, v, "left"), out, cap, depth + 1);
+      return n + an_strbuf_alias_leaves(c, nt_ref(nt, v, "right"), out + n, cap - n, depth + 1);
+    }
+    /* `a && g` answers a only when a is nil or false, never a String */
+    case NK_AndNode:
+      return an_strbuf_alias_leaves(c, nt_ref(nt, v, "right"), out, cap, depth + 1);
+    case NK_CaseNode: {
+      int nw = 0, n = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+      for (int w = 0; w < nw; w++)
+        n += an_strbuf_alias_leaves(c, nt_ref(nt, whens[w], "statements"), out + n, cap - n, depth + 1);
+      return n + an_strbuf_alias_leaves(c, nt_ref(nt, v, "else_clause"), out + n, cap - n, depth + 1);
+    }
+    default:
+      return 0;
+  }
+}
+/* The local read a multiple assignment's value hands target `t` (a
+   LocalVariableTargetNode among its `lefts`): `t, u = s, 1` makes t another
+   name for s, element for target, when the value is an Array literal with no
+   splat. -1 for anything else. */
+static int an_masgn_alias_source(Compiler *c, int mw, int t) {
+  const NodeTable *nt = c->nt;
+  int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+  int value = nt_ref(nt, mw, "value");
+  if (value < 0 || nt_kind(nt, value) != NK_ArrayNode) return -1;
+  int en = 0; const int *els = nt_arr(nt, value, "elements", &en);
+  for (int i = 0; i < en; i++) if (nt_kind(nt, els[i]) == NK_SplatNode) return -1;
+  for (int i = 0; i < ln && i < en; i++)
+    if (lefts[i] == t) return an_strbuf_alias_source(c, els[i]);
+  return -1;
+}
 /* The aliasing writes (`b = a`, `b = a << x`) of every scope, collected in
    one walk of the table. Asked once per call site of a lent parameter, a
    walk each made the pass (sites x nodes): a method defined in a thousand
@@ -13496,6 +13557,19 @@ typedef struct { int *head, *next; const char **wn, **rn; int n; } ALocalAliases
 /* A cache cut short would read a missing alias as none, and promotion would
    keep a slot or a copy where the handle is needed: a failed allocation
    stops the compile instead, as argov_reserve does. */
+static void an_local_aliases_add(ALocalAliases *t, int *cap, int si, const char *wn, const char *rn) {
+  if (!wn || !rn || sp_streq(wn, rn)) return;
+  if (t->n == *cap) {
+    *cap = *cap ? *cap * 2 : 64;
+    int *nn = (int *)realloc(t->next, sizeof(int) * (size_t)*cap);
+    const char **nw = nn ? (const char **)realloc(t->wn, sizeof(char *) * (size_t)*cap) : NULL;
+    const char **nr = nw ? (const char **)realloc(t->rn, sizeof(char *) * (size_t)*cap) : NULL;
+    if (!nn || !nw || !nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    t->next = nn; t->wn = nw; t->rn = nr;
+  }
+  t->wn[t->n] = wn; t->rn[t->n] = rn;
+  t->next[t->n] = t->head[si]; t->head[si] = t->n; t->n++;
+}
 static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
   const NodeTable *nt = c->nt;
   memset(t, 0, sizeof *t);
@@ -13509,20 +13583,34 @@ static void an_local_aliases_build(Compiler *c, ALocalAliases *t) {
     int si = ws ? (int)(ws - c->scopes) : -1;
     if (si < 0 || si >= c->nscopes) continue;
     const char *wn = nt_str(nt, w, "name");
-    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
-    if (wv < 0) continue;
-    const char *rn = nt_str(nt, wv, "name");
-    if (!wn || !rn || sp_streq(wn, rn)) continue;
-    if (t->n == cap) {
-      cap = cap ? cap * 2 : 64;
-      int *nn = (int *)realloc(t->next, sizeof(int) * (size_t)cap);
-      const char **nw = nn ? (const char **)realloc(t->wn, sizeof(char *) * (size_t)cap) : NULL;
-      const char **nr = nw ? (const char **)realloc(t->rn, sizeof(char *) * (size_t)cap) : NULL;
-      if (!nn || !nw || !nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      t->next = nn; t->wn = nw; t->rn = nr;
+    int lv[16];
+    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+    for (int l = 0; l < nl; l++) an_local_aliases_add(t, &cap, si, wn, nt_str(nt, lv[l], "name"));
+  }
+  /* `h ||= g`, `h &&= g` */
+  for (int k = 0; k < 2; k++)
+    for (int w = comp_kind_first(c, k ? NK_LocalVariableAndWriteNode : NK_LocalVariableOrWriteNode); w >= 0;
+         w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != (k ? NK_LocalVariableAndWriteNode : NK_LocalVariableOrWriteNode)) continue;
+      Scope *ws = comp_scope_of(c, w);
+      int si = ws ? (int)(ws - c->scopes) : -1;
+      if (si < 0 || si >= c->nscopes) continue;
+      int lv[16];
+      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+      for (int l = 0; l < nl; l++) an_local_aliases_add(t, &cap, si, nt_str(nt, w, "name"), nt_str(nt, lv[l], "name"));
     }
-    t->wn[t->n] = wn; t->rn[t->n] = rn;
-    t->next[t->n] = t->head[si]; t->head[si] = t->n; t->n++;
+  /* `t, u = s, 1`: each target an element names */
+  for (int mw = comp_kind_first(c, NK_MultiWriteNode); mw >= 0; mw = comp_kind_next(c, mw)) {
+    if (nt_kind(nt, mw) != NK_MultiWriteNode) continue;
+    Scope *ws = comp_scope_of(c, mw);
+    int si = ws ? (int)(ws - c->scopes) : -1;
+    if (si < 0 || si >= c->nscopes) continue;
+    int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+    for (int i = 0; i < ln; i++) {
+      if (nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) continue;
+      int sv = an_masgn_alias_source(c, mw, lefts[i]);
+      if (sv >= 0) an_local_aliases_add(t, &cap, si, nt_str(nt, lefts[i], "name"), nt_str(nt, sv, "name"));
+    }
   }
 }
 
@@ -14841,6 +14929,7 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
    it in the fixpoint, and the post-fixpoint handle loop again, since a
    local convert_byref_handle_params pulls into the handle there (`t = s;
    grow(t)`) takes its alias source along only through this rule. */
+static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, const char *tgtn);
 static int promote_local_alias_pairs(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -14851,64 +14940,89 @@ static int promote_local_alias_pairs(Compiler *c) {
      sp_String_new, which inherits the source's frozen state. */
   for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    /* the aliasing shapes: `s2 = s1` and the value-position append chain
-       `s2 = (s1 << x)`, whose value IS the base object */
-    int wv = an_strbuf_alias_source(c, nt_ref(nt, w, "value"));
-    if (wv < 0) continue;
-    const char *srcn = nt_str(nt, wv, "name");
-    const char *tgtn = nt_str(nt, w, "name");
-    Scope *ws = comp_scope_of(c, w);
-    if (!srcn || !tgtn || !ws || sp_streq(srcn, tgtn)) continue;
-    LocalVar *srcv = scope_local(ws, srcn);
-    LocalVar *tgtv = scope_local(ws, tgtn);
-    if (!srcv || !tgtv) continue;
-    if (srcv->str_shared && tgtv->str_shared) continue;   /* settled */
-    /* A block parameter is bound by its iterator, which hands over a shared
-       handle only when the iteration rule made the container's elements
-       handles (the parameter is then already a shared strbuf). Otherwise the
-       element is a plain string, and promoting the parameter through an
-       alias -- `|s| s = s__bpin` once #5669 rebinds a reassigned parameter --
-       declared an sp_String * the iterator assigns a const char * to. */
-    if ((srcv->is_block_param && !(srcv->type == TY_STRBUF && srcv->str_shared)) ||
-        (tgtv->is_block_param && !(tgtv->type == TY_STRBUF && tgtv->str_shared))) continue;
-    /* The source may be the method's own parameter (`def m(y) = (t = y;
-       t << x)`). strbuf_slot_eligible turns parameters away, since a local
-       slot's representation is the scope's own choice and a parameter's is
-       its callers' too, so the pair was skipped and the append landed in t's
-       copy, lost even to the method's own later reads of y. The parameter
-       takes the handle instead, as one handed on to a handle parameter does
-       (convert_byref_handle_params), and that pass then pulls its callers. */
-    int src_param = srcv->is_param && !srcv->is_block_param && !srcv->rbs_seeded &&
-                    an_param_idx(ws, srcn) >= 0 &&
-                    (srcv->type == TY_STRING || srcv->type == TY_STRBUF);
-    if ((!src_param && !strbuf_slot_eligible(c, srcn, ws, srcv)) ||
-        !strbuf_slot_eligible(c, tgtn, ws, tgtv)) continue;
-    int ms = strbuf_mut_kind(c, srcn, ws);
-    int mt = strbuf_mut_kind(c, tgtn, ws);
-    if (ms < 0 || mt < 0) continue;         /* a disqualifying mutator */
-    /* An endpoint another rule made the handle counts as mutated: being the
-       handle is the conclusion that evidence was for. The alias set is then
-       mutated through it somewhere, by a later alias (`t = s; u = t;
-       u << x`) or by a callee it was handed to (`t = s; grow(t)`), and the
-       source still holding its own bytes kept the old String. */
-    int hs = srcv->type == TY_STRBUF && srcv->str_shared;
-    int ht = tgtv->type == TY_STRBUF && tgtv->str_shared;
-    if (ms != 1 && mt != 1 && !hs && !ht) continue;   /* alias set never mutated */
-    if (src_param && (srcv->type != TY_STRBUF || !srcv->str_shared || srcv->byref_out)) {
-      if (srcv->byref_out) { srcv->byref_out = 0; srcv->is_cell = 0; }
-      srcv->type = TY_STRBUF; srcv->str_shared = 1;
-      changed = 1;
-    }
-    /* A slot that has widened past String cannot carry the shared-mutable
-       REPRESENTATION: strbuf is an sp_String handle, and a poly slot may hold
-       anything. Boxing keeps the handle, so identity and in-place mutation
-       still travel; forcing strbuf back on it only fought whatever widened it,
-       every round, to the fixpoint's cap (#4116). */
-    if (srcv->type != TY_POLY && (srcv->type != TY_STRBUF || !srcv->str_shared))
-      {  srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1;  }
-    if (tgtv->type != TY_POLY && (tgtv->type != TY_STRBUF || !tgtv->str_shared))
-      {  tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1;  }
+    /* the aliasing shapes: `s2 = s1`, the value-position append chain
+       `s2 = (s1 << x)`, whose value IS the base object, and each arm of a
+       conditional (an_strbuf_alias_leaves) */
+    int lv[16];
+    int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+    for (int l = 0; l < nl; l++)
+      changed |= promote_local_alias_pair(c, comp_scope_of(c, w), nt_str(nt, lv[l], "name"), nt_str(nt, w, "name"));
   }
+  /* `h ||= g` and `h &&= g` are `h = g` on the path that writes */
+  for (int k = 0; k < 2; k++)
+    for (int w = comp_kind_first(c, k ? NK_LocalVariableAndWriteNode : NK_LocalVariableOrWriteNode); w >= 0;
+         w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != (k ? NK_LocalVariableAndWriteNode : NK_LocalVariableOrWriteNode)) continue;
+      int lv[16];
+      int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+      for (int l = 0; l < nl; l++)
+        changed |= promote_local_alias_pair(c, comp_scope_of(c, w), nt_str(nt, lv[l], "name"), nt_str(nt, w, "name"));
+    }
+  /* `t, u = s, 1` names s as t, as `t = s` does (an_masgn_alias_source) */
+  for (int mw = comp_kind_first(c, NK_MultiWriteNode); mw >= 0; mw = comp_kind_next(c, mw)) {
+    if (nt_kind(nt, mw) != NK_MultiWriteNode) continue;
+    int ln = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln);
+    for (int i = 0; i < ln; i++) {
+      if (nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) continue;
+      int sv = an_masgn_alias_source(c, mw, lefts[i]);
+      if (sv >= 0)
+        changed |= promote_local_alias_pair(c, comp_scope_of(c, mw), nt_str(nt, sv, "name"), nt_str(nt, lefts[i], "name"));
+    }
+  }
+  return changed;
+}
+static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, const char *tgtn) {
+  int changed = 0;
+  if (!srcn || !tgtn || !ws || sp_streq(srcn, tgtn)) return 0;
+  LocalVar *srcv = scope_local(ws, srcn);
+  LocalVar *tgtv = scope_local(ws, tgtn);
+  if (!srcv || !tgtv) return 0;
+  if (srcv->str_shared && tgtv->str_shared) return 0;   /* settled */
+  /* A block parameter is bound by its iterator, which hands over a shared
+     handle only when the iteration rule made the container's elements
+     handles (the parameter is then already a shared strbuf). Otherwise the
+     element is a plain string, and promoting the parameter through an
+     alias -- `|s| s = s__bpin` once #5669 rebinds a reassigned parameter --
+     declared an sp_String * the iterator assigns a const char * to. */
+  if ((srcv->is_block_param && !(srcv->type == TY_STRBUF && srcv->str_shared)) ||
+      (tgtv->is_block_param && !(tgtv->type == TY_STRBUF && tgtv->str_shared))) return 0;
+  /* The source may be the method's own parameter (`def m(y) = (t = y;
+     t << x)`). strbuf_slot_eligible turns parameters away, since a local
+     slot's representation is the scope's own choice and a parameter's is
+     its callers' too, so the pair was skipped and the append landed in t's
+     copy, lost even to the method's own later reads of y. The parameter
+     takes the handle instead, as one handed on to a handle parameter does
+     (convert_byref_handle_params), and that pass then pulls its callers. */
+  int src_param = srcv->is_param && !srcv->is_block_param && !srcv->rbs_seeded &&
+                  an_param_idx(ws, srcn) >= 0 &&
+                  (srcv->type == TY_STRING || srcv->type == TY_STRBUF);
+  if ((!src_param && !strbuf_slot_eligible(c, srcn, ws, srcv)) ||
+      !strbuf_slot_eligible(c, tgtn, ws, tgtv)) return 0;
+  int ms = strbuf_mut_kind(c, srcn, ws);
+  int mt = strbuf_mut_kind(c, tgtn, ws);
+  if (ms < 0 || mt < 0) return 0;         /* a disqualifying mutator */
+  /* An endpoint another rule made the handle counts as mutated: being the
+     handle is the conclusion that evidence was for. The alias set is then
+     mutated through it somewhere, by a later alias (`t = s; u = t;
+     u << x`) or by a callee it was handed to (`t = s; grow(t)`), and the
+     source still holding its own bytes kept the old String. */
+  int hs = srcv->type == TY_STRBUF && srcv->str_shared;
+  int ht = tgtv->type == TY_STRBUF && tgtv->str_shared;
+  if (ms != 1 && mt != 1 && !hs && !ht) return 0;   /* alias set never mutated */
+  if (src_param && (srcv->type != TY_STRBUF || !srcv->str_shared || srcv->byref_out)) {
+    if (srcv->byref_out) { srcv->byref_out = 0; srcv->is_cell = 0; }
+    srcv->type = TY_STRBUF; srcv->str_shared = 1;
+    changed = 1;
+  }
+  /* A slot that has widened past String cannot carry the shared-mutable
+     REPRESENTATION: strbuf is an sp_String handle, and a poly slot may hold
+     anything. Boxing keeps the handle, so identity and in-place mutation
+     still travel; forcing strbuf back on it only fought whatever widened it,
+     every round, to the fixpoint's cap (#4116). */
+  if (srcv->type != TY_POLY && (srcv->type != TY_STRBUF || !srcv->str_shared))
+    {  srcv->type = TY_STRBUF; srcv->str_shared = 1; changed = 1;  }
+  if (tgtv->type != TY_POLY && (tgtv->type != TY_STRBUF || !tgtv->str_shared))
+    {  tgtv->type = TY_STRBUF; tgtv->str_shared = 1; changed = 1;  }
   return changed;
 }
 
