@@ -46,7 +46,7 @@
  * evaluator does not understand. A replacement keeps the call's line count. */
 typedef enum { MV_UNDEF = 0, MV_NIL, MV_TRUE, MV_FALSE, MV_INT, MV_STR, MV_SYM, MV_ARR } MvKind;
 
-typedef struct Mv { MvKind k; long i; char *s; struct Mv *a; int n; } Mv;
+typedef struct Mv { MvKind k; long long i; char *s; struct Mv *a; int n; } Mv;
 
 typedef struct { char *name; Mv v; } MxVar;
 
@@ -106,7 +106,7 @@ static void mv_to_s(Mv v, MxBuf *b) {
   case MV_NIL: break;
   case MV_TRUE: mxb_puts(b, "true"); break;
   case MV_FALSE: mxb_puts(b, "false"); break;
-  case MV_INT: snprintf(tmp, sizeof tmp, "%ld", v.i); mxb_puts(b, tmp); break;
+  case MV_INT: snprintf(tmp, sizeof tmp, "%lld", v.i); mxb_puts(b, tmp); break;
   case MV_STR: case MV_SYM: mxb_puts(b, v.s); break;
   default: break;
   }
@@ -152,6 +152,29 @@ static void mv_inspect(Mv v, MxBuf *b) {
     mxb_puts(b, "]");
     break;
   default: mv_to_s(v, b); break;
+  }
+}
+
+/* Does mv_inspect spell v exactly as CRuby's inspect does? It quotes for Ruby
+   source (`"\#"`, `"\x1b"`), which reads back as the same value but is not
+   the text CRuby prints, and quotes every operator Symbol (`:"+"`), so a
+   value whose inspect becomes program DATA (output, a constant) is followed
+   only when it is plain: printable ASCII Strings with nothing to escape,
+   Symbols spelled as identifiers, integers, nil, booleans and Arrays of them. */
+static int mv_inspect_exact(Mv v) {
+  switch (v.k) {
+  case MV_NIL: case MV_TRUE: case MV_FALSE: case MV_INT: return 1;
+  case MV_STR:
+    for (const char *p = v.s; *p; p++) {
+      unsigned char ch = (unsigned char)*p;
+      if (ch < 0x20 || ch > 0x7e || ch == '"' || ch == '\\' || ch == '#') return 0;
+    }
+    return 1;
+  case MV_SYM: return mx_sym_plain(v.s);
+  case MV_ARR:
+    for (int i = 0; i < v.n; i++) if (!mv_inspect_exact(v.a[i])) return 0;
+    return 1;
+  default: return 0;
   }
 }
 
@@ -280,6 +303,14 @@ static int mx_name_unique(const char *name) {
   return !g_mx_hide_all && !mx_names_has(&g_mx_dup, name) && !mx_names_has(&g_mx_hidden, name);
 }
 
+/* May a call of this reflective primitive (const_set, module_eval, public_send,
+   ...) reach Module's own? Not when the program gives the name a method of its
+   own anywhere: a class method, an alias, a module method a class extends.
+   Such a call is left as written, and refused as before. */
+static int mx_prim_builtin(const char *name) {
+  return mx_name_unique(name) && !mx_first_named(name);
+}
+
 /* the macro a call on self inside a macro body reaches: its own module's */
 static MxMacro *mx_nested_macro(const char *modpath, const char *name) {
   if (!modpath || !mx_name_unique(name)) return NULL;
@@ -324,7 +355,8 @@ static int mx_eval_parts(MxCtx *c, pm_node_list_t *parts, MxBuf *b) {
       if (!e->statements || e->statements->body.size != 1) return 0;
       Mv v;
       if (!mx_eval(c, e->statements->body.nodes[0], &v)) return 0;
-      if (v.k == MV_ARR) mv_inspect(v, b); else mv_to_s(v, b);
+      if (v.k == MV_ARR) { if (!mv_inspect_exact(v)) return 0; mv_inspect(v, b); }
+      else mv_to_s(v, b);
     }
     else if (PM_NODE_TYPE(p) == PM_INTERPOLATED_STRING_NODE) {
       if (!mx_eval_parts(c, &((pm_interpolated_string_node_t *)p)->parts, b)) return 0;
@@ -371,7 +403,7 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
       MxBuf b = {0}; mv_to_s(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
     }
     else if (strcmp(name, "to_sym") == 0 && (r.k == MV_STR || r.k == MV_SYM)) { *out = r; out->k = MV_SYM; ok = 1; }
-    else if (strcmp(name, "inspect") == 0) {
+    else if (strcmp(name, "inspect") == 0 && mv_inspect_exact(r)) {
       MxBuf b = {0}; mv_inspect(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
     }
     /* case mapping and length only over ASCII: CRuby's are by character,
@@ -393,7 +425,7 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
     }
     else if ((strcmp(name, "size") == 0 || strcmp(name, "length") == 0) && r.k != MV_NIL) {
       *out = mv_nil(); out->k = MV_INT;
-      out->i = r.k == MV_ARR ? r.n : (r.k == MV_STR || r.k == MV_SYM) ? (long)strlen(r.s) : 0;
+      out->i = r.k == MV_ARR ? r.n : (r.k == MV_STR || r.k == MV_SYM) ? (long long)strlen(r.s) : 0;
       ok = r.k == MV_ARR || ((r.k == MV_STR || r.k == MV_SYM) && mx_ascii(r.s));
     }
     else if ((strcmp(name, "first") == 0 || strcmp(name, "last") == 0) && r.k == MV_ARR) {
@@ -427,7 +459,7 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
     int eq = mv_eq(r, a0);
     *out = mv_nil(); out->k = (eq == (name[0] == '=')) ? MV_TRUE : MV_FALSE; ok = 1;
   }
-  /* an Integer result past a C long is a Bignum in CRuby: not followed */
+  /* an Integer result past 64 bits is a Bignum in CRuby: not followed */
   else if (strcmp(name, "+") == 0 && r.k == MV_INT && a0.k == MV_INT) {
     *out = r; ok = !__builtin_add_overflow(r.i, a0.i, &out->i);
   }
@@ -435,8 +467,8 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
     *out = r; ok = !__builtin_mul_overflow(r.i, a0.i, &out->i);
   }
   else if (strcmp(name, "**") == 0 && r.k == MV_INT && a0.k == MV_INT && a0.i >= 0 && a0.i < 64) {
-    long v = 1; int of = 0;
-    for (long q = 0; q < a0.i && !of; q++) of = __builtin_mul_overflow(v, r.i, &v);
+    long long v = 1; int of = 0;
+    for (long long q = 0; q < a0.i && !of; q++) of = __builtin_mul_overflow(v, r.i, &v);
     *out = r; out->i = v; ok = !of;
   }
   else if (strcmp(name, "-") == 0 && r.k == MV_INT && a0.k == MV_INT) {
@@ -453,7 +485,7 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
     *out = v; ok = 1;
   }
   else if (strcmp(name, "[]") == 0 && r.k == MV_ARR && a0.k == MV_INT) {
-    long ix = a0.i < 0 ? r.n + a0.i : a0.i;
+    long long ix = a0.i < 0 ? r.n + a0.i : a0.i;
     *out = (ix >= 0 && ix < r.n) ? r.a[ix] : mv_nil(); ok = 1;
   }
 done:
@@ -469,16 +501,16 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
   case PM_FALSE_NODE: *out = mv_nil(); out->k = MV_FALSE; return 1;
   case PM_INTEGER_NODE: {
     pm_integer_node_t *in = (pm_integer_node_t *)n;
-    unsigned long uv;
+    unsigned long long uv;
     if (in->value.values) {
       if (in->value.length > 2) return 0;
-      uv = (unsigned long)in->value.values[0] |
-           (in->value.length > 1 ? (unsigned long)in->value.values[1] << 32 : 0);
-      if (uv > 0x7fffffffffffffffUL) return 0;
+      uv = (unsigned long long)in->value.values[0] |
+           (in->value.length > 1 ? (unsigned long long)in->value.values[1] << 32 : 0);
+      if (uv > 0x7fffffffffffffffULL) return 0;
     }
     else uv = in->value.value;
     *out = mv_nil(); out->k = MV_INT;
-    out->i = in->value.negative ? -(long)uv : (long)uv;
+    out->i = in->value.negative ? -(long long)uv : (long long)uv;
     return 1;
   }
   case PM_STRING_NODE: {
@@ -609,7 +641,8 @@ static int mx_residual(MxCtx *c, pm_node_t *n, MxBuf *b) {
   if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
     pm_call_node_t *cn = (pm_call_node_t *)n;
     char *name = mx_name(cn->name);
-    int snd = strcmp(name, "public_send") == 0 || strcmp(name, "send") == 0 || strcmp(name, "__send__") == 0;
+    int snd = (strcmp(name, "public_send") == 0 || strcmp(name, "send") == 0 || strcmp(name, "__send__") == 0) &&
+              mx_prim_builtin(name);
     free(name);
     if (snd && (!cn->receiver || PM_NODE_TYPE(cn->receiver) == PM_SELF_NODE) && cn->arguments &&
         cn->arguments->arguments.size >= 1 && !cn->block) {
@@ -729,7 +762,8 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              /* only these evaluate a string as the class body: instance_eval
                 defines on the singleton class, and the _exec forms take a
                 block, not code */
-             (strcmp(name, "module_eval") == 0 || strcmp(name, "class_eval") == 0)) {
+             (strcmp(name, "module_eval") == 0 || strcmp(name, "class_eval") == 0) &&
+             mx_prim_builtin(name)) {
       Mv code;
       if (mx_eval(c, args->nodes[0], &code) && code.k == MV_STR) {
         if (o) { mxb_puts(o, code.s); mxb_puts(o, "\n"); }
@@ -737,7 +771,8 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
         ok = 1;
       }
     }
-    else if (self_recv && argc == 2 && strcmp(name, "const_set") == 0 && !cn->block) {
+    else if (self_recv && argc == 2 && strcmp(name, "const_set") == 0 && !cn->block &&
+             mx_prim_builtin(name)) {
       Mv cnm;
       if (mx_eval(c, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
           isupper((unsigned char)cnm.s[0]) && mx_sym_plain(cnm.s)) {
@@ -751,6 +786,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     }
     else if (self_recv && argc == 2 && !cn->block &&
              (strcmp(name, "define_singleton_method") == 0 || strcmp(name, "define_method") == 0) &&
+             mx_prim_builtin(name) &&
              PM_NODE_TYPE(args->nodes[1]) == PM_LAMBDA_NODE &&
              !((pm_lambda_node_t *)args->nodes[1])->parameters) {
       Mv mn;
@@ -1578,6 +1614,20 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
   return true;
 }
 
+/* A program that gives a reflective primitive a method of its own, or hooks
+   what one does (`const_added`, `method_added`, ...), is expanded nowhere: an
+   expansion would bypass the override or the hook, where CRuby runs them. */
+static int mx_program_reflects(void) {
+  static const char *const PRIM[] = { "module_eval", "class_eval", "instance_eval",
+    "const_set", "define_method", "define_singleton_method", "public_send", "send",
+    "__send__", NULL };
+  static const char *const HOOK[] = { "const_added", "method_added", "singleton_method_added", NULL };
+  for (int i = 0; PRIM[i]; i++) if (!mx_prim_builtin(PRIM[i])) return 1;
+  for (int i = 0; HOOK[i]; i++)
+    if (mx_names_has(&g_mx_hidden, HOOK[i]) || mx_first_named(HOOK[i]) || mx_names_has(&g_mx_defs, HOOK[i])) return 1;
+  return 0;
+}
+
 static int mx_edit_cmp(const void *a, const void *b) {
   const MxEdit *x = a, *y = b;
   return x->start < y->start ? -1 : x->start > y->start;
@@ -1588,6 +1638,7 @@ static int mx_edit_cmp(const void *a, const void *b) {
 
 static char *sp_expand_class_macros(const char *source) {
   /* cheap gate: a module_eval / const_set / public_send somewhere */
+  if (!strstr(source, "extend")) return NULL;
   if (!strstr(source, "module_eval") && !strstr(source, "class_eval") &&
       !strstr(source, "const_set") && !strstr(source, "public_send") &&
       !strstr(source, "define_singleton_method") && !strstr(source, "define_method"))
@@ -1609,6 +1660,7 @@ static char *sp_expand_class_macros(const char *source) {
     mx_index_macros();
     MxHideScan hs = { 0 };
     pm_visit_node(root, mx_hide_visit, &hs);
+    if (g_mx_nmacros > 0 && mx_program_reflects()) g_mx_nmacros = 0;
     if (g_mx_nmacros > 0) {
       MxEdits ed = {0};
       /* one walk in program order: a macro call sees only the extends the
