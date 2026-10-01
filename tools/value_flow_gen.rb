@@ -328,7 +328,7 @@ module ValueFlowGen
     if (k = ProbeCommon.count_kind(want, got))
       return k
     end
-    at = (0...want.size).find { |i| want[i] != got[i] }
+    at = (0...want.size).find { |i| !ProbeCommon.same_answer?(want[i], got[i]) }
     return "exit-status" if at.nil?
     "#{roles(c.realized)[at]}: #{ProbeCommon.answer_kind(want[at], got[at], "value")}"
   end
