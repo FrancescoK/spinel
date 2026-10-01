@@ -74,10 +74,15 @@ end
 
 # fixture_chunks(src): split a fixture's top level into the pieces an example
 # may or may not need. A top-level module is a container (`module
-# KernelSpecs`): its class/module/def/constant children are chunks of their
-# own, and it is kept whatever is pruned from it. A top-level class, def or
-# constant is one chunk. Anything else (a call, an include, a require) is kept.
-# Returns [[name or nil, text]], in source order; nil means always kept.
+# KernelSpecs`): its children are pieces of their own, and its header and
+# footer are kept whatever is pruned from it. A class, module, def or
+# constant is a :def piece, named. Any other statement (a call, an include,
+# `class << obj`) is a :stmt piece. It is kept when it names no :def piece
+# and defines nothing; else when a :def piece it names is kept
+# (`class << CS_SINGLETON1` goes with CS_SINGLETON1), or when the example
+# names a method or constant it defines. The text between pieces is :glue,
+# always kept. Returns [[name or nil, text, kind, names it defines]] in
+# source order, or nil.
 def fixture_chunks(src)
   res = Prism.parse(src)
   return nil unless res.success?
@@ -88,49 +93,75 @@ def fixture_chunks(src)
     when Prism::ConstantWriteNode, Prism::ConstantOrWriteNode then n.name.to_s
     end
   end
-  piece = ->(n) { src.byteslice(n.location.start_offset, n.location.length) }
+  # the methods and constants a statement defines inside itself (`class <<
+  # self; def m`), which an example can name as it names a :def piece
+  inner_names = lambda do |n, acc = []|
+    acc << n.name.to_s if n.is_a?(Prism::DefNode) || n.is_a?(Prism::ConstantWriteNode)
+    acc << n.constant_path.slice.split("::").last if n.is_a?(Prism::ClassNode) || n.is_a?(Prism::ModuleNode)
+    n.compact_child_nodes.each { |c| inner_names.(c, acc) }
+    acc
+  end
+  piece = lambda do |n, top = false|
+    nm = name_of.(n)
+    # a reopened builtin at the top level (`class Class; def m`) is needed for
+    # the methods it adds, not because the example says Class
+    nm = nil if top && nm && (n.is_a?(Prism::ClassNode) || n.is_a?(Prism::ModuleNode)) &&
+                n.constant_path.is_a?(Prism::ConstantReadNode) && Object.const_defined?(nm)
+    [nm, src.byteslice(n.location.start_offset, n.location.length), nm ? :def : :stmt, nm ? [] : inner_names.(n).uniq]
+  end
+  glue = ->(from, to) { [nil, src.byteslice(from, to - from), :glue, []] }
   out = []
   pos = 0
   res.value.statements.body.each do |top|
-    out << [nil, src.byteslice(pos, top.location.start_offset - pos)]
+    out << glue.(pos, top.location.start_offset)
     pos = top.location.start_offset + top.location.length
     body = top.is_a?(Prism::ModuleNode) && top.body.is_a?(Prism::StatementsNode) ? top.body.body : nil
     if body.nil? || body.empty?
-      out << [name_of.(top), piece.(top)]
+      out << piece.(top, true)
       next
     end
-    # the container's header and footer stay; its children are chunks
     inner = top.location.start_offset
     body.each do |c|
-      out << [nil, src.byteslice(inner, c.location.start_offset - inner)]
-      out << [name_of.(c), piece.(c)]
+      out << glue.(inner, c.location.start_offset)
+      out << piece.(c)
       inner = c.location.start_offset + c.location.length
     end
-    out << [nil, src.byteslice(inner, pos - inner)]
+    out << glue.(inner, pos)
   end
-  out << [nil, src.byteslice(pos, src.bytesize - pos)]
+  out << glue.(pos, src.bytesize)
 end
 
-# fixture_text(src, text): src keeping only the chunks text names, and the
-# chunks those name, transitively. A fixture Prism cannot parse, or that is
-# not valid UTF-8, is kept whole (the CRuby oracle judges the result).
+# fixture_text(src, text): src keeping only the pieces text needs: the :def
+# pieces it names, the :stmt pieces that go with them, and what those name,
+# transitively. A fixture Prism cannot parse, or that is not valid UTF-8, is
+# kept whole (the CRuby oracle judges the result).
 def fixture_text(src, text)
   # the files a fixture loads are inlined ahead of it (fixture_files), and the
   # extracted program has no directory to load anything else from
   src = src.b.gsub(/^[ \t]*require(?:_relative)?[ \t(].*$/n, "").force_encoding(Encoding::UTF_8)
   return src unless src.valid_encoding?
   chunks = fixture_chunks(src) or return src
-  kept = chunks.map { |name, _| name.nil? }
-  look = text + chunks.select { |name, _| name.nil? }.map(&:last).join
+  word = ->(name) { /(?<![\w@$])#{Regexp.escape(name)}(?![\w])/ }
+  defs = chunks.each_index.select { |i| chunks[i][2] == :def }
+  # the :def pieces each :stmt names; a :stmt that names none is always kept
+  names = {}
+  chunks.each_with_index do |(_, body, kind, _), i|
+    names[i] = defs.select { |d| body =~ word.(chunks[d][0]) } if kind == :stmt
+  end
+  kept = chunks.each_with_index.map { |(_, _, kind, own), i| kind == :glue || (kind == :stmt && names[i].empty? && own.empty?) }
+  look = text + "\n" + chunks.each_index.select { |i| kept[i] }.map { |i| chunks[i][1] }.join("\n")
   loop do
     grew = false
-    chunks.each_with_index do |(name, body), i|
-      next if kept[i] || look !~ /(?<![\w@$])#{Regexp.escape(name)}(?![\w])/
-      kept[i] = true; look += body; grew = true
+    chunks.each_with_index do |(name, body, kind, own), i|
+      next if kept[i]
+      need = kind == :def ? look =~ word.(name) :
+             names[i].any? { |d| kept[d] } || own.any? { |m| look =~ word.(m) }
+      next unless need
+      kept[i] = true; look += "\n" + body; grew = true   # apart, so names stay words
     end
     break unless grew
   end
-  chunks.each_with_index.map { |(_, body), i| kept[i] ? body : "" }.join
+  chunks.each_with_index.map { |(_, body, _, _), i| kept[i] ? body : "" }.join
 end
 
 def rewrite(line)
