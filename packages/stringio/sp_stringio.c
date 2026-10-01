@@ -411,7 +411,19 @@ const char *sp_StringIO_read_va(sp_StringIO *s, sp_int n, sp_RbVal *v) {
   if (n == 2) sp_raise_cls("NotImplementedError", "StringIO#read into a buffer");
   if (n == 0 || v[0].tag == SP_TAG_NIL) return sp_StringIO_read(s);
   if (v[0].tag == SP_TAG_INT) return sp_StringIO_read_n(s, v[0].v.i);
-  if (v[0].tag == SP_TAG_FLT) return sp_StringIO_read_n(s, (sp_int)v[0].v.f);
+  if (v[0].tag == SP_TAG_FLT) {
+    double f = v[0].v.f;
+    /* a Float out of Integer's range raises as CRuby's does, not cast */
+    if (!(f > -9223372036854775808.0 && f < 9223372036854775808.0)) {
+      char msg[96];
+      if (f != f) snprintf(msg, sizeof msg, "float NaN out of range of integer");
+      else if (f == 1.0 / 0.0) snprintf(msg, sizeof msg, "float Inf out of range of integer");
+      else if (f == -1.0 / 0.0) snprintf(msg, sizeof msg, "float -Inf out of range of integer");
+      else snprintf(msg, sizeof msg, "float %-.10g out of range of integer", f);
+      sp_raise_cls("RangeError", msg);
+    }
+    return sp_StringIO_read_n(s, (sp_int)f);
+  }
   sio_type_error(v[0], "Integer");
   return NULL;
 }

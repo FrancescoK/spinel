@@ -35,3 +35,11 @@ end
 
 out = Wrap.new(StringIO.new)
 p out.write("a", 1, :b), out.string
+
+# a Float length: truncated, or a RangeError out of Integer's range
+p Wrap.new(StringIO.new("xyz")).read(2.9)
+[1e100, -1e100, Float::INFINITY, -Float::INFINITY, Float::NAN].each do |f|
+  Wrap.new(StringIO.new("x")).read(f)
+rescue RangeError => e
+  p e.message
+end
