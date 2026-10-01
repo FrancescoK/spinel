@@ -581,6 +581,33 @@ int sp_str_mutator(const char *nm, unsigned want) {
     if (sp_streq(nm, M[i].nm)) return (M[i].mask & want) == want;
   return 0;
 }
+/* A String call whose value is its receiver, whatever it did to it first:
+   to_s, to_str, itself and freeze, and the mutators that answer self --
+   prepend, insert, replace, clear, reverse!, force_encoding, encode!. (`<<`
+   and concat, which every String alias walk already takes, are left to
+   those walks.) A block would make the name some other method's. Whether
+   the receiver IS a String is the caller's question: to_s and itself are
+   every class's names. */
+int str_self_call(const NodeTable *nt, int id) {
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return 0;
+  int a = nt_ref(nt, id, "arguments");
+  int ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
+  }
+  if (ac == 0 && (sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "itself") ||
+                  sp_streq(nm, "freeze") || sp_streq(nm, "clear") || sp_streq(nm, "reverse!")))
+    return 1;
+  if (ac == 1 && (sp_streq(nm, "replace") || sp_streq(nm, "force_encoding") ||
+                  sp_streq(nm, "encode!") || sp_streq(nm, "prepend")))
+    return 1;
+  return ac == 2 && sp_streq(nm, "insert");
+}
 /* A receiver-mutating Array method. */
 int array_mutator_name(const char *nm) {
   size_t l = nm ? strlen(nm) : 0;
