@@ -2503,10 +2503,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* the desugared ENV snapshot (#2742) */
   if (recv < 0 && sp_streq(name, "__env_to_h") && argc == 0) return TY_STR_STR_HASH;
-  /* `exception: false` on an unparseable String answers nil, so the call is
-     nilable and cannot be the unboxed value type (#3893). */
+  /* Exception-suppressed String or nullable conversion can answer nil, so it
+     cannot use the unboxed numeric value type (#3893). */
   if (recv < 0 && (sp_streq(name, "Complex") || sp_streq(name, "Rational")) &&
-      argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
+      argc == 2 && (infer_type(c, argv[0]) == TY_STRING ||
+                    ((infer_type(c, argv[0]) == TY_NIL || infer_type(c, argv[0]) == TY_POLY ||
+                      ((infer_type(c, argv[0]) == TY_INT || infer_type(c, argv[0]) == TY_FLOAT) &&
+                       nullable_int_value(c, argv[0]))) &&
+                     nt_kind(nt, argv[1]) == NK_KeywordHashNode)) &&
       nt_type(nt, argv[1]) &&
       (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
        sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
