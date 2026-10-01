@@ -5252,8 +5252,32 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
        to an instance pointer (#4648). */
     if (src->class_id != mod_id || (src->is_cmethod && !src->is_module_function) || !src->name) continue;
     int own = comp_cmethod_in_class(c, ci, src->name);
-    if (own >= 0 && (inherited || !c->scopes[own].is_extend_copy)) continue;   /* the class's own */
-    if (own >= 0) {
+    if (own >= 0 && inherited) continue;
+    /* The class's own class method comes first, and a module it extends
+       sits behind it: a super in the own method reaches the module's,
+       copied in under a shadow name, in front of any module extended
+       earlier. With no super there, nothing can reach the copy. */
+    char *own_name = NULL;
+    char behind[256] = "";
+    if (own >= 0 && !c->scopes[own].is_extend_copy) {
+      if (!scope_body_has_super(c, own)) continue;
+      ClassInfo *cif = &c->classes[ci];
+      char key[320];
+      snprintf(behind, sizeof behind, "__inc %d %s", cif->prep_shadow_count++, src->name);
+      snprintf(key, sizeof key, "self.%s", src->name);
+      for (int kk = 0; kk < cif->nprep_chain; kk++)
+        if (sp_streq(cif->prep_from[kk], key)) {
+          free(cif->prep_from[kk]);
+          snprintf(key, sizeof key, "self.%s", behind);
+          cif->prep_from[kk] = strdup(key);
+          break;
+        }
+      comp_cprep_chain_add(cif, src->name, behind);
+      /* aside while the copy takes the name, then back */
+      own_name = c->scopes[own].name;
+      c->scopes[own].name = strdup("\x01own");
+    }
+    else if (own >= 0) {
       /* An earlier extend put this name here. The later module comes first
          among the singleton's ancestors, so it supersedes: the earlier copy
          takes a shadow name, carrying its own super target with it, and a
@@ -5300,7 +5324,12 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited) {
     specialize_cmethod_for(c, ms, mod_id, ci);
     src = &c->scopes[ms];  /* realloc-safe */
     { int cp = comp_cmethod_in_class(c, ci, src->name);
-      if (cp >= 0) c->scopes[cp].is_extend_copy = 1; }
+      if (cp >= 0) c->scopes[cp].is_extend_copy = 1;
+      if (own_name) {
+        if (cp >= 0) { free(c->scopes[cp].name); c->scopes[cp].name = strdup(behind); }
+        free(c->scopes[own].name);
+        c->scopes[own].name = own_name;
+      } }
     did_clone = 1;
     /* a module_function stays callable on the module itself
        (`Coordinates.countdown(1)`), so its source is not dead */
