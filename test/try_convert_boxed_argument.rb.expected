@@ -1,0 +1,19 @@
+[]
+true
+[5]
+{}
+true
+{a: 1}
+true
+true
+[[1, 2], nil, nil, nil, nil]
+[nil, {b: 2}, nil, nil, nil]
+[nil, nil, "str", nil, nil]
+[nil, nil, nil, 7, nil]
+[nil, nil, nil, 2, nil]
+[nil, nil, nil, nil, /re/]
+[nil, nil, nil, nil, nil]
+[nil, nil, nil, nil, nil]
+nil
+true
+2
