@@ -685,8 +685,6 @@ values too.
 
 Not yet shared:
 
-- a `yield` by keyword (`yield(k: s)` into `{ |k:| k << x }`) of a String
-  that a proc or a `Method` shares too;
 - by keyword, through an UnboundMethod, a curried proc, a proc or `Method`
   read out of a slot that holds other values too, and `instance_exec`;
 - through `instance_exec`, a String variable in or ahead of a splat
