@@ -8074,6 +8074,40 @@ int block_opt_default(Compiler *c, int block, int idx) {
   return -1;
 }
 
+/* The parameter position idx of a yield of n plain arguments binds (n < 0:
+   a count not known here): a required one, or a post the count lands
+   there (block_fill hands the posts the last values), else NULL. A
+   parameter the block appends to binds as an alias of the variable yielded
+   to it at such a position (block_param_wants_alias), a post as a required
+   one (#6179). */
+const char *block_param_at(Compiler *c, int block, int idx, int n) {
+  const char *bp = block_param_name(c, block, idx);
+  if (bp || n < 0 || idx >= n) return bp;
+  int bpn = nt_ref(c->nt, block, "parameters");
+  int pn = bpn >= 0 && nt_kind(c->nt, bpn) == NK_BlockParametersNode ? nt_ref(c->nt, bpn, "parameters") : -1;
+  if (pn < 0) return NULL;
+  int rn = 0, on = 0, sn = 0;
+  nt_arr(c->nt, pn, "requireds", &rn);
+  nt_arr(c->nt, pn, "optionals", &on);
+  nt_arr(c->nt, pn, "posts", &sn);
+  if (sn == 0) return NULL;
+  int ot, ps;
+  block_fill(rn, on, sn, block_rest_marker(c, block), n, &ot, &ps);
+  return idx >= ps && idx < ps + sn ? block_post_name(c, block, idx - ps) : NULL;
+}
+/* The count of a call's or a yield's plain positional arguments, or -1 when
+   one is a splat, a keyword hash or a block argument (the count is then
+   the run time's). */
+int call_plain_argc(Compiler *c, int call) {
+  int a = nt_ref(c->nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(c->nt, av[i]);
+    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return -1;
+  }
+  return ac;
+}
+
 /* Name of a block's idx-th post-required parameter (`|a, *b, c|` -> c), or NULL. */
 const char *block_post_name(Compiler *c, int block, int idx) {
   return block_list_name(c, block, "posts", idx);

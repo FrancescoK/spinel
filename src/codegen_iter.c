@@ -259,7 +259,7 @@ static int yield_target_of(int blk, const char **owner) {
    whose parameter of block `target` wants the alias? A `blk.call(...)` on
    the &block parameter of the method the block is written in (`owner`)
    splices as that yield does. */
-static int block_param_wants_alias_at(Compiler *c, int blk, int k, int depth);
+static int block_param_wants_alias_at(Compiler *c, int blk, int k, int n, int depth);
 static int subtree_yields_local_to_alias(Compiler *c, int id, const char *name, int target,
                                          const char *owner, int depth) {
   const NodeTable *nt = c->nt;
@@ -292,7 +292,7 @@ static int subtree_yields_local_to_alias(Compiler *c, int id, const char *name, 
       }
       if (nt_kind(nt, av[j]) != NK_LocalVariableReadNode) continue;
       const char *vn = nt_str(nt, av[j], "name");
-      if (vn && sp_streq(vn, name) && block_param_wants_alias_at(c, target, j, depth + 1)) return 1;
+      if (vn && sp_streq(vn, name) && block_param_wants_alias_at(c, target, j, call_plain_argc(c, id), depth + 1)) return 1;
     }
   }
   int nr = nt_num_refs(nt, id);
@@ -312,12 +312,14 @@ static int subtree_yields_local_to_alias(Compiler *c, int id, const char *name, 
    itself (see emit_block_invoke's alias binding), or the append lands in
    the parameter's copy and the yielded string never sees it (`fill(buf) {
    |s| s << "z" }` left buf empty, and so did `{ |s| grow(s) }`). */
-int block_param_wants_alias(Compiler *c, int blk, int k) {
-  return block_param_wants_alias_at(c, blk, k, 0);
+int block_param_wants_alias(Compiler *c, int blk, int k, int n) {
+  return block_param_wants_alias_at(c, blk, k, n, 0);
 }
-static int block_param_wants_alias_at(Compiler *c, int blk, int k, int depth) {
+static int block_param_wants_alias_at(Compiler *c, int blk, int k, int n, int depth) {
   if (blk < 0 || depth > SP_INLINE_DEPTH_MAX) return 0;
-  const char *bp = block_param_name(c, blk, k);
+  /* a post the position binds of a yield of n plain arguments too
+     (emit_block_binds aliases it) */
+  const char *bp = block_param_at(c, blk, k, n);
   return bp && block_local_wants_alias_at(c, blk, bp, depth);
 }
 /* The same for any of the block's own parameters by name, a keyword one
@@ -383,7 +385,7 @@ static int inline_param_yielded_mutated(Compiler *c, int mi, const char *name, i
       }
       if (nt_kind(nt, av[k]) != NK_LocalVariableReadNode) continue;
       const char *vn = nt_str(nt, av[k], "name");
-      if (vn && sp_streq(vn, name) && block_param_wants_alias(c, blk, k)) return 1;
+      if (vn && sp_streq(vn, name) && block_param_wants_alias(c, blk, k, call_plain_argc(c, q))) return 1;
     }
   }
   return 0;
@@ -1841,6 +1843,42 @@ static TyKind builtin_yield_self_pair(Compiler *c, int arg) {
    bind through here; `bi` switches the rename tables for the former (NULL
    for a block bound in place), and `al` collects the parameters aliased to
    a yielded String variable (NULL: none are). */
+/* A post block parameter `bp` (renamed `bpr`) the block appends to, bound
+   from a yield of plain String variable `yarg`: alias the variable, as a
+   required parameter is aliased, or the append lands in the post's copy
+   (#6179). A variable that is the shared handle has no slot to lend, and a
+   post that does not take the handle is refused there, as a keyword is.
+   Answers 1 when it bound the alias. */
+static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const char *bpr, LocalVar *bl,
+                                 int yarg, Buf *b, int indent, int as_expr, BlockAliases *al) {
+  const NodeTable *nt = c->nt;
+  if (!al || !bl || nt_kind(nt, yarg) != NK_LocalVariableReadNode || !block_local_wants_alias(c, blk, bp))
+    return 0;
+  if (local_is_handle(c, yarg) || comp_ntype(c, yarg) == TY_STRBUF) {
+    char msg[512], bnb[160];
+    snprintf(msg, sizeof msg,
+             "a String is passed to a block's post parameter `%s` through a yield, which the block "
+             "appends to: this yield hands the block a copy, so the append would not reach the caller's "
+             "String (a String is not yet shared by reference through a `yield` into a post block "
+             "parameter from a variable that is also shared with a proc or method). Return the String "
+             "from the block and assign it, or append to it in the caller.", block_kw_key(bp, bnb, sizeof bnb));
+    unsupported_feature(c, yarg, msg);
+    return 0;
+  }
+  if (comp_ntype(c, yarg) != TY_STRING || al->n >= (int)(sizeof al->lv / sizeof al->lv[0])) return 0;
+  refuse_alias_of_snapshot(c, yarg, bp);
+  if (!as_expr) emit_indent(b, indent);
+  if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
+  buf_printf(b, "const char **_cell_%s = &(", bpr);
+  emit_expr(c, yarg, b);
+  buf_puts(b, ")");
+  buf_puts(b, as_expr ? "; " : ";\n");
+  al->lv[al->n++] = bl;
+  bl->inline_alias++;
+  bl->is_cell = 1;
+  return 1;
+}
+
 void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                       Buf *b, int indent, int as_expr, BiRen *bi, BlockAliases *al) {
   const NodeTable *nt = c->nt;
@@ -2045,7 +2083,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
        writes through the cell for the rest of this splice. */
     if (poly_splat_tmp < 0 && splat_tmp < 0 && k < yc &&
         nt_kind(nt, yargs[k]) == NK_LocalVariableReadNode && !local_is_handle(c, yargs[k]) &&
-        comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k)) {
+        comp_ntype(c, yargs[k]) == TY_STRING && block_param_wants_alias(c, blk, k, -1)) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       if (bl && al) refuse_alias_of_snapshot(c, yargs[k], bp);
       if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
@@ -2240,6 +2278,10 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
       TyKind qt = ql ? ql->type : TY_UNKNOWN;
       const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value(qt);
+      /* a post the block appends to aliases the variable yielded to it */
+      if (poly_splat_tmp < 0 && splat_tmp < 0 && ps_static + qi < yc &&
+          emit_block_post_alias(c, blk, qp, qpr, ql, yargs[ps_static + qi], b, indent, as_expr, al))
+        continue;
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "lv_%s = ", qpr);
       if (splat_tmp >= 0) {
@@ -2261,7 +2303,10 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       }
       else {
         int idx = ps_static + qi;
-        if (idx < yc) emit_block_arg_coerced(c, yargs[idx], qt, b);
+        /* a post that is the shared handle takes a handle yielded to it
+           itself (yield_splice_handles), as a required one does */
+        if (idx < yc && ql && ql->type == TY_STRBUF && ql->str_shared && emit_handle_var_ref(c, yargs[idx], b)) {}
+        else if (idx < yc) emit_block_arg_coerced(c, yargs[idx], qt, b);
         else buf_puts(b, qdflt);
       }
       buf_puts(b, as_expr ? "; " : ";\n");

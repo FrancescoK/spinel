@@ -23841,8 +23841,8 @@ static int ie_splice_aliases(Compiler *c, int id, const char *name, int recv) {
 }
 
 /* Is block `blk`'s parameter k the shared String handle? */
-static int block_param_is_handle(Compiler *c, int blk, int k) {
-  const char *bp = block_param_name(c, blk, k);
+static int block_param_is_handle(Compiler *c, int blk, int k, int n) {
+  const char *bp = block_param_at(c, blk, k, n);
   Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
   LocalVar *t = bs ? scope_local(bs, bp) : NULL;
   return t && t->type == TY_STRBUF && t->str_shared;
@@ -24360,10 +24360,10 @@ static void refuse_string_copies(Compiler *c, int id) {
       int shared;
       const char *kind = strvar_arg(c, av[k], &shared);
       if (!kind) continue;
-      if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k)) continue;
+      if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k, call_plain_argc(c, id))) continue;
       /* a parameter that is the shared handle takes the caller's, pulled in
          (yield_splice_handles) */
-      if (spliced && local_is_handle(c, av[k]) && block_param_is_handle(c, blk, k)) continue;
+      if (spliced && local_is_handle(c, av[k]) && block_param_is_handle(c, blk, k, call_plain_argc(c, id))) continue;
       if (dyn_block_appends(c, blk, k)) {
         char thr2[48]; snprintf(thr2, sizeof thr2, "`%s`", name);
         char why2[64]; snprintf(why2, sizeof why2, "through `%s`", name);

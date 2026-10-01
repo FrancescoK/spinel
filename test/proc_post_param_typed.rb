@@ -24,3 +24,20 @@ p ra([1, 2], 2) { |n = 0, t| t.size }
 p rh({ a: 1 }, 1) { |n = 0, t| t[:a] }
 p ro(Pt.new(7), 1) { |*q, t| t.v }
 p r1(+"c", 1) { |*q, t| [q, t] }
+# An appended String post is the caller's String, through the recursive
+# forwarder, a spliced yield and a proc's or lambda's call; a nil the same
+# method yields at another call site still builds.
+Z = "Z" * 40
+def ra(x, n, &b) = n > 0 ? ra(x, n - 1, &b) : yield(0, x)
+s = +"abc"; ra(s, 2) { |n = 0, t| t << Z }; p s.size
+s = +"abc"; ra(s, 2) { |*q, t| t << Z }; p s.size
+def y(x) = yield(0, x)
+s = +"abc"; y(s) { |n = 0, t| t << Z }; p s.size
+s = +"abc"; y(s) { |*q, t| t << Z }; p s.size
+pr = proc { |*q, t| t << Z }
+s = +"abc"; pr.call(1, s); p s.size
+la = ->(n, *q, t) { t << Z }
+s = +"abc"; la.call(1, s); p s.size
+def y2(x) = yield(0, x)
+s = +"abc"; y2(s) { |n = 0, t| t << Z if t }; p s.size
+p y2(nil) { |n = 0, t| t }
