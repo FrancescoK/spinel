@@ -13349,30 +13349,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     /* A chain `out << a << b` (or a single `<<`) on a boxed local or ivar:
        the value form stores each step back into that slot, before the next
        argument runs and only while the slot still holds the receiver, so the
-       statement is that form. A user class's own #<< keeps the single call
-       below, which its per-class dispatch needs. */
-    int user_shl = 0;
-    for (int k = 0; k < c->nclasses && !user_shl; k++)
-      if (comp_poly_arm_defines_n(c, k, "<<", 1)) user_shl = 1;
-    if (sp_streq(name, "<<") && argc == 1 && !user_shl && poly_shl_root_slot(c, recv) >= 0) {
+       statement is that form. A user class's own #<< goes through it too:
+       sp_poly_shl dispatches to it, and only a plain String receiver is
+       stored back. */
+    if (sp_streq(name, "<<") && argc == 1 && poly_shl_root_slot(c, recv) >= 0) {
       emit_indent(b, indent);
       buf_puts(b, "(void)("); emit_call(c, id, b); buf_puts(b, ");\n");
-      return 1;
-    }
-    if (sp_streq(name, "<<") && argc == 1 && nt_type(nt, recv) &&
-        (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
-         sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
-      /* the same rule as the value form: only while the slot still holds
-         the String the append was made to */
-      int was = ++g_tmp, got = ++g_tmp, cur = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "{ sp_RbVal _t%d = ", was); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", got); emit_call(c, id, b);
-      buf_printf(b, "; sp_RbVal _t%d = ", cur); emit_expr(c, recv, b);
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_STR && _t%d.tag == SP_TAG_STR && _t%d.v.s == _t%d.v.s) ",
-                 was, cur, cur, was);
-      emit_expr(c, recv, b);
-      buf_printf(b, " = _t%d; }\n", got);
       return 1;
     }
     /* Skip when a user class defines the name -- the poly value may be that
