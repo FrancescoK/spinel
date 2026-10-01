@@ -5129,7 +5129,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_puts(g_pre, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(g_pre, g_indent + 1);
-  buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
+  buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) { sp_pending_exc_obj = sp_exc_obj[sp_exc_top]; sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]); }\n");
   emit_indent(g_pre, g_indent);
   buf_puts(g_pre, "}\n");
   if (f_ifnone) {
