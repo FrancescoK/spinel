@@ -1175,12 +1175,14 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
      slot's default instead. */
   int is_cls_tok = strncmp(past_open_parens(txt), "sp_raise_cls(", 13) == 0;
   if (is_tok) {
-    if (target == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", txt);
-    else if (target == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", txt);
-    else if (target == TY_SYMBOL) buf_printf(b, "(sp_sym)sp_poly_to_i(%s)", txt);
-    else if (target == TY_INT || target == TY_BOOL) buf_printf(b, "sp_poly_to_i(%s)", txt);
-    else if (target == TY_POLY) buf_puts(b, txt);   /* already sp_RbVal */
-    else emit_unbox_text(c, target, txt, b);         /* pointer/object/hash slot */
+    switch (target) {
+    case TY_STRING: buf_printf(b, "sp_poly_to_s(%s)", txt); break;
+    case TY_FLOAT: buf_printf(b, "sp_poly_to_f(%s)", txt); break;
+    case TY_SYMBOL: buf_printf(b, "(sp_sym)sp_poly_to_i(%s)", txt); break;
+    case TY_INT: case TY_BOOL: buf_printf(b, "sp_poly_to_i(%s)", txt); break;
+    case TY_POLY: buf_puts(b, txt); break;               /* already sp_RbVal */
+    default: emit_unbox_text(c, target, txt, b); break;  /* pointer/object/hash slot */
+    }
   }
   else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
     buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
