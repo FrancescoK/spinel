@@ -233,6 +233,18 @@ SP_NORETURN SP_COLD void sp_raise_nil_cmp(int left_nil, const char *op, const ch
 SP_NORETURN SP_COLD void sp_raise_nil_float_op(int left_nil, const char *op);
 #define SP_FLOAT_NIL_CK(a, b, op) \
   if (SP_UNLIKELY(sp_float_is_nil(a) || sp_float_is_nil(b))) sp_raise_nil_float_op(sp_float_is_nil(a), op)
+/* The same check on the result `r = a op b` of + - * /: a nil operand, a
+   NaN, always makes r a NaN, so the operands are only looked at when r is
+   one. NaN arithmetic that involves no nil finds neither operand nil there
+   and goes on. In a loop that is one compare of r with itself, where the
+   operand test moved each operand out of its register. Not for % or **:
+   pow(nil, 0) is 1. */
+#define SP_FLOAT_NIL_CK_NAN(r, a, b, op) \
+  if (SP_UNLIKELY((r) != (r))) { SP_FLOAT_NIL_CK(a, b, op); }
+/* ... when only the right operand can be nil, which leaves the left one
+   free to be overwritten in place */
+#define SP_FLOAT_NIL_CK_NAN_R(r, b, op) \
+  if (SP_UNLIKELY((r) != (r)) && sp_float_is_nil(b)) sp_raise_nil_float_op(0, op)
 
 /* A divisor that is a power of two the C compiler can see (a literal the
    emitter wrote) makes Ruby's floored % a mask: for b = 2**k, `a % b` is
