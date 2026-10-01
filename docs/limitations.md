@@ -694,6 +694,10 @@ Not yet shared:
   variable; through a `yield` into a block the method keeps or a proc
   passed with `&`, one held by a block parameter or by a global or class
   variable;
+- through a splat of a local Array the program changes after its literal,
+  a String it holds that is no shared handle: a global or an instance
+  variable pushed into it, or the contents of another Array
+  (`s.replace(t)`);
 - through a proc, a `Method` (bound, unbound, or read out of a slot), a
   curried proc, a method `define_method` defines, `new` or `raise`, a
   String held by a block parameter, by a variable a block or proc captures,

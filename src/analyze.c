@@ -18118,6 +18118,7 @@ static void dyn_site_reach(Compiler *c, int n, int k, DynReach *r) {
 
 /* Pull the String variables dynamic site `n` hands a target that appends to
    them into the shared handle. */
+static int spread_demand_changed_local(Compiler *c, int splat);
 static int dyn_pull_site_args(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -18139,6 +18140,7 @@ static int dyn_pull_site_args(Compiler *c, int n) {
         any = !r.unlifted && (r.app || (r.unknown && dyn_any_appender(c)));
       }
       if (!any || x < 0) break;
+      changed |= spread_demand_changed_local(c, av[k]);
       int lits[64], nl = 0;
       if (nt_kind(nt, x) == NK_ArrayNode) lits[nl++] = x;
       else if (nt_kind(nt, x) == NK_LocalVariableReadNode) {
@@ -18618,6 +18620,99 @@ static int spread_param_appended(Compiler *c, int mi, int pj) {
    group member that only reads pulls nothing), and a class's initialize
    for its `new`: bound by value, that one is refused still
    (refuse_string_copies), since `new` does not share a String yet. */
+/* Is local Array `xn` changed after the literal it is written from: a call
+   on it that mutates an Array (`s << w`, `s.clear`, `s.replace(t)`), or
+   handed to a call that may? Its layout is then the run time's, not the
+   literal's, and what it holds is whatever was stored into it. */
+static int an_local_array_changed(Compiler *c, const char *xn, Scope *xs) {
+  static const char *const MUT[] = { "<<", "push", "append", "concat", "insert", "unshift", "prepend",
+    "replace", "clear", "[]=", "pop", "shift", "delete", "delete_at", "delete_if", "keep_if", "fill",
+    "slice!", NULL };
+  const NodeTable *nt = c->nt;
+  if (!xn || !xs) return 1;
+  for (int u = comp_scall_first(c, (int)(xs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    const char *un = nt_str(nt, u, "name");
+    int r = nt_ref(nt, u, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && nt_str(nt, r, "name") &&
+        sp_streq(nt_str(nt, r, "name"), xn) && comp_scope_of(c, r) == xs && un) {
+      if (un[0] && un[strlen(un) - 1] == '!') return 1;
+      for (int i = 0; MUT[i]; i++) if (sp_streq(un, MUT[i])) return 1;
+    }
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++)
+      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+          sp_streq(nt_str(nt, av[k], "name"), xn)) return 1;
+  }
+  return 0;
+}
+int an_local_array_changed_x(Compiler *c, const char *xn, Scope *xs) { return an_local_array_changed(c, xn, xs); }
+/* ...and does it store a String the container rule cannot make the handle:
+   another Array's contents (`replace`, `concat`), or a global, a class
+   variable, an instance variable, a block's parameter pushed into it? */
+int an_local_array_stores_unshared(Compiler *c, const char *xn, Scope *xs) {
+  const NodeTable *nt = c->nt;
+  if (!xn || !xs) return 1;
+  for (int u = comp_scall_first(c, (int)(xs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    const char *un = nt_str(nt, u, "name");
+    int r = nt_ref(nt, u, "receiver");
+    if (!un || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || !nt_str(nt, r, "name") ||
+        !sp_streq(nt_str(nt, r, "name"), xn) || comp_scope_of(c, r) != xs) continue;
+    if (sp_streq(un, "replace") || sp_streq(un, "concat")) return 1;
+    if (!(sp_streq(un, "<<") || sp_streq(un, "push") || sp_streq(un, "append") || sp_streq(un, "unshift") ||
+          sp_streq(un, "prepend") || sp_streq(un, "insert") || sp_streq(un, "[]="))) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      TyKind at = comp_ntype(c, av[k]);
+      if (at != TY_STRING && at != TY_STRBUF && at != TY_POLY) continue;
+      if (ak == NK_GlobalVariableReadNode || ak == NK_ClassVariableReadNode || ak == NK_InstanceVariableReadNode)
+        return 1;
+      if (ak == NK_LocalVariableReadNode) {
+        const char *vn = nt_str(nt, av[k], "name");
+        LocalVar *lv = vn ? scope_local(xs, vn) : NULL;
+        if (lv && lv->is_block_param) return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* A splat of a local Array the program changes after its literal, into a
+   parameter that appends: the container rule makes the Array hold the
+   handle of every String stored into it (promote_shared_stored_strings), so
+   the splat hands over the caller's Strings whatever they are by then.
+   Answers 1 when it changed anything. */
+static int spread_demand_changed_local(Compiler *c, int splat) {
+  const NodeTable *nt = c->nt;
+  int x = nt_ref(nt, splat, "expression");
+  if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) return 0;
+  const char *xn = nt_str(nt, x, "name");
+  Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+  if (!xs || !an_local_array_changed(c, xn, xs)) return 0;
+  return strbuf_demand_container_stores(c, xn, xs);
+}
+
+/* The first scope from mi on along its name's chain that has a rest, or -1,
+   memoized in rf (-2: not asked): each chain is walked once a pass. */
+static int spread_rest_from(Compiler *c, int *rf, int mi) {
+  if (mi < 0) return -1;
+  if (rf[mi] != -2) return rf[mi];
+  int r = c->scopes[mi].rest_idx >= 0 ? mi : -1;
+  if (r < 0) {
+    /* walk to the first answered or rest scope, then fill the stretch */
+    int k = g_dyn.snext[mi];
+    while (k >= 0 && rf[k] == -2 && c->scopes[k].rest_idx < 0) k = g_dyn.snext[k];
+    r = k < 0 ? -1 : rf[k] != -2 ? rf[k] : k;
+    for (int j = mi; j >= 0 && j != k; j = g_dyn.snext[j]) rf[j] = r;
+  }
+  rf[mi] = r;
+  return r;
+}
+
 static int promote_spread_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -18625,7 +18720,11 @@ static int promote_spread_string_args(Compiler *c) {
   /* per scope, the parameters it appends to (bit 31: answered), asked once
      a pass: every call of a name visits every method of it */
   unsigned *app = (unsigned *)calloc((size_t)c->nscopes + 1, sizeof(unsigned));
-  if (!app) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* per scope, the first scope of its name, itself or later, that has a
+     rest (-1 none): a call without a splat follows only those */
+  int *rest_from = (int *)malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!app || !rest_from) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i <= c->nscopes; i++) rest_from[i] = -2;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
@@ -18641,7 +18740,10 @@ static int promote_spread_string_args(Compiler *c) {
       int ci = nt_str(nt, r, "name") ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
       ctor = ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
     }
-    for (int mi = ctor >= 0 ? ctor : dyn_scopes_named(c, nm); mi >= 0; mi = ctor >= 0 ? -1 : g_dyn.snext[mi]) {
+    int first = ctor >= 0 ? ctor : dyn_scopes_named(c, nm);
+    if (!splat && ctor < 0) first = spread_rest_from(c, rest_from, first);
+    for (int mi = first; mi >= 0;
+         mi = ctor >= 0 ? -1 : splat ? g_dyn.snext[mi] : spread_rest_from(c, rest_from, g_dyn.snext[mi])) {
       Scope *m = &c->scopes[mi];
       if (!splat && m->rest_idx < 0) continue;
       if (!(app[mi] & 0x80000000u)) {
@@ -18649,15 +18751,20 @@ static int promote_spread_string_args(Compiler *c) {
         for (int pj = 0; pj < m->nparams && pj < 31; pj++)
           if (spread_param_appended(c, mi, pj)) app[mi] |= 1u << pj;
       }
-      for (int pj = 0; pj < m->nparams && pj < 31; pj++) {
-        if (!(app[mi] & (1u << pj)) || (!splat && pj != m->rest_idx)) continue;
+      /* without a splat, only the rest */
+      for (int pj = splat ? 0 : m->rest_idx; pj < (splat ? m->nparams : m->rest_idx + 1) && pj < 31; pj++) {
+        if (!(app[mi] & (1u << pj))) continue;
         int out[32], direct[32];
         int k = spread_string_reads(c, m, n, pj, out, direct, 32);
         for (int i = 0; i < k; i++) changed |= dyn_pull_arg(c, out[i], direct[i]);
+        /* a splatted local Array the program changes holds what was stored */
+        for (int i = 0; splat && i < ac; i++)
+          if (nt_kind(nt, av[i]) == NK_SplatNode) changed |= spread_demand_changed_local(c, av[i]);
       }
     }
   }
   free(app);
+  free(rest_from);
   dyn_memo_stale();
   return changed;
 }
