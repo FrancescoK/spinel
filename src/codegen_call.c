@@ -23536,6 +23536,7 @@ static int ie_arg_aliases(Compiler *c, int a) {
    The call's String variable is pulled into it, but for one that cannot
    be: a block's parameter, a global or class variable, an ivar that is no
    handle. A spliced call is emitted by the inliner, which asks this too. */
+static void refuse_rest_yield_copies(Compiler *c, int id, int t);
 void refuse_yield_handle_args(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -23545,6 +23546,7 @@ void refuse_yield_handle_args(Compiler *c, int id) {
   if (!ym || !(ym->is_lowered_yield || ym->yields) ||
       !refuse_call_binds(c, refuse_scope_params(c, ym), id, 0, 0)) return;
   if (nt_int(nt, id, "node_line", 0) > 0) g_refuse_call = id;
+  refuse_rest_yield_copies(c, id, ymi);
   for (int j = 0; j < ym->nparams && j < 16; j++) {
     LocalVar *q = ym->pnames[j] ? scope_local(ym, ym->pnames[j]) : NULL;
     if (!q || q->type != TY_STRBUF || !q->str_shared) continue;
@@ -23691,14 +23693,15 @@ void refuse_super_splat(Compiler *c, int id, int target) {
   int sv = splat_string_var(c, av, ac, &fs);
   if (sv < 0) return;
   Scope *m = &c->scopes[target];
-  for (int j = fs; j < m->nparams && j < fs + 16; j++) {
+  /* every position the target binds, its rest's past the bits too (an
+     answer it cannot give is refused, fwd_param_appends_at) */
+  int end = m->rest_idx >= 0 && m->rest_idx + 17 > m->nparams ? m->rest_idx + 17 : m->nparams;
+  for (int j = fs; j < end; j++) {
     if (!fwd_param_appends_at(c, target, j)) continue;
-    int shared;
-    const char *kind = strvar_arg(c, sv, &shared);
+    const char *pn = j < m->nparams ? m->pnames[j] : m->pnames[m->rest_idx];
     char mt[96]; snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : "?");
     char why[96]; snprintf(why, sizeof why, "through a splat into `super`");
-    (void)kind;
-    refuse_string_copy(c, sv, mt, m->pnames[j] ? m->pnames[j] : "?", "a splat into `super`", why);
+    refuse_string_copy(c, sv, mt, pn ? pn : "?", "a splat into `super`", why);
   }
 }
 
@@ -23709,8 +23712,11 @@ void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
   int fs;
   int sv = splat_string_var(c, yv, yc, &fs);
   if (sv < 0) return;
-  for (int k = fs; k < fs + 16 && k < 16; k++) {
-    if (!dyn_block_appends(c, blk, k)) continue;
+  for (int k = fs; k < fs + 64; k++) {
+    /* past the masks' 16 positions, a parameter the block binds there (or
+       its rest) is refused unasked */
+    if (k >= 16 && !proc_param_name(c, blk, k) && !proc_has_rest(c, blk)) break;
+    if (k < 16 && !dyn_block_appends(c, blk, k)) continue;
     refuse_string_copy(c, sv, "a block", proc_param_name(c, blk, k), "a splat into a yield",
                        "through a splat into a yield");
   }
@@ -23743,6 +23749,53 @@ static int refuse_fwd_target(Compiler *c, int id, const char *name) {
   return mi >= 0 ? mi : comp_method_index(c, name);
 }
 
+/* The position method t's `yield(..., *rest)` lays its rest from, or -1. */
+static int fwd_rest_yield_start(Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[t];
+  const char *rn = m->rest_idx >= 0 ? m->pnames[m->rest_idx] : NULL;
+  if (!rn || !m->yields) return -1;
+  for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
+    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != m) continue;
+    int a = nt_ref(nt, y, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      if (nt_kind(nt, av[k]) != NK_SplatNode) continue;
+      int x = nt_ref(nt, av[k], "expression");
+      if (x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode && nt_str(nt, x, "name") &&
+          sp_streq(nt_str(nt, x, "name"), rn)) return k;
+      break;
+    }
+  }
+  return -1;
+}
+
+/* A String gathered into the rest of a method that yields it with a splat
+   (`def y(*r) = yield(*r)`) to the call's literal block, which appends to
+   the parameter it lands on: the element is a copy, as for any splat into a
+   yield. Asked for spliced and lowered calls alike (refuse_yield_handle_args). */
+static void refuse_rest_yield_copies(Compiler *c, int id, int t) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (t < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return;
+  int ys = fwd_rest_yield_start(c, t);
+  if (ys < 0) return;
+  Scope *m = &c->scopes[t];
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int pos = ac;
+  while (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
+  for (int k = m->rest_idx; k < pos - m->npost_rest; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+    int shared;
+    if (!strvar_arg(c, av[k], &shared) || shared || local_is_handle(c, av[k])) continue;
+    int bk = ys + (k - m->rest_idx);
+    if (bk < 16 ? !dyn_block_appends(c, blk, bk) : !proc_param_name(c, blk, bk) && !proc_has_rest(c, blk)) continue;
+    refuse_string_copy(c, av[k], "a block", proc_param_name(c, blk, bk), "a splat into a yield",
+                       "through a splat into a yield");
+  }
+}
+
 /* A method that forwards its rest (`def w(*a) = m(*a)`, `*`, `...`) to a
    parameter that appends, or hands a POLY parameter on to one (`def m(p,
    k:) = super`, called with `**h`): the call's String variable is pulled
@@ -23758,24 +23811,30 @@ static void refuse_forwarded_args(Compiler *c, int id, const char *name) {
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int pos = ac;
   while (pos > 0 && (nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode || nt_kind(nt, av[pos - 1]) == NK_BlockArgumentNode)) pos--;
-  for (int k = 0; k < pos && k < 16; k++) {
+  for (int k = 0; k < pos; k++) {
     if (nt_kind(nt, av[k]) == NK_SplatNode) break;
     int shared;
     const char *kind = strvar_arg(c, av[k], &shared);
     if (!kind || ctor_arg_shared(c, av[k], 0)) continue;
-    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && !sp_streq(kind, "a block's parameter") &&
-        !sp_streq(kind, "a variable a block or a proc captures")) continue;
     const char *pn = NULL, *thr = NULL;
+    int r, pulled;
     if (m->rest_idx >= 0 && k >= m->rest_idx) {
-      if (k >= pos - m->npost_rest || !fwd_rest_elem_appends(c, t, k - m->rest_idx)) continue;
+      if (k >= pos - m->npost_rest || !(r = fwd_rest_elem_appends(c, t, k - m->rest_idx))) continue;
       pn = m->pnames[m->rest_idx] && m->pnames[m->rest_idx][0] != '_' ? m->pnames[m->rest_idx] : "*";
       thr = "the rest it hands on";
+      pulled = r > 0 && k - m->rest_idx < 16;
     }
     else {
-      if (k >= m->nparams || !fwd_poly_param_appends(c, t, k)) continue;
+      if (k >= m->nparams || !(r = fwd_poly_param_appends(c, t, k))) continue;
       pn = m->pnames[k];
       thr = "a parameter it hands on";
+      pulled = r > 0;
     }
+    /* a local or a parameter the passes pulled into the handle goes over as
+       it; one past the 16 positions, or behind an answer cut short, was not */
+    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && !sp_streq(kind, "a block's parameter") &&
+        !sp_streq(kind, "a variable a block or a proc captures") && (pulled || local_is_handle(c, av[k])))
+      continue;
     char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
     char why[96]; snprintf(why, sizeof why, "from %s", kind);
     char through[96]; snprintf(through, sizeof through, "%s", thr);

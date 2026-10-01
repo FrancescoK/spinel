@@ -1072,6 +1072,21 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
+	t=test/reject/string_forward_rest_past16.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/frp.c" >"$$tmp/frp.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String forwarded past 16 positions compiled)"; ok=0; \
+	else grep -q "through the rest it hands on" "$$tmp/frp.out" || \
+	  { echo "reject-test: FAIL (a String forwarded past 16 positions rejected without saying why)"; sed -n 1,5p "$$tmp/frp.out"; ok=0; }; fi; \
+	t=test/reject/string_forward_poly_chain.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fpc.c" >"$$tmp/fpc.out" 2>&1; then \
+	  echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound compiled)"; ok=0; \
+	else grep -q "through a parameter it hands on" "$$tmp/fpc.out" || \
+	  { echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound rejected without saying why)"; sed -n 1,5p "$$tmp/fpc.out"; ok=0; }; fi; \
+	t=test/reject/string_rest_splat_yield.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rsy.c" >"$$tmp/rsy.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String gathered into a rest yielded with a splat compiled)"; ok=0; \
+	else grep -q "through a splat into a yield" "$$tmp/rsy.out" || \
+	  { echo "reject-test: FAIL (a String gathered into a rest yielded with a splat rejected without saying why)"; sed -n 1,5p "$$tmp/rsy.out"; ok=0; }; fi; \
 	t=test/reject/toplevel_include_yield_ivar_target.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tiv.c" >"$$tmp/tiv.out" 2>&1; then \
 	  echo "reject-test: FAIL (an included method assigning an ivar as a multiple-assignment target compiled)"; ok=0; \
