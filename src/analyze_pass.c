@@ -2555,6 +2555,34 @@ static int masgn_nested_poly(Compiler *c, Scope *ms, int tgt) {
   return changed;
 }
 
+/* Whether local `nm` of scope `sc` names a row of a narrowed table: one of
+   its writes reads an element (`[]`, `at`) of an Integer or Float table, or
+   copies a local that does (`row = @t[k]; al = row`). A copy is the same
+   row, and the direct-alias propagation carries its type back to `row`, so
+   widening the copy made `row` a converted copy as well. */
+static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope *sc, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 8) return 0;
+  for (int r = lw_index_first(lw, nm, (int)(sc - c->scopes)); r >= 0; r = lw->next[r]) {
+    int w = lw->node[r];
+    const char *wn = nt_str(nt, w, "name");
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !wn || !sp_streq(wn, nm) ||
+        comp_scope_of(c, w) != sc) continue;
+    int wv = nt_ref(nt, w, "value");
+    if (wv >= 0 && nt_kind(nt, wv) == NK_LocalVariableReadNode) {
+      const char *src = nt_str(nt, wv, "name");
+      if (src && !sp_streq(src, nm) && table_row_alias(c, lw, src, sc, depth + 1)) return 1;
+      continue;
+    }
+    const char *wcn = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? nt_str(nt, wv, "name") : NULL;
+    int wr = wcn ? nt_ref(nt, wv, "receiver") : -1;
+    TyKind wrt = wr >= 0 ? infer_type(c, wr) : TY_UNKNOWN;
+    if (wcn && (sp_streq(wcn, "[]") || sp_streq(wcn, "at")) &&
+        (wrt == TY_INT_ARRAY_ARRAY || wrt == TY_FLOAT_ARRAY_ARRAY)) return 1;
+  }
+  return 0;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -3722,7 +3750,8 @@ int infer_write_types(Compiler *c) {
         if (lit >= 0 && !proc_literal_calls_in_sight(c, lit)) { lv->type = TY_POLY; continue; }
       }
       /* A row read out of a narrowed table (`row = @t[k]` over an Integer or
-         Float table) is that row, not a copy: a boxed value pushed into it is
+         Float table), or a local copied from one (`al = row`, table_row_alias),
+         is that row, not a copy: a boxed value pushed into it is
          unboxed as the typed push unboxes one, raising on a foreign element,
          and a local narrowed from the table keeps its kind the same way (its
          oa_pin). Widened to the general Array, the read became a converted
@@ -3730,20 +3759,7 @@ int infer_write_types(Compiler *c) {
          --int-overflow=promote a computed Integer is boxed, so `row << k * 10`
          filled nothing. */
       if (is_push && vt == TY_POLY && ty_is_array(lv->type) && lv->type != TY_POLY_ARRAY) {
-        int row_alias = 0;
-        for (int _r = lw_index_first(&lw_ix, rnm, (int)(lsc - c->scopes)); _r >= 0 && !row_alias; _r = lw_ix.next[_r]) {
-          int w = lw_ix.node[_r];
-          const char *wn = nt_str(nt, w, "name");
-          if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !wn || !sp_streq(wn, rnm) ||
-              comp_scope_of(c, w) != lsc) continue;
-          int wv = nt_ref(nt, w, "value");
-          const char *wcn = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? nt_str(nt, wv, "name") : NULL;
-          int wr = wcn ? nt_ref(nt, wv, "receiver") : -1;
-          TyKind wrt = wr >= 0 ? infer_type(c, wr) : TY_UNKNOWN;
-          row_alias = wcn && (sp_streq(wcn, "[]") || sp_streq(wcn, "at")) &&
-                      (wrt == TY_INT_ARRAY_ARRAY || wrt == TY_FLOAT_ARRAY_ARRAY);
-        }
-        if (row_alias) continue;
+        if (table_row_alias(c, &lw_ix, rnm, lsc, 0)) continue;
       }
       slot = &lv->type;
       slot_reset = !lv->is_param && !lv->is_block_param && !lv->rbs_seeded;
