@@ -146,14 +146,77 @@ static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) 
    the yielded variable itself (see emit_block_invoke's alias binding), or the
    append lands in the parameter's copy and the yielded string never sees it
    (`fill(buf) { |s| s << "z" }` left buf empty). */
-static int block_param_wants_alias(Compiler *c, int blk, int k) {
+/* The block a spliced block's own `yield` reaches, per enclosing inline: a
+   literal block passed to an inlined method yields to the block that was
+   current where it is written (g_yield_block_fallback while its body is
+   spliced). Kept as a stack, since the fallback names one level only, and
+   `def run2(x) = run(x) { |u| yield u }` asks it of the block a level out. */
+static struct { int blk, target; const char *owner; } g_ytgt[SP_INLINE_DEPTH_MAX + 1];
+static int g_nytgt;
+static int yield_target_of(int blk, const char **owner) {
+  for (int i = g_nytgt - 1; i >= 0; i--)
+    if (g_ytgt[i].blk == blk) { *owner = g_ytgt[i].owner; return g_ytgt[i].target; }
+  return -1;
+}
+/* Does the subtree under `id` yield a plain read of `name` at a position
+   whose parameter of block `target` wants the alias? A `blk.call(...)` on
+   the &block parameter of the method the block is written in (`owner`)
+   splices as that yield does. */
+static int block_param_wants_alias_at(Compiler *c, int blk, int k, int depth);
+static int subtree_yields_local_to_alias(Compiler *c, int id, const char *name, int target,
+                                         const char *owner, int depth) {
   const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int yields = k == NK_YieldNode;
+  if (!yields && k == NK_CallNode && owner) {
+    int r = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    yields = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && cn && sp_streq(cn, "call") &&
+             nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), owner);
+  }
+  if (yields) {
+    int aa = nt_ref(nt, id, "arguments"); int an = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      if (nt_kind(nt, av[j]) != NK_LocalVariableReadNode) continue;
+      const char *vn = nt_str(nt, av[j], "name");
+      if (vn && sp_streq(vn, name) && block_param_wants_alias_at(c, target, j, depth + 1)) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_yields_local_to_alias(c, nt_ref_at(nt, id, i), name, target, owner, depth)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, id, i, &n);
+    for (int q = 0; q < n; q++)
+      if (subtree_yields_local_to_alias(c, a[q], name, target, owner, depth)) return 1;
+  }
+  return 0;
+}
+static int block_param_wants_alias(Compiler *c, int blk, int k) {
+  return block_param_wants_alias_at(c, blk, k, 0);
+}
+static int block_param_wants_alias_at(Compiler *c, int blk, int k, int depth) {
+  const NodeTable *nt = c->nt;
+  if (blk < 0 || depth > SP_INLINE_DEPTH_MAX) return 0;
   const char *bp = block_param_name(c, blk, k);
   if (!bp) return 0;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
   if (!lv || lv->type != TY_STRING || (lv->is_cell && !lv->inline_alias)) return 0;
-  if (!subtree_mutates_local(nt, nt_ref(nt, blk, "body"), bp)) return 0;
+  /* Mutated in place, or yielded on to a block that is: `run(x) { |u|
+     yield u }` inside a method whose own block appends hands that block
+     the parameter, which is a copy unless it aliases the yielded variable
+     in turn (each level's copy kept the append from the one before). */
+  if (!subtree_mutates_local(nt, nt_ref(nt, blk, "body"), bp)) {
+    const char *owner = NULL;
+    int tgt = yield_target_of(blk, &owner);
+    if (tgt < 0 || !subtree_yields_local_to_alias(c, nt_ref(nt, blk, "body"), bp, tgt, owner, depth))
+      return 0;
+  }
   for (int w = 0; w < nt->count; w++) {
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOperatorWriteNode &&
@@ -594,6 +657,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback = saved_block;
   g_yield_block_fallback_nren = saved_bnren;
   g_yield_block_fallback_param_name = saved_bown;
+  /* a literal block yields to the block current here (a forwarded one keeps
+     the target it was given where it was written) */
+  int pushed_ytgt = 0;
+  if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
+    g_ytgt[g_nytgt].blk = block; g_ytgt[g_nytgt].target = saved_block;
+    g_ytgt[g_nytgt].owner = saved_bpn;
+    g_nytgt++; pushed_ytgt = 1;
+  }
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
   /* the block being captured is caller code: record the caller's self so
@@ -923,6 +994,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  if (pushed_ytgt) g_nytgt--;
   g_block_nren = saved_bnren;
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_owner_param_name = saved_bown;
