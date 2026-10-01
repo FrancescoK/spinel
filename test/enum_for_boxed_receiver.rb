@@ -15,3 +15,14 @@ p vals[1].to_enum.map { |x| x.to_s * 2 }
 e = vals[0].enum_for
 p e.next, e.next
 p Parts.new(3, 4).enum_for.to_a
+
+# a Struct's each, an endless Enumerator (not drained), and values with no
+# each, which raise as CRuby does
+S = Struct.new(:a, :b)
+class NoEach; end
+endless = Enumerator.new { |y| n = 0; loop { y << (n += 1) } }
+[S.new(1, 2), endless, "str", nil, NoEach.new, 5].each do |v|
+  p v.enum_for.first(2)
+rescue NoMethodError => e
+  p e.message[0, 26]
+end

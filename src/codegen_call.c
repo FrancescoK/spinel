@@ -7149,6 +7149,7 @@ static int poly_num_arm(const char *name, int argc) {
    only one of them runs. It declines where the emission is a raise token,
    which adds nothing over the default already there, and where the slot the
    switch assigns is typed for something the builtin answer is not. */
+static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b);   /* defined at emit_call */
 static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
@@ -9270,22 +9271,24 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               obj_default_done = 1;
             } }
         } }
-      /* to_s / inspect are universal: a poly value that is a builtin scalar
-         (int, float, string, ...) rather than one of the enumerated user
-         classes still answers them. Without a default arm the result stayed
-         the empty-string default, so `@x.to_s` on a poly-widened int printed
-         blank. Route the fallthrough through the runtime poly converter. */
       /* `x.enum_for` on a boxed value, rewritten to the generator helper the
          classes with a yielding each carry: any other value is enumerated
          as the builtin it is */
       if (!obj_default_done && sp_streq(name, "__to_enum_each") &&
           (ret == TY_POLY || ret == TY_ENUMERATOR)) {
+        char ev[24]; snprintf(ev, sizeof ev, "_t%d", tv);
         buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) buf_printf(b, "sp_box_obj(sp_Enumerator_new_from(_t%d), SP_BUILTIN_ENUMERATOR)", tv);
-        else buf_printf(b, "sp_Enumerator_new_from(_t%d)", tv);
+        if (ret == TY_POLY) buf_puts(b, "sp_box_obj(");
+        emit_poly_enum_for(c, ev, b);
+        if (ret == TY_POLY) buf_puts(b, ", SP_BUILTIN_ENUMERATOR)");
         buf_puts(b, "; break;");
         obj_default_done = 1;
       }
+      /* to_s / inspect are universal: a poly value that is a builtin scalar
+         (int, float, string, ...) rather than one of the enumerated user
+         classes still answers them. Without a default arm the result stayed
+         the empty-string default, so `@x.to_s` on a poly-widened int printed
+         blank. Route the fallthrough through the runtime poly converter. */
       if (!obj_default_done && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
         const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
         buf_printf(b, " default: _t%d = ", tr);
@@ -24658,10 +24661,33 @@ static void refuse_string_copies(Compiler *c, int id) {
   }
 }
 
+/* `x.enum_for` on the boxed value `val`, for what no generator helper
+   serves: a class of the program's own with an each of its own and no
+   helper (a Struct's) is enumerated through its to_a, any other value by
+   sp_poly_enum_for_each, which raises NoMethodError for a value with no
+   each. */
+static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _e%d = %s; (_e%d.tag == SP_TAG_OBJ && (0", t, val, t);
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].instantiated && comp_method_in_chain(c, k, "each", NULL) >= 0 &&
+        comp_method_in_chain(c, k, "__to_enum_each", NULL) < 0)
+      buf_printf(b, " || _e%d.cls_id == %d", t, k);
+  buf_printf(b, ")) ? sp_Enumerator_new_from(_e%d) : sp_poly_enum_for_each(_e%d); })", t, t);
+}
 void emit_call(Compiler *c, int id, Buf *b) {
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
+  { const char *pn = nt_str(c->nt, id, "name");
+    int pr = nt_ref(c->nt, id, "receiver");
+    if (pn && pr >= 0 && sp_streq(pn, "__poly_enum_for")) {
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_boxed(c, pr, &rb);
+      emit_poly_enum_for(c, rb.p ? rb.p : "sp_box_nil()", b);
+      free(rb.p);
+      return;
+    } }
   /* Module#name answers a frozen String in CRuby; the many arms below spell
      it as a static name, so the result is wrapped here once */
   { static int in_name = 0;
