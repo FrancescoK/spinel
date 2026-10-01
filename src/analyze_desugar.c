@@ -2981,6 +2981,16 @@ int desugar_dynamic_send(Compiler *c) {
     int splat_src = -1;
     if (argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode) {
       int se = nt_ref(nt, argv[0], "expression");
+      if (se < 0) {
+        /* an anonymous `*` (a `...` forwarder's `__send__(*, **, &)`): the
+           rest local the parameter registration named for it */
+        se = nt_new_node(nt, "LocalVariableReadNode");
+        if (se < 0) continue;
+        nt_node_set_str(nt, se, "name", "__anon_rest");
+        comp_grow_node_arrays(c);
+        c->nscope[se] = c->nscope[id];
+        args = nt_ref(nt, id, "arguments"); argv = nt_arr(nt, args, "arguments", &argc);   /* realloc-safe */
+      }
       NodeKind sk = se >= 0 ? nt_kind(nt, se) : NK_NONE;
       if (sk != NK_LocalVariableReadNode && sk != NK_InstanceVariableReadNode) continue;
       splat_src = se;
@@ -5612,6 +5622,21 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   }
   return fwd_class_value_new_shape(nt);
 }
+/* whether a def of `name` takes a *rest or **rest: a forward to it wants the
+   splat channels, where the direct model (one synthesized parameter per
+   forwarded argument) binds the first argument to the rest slot */
+static int def_has_rest_by_name(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "DefNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int pn = nt_ref(nt, id, "parameters");
+    if (pn < 0) continue;
+    if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode") ||
+        fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) return 1;
+  }
+  return 0;
+}
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);
   if (id < 0) return -1;
@@ -5619,6 +5644,17 @@ static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   nt_node_set_int(nt, id, "node_file", nt_int(nt, like, "node_file", 0));
   nt_node_set_int(nt, id, "node_col", nt_int(nt, like, "node_col", 0));
   return id;
+}
+/* is there a def of `name` at all? def_shape_by_name answers -1 both for
+   none and for a `...` forwarder's own def (which takes its target's
+   shape), and only the first is a callee no def describes */
+static int def_exists_by_name(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "DefNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && sp_streq(nm, name)) return 1;
+  }
+  return 0;
 }
 static int any_call_passes_block(const NodeTable *nt, const char *name) {
   for (int id = 0; id < nt->count; id++) {
@@ -6176,6 +6212,18 @@ int desugar_anon_block_param(Compiler *c) {
   return changed;
 }
 
+/* does any call of `name` pass keywords (a trailing `k: v` / `**h`)? */
+static int any_call_passes_keywords(const NodeTable *nt, const char *name) {
+  for (int id = 0; id < nt->count; id++) {
+    if (!fwd_node_is(nt, id, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name)) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac >= 1 && av && fwd_node_is(nt, av[ac - 1], "KeywordHashNode")) return 1;
+  }
+  return 0;
+}
 int desugar_forwarding_to_rest_callee(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6213,10 +6261,25 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
       int sh = fwd_target_shape(nt, def, id, is_super);
       if (sh == FWD_BUILTIN) {
         int arity = fwd_fixed_call_arity(nt, dname);
-        if (arity == -2) { ok = 0; break; }
-        if (arity < 0)
-          unsupported_feature(c, id, "`...` forwarded into a builtin method, from calls that do not all "
-                                     "pass the same number of positional arguments");
+        int via = cn && (sp_streq(cn, "__send__") || sp_streq(cn, "send") ||
+                         sp_streq(cn, "public_send") || sp_streq(cn, "call"));
+        if (arity < 0 && via) {
+          /* A callee that takes anything and sorts it out itself -- a proc's
+             `.call`, a `__send__` (the deprecation proxy's method_missing) --
+             whose callers disagree on their count or do not exist: it has no
+             parameter list to read the channels from, so they are the ones
+             this method's callers use, forwarded anonymously (the positional
+             channel always, keywords when a caller passes them, the block
+             when one passes a block). A fixed-arity builtin keeps the
+             refusal below. */
+          sh = 1 | (any_call_passes_keywords(nt, dname) ? 2 : 0) | (any_call_passes_block(nt, dname) ? 4 : 0);
+        }
+        else {
+          if (arity == -2) { ok = 0; break; }
+          if (arity < 0)
+            unsupported_feature(c, id, "`...` forwarded into a builtin method, from calls that do not all "
+                                       "pass the same number of positional arguments");
+        }
       }
       int recv = is_super ? -1 : nt_ref(nt, id, "receiver");
       if (is_new && sh == -2 && recv >= 0 && !fwd_node_is(nt, recv, "SelfNode") &&
