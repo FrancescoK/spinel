@@ -44,6 +44,13 @@ o << "+"
 [1].each { o << "b" }
 p o
 
+# a boxed element held as a shared handle: `s = +s` on a frozen one
+xs = [1, "s"]
+b = xs[1]
+b = +b
+b << "x"
+p b
+
 def build(status_lines, status)
   out = +(status_lines[status] || "HTTP/1.1 #{status} Unknown\r\n")
   { "a" => "1", "b" => "2" }.each { |key, val| out << key << ": " << val << "\r\n" }

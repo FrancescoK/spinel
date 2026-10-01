@@ -633,17 +633,20 @@ pass the same kind).
 
 A local, ivar, Hash value or Array element that holds more than one kind of
 value keeps a String in it as a plain value, not as the shared handle a
-String-only local gets. `<<` on it builds the longer String and stores it back
-into that one slot, so the result is right there, but another name for the
-same String does not see the change:
+String-only slot gets. `<<` on it builds the longer String instead of
+changing the old one. A `<<` statement (or a chain of them) stores the result
+back into its slot, so that slot is right, but another name for the same
+String does not see the change; and a `<<` whose value is used (`r = (x << y)`,
+`p(x << y)`) does not store it back at all:
 
 ```ruby
 h = {}
 [1].each { |i| h[i] = "v#{i}" }
-o = +h[1]     # o is a slot of its own, typed by what else it holds
+h[2] = 5          # the values are now Strings and Integers
+o = +h[1]
 o << "+"
-p o           # "v1+" in both
-p h           # {1 => "v1+"} in CRuby, {1 => "v1"} in Spinel
+p o               # "v1+" in both
+p h               # {1 => "v1+", 2 => 5} in CRuby, {1 => "v1", 2 => 5} in Spinel
 ```
 
 #### A String a method appends to is not yet shared through some dynamic calls

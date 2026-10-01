@@ -4569,9 +4569,15 @@ static inline sp_String *sp_String_uplus(sp_String *h) {
 static inline const char *sp_str_uplus(const char *s) {
   return sp_str_is_frozen_val(s) ? sp_str_dup(s) : s;
 }
-/* +v on a boxed value: the same for a String; anything else is itself */
+/* +v on a boxed value: the same for a String, whether it is boxed as a
+   plain value or as a shared handle; anything else is itself */
 static sp_RbVal sp_poly_uplus(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s)) return sp_box_str(sp_str_dup(v.v.s));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    sp_String *h = (sp_String *)v.v.p;
+    sp_String *n = sp_String_uplus(h);
+    return n == h ? v : sp_box_obj((void *)n, SP_BUILTIN_STRBUF);
+  }
   return v;
 }
 static sp_RbVal sp_poly_neg(sp_RbVal a) {
