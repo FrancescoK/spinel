@@ -15664,8 +15664,10 @@ static int promote_shared_stored_strings(Compiler *c) {
     int rrecv = nt_ref(nt, wv, "receiver");
     if (rrecv < 0) continue;
     TyKind rrt = infer_type(c, rrecv);
-    if (!ty_is_object(rrt)) continue;
-    int rcid = ty_object_class(rrt);
+    /* a class method's reader (`C.x`, and the getter a class body's read
+       goes through) hands out the class's civ_ slot the same way */
+    if (!ty_is_object(rrt) && rrt != TY_CLASS) continue;
+    int rcid = rrt == TY_CLASS ? -1 : ty_object_class(rrt);
     const char *mn = nt_str(nt, wv, "name");
     if (!mn) continue;
     char ivbuf[300]; int defc = rcid;
