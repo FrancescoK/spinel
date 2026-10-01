@@ -1136,7 +1136,7 @@ reject-test: $(SPINEL)
 	for t in test/reject/macro_*.rb; do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mc.c" >"$$tmp/mc.out" 2>&1; then \
 	  echo "reject-test: FAIL ($$t: a macro over state or a name it cannot compute was expanded)"; ok=0; \
-	else grep -qE "unsupported send with a runtime method name|unsupported call: .*CallNode .module_eval.|no class in the program defines" "$$tmp/mc.out" || \
+	else grep -qE "unsupported send with a runtime method name|unsupported call: .*CallNode .(module_eval|const_set).|no class in the program defines" "$$tmp/mc.out" || \
 	  { echo "reject-test: FAIL ($$t: refused without saying why)"; sed -n 1,5p "$$tmp/mc.out"; ok=0; }; fi; \
 	done; \
 	t=test/reject/def_delegators_splat.rb; \
