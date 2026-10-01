@@ -58,6 +58,12 @@ def copied = yield.dup
 p copied { [1] }
 p copied { "abc" }
 
+def negated = yield.-@
+p negated { "ab" }
+p negated { 5 }
+p negated { 2.5 }
+p negated { "ab" }.frozen?
+
 def mag = yield.magnitude
 p mag { -3 }
 p mag { -2.5 }

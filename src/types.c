@@ -319,8 +319,14 @@ static int ty_recv_is_plain_array(TyKind t) {
 int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, TyKind *out) {
   if (!name) return 0;
   if (argc == 0) {
-    if (!strcmp(name, "abs") || !strcmp(name, "magnitude") || !strcmp(name, "-@")) {
+    if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) {
       if (recv != TY_INT && recv != TY_FLOAT) return 0;
+      *out = recv; return 1;
+    }
+    /* String#-@ is the deduplicated frozen String, so a String site belongs
+       here too; a String has no abs or magnitude. */
+    if (!strcmp(name, "-@")) {
+      if (recv != TY_INT && recv != TY_FLOAT && recv != TY_STRING) return 0;
       *out = recv; return 1;
     }
     if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||

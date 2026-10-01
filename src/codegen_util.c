@@ -544,7 +544,11 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
    (ty_recv_builtin_result): the analyzer made the yield poly exactly where
    every site's kind is in it, so each site's value is boxed into the slot.
    The receiver may itself be such a call (`yield.reverse.first`), typed per
-   site the same way one link down. */
+   site the same way one link down. Only where the analyzer took that path,
+   which it marks by typing the call poly: where some site's kind is not in
+   the table the call keeps one site's type, and answering the other site's
+   own kind here sent its value to the raise-tail arm, which dropped it for
+   nil (`-"ab"` at one site, `-5` at another, printed nil for the second). */
 static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
@@ -553,6 +557,7 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   if (!op || recv < 0) return 0;
   if (nt_kind(nt, recv) != NK_YieldNode && nt_kind(nt, recv) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
+  if (c->ntype[id] != TY_POLY) return 0;
   int an = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind rt;
