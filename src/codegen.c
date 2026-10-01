@@ -5854,7 +5854,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      staged as #exit_value, exactly as a proc outliving its home does. */
   const char *sv_prh_fb = g_proc_return_home; int sv_ptr_fb = g_proc_toplevel_return;
   g_proc_return_home = "-1"; g_proc_toplevel_return = 0;
-  g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk; g_block_nren = 0;
+  RenPark ren_sv = ren_park(0);   /* as a proc body: park the caller's renames */
+  g_pre = NULL; g_indent = 1; g_block_id = blk; g_block_nren = 0;
   /* g_block_param_name is the name of the &block a body calls through
      (`blk.call(x)`, `blk[x]`), which is_block_call splices the active block
      for. A Thread.new / Fiber.new block's own first parameter is not that: it
@@ -6095,7 +6096,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_in_fiber_body--;
 
   /* Restore emission state */
-  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
+  ren_unpark(&ren_sv);
+  g_pre = sv_pre; g_indent = sv_indent; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt; g_c_ret_void = sv_cv;
   g_proc_return_home = sv_prh_fb; g_proc_toplevel_return = sv_ptr_fb;
   g_self_deref = sv_fbderef;
@@ -7123,7 +7125,10 @@ else if (orecv >= 0 && onm) {
   int sv_ptr = g_proc_toplevel_return;
   g_proc_toplevel_return = (!is_lambda && !is_block_node && !ret_proc &&
                             comp_scope_of(c, create) == &c->scopes[0]);
-  g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
+  /* the body's inlines push their renames from slot 0, over the enclosing
+     method's live entries: park them, not just the count (#3943) */
+  RenPark ren_sv = ren_park(0);
+  g_pre = NULL; g_indent = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
@@ -7760,7 +7765,8 @@ else if (orecv >= 0 && onm) {
   free(proc_body_buf.p);
   g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc; g_c_ret_void = sv_cv;
 
-  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block; g_block_nren = sv_bnren;
+  ren_unpark(&ren_sv);
+  g_pre = sv_pre; g_indent = sv_indent; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_self_deref = sv_deref;
   g_ie_class_id = sv_iec;
