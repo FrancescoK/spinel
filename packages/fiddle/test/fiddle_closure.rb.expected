@@ -1,0 +1,17 @@
+Fiddle::Closure::BlockCaller
+Integer
+[1, 1]
+4
+false
+"abcde"
+true
+"vwxyz"
+6.5
+[[1, 2.5, 3]]
+42
+-8
+-9
+Fiddle::Pointer
+true
+true
+RuntimeError: unknown type 99

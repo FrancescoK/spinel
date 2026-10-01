@@ -1,0 +1,9 @@
+8
+"42-x-2.5"
+5
+"plain"
+12
+"5000000000 7"
+ArgumentError: variadic arguments must be type and value pairs
+ArgumentError: wrong number of arguments (given 2, expected 3+)
+true
