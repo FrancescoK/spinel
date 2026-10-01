@@ -100,7 +100,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
      it by evaluating for effect and yielding nil, mirroring emit_boxed. Without
      this, the int-boxing fallback below produced sp_box_int(<sp_RbVal>) -- an
      sp_int slot fed a boxed value (the recurring poly-box bug family). */
-  if (t == TY_UNKNOWN || t == TY_VOID || t == TY_REGEX) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
+  if (t == TY_UNKNOWN || t == TY_VOID) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
   /* Reference-backed builtins are nilable C pointers -- box NULL as nil (see
      ty_nullable_builtin_id). This also covers TY_PROC/TY_METHOD, which used to
      fall to the sp_box_proc/sp_box_method switch cases below (both wrapped NULL
