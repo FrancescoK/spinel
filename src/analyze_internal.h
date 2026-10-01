@@ -399,6 +399,7 @@ int desugar_body_self_call(Compiler *c);
 int desugar_body_module_eval(Compiler *c);
 int desugar_extend_self(Compiler *c);
 int desugar_kernel_reopen(Compiler *c);
+int desugar_zip_block_operands(Compiler *c);
 int desugar_singleton_class_mixin(Compiler *c);
 int desugar_singleton_attr(Compiler *c);
 int desugar_constant_path_self_alias(Compiler *c);

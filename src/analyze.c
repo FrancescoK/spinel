@@ -26781,6 +26781,7 @@ void analyze_program(Compiler *c) {
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
   desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */
   desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
+  desugar_zip_block_operands(c);         /* xs.zip(a, b) { } -> (xs.zip(a, b).each { }; nil) */
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */

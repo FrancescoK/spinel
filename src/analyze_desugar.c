@@ -1138,6 +1138,60 @@ int desugar_kernel_reopen(Compiler *c) {
   return 1;
 }
 
+/* ---- `xs.zip(a, b) { |t| ... }` with other than one operand -------------
+   The block form of zip is written for one operand. With two or more (or a
+   splat, or none) the call fell to the runtime dispatch, which has no zip
+   arm, and raised NoMethodError. The blockless form takes any count, so the
+   call becomes `(xs.zip(a, b).each { |t| ... }; nil)`: the same tuples in
+   the same order, and the nil zip's block form answers. A program defining
+   its own zip keeps its call. */
+int desugar_zip_block_operands(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_DefNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "zip"))
+      return 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "zip")) continue;
+    int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int args = nt_ref(nt, id, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    int splat = 0;
+    for (int i = 0; i < argc; i++) if (nt_kind(nt, argv[i]) == NK_SplatNode) splat = 1;
+    if (argc == 1 && !splat) continue;
+    int line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    int col = nt_int(nt, id, "node_col", 0);
+    int zc = nt_new_node(nt, "CallNode"), ec = nt_new_node(nt, "CallNode");
+    int st = nt_new_node(nt, "StatementsNode"), nl = nt_new_node(nt, "NilNode");
+    if (zc < 0 || ec < 0 || st < 0 || nl < 0) continue;
+    int fresh[4] = { zc, ec, st, nl };
+    for (int k = 0; k < 4; k++) {
+      nt_node_set_int(nt, fresh[k], "node_line", line);
+      nt_node_set_int(nt, fresh[k], "node_file", file);
+      nt_node_set_int(nt, fresh[k], "node_col", col);
+    }
+    nt_node_set_str(nt, zc, "name", "zip");
+    nt_node_set_ref(nt, zc, "receiver", recv);
+    if (args >= 0) nt_node_set_ref(nt, zc, "arguments", args);
+    nt_node_set_str(nt, ec, "name", "each");
+    nt_node_set_ref(nt, ec, "receiver", zc);
+    nt_node_set_ref(nt, ec, "block", blk);
+    int body[2] = { ec, nl };
+    nt_node_set_arr(nt, st, "body", body, 2);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    nt_node_set_int(nt, id, "node_col", col);
+    nt_node_set_ref(nt, id, "body", st);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- `singleton_class.prepend(Mod)` in a class or module body ------------
    The statement adds Mod's methods to the class object -- what `extend Mod`
    does, the precedence between Mod and the class's own singleton methods
