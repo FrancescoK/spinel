@@ -4134,6 +4134,17 @@ static void emit_boxed_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
 }
 
 /* `=> name` binding: lv_<lnm> = _t<t>, boxed when the local is poly. */
+static const char *pm_target_name(const NodeTable *nt, int pat) {
+  const char *ty = nt_type(nt, pat);
+  if (ty && sp_streq(ty, "LocalVariableTargetNode")) return nt_str(nt, pat, "name");
+  if (ty && sp_streq(ty, "CapturePatternNode")) {
+    int tgt = nt_ref(nt, pat, "target");
+    if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+      return nt_str(nt, tgt, "name");
+  }
+  return NULL;
+}
+
 static void emit_pattern_bind(Compiler *c, int id, const char *lnm, TyKind pt, int t, int indent, Buf *b) {
   if (!lnm) return;
   emit_indent(b, indent);
@@ -4826,15 +4837,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       int npost = 0;
       const int *posts = nt_arr(nt, array_pat, "posts", &npost);
       for (int i = 0; i < apn; i++) {
-        const char *lty2 = nt_type(nt, reqs[i]);
-        const char *lnm = NULL;
-        if (lty2 && sp_streq(lty2, "LocalVariableTargetNode")) lnm = nt_str(nt, reqs[i], "name");
-        else if (lty2 && sp_streq(lty2, "CapturePatternNode")) {
-          /* `Class => x`: the class check ran in the arm condition; bind x */
-          int tgt = nt_ref(nt, reqs[i], "target");
-          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
-            lnm = nt_str(nt, tgt, "name");
-        }
+        /* `Class => x`: the class check ran in the arm condition; bind x */
+        const char *lnm = pm_target_name(nt, reqs[i]);
         if (!lnm) continue;
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = ", rename_local(lnm));
@@ -4868,14 +4872,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       }
       /* posts bind from the tail: post j is at index len - (npost - j). */
       for (int j = 0; j < npost; j++) {
-        const char *pty2 = nt_type(nt, posts[j]);
-        const char *lnm = NULL;
-        if (pty2 && sp_streq(pty2, "LocalVariableTargetNode")) lnm = nt_str(nt, posts[j], "name");
-        else if (pty2 && sp_streq(pty2, "CapturePatternNode")) {
-          int tgt = nt_ref(nt, posts[j], "target");
-          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
-            lnm = nt_str(nt, tgt, "name");
-        }
+        const char *lnm = pm_target_name(nt, posts[j]);
         if (!lnm) continue;
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = ", rename_local(lnm));
@@ -4912,13 +4909,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         const char *lty2 = nt_type(nt, reqs[j]);
         if (!lty2) continue;
         char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d + %dLL)", find_k, find_arr, find_pos, j);
-        const char *lnm = NULL;
-        if (sp_streq(lty2, "LocalVariableTargetNode")) lnm = nt_str(nt, reqs[j], "name");
-        else if (sp_streq(lty2, "CapturePatternNode")) {
-          int tgt = nt_ref(nt, reqs[j], "target");
-          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
-            lnm = nt_str(nt, tgt, "name");
-        }
+        const char *lnm = pm_target_name(nt, reqs[j]);
         if (lnm) {
           emit_indent(b, body_indent);
           buf_printf(b, "lv_%s = ", rename_local(lnm));
