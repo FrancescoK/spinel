@@ -37711,7 +37711,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           else if (!is_builtin_reopen(scn) && !comp_class_is_module(c, &c->classes[dispatch_cid]) &&
                    !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
           if (st != TY_UNKNOWN) {
-            buf_printf(b, "sp_Object_%s(", mc(name));
+            buf_printf(b, "sp_Object_%s(", mc(c->scopes[omi].name));
             if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
             else emit_boxed_text(c, st, g_self, b);
             emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44912,7 +44912,7 @@ else {
       int hc_ci = comp_class_index(c, "Hash");
       int hc_mi = hc_ci >= 0 ? comp_method_in_chain(c, hc_ci, name, NULL) : -1;
       if (hc_mi >= 0) {
-        buf_printf(b, "sp_Hash_%s(", mc(name));
+        buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
         emit_boxed(c, recv, b);
         emit_args_filled(c, hc_mi, nt_ref(nt, id, "arguments"), ", ", b);
         buf_puts(b, ")");
@@ -44938,7 +44938,7 @@ else {
       int nm_ci = comp_class_index(c, "Numeric");
       int nm_mi = nm_ci >= 0 ? comp_method_in_chain(c, nm_ci, name, NULL) : -1;
       if (nm_mi >= 0) {
-        buf_printf(b, "sp_Numeric_%s(", mc(name));
+        buf_printf(b, "sp_Numeric_%s(", mc(c->scopes[nm_mi].name));
         emit_boxed(c, recv, b);
         emit_args_filled(c, nm_mi, nt_ref(nt, id, "arguments"), ", ", b);
         buf_puts(b, ")");
@@ -44954,7 +44954,7 @@ else {
           const char *box_fn = (rt == TY_INT_ARRAY) ? "sp_box_int_array" :
                                (rt == TY_STR_ARRAY) ? "sp_box_str_array" :
                                (rt == TY_FLOAT_ARRAY) ? "sp_box_float_array" : "sp_box_poly_array";
-          buf_printf(b, "sp_Array_%s(", mc(name));
+          buf_printf(b, "sp_Array_%s(", mc(c->scopes[oc_mi2].name));
           buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")");
           emit_args_filled(c, oc_mi2, nt_ref(nt, id, "arguments"), ", ", b);
           buf_puts(b, ")");
@@ -45001,7 +45001,7 @@ else {
           int void3 = method_is_void(&c->scopes[oc_mi3]) && want3 != TY_VOID &&
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
           if (void3) buf_puts(b, "(");
-          buf_printf(b, "sp_Object_%s(", mc(name));
+          buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
           emit_boxed(c, recv, b);
           emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
