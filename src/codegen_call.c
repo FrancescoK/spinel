@@ -15258,20 +15258,71 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_PolyArray_new()"); return 1;
       }
       if (cn && sp_streq(cn, "Array") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-        /* Array.new(n) -> PolyArray of n nils */
+        /* Array.new(ary) -> a copy of ary, of its own kind; an empty literal
+           (no element to type it) is an empty Array */
+        TyKind aat = comp_ntype(c, argv[0]);
+        int ael = 0;
+        if (nt_kind(nt, argv[0]) == NK_ArrayNode) nt_arr(nt, argv[0], "elements", &ael);
+        if (nt_kind(nt, argv[0]) == NK_ArrayNode && ael == 0 && !ty_is_array(aat)) {
+          buf_puts(b, "sp_PolyArray_new()");
+          return 1;
+        }
+        if (ty_is_array(aat) && aat == comp_ntype(c, id)) {
+          const char *ak = aat == TY_POLY_ARRAY ? "Poly" : array_kind(aat);
+          if (ak) {
+            buf_printf(b, "sp_%sArray_dup(", ak);
+            emit_expr(c, argv[0], b);
+            buf_puts(b, ")");
+            return 1;
+          }
+        }
+        /* a typed Array into a call the inference widened: copied boxed */
+        if (ty_is_array(aat) && comp_ntype(c, id) == TY_POLY_ARRAY) {
+          buf_puts(b, "sp_PolyArray_dup(sp_poly_to_poly_array(");
+          emit_boxed(c, argv[0], b);
+          buf_puts(b, "))");
+          return 1;
+        }
+        /* Array.new(n) -> PolyArray of n nils; a boxed operand that holds an
+           Array is copied instead */
         int tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+        int tpv = -1;
+        if (aat == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE) {
+          tpv = ++g_tmp;
+          Buf pvb; memset(&pvb, 0, sizeof pvb); emit_expr(c, argv[0], &pvb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tpv, pvb.p ? pvb.p : "sp_box_nil()", tpv);
+          free(pvb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tr, tr);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) "
+                            "_t%d = sp_PolyArray_dup(sp_poly_to_poly_array(_t%d));\n", tpv, tpv, tr, tpv);
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "else {\n");
+          g_argov_node[g_n_argov] = argv[0];
+          snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tpv);
+          g_n_argov++;
+        }
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);  /* poly size -> int (spinel-dev#24) */
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : "0"); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", tr);
-        emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+        if (tpv >= 0) buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tr);
+        else {
+          buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", tr);
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+        }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_box_nil());\n",
                    ti, ti, tn, ti, tr);
         free(nb.p);
+        if (tpv >= 0) {
+          g_n_argov--;
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        }
         buf_printf(b, "_t%d", tr); return 1;
       }
       if (cn && sp_streq(cn, "Array") && nt_ref(nt, id, "block") >= 0) {

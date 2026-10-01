@@ -22263,6 +22263,9 @@ static int nullable_int_elem_expr(Compiler *c, int v, int depth) {
         if (tail >= 0) return nullable_int_value(c, tail);
         int ca = nt_ref(nt, v, "arguments"); int an = 0;
         const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+        /* `Array.new(ary)` holds what ary holds */
+        if (an == 1 && av && ty_is_array(infer_type(c, av[0])))
+          return nullable_int_elem_expr(c, av[0], depth + 1);
         return an >= 2 && nullable_int_value(c, av[1]);
       }
     }
@@ -24102,7 +24105,14 @@ static int aon_container(Compiler *c, int v, int depth) {
       if (rn && sp_streq(rn, "Array") && blk < 0) {
         int ca = nt_ref(nt, v, "arguments"); int an = 0;
         const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-        return an == 1 || (an >= 2 && aon_value(c, av[1], depth + 1));
+        /* `Array.new(ary)` copies ary's elements; one known only at run
+           time may be such an Array */
+        if (an == 1 && av) {
+          TyKind at = infer_type(c, av[0]);
+          if (ty_is_array(at)) return aon_container(c, av[0], depth + 1);
+          return at != TY_POLY;
+        }
+        return an >= 2 && aon_value(c, av[1], depth + 1);
       }
     }
     return 0;

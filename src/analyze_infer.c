@@ -3543,6 +3543,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
            empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
         if (argc == 0 && blk < 0) return TY_UNKNOWN;
+        /* `Array.new(ary)` is a copy of ary, of its own kind */
+        if (argc == 1 && blk < 0) {
+          TyKind at = infer_type(c, argv[0]);
+          if (ty_is_array(at)) return at;
+        }
         return TY_POLY_ARRAY;
       }
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
