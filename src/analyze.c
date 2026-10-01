@@ -16739,11 +16739,23 @@ static struct {
   unsigned *ctor;     /* per scope: an initialize's appended and kept parameters (ctor_append_bits) */
   int ctor_any;       /* -1 not asked yet, else "some initialize parameter is the handle" */
   int kw_any;         /* -1 not asked yet, else "some target appends to a keyword parameter" */
-  unsigned char *callable; /* per node: 0 not asked, 1 never a proc, 2 may be, 3 being asked */
+  /* dyn_may_callable's memos: 0 not asked, 1 never a proc, 2 may be, 3 being asked */
+  unsigned char *callable; /* per node */
+  unsigned char *pcall;    /* per scope and positional parameter */
+  unsigned char *rcall;    /* per scope: what it returns */
+  /* and its indexes, built once per pass: every call by name, every return
+     by scope, the names a Symbol or String argument spells, and whether
+     the program reaches methods by a name it computes */
+  ANameHash cnames;
+  int *chead, *cnext, *rhead, *rnext, ibuilt, open_names;
+  ANameHash lnames;
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
-  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk); free(g_dyn.ctor); free(g_dyn.callable);
+  free(g_dyn.lit); free(g_dyn.meth); free(g_dyn.blk); free(g_dyn.ctor);
+  free(g_dyn.callable); free(g_dyn.pcall); free(g_dyn.rcall);
+  anh_free(&g_dyn.cnames); anh_free(&g_dyn.lnames);
+  free(g_dyn.chead); free(g_dyn.cnext); free(g_dyn.rhead); free(g_dyn.rnext);
   anh_free(&g_dyn.bnames);
   free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
   anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
@@ -16755,7 +16767,9 @@ static void dyn_memo_reset(Compiler *c) {
   g_dyn.blk = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
   g_dyn.ctor = (unsigned *)calloc((size_t)g_dyn.nscope + 1, sizeof(unsigned));
   g_dyn.callable = (unsigned char *)calloc((size_t)g_dyn.nlit + 1, 1);
-  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor || !g_dyn.callable) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  g_dyn.pcall = (unsigned char *)calloc(((size_t)g_dyn.nscope + 1) * DYN_ARGS, 1);
+  g_dyn.rcall = (unsigned char *)calloc((size_t)g_dyn.nscope + 1, 1);
+  if (!g_dyn.lit || !g_dyn.meth || !g_dyn.blk || !g_dyn.ctor || !g_dyn.callable || !g_dyn.pcall || !g_dyn.rcall) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   g_dyn.any = -1;
   g_dyn.ctor_any = -1;
   g_dyn.kw_any = -1;
@@ -17606,6 +17620,62 @@ int dyn_call_site(Compiler *c, int n) {
    method returns, and branches. Anything not followed may be one. A cycle
    counts as may-be, so an answer is never decided from a guess. */
 static int dyn_may_callable(Compiler *c, int v, int depth);
+
+/* The indexes the walk reads, built once per pass. */
+static void dyn_callable_index(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_dyn.ibuilt) return;
+  g_dyn.ibuilt = 1;
+  g_dyn.cnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nlit + 1));
+  g_dyn.rnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nlit + 1));
+  g_dyn.rhead = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nscope + 1));
+  if (!g_dyn.cnext || !g_dyn.rnext || !g_dyn.rhead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i <= g_dyn.nscope; i++) g_dyn.rhead[i] = -1;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm) continue;
+    int h = anh_find(&g_dyn.cnames, nm);
+    if (h < 0) {
+      anh_add(&g_dyn.cnames, nm);
+      h = g_dyn.cnames.n - 1;
+      g_dyn.chead = (int *)realloc(g_dyn.chead, sizeof(int) * (size_t)g_dyn.cnames.n);
+      if (!g_dyn.chead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      g_dyn.chead[h] = -1;
+    }
+    g_dyn.cnext[n] = g_dyn.chead[h];
+    g_dyn.chead[h] = n;
+    /* a method named by a Symbol or a String anywhere: send, method,
+       define_method, alias_method, respond_to?... */
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++) {
+      NodeKind ak = nt_kind(nt, av[k]);
+      const char *lit = ak == NK_SymbolNode ? nt_str(nt, av[k], "value")
+                      : ak == NK_StringNode ? nt_str(nt, av[k], "content") : NULL;
+      if (lit && anh_find(&g_dyn.lnames, lit) < 0) anh_add(&g_dyn.lnames, lit);
+    }
+    /* ... or by a name it computes */
+    static const char *const by_name[] = {
+      "send", "__send__", "public_send", "method", "public_method", "instance_method",
+      "public_instance_method", "define_method", "alias_method", "method_missing", NULL };
+    for (int k = 0; by_name[k]; k++)
+      if (sp_streq(nm, by_name[k]) && ac > 0 && nt_kind(nt, av[0]) != NK_SymbolNode &&
+          nt_kind(nt, av[0]) != NK_StringNode) g_dyn.open_names = 1;
+  }
+  /* `super` hands a method's own arguments on; an alias gives it a second name */
+  if (comp_kind_first(c, NK_SuperNode) >= 0 || comp_kind_first(c, NK_ForwardingSuperNode) >= 0 ||
+      comp_kind_first(c, NK_AliasMethodNode) >= 0) g_dyn.open_names = 1;
+  for (int r = comp_kind_first(c, NK_ReturnNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (nt_kind(nt, r) != NK_ReturnNode) continue;
+    Scope *rs = comp_scope_of(c, r);
+    if (!rs) continue;
+    int si = (int)(rs - c->scopes);
+    g_dyn.rnext[r] = g_dyn.rhead[si];
+    g_dyn.rhead[si] = r;
+  }
+}
+
 static int dyn_tail_may_callable(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 0;   /* an empty body: nil */
@@ -17635,32 +17705,52 @@ static int dyn_tail_may_callable(Compiler *c, int n, int depth) {
     default: return dyn_may_callable(c, n, depth + 1);
   }
 }
+
 /* What method mi returns: its body's last value and every `return`. */
-static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
+static int dyn_returns_walk(Compiler *c, int mi, int depth) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   if (m->body < 0 || m->cs_synth || m->is_lowered_yield) return 1;
+  /* a define_method body, or one a method_missing could stand in for */
+  if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) return 1;
   if (dyn_tail_may_callable(c, m->body, depth)) return 1;
-  for (int r = comp_kind_first(c, NK_ReturnNode); r >= 0; r = comp_kind_next(c, r)) {
-    if (nt_kind(nt, r) != NK_ReturnNode || comp_scope_of(c, r) != m) continue;
+  for (int r = g_dyn.rhead[mi]; r >= 0; r = g_dyn.rnext[r]) {
     int a = nt_ref(nt, r, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     if (ac == 1 && dyn_may_callable(c, av[0], depth + 1)) return 1;
   }
   return 0;
 }
+static int dyn_returns_may_callable(Compiler *c, int mi, int depth) {
+  if (mi < 0 || mi >= g_dyn.nscope) return 1;
+  unsigned char *m = &g_dyn.rcall[mi];
+  if (*m == 3) return 1;
+  if (*m) return *m == 2;
+  *m = 3;
+  int r = dyn_returns_walk(c, mi, depth);
+  g_dyn.rcall[mi] = r ? 2 : 1;
+  return r;
+}
+
 /* Can call `n` dispatch to method mi? Not when its receiver's type is one
    that does not have it: a builtin value, or an object whose class (or a
-   subclass of it) has another. */
+   subclass of it) has another. A method on Object, Kernel, a builtin class
+   or a module can be anyone's. */
 static int dyn_site_may_reach(Compiler *c, int n, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
+  if (m->is_cmethod || m->class_id < 0) return 1;
+  ClassInfo *mc = &c->classes[m->class_id];
+  if (mc->def_node < 0 || nt_kind(nt, mc->def_node) != NK_ClassNode) return 1;
+  if (is_builtin_class_name(mc->name) || sp_streq(mc->name, "Object") || sp_streq(mc->name, "BasicObject"))
+    return 1;
   int recv = nt_ref(nt, n, "receiver");
   int cls = -1;
   if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
     Scope *encl = comp_scope_of(c, n);
-    cls = encl ? encl->class_id : -1;
-    if (cls < 0) return 1;
+    /* a class method's self is the class, whose methods are not scopes here */
+    if (!encl || encl->is_cmethod || encl->class_id < 0) return 1;
+    cls = encl->class_id;
   }
   else {
     TyKind rt = comp_ntype(c, recv);
@@ -17668,32 +17758,27 @@ static int dyn_site_may_reach(Compiler *c, int n, int mi) {
     if (!ty_is_object(rt)) return 0;
     cls = ty_object_class(rt);
   }
-  if (m->is_cmethod) return 1;
-  if (m->class_id < 0) return 1;
   /* mi's class is cls or one below it */
   for (int k = m->class_id; k >= 0; k = c->classes[k].parent) if (k == cls) return 1;
   /* or cls inherits mi from a class above it */
   return comp_method_in_chain(c, cls, m->name, NULL) == mi;
 }
+
 /* What parameter j of method mi can be handed: the argument each call
    that can reach it passes there. Only a method whose parameters are all
-   plain required ones, that nothing names by Symbol or reaches by `super`. */
-static int dyn_param_may_callable(Compiler *c, Scope *m, int j, int depth) {
+   plain required ones, in a program that names no method by a name it
+   computes and nothing names this one by a literal. */
+static int dyn_param_walk(Compiler *c, Scope *m, int j, int depth) {
   const NodeTable *nt = c->nt;
   int mi = (int)(m - c->scopes);
   if (!m->name || m->is_cmethod || sp_streq(m->name, "initialize")) return 1;
   if (m->nrequired != m->nparams || m->rest_idx >= 0 || m->kwrest_idx >= 0 || m->npost_rest) return 1;
-  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
-    if (nt_kind(nt, n) != NK_CallNode) continue;
-    const char *cn = nt_str(nt, n, "name");
-    if (!cn) continue;
+  if (g_dyn.open_names || anh_find(&g_dyn.lnames, m->name) >= 0) return 1;
+  int h = anh_find(&g_dyn.cnames, m->name);
+  for (int n = h >= 0 ? g_dyn.chead[h] : -1; n >= 0; n = g_dyn.cnext[n]) {
+    if (!dyn_site_may_reach(c, n, mi)) continue;
     int a = nt_ref(nt, n, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    /* named by Symbol: send, method, define_method, alias_method, ... */
-    for (int k = 0; k < ac; k++)
-      if (nt_kind(nt, av[k]) == NK_SymbolNode && nt_str(nt, av[k], "value") &&
-          sp_streq(nt_str(nt, av[k], "value"), m->name)) return 1;
-    if (!sp_streq(cn, m->name) || !dyn_site_may_reach(c, n, mi)) continue;
     for (int k = 0; k < ac; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
       if (ak == NK_SplatNode || ak == NK_KeywordHashNode) return 1;
@@ -17701,14 +17786,20 @@ static int dyn_param_may_callable(Compiler *c, Scope *m, int j, int depth) {
     if (ac != m->nparams) continue;   /* it raises ArgumentError instead */
     if (dyn_may_callable(c, av[j], depth + 1)) return 1;
   }
-  for (int n = comp_kind_first(c, NK_SuperNode); n >= 0; n = comp_kind_next(c, n))
-    if (nt_kind(nt, n) == NK_SuperNode) return 1;
-  for (int n = comp_kind_first(c, NK_ForwardingSuperNode); n >= 0; n = comp_kind_next(c, n))
-    if (nt_kind(nt, n) == NK_ForwardingSuperNode) return 1;
-  for (int n = comp_kind_first(c, NK_AliasMethodNode); n >= 0; n = comp_kind_next(c, n))
-    if (nt_kind(nt, n) == NK_AliasMethodNode) return 1;
   return 0;
 }
+static int dyn_param_may_callable(Compiler *c, Scope *m, int j, int depth) {
+  int mi = (int)(m - c->scopes);
+  if (mi < 0 || mi >= g_dyn.nscope || j < 0 || j >= DYN_ARGS) return 1;
+  unsigned char *p = &g_dyn.pcall[(size_t)mi * DYN_ARGS + (size_t)j];
+  if (*p == 3) return 1;
+  if (*p) return *p == 2;
+  *p = 3;
+  int r = dyn_param_walk(c, m, j, depth);
+  g_dyn.pcall[(size_t)mi * DYN_ARGS + (size_t)j] = r ? 2 : 1;
+  return r;
+}
+
 static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   TyKind t = comp_ntype(c, v);
@@ -17753,6 +17844,15 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
       /* on a boxed or builtin receiver it may be the builtin's answer */
       int recv = nt_ref(nt, v, "receiver");
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode && !ty_is_object(comp_ntype(c, recv))) return 1;
+      /* self in a class method is the class: its methods (a `class << self`
+         accessor) are not walked */
+      if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+        Scope *encl = comp_scope_of(c, v);
+        if (!encl || encl->is_cmethod) return 1;
+      }
+      /* an attribute reader is a slot, which may hold anything */
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_reader_in_chain(c, k, nm, NULL)) return 1;
       int any = 0;
       for (int mi = dyn_scopes_named(c, nm); mi >= 0; mi = g_dyn.snext[mi]) {
         if (!dyn_site_may_reach(c, v, mi)) continue;
@@ -17767,6 +17867,7 @@ static int dyn_may_callable_walk(Compiler *c, int v, int depth) {
 static int dyn_may_callable(Compiler *c, int v, int depth) {
   if (v < 0 || depth > 16) return 1;
   if (!g_dyn.fresh) dyn_memo_reset(c);
+  dyn_callable_index(c);
   unsigned char *m = &g_dyn.callable[v];
   if (*m == 3) return 1;
   if (*m) return *m == 2;

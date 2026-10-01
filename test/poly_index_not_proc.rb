@@ -27,10 +27,6 @@ app = App.new
   p env ? respond(app, env) : nil
 end
 
-pick = ->(on) { on ? { "k" => "v" } : nil }
-h = pick.(true)
-%w[k z].each { |k| p h[k] } if h
-
 out = []
 stream = ->(s) { s << "!" }
 stream.call(out)
