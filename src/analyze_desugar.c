@@ -9068,6 +9068,37 @@ int desugar_enum_iter_splat_args(Compiler *c) {
   return changed;
 }
 
+static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n);
+
+/* Does the block read one of its leading requireds past the `m` values a
+   step yields (`|q, r|` over each_index reading r)? Those are nil in CRuby.
+   The emitters bind the first m and leave the others as they were, which
+   reads nil only while nothing else types the slot; the builtins/
+   enumerable.rb methods bind them nil through their yield. A block that
+   never reads them is left alone. */
+static int bs_extras_read(Compiler *c, int blk, const char *const *names, int np, int m,
+                          const char *nm, int argc) {
+  if (np <= m || ((builtin_enum_name_index(nm) >= 0) &&
+                  !((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc > 0))) return 0;
+  return pdl_body_reads(c->nt, nt_ref(c->nt, blk, "body"), (const char **)names + m, np - m);
+}
+
+/* Can `recv`'s Hash type still be a guess the fixpoint revises? In the
+   optimistic rounds a local or an instance variable read can be typed from
+   partial evidence: `c[5] = 9` on a local read out of an ivar not yet typed
+   reads as a store into a Hash. Where a Hash and an Array yield a different
+   count (the filters: the key and the value, or the element), the rewrite,
+   which is for good, waits until those rounds are over. */
+static int bs_hash_guess(Compiler *c, int recv, TyKind rt, const char *nm) {
+  static const char *const two[] = {
+    "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!", "reject!", NULL };
+  if (!g_infer_optimistic || !ty_is_hash(rt)) return 0;
+  NodeKind k = nt_kind(c->nt, recv);
+  if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
+  for (int i = 0; two[i]; i++) if (sp_streq(nm, two[i])) return 1;
+  return 0;
+}
+
 /* A block given to a builtin iterator with a parameter list the typed
    emitters do not distribute: optionals (`|c, a = 10|`), posts (`|*r, c|`),
    or a rest a yielded pair or Array is spread across. The emitters bind the
@@ -9136,6 +9167,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
        and so does its own method of the name on a boxed receiver */
     if ((rt == TY_POLY || sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self")) &&
         def_exists_by_name(nt, nm)) continue;
+    if (bs_hash_guess(c, recv, rt, nm)) continue;
     TyKind elem; int hash_pair;
     int m = bs_enum_yield_count(c, recv, nm, argc, &elem);
     int via_enum = m != 0;
@@ -9160,7 +9192,15 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       s.post = nt_arr(nt, pn, "posts", &s.Q);
     }
     int plain = s.O == 0 && s.Q == 0 && s.rest < 0;
-    if (plain && (m != 1 || s.P < 2 || hash_pair || via_enum || bs_spreads(nm, s.P))) continue;
+    /* past the values that do not spread, a required the body reads is
+       bound nil (bs_extras_read) */
+    int nospread = m >= 2 || hash_pair || (elem != TY_UNKNOWN && elem != TY_POLY && !ty_is_array(elem));
+    const char *pnames[12];
+    for (int i = 0; i < s.P && i < 12; i++)
+      pnames[i] = numbered ? numbered_param_name(c, bp, i) : nt_str(nt, s.pre[i], "name");
+    int extras = plain && !via_enum && nospread && s.P <= 12 &&
+                 bs_extras_read(c, blk, pnames, s.P, hash_pair ? 2 : m, nm, argc);
+    if (plain && !extras && (m != 1 || s.P < 2 || hash_pair || via_enum || bs_spreads(nm, s.P))) continue;
     bad = s.P + s.O + s.Q > 12;
     for (int i = 0; i < s.P && !numbered; i++) if (nt_kind(nt, s.pre[i]) != NK_RequiredParameterNode) bad = 1;
     for (int i = 0; i < s.Q; i++) if (nt_kind(nt, s.post[i]) != NK_RequiredParameterNode) bad = 1;
@@ -9184,11 +9224,9 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
       /* an anonymous `*` binds nothing: beside requireds it only drops the
          values past them, which every emitter does */
       int rest_bound = !(rn && *rn) || bs_binds_rest(rt, nm, argc);
-      if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum && rest_bound) continue;
-      if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn && rest_bound) continue; }
-    /* a value that does not spread leaves the requireds past the first
-       unbound */
-    if (plain && !dyn) continue;
+      if (s.O == 0 && s.Q == 0 && !splat && m != 1 && !ty_is_hash(rt) && !via_enum && rest_bound && !extras) continue;
+      if (s.O == 0 && s.Q == 0 && splat && !hash_pair && !dyn && rest_bound && !extras) continue; }
+    if (plain && !dyn && !extras) continue;
 
     BsB b = { nt, 1 };
     int base = nt->count;
