@@ -14570,6 +14570,26 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       { char ivb[300]; int defc = -1;
         const char *riv = an_reader_ivar_of(c, node, &defc, ivb, sizeof ivb);
         if (riv && defc >= 0) return strbuf_ivar_source_walk(c, defc, riv, depth + 1, mode); }
+      /* `Hash.new { |hh, k| hh[k] = v }`: the default block's first
+         parameter is the Hash itself, and what it stores there is the
+         Hash's */
+      int hnew = sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+                 nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash");
+      /* `Hash.new(v)`: a read of a missing key answers v itself (not
+         counted as a value the Hash holds when asking for a non-String) */
+      if (hnew && blk < 0 && SB_KIND(mode) != SB_HAS_NONSTRING) {
+        int ha = nt_ref(nt, node, "arguments"), hn = 0;
+        const int *hv = ha >= 0 ? nt_arr(nt, ha, "arguments", &hn) : NULL;
+        if (hn >= 1 && nt_kind(nt, hv[0]) != NK_KeywordHashNode)
+          return strbuf_store_leaf(c, hv[0], depth, mode);
+      }
+      if (hnew && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+        const char *hp = block_param_name(c, blk, 0);
+        Scope *hs = hp ? comp_scope_of(c, blk) : NULL;
+        if (hs && SB_KIND(mode) != SB_DEMAND)
+          return strbuf_container_stores_kind(c, hp, hs, depth + 1, mode);
+        return hs ? strbuf_demand_container_stores_here(c, hp, hs, depth + 1, mode) : 0;
+      }
       /* `Array.new(n) { ... }` fills the array with its block's tail */
       if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
