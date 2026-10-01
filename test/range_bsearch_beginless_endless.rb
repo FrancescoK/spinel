@@ -1,3 +1,4 @@
+# spinel: int64
 # Range#bsearch over a beginless or endless Integer range: the bounds span
 # most of sp_int, so the probe's midpoint (hi - lo) and the step past it
 # (mid + 1) overflowed. That is undefined, and gcc compiled the search into a
