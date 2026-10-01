@@ -15109,6 +15109,72 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
    local convert_byref_handle_params pulls into the handle there (`t = s;
    grow(t)`) takes its alias source along only through this rule. */
 static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, const char *tgtn);
+/* `t = x` where x is a boxed local an `is_a?(String)` guard narrowed (the
+   read is typed String, the slot is POLY), directly or as an arm of a
+   conditional: t is a second name for the String in x's box. When t is
+   mutated in place, t takes the handle and the read is lifted
+   (poly_strbuf_lift): the String in the box becomes the handle, stored
+   back, which t then holds (emit_strbuf_value). Left a plain String, t was
+   a copy of x's, and its appends never reached x. */
+/* The boxed-local reads among the values conditional `v` can hand over
+   (each arm of `c ? x : g`, `if`/`unless`, `g || x`, the right of `a &&
+   x`), into out[]: answers the count. */
+static int poly_alias_leaves(Compiler *c, int v, int *out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || cap <= 0 || depth > 8) return 0;
+  switch (nt_kind(nt, v)) {
+    case NK_ParenthesesNode:
+      return poly_alias_leaves(c, nt_ref(nt, v, "body"), out, cap, depth + 1);
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
+      return n > 0 ? poly_alias_leaves(c, b[n - 1], out, cap, depth + 1) : 0;
+    }
+    case NK_ElseNode:
+      return poly_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
+    case NK_IfNode: case NK_UnlessNode: {
+      int sub = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+      int n = poly_alias_leaves(c, nt_ref(nt, v, "statements"), out, cap, depth + 1);
+      return n + poly_alias_leaves(c, sub, out + n, cap - n, depth + 1);
+    }
+    case NK_OrNode: {
+      int n = poly_alias_leaves(c, nt_ref(nt, v, "left"), out, cap, depth + 1);
+      return n + poly_alias_leaves(c, nt_ref(nt, v, "right"), out + n, cap - n, depth + 1);
+    }
+    case NK_AndNode:
+      return poly_alias_leaves(c, nt_ref(nt, v, "right"), out, cap, depth + 1);
+    case NK_LocalVariableReadNode: {
+      const char *xn = nt_str(nt, v, "name");
+      LocalVar *xv = xn ? scope_local(comp_scope_of(c, v), xn) : NULL;
+      if (!xv || xv->type != TY_POLY || xv->is_block_param || comp_ntype(c, v) != TY_STRING) return 0;
+      out[0] = v;
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+static int promote_poly_alias_write(Compiler *c, int w) {
+  const NodeTable *nt = c->nt;
+  Scope *ws = comp_scope_of(c, w);
+  const char *tn = nt_str(nt, w, "name");
+  LocalVar *tv = ws && tn ? scope_local(ws, tn) : NULL;
+  if (!tv || tv->is_block_param) return 0;
+  int lv[16];
+  int nl = poly_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
+  if (nl == 0 || !strbuf_slot_eligible(c, tn, ws, tv) || strbuf_mut_kind(c, tn, ws) != 1) return 0;
+  int changed = 0;
+  for (int l = 0; l < nl; l++) {
+    const char *xn = nt_str(nt, lv[l], "name");
+    LocalVar *xv = scope_local(comp_scope_of(c, lv[l]), xn);
+    if (!c->poly_strbuf_lift[lv[l]]) { c->poly_strbuf_lift[lv[l]] = 1; changed = 1; }
+    /* a method's own boxed parameter pulls its callers in (poly_lift) */
+    if (xv->is_param && an_param_idx(comp_scope_of(c, lv[l]), xn) >= 0 && !(xv->poly_lift & POLY_LIFT_APPENDED)) {
+      xv->poly_lift |= POLY_LIFT_APPENDED; changed = 1;
+    }
+  }
+  if (tv->type != TY_STRBUF || !tv->str_shared) { tv->type = TY_STRBUF; tv->str_shared = 1; changed = 1; }
+  return changed;
+}
 static int promote_local_alias_pairs(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -15126,6 +15192,7 @@ static int promote_local_alias_pairs(Compiler *c) {
     int nl = an_strbuf_alias_leaves(c, nt_ref(nt, w, "value"), lv, 16, 0);
     for (int l = 0; l < nl; l++)
       changed |= promote_local_alias_pair(c, comp_scope_of(c, w), nt_str(nt, lv[l], "name"), nt_str(nt, w, "name"));
+    changed |= promote_poly_alias_write(c, w);
   }
   /* `h ||= g` and `h &&= g` are `h = g` on the path that writes */
   for (int k = 0; k < 2; k++)

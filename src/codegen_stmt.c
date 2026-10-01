@@ -1231,7 +1231,10 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       if (depth == 0) return 0;
       const char *vn = nt_str(nt, v, "name");
       LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
-      return vl && vl->type == TY_STRBUF && vl->str_shared;
+      /* a boxed local's lifted read hands over the handle in its box
+         (promote_poly_alias_write) */
+      return vl && ((vl->type == TY_STRBUF && vl->str_shared) ||
+                    (vl->type == TY_POLY && nt_kind(nt, v) == NK_LocalVariableReadNode && c->poly_strbuf_lift[v]));
     }
     default:
       return 0;
@@ -1329,6 +1332,22 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
 static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  /* a boxed local's read the alias rule lifted (promote_poly_alias_write):
+     the String in the box becomes the handle, stored back, and the slot
+     takes that handle, so the two names are one String */
+  if (lv->str_shared && v >= 0 && nt_kind(c->nt, v) == NK_LocalVariableReadNode && c->poly_strbuf_lift[v]) {
+    const char *vn = nt_str(c->nt, v, "name");
+    LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
+    if (vl && vl->type == TY_POLY) {
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_local_ref(c, v, vn, &rl);
+      buf_puts(b, "sp_poly_as_strbuf(");
+      emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      buf_puts(b, ")");
+      free(rl.p);
+      return;
+    }
+  }
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
      HANDLE, not the buffer, so the two names denote one object: a later
      `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
@@ -1370,7 +1389,8 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
      String, wrapped below as a new handle the way a store wraps one
      (emit_boxed); handed over bare, the C did not build. */
-  else if (comp_ntype(c, v) == TY_STRBUF &&
+  else if (comp_ntype(c, v) == TY_STRBUF && nt_kind(c->nt, v) != NK_StringNode &&
+           nt_kind(c->nt, v) != NK_InterpolatedStringNode &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
