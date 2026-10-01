@@ -12501,7 +12501,12 @@ static int an_call_target_mi(Compiler *c, int id) {
   return ty_is_object(rt) ? comp_method_in_chain(c, ty_object_class(rt), nm, NULL) : -1;
 }
 /* Does the code under `node` append to local `vn` in place, or hand it to a
-   parameter that is lent? */
+   parameter that is lent? A spliced yielding method's parameter is lent
+   where the splice binds it as an alias (an_inline_param_lent): `def
+   run2(x) = run(x) { |u| yield u }` lends x to run, whose block yields it on
+   to run2's. */
+static int an_inline_param_lent(Compiler *c, int mi, int j, int blk);
+static int an_lend_nest;   /* the splice questions a walk asks, nested */
 static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 64) return 0;
@@ -12511,11 +12516,19 @@ static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int dep
         nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), vn)) return 1;
     int mi = an_call_target_mi(c, node);
     Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    int blk = nt_ref(nt, node, "block");
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) blk = -1;
     for (int j = 0; m && j < m->nparams; j++) {
-      if (!comp_byref_param(c, m, j)) continue;
+      int spliced = blk >= 0 && m->yields && !m->is_lowered_yield && j < 32 && an_lend_nest < 4;
+      if (!comp_byref_param(c, m, j) && !spliced) continue;
       int an = arg_layout_param_node(c, m, node, j, NULL);
-      if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode && nt_str(nt, an, "name") &&
-          sp_streq(nt_str(nt, an, "name"), vn)) return 1;
+      if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
+          !sp_streq(nt_str(nt, an, "name"), vn)) continue;
+      if (comp_byref_param(c, m, j)) return 1;
+      an_lend_nest++;
+      int lent = an_inline_param_lent(c, mi, j, blk);
+      an_lend_nest--;
+      if (lent) return 1;
     }
   }
   int nr = nt_num_refs(nt, node);
@@ -12529,17 +12542,129 @@ static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int dep
   }
   return 0;
 }
+/* Is `node` a yield of spliced method `m`'s block: a `yield`, or a
+   `blk.call(...)` on its own &block, which the splice expands as one? */
+static int an_yield_like(Compiler *c, int node, Scope *m) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, node) == NK_YieldNode) return 1;
+  if (nt_kind(nt, node) != NK_CallNode || !m->blk_param || !m->blk_param[0]) return 0;
+  const char *cn = nt_str(nt, node, "name");
+  int r = nt_ref(nt, node, "receiver");
+  return cn && sp_streq(cn, "call") && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode &&
+         nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), m->blk_param);
+}
 /* Does a spliced block `blk` lend its parameter k: append to it, or hand it
    to a lent parameter? The splice then binds it as an alias of the variable
    yielded to it (block_param_wants_alias), and a caller's parameter behind
    that variable has to be lent too. */
+static int an_block_param_lent(Compiler *c, int blk, int k);
+static int an_block_kw_lent(Compiler *c, int blk, const char *key);
+/* Does the code under `node` yield a plain read of `vn`, in spliced method
+   `mi`, at a position (or to a keyword) whose parameter some block a call
+   site of `mi` passes lends? */
+static int an_subtree_yields_lent(Compiler *c, int node, const char *vn, int mi) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind nk = nt_kind(nt, node);
+  if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
+  if (an_yield_like(c, node, &c->scopes[mi])) {
+    int aa = nt_ref(nt, node, "arguments"), an = 0;
+    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      if (nt_kind(nt, av[j]) == NK_SplatNode) break;
+      /* by keyword, to the blocks' keyword of that name */
+      const char *key = NULL;
+      int v = av[j];
+      if (nt_kind(nt, av[j]) == NK_KeywordHashNode) {
+        int en = 0; const int *el = nt_arr(nt, av[j], "elements", &en);
+        for (int e = 0; e < en && !key; e++) {
+          int kv;
+          const char *k2 = dyn_kw_elem_key(c, el[e], &kv);
+          if (k2 && kv >= 0 && nt_kind(nt, kv) == NK_LocalVariableReadNode && nt_str(nt, kv, "name") &&
+              sp_streq(nt_str(nt, kv, "name"), vn)) { key = k2; v = kv; }
+        }
+        if (!key) continue;
+      }
+      if (nt_kind(nt, v) != NK_LocalVariableReadNode || !nt_str(nt, v, "name") ||
+          !sp_streq(nt_str(nt, v, "name"), vn)) continue;
+      for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+        int ub = nt_kind(nt, u) == NK_CallNode ? nt_ref(nt, u, "block") : -1;
+        if (ub < 0 || nt_kind(nt, ub) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+        if (key ? an_block_kw_lent(c, ub, key) : an_block_param_lent(c, ub, j)) return 1;
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (an_subtree_yields_lent(c, nt_ref_at(nt, node, i), vn, mi)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
+    for (int q = 0; q < n; q++)
+      if (an_subtree_yields_lent(c, a[q], vn, mi)) return 1;
+  }
+  return 0;
+}
 static int an_block_param_lent(Compiler *c, int blk, int k) {
   const char *bp = blk >= 0 ? block_param_name(c, blk, k) : NULL;
   if (!bp) return 0;
   Scope *bs = comp_scope_of(c, blk);
   LocalVar *lv = bs ? scope_local(bs, bp) : NULL;
   if (!lv || lv->type != TY_STRING || lv->is_cell) return 0;
-  return an_subtree_lends_local(c, nt_ref(c->nt, blk, "body"), bp, 0);
+  if (an_subtree_lends_local(c, nt_ref(c->nt, blk, "body"), bp, 0)) return 1;
+  /* yielded on (`run(x) { |u| yield u }`) to the blocks the spliced method
+     it is written in is called with, which lend it */
+  if (!bs->name || !bs->yields || bs->is_lowered_yield || an_lend_nest >= 4) return 0;
+  an_lend_nest++;
+  int lent = an_subtree_yields_lent(c, nt_ref(c->nt, blk, "body"), bp, (int)(bs - c->scopes));
+  an_lend_nest--;
+  return lent;
+}
+/* The same for the keyword parameter of `blk` that keyword `key` binds. */
+static int dyn_kw_name_is(const char *pn, const char *key);
+static const char *an_block_kw_param(Compiler *c, int blk, const char *key) {
+  for (int i = 0; blk >= 0 && key; i++) {
+    const char *kp = block_keyword_name(c, blk, i);
+    if (!kp) break;
+    if (dyn_kw_name_is(kp, key)) return kp;
+  }
+  return NULL;
+}
+static int an_block_kw_lent(Compiler *c, int blk, const char *key) {
+  const char *kp = an_block_kw_param(c, blk, key);
+  if (!kp) return 0;
+  Scope *bs = comp_scope_of(c, blk);
+  LocalVar *lv = bs ? scope_local(bs, kp) : NULL;
+  if (!lv || lv->type != TY_STRING || lv->is_cell) return 0;
+  if (an_subtree_lends_local(c, nt_ref(c->nt, blk, "body"), kp, 0)) return 1;
+  if (!bs->name || !bs->yields || bs->is_lowered_yield || an_lend_nest >= 4) return 0;
+  an_lend_nest++;
+  int lent = an_subtree_yields_lent(c, nt_ref(c->nt, blk, "body"), kp, (int)(bs - c->scopes));
+  an_lend_nest--;
+  return lent;
+}
+/* Does yield (or `blk.call`) `y` hand `pn` to a parameter block `blk`
+   lends, by position or by keyword? */
+static int an_yield_lends(Compiler *c, int y, const char *pn, int blk) {
+  const NodeTable *nt = c->nt;
+  int aa = nt_ref(nt, y, "arguments"), an = 0;
+  const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
+  for (int k = 0; k < an; k++) {
+    if (nt_kind(nt, av[k]) == NK_SplatNode) break;
+    if (nt_kind(nt, av[k]) == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, av[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v;
+        const char *key = dyn_kw_elem_key(c, el[e], &v);
+        if (key && v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode && nt_str(nt, v, "name") &&
+            sp_streq(nt_str(nt, v, "name"), pn) && an_block_kw_lent(c, blk, key)) return 1;
+      }
+      continue;
+    }
+    if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
+        sp_streq(nt_str(nt, av[k], "name"), pn) && an_block_param_lent(c, blk, k)) return 1;
+  }
+  return 0;
 }
 /* Does spliced yielding method `mi` yield its boxed parameter pj to a block
    parameter a literal block at one of its call sites appends to, in place
@@ -12590,16 +12715,12 @@ static int an_inline_param_lent(Compiler *c, int mi, int j, int blk) {
     if (comp_scope_of(c, w) == m && nt_kind(nt, w) != NK_LocalVariableWriteNode && nt_str(nt, w, "name") &&
         sp_streq(nt_str(nt, w, "name"), pn)) return 0;
   if (an_subtree_lends_local(c, m->body, pn, 0)) return 1;
-  for (int y = comp_kind_first(c, NK_YieldNode); blk >= 0 && y >= 0; y = comp_kind_next(c, y)) {
-    if (nt_kind(nt, y) != NK_YieldNode || comp_scope_of(c, y) != m) continue;
-    int aa = nt_ref(nt, y, "arguments"), an = 0;
-    const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
-    for (int k = 0; k < an; k++) {
-      if (nt_kind(nt, av[k]) == NK_SplatNode) break;
-      if (nt_kind(nt, av[k]) == NK_LocalVariableReadNode && nt_str(nt, av[k], "name") &&
-          sp_streq(nt_str(nt, av[k], "name"), pn) && an_block_param_lent(c, blk, k)) return 1;
-    }
-  }
+  /* a `yield`, or a `blk.call` the splice expands as one (the scope's own
+     call chain); by position, or by keyword to the block's keyword */
+  for (int y = comp_kind_first(c, NK_YieldNode); blk >= 0 && y >= 0; y = comp_kind_next(c, y))
+    if (nt_kind(nt, y) == NK_YieldNode && comp_scope_of(c, y) == m && an_yield_lends(c, y, pn, blk)) return 1;
+  for (int y = m->blk_param && blk >= 0 ? comp_scall_first(c, mi) : -1; y >= 0; y = comp_scall_next(c, y))
+    if (comp_scope_of(c, y) == m && an_yield_like(c, y, m) && an_yield_lends(c, y, pn, blk)) return 1;
   return 0;
 }
 
@@ -18399,6 +18520,144 @@ static int an_local_is_handle_or_aliased(Compiler *c, const ALocalAliases *t, in
   return lv && !lv->is_param && !lv->is_cell && lv->type == TY_STRING &&
          an_local_has_alias(c, t, vn, vs);
 }
+/* The keywords of a spliced yield (`yield(k: x)`): a block keyword a
+   handle is yielded to, and that the block lends, takes the handle, and
+   then every variable yielded to it is pulled in; a proc a call site passes
+   with `&` that appends to the keyword pulls the variable, whose handle the
+   yield's Hash then carries. */
+static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int v;
+    const char *key = dyn_kw_elem_key(c, el[e], &v);
+    if (!key || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) continue;
+    TyKind at = comp_ntype(c, v);
+    if (at != TY_STRING && at != TY_STRBUF) continue;
+    int is_h = an_local_is_handle(c, v), into_h = 0;
+    for (int ei = h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
+      int u = g_dyn.bnode[ei], blk = nt_ref(nt, u, "block");
+      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      const char *kp = an_block_kw_param(c, blk, key);
+      Scope *bs = kp ? comp_scope_of(c, blk) : NULL;
+      LocalVar *t = bs ? scope_local(bs, kp) : NULL;
+      if (!t || t->is_cell) continue;
+      if (t->type == TY_STRBUF && t->str_shared) { into_h = 1; continue; }
+      if (pass || !is_h || t->type != TY_STRING || !an_block_kw_lent(c, blk, key)) continue;
+      t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
+    }
+    if (pass && into_h && !is_h) changed |= dyn_pull_arg(c, v, 0);
+    for (int ei = !pass && h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
+      int u = g_dyn.bnode[ei], ba = nt_ref(nt, u, "block");
+      if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+      int x = nt_ref(nt, ba, "expression");
+      if (x < 0) continue;
+      DynReach r; memset(&r, 0, sizeof r);
+      dyn_reach_kw(c, x, key, 0, &r);
+      if (r.unlifted || !(r.app || (r.unknown && dyn_any_kw_appender(c)))) continue;
+      changed |= dyn_pull_arg(c, v, 1);
+      break;
+    }
+  }
+  return changed;
+}
+/* One yield of a spliced method (or a `blk.call` the splice expands as
+   one): a spliced block's parameter a handle is yielded to, and then every
+   variable yielded to it. */
+static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliases) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  Scope *ms = comp_scope_of(c, y);
+  if (!ms || !ms->name || !ms->yields) return 0;
+  int mi = (int)(ms - c->scopes);
+  int aa = nt_ref(nt, y, "arguments"), ac = 0;
+  const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
+  /* an initialize is called by `new` */
+  int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
+  for (int k = 0; k < ac && k < DYN_ARGS; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    if (ak == NK_SplatNode) break;
+    /* by keyword, to the blocks' keyword of that name */
+    if (ak == NK_KeywordHashNode) { changed |= yield_splice_kw_handles(c, mi, h, av[k], pass); break; }
+    /* a block parameter a String value is yielded to, appended to
+       through a local that names it: it takes the handle the alias
+       shares, wrapped around the value (a yielded variable is pulled in
+       below) */
+    TyKind at = comp_ntype(c, av[k]);
+    if (!pass && (at == TY_STRING || at == TY_STRBUF))
+      for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+        int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
+        if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+        const char *bp = block_param_name(c, blk, k);
+        Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+        LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+        if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, aliases, bs, bp))
+          continue;
+        t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
+      }
+    if (ak != NK_LocalVariableReadNode) continue;
+    /* A parameter a nil or other argument widened to POLY boxes what it
+       is bound to: yielded to a proc a call site passes that appends to
+       it, that call site's String variable is pulled in, as for a POLY
+       parameter the method appends to itself (convert_byref_handle_params).
+       Left as a plain String, the box the proc appended to was a copy. */
+    if (at == TY_POLY) {
+      int pj = an_param_idx(ms, nt_str(nt, av[k], "name"));
+      for (int e = !pass && pj >= 0 && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+        int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
+        if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+        int v = nt_ref(nt, ba, "expression");
+        if (v < 0) continue;
+        DynReach r; memset(&r, 0, sizeof r);
+        dyn_reach_value(c, v, k, 0, &r);
+        if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
+        int ua = arg_layout_param_node(c, ms, u, pj, NULL);
+        if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
+      }
+      continue;
+    }
+    if (at != TY_STRING && at != TY_STRBUF) continue;
+    int is_h = an_local_is_handle_or_aliased(c, aliases, av[k]), into_h = 0;
+    for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+      int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
+      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      const char *bp = block_param_name(c, blk, k);
+      Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+      LocalVar *t = bs ? scope_local(bs, bp) : NULL;
+      if (!t || t->is_cell) continue;
+      if (t->type == TY_STRBUF && t->str_shared) { into_h = 1; continue; }
+      /* a boxed parameter the block appends to in place appends through
+         a box that holds the handle (#5957): the yielded variable has
+         to be the handle, which the binding boxes as itself. Not for a
+         method that names its block, which is lowered to call it as a
+         proc once it keeps it, where the yield boxes what it hands. */
+      if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
+          an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
+      if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
+      t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
+    }
+    if (pass && into_h && !an_local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
+    /* a call site handing the method a proc (`run(s, &pr)`,
+       `&method(:m)`): the spliced yield calls it, boxing what it yields,
+       which carries the handle into a proc that appends to it */
+    for (int e = !pass && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+      int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
+      if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+      int v = nt_ref(nt, ba, "expression");
+      if (v < 0) continue;
+      DynReach r; memset(&r, 0, sizeof r);
+      dyn_reach_value(c, v, k, 0, &r);
+      if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
+      /* the read stays unmarked: the literal blocks the same yield binds
+         take the plain String, and the proc call boxes the handle
+         (emit_proc_yield) */
+      changed |= dyn_pull_arg(c, av[k], 0);
+      break;
+    }
+  }
+  return changed;
+}
 static int yield_splice_handles(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -18454,97 +18713,16 @@ static int yield_splice_handles(Compiler *c) {
     }
   }
   /* a spliced block's parameter a handle is yielded to, and then every
-     variable yielded to it */
-  for (int pass = 0; pass < 2; pass++)
-    for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y)) {
-      if (nt_kind(nt, y) != NK_YieldNode) continue;
-      Scope *ms = comp_scope_of(c, y);
-      if (!ms || !ms->name || !ms->yields) continue;
-      int mi = (int)(ms - c->scopes);
-      int aa = nt_ref(nt, y, "arguments"), ac = 0;
-      const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
-      /* an initialize is called by `new` */
-      int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
-      for (int k = 0; k < ac && k < DYN_ARGS; k++) {
-        NodeKind ak = nt_kind(nt, av[k]);
-        if (ak == NK_SplatNode || ak == NK_KeywordHashNode) break;
-        /* a block parameter a String value is yielded to, appended to
-           through a local that names it: it takes the handle the alias
-           shares, wrapped around the value (a yielded variable is pulled in
-           below) */
-        TyKind at = comp_ntype(c, av[k]);
-        if (!pass && (at == TY_STRING || at == TY_STRBUF))
-          for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
-            int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-            if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-            const char *bp = block_param_name(c, blk, k);
-            Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
-            LocalVar *t = bs ? scope_local(bs, bp) : NULL;
-            if (!t || t->is_cell || t->type != TY_STRING || !an_block_param_alias_mutated(c, &aliases, bs, bp))
-              continue;
-            t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
-          }
-        if (ak != NK_LocalVariableReadNode) continue;
-        /* A parameter a nil or other argument widened to POLY boxes what it
-           is bound to: yielded to a proc a call site passes that appends to
-           it, that call site's String variable is pulled in, as for a POLY
-           parameter the method appends to itself (convert_byref_handle_params).
-           Left as a plain String, the box the proc appended to was a copy. */
-        if (at == TY_POLY) {
-          int pj = an_param_idx(ms, nt_str(nt, av[k], "name"));
-          for (int e = !pass && pj >= 0 && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
-            int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-            if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
-            int v = nt_ref(nt, ba, "expression");
-            if (v < 0) continue;
-            DynReach r; memset(&r, 0, sizeof r);
-            dyn_reach_value(c, v, k, 0, &r);
-            if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
-            int ua = arg_layout_param_node(c, ms, u, pj, NULL);
-            if (ua >= 0) changed |= dyn_pull_arg(c, ua, 1);
-          }
-          continue;
-        }
-        if (at != TY_STRING && at != TY_STRBUF) continue;
-        int is_h = an_local_is_handle_or_aliased(c, &aliases, av[k]), into_h = 0;
-        for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
-          int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-          if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
-          const char *bp = block_param_name(c, blk, k);
-          Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
-          LocalVar *t = bs ? scope_local(bs, bp) : NULL;
-          if (!t || t->is_cell) continue;
-          if (t->type == TY_STRBUF && t->str_shared) { into_h = 1; continue; }
-          /* a boxed parameter the block appends to in place appends through
-             a box that holds the handle (#5957): the yielded variable has
-             to be the handle, which the binding boxes as itself. Not for a
-             method that names its block, which is lowered to call it as a
-             proc once it keeps it, where the yield boxes what it hands. */
-          if (t->type == TY_POLY && !(ms->blk_param && ms->blk_param[0]) &&
-              an_subtree_lends_local(c, nt_ref(nt, blk, "body"), bp, 0)) { into_h = 1; continue; }
-          if (pass || !is_h || t->type != TY_STRING || !an_block_param_lent(c, blk, k)) continue;
-          t->type = TY_STRBUF; t->str_shared = 1; changed = 1;
-        }
-        if (pass && into_h && !an_local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 0);
-        /* a call site handing the method a proc (`run(s, &pr)`,
-           `&method(:m)`): the spliced yield calls it, boxing what it yields,
-           which carries the handle into a proc that appends to it */
-        for (int e = !pass && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
-          int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-          if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
-          int v = nt_ref(nt, ba, "expression");
-          if (v < 0) continue;
-          DynReach r; memset(&r, 0, sizeof r);
-          dyn_reach_value(c, v, k, 0, &r);
-          if (r.unlifted || !(r.app || (r.unknown && dyn_any_appender(c)))) continue;
-          /* the read stays unmarked: the literal blocks the same yield binds
-             take the plain String, and the proc call boxes the handle
-             (emit_proc_yield) */
-          changed |= dyn_pull_arg(c, av[k], 0);
-          break;
-        }
-      }
+     variable yielded to it: through a `yield`, and through a `blk.call` on
+     the method's own &block, which the splice expands as one */
+  for (int pass = 0; pass < 2; pass++) {
+    for (int y = comp_kind_first(c, NK_YieldNode); y >= 0; y = comp_kind_next(c, y))
+      if (nt_kind(nt, y) == NK_YieldNode) changed |= yield_splice_site(c, y, pass, &aliases);
+    for (int y = comp_kind_first(c, NK_CallNode); y >= 0; y = comp_kind_next(c, y)) {
+      Scope *ys = nt_kind(nt, y) == NK_CallNode ? comp_scope_of(c, y) : NULL;
+      if (ys && ys->yields && an_yield_like(c, y, ys)) changed |= yield_splice_site(c, y, pass, &aliases);
     }
+  }
   an_local_aliases_free(&aliases);
   return changed;
 }
