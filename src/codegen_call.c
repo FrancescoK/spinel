@@ -20825,7 +20825,8 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   if (rt != TY_STRING && rt != TY_STRBUF && rt != TY_SYMBOL) return 0;
   int anode = nt_ref(nt, id, "arguments"), argc = 0;
   const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
-  if (argc == 0 || nt_ref(nt, id, "block") >= 0 || user_defines_or_reads(c, name)) return 0;
+  /* a block is ignored, as CRuby ignores it, and checks the options all the same */
+  if (argc == 0 || user_defines_or_reads(c, name)) return 0;
   for (int i = 0; i < argc; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
