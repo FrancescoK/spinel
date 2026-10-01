@@ -12495,6 +12495,15 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "captures"))  buf_printf(b, "sp_MatchData_captures(%s)", r);
     else if (sp_streq(name, "to_a"))      buf_printf(b, "sp_MatchData_to_a(%s)", r);
     else if (sp_streq(name, "nil?"))      buf_printf(b, "(%s == 0)", r);
+    /* a method the program adds to Object is every MatchData's too (`$~.me`
+       under ruby/spec's `$~.should`): leave it to the Object reopening
+       dispatch, which boxes the receiver -- a nil $~ included -- instead of
+       refusing it as a MatchData method this table lacks */
+    else if (comp_class_index(c, "Object") >= 0 &&
+             comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) {
+      free(rs.p);
+      return 0;
+    }
     else unsupported(c, id, "MatchData method");
     free(rs.p);
     return 1;
