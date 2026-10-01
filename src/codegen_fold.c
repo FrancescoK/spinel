@@ -8954,13 +8954,46 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
   return a;
 }
 
+/* Does parameter i of m take the argument written at index i, ahead of the
+   first splat, however many values the splats hold? A required leading
+   positional always does. An optional one does when the arguments written
+   outside the splats cover every required positional, leading and after
+   the rest, and the optionals up to i: the run time fills the required
+   ones first, so with fewer a short splat moves the argument onto a later
+   parameter (`def g(a = nil, *r, z)` called `g(s, *e)` binds s to z when e
+   is empty). `argv` holds all `argc` arguments, the keyword hash included. */
+int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i) {
+  const NodeTable *nt = c->nt;
+  int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc - 1 : argc;
+  if (!argv || i < 0 || i >= pos_argc || i >= m->nparams) return 0;
+  int nopt = 0;
+  for (int k = 0; k <= i; k++) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || !m->pnames[k] ||
+        k == m->rest_idx || k == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[k])) return 0;
+    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return 0;
+    if (m->pdefault && m->pdefault[k] >= 0) nopt++;
+  }
+  if (!nopt) return 1;
+  int written = 0, nreq = 0;
+  for (int k = 0; k < pos_argc; k++) {
+    NodeKind ak = nt_kind(nt, argv[k]);
+    if (ak != NK_SplatNode && ak != NK_BlockArgumentNode) written++;
+  }
+  for (int k = 0; k < m->nparams; k++)
+    if (m->pnames[k] && k != m->rest_idx && k != m->kwrest_idx && !(m->pdefault && m->pdefault[k] >= 0) &&
+        !callee_param_is_declared_kwarg(c, m, m->pnames[k])) nreq++;
+  return written - nreq >= nopt;
+}
+
 /* The argument parameter i of m takes out of a gather whatever the splats
    hold, or -1: the gather keeps the arguments in order, and the leading
-   required positionals take its first elements, so one ahead of the first
-   splat with only requireds before it is the argument written at its
-   index. The binders fund it from the gather all the same; what lends it
-   (emit_gather_lead_lent) and the analysis that follows a String into it
-   (arg_layout_param_node) read it here, and both only for an argument
+   positionals take its first elements, so one ahead of the first splat
+   that the splats cannot move (gather_lead_placed) is the argument written
+   at its index. The binders fund it from the gather all the same; what
+   lends it (emit_gather_lead_lent) and the analysis that follows a String
+   into it (arg_layout_param_node) read it here, and both only for an argument
    nothing after it can give another value: the gather ran every argument,
    and the call fills the defaults, before the callee reads what was lent,
    so `grow(s, *xs, (s = +"q"; 9))` would bind the new String where CRuby
@@ -8973,15 +9006,7 @@ int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i) {
 static int gather_lead_arg(Compiler *c, Scope *m, const int *argv, int argc, int i) {
   const NodeTable *nt = c->nt;
   int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
-  int pos_argc = kwh >= 0 ? argc - 1 : argc;
-  if (!argv || i < 0 || i >= pos_argc || i >= m->nparams) return -1;
-  for (int k = 0; k <= i; k++) {
-    NodeKind ak = nt_kind(nt, argv[k]);
-    if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || !m->pnames[k] ||
-        k == m->rest_idx || k == m->kwrest_idx || (m->pdefault && m->pdefault[k] >= 0) ||
-        callee_param_is_declared_kwarg(c, m, m->pnames[k])) return -1;
-    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return -1;
-  }
+  if (!gather_lead_placed(c, m, argv, argc, i)) return -1;
   int x = argv[i];
   NodeKind xk = nt_kind(nt, x);
   const char *vn = xk == NK_LocalVariableReadNode ? nt_str(nt, x, "name") : NULL;

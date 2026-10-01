@@ -18717,6 +18717,7 @@ static int rest_elems_mutated(Compiler *c, int mi) {
    1 for an argument written in the call, which the call boxes itself, and 0
    for an element of a local Array, which the container rule turns into the
    handle (promote_shared_stored_strings). Answers the count. */
+int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i);
 int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *direct, int cap) {
   const NodeTable *nt = c->nt;
   int a = nt_ref(nt, call, "arguments"), ac = 0;
@@ -18739,16 +18740,12 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
        the handle, or the append lands in the slot's copy and the String's
        other name misses it. Any other String there stays lent as before,
        so a call that hands over no shared String keeps its slots. An
-       optional parameter there is filled the same way unless required
-       parameters follow the rest: those take the last arguments first, so
-       a short splat moves the lead argument onto them
-       (`def g2(a = nil, b = 1, *r)`). */
+       optional parameter there is filled the same way when the arguments
+       written outside the splats leave no splat length that moves the lead
+       argument onto a later parameter (gather_lead_placed: `def g4(a =
+       nil, *r, z)` called `g4(s, *e, 1)`, but not `g4(s, *e)`). */
     if (an < 0 && pj < fs && pj < m->nparams && pj != m->rest_idx) {
-      for (int k = 0; k <= pj; k++)
-        if (!m->pnames[k] || k == m->rest_idx || k == m->kwrest_idx ||
-            (m->pdefault && m->pdefault[k] >= 0 && m->npost_rest > 0) ||
-            callee_param_is_declared_kwarg(c, m, m->pnames[k]))
-          return 0;
+      if (!gather_lead_placed(c, m, av, ac, pj)) return 0;
       if (cap < 1 || !an_arg_is_shared_handle(c, av[pj])) return 0;
       out[0] = av[pj]; direct[0] = 1;
       return 1;

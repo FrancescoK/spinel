@@ -1072,6 +1072,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
+	t=test/reject/string_gather_short_splat_lead.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/gss.c" >"$$tmp/gss.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String a short splat can move onto another parameter compiled)"; ok=0; \
+	else grep -q "ahead of a splat whose length decides which parameter takes it" "$$tmp/gss.out" || \
+	  { echo "reject-test: FAIL (short-splat lead rejected without saying why)"; sed -n 1,5p "$$tmp/gss.out"; ok=0; }; fi; \
 	t=test/reject/toplevel_include_yield_ivar_target.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tiv.c" >"$$tmp/tiv.out" 2>&1; then \
 	  echo "reject-test: FAIL (an included method assigning an ivar as a multiple-assignment target compiled)"; ok=0; \
@@ -1548,6 +1553,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/string_handle_poly_variable.rb \
                   test/string_handle_splat_gather.rb \
                   test/string_alias_gathered_lead.rb \
+                  test/string_gather_optional_post.rb \
                   test/default_reads_callee_self.rb \
                   test/main_body_split.rb \
                   test/string_handle_initialize_kept_block.rb \

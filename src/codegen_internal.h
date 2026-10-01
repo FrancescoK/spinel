@@ -610,6 +610,9 @@ int arg_ran_first(int node, int from);
    (emit_arg_temp), -1 when there is none. */
 int ran_first_handle(int node);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
+/* Does parameter i take the argument written at index i ahead of the first
+   splat, however long the splats run? */
+int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i);
 void emit_gather_arity_check(Compiler *c, Scope *m, int ct);
 void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out);
 /* A byref parameter's value with no caller slot to lend: a rooted temp's address. */
