@@ -28,6 +28,16 @@ class SpecExpectation
   def ==(other)
     report(@v == other, "expected #{other.inspect}, got #{@v.inspect}")
   end
+  # x.should.eq(y): the extractor's spelling of x.should == y. spinel does not
+  # dispatch a user == whose argument is a Hash (see extract.rb's rewrite).
+  def eq(other)
+    report(@v == other, "expected #{other.inspect}, got #{@v.inspect}")
+  end
+  # x.should.same(y): the extractor's spelling of x.should.equal?(y). spinel
+  # compiles equal? as identity in place and never calls a user's.
+  def same(other)
+    report(@v.equal?(other), "expected same object as #{other.inspect}")
+  end
   def !=(other)
     report(@v != other, "expected not #{other.inspect}")
   end

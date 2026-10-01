@@ -147,7 +147,32 @@ def rewrite(line)
   line = line.sub(/\.should(_not)?\.respond_to\?(\((?:[^()]|\g<2>)*\))(\s*(?:#.*)?)$/) do
     ".respond_to?#{$2}.should == #{$1 ? "false" : "true"}#{$3}"
   end
+  # spinel never dispatches a user `equal?` (it compiles identity in place),
+  # so `x.should.equal?(y)` checked nothing either
+  line = line.gsub(/\.should(_not)?\.equal\?(?=[( ])/) { ".should#{$1}.same" }
+  # spinel does not dispatch a user `==` whose argument is a Hash, so
+  # `x.should == {a: 1}` checked nothing: the expectation is called by name
+  # instead. Only an operand that ends on its line is rewritten, and none a
+  # pair of parentheses would change (a modifier, and/or, a heredoc).
+  if (m = line.match(/\A(.*\.should(?:_not)?) == (.*?)(\s*)\z/m)) && one_line_operand?(m[2])
+    line = "#{m[1]}.eq(#{m[2]})#{m[3]}"
+  end
   line
+end
+
+def one_line_operand?(rhs)
+  return false if rhs.empty? || rhs.include?(".should")
+  return false if rhs =~ /\b(if|unless|while|until|rescue|and|or|not|do)\b/ || rhs =~ /<<[~-]?["'A-Z_]/
+  return false if rhs =~ /#(?!\{)/ || rhs =~ /[,\\(\[{|&+\-*\/=<>.?:]\z/
+  depth = 0
+  bare = rhs.gsub(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/, '""')
+  return false if bare.include?(";")
+  bare.each_char do |ch|
+    depth += 1 if "([{".include?(ch)
+    depth -= 1 if ")]}".include?(ch)
+    return false if depth < 0
+  end
+  depth.zero?
 end
 
 total = 0
