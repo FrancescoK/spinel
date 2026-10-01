@@ -368,6 +368,14 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
       break;
     case NK_DefNode:
       return 0;
+    case NK_ReturnNode:
+      /* `return super` leaves initialize, whose value `new` drops; only a
+         lambda's return hands the value on. */
+      for (int q = par[p]; q >= 0; q = par[q]) {
+        if (nt_kind(nt, q) == NK_LambdaNode) return 1;
+        if (nt_kind(nt, q) == NK_DefNode) return 0;
+      }
+      return 0;
     case NK_BlockNode: {
       int call = par[p];
       const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
@@ -382,6 +390,11 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
       const char *ty = nt_type(nt, p);
       if (ty && sp_streq(ty, "EnsureNode")) return 0;
       if (ty && sp_streq(ty, "WhenNode") && nt_ref(nt, p, "statements") == v) break;
+      if (ty && sp_streq(ty, "ArgumentsNode") && par[p] >= 0 && nt_kind(nt, par[p]) == NK_ReturnNode) {
+        int na = 0;
+        nt_arr(nt, p, "arguments", &na);
+        if (na == 1) break;   /* `return super`; `return super, x` builds an Array of it */
+      }
       return 1;
     }
     }

@@ -52,3 +52,11 @@ end
 p M.new(3).a, L.new.a
 p K.new(true).a, K.new(false).a, J.new.a
 p S.new(2).v
+# `return super` leaves initialize, so new drops its value too
+class I < N
+  def initialize(flag)
+    return super(9) if flag
+    return(super(10))
+  end
+end
+p I.new(true).a, I.new(false).a
