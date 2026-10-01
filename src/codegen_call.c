@@ -13884,6 +13884,18 @@ static void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, 
   buf_printf(b, "); _t%d; })", te);
 }
 
+/* Klass.try_convert(x) on a boxed x: whether x already is one of the
+   class is known only at run time, so the runtime answers by the class's
+   name, as it does for a class known only at run time. A typed x the
+   emitters below answer statically. */
+static int emit_try_convert_boxed(Compiler *c, const char *cname, int arg, Buf *b) {
+  if (comp_ntype(c, arg) != TY_POLY) return 0;
+  buf_printf(b, "sp_poly_class_try_convert(sp_box_class_name(SPL(\"%s\")), ", cname);
+  emit_boxed(c, arg, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -13965,6 +13977,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return 1; }
+    if (emit_try_convert_boxed(c, "Array", argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
   }
@@ -13974,6 +13987,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (at == TY_INT || at == TY_BIGINT) { emit_boxed(c, argv[0], b); return 1; }
+    if (emit_try_convert_boxed(c, "Integer", argv[0], b)) return 1;
     /* a Float converts via to_int (truncates; Inf/NaN raises FloatDomainError) */
     if (at == TY_FLOAT) {
       buf_puts(b, g_promote_mode ? "sp_box_f_to_int(" : "sp_box_int(sp_float_to_i_checked(");
@@ -13992,6 +14006,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       sp_streq(name, "try_convert")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (ty_is_hash(at)) { emit_boxed(c, argv[0], b); return 1; }
+    if (emit_try_convert_boxed(c, "Hash", argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
   }
@@ -14006,6 +14021,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     TyKind at = comp_ntype(c, argv[0]);
     int ok = want_str ? (at == TY_STRING || at == TY_STRBUF) : (at == TY_IO);
     if (ok) { emit_boxed(c, argv[0], b); return 1; }
+    if (emit_try_convert_boxed(c, nt_str(nt, recv, "name"), argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
   }
@@ -34410,6 +34426,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (comp_ntype(c, argv[0]) == TY_REGEX) {
       buf_puts(b, "sp_box_regexp((void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
     }
+    else if (emit_try_convert_boxed(c, "Regexp", argv[0], b)) {}
     else {
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     }
