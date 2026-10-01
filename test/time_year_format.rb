@@ -28,3 +28,10 @@ p({ t: Time.utc(-12, 4, 12), n: 1 })
 %w[%-Y %_Y %_10Y %-10Y %5Y %3Y %-G %_G %-C %_y %-y %^v %-F].each do |f|
   puts "#{f.ljust(6)} " + [12, -12, 2024].map { |y| Time.utc(y, 1, 5).strftime(f) }.join("|")
 end
+
+# a width wider than any year still pads the whole field, sign first
+%w[%200Y %_200Y %200G %-200Y %010Y].each do |f|
+  r = [12, -12, 2024].map { |y| Time.utc(y, 1, 5).strftime(f) }
+  puts "#{f} #{r.map(&:size).inspect} #{r.map(&:strip).join("|")}"
+end
+puts Time.at(-5).utc.strftime("%10s|%_10s")
