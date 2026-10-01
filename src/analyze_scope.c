@@ -608,6 +608,14 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   int dblk = nt_ref(nt, dc, "block");
   if (dblk < 0) return 0;
   int dbody = nt_ref(nt, dblk, "body");
+  /* Keyword parameters are bound only by a DefNode's parameters (see
+     desugar_define_method_keywords), which an unrolled scope does not
+     have: a call's `k: 5` would bind the whole Hash to k. Leave those. */
+  { int dpn0 = nt_ref(nt, dblk, "parameters");
+    int dps0 = dpn0 >= 0 ? nt_ref(nt, dpn0, "parameters") : -1;
+    int dkn0 = 0;
+    if (dps0 >= 0) (void)nt_arr(nt, dps0, "keywords", &dkn0);
+    if (dkn0 > 0) return 0; }
   /* iterate the array literal's elements */
   int en = 0; const int *elems = nt_arr(nt, recv, "elements", &en);
   if (en == 0) return 0;
