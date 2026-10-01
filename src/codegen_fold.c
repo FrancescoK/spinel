@@ -6534,13 +6534,15 @@ else if (dty && sp_streq(dty, "NilNode")) {
        expression passes through unchanged. */
     emit_boxed(c, dv, &db);
     const char *dx = db.p ? db.p : "sp_box_nil()";
-    if (pt == TY_INT) buf_printf(out, "sp_poly_to_i_or_nil(%s)", dx);
-    else if (pt == TY_FLOAT) buf_printf(out, "sp_poly_to_f_or_nil(%s)", dx);
-    else if (pt == TY_STRING) buf_printf(out, "sp_poly_to_s_or_nil(%s)", dx);
-    else if (pt == TY_SYMBOL) buf_printf(out, "(sp_sym)sp_poly_to_i(%s)", dx);
-    else if (pt == TY_BOOL) buf_printf(out, "sp_poly_to_i(%s)", dx);
-    else if (pt == TY_BIGINT) buf_printf(out, "sp_poly_as_bigint(%s)", dx);
-    else emit_unbox_text(c, pt, dx, out);
+    switch (pt) {
+    case TY_INT: buf_printf(out, "sp_poly_to_i_or_nil(%s)", dx); break;
+    case TY_FLOAT: buf_printf(out, "sp_poly_to_f_or_nil(%s)", dx); break;
+    case TY_STRING: buf_printf(out, "sp_poly_to_s_or_nil(%s)", dx); break;
+    case TY_SYMBOL: buf_printf(out, "(sp_sym)sp_poly_to_i(%s)", dx); break;
+    case TY_BOOL: buf_printf(out, "sp_poly_to_i(%s)", dx); break;
+    case TY_BIGINT: buf_printf(out, "sp_poly_as_bigint(%s)", dx); break;
+    default: emit_unbox_text(c, pt, dx, out); break;
+    }
     free(db.p);
   }
   /* Same boundary promotion the supplied-argument path does: an int DEFAULT
