@@ -7506,7 +7506,7 @@ static int value_arm_is(const NodeTable *nt, int v, int node) {
    rebuilt per fixpoint iteration and when the table grows, like the
    receiver set above, and each node on it is checked as the walk did, so
    one that no longer holds the yield answers no. */
-enum { YU_WRITE, YU_ELEMENT, YU_ARGUMENT, YU_RECEIVER, YU_FRAME };
+enum { YU_WRITE, YU_ELEMENT, YU_ARGUMENT, YU_RECEIVER, YU_FRAME, YU_BLOCK };
 static const NodeKind yu_write_kinds[] = {
   NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
   NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
@@ -7578,6 +7578,9 @@ static int yield_uses(Compiler *c, int y) {
     NT_FOREACH_KIND(nt, NK_CallNode, w) {
       int r = nt_ref(nt, w, "receiver");
       if (r >= 0 && r < nt->count && nt_kind(nt, r) == NK_YieldNode) yu_add(r, w, YU_RECEIVER);
+      int bk = nt_ref(nt, w, "block");
+      if (bk >= 0 && bk < nt->count && nt_kind(nt, bk) == NK_BlockNode)
+        yu_collect(nt, nt_ref(nt, bk, "body"), w, YU_BLOCK);
       int an = nt_ref(nt, w, "arguments");
       if (an < 0) continue;
       int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
@@ -8707,6 +8710,16 @@ TyKind infer_uncached(Compiler *c, int id) {
           int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
           for (int e = 0; e < ac; e++)
             if (value_arm_is(nt, av[e], id)) return TY_POLY;
+          break;
+        }
+        case YU_BLOCK: {
+          /* The value of a block handed to a method the program defines
+             likewise: that method's own yield takes it into a slot typed
+             from the first site, so `def run2(x) = run(x) { |u| yield u }`
+             with an Integer block at one site and a String one at another
+             emitted the String into an sp_int. Poly boxes each site's. */
+          const char *wn = nt_str(nt, w, "name");
+          if (wn && call_may_reach_user_method(c, w, wn)) return TY_POLY;
           break;
         }
         case YU_RECEIVER: {
