@@ -1801,6 +1801,13 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
   return 1;
 }
 
+static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
+  if (an_builtin_only) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_poly_arm_defines_n(c, k, name, argc)) return 1;
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
@@ -1849,11 +1856,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && argc == 0 && (sp_streq(name, "to_a") || sp_streq(name, "to_ary")) &&
       nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
       an_to_a_result_mutated(c, id)) {
-    int has_user = 0;
-    if (!an_builtin_only)
-      for (int k = 0; k < c->nclasses && !has_user; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
-    if (!has_user) return TY_POLY;
+    if (!an_user_poly_arm(c, name, argc)) return TY_POLY;
   }
 
   /* `alias new old` / `alias_method :new, :old` in a reopened primitive
@@ -5481,11 +5484,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          user lookup below. */
       if ((sp_streq(name, "keys") || sp_streq(name, "values") ||
            sp_streq(name, "to_a")) && argc == 0) {
-        int has_user = 0;
-        if (!an_builtin_only)
-        for (int k = 0; k < c->nclasses && !has_user; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
-        if (!has_user) return an_poly_concrete(c, name, TY_POLY_ARRAY);
+        if (!an_user_poly_arm(c, name, argc)) return an_poly_concrete(c, name, TY_POLY_ARRAY);
       }
       if (sp_streq(name, "clamp")) return an_poly_concrete(c, name, TY_POLY);  /* boxed numeric clamp -> poly */
       /* a boxed Encoding value, as the concrete String arm answers. Without a
@@ -5497,11 +5496,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           ((argc == 0 && (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
                           sp_streq(name, "to_r") || sp_streq(name, "to_c"))) ||
            (argc <= 1 && sp_streq(name, "rationalize")))) {   /* an optional epsilon */
-        int has_user = 0;
-        if (!an_builtin_only)
-        for (int k = 0; k < c->nclasses && !has_user; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
-        if (!has_user) {
+        if (!an_user_poly_arm(c, name, argc)) {
           /* concrete result types, matching the TY_NIL receiver arm so a
              local settled on an early (pre-widening) pass stays consistent */
           if (sp_streq(name, "to_a")) return an_poly_concrete(c, name, TY_POLY_ARRAY);
@@ -5515,10 +5510,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         }
       }
       if (argc == 1 && sp_streq(name, "===")) {
-        int has_user = 0;
-        if (!an_builtin_only)
-        for (int k = 0; k < c->nclasses && !has_user; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
+        int has_user = an_user_poly_arm(c, name, argc);
         /* A boxed receiver can be a Proc, whose #=== answers the proc's
            return value rather than a boolean (#3818); a poly slot holds the
            booleans every other kind answers just as well. */
@@ -5977,11 +5969,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         if (!has_user) return an_poly_concrete(c, name, TY_POLY_ARRAY);
       }
       if (argc >= 1 && sp_streq(name, "values_at") && nt_ref(nt, id, "block") < 0) {
-        int has_user = 0;
-        if (!an_builtin_only)
-        for (int k = 0; k < c->nclasses && !has_user; k++)
-          if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
-        if (!has_user) return an_poly_concrete(c, name, TY_POLY_ARRAY);
+        if (!an_user_poly_arm(c, name, argc)) return an_poly_concrete(c, name, TY_POLY_ARRAY);
       }
       /* Array-reduction methods on a boxed array element (a run from
          chunk_while etc.): the concrete element type is erased to poly, so the
