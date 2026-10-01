@@ -16747,7 +16747,7 @@ static struct {
      by scope, the names a Symbol or String argument spells, and whether
      the program reaches methods by a name it computes */
   ANameHash cnames;
-  int *chead, *cnext, *rhead, *rnext, ccap, ibuilt, open_names;
+  int *chead, *cnext, *rhead, *rnext, ccap, ibuilt, icount, open_names, returns_open;
   ANameHash lnames;
 } g_dyn;
 
@@ -17626,12 +17626,16 @@ static void dyn_callable_index(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (g_dyn.ibuilt) return;
   g_dyn.ibuilt = 1;
-  g_dyn.cnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nlit + 1));
-  g_dyn.rnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nlit + 1));
+  /* sized by the table as it is now: codegen adds nodes after the memo was
+     sized, and one past what is indexed here makes the walk give up */
+  g_dyn.icount = nt->count;
+  g_dyn.cnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.icount + 1));
+  g_dyn.rnext = (int *)malloc(sizeof(int) * ((size_t)g_dyn.icount + 1));
   g_dyn.rhead = (int *)malloc(sizeof(int) * ((size_t)g_dyn.nscope + 1));
   if (!g_dyn.cnext || !g_dyn.rnext || !g_dyn.rhead) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i <= g_dyn.nscope; i++) g_dyn.rhead[i] = -1;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (n >= g_dyn.icount) { g_dyn.open_names = 1; continue; }
     if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
     if (!nm) continue;
@@ -17671,6 +17675,7 @@ static void dyn_callable_index(Compiler *c) {
   if (comp_kind_first(c, NK_SuperNode) >= 0 || comp_kind_first(c, NK_ForwardingSuperNode) >= 0 ||
       comp_kind_first(c, NK_AliasMethodNode) >= 0) g_dyn.open_names = 1;
   for (int r = comp_kind_first(c, NK_ReturnNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (r >= g_dyn.icount) { g_dyn.returns_open = 1; continue; }
     if (nt_kind(nt, r) != NK_ReturnNode) continue;
     Scope *rs = comp_scope_of(c, r);
     if (!rs) continue;
@@ -17714,7 +17719,7 @@ static int dyn_tail_may_callable(Compiler *c, int n, int depth) {
 static int dyn_returns_walk(Compiler *c, int mi, int depth) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
-  if (m->body < 0 || m->cs_synth || m->is_lowered_yield) return 1;
+  if (m->body < 0 || m->cs_synth || m->is_lowered_yield || g_dyn.returns_open) return 1;
   /* a define_method body, or one a method_missing could stand in for */
   if (m->def_node < 0 || nt_kind(nt, m->def_node) != NK_DefNode) return 1;
   if (dyn_tail_may_callable(c, m->body, depth)) return 1;
