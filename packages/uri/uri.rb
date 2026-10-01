@@ -373,6 +373,21 @@ module URI
 
   RFC2396_PARSER = RFC2396_Parser.new
 
+  def self.normalize_path(path)
+    trailing_slash = path.end_with?("/")
+    parts = []
+    path.split("/").each do |part|
+      if part == ".."
+        parts.pop if parts.length > 1
+      elsif part != "."
+        parts << part
+      end
+    end
+    normalized = parts.join("/")
+    normalized << "/" if trailing_slash && !normalized.end_with?("/")
+    normalized
+  end
+
   def self.join(base, rel)
     b = parse(base.to_s)
     r = rel.to_s
@@ -385,6 +400,7 @@ module URI
       dir = cut ? dir[0, cut + 1] : "/"
       path = dir + r
     end
+    path = normalize_path(path)
     q = ""
     qi = path.index("?")
     if qi
