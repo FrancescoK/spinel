@@ -50,13 +50,20 @@ classify_one() {
   local diag; diag=$("$SPINEL" "$f" -o "$bin" 2>&1 >/dev/null)
   if [ ! -x "$bin" ]; then
     local reason; reason=$(grep -oE "unsupported [^:]*|Parse errors|cannot [a-z ]*|error: [^(]*" <<<"$diag" | head -1)
+    # a refusal in the compiler's present wording ("Refinements are not
+    # supported by AOT compilation: ...", "undefined method 'x' for a Class:
+    # ...") matches none of the forms above; take its message up to the
+    # explanation. Read as "unknown", 40% of the rejects hid their construct
+    # from the ranking and from gen_manifest's by-design ledger.
+    [ -z "$reason" ] && reason=$(sed -nE 's/^spinel: [^ ]+:[0-9]+: //p' <<<"$diag" |
+      grep -v '^warning:' | head -1 | sed -E 's/: .*//; s/ \(see docs[^)]*\)//')
     # a rejected call names its method: append it so the reject ranking (and
     # the by-design ledger's rules) can see WHICH call, not just "a call"
     case "$reason" in unsupported*call*|unsupported*argument*)
       local mn; mn=$(grep -oE 'CallNode `[A-Za-z_0-9?!=<>]+`' <<<"$diag" | head -1 | sed 's/CallNode //')
       [ -n "$mn" ] && reason="$reason $mn";;
     esac
-    echo -e "$bn\tREJECT\t${reason:-unknown}" > "$row"; return
+    printf '%s\tREJECT\t%s\n' "$bn" "${reason:-unknown}" > "$row"; return
   fi
   local rc last
   # run output goes to a file, NOT a shell variable: an example that prints
@@ -66,7 +73,11 @@ classify_one() {
   last=$(tail -c 4096 "$run_out" | tail -1)
   rm -f "$bin" "$run_out"
   if [ $rc -ne 0 ] || ! grep -q "MSPEC-DONE" <<<"$last"; then
-    echo -e "$bn\tERROR\trc=$rc" > "$row"
+    # the last line is what the program died with (an uncaught exception's
+    # message, if it raised one): gen_manifest's ledger reads it, as it reads
+    # a reject's reason
+    last=${last//$'\t'/ }; last=${last//$'\r'/}
+    printf '%s\tERROR\trc=%s %s\n' "$bn" "$rc" "${last:0:200}" > "$row"
   elif grep -q "fail=0" <<<"$last"; then
     echo -e "$bn\tPASS\t$last" > "$row"
   else
