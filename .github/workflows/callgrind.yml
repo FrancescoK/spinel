@@ -48,9 +48,14 @@ jobs:
             for b in $list; do
               [ -f "benchmark/$b.rb" ] || continue
               ./spinel "benchmark/$b.rb" -o "$RUNNER_TEMP/$b-$side" >/dev/null 2>&1 || { echo "$b $side build-failed" >> "$RUNNER_TEMP/ir.txt"; continue; }
-              valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/$b-$side.cg" "$RUNNER_TEMP/$b-$side" > /dev/null 2> "$RUNNER_TEMP/$b-$side.vg" || true
-              ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/$b-$side.vg" | grep -o '[0-9]*$')
-              echo "$b $side ${ir:-none}" >> "$RUNNER_TEMP/ir.txt"
+              # REPEAT > 1 measures a benchmark several times (a threaded
+              # one's interleaving, and so its Ir, varies run to run)
+              for k in $(seq 1 "${REPEAT:-1}"); do
+                n=$b; [ "${REPEAT:-1}" -gt 1 ] && n="$b#$k"
+                valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/$n-$side.cg" "$RUNNER_TEMP/$b-$side" > /dev/null 2> "$RUNNER_TEMP/$n-$side.vg" || true
+                ir=$(grep -o 'Collected : [0-9]*' "$RUNNER_TEMP/$n-$side.vg" | grep -o '[0-9]*$')
+                echo "$n $side ${ir:-none}" >> "$RUNNER_TEMP/ir.txt"
+              done
             done
             cd - >/dev/null
           }
