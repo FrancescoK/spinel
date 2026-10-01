@@ -35348,6 +35348,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 0 && sp_streq(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
     const char *rtyf = nt_type(nt, recv);
     int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode"));
+    /* a shared String handle reads back as an expression (a copy), which
+       cannot be assigned to: freeze the handle, which every later mutation
+       through it checks, and answer its contents frozen */
+    char fzref[1024];
+    if (assignable_f && strbuf_slot_ref(c, recv, fzref, sizeof fzref)) {
+      buf_printf(b, "({ sp_String_freeze(%s); sp_str_freeze_val(", fzref);
+      emit_expr(c, recv, b); buf_puts(b, "); })");
+      return;
+    }
     if (assignable_f) {
       buf_puts(b, "({ ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
