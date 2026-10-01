@@ -1,0 +1,6 @@
+"a|b\\."
+true
+false
+"none"
+"http|https"
+"(?!)"

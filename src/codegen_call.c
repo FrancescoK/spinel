@@ -35481,11 +35481,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     /* A single Array-valued argument whose elements are only known at run time
        (a variable/expression, not a literal) is joined by the runtime helper. */
     else if (argc == 1) {
-      TyKind uat = comp_ntype(c, argv[0]);
-      if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY) {
+      /* `Regexp.union(*a)` is the union of a's elements, as `(a)` is */
+      int ua = argv[0];
+      int splat = nt_kind(nt, ua) == NK_SplatNode && nt_ref(nt, ua, "expression") >= 0;
+      if (splat) ua = nt_ref(nt, ua, "expression");
+      TyKind uat = comp_ntype(c, ua);
+      if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY || (splat && uat == TY_POLY)) {
         buf_puts(b, "sp_re_union_array(");
-        if (uat == TY_STR_ARRAY) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[0], b);
+        if (uat == TY_STR_ARRAY) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, ua, b); buf_puts(b, ")"); }
+        else if (uat == TY_POLY) { buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, ua, b); buf_puts(b, ")"); }
+        else emit_expr(c, ua, b);
         buf_puts(b, ")");
         return;
       }
