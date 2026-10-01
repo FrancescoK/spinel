@@ -8545,6 +8545,15 @@ TyKind infer_uncached(Compiler *c, int id) {
           if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
                                 sp_streq(op, "/") || sp_streq(op, "%")))
             return TY_POLY;
+          /* A no-arg builtin whose return type mirrors the receiver's type
+             (abs, unary -): Integer.abs is Integer, Float.abs is Float.
+             The same mismatch occurs: the slot is typed from the first
+             site's receiver, and the second site's concrete result (a
+             double from fabs, say) is stored into an integer slot.
+             yield_builtin_method_site_type types the call from the
+             per-site block type; only extend this list in tandem. */
+          if (ac == 0 && op && (sp_streq(op, "abs") || sp_streq(op, "-@")))
+            return TY_POLY;
           break;
         }
         case YU_FRAME: {
