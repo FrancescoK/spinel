@@ -4,6 +4,7 @@
    (codegen_call_arms.h). */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
@@ -1965,5 +1966,73 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
     else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); }
     return 1;
   }
+  return 0;
+}
+
+int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = repr_of(c, recv).ty;
+  /* A set raises on a frozen kind, or is refused where no ivar slot exists.
+     The receiver and arguments run first, including before a bad name. */
+  int is_set = x->op->arg[0] == 's';
+  int frozen_kind = rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_NIL || rt == TY_SYMBOL ||
+                    rt == TY_BIGINT || rt == TY_RANGE;
+  if (is_set && !frozen_kind)
+    unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
+                               "instance variables for a builtin value, so the variable has no slot to live in");
+  const char *a0ty = argc >= 1 ? nt_type(nt, argv[0]) : NULL;
+  const char *sym = a0ty && sp_streq(a0ty, "SymbolNode") ? nt_str(nt, argv[0], "value")
+                  : a0ty && sp_streq(a0ty, "StringNode") ? nt_str(nt, argv[0], "content") : NULL;
+  int tv = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+  /* a literal name with no `@` is NameError before anything else */
+  if (argc >= 1 && sym && sym[0] != '@')
+    buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
+  if (is_set)
+    buf_printf(b, "sp_raise_frozen_obj(_t%d, sp_str_concat((&(\"\\xff\" \"can't modify frozen \")[1]), "
+                  "sp_poly_class_name(_t%d))); ", tv, tv);
+  if (x->op->arg[0] == 'l') buf_puts(b, "sp_PolyArray_new(); })");
+  else if (x->op->arg[0] == 'd') buf_puts(b, "(sp_bool)0; })");
+  else {
+    /* A raising set still needs the settled result's C representation. */
+    Repr rp = repr_of(c, id);
+    const char *nv = nil_value(rp.as_ty);
+    buf_printf(b, "%s; })", nv ? nv : default_value(rp.as_ty));
+  }
+  return 1;
+}
+
+int emit_ivar_reflection(Compiler *c, int id, int recv, TyKind rt,
+                         const char *name, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (recv >= 0 && ty_builtin_ivar_less(rt) &&
+      emit_builtin_op(c, id, recv, BOP_IVAR_LESS, name, b)) return 1;
+  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
+     the layout answers at compile time. This structural rule needs the
+     literal name and the class's unset-slot state, outside builtin row guards. */
+  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      ty_is_object(rt) && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    int dcid = ty_object_class(rt);
+    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
+    /* one nothing has set yet is not defined (ivar_set_kind) */
+    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
+      int tro = ++g_tmp;
+      char ex[160], tb[256];
+      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
+      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
+      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
+      return 1;
+    }
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
+    return 1;
+  }
+
   return 0;
 }
