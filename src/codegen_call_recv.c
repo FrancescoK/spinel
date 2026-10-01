@@ -14221,18 +14221,27 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      TY_NIL on an early fixpoint pass and typed a captured local concretely);
      unbox the helper's boxed result to match it -- the receiver provably held
      nil there, so the payload really is the concrete kind. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "to_h") ||
-       sp_streq(name, "to_r") || sp_streq(name, "rationalize") || sp_streq(name, "to_c"))) {
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 0 && (sp_streq(name, "to_h") || sp_streq(name, "to_r") || sp_streq(name, "to_c"))) ||
+       (argc <= 1 && sp_streq(name, "rationalize")))) {
     int has_user = 0;
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
     if (!has_user) {
-      /* rationalize with no argument equals to_r for the values a poly nil/int
-         can hold (nil -> (0/1), int -> (n/1)) (#2460). */
-      if (sp_streq(name, "to_r") || sp_streq(name, "rationalize")) {
+      if (sp_streq(name, "to_r")) {
         buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
         emit_expr(c, recv, b);
+        buf_puts(b, ").v.p)");
+      }
+      /* rationalize is to_r for nil and an Integer (#2460), not for a Float
+         (0.1.rationalize is (1/10), its to_r the exact binary value), and it
+         takes an epsilon, which nil and an Integer ignore: the runtime picks
+         the kind's own (sp_poly_rationalize_m), the epsilon boxed */
+      else if (sp_streq(name, "rationalize")) {
+        buf_puts(b, "(*(sp_Rational *)sp_poly_rationalize_m(");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %d, ", argc);
+        if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
         buf_puts(b, ").v.p)");
       }
       else if (sp_streq(name, "to_c")) {
