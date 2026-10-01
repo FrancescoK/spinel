@@ -1,8 +1,9 @@
 require "fileutils"
+require "tmpdir"
 
 # FileUtils.copy_file: the contents, the source's mode on a new file, and the
 # times with preserve
-dir = "/tmp/spinel_fu_copy_file_#{Process.pid}"
+dir = File.join(Dir.tmpdir, "spinel_fu_copy_file_#{Process.pid}")
 FileUtils.mkdir_p(dir)
 src = "#{dir}/src.txt"
 File.write(src, "hello")
