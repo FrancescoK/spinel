@@ -9444,6 +9444,25 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
   return changed;
 }
 
+/* Does the subtree under `node` read or write an ivar? */
+static int subtree_has_ivar(const NodeTable *nt, int node, int depth) {
+  if (node < 0) return 0;
+  /* past the depth this follows, an ivar may be there: not spliced */
+  if (depth > 200) return 1;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
+      k == NK_InstanceVariableOrWriteNode || k == NK_InstanceVariableAndWriteNode ||
+      k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableTargetNode) return 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (subtree_has_ivar(nt, nt_ref_at(nt, node, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_has_ivar(nt, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+
 /* instance_eval / instance_exec with a block on a BUILTIN receiver: splice the
    body inline with self bound to a temp (#2634). User-object receivers keep
    the dedicated codegen path (ie_direct), which handles their ivars/methods.
@@ -9485,6 +9504,10 @@ int desugar_instance_eval_builtin(Compiler *c) {
     int body = nt_ref(nt, blk, "body");
     if (body < 0) continue;
     if (subtree_has_kind(nt, body, NK_DefNode, 0)) continue;
+    /* the block's ivars are the receiver's, which has none: spliced here
+       they read and wrote the caller's. The codegen path reads them nil
+       and refuses a write (emit_call's non-object instance_exec). */
+    if (subtree_has_ivar(nt, nt_ref(nt, blk, "parameters"), 0) || subtree_has_ivar(nt, body, 0)) continue;
     {
       const char *rcls = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
                        : rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time"
