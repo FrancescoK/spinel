@@ -1510,6 +1510,7 @@ GC_MINOR_TESTS := test/gc_minor_thread_local_slot.rb \
                   test/class_value_dispatch_args.rb \
                   test/string_handle_proc_method.rb \
                   test/string_handle_initialize.rb \
+                  test/string_handle_poly_variable.rb \
                   test/default_reads_callee_self.rb \
                   test/main_body_split.rb \
                   test/string_handle_initialize_kept_block.rb \

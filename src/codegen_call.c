@@ -7187,6 +7187,9 @@ static int poly_name_takes_handle(Compiler *c, const char *name) {
     for (int j = 0; j < s->nparams; j++) {
       LocalVar *q = s->pnames[j] ? scope_local(s, s->pnames[j]) : NULL;
       if (q && q->is_param && q->type == TY_STRBUF && q->str_shared) return 1;
+      /* a POLY parameter appended to in place takes a handle argument boxed
+         as the handle (emit_poly_boxed_shared_arg) */
+      if (q && q->is_param && q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) return 1;
     }
   }
   return 0;
@@ -7221,6 +7224,31 @@ static int emit_poly_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa) 
   return 1;
 }
 
+/* Positional `k` into an arm whose parameter is POLY and appended to in
+   place (POLY_LIFT_APPENDED): a String variable that is the shared handle
+   goes over as the handle, boxed, so the arm's `sp_poly_shl` & co. append to
+   the caller's String; the temp's String value, boxed, was a copy, and the
+   appends stayed in it (#6179). 0 for anything else, which boxes the temp. */
+static int emit_poly_boxed_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa) {
+  TyKind at = A->atmp_ty[k];
+  if (at != TY_STRING && at != TY_STRBUF) return 0;
+  if (A->htmp && A->htmp[k]) {
+    buf_printf(pa, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", A->htmp[k]);
+    return 1;
+  }
+  int an = A->argv[k];
+  if (nt_kind(c->nt, an) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(c->nt, an, "name");
+  Scope *vs = vn ? comp_scope_of(c, an) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv || lv->type != TY_STRBUF || !lv->str_shared) return 0;
+  if (poly_other_arg_runs(c, A->argv, A->pos_argc, A->kw ? A->kw->kwh : -1, k)) return 0;
+  char sref[192];
+  if (!strbuf_slot_ref(c, an, sref, sizeof sref)) return 0;
+  buf_printf(pa, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", sref);
+  return 1;
+}
+
 /* Parameter `a` of an arm, from where the layout says: a keyword by name
    from the split-off hash (emit_poly_kw_param), an argument's temp, the
    keyword hash as one more positional, the rest, the gather, or the
@@ -7244,6 +7272,8 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
     if (L->arg[a] < A->pos_argc) {
       if (pt == TY_STRBUF && pv && pv->str_shared &&
           emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
+      if (pt == TY_POLY && pv && (pv->poly_lift & POLY_LIFT_APPENDED) &&
+          emit_poly_boxed_shared_arg(c, A, L->arg[a], pa)) return;
       emit_poly_temp_as(c, pt, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], pa);
       return;
     }

@@ -2498,6 +2498,20 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
 }
+/* A POLY variable's value as it is handed to a parameter the callee appends
+   to in place: a plain String becomes the shared handle, boxed, and the
+   caller stores it back into the variable before the call, so the callee's
+   `sp_poly_shl` & co. append to the String the variable holds (#6179). A
+   plain String box is a value: appended to, it answered a new String in the
+   callee's own copy of the parameter, and the caller's variable never
+   changed. The handle takes the header's length and marks
+   (sp_poly_as_strbuf), so a binary String keeps its bytes and a frozen one
+   still raises FrozenError on the append. Any other value, a handle
+   included, is passed as it is. */
+static inline sp_RbVal sp_poly_strbuf_lift(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_box_obj(sp_poly_as_strbuf(v), SP_BUILTIN_STRBUF);
+  return v;
+}
 /* A boxed value unboxed into a String slot. A mutable String's box carries
    its sp_String handle in the union, so reading `.v.s` there hands the slot
    the handle, not the bytes; the bytes are the handle's data, the same live

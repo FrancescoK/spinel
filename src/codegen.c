@@ -10036,6 +10036,12 @@ static void emit_zsuper_arg(Compiler *c, Scope *s, LocalVar *dst, TyKind dt, con
     return;
   }
   if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_boxed_text(c, st, _bx.p, b);
+  /* a POLY parameter handed to a parent parameter appended to in place: a
+     plain String it holds becomes the shared handle first, as a marked read
+     does at a call (poly_strbuf_lift, #6179) */
+  else if (st == TY_POLY && dt == TY_POLY && (src->poly_lift & POLY_LIFT_ZSUPER) && dst &&
+           (dst->poly_lift & POLY_LIFT_APPENDED))
+    emit_poly_lift_ref(_bx.p, b);
   else if (st == TY_POLY && dt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", _bx.p);
   else if (st == TY_POLY && dt != TY_POLY && dt != TY_UNKNOWN) emit_unbox_text(c, dt, _bx.p, b);
