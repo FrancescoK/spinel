@@ -4129,6 +4129,12 @@ static void emit_poly_auto_splat(Compiler *c, int block, int telem, Buf *b, int 
   emit_indent(b, indent + 1); buf_puts(b, "}\n");
 }
 
+static int emit_shadow_save(Compiler *c, TyKind t, const char *name, Buf *b, int indent) {
+  int ts = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, t, &ot);
+  emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts, name); free(ot.p);
+  return ts;
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   return emit_ivar_nil_guarded(c, id, b, indent, emit_iteration_stmt_body);
@@ -4790,14 +4796,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int p1_box_poly = clv_ewi_p1 && clv_ewi_p1->type == TY_POLY;
     /* Save outer variables before loop */
     int ts_p0 = 0, ts_p1 = 0;
-    if (p0 && clv_ewi_p0) {
-      ts_p0 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, clv_ewi_p0->type, &ot);
-      emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts_p0, p0); free(ot.p);
-    }
-    if (p1 && clv_ewi_p1) {
-      ts_p1 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, clv_ewi_p1->type, &ot);
-      emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts_p1, p1); free(ot.p);
-    }
+    if (p0 && clv_ewi_p0) ts_p0 = emit_shadow_save(c, clv_ewi_p0->type, p0, b, indent);
+    if (p1 && clv_ewi_p1) ts_p1 = emit_shadow_save(c, clv_ewi_p1->type, p1, b, indent);
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
     buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
@@ -4886,14 +4886,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       LocalVar *zlv0 = (p0 && zs) ? scope_local(zs, p0) : NULL;
       LocalVar *zlv1 = (p1n && zs) ? scope_local(zs, p1n) : NULL;
       int zs0 = 0, zs1 = 0;
-      if (p0 && zlv0) {
-        zs0 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, zlv0->type, &ot);
-        emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", zs0, p0); free(ot.p);
-      }
-      if (p1n && zlv1) {
-        zs1 = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, zlv1->type, &ot);
-        emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", zs1, p1n); free(ot.p);
-      }
+      if (p0 && zlv0) zs0 = emit_shadow_save(c, zlv0->type, p0, b, indent);
+      if (p1n && zlv1) zs1 = emit_shadow_save(c, zlv1->type, p1n, b, indent);
       emit_indent(b, indent);
       if (recv_poly)
         buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(%s); _t%d++) {\n",
@@ -5184,10 +5178,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     Scope *cs_pa = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *outer_pa = (p0 && cs_pa) ? scope_local(cs_pa, p0) : NULL;
     int ts_pa = 0;
-    if (outer_pa) {
-      ts_pa = ++g_tmp; Buf ot_pa; memset(&ot_pa, 0, sizeof ot_pa); emit_ctype(c, outer_pa->type, &ot_pa);
-      emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot_pa.p ? ot_pa.p : "sp_RbVal", ts_pa, p0); free(ot_pa.p);
-    }
+    if (outer_pa) ts_pa = emit_shadow_save(c, outer_pa->type, p0, b, indent);
     emit_indent(b, indent);
     if (rt == TY_ENUMERATOR)
       buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s);\n", ta, rb.p ? rb.p : "");
@@ -5293,10 +5284,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int ts = 0;
     if (outer) {
       /* Block params shadow outer variables in Ruby; save and restore */
-      ts = ++g_tmp;
-      Buf ot_ea; memset(&ot_ea, 0, sizeof ot_ea); emit_ctype(c, outer->type, &ot_ea);
-      emit_indent(b, indent);
-      buf_printf(b, "%s _t%d = lv_%s;\n", ot_ea.p ? ot_ea.p : "sp_RbVal", ts, p0); free(ot_ea.p);
+      ts = emit_shadow_save(c, outer->type, p0, b, indent);
     }
     if (rev) { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_%sArray_length(%s);\n", tn, k, rb.p); }
     emit_indent(b, indent);
