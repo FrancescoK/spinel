@@ -7469,12 +7469,38 @@ else if (orecv >= 0 && onm) {
       buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
                  restn);
     }
+    /* A post binds as an optional does: the boxed value, unboxed into the
+       type the analysis gave the parameter. Declared boxed whatever that
+       type, a post a lowered block's yields typed a String or an Integer
+       (`rec(x, n - 1, &b)` forwarding to `{ |n = 0, t| t.size }`) was
+       read through the boxed value as that type, and the C did not
+       build. */
     for (int j = 0; j < nposts; j++) {
       const char *pp = proc_post_name(c, create, j);
       if (!pp) continue;
-      buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
-      buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
-      buf_printf(pb, "    (void)lv_%s;\n", pp);
+      LocalVar *plv = scope_local(bs, pp);
+      TyKind lt = plv ? plv->type : TY_POLY;
+      if (lt == TY_POLY || lt == TY_UNKNOWN) {
+        buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
+        buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
+        buf_printf(pb, "    (void)lv_%s;\n", pp);
+        continue;
+      }
+      buf_printf(pb, "    sp_RbVal _pv_%s = (_sp_ps + %d < argc && _sp_ps + %d < 16) ? _sp_proc_poly_args[_sp_ps + %d]"
+                     " : sp_box_nil(); SP_GC_ROOT_RBVAL(_pv_%s);\n", pp, j, j, j, pp);
+      char src[160];
+      snprintf(src, sizeof src, "_pv_%s", pp);
+      Buf ub = {0};
+      if (plv->nullable_int) emit_unbox_nilable_text(c, lt, src, &ub);
+      /* nil is the NULL handle, not an empty String (#6179) */
+      else if (lt == TY_STRBUF) buf_printf(&ub, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", src, src);
+      else emit_unbox_text(c, lt, src, &ub);
+      buf_puts(pb, "    ");
+      emit_ctype(c, lt, pb);
+      buf_printf(pb, " lv_%s = %s;", pp, ub.p ? ub.p : "0");
+      if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", pp);
+      buf_printf(pb, " (void)lv_%s;\n", pp);
+      free(ub.p);
     }
   }
   /* Keyword params (`proc { |a:, b: 5| }`): the caller's kwargs arrive as a
