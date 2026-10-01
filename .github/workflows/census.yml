@@ -1,0 +1,62 @@
+# A ruby/spec census: every runnable core suite and language, extracted,
+# run against spinel and judged by `ruby --enable-frozen-string-literal`,
+# in six shards balanced by cost. Each shard uploads its TSVs and manifests.
+name: census
+on:
+  push:
+    branches: [census]
+  workflow_dispatch:
+jobs:
+  run:
+    name: census ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Build
+        run: |
+          set -a; . ./census.conf; set +a
+          d="$RUNNER_TEMP/spinel"
+          git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
+          cd "$d"
+          git fetch -q https://github.com/FrancescoK/spinel.git '+refs/heads/ci/*:refs/remotes/fork/ci/*'
+          git checkout -q "$SHA"
+          make deps > /dev/null || { sleep 30; make deps > /dev/null; }
+          make -j"$(nproc)" all > /dev/null
+          make build/rubyspec/.pinned > /dev/null
+      - name: Run
+        run: |
+          cd "$RUNNER_TEMP/spinel"
+          mkdir -p out
+          skip=" core/objectspace core/tracepoint core/binding core/refinement core/gc core/process core/signal core/io core/file core/dir core/argf "
+          s1="language"; s2="core/string"; s3="core/kernel core/module"
+          s4="core/array core/hash core/integer"
+          s5="core/time core/enumerable core/enumerator core/range core/thread"
+          named=" $s1 $s2 $s3 $s4 $s5 "
+          case "${{ matrix.shard }}" in
+          1) suites="$s1" ;; 2) suites="$s2" ;; 3) suites="$s3" ;; 4) suites="$s4" ;; 5) suites="$s5" ;;
+          6) suites=""
+             for p in build/rubyspec/core/*/; do s="core/$(basename "$p")"
+               case "$skip$named" in *" $s "*) ;; *) suites="$suites $s" ;; esac; done ;;
+          esac
+          echo "suites:$suites"
+          for d in $suites; do
+            nm=$(echo "$d" | tr / -)
+            start=$(date +%s)
+            ruby tools/rubyspec/extract.rb "build/rubyspec/$d" "build/rubyspec-ex-$nm" > "out/$nm.extract.log" 2>&1 || { echo "$d: extraction failed"; continue; }
+            RUBYSPEC_JOBS=$(nproc) bash tools/rubyspec/run.sh "build/rubyspec-ex-$nm" "out/$nm.tsv" > "out/$nm.run.log" 2>&1 || echo "$d: run.sh rc $?"
+            ruby tools/rubyspec/gen_manifest.rb "out/$nm.tsv" > "out/$nm.man" 2> "out/$nm.man.err" || true
+            echo "$d $(( $(date +%s) - start ))s $(wc -l < "out/$nm.tsv" 2>/dev/null) rows" | tee -a out/times.txt
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: census-${{ matrix.shard }}
+          path: ${{ runner.temp }}/spinel/out
