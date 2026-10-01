@@ -427,7 +427,7 @@ int is_eq_op(const char *op) {
 int is_void_call(const char *name) {
   static const char *const set[] = {
     "puts", "print", "p", "pp", "require", "require_relative",
-    "raise", "warn", "printf", NULL};
+    "raise", "fail", "warn", "printf", NULL};
   return str_in(name, set);
 }
 /* 1 for a local-write kind whose `value` is what the local then holds (a
