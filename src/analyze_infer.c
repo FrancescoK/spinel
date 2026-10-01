@@ -1460,8 +1460,7 @@ int poly_builtin_zero_arg_name(const char *m) {
     "pop", "shift", "clear", "dup", "clone", "freeze", "chars", "bytes",
     "strip", "chomp", "chop", "upcase", "downcase", "capitalize", "swapcase",
     "succ", "next", "abs", "round", "floor", "ceil", "arity", "call", NULL };
-  for (int i = 0; B[i]; i++) if (sp_streq(m, B[i])) return 1;
-  return 0;
+  return str_in(m, B);
 }
 /* The return a user class gives `name` at this arity, unified over every class
    that defines it, or TY_UNKNOWN when none does (or none has settled). The

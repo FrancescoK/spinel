@@ -660,8 +660,7 @@ int lazy_stage_name(const char *nm) {
     /* blockless counter / grouping stages (LAZY_COUNTER_STAGE) */
     "take", "drop", "each_slice", "each_cons", NULL };
   if (!nm) return 0;
-  for (int i = 0; ST[i]; i++) if (sp_streq(nm, ST[i])) return 1;
-  return 0;
+  return str_in(nm, ST);
 }
 
 static int chain_is_lazy_valued_1(Compiler *c, int node);

@@ -4843,8 +4843,7 @@ int is_fresh_array(Compiler *c, int v) {
   TyKind rt = infer_type(c, r);
   if (rt == TY_UNKNOWN || rt == TY_POLY || ty_is_object(rt)) return 0;
   if (sp_streq(nm, "to_a")) return !ty_is_array(rt);
-  for (int k = 0; fresh[k]; k++) if (sp_streq(nm, fresh[k])) return 1;
-  return 0;
+  return str_in(nm, fresh);
 }
 
 /* Collects into out[] the container literals `n` can evaluate to, as far
@@ -5050,8 +5049,7 @@ static int array_answers_receiver(Compiler *c, int v) {
   const char *nm = nt_str(c->nt, v, "name");
   int r = nt_ref(c->nt, v, "receiver");
   if (!nm || r < 0 || !ty_is_array(infer_type(c, r))) return 0;
-  for (int k = 0; self_ret[k]; k++) if (sp_streq(nm, self_ret[k])) return 1;
-  return 0;
+  return str_in(nm, self_ret);
 }
 
 /* The class whose ivar the value `v` reads, with the ivar's name in *ivn:
@@ -6497,8 +6495,7 @@ int is_string_only_method(const char *m) {
     "partition", "rpartition", "succ", "hex", "oct", "codepoints", "scrub",
     "crypt", "delete_prefix", "delete_suffix", "casecmp", "casecmp?",
     "force_encoding", NULL };
-  for (int i = 0; set[i]; i++) if (sp_streq(m, set[i])) return 1;
-  return 0;
+  return str_in(m, set);
 }
 
 /* Infer still-unknown params from ivar hash operations in the method body.
@@ -8779,8 +8776,7 @@ static int block_kept_by_builtin(const char *name) {
     "instance_exec", "instance_eval", "class_exec", "module_exec",
     "class_eval", "module_eval", "to_enum", "enum_for", "at_exit", "trap",
     "define_finalizer", NULL };
-  for (int k = 0; keep[k]; k++) if (sp_streq(name, keep[k])) return 1;
-  return 0;
+  return str_in(name, keep);
 }
 
 /* Where a block handed to scope `si` is bound besides si's own sites: the
@@ -9236,8 +9232,7 @@ int ie_kernel_global(const char *n) {
     "printf", "sprintf", "format", "rand", "srand", "sleep", "exit", "abort",
     "loop", "lambda", "proc", "catch", "throw", "gets", "binding",
     "block_given?", "at_exit", "caller", "freeze", "frozen?", NULL };
-  for (int i = 0; K[i]; i++) if (sp_streq(n, K[i])) return 1;
-  return 0;
+  return str_in(n, K);
 }
 
 /* Repoint self and receiverless calls in an instance_eval body at the bound
@@ -9808,8 +9803,7 @@ static int dir_enumerable_name(const char *nm) {
     "take", "drop", "take_while", "drop_while", "zip", "each_slice",
     "each_cons", "any?", "all?", "none?", "one?", "filter_map", "find_index",
     "chunk_while", "slice_when", "uniq", "reverse_each", "lazy", NULL };
-  for (int i = 0; E[i]; i++) if (sp_streq(nm, E[i])) return 1;
-  return 0;
+  return str_in(nm, E);
 }
 int desugar_dir_surface(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
