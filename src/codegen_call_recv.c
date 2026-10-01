@@ -6880,29 +6880,41 @@ else {
         return 1;
       }
       if (sp_streq(name, "default=") && argc == 1) {
+        /* The value is evaluated once, before a frozen receiver refuses it,
+           as a setter's argument is, and the same value is the result. A
+           nil-typed value (a nil literal, or a call that returns nil as void)
+           is evaluated for its effects and stored as nil. */
+        TyKind at = comp_ntype(c, argv[0]);
+        int is_nil = at == TY_NIL || at == TY_VOID;
+        int held = !is_nil && (ty_is_object(at) || c_type_name(at));
         int t = ++g_tmp, tv = ++g_tmp;
+        char av[32];
+        snprintf(av, sizeof av, is_nil ? "0" : "_t%d", tv);
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
-        /* the value is evaluated before a frozen receiver refuses it, as a
-           setter's argument is */
-        char frz[160];
-        snprintf(frz, sizeof frz, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
-                 t, t, t, hash_box_cls(rt));
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+        if (held) { buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
+        else if (is_nil) { buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");"); }
+        buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+                   t, t, t, hash_box_cls(rt));
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-          buf_printf(b, "; sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
+          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+          if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
+          buf_puts(b, ";");
         }
         else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
           /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
-          buf_printf(b, "; sp_int _t%d = ", tv);
-          if (comp_ntype(c, argv[0]) == TY_NIL) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, argv[0], b);
-          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
+          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+          if (is_nil) buf_puts(b, "SP_INT_NIL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+          buf_puts(b, ";");
         }
         else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-          buf_printf(b, "; const char *_t%d = ", tv); emit_expr(c, argv[0], b);
-          buf_printf(b, ";%s if (_t%d) _t%d->default_v = _t%d; ", frz, t, t, tv);
+          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+          if (is_nil) buf_puts(b, "NULL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+          buf_puts(b, ";");
         }
-        else buf_printf(b, ";%s ", frz);
-        emit_expr(c, argv[0], b); buf_puts(b, "; })"); return 1;
+        buf_puts(b, " ");
+        if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
+        buf_puts(b, "; })"); return 1;
       }
       if (sp_streq(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
         /* runtime returns sym ids as an IntArray; box into a poly (sym) array */
