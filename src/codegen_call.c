@@ -6485,6 +6485,14 @@ static int method_bm_ret_kind(Compiler *c, Scope *m, int *out_ret) {
   return 1;
 }
 
+static int method_def_has_keywords(Compiler *c, const Scope *m) {
+  int pn = m->def_node >= 0 ? nt_ref(c->nt, m->def_node, "parameters") : -1;
+  if (pn < 0) return 0;
+  int nk = 0;
+  nt_arr(c->nt, pn, "keywords", &nk);
+  return nk > 0 || nt_ref(c->nt, pn, "keyword_rest") >= 0;
+}
+
 static int method_legacy_int_abi(Compiler *c, int mi, int recv_bound, char *out_sig, size_t sigcap,
                                  int *out_fixed, int *out_rest, int *out_ret) {
   if (sigcap) out_sig[0] = 0;
@@ -6528,18 +6536,10 @@ static int method_legacy_int_abi(Compiler *c, int mi, int recv_bound, char *out_
      the static cast cannot do, so decline every rest parameter (named or
      anonymous). */
   if (m->rest_idx >= 0) return 0;
-  if (m->def_node >= 0) {
-    int pn = nt_ref(c->nt, m->def_node, "parameters");
-    if (pn >= 0) {
-      int nk = 0;
-      nt_arr(c->nt, pn, "keywords", &nk);
-      /* Any keyword parameter (optional or required) is matched by name in
-         CRuby; the positional legacy ABI would feed it a positional argument
-         or nothing. */
-      if (nk > 0) return 0;
-      if (nt_ref(c->nt, pn, "keyword_rest") >= 0) return 0;
-    }
-  }
+  /* Any keyword parameter (optional or required) is matched by name in
+     CRuby; the positional legacy ABI would feed it a positional argument
+     or nothing. */
+  if (method_def_has_keywords(c, m)) return 0;
   /* Classify every fixed parameter against the sp_int register the legacy
      cast writes. All-scalar (int/bool/symbol/nil/untyped) and all-pointer
      (heap object / Proc) targets are each safe for a matching argument list;
@@ -6601,15 +6601,7 @@ static int method_poly_abi(Compiler *c, int mi, int recv_bound, int *out_fixed, 
   if (cmethod_takes_self_cls(c, mi)) return 0;
   if (m->kwrest_idx >= 0 || m->npost_rest > 0) return 0;
   if (m->rest_idx >= 0) return 0;
-  if (m->def_node >= 0) {
-    int pn = nt_ref(c->nt, m->def_node, "parameters");
-    if (pn >= 0) {
-      int nk = 0;
-      nt_arr(c->nt, pn, "keywords", &nk);
-      if (nk > 0) return 0;
-      if (nt_ref(c->nt, pn, "keyword_rest") >= 0) return 0;
-    }
-  }
+  if (method_def_has_keywords(c, m)) return 0;
   int nfixed = m->nparams - pstart;
   if (nfixed > SP_PROC_ARG_SLOTS) return 0;   /* the boxed slots the side channel carries */
   for (int k = pstart; k < pstart + nfixed; k++) {
