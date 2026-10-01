@@ -94,6 +94,20 @@ arr = [f]
 fwd_named(*arr)
 p f.size
 
+# a chain of six forwarders, and two that forward to each other
+def fw6(*r) = fw5(*r)
+def fw5(*r) = fw4(*r)
+def fw4(*r) = fw3(*r)
+def fw3(*r) = fw2(*r)
+def fw2(*r) = fw1(*r)
+def fw1(*r) = grow(*r)
+def ca(n, *r) = n > 0 ? cb(n - 1, *r) : nil
+def cb(n, *r) = n > 0 ? ca(n - 1, *r) : grow(*r)
+g = +"g"
+fw6(g)
+ca(3, g)
+p g.size
+
 # a method that only reads leaves the String alone
 def size_of(p1) = p1.size
 def fwd_read(*r) = size_of(*r)
