@@ -26017,9 +26017,11 @@ static int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, co
     static const char *const ioclasses[] = {
       "BasicObject", "Object", "Kernel", "IO", "File", "BasicSocket", "IPSocket",
       "TCPSocket", "TCPServer", "UDPSocket", "UNIXSocket", "UNIXServer", "Socket", NULL };
-    for (int u = 0; foldable && ioclasses[u]; u++) {
+    for (int u = 0; ioclasses[u]; u++) {
       int k = comp_class_index(c, ioclasses[u]);
-      if (k >= 0 && comp_method_in_chain(c, k, qm, NULL) >= 0) return 1;
+      if (k < 0 || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
+      if (comp_method_vis_in_chain(c, k, qm) == SP_VIS_PUBLIC) return 1;
+      return foldable ? include_all : -1;
     }
     return -1;
   }

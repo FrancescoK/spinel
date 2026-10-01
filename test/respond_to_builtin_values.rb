@@ -6,6 +6,7 @@ require "socket"
 
 class IO
   def dormouse_hello = :hi
+  private def dormouse_secret = :no
 end
 
 class Object
@@ -30,6 +31,8 @@ p r
 
 f = File.open(__FILE__)
 p f.respond_to?(:path), f.respond_to?(:to_path), f.respond_to?(:size), f.respond_to?(:stat), f.respond_to?(:flock), f.respond_to?(:truncate), f.respond_to?(:fcntl), f.respond_to?(:sysread), f.respond_to?(:lineno), f.respond_to?(:puts), f.respond_to?(:readpartial), f.respond_to?(:accept), f.respond_to?(:peeraddr), f.respond_to?(:dormouse_hello), f.respond_to?(:nope)
+flag = ARGV.include?("all")
+p f.respond_to?(:dormouse_hello, flag), f.respond_to?(:dormouse_secret), f.respond_to?(:dormouse_secret, true), f.respond_to?(:dormouse_secret, flag)
 p f.respond_to?(:map), f.respond_to?(:to_a), f.respond_to?(:each_with_index), f.respond_to?(:to_i), f.respond_to?(:putc), f.respond_to?(:everywhere)
 bf = [f, 1][0]
 p bf.respond_to?(:map), bf.respond_to?(:first), bf.respond_to?(:to_i), bf.respond_to?(:putc)
@@ -45,7 +48,7 @@ port = srv.addr[1]
 p srv.respond_to?(:accept), srv.respond_to?(:accept_nonblock), srv.respond_to?(:listen), srv.respond_to?(:peeraddr), srv.respond_to?(:puts), srv.respond_to?(:path), srv.respond_to?(:size)
 sock = TCPSocket.new("127.0.0.1", port)
 p sock.respond_to?(:accept), sock.respond_to?(:peeraddr), sock.respond_to?(:getpeername), sock.respond_to?(:recv), sock.respond_to?(:send), sock.respond_to?(:path), sock.respond_to?(:to_path), sock.respond_to?(:size), sock.respond_to?(:readpartial), sock.respond_to?(:dormouse_hello)
-p sock.respond_to?(:everywhere), sock.respond_to?(:recvmsg), sock.respond_to?(:bind), sock.respond_to?(:map)
+p sock.respond_to?(:everywhere), sock.respond_to?(:recvmsg), sock.respond_to?(:bind), sock.respond_to?(:map), sock.respond_to?(:getpeereid)
 bs = [sock, 1][0]
 p bs.respond_to?(:accept), bs.respond_to?(:peeraddr), bs.respond_to?(:recv), bs.respond_to?(:puts), bs.respond_to?(:size)
 sock.close

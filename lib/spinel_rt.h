@@ -2189,17 +2189,17 @@ static sp_bool sp_io_responds(sp_File *f, const char *m) {
     "atime", "birthtime", "chmod", "chown", "ctime", "flock", "lstat", "mtime", "size",
     "truncate", NULL };
   static const char *const basicm[] = {
-    "connect_address", "do_not_reverse_lookup", "do_not_reverse_lookup=", "getpeereid",
-    "getpeername", "getsockname", "getsockopt", "local_address", "recv", "recv_nonblock",
+    "connect_address", "do_not_reverse_lookup", "do_not_reverse_lookup=", "getpeername", "getsockname", "getsockopt", "local_address", "recv", "recv_nonblock",
     "recvmsg", "recvmsg_nonblock", "remote_address", "sendmsg", "sendmsg_nonblock",
     "setsockopt", "shutdown", NULL };
   static const char *const ipm[] = { "addr", "peeraddr", "recvfrom", NULL };
   static const char *const udpm[] = { "bind", "connect", "recvfrom_nonblock", NULL };
-  static const char *const unixm[] = { "addr", "peeraddr", "recv_io", "recvfrom", "send_io", NULL };
+  static const char *const unixm[] = {
+    "addr", "getpeereid", "peeraddr", "recv_io", "recvfrom", "send_io", NULL };
   static const char *const serverm[] = { "accept", "accept_nonblock", "listen", "sysaccept", NULL };
   static const char *const socketm[] = {
-    "accept", "accept_nonblock", "bind", "connect", "connect_nonblock", "ipv6only!",
-    "listen", "recvfrom", "recvfrom_nonblock", "sysaccept", NULL };
+    "accept", "accept_nonblock", "bind", "connect", "connect_nonblock", "getpeereid",
+    "ipv6only!", "listen", "recvfrom", "recvfrom_nonblock", "sysaccept", NULL };
   const char *k;
   if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0))
     return sp_str_in_list(m, statm);
