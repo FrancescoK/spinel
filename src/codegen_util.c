@@ -2848,6 +2848,16 @@ const char *bigint_arith_fn(const char *op) {
    default exception message/to_s path must dispatch to the user method rather
    than reporting the stored message (which defaults to the class name). */
 int exc_has_user_msg_override(Compiler *c) {
+  /* a builtin exception's reopening defining either (`class StandardError;
+     def to_s`) serves every exception under it */
+  if (any_exc_reopen(c))
+    for (int i = 0; i < c->nclasses; i++) {
+      if (!class_is_exc_reopen(c, i)) continue;
+      for (int k = 0; k < 2; k++) {
+        int mi = comp_method_in_chain(c, i, k ? "to_s" : "message", NULL);
+        if (mi >= 0 && c->scopes[mi].class_id == i && (TyKind)c->scopes[mi].ret == TY_STRING) return 1;
+      }
+    }
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_is_exc_subclass(c, i)) continue;
     /* Only a string-returning override is dispatched (see codegen_program),

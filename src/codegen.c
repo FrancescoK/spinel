@@ -7643,6 +7643,19 @@ int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max) {
   return n;
 }
 
+/* Emits the head of a pick among the reopenings xr[0..xn) that define one
+   method: the one the runtime class cls_expr (a const char * expression)
+   reaches first up its ancestry, as Ruby's lookup takes the most-derived
+   definition whatever order the reopenings were written in. Leaves _xi<T>
+   holding the index into xr (-1: none of them) and returns T. */
+int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cls_expr, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "static const char *const _xn%d[] = {", t);
+  for (int q = 0; q < xn; q++) buf_printf(b, "%s\"%s\"", q ? ", " : "", c->classes[xr[q]].name);
+  buf_printf(b, "}; int _xi%d = sp_exc_nearest_cls(%s, _xn%d, %d); ", t, cls_expr, t, xn);
+  return t;
+}
+
 /* Build the full Ruby-style qualified name ("ActiveRecord::RecordNotFound") for
    class index ci by walking enclosing_class up to the top level. */
 const char *class_ruby_name(Compiler *c, int ci) {
@@ -10501,7 +10514,57 @@ void emit_super(Compiler *c, int id, Buf *b) {
        Exception's: the message the exception was raised with. The subclass's
        struct starts with the builtin exception's, so the stored message reads
        straight off self (`def message; [super, detail].join; end`). */
-    if (class_is_exc_subclass(c, s->class_id) && !s->is_cmethod &&
+    /* `super` from a reopening of a builtin exception class (`class
+       RuntimeError; def tag = "RT:" + super`), or from a user exception
+       subclass whose parents leave the name to one: the reopening above it
+       that defines the name, picked at run time from the builtin ancestry
+       -- the class's own parent for a reopening, the builtin it descends
+       from (inclusive) for a subclass. */
+    if (!s->is_cmethod && uname && any_exc_reopen(c) &&
+        (class_is_exc_reopen(c, s->class_id) || class_is_exc_subclass(c, s->class_id))) {
+      int xr0[8], xr[8], xn = 0;
+      int xn0 = exc_reopen_definers(c, uname, xr0, 8);
+      for (int q = 0; q < xn0; q++) if (xr0[q] != s->class_id) xr[xn++] = xr0[q];
+      if (xn > 0) {
+        char from[160];
+        if (class_is_exc_reopen(c, s->class_id))
+          snprintf(from, sizeof from, "sp_exc_parent_of_name(\"%s\")", c->classes[s->class_id].name);
+        else
+          snprintf(from, sizeof from, "\"%s\"", exc_builtin_parent(c, s->class_id));
+        const char *scn = class_ruby_name(c, s->class_id);
+        if (!scn) scn = c->classes[s->class_id].name;
+        buf_puts(b, "({ ");
+        int pk = emit_exc_reopen_pick_head(c, xr, xn, from, b);
+        /* none above it: #message / #to_s are Exception's own, the stored
+           message; any other name has no superclass method */
+        if ((sp_streq(uname, "message") || sp_streq(uname, "to_s")) && comp_ntype(c, id) == TY_STRING)
+          buf_printf(b, "_xi%d < 0 ? sp_exc_message((struct sp_Exception_s *)%s) : ", pk, g_self);
+        else
+          buf_printf(b, "if (_xi%d < 0) sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"); ",
+                     pk, uname, scn);
+        for (int q = 0; q < xn; q++) {
+          int xm = comp_method_in_chain(c, xr[q], uname, NULL);
+          if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
+          buf_printf(b, "sp_%s_%s((sp_Exception *)%s", mc_reopen_cls(c, xr[q], uname), mc(uname), g_self);
+          if (ty && sp_streq(ty, "ForwardingSuperNode")) {
+            Scope *pm = &c->scopes[xm];
+            ZSuper z;
+            zsuper_begin(c, s, pm, &z);
+            for (int i = 0; i < pm->nparams; i++) {
+              buf_puts(b, ", ");
+              emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
+            }
+            zsuper_end(&z);
+          }
+          else emit_args_filled(c, xm, nt_ref(c->nt, id, "arguments"), ", ", b);
+          buf_puts(b, ")");
+          if (q != xn - 1) buf_puts(b, " : ");
+        }
+        buf_puts(b, "; })");
+        return;
+      }
+    }
+    if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) && !s->is_cmethod &&
         (sp_streq(uname, "message") || sp_streq(uname, "to_s"))) {
       TyKind rt = comp_ntype(c, id);
       Buf mb; memset(&mb, 0, sizeof mb);
@@ -10533,6 +10596,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_Object_%s(", mc(uname));
     emit_boxed_text(c, ty_object(s->class_id), g_self, b);
   }
+  /* a user exception subclass's super reaching its builtin parent's
+     reopening: that method takes the runtime's sp_Exception */
+  else if (class_is_exc_reopen(c, defcls))
+    buf_printf(b, "sp_%s_%s((sp_Exception *)%s", mc_reopen_cls(c, defcls, uname), mc(uname), g_self);
   else
     buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
   if (ty && sp_streq(ty, "ForwardingSuperNode")) {
@@ -14320,7 +14387,7 @@ char *codegen_program(const NodeTable *nt) {
      prototypes are written. */
   if (exc_has_user_msg_override(c) || exc_has_nonstring_msg_override(c)) {
     for (int i = 0; i < c->nclasses; i++) {
-      if (!class_is_exc_subclass(c, i)) continue;
+      if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
       static const char *const fns[2] = { "message", "to_s" };
       for (int k = 0; k < 2; k++) {
         int mi = comp_method_in_chain(c, i, fns[k], NULL);
@@ -14360,14 +14427,20 @@ char *codegen_program(const NodeTable *nt) {
         if (!qn) continue;
         buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
       }
-      int base_exc = -1;
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_reopen(c, i)) continue;
-        if (sp_streq(c->classes[i].name, "Exception")) { base_exc = i; continue; }
-        buf_printf(&b, "  if (sp_exc_cls_matches(n, \"%s\")) return %d;\n", c->classes[i].name, i);
+      /* the reopening nearest the runtime class up its ancestry, so a
+         RuntimeError keys to a RuntimeError reopening ahead of a
+         StandardError one declared before it */
+      int xr[256], xn = 0;
+      for (int i = 0; i < c->nclasses && xn < 256; i++)
+        if (class_is_exc_reopen(c, i)) xr[xn++] = i;
+      if (xn > 0) {
+        buf_puts(&b, "  { ");
+        int t = emit_exc_reopen_pick_head(c, xr, xn, "n", &b);
+        buf_printf(&b, "static const int _xc%d[] = {", t);
+        for (int q = 0; q < xn; q++) buf_printf(&b, "%s%d", q ? ", " : "", xr[q]);
+        buf_printf(&b, "}; if (_xi%d >= 0) return _xc%d[_xi%d]; }\n", t, t, t);
       }
-      if (base_exc >= 0) buf_printf(&b, "  return %d;\n}\n", base_exc);
-      else buf_puts(&b, "  return 0x7fffffff;\n}\n");
+      buf_puts(&b, "  return 0x7fffffff;\n}\n");
     } }
 
   /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
@@ -14377,6 +14450,21 @@ char *codegen_program(const NodeTable *nt) {
      message. Emitted after the method prototypes it calls. Marked unused: a
      program can define an override yet never query it, and the call sites only
      reference these when a query is compiled. */
+  /* a reopening's #message / #to_s answering something other than a String
+     cannot stand in for the stored message the runtime reads: refused
+     rather than left unseen by #message */
+  if (any_exc_reopen(c))
+    for (int i = 0; i < c->nclasses; i++) {
+      if (!class_is_exc_reopen(c, i)) continue;
+      for (int k = 0; k < 2; k++) {
+        int mi = comp_method_in_chain(c, i, k ? "to_s" : "message", NULL);
+        if (mi < 0 || c->scopes[mi].class_id != i) continue;
+        TyKind mr = (TyKind)c->scopes[mi].ret;
+        if (mr != TY_STRING && mr != TY_UNKNOWN)
+          unsupported_feature(c, c->scopes[mi].def_node,
+                              "a builtin exception reopening's #message / #to_s that answers a non-String");
+      }
+    }
   if (exc_has_user_msg_override(c)) {
     for (int pass = 0; pass < 2; pass++) {
       int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
@@ -14397,6 +14485,8 @@ char *codegen_program(const NodeTable *nt) {
         else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
         if (mi < 0) continue;
         if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
+        /* a reopening's method is picked by the runtime class below */
+        if (class_is_exc_reopen(c, dcls)) continue;
         const char *dcn = c->classes[dcls].c_name;
         const char *cn0 = class_ruby_name(c, i);
         if (!cn0) cn0 = c->classes[i].name;
@@ -14406,6 +14496,25 @@ char *codegen_program(const NodeTable *nt) {
         if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
           buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
                      c->classes[i].name, dcn, fn, dcn);
+      }
+      /* a builtin exception's reopening: #message is the nearest reopening's
+         #message, else (Exception#message calls #to_s) the nearest #to_s,
+         else the stored message */
+      for (int f = want_message ? 0 : 1; f < 2; f++) {
+        const char *fn = f ? "to_s" : "message";
+        int xr0[8], xr[8], xn = 0;
+        int xn0 = exc_reopen_definers(c, fn, xr0, 8);
+        for (int q = 0; q < xn0; q++) {
+          int mi = comp_method_in_chain(c, xr0[q], fn, NULL);
+          if ((TyKind)c->scopes[mi].ret == TY_STRING) xr[xn++] = xr0[q];
+        }
+        if (xn == 0) continue;
+        buf_puts(&b, "  { ");
+        int pk = emit_exc_reopen_pick_head(c, xr, xn, "cls", &b);
+        buf_puts(&b, "\n");
+        for (int q = 0; q < xn; q++)
+          buf_printf(&b, "    if (_xi%d == %d) return sp_%s_%s(e);\n", pk, q, mc_reopen_cls(c, xr[q], fn), mc(fn));
+        buf_puts(&b, "  }\n");
       }
       buf_puts(&b, "  return sp_exc_message(e);\n}\n");
     }
@@ -14435,6 +14544,7 @@ char *codegen_program(const NodeTable *nt) {
         if (mi < 0) continue;
         TyKind mret = (TyKind)c->scopes[mi].ret;
         if (mret == TY_UNKNOWN || mret == TY_VOID) continue;
+        if (class_is_exc_reopen(c, dcls)) continue;   /* picked by sp_user_exc_message */
         const char *dcn = c->classes[dcls].c_name;
         const char *cn0 = class_ruby_name(c, i);
         if (!cn0) cn0 = c->classes[i].name;

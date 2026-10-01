@@ -69,6 +69,26 @@ int sp_exc_cls_matches(const char *raised, const char *target) {
   if (!strcmp(target, "Object") || !strcmp(target, "BasicObject") || !strcmp(target, "Kernel")) return 1;
   return 0;
 }
+/* Which of n class names `raised` reaches first going up its ancestry (the
+   class itself first, then its user and builtin parents): the index of that
+   name, or -1 when none is an ancestor. Picks the most-derived reopening of
+   a builtin exception class that defines a method, the way Ruby's lookup
+   does, whatever order the reopenings were written in. */
+int sp_exc_nearest_cls(const char *raised, const char *const *targets, int n) {
+  if (!raised) return -1;
+  const char *cls = sp_exc_canonical_name(raised);
+  for (int depth = 0; depth < 30 && cls; depth++) {
+    for (int i = 0; i < n; i++)
+      if (sp_exc_level_matches(cls, sp_exc_canonical_name(targets[i]))) return i;
+    const char *parent = NULL;
+    if (sp_user_exc_parent_fn) parent = sp_user_exc_parent_fn(cls);
+    if (!parent) parent = sp_exc_parent_of_name(cls);
+    cls = parent;
+  }
+  for (int i = 0; i < n; i++)
+    if (!strcmp(targets[i], "Exception")) return i;
+  return -1;
+}
 /* Class-gated introspection accessors (#2753-#2756, #2770): each answers only
    on its CRuby-defining class (walking the name-carried hierarchy) and raises
    NoMethodError elsewhere, matching per-class method definitions. */

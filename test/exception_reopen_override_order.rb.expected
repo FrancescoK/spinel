@@ -1,0 +1,21 @@
+RT:SE:boom
+SE:a
+false
+IX:key not found: :k
+true
+MY:RT:SE:m
+MA:SE:g
+RT:SE:x
+true
+false
+<io>
+RT:SE:p
+SE:q
+IX:r
+no:1
+true
+false
+false
+false
+42
+"se"

@@ -857,20 +857,16 @@ static int class_is_prim_reopen(Compiler *c, int k) {
          class_has_exc_name(c, k);
 }
 
-/* The reopening of a builtin exception class whose `name` serves class k --
-   k itself when it is that reopening, else the one named by k's nearest
-   builtin ancestor, else a base Exception reopening, else the first that
-   defines the name -- or -1. A boxed exception of class k that has no
-   method of its own for the name dispatches there (poly_exception_reopen). */
+/* The reopening of a builtin exception class whose `name` serves class k
+   in a poly dispatch arm: k itself when it is that reopening, else -1. A
+   boxed exception of any other class with no method of its own for the name
+   is re-keyed at run time to the reopening nearest its class
+   (emit_poly_dispatch_key), so no arm guesses one here. */
 static int exc_arm_definer(Compiler *c, int k, const char *name) {
   int xr[8];
   int xn = exc_reopen_definers(c, name, xr, 8);
-  if (xn <= 0) return -1;
   for (int q = 0; q < xn; q++) if (xr[q] == k) return k;
-  const char *par = class_is_exc_subclass(c, k) ? exc_builtin_parent(c, k) : NULL;
-  if (par) for (int q = 0; q < xn; q++) if (sp_streq(c->classes[xr[q]].name, par)) return xr[q];
-  for (int q = 0; q < xn; q++) if (sp_streq(c->classes[xr[q]].name, "Exception")) return xr[q];
-  return xr[0];
+  return -1;
 }
 
 /* Whether a user exception class answers `name`: the dispatch key then has
@@ -884,10 +880,46 @@ static int poly_exc_cand(Compiler *c, const char *name) {
   return 0;
 }
 
+static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+                                        const char *pick_name, Buf *b);
 static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b) {
+  emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
+}
+
+/* The dispatch key, with a boxed exception of a class that has no method of
+   its own for pick_name (when given) re-keyed to the builtin exception
+   reopening defining it that is nearest the runtime class up its ancestry,
+   or to no arm when none is above it (NoMethodError). */
+static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+                                        const char *pick_name, Buf *b) {
   if (exc_cand) {
     /* a boxed exception keys by its user class (sp_exc_user_cls_id); every
        other value by the rule below */
+    int xr[8], xn = pick_name ? exc_reopen_definers(c, pick_name, xr, 8) : 0;
+    if (xn > 0) {
+      /* an exception -- the runtime's, or a user subclass instance boxed
+         under its own class -- whose class has no method of its own for
+         the name takes the nearest reopening's arm */
+      int kt = ++g_tmp;
+      buf_printf(b, "({ int _k%d = ", kt);
+      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION", tv, tv);
+      for (int k = 0; k < c->nclasses; k++)
+        if (class_is_exc_subclass(c, k)) buf_printf(b, " || _t%d.cls_id == %d", tv, k);
+      buf_printf(b, ") && (_k%d == 0x7fffffff", kt);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!class_has_exc_name(c, k) && !class_is_exc_subclass(c, k)) continue;
+        if (comp_method_in_chain(c, k, pick_name, NULL) >= 0 || comp_reader_in_chain(c, k, pick_name, NULL)) continue;
+        buf_printf(b, " || _k%d == %d", kt, k);
+      }
+      buf_puts(b, ")) { ");
+      char xcls[64]; snprintf(xcls, sizeof xcls, "((sp_Exception *)_t%d.v.p)->cls_name", tv);
+      int pk = emit_exc_reopen_pick_head(c, xr, xn, xcls, b);
+      buf_printf(b, "static const int _xc%d[] = {", pk);
+      for (int q = 0; q < xn; q++) buf_printf(b, "%s%d", q ? ", " : "", xr[q]);
+      buf_printf(b, "}; _k%d = _xi%d >= 0 ? _xc%d[_xi%d] : 0x7fffffff; } _k%d; })", kt, pk, pk, pk, kt);
+      return;
+    }
     buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION) ? sp_exc_user_cls_id(_t%d) : ", tv, tv, tv);
     emit_poly_dispatch_key(c, tv, cls0_cand, prim_cand, 0, b);
     buf_puts(b, ")");
@@ -8300,7 +8332,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* a genuine String in a slot whose name a user class owns (#4816) */
       emit_poly_str_prearm(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, b);
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key(c, tv, cls0_cand, prim_cand0, poly_exc_cand(c, name), b);
+      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand0, poly_exc_cand(c, name), name, b);
       buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         /* A never-instantiated class can't be this poly value's runtime class,
@@ -9715,7 +9747,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* where this switch starts, so its end can tell whether any arm below
          wrote the `default:` label (see the builtin default at the close) */
       size_t sw_start = b->len;
-      emit_poly_dispatch_key(c, tv, cls0_cand2, prim_cand2, poly_exc_cand(c, name), b);
+      emit_poly_dispatch_key_pick(c, tv, cls0_cand2, prim_cand2, poly_exc_cand(c, name), name, b);
       buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         /* native (C-backed) class arm: a declared method of this arity takes
@@ -33481,9 +33513,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      base-typed, or a user subclass instance whose own chain lacks the method
      or reaches it through the reopened parent. Several reopenings defining
      the name (Exception#brief and KeyError#brief) are told apart by the
-     runtime class name, most-derived first in declaration order; a base
-     Exception reopening answers for every class. */
-  if (recv >= 0) {
+     runtime class: the one nearest it up its ancestry answers, a base
+     Exception reopening for every class. */
+  /* #message / #to_s take the runtime's message dispatchers, which pick a
+     reopening's override by the runtime class and fall back to the stored
+     message (sp_user_exc_message / sp_user_exc_to_s) */
+  if (recv >= 0 && !sp_streq(name, "message") && !sp_streq(name, "to_s")) {
     TyKind xrt = comp_ntype(c, recv);
     int xdef = -1, xob = ty_is_object(xrt) ? ty_object_class(xrt) : -1;
     int xhit = xob >= 0 && class_is_exc_subclass(c, xob)
@@ -33494,38 +33529,31 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int xr[8];
       int xn = exc_reopen_definers(c, name, xr, 8);
       if (xn > 0) {
-        int xt = ++g_tmp, xbase = -1;
-        for (int q = 0; q < xn; q++)
-          if (sp_streq(c->classes[xr[q]].name, "Exception")) xbase = q;
+        int xt = ++g_tmp;
         buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
         emit_expr(c, recv, b);
         buf_puts(b, "); ");
-        if (xbase < 0) {
-          /* no catch-all reopening: a runtime class none of them names has
-             no such method */
-          buf_puts(b, "if (!(");
-          for (int q = 0; q < xn; q++)
-            buf_printf(b, "%ssp_exc_cls_matches(_t%d->cls_name, \"%s\")", q ? " || " : "", xt, c->classes[xr[q]].name);
-          buf_printf(b, ")) sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", name);
-          char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
-          emit_boxed_text(c, TY_EXCEPTION, xv, b);
-          buf_puts(b, ")); ");
-        }
-        int last = xbase >= 0 ? xbase : xn - 1;
+        char xcls[48]; snprintf(xcls, sizeof xcls, "_t%d->cls_name", xt);
+        int pk = emit_exc_reopen_pick_head(c, xr, xn, xcls, b);
+        /* a runtime class none of them is above has no such method */
+        buf_printf(b, "if (_xi%d < 0) sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", pk, name);
+        char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+        emit_boxed_text(c, TY_EXCEPTION, xv, b);
+        buf_puts(b, ")); ");
+        /* definers that answer different types meet as a boxed value */
+        int xpoly = comp_ntype(c, id) == TY_POLY;
         for (int q = 0; q < xn; q++) {
-          if (q == xbase) continue;
           int mi = comp_method_in_chain(c, xr[q], name, NULL);
-          if (q != last) buf_printf(b, "sp_exc_cls_matches(_t%d->cls_name, \"%s\") ? ", xt, c->classes[xr[q]].name);
-          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
-          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
-          buf_puts(b, ")");
-          if (q != last) buf_puts(b, " : ");
-        }
-        if (xbase >= 0) {
-          int mi = comp_method_in_chain(c, xr[xbase], name, NULL);
-          buf_printf(b, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[xbase], name), mc(name), xt);
-          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
-          buf_puts(b, ")");
+          if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
+          Buf cb; memset(&cb, 0, sizeof cb);
+          buf_printf(&cb, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
+          emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", &cb);
+          buf_puts(&cb, ")");
+          TyKind mrt = (TyKind)c->scopes[mi].ret;
+          if (xpoly && mrt != TY_POLY) emit_boxed_text(c, mrt, cb.p, b);
+          else buf_puts(b, cb.p);
+          free(cb.p);
+          if (q != xn - 1) buf_puts(b, " : ");
         }
         buf_puts(b, "; })");
         return;
@@ -39817,6 +39845,26 @@ else {
     else if (aty && sp_streq(aty, "StringNode")) {
       qm = nt_str(nt, argv[0], "content");
       if (!qm) qm = nt_str(nt, argv[0], "unescaped");
+    }
+    /* an exception answers a name a builtin exception's reopening defines
+       only when its runtime class is under that reopening: asked at run
+       time, the builtin surface beside it */
+    int xr[8], xn = 0;
+    if (qm && recv >= 0 && rt == TY_EXCEPTION && argc == 1) xn = exc_reopen_definers(c, qm, xr, 8);
+    if (xn > 0) {
+      int xt = ++g_tmp;
+      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", xt);
+      emit_expr(c, recv, b);
+      buf_puts(b, "); ");
+      char xcls[64]; snprintf(xcls, sizeof xcls, "(_t%d ? _t%d->cls_name : NULL)", xt, xt);
+      int pk = emit_exc_reopen_pick_head(c, xr, xn, xcls, b);
+      buf_printf(b, "(_xi%d >= 0 || (_t%d && sp_poly_responds_builtin(", pk, xt);
+      char xv[32]; snprintf(xv, sizeof xv, "_t%d", xt);
+      emit_boxed_text(c, TY_EXCEPTION, xv, b);
+      buf_puts(b, ", \"");
+      emit_c_escaped(b, qm);
+      buf_puts(b, "\"))); })");
+      return;
     }
     if (qm) {
       int ans = respond_to_static_answer(c, id, recv, rt, qm, argc, argv);

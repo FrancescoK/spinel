@@ -530,6 +530,7 @@ int any_exc_reopen(Compiler *c);
 char **dsend_candidates(Compiler *c, int *out_n);
 int emit_super_respond_to(Compiler *c, int id, Scope *s, Buf *b);
 int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max);
+int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cls_expr, Buf *b);
 int class_has_subclass(Compiler *c, int ocid);
 int exc_has_user_msg_override(Compiler *c);
 int exc_has_nonstring_msg_override(Compiler *c);

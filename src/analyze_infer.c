@@ -5202,9 +5202,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && (rt == TY_EXCEPTION ||
                     (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
                      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0))) {
+    /* the runtime class picks among several definers, so the call answers
+       what they all do, or a boxed value when they disagree */
     int xr[8];
-    if (exc_reopen_definers(c, name, xr, 8) > 0)
-      return method_call_ret(c, comp_method_in_chain(c, xr[0], name, NULL), id);
+    int xn = exc_reopen_definers(c, name, xr, 8);
+    if (xn > 0) {
+      TyKind xt = method_call_ret(c, comp_method_in_chain(c, xr[0], name, NULL), id);
+      for (int q = 1; q < xn; q++)
+        if (method_call_ret(c, comp_method_in_chain(c, xr[q], name, NULL), id) != xt) return TY_POLY;
+      return xt;
+    }
   }
   int exc_shaped = rt == TY_EXCEPTION ||
                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
