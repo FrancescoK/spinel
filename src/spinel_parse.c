@@ -3906,6 +3906,124 @@ static int sp_is_method_name_char(char c) {
          c == '%' || c == '[' || c == ']';
 }
 
+/* The names of the constant NAME that the `def_delegators ... *NAME` at
+   `before` splats, read from the source text. Its one definition in the
+   file must be a line of its own at the call's (indented) indentation, in
+   the same class body with no heredoc between, holding a literal Symbol
+   Array (`[:a, :b]` over any lines, or `%i[a b]`) followed by nothing but
+   `.freeze` and a comment; every other use of the name must be a splat or a
+   read (`.each`, `.include?`, ...). 0 for anything else, which the caller
+   refuses. */
+static int sp_ident_char(char ch) {
+  return isalnum((unsigned char)ch) || ch == '_';
+}
+static size_t sp_line_start(const char *src, size_t p) {
+  while (p > 0 && src[p - 1] != '\n') p--;
+  return p;
+}
+static size_t sp_indent(const char *src, size_t ls) {
+  size_t q = ls;
+  while (src[q] == ' ' || src[q] == '\t') q++;
+  return q - ls;
+}
+static int sp_const_symbol_list(const char *src, size_t len, size_t before, const char *name,
+                                char (**out)[160], int *nout) {
+  size_t nl = strlen(name);
+  size_t call_ls = sp_line_start(src, before), call_ind = sp_indent(src, call_ls);
+  /* a class body at the top level is not indented: too close to its
+     neighbours to tell apart by indentation alone */
+  if (call_ind == 0) return 0;
+  /* Every use of the name in the file must be one of: its one definition
+     (checked below), a `*NAME` splat, or a call of a method that only reads
+     the Array. Anything else -- a second assignment (in a string, a branch,
+     after `;`), an alias, `<<`, `A::NAME.push` -- could change what it
+     holds, and refuses. */
+  static const char *const reads[] = {
+    ".each", ".each_with_index", ".include?", ".map", ".size", ".length", ".first",
+    ".last", ".join", ".to_a", ".freeze", ".frozen?", ".dup", ".any?", ".all?", ".none?",
+    ".count", ".index", ".sort", ".min", ".max", ".inspect", ".to_s", ".empty?", NULL };
+  int ndefs = 0;
+  for (size_t p = 0; p + nl <= len; p++) {
+    if (strncmp(src + p, name, nl) != 0) continue;
+    if ((p > 0 && sp_ident_char(src[p - 1])) || sp_ident_char(src[p + nl])) continue;
+    if (p > 0 && src[p - 1] == '*') continue;                        /* a splat */
+    size_t q = p + nl;
+    while (q < len && (src[q] == ' ' || src[q] == '\t')) q++;
+    if (src[q] == '=' && src[q + 1] != '=' && src[q + 1] != '~' && src[q + 1] != '>') { ndefs++; continue; }
+    int ok = 0;
+    for (int r = 0; reads[r] && !ok; r++) {
+      size_t rl = strlen(reads[r]);
+      if (strncmp(src + q, reads[r], rl) == 0 && !sp_ident_char(src[q + rl]) &&
+          src[q + rl] != '!' && src[q + rl] != '=') ok = 1;
+    }
+    if (!ok) return 0;
+  }
+  if (ndefs != 1) return 0;
+  /* the last definition line at the call's indentation, walking back */
+  size_t at = (size_t)-1;
+  size_t ls = call_ls;
+  while (ls > 0) {
+    ls = sp_line_start(src, ls - 1);
+    size_t ind = sp_indent(src, ls), t = ls + ind;
+    if (src[t] == '\n' || src[t] == '#' || src[t] == '\r') continue;   /* blank or comment */
+    if (ind < call_ind) return 0;                                     /* left the class body */
+    for (size_t h = t; src[h] != '\n'; h++)                           /* a heredoc opens here */
+      if (src[h] == '<' && src[h + 1] == '<' && (src[h + 2] == '~' || src[h + 2] == '-' ||
+          isupper((unsigned char)src[h + 2]))) return 0;
+    if (ind != call_ind || strncmp(src + t, name, nl) != 0 || sp_ident_char(src[t + nl])) continue;
+    size_t q = t + nl;
+    while (src[q] == ' ' || src[q] == '\t') q++;
+    if (src[q] != '=' || src[q + 1] == '=' || src[q + 1] == '~' || src[q + 1] == '>') continue;
+    at = q + 1;
+    break;
+  }
+  if (at == (size_t)-1) return 0;
+  size_t q = at;
+  while (q < before && (src[q] == ' ' || src[q] == '\t')) q++;
+  int pct = 0;
+  char close = ']';
+  if (strncmp(src + q, "%i[", 3) == 0 || strncmp(src + q, "%i(", 3) == 0) {
+    pct = 1; close = src[q + 2] == '[' ? ']' : ')'; q += 3;
+  }
+  else if (src[q] == '[') q++;
+  else return 0;
+  int cap = 16, n = 0;
+  char (*names)[160] = malloc(sizeof(*names) * (size_t)cap);
+  if (!names) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  for (;;) {
+    while (q < before && (src[q] == ' ' || src[q] == '\t' || src[q] == '\n' || src[q] == '\r' ||
+                          (!pct && src[q] == ','))) q++;
+    if (q >= before) { free(names); return 0; }
+    if (src[q] == close) { q++; break; }
+    if (!pct) { if (src[q] != ':') { free(names); return 0; } q++; }
+    /* a name, with a trailing ? ! or = (closed?, write!, v=), or :<< --
+       the one operator the rewrite is known to delegate right */
+    size_t s0 = q;
+    if (sp_ident_char(src[q])) {
+      while (q < before && sp_ident_char(src[q])) q++;
+      if (src[q] == '?' || src[q] == '!' || (src[q] == '=' && src[q + 1] != '>')) q++;
+    }
+    else if (src[q] == '<' && src[q + 1] == '<' && src[q + 2] != '<' && src[q + 2] != '=') q += 2;
+    if (q == s0 || q - s0 >= 160) { free(names); return 0; }
+    if (n == cap) {
+      cap *= 2;
+      char (*nn)[160] = realloc(names, sizeof(*names) * (size_t)cap);
+      if (!nn) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      names = nn;
+    }
+    memcpy(names[n], src + s0, q - s0);
+    names[n][q - s0] = 0;
+    n++;
+  }
+  /* only `.freeze` and a comment may follow */
+  if (strncmp(src + q, ".freeze", 7) == 0) q += 7;
+  while (src[q] == ' ' || src[q] == '\t' || src[q] == '\r') q++;
+  if (src[q] != '\n' && src[q] != '#' && src[q] != 0) { free(names); return 0; }
+  if (n == 0) { free(names); return 0; }
+  *out = names; *nout = n;
+  return 1;
+}
+
 /* Where rewrite_syntax_sugar wrote the `{` / `do` of each block it made
    from `&:sym`, in the buffer Prism parses: flatten marks those BlockNodes
    (sym_proc_block), which a user's own `{ |_spx| _spx.m }` is not. The
@@ -4285,6 +4403,31 @@ static char *rewrite_syntax_sugar(char *source) {
             if (ch == '\\' && k3 + 1 < len && source[k3 + 1] == '\n') { nl3++; k3 += 2; continue; }
             if (ch == '\n' && (after_comma || paren3 > 0)) { nl3++; k3++; continue; }
             break;
+          }
+          /* `*NAMES`, a constant holding a literal Symbol Array (Rack::Lint's
+             `def_delegators :@stream, *REQUIRED_METHODS`): its names */
+          if (k3 + 1 < len && source[k3] == '*' && source[k3 + 1] >= 'A' && source[k3 + 1] <= 'Z' &&
+              nsym > 0) {
+            size_t c0 = k3 + 1, c1 = c0;
+            while (c1 < len && sp_is_method_name_char(source[c1])) c1++;
+            char cname[128];
+            if (c1 - c0 >= sizeof cname) { bad3 = 1; break; }
+            memcpy(cname, source + c0, c1 - c0); cname[c1 - c0] = 0;
+            char (*csyms)[160] = NULL; int ncs = 0;
+            if (!sp_const_symbol_list(source, len, i, cname, &csyms, &ncs)) { bad3 = 1; break; }
+            for (int q = 0; q < ncs; q++) {
+              if ((size_t)nsym == symcap) {
+                symcap *= 2;
+                char (*ns)[160] = realloc(syms, sizeof(*syms) * symcap);
+                if (!ns) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+                syms = ns;
+              }
+              memcpy(syms[nsym++], csyms[q], sizeof csyms[q]);
+            }
+            free(csyms);
+            after_comma = 0;
+            k3 = c1;
+            continue;
           }
           if (k3 >= len || source[k3] != ':') break;
           after_comma = 0;
