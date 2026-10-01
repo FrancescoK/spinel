@@ -11775,8 +11775,9 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
     if (an < 1) continue;
     TyKind kt = infer_type(c, av[0]);
     TyKind want = TY_UNKNOWN;
-    if (kt == TY_SYMBOL) want = TY_SYM_POLY_HASH;
-    else if (kt == TY_STRING) {
+    switch (kt) {
+    case TY_SYMBOL: want = TY_SYM_POLY_HASH; break;
+    case TY_STRING: {
       /* The key operations this pass keys off (`key?`, `[]`, `fetch`, `dig`)
          say what the KEY is and nothing about the value, so the poly-valued
          variant was the only answer available here. But the slot's own
@@ -11796,8 +11797,9 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_STRING, wv)
                                                : TY_STR_POLY_HASH;
+      break;
     }
-    else if (kt == TY_INT) {
+    case TY_INT: {
       /* The same argument the String branch makes: this mark is permanent and
          only ever widens, so pinning the boxed variant throws away a value type
          the slot's own `h[k] = v` writes state right there. `[]=` joined this
@@ -11817,25 +11819,29 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
         if (dn >= 0) wv = ty_unify(wv, hash_default_value_ty(c, dn)); }
       want = (wv == TY_INT || wv == TY_STRING) ? ty_hash_of(TY_INT, wv)
                                                : TY_POLY_POLY_HASH;
+      break;
     }
     /* a boxed key (one call site passes a String, another an Integer) is only
        representable by the poly-keyed variant; the StrPolyHash default would
        hand the boxed value to a const char * slot and segfault */
-    else if (kt == TY_POLY) want = TY_POLY_POLY_HASH;
+    case TY_POLY: want = TY_POLY_POLY_HASH; break;
     /* Every other KNOWN key kind -- an Array, a Float, a user object -- has no
        keyed variant of its own either, so the poly-keyed one is the only
        representation that holds it. Falling through here left the literal at
        the StrPolyHash default and put the key straight into a const char *
        slot, which the C compiler reported against generated code (#4000).
        TY_UNKNOWN still falls through: the key is not settled yet. */
-    else if (kt != TY_UNKNOWN && kt != TY_VOID) want = TY_POLY_POLY_HASH;
-    /* An empty container LITERAL as the key infers no kind at all, but it is
-       still a pointer at emit time (a bare `[]` lowers to an array), so it
-       needs the same widening -- the unresolved kind is what let `{}.fetch []`
-       through to the C compiler. */
-    else if (kt == TY_UNKNOWN &&
-             (nt_kind(nt, av[0]) == NK_ArrayNode || nt_kind(nt, av[0]) == NK_HashNode))
-      want = TY_POLY_POLY_HASH;
+    default:
+      if (kt != TY_UNKNOWN && kt != TY_VOID) want = TY_POLY_POLY_HASH;
+      /* An empty container LITERAL as the key infers no kind at all, but it is
+         still a pointer at emit time (a bare `[]` lowers to an array), so it
+         needs the same widening -- the unresolved kind is what let `{}.fetch []`
+         through to the C compiler. */
+      else if (kt == TY_UNKNOWN &&
+               (nt_kind(nt, av[0]) == NK_ArrayNode || nt_kind(nt, av[0]) == NK_HashNode))
+        want = TY_POLY_POLY_HASH;
+      break;
+    }
     if (!ty_is_hash(want)) continue;
     if (direct) {
       if (c->hash_want[recv] != want) { c->hash_want[recv] = want; changed = 1; }
