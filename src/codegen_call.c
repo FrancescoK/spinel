@@ -5436,13 +5436,17 @@ static void emit_key_not_found(Compiler *c, int key_node, Buf *b) {
 /* Emit the else-branch of a poly-Hash `fetch` dispatched through the poly value
    switch: the caller's default (fetch(k, dflt)) or a KeyError raise (fetch(k)),
    coerced to the dispatch's result-temp representation (poly, or the scalar
-   `trt`). `argv1` is the default-argument node (only read when argc == 2);
-   `key_node` is the fetched key (argv[0]) for the KeyError message. */
-static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, int argv1,
+   `trt`). `dty` is the C type the default's temp atmp[1] was declared with
+   (only read when argc == 2), which boxes it as the switch's default arm
+   does: a default with no type of its own (an empty `[]` or `{}`) is held
+   boxed already, and boxing it again by the node's type ran it for effect
+   and answered nil. `key_node` is the fetched key (argv[0]) for the
+   KeyError message. */
+static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKind dty,
                                    int key_node, TyKind ret, TyKind trt, Buf *b) {
   if (argc == 2) {
     char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-    if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv1), dn, b);
+    if (ret == TY_POLY) emit_boxed_text(c, dty, dn, b);
     else buf_puts(b, dn);
   }
   else {
@@ -11138,7 +11142,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      HV[hvi].cls, tr, HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
           if (ret == TY_POLY) emit_boxed_text(c, HV[hvi].vt, getx, b); else buf_puts(b, getx);
           buf_puts(b, " : ");
-          if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b);
+          if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
           else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
           buf_puts(b, "; break;");
         }
@@ -11161,7 +11165,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (is_fetch) buf_printf(b, "%s ? ", hx);
           if (ret == TY_POLY) buf_puts(b, getx);
           else emit_unbox_text(c, trt, getx, b);
-          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b); }
+          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b); }
           buf_puts(b, "; break;");
         }
       }
@@ -11178,7 +11182,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else if (trt == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
         else buf_printf(b, "sp_poly_to_i(%s)", getx);
         buf_puts(b, " : ");
-        if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b);
+        if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
         buf_puts(b, "; break;");
         /* a symbol key against generic poly-keyed storage: an empty `{}`
@@ -11192,7 +11196,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (is_fetch) buf_printf(b, "%s ? ", hx2);
           if (ret == TY_POLY) buf_puts(b, getx2);
           else emit_unbox_text(c, trt, getx2, b);
-          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b); }
+          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b); }
           buf_puts(b, "; break;");
         }
       }
@@ -11223,7 +11227,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (is_fetch) buf_printf(b, "%s ? ", hx);
         if (ret == TY_POLY) buf_puts(b, gx);
         else emit_unbox_text(c, ptrt, gx, b);
-        if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, ptrt, b); }
+        if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, ptrt, b); }
         buf_puts(b, "; break;");
       }
       /* eql?/equal?/is_a?/kind_of?/instance_of? on a builtin-scalar (or
