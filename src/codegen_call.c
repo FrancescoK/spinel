@@ -24835,6 +24835,29 @@ static void refuse_string_copies(Compiler *c, int id) {
       }
       return;
     } }
+  /* `Thread.new(v) { |t| t << x }`: the block's parameter takes a box,
+     which holds a pulled local's handle or an ivar's (promote_dyncall_
+     string_args), and a copy of any other String */
+  { int tblk = an_thread_arg_block(c, id);
+    int ta = tblk >= 0 ? nt_ref(nt, id, "arguments") : -1, tac = 0;
+    const int *tav = ta >= 0 ? nt_arr(nt, ta, "arguments", &tac) : NULL;
+    for (int k = 0; k < tac && k < 16; k++) {
+      if (nt_kind(nt, tav[k]) == NK_SplatNode || nt_kind(nt, tav[k]) == NK_KeywordHashNode) break;
+      int shared;
+      const char *kind = strvar_arg(c, tav[k], &shared);
+      if (!kind || !dyn_block_appends(c, tblk, k) || c->strbuf_box[tav[k]] || local_is_handle(c, tav[k])) continue;
+      int tr = nt_ref(nt, id, "receiver");
+      char thr[96];
+      if (nt_kind(nt, tr) == NK_ConstantReadNode) snprintf(thr, sizeof thr, "`%s.%s`", nt_str(nt, tr, "name"), name);
+      else snprintf(thr, sizeof thr, "`%s`", name);
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      /* the parameter as written, without the shadow rename's suffix */
+      const char *pn = proc_param_name(c, tblk, k);
+      char pb[96];
+      snprintf(pb, sizeof pb, "%.*s", pn && block_param_is_renamed(pn) ? (int)block_param_written_len(pn) : 95,
+               pn ? pn : "?");
+      refuse_string_copy(c, tav[k], "a block", pb, thr, why);
+    } }
   /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
      initialize's appended String parameter is the handle (ctor_convert_params),
      and the caller's String variable is pulled into it (ctor_pull_args), but
