@@ -153,6 +153,13 @@ module Net
     # used to do, sending both and leaving the server to pick.
     def []=(name, value)
       k = name.to_s.downcase
+      # nil removes the header, as CRuby's Net::HTTPHeader#[]= does: a Host
+      # set to nil lets the default one go out again instead of an empty one.
+      if value.nil?
+        @headers.delete(k)
+        @header_names.delete(k)
+        return nil
+      end
       # An Array joins with ", ", the way CRuby serves a multi-valued header:
       # `req["Accept"] = %w[a b]` reads back "a, b" and goes out as one line.
       # `to_s` on an Array is its INSPECT form, so without this the wire got
