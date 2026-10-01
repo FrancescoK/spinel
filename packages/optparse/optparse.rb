@@ -57,7 +57,7 @@ class OptionParser
   attr_accessor :banner, :summary_width, :summary_indent
 
   def initialize(banner = nil, width = 32, indent = "    ", &block)
-    @banner = banner || "Usage: " + File.basename($0, ".*") + " [options]"
+    @banner = banner || "Usage: " + File.basename($0) + " [options]"
     @summary_width = width
     @summary_indent = indent
     @entries = []
@@ -79,7 +79,7 @@ class OptionParser
 
   # When a switch raises an error, argv keeps only the words after the
   # switch that failed, as in CRuby.
-  def parse!(argv)
+  def parse!(argv = ARGV)
     rest = []
     i = 0
     begin
