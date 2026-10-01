@@ -39,18 +39,26 @@ class Integer
     # (NoMethodError / a comparison-failed ArgumentError). Written out
     # explicitly so the two match (test/numeric_nil_argument.rb,
     # test/numeric_string_argument.rb, test/strict_arg_conversion.rb).
-    unless base.is_a?(Integer)
-      raise TypeError, "no implicit conversion of #{base.nil? ? "nil" : base.class} into Integer"
-    end
-    raise ArgumentError, "negative radix" if base < 0
-    raise ArgumentError, "invalid radix #{base}" if base < 2
+    # A Float, a Rational or a Complex converts through #to_int, as
+    # rb_to_int takes it: 3.9 and 7/2 are 3, and a Complex with a nonzero
+    # imaginary part is its RangeError. Each arm answers an Integer, so the
+    # radix keeps the Integer slot an Integer base had.
+    radix = if base.is_a?(Integer)
+              base
+            elsif base.is_a?(Float) || base.is_a?(Rational) || base.is_a?(Complex)
+              base.to_int
+            else
+              raise TypeError, "no implicit conversion of #{base.nil? ? "nil" : base.class} into Integer"
+            end
+    raise ArgumentError, "negative radix" if radix < 0
+    raise ArgumentError, "invalid radix #{radix}" if radix < 2
     raise Math::DomainError, "out of domain" if self < 0
     return [0] if self == 0
     result = []
     n = self
     while n > 0
-      result << n % base
-      n /= base
+      result << n % radix
+      n /= radix
     end
     result
   end

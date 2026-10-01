@@ -1,0 +1,12 @@
+[2, 1]
+[2, 1]
+"invalid radix 0"
+"negative radix"
+[0, 0, 1]
+"negative radix"
+"no implicit conversion of nil into Integer"
+"no implicit conversion of String into Integer"
+24
+[4, 3, 2, 1]
+[34, 12]
+[2, 1]
