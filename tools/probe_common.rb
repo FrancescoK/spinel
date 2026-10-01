@@ -394,16 +394,19 @@ module ProbeCommon
   # is nil, true, false, an Integer, a Float or a Symbol, else by its class
   # -- and a sort's order is its platform's qsort's: on Linux `[1, nil,
   # 1].sort` says "comparison of Integer with nil failed" and then
-  # "comparison of NilClass with 1 failed". Two such lines are one answer
-  # when they name the same pair either way round and agree in the rest.
-  CMP_FAILED = /comparison of (\S+) with (.+?) failed/
+  # "comparison of NilClass with 1 failed". Two lines of such an exception
+  # (`<Class>: <message>`, as the generators print one they rescue) are one
+  # answer when they raise the same class, name the same pair either way
+  # round and agree in the rest; a value that only reads like the message
+  # is compared as it is.
+  CMP_FAILED = /\A([A-Z][\w:]*): comparison of (\S+) with (.+?) failed/
 
   def same_answer?(w, g)
     return true if w == g
     wm = w.match(CMP_FAILED)
     gm = g.match(CMP_FAILED)
-    return false unless wm && gm && wm.pre_match == gm.pre_match && wm.post_match == gm.post_match
-    operand_class(wm[2]) == gm[1] && operand_class(gm[2]) == wm[1]
+    return false unless wm && gm && wm[1] == gm[1] && wm.post_match == gm.post_match
+    operand_class(wm[3]) == gm[2] && operand_class(gm[3]) == wm[2]
   end
 
   # The lines of two runs, the same answer line by line.
