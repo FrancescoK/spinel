@@ -6100,6 +6100,27 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         }
         return an_poly_concrete(c, name, TY_NIL);
       }
+      /* The last resort, after every name's own rule above: no user answer
+         is settled yet -- a method answering through this very call (`def
+         to_ary = @body.to_ary`, where @body may be another wrapper) never
+         settles on its own, and the candidate loop skips it -- but the
+         builtin surface has an answer. Poly, as the container reads get, so
+         the call has a type and the dispatch a default arm for a genuine
+         builtin. Only once the fixpoint has converged without it (not
+         g_infer_optimistic): a candidate that settles in a later round would
+         otherwise be widened for good. */
+      if (!found && npc > 0 && !an_builtin_only && !g_infer_optimistic && recv >= 0 &&
+          nt_ref(nt, id, "block") < 0 && (nat_found || an_user_defines_or_reads(c, name))) {
+        long uk = narrow_key(5, id, "");
+        int uhit; int ucached = narrow_memo_get(uk, &uhit);
+        TyKind ubt = uhit ? (TyKind)ucached : an_builtin_answer(c, id);
+        if (!uhit) narrow_memo_put(uk, (int)ubt);
+        if (ubt != TY_UNKNOWN && ubt != TY_VOID) {
+          if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+            c->poly_builtin_ty[id] = ubt;
+          return TY_POLY;
+        }
+      }
     }
   }
 
