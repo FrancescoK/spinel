@@ -26510,6 +26510,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                        " ? sp_penum_call1((sp_Proc *)_t%d.v.p, ", tp3, tp3, tp3);
       { Buf ab3; memset(&ab3, 0, sizeof ab3); emit_boxed(c, pv[0], &ab3);
         buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
+        /* Method#=== calls the method too, as its `[]` does: compared, a
+           Method read out of a container answered false (#6179) */
+        if (comp_ntype(c, pr) == TY_POLY) {
+          buf_printf(&pb3, ") : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD && _t%d.v.p"
+                           " ? sp_poly_call_aref(_t%d, ", tp3, tp3, tp3, tp3);
+          buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
+        }
         /* Everything else dispatches case-equality on the receiver's runtime
            class the way CRuby does -- a Regexp matches, a Range covers, a
            Class tests membership. Plain equality answered false for all of
@@ -28314,8 +28321,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      raise, with no arm at all: one `def call(severity, time, progname,
      message)` on a log formatter turned every `pred.call(host, port)` on a
      Proc slot into NoMethodError. */
+  /* Proc#yield is #call as well; a Method has no `yield`, so one read out
+     of the slot raises NoMethodError, as anything else that is no Proc
+     does (is_yield below) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
-      (sp_streq(name, "call") || sp_streq(name, "()"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield"))) {
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
       int umi = comp_method_in_class(c, _k, name);
@@ -28343,6 +28353,16 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          literal builds its proc), and a callable a call answered is held by
          nothing else */
       emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t);
+      /* `.yield`: the call below for a Proc or a curried one, and
+         NoMethodError for anything else, a Method included */
+      int is_yield = sp_streq(name, "yield");
+      char yield_else[96] = "";
+      if (is_yield) {
+        buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_PROC ||"
+                      " _t%d.cls_id == SP_BUILTIN_CURRY) ? ", t, t, t, t);
+        snprintf(yield_else, sizeof yield_else,
+                 " : (sp_raise_nomethod(sp_nomethod_msg(\"yield\", _t%d)), sp_box_nil()))", t);
+      }
       /* the poly callable may be a Proc or a bound Method (different ABIs).
          Under promote the bound method is poly-signatured, so call it through
          the poly ABI and unbox the result back to the sp_int the Proc arm
@@ -28358,7 +28378,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (call_args_need_spread(nt, argv, argc)) {
           char kwp[24];
           int ta = emit_spread_args_kw(c, argv, argc, kwp, sizeof kwp);
-          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), %s)", t, ta, kwp);
+          buf_printf(b, "sp_poly_callable_spread(_t%d, sp_box_poly_array(_t%d), %s)%s", t, ta, kwp, yield_else);
           return;
         }
       }
@@ -28540,6 +28560,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
       buf_printf(b, "}, %d))", argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1);
       if (pubs.p) buf_puts(b, ")");
+      buf_puts(b, yield_else);
       free(pubs.p);
       #undef EMIT_POLY_CALL_MARG
       #undef EMIT_POLY_CALL_SLOT
