@@ -5618,17 +5618,14 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                  name, tv);
       return 1;
     }
-    /* localtime(off) / getlocal(off): a fixed offset, seconds or "+HH:MM". */
+    /* localtime(zone) / getlocal(zone): the zone a value names, as `in:`
+       reads it (sp_time_in_zone_v); nil is local time. */
     if (argc == 1 && (sp_streq(name, "localtime") || sp_streq(name, "getlocal"))) {
       int tv = ++g_tmp, ov = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_int _t%d = ", ov);
-      if (comp_ntype(c, argv[0]) == TY_STRING) {
-        buf_puts(b, "sp_time_offset_from_str("); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_RbVal _t%d = ", ov); emit_boxed(c, argv[0], b);
       buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME"
-                    " ? sp_box_time(sp_time_getlocal_off(*(sp_Time *)_t%d.v.p, _t%d))"
+                    " ? sp_box_time(sp_time_in_zone_v(*(sp_Time *)_t%d.v.p, _t%d, 1))"
                     " : (sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), sp_box_nil()); })",
                  tv, tv, tv, ov, name, tv);
       return 1;
@@ -11641,24 +11638,16 @@ static int class_new_pos_arity(Compiler *c, int ci, int *pmin, int *pmax) {
 /* Time.new(...) with a ZONE argument (the 7th positional, or `in:`): the civil
    fields are read in that zone. A name ("UTC"/"Z"), an offset string in any of
    CRuby's spellings, or an Integer offset -- resolved at run time so a variable
-   works too (#3697). Emits a statement expression; `npos` positional fields. */
+   works too (#3697); a zone known only at run time may also be a whole-second
+   Float or Rational, or nil, which reads the fields in local time. The fields
+   are evaluated first, in order, then the zone, as CRuby does. Emits a
+   statement expression; `npos` positional fields. */
 static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Buf *b) {
-  int tz = ++g_tmp, tu = ++g_tmp, tt = ++g_tmp;
+  int tz = ++g_tmp, tu = ++g_tmp, tt = ++g_tmp, tl = ++g_tmp, tf = ++g_tmp;
   TyKind zt = comp_ntype(c, zone);
-  buf_printf(b, "({ int _t%d = 0; int64_t _t%d = ", tu, tz);
-  if (zt == TY_STRING) { buf_printf(b, "sp_time_zone_arg_off("); emit_expr(c, zone, b); buf_printf(b, ", &_t%d)", tu); }
-  else if (zt == TY_INT) emit_int_expr(c, zone, b);
-  else {
-    int tb2 = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tb2); emit_boxed(c, zone, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_time_zone_arg_off(_t%d.v.s, &_t%d)"
-                  " : _t%d.tag == SP_TAG_INT ? (int64_t)_t%d.v.i"
-                  " : (sp_raise_cls(\"ArgumentError\", \"invalid time zone\"), (int64_t)0); })",
-               tb2, tb2, tu, tb2, tb2);
-  }
-  buf_printf(b, "; sp_Time _t%d = sp_time_new_off(", tt);
+  buf_printf(b, "({ int64_t _t%d[6];", tf);
   for (int i = 0; i < 6; i++) {
-    if (i) buf_puts(b, ", ");
+    buf_printf(b, " _t%d[%d] = ", tf, i);
     if (i < npos) {
       TyKind fit = comp_ntype(c, argv[i]);
       if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
@@ -11667,8 +11656,20 @@ static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Bu
       else emit_int_expr(c, argv[i], b);
     }
     else buf_puts(b, i == 1 || i == 2 ? "1" : "0");
+    buf_puts(b, ";");
   }
-  buf_printf(b, ", _t%d ? 0 : _t%d);", tu, tz);
+  buf_printf(b, " int _t%d = 0, _t%d = 0; int64_t _t%d = ", tu, tl, tz);
+  if (zt == TY_STRING) { buf_printf(b, "sp_time_zone_arg_off("); emit_expr(c, zone, b); buf_printf(b, ", &_t%d)", tu); }
+  else if (zt == TY_INT) emit_int_expr(c, zone, b);
+  else {
+    int tb2 = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tb2); emit_boxed(c, zone, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (_t%d = 1, (int64_t)0) : sp_time_zone_val_off(_t%d, &_t%d); })",
+               tb2, tl, tb2, tu);
+  }
+  buf_printf(b, "; sp_Time _t%d = _t%d ? sp_time_new(_t%d[0], _t%d[1], _t%d[2], _t%d[3], _t%d[4], _t%d[5])"
+                " : sp_time_new_off(_t%d[0], _t%d[1], _t%d[2], _t%d[3], _t%d[4], _t%d[5], _t%d ? 0 : _t%d);",
+             tt, tl, tf, tf, tf, tf, tf, tf, tf, tf, tf, tf, tf, tf, tu, tz);
   buf_printf(b, " if (_t%d) { _t%d.is_utc = 1; _t%d.utc_off = 0; } _t%d; })", tu, tt, tt, tt);
 }
 
@@ -11681,13 +11682,7 @@ static void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b) {
   if (zt == TY_STRING) { buf_printf(b, " sp_time_in_zone_s(_t%d, ", ts); emit_expr(c, zone, b); buf_puts(b, "); })"); }
   else if (zt == TY_INT) { buf_printf(b, " sp_time_in_zone_i(_t%d, ", ts); emit_int_expr(c, zone, b); buf_puts(b, "); })"); }
   else {
-    int tz = ++g_tmp;
-    buf_printf(b, " sp_RbVal _t%d = ", tz); emit_boxed(c, zone, b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_time_in_zone_s(_t%d, _t%d.v.s)"
-                  " : _t%d.tag == SP_TAG_INT ? sp_time_in_zone_i(_t%d, _t%d.v.i)"
-                  " : _t%d.tag == SP_TAG_NIL ? _t%d"
-                  " : (sp_raise_cls(\"ArgumentError\", \"invalid time zone\"), _t%d); })",
-               tz, ts, tz, tz, ts, tz, tz, ts, ts);
+    buf_printf(b, " sp_time_in_zone_v(_t%d, ", ts); emit_boxed(c, zone, b); buf_puts(b, ", 0); })");
   }
 }
 

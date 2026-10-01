@@ -2156,6 +2156,46 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* A zone given as a value whose type is known only at run time (`in:`,
+   Time.new's 7th positional, localtime / getlocal's argument): a String as
+   sp_time_zone_arg_off spells it; an Integer, or a Float or Rational holding
+   a whole number, an offset in seconds, below a day either way. sp_Time keeps
+   whole seconds of offset, so a fractional one raises NotImplementedError
+   rather than rounding. Anything else is CRuby's TypeError. The caller
+   answers nil, which keeps local time. */
+static int64_t sp_time_zone_val_off(sp_RbVal z, int *is_utc_out) SP_UNUSED;
+static int64_t sp_time_zone_val_off(sp_RbVal z, int *is_utc_out) {
+  *is_utc_out = 0;
+  int64_t off = 0;
+  if (z.tag == SP_TAG_STR) return sp_time_zone_arg_off(z.v.s, is_utc_out);
+  if (z.tag == SP_TAG_INT) off = z.v.i;
+  else if (z.tag == SP_TAG_BIGINT) sp_raise_cls("ArgumentError", "utc_offset out of range");
+  else if (z.tag == SP_TAG_FLT || (z.tag == SP_TAG_OBJ && z.cls_id == SP_BUILTIN_RATIONAL && z.v.p)) {
+    double f; int whole;
+    if (z.tag == SP_TAG_FLT) { f = z.v.f; whole = f == floor(f); }
+    else {
+      sp_Rational q = *(sp_Rational *)z.v.p;
+      f = (double)q.num / (double)q.den; whole = q.den == 1;
+    }
+    if (!(fabs(f) < 86400.0)) sp_raise_cls("ArgumentError", "utc_offset out of range");
+    if (!whole) sp_raise_cls("NotImplementedError", "a utc_offset of a fraction of a second is not supported");
+    off = (int64_t)f;
+  }
+  else sp_raise_cls("TypeError", sp_sprintf("can't convert %s into an exact number", sp_poly_class_name(z)));
+  if (off <= -86400 || off >= 86400) sp_raise_cls("ArgumentError", "utc_offset out of range");
+  return off;
+}
+/* t re-read in the zone value z (above); nil keeps t when `nil_local` is 0,
+   and reads it in local time when it is 1 (localtime / getlocal) */
+static sp_Time sp_time_in_zone_v(sp_Time t, sp_RbVal z, int nil_local) SP_UNUSED;
+static sp_Time sp_time_in_zone_v(sp_Time t, sp_RbVal z, int nil_local) {
+  if (z.tag == SP_TAG_NIL) return nil_local ? sp_time_localtime(t) : t;
+  int isu = 0;
+  int64_t off = sp_time_zone_val_off(z, &isu);
+  if (isu) { t.is_utc = 1; t.utc_off = 0; }
+  else { t.is_utc = 2; t.utc_off = (int32_t)off; }
+  return t;
+}
 /* respond_to? on an IO handle, by its kind: the names CRuby 4.0 answers for
    that kind (File::Stat, IO with Enumerable, File, BasicSocket and each
    socket class) that spinel can also call on it. A typed handle and one in a

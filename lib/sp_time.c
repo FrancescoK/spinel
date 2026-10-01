@@ -231,28 +231,53 @@ sp_Time sp_time_new_utc(int64_t y, int64_t mo, int64_t d,
   return (sp_Time){ sp_time_civil_epoch(y, mo, d, h, mi, s), 0, 1 };
 }
 
-/* A zone argument (`in:`, or Time.new's 7th positional): "UTC" / "Z" is UTC,
-   an Integer or a "+HH[:MM[:SS]]" / "+HHMM" string a fixed offset east of
-   UTC. Anything else is CRuby's ArgumentError (#3696, #3697, #3698). */
+/* A zone argument (`in:`, Time.new's 7th positional, or localtime /
+   getlocal's String): CRuby's utc_offset_arg. "UTC" in any case and "Z" are
+   UTC; a military letter is a whole-hour offset ("A".."I" +1..+9, "K".."M"
+   +10..+12, "N".."Y" -1..-12, no "J"); otherwise "+HH", "+HHMM", "+HHMMSS",
+   "+HH:MM" or "+HH:MM:SS", minutes and seconds below 60, where a negative
+   zero ("-00:00") is UTC as well. Any other spelling is CRuby's ArgumentError
+   naming the forms, and an offset of a day or more its "utc_offset out of
+   range" (#3696, #3697, #3698). */
 int64_t sp_time_zone_arg_off(const char *z, int *is_utc_out) {
   *is_utc_out = 0;
   if (!z) sp_raise_cls("ArgumentError", "invalid time zone");
-  if (strcmp(z, "UTC") == 0 || strcmp(z, "utc") == 0 ||
-      strcmp(z, "Z") == 0 || strcmp(z, "GMT") == 0) { *is_utc_out = 1; return 0; }
-  if (z[0] == '+' || z[0] == '-') {
-    int sign = z[0] == '-' ? -1 : 1;
-    const char *p = z + 1;
-    int f[3] = {0, 0, 0}, nf = 0;
-    while (nf < 3) {
-      if (!(p[0] >= '0' && p[0] <= '9') || !(p[1] >= '0' && p[1] <= '9')) break;
-      f[nf++] = (p[0] - '0') * 10 + (p[1] - '0');
-      p += 2;
-      if (*p == ':') p++;
-      else if (nf == 1 && *p) continue;   /* "+HHMM" */
-      else break;
-    }
-    if (nf >= 1 && !*p) return sign * (int64_t)(f[0] * 3600 + f[1] * 60 + f[2]);
+  size_t len = strlen(z);
+  const char *min = NULL, *sec = NULL;
+  int64_t n = 0;
+  switch (len) {
+  case 1:
+    if (z[0] == 'Z') { *is_utc_out = 1; return 0; }
+    if (z[0] >= 'A' && z[0] <= 'I') return (int64_t)(z[0] - 'A' + 1) * 3600;
+    if (z[0] >= 'K' && z[0] <= 'M') return (int64_t)(z[0] - 'A') * 3600;
+    if (z[0] >= 'N' && z[0] <= 'Y') return (int64_t)('M' - z[0]) * 3600;
+    goto invalid;
+  case 3:
+    if ((z[0] | 0x20) == 'u' && (z[1] | 0x20) == 't' && (z[2] | 0x20) == 'c') { *is_utc_out = 1; return 0; }
+    break;                                          /* "+HH" */
+  case 9: if (z[6] != ':') goto invalid; sec = z + 7; /* fall through: "+HH:MM:SS" */
+  case 6: if (z[3] != ':') goto invalid; min = z + 4; break;   /* "+HH:MM" */
+  case 7: sec = z + 5;                              /* fall through: "+HHMMSS" */
+  case 5: min = z + 3; break;                       /* "+HHMM" */
+  default: goto invalid;
   }
+  if (sec) {
+    if (!isdigit((unsigned char)sec[0]) || !isdigit((unsigned char)sec[1]) || sec[0] > '5') goto invalid;
+    n += (sec[0] - '0') * 10 + (sec[1] - '0');
+  }
+  if (min) {
+    if (!isdigit((unsigned char)min[0]) || !isdigit((unsigned char)min[1]) || min[0] > '5') goto invalid;
+    n += ((min[0] - '0') * 10 + (min[1] - '0')) * 60;
+  }
+  if ((z[0] != '+' && z[0] != '-') || !isdigit((unsigned char)z[1]) || !isdigit((unsigned char)z[2])) goto invalid;
+  n += (int64_t)((z[1] - '0') * 10 + (z[2] - '0')) * 3600;
+  if (z[0] == '-') {
+    if (n == 0) { *is_utc_out = 1; return 0; }
+    n = -n;
+  }
+  if (n <= -86400 || n >= 86400) sp_raise_cls("ArgumentError", "utc_offset out of range");
+  return n;
+invalid:
   sp_raise_cls("ArgumentError", sp_sprintf("\"+HH:MM\", \"-HH:MM\", \"UTC\" or \"A\"..\"I\",\"K\"..\"Z\" expected for utc_offset: %s", z));
   return 0;
 }
@@ -363,28 +388,10 @@ sp_Time sp_time_localtime(sp_Time t) {
   t.is_utc = 0;
   return t;
 }
-/* Parse a "+HH:MM"/"-HH:MM"/"+HHMM"/"UTC" utc_offset string to seconds (#3093). */
-int32_t sp_time_offset_from_str(const char *s) {SP_GC_ROOT_STR(s);
-  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
-  if (!s || strcmp(s, "UTC") == 0 || strcmp(s, "Z") == 0) return 0;
-  char sign = s[0];
-  if (sign != '+' && sign != '-')
-    sp_raise_cls("ArgumentError", sp_sprintf("\"+HH:MM\" or \"-HH:MM\" expected for utc_offset: %s", s));
-  const char *p = s + 1;
-  int oh = 0, om = 0, os = 0;
-  if (strchr(p, ':')) sscanf(p, "%d:%d:%d", &oh, &om, &os);
-  else {
-    size_t len = strlen(p);
-    if (len >= 2) oh = (p[0] - '0') * 10 + (p[1] - '0');
-    if (len >= 4) om = (p[2] - '0') * 10 + (p[3] - '0');
-  }
-  int32_t off = oh * 3600 + om * 60 + os;
-  return sign == '-' ? -off : off;
-}
 /* Time#getlocal(off)/#localtime(off): reinterpret the instant in a fixed zone
    `off` seconds east of UTC, without changing the underlying epoch (#3093). */
 sp_Time sp_time_getlocal_off(sp_Time t, int64_t off) {
-  if (off < -86400 || off > 86400)
+  if (off <= -86400 || off >= 86400)
     sp_raise_cls("ArgumentError", "utc_offset out of range");
   t.is_utc = 2;
   t.utc_off = (int32_t)off;
