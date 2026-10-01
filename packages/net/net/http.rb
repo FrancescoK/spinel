@@ -173,8 +173,12 @@ module Net
       value
     end
 
+    # A copy, as CRuby's `@header[key].join(", ")` is a new String: appending
+    # to what `[]` answers leaves the stored value alone (and the stored one
+    # may be a frozen literal).
     def [](name)
-      @headers[name.to_s.downcase]
+      v = @headers[name.to_s.downcase]
+      v ? v.dup : nil
     end
 
     def key?(name)

@@ -4809,6 +4809,9 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
        returns the receiver -- not the Integer#<< bit-shift fallback below. */
     if (a.cls_id >= 0) return sp_poly_binop_bad("<<", a, b);
   }
+  /* a frozen String refuses, as the typed paths do: a literal is frozen
+     (frozen_string_literal is always on) and so is a `.freeze`d one (#6328) */
+  if (a.tag == SP_TAG_STR && a.v.s && sp_str_is_frozen_val(a.v.s)) sp_raise_frozen_str(a.v.s);
   /* String#<< appends (sp_str_concat treats NULL as the empty string) */
   if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR)
     return sp_box_str(sp_str_concat(a.v.s, b.v.s));
@@ -9664,6 +9667,7 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
      caller to reassign to the poly slot (sp_poly_arr_set is a no-op on a
      string, silently dropping the mutation) (#3172). */
   if (v.tag == SP_TAG_STR) {
+    if (v.v.s && sp_str_is_frozen_val(v.v.s)) sp_raise_frozen_str(v.v.s);   /* #6328 */
     const char *rep = (val.tag == SP_TAG_STR) ? (val.v.s ? val.v.s : sp_str_empty)
                                               : sp_poly_to_s(val);
     return sp_box_str(sp_str_splice_at(v.v.s ? v.v.s : sp_str_empty, idx, 1, rep, 0));
