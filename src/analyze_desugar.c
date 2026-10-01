@@ -1632,6 +1632,21 @@ static int mrv_no_scope(const NodeTable *nt, int root, int depth) {
   return 1;
 }
 static int mrv_is_string(TyKind t) { return t == TY_STRING || t == TY_STRBUF; }
+/* Does the subtree under `root` write a variable -- any, or the one named
+   `vn` when it is given? Past the depth it follows, it answers that it may. */
+static int mrv_writes(const NodeTable *nt, int root, const char *vn, int depth) {
+  if (root < 0 || root >= nt->count) return 0;
+  if (depth > 200) return 1;
+  const char *ty = nt_type(nt, root);
+  size_t tl = ty ? strlen(ty) : 0;
+  if (((tl > 9 && strcmp(ty + tl - 9, "WriteNode") == 0) || (tl > 10 && strcmp(ty + tl - 10, "TargetNode") == 0)) &&
+      strstr(ty, "Variable") && (!vn || sp_streq(nt_str(nt, root, "name"), vn))) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) if (mrv_writes(nt, nd->r[i].ref, vn, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) if (mrv_writes(nt, nd->a[i].ids[j], vn, depth + 1)) return 1;
+  return 0;
+}
 /* The read of the variable a write node names (`x = v`, `@v ||= e`), or -1
    for another node. */
 static int mrv_target_read(NodeTable *nt, int w) {
@@ -1759,6 +1774,10 @@ int desugar_mutator_receiver_value(Compiler *c) {
     int r = nt_ref(nt, id, "receiver");
     if (!nm || r < 0 || !sp_str_mutator(nm, SP_MUT_LOCAL) || nt_ref(nt, id, "block") >= 0) continue;
     int args = nt_ref(nt, id, "arguments");
+    /* an argument that writes a variable runs after the receiver: moved
+       into an arm, or onto a re-read of the variable, it would replace the
+       String the receiver answered (`s.to_s << (s = +"b")`) */
+    if (mrv_writes(nt, args, NULL, 0)) continue;
     NodeKind rk = nt_kind(nt, r);
     /* `s.tap { }` answers s: the block runs, then the call on s; so does
        `s.then { |z| ...; z }`, whose block answers its parameter */
@@ -1768,6 +1787,9 @@ int desugar_mutator_receiver_value(Compiler *c) {
       NodeKind xk = nt_kind(nt, x);
       if ((xk != NK_LocalVariableReadNode && xk != NK_InstanceVariableReadNode) ||
           !mrv_is_string(infer_type(c, x))) continue;
+      /* a block that assigns the variable leaves it naming another String
+         than the one the call answers */
+      if (mrv_writes(nt, nt_ref(nt, r, "block"), nt_str(nt, x, "name"), 0)) continue;
       int base = nt->count;
       int x2 = nt_clone_subtree(nt, x), st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
       long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
@@ -1826,6 +1848,10 @@ int desugar_mutator_receiver_value(Compiler *c) {
     else {
       na = mrv_arms(nt, r, arms, 64);
       if (na == 0) continue;
+      /* an arm longer than the rewrite's buffer is left as it was */
+      int big = 0;
+      for (int k = 0; k < na && !big; k++) { int bn = 0; nt_arr(nt, arms[k], "body", &bn); big = bn > 255; }
+      if (big) continue;
       if (rk == NK_ParenthesesNode) {
         int bn = 0; const int *bb = nt_arr(nt, arms[0], "body", &bn);
         if (!mrv_paren_value(nt, bb[bn - 1])) continue;
@@ -1876,7 +1902,6 @@ int desugar_mutator_receiver_value(Compiler *c) {
       for (int k = 0; k < na; k++) {
         int bn = 0; const int *bb = nt_arr(nt, arms[k], "body", &bn);
         int body[256];
-        if (bn > 255) bn = 255;
         memcpy(body, bb, sizeof(int) * (size_t)bn);
         int last = body[bn - 1], tr = mrv_target_read(nt, last);
         if (tr >= 0) {
