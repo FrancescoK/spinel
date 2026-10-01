@@ -1,0 +1,19 @@
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ArgumentError, "unknown keyword: :unknown"]
+[ArgumentError, "unknown keyword: :unknown"]
+[ArgumentError, "unknown keyword: :unknown"]
+[ArgumentError, "unknown keywords: :a, :b"]
+[ArgumentError, "unknown keyword: :a"]
+[ArgumentError, "unknown keyword: :x"]
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ArgumentError, "unknown keyword: :bad"]
+[5, 6, 7]
+{}
+nil
+{a: 1}
+5
+"abab"
+{ab: "abab"}
+{a: 1}
+[ArgumentError, "unknown keyword: :unknown"]

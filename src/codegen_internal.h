@@ -1316,6 +1316,7 @@ Buf expr_buf(Compiler *c, int node);
    it handled the call and emitted into `b`, else 0 (emit_call falls through). */
 int emit_arg_type_guards(Compiler *c, int id, Buf *b);
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b);
+int emit_hash_new_arg_guard(Compiler *c, int id, Buf *b);
 int emit_blockless_enumerator(Compiler *c, int id, Buf *b);
 int emit_unresolved_call(Compiler *c, int id, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b);
