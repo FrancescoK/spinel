@@ -15587,7 +15587,7 @@ static sp_StrStrHash *sp_env_filter_bang(sp_Proc *p, int keep) {
 static sp_StrStrHash *sp_env_update_v(sp_RbVal hv, int replace) {
   SP_GC_ROOT_RBVAL(hv);
   sp_PolyPolyHash *h = sp_poly_as_poly_poly_hash(hv);
-  if (!h) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_poly_class_name(hv)));
+  if (!h) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(hv)));
   SP_GC_ROOT(h);
   for (sp_int i = 0; i < h->len; i++) {
     sp_RbVal k = h->keys[h->order[i]], v = h->vals[h->order[i]];
