@@ -13512,6 +13512,14 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   int recv = nt_ref(nt, id, "receiver");
   int has_blk = nt_ref(nt, id, "block") >= 0;
   int t = ++g_tmp;
+  /* A String mutator on a receiver that is no variable -- an element read,
+     a Hash value -- has only the shared handle behind the box to take its
+     new contents. Its temp is named as the reader shim names a handle's
+     shadow copy (sb_shadowed_reader), so the typed emitter writes the new
+     contents back into it, as it does for a variable, and the write-back
+     below hands them to the handle. Under a plain name, slice! answered the
+     removed part and wrote nothing back. */
+  const char *tp = (kind == PF_STRING && box && (flags & PF_MUT) && !face_str_var_recv(nt, recv)) ? "lv__sb" : "_t";
   char bx[32];
   Buf rb; memset(&rb, 0, sizeof rb);
   if (box) snprintf(bx, sizeof bx, "_t%d", box);
@@ -13523,8 +13531,12 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   const char *rs = box ? bx : rb.p ? rb.p : "sp_box_nil()";
   emit_indent(g_pre, g_indent);
   switch (kind) {
+    /* A String mutator's receiver checks a shared handle's frozen flag
+       first, as the Array and Hash coercions below do: the handle hands out
+       its own bytes, and setbyte wrote them before the write-back raised. */
     case PF_STRING:
-      buf_printf(g_pre, "const char *_t%d = sp_poly_recv_s(%s, \"%s\"); SP_GC_ROOT(_t%d);\n", t, rs, name, t);
+      buf_printf(g_pre, "const char *%s%d = sp_poly_recv_s%s(%s, \"%s\"); SP_GC_ROOT(%s%d);\n",
+                 tp, t, (flags & PF_MUT) ? "_mut" : "", rs, name, tp, t);
       break;
     case PF_INT:
       /* The block iterators check: `"x".times { }` is a NoMethodError in
@@ -13555,7 +13567,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   }
   free(rb.p);
   g_argov_node[g_n_argov] = recv;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "%s%d", tp, t);
   g_n_argov++;
   TyKind as = ty_poly_face_kind(kind);
   TyKind sv = c->ntype[recv]; c->ntype[recv] = as;
@@ -13622,8 +13634,9 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
         buf_printf(&wb, "sp_poly_str_become(_t%d, _t%d)", box, nv);
       }
       else {
-        if (flags & PF_SAME_OK) buf_printf(&wb, "if (!sp_poly_str_is_own(_t%d, _t%d)) ", box, nv);
-        buf_printf(&wb, "sp_poly_str_become_handle(_t%d, _t%d, \"%s\")", box, nv, name);
+        const char *np = nv == t ? tp : "_t";
+        if (flags & PF_SAME_OK) buf_printf(&wb, "if (!sp_poly_str_is_own(_t%d, %s%d)) ", box, np, nv);
+        buf_printf(&wb, "sp_poly_str_become_handle(_t%d, %s%d, \"%s\")", box, np, nv, name);
       }
     }
     if (!has_val) buf_printf(val, "({ (void)(%s); %s; })", call, wb.p);
@@ -13720,7 +13733,11 @@ static int emit_face_reentry(Compiler *c, int id, unsigned kind, unsigned flags,
   int box = 0;
   Buf pre = {0, 0, 0}, val = {0, 0, 0};
   TyKind nat = TY_UNKNOWN;
-  if ((flags & PF_MUT) && kind == PF_STRING && !(flags & PF_VAL_SELF) && !face_str_var_recv(nt, recv)) return 0;
+  /* A String mutator on a receiver that is no variable is taken too: the
+     shadow temp emit_face_arm names takes its new contents, and only a
+     shared handle behind the box can absorb them; a plain box raises the
+     NoMethodError the call raised before. Declined here, setbyte raised
+     that NoMethodError for the handle as well. */
   if ((flags & PF_MUT) && (kind == PF_ARRAY || kind == PF_STRING || kind == PF_HASH)) box = ++g_tmp;
   if (!face_probe_arm(c, id, kind, flags, box, &pre, &val, &nat)) {
     free(pre.p); free(val.p);
@@ -13788,7 +13805,6 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   for (unsigned kind = 1; kind & PF_OWNERS; kind <<= 1) {
     if (!(own & kind)) continue;
     unsigned fl = ty_poly_face_owner_flags(name, argc, has_blk, plain, kind);
-    if ((fl & PF_MUT) && kind == PF_STRING && !(fl & PF_VAL_SELF) && !face_str_var_recv(nt, recv)) continue;
     int misfit = -1;
     if ((fl & PF_ARGS_OWN) && plain)
       for (int i = 0; i < argc && misfit < 0; i++) if (face_arg_misfit(c, kind, argv[i])) misfit = i;

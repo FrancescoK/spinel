@@ -39486,9 +39486,10 @@ else {
          expression position (an `if`/ternary condition) where a g_pre prelude
          would not be flushed and would splice a stray statement into the
          condition (#3187). */
+      /* a shared String handle matches its live bytes, through the deref */
       int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
+      buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
+      buf_printf(b, "); (_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? sp_box_nil()"
                     " : sp_raise_nomethod(\"undefined method '=~' for poly\")); })",
                  tv, are, tv, tv);
@@ -39499,8 +39500,8 @@ else {
        non-poly (string) receiver keeps the direct negated-match emit. */
     if (are >= 0 && sp_streq(name, "!~") && rpoly) {
       int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (_t%d.tag == SP_TAG_STR ? sp_re_match(sp_re_pat_%d, _t%d.v.s) < 0"
+      buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
+      buf_printf(b, "); (_t%d.tag == SP_TAG_STR ? sp_re_match(sp_re_pat_%d, _t%d.v.s) < 0"
                     " : _t%d.tag == SP_TAG_NIL ? 1"
                     " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0)); })",
                  tv, are, tv, tv);
@@ -39710,7 +39711,7 @@ else {
           if (sp_streq(name, "=~") && rt == TY_POLY) {
             int tv = ++g_tmp;
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ");\n");
             buf_printf(b, "(_t%d.tag == SP_TAG_STR ? sp_re_match_poly(%s, _t%d.v.s)"
                           " : sp_raise_nomethod(\"undefined method '=~' for poly\"))",
                        tv, rp.p, tv);
