@@ -98,7 +98,9 @@ class Pathname
     return Pathname.new(o) if @path == ""
     return self if o == "" || o == "."
 
-    Pathname.new(Pathname.clean_str("#{@path}#{SEPARATOR}#{o}"))
+    joined = Pathname.clean_str("#{@path}#{SEPARATOR}#{o}")
+    joined = "#{joined}#{SEPARATOR}" if o.end_with?(SEPARATOR) && joined != SEPARATOR
+    Pathname.new(joined)
   end
 
   def /(other)
