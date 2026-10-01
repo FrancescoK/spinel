@@ -33157,6 +33157,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (comp_method_in_chain(c, k, name, NULL) >= 0 ||
           comp_reader_in_chain(c, k, name, NULL))
         iocand = 1;
+      /* an attr writer answers `x.sync = v` as a reader answers `x.sync` */
+      size_t nl = strlen(name);
+      if (nl > 1 && nl < 256 && name[nl - 1] == '=') {
+        char base[256]; memcpy(base, name, nl - 1); base[nl - 1] = 0;
+        if (comp_writer_in_chain(c, k, base, NULL)) iocand = 1;
+      }
     }
     /* printf: the receiver and every argument, the format included, are
        evaluated and rooted before the handle is unboxed, so a receiver that

@@ -8470,6 +8470,15 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
     else buf_puts(b, src);
     buf_puts(b, "; break;");
   }
+  /* a real IO in the slot keeps its own writer beside the program's: a Log
+     with `attr_accessor :sync` and $stdout in one slot, `x.sync = v` on the
+     stream raised NoMethodError. Only the truth of v sets the mode. */
+  if (sp_streq(base, "sync")) {
+    buf_printf(b, " case SP_BUILTIN_IO: sp_File_set_sync((sp_File *)%s, sp_poly_truthy(", objp);
+    if (at == TY_POLY || at == TY_UNKNOWN) buf_puts(b, src);
+    else emit_boxed_text(c, at, src, b);
+    buf_puts(b, ")); break;");
+  }
 }
 
 /* The statement that brings a synthesized singleton subclass into being --
