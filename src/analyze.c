@@ -24413,6 +24413,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_empty_block_body(c);         /* m { } -> m { nil } */
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
+    ch |= desugar_method_call_runtime_name(c); /* method(var).call(a) -> send(var, a) */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_dynamic_method(c);
     ch |= desugar_dynamic_respond_to(c);       /* recv.respond_to?(var) -> static name dispatch */

@@ -3141,6 +3141,48 @@ int desugar_dynamic_send(Compiler *c) {
   return changed;
 }
 
+/* `method(name).call(args)` with a NAME known only at run time is
+   `send(name, args)`: both reach private methods, and the call is the only
+   use of the Method. Rewritten so the runtime-name send lowering dispatches
+   it (or refuses it where it cannot, a receiverless one at the top level);
+   left alone, the call on an unresolved Method compiled to an unconditional
+   NoMethodError raise (#6484). A program defining its own `method` keeps it. */
+int desugar_method_call_runtime_name(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "method")) return 0;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || !sp_streq(nt_str(nt, id, "name"), "call")) continue;
+    int m = nt_ref(nt, id, "receiver");
+    if (m < 0 || nt_kind(nt, m) != NK_CallNode || !sp_streq(nt_str(nt, m, "name"), "method")) continue;
+    if (nt_ref(nt, m, "block") >= 0) continue;
+    int ma = nt_ref(nt, m, "arguments"), mac = 0;
+    const int *mav = ma >= 0 ? nt_arr(nt, ma, "arguments", &mac) : NULL;
+    if (mac != 1 || !mav) continue;
+    NodeKind k0 = nt_kind(nt, mav[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode || k0 == NK_SplatNode) continue;
+    int ca = nt_ref(nt, id, "arguments"), cac = 0;
+    const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &cac) : NULL;
+    int *nv = (int *)malloc(sizeof(int) * (size_t)(cac + 1));
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nv[0] = mav[0];
+    for (int i = 0; i < cac; i++) nv[i + 1] = cav[i];
+    int na = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, na, "arguments", nv, cac + 1);
+    free(nv);
+    comp_grow_node_arrays(c);
+    c->nscope[na] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", nt_ref(nt, m, "receiver"));
+    nt_node_set_str(nt, id, "name", "send");
+    nt_node_set_ref(nt, id, "arguments", na);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_dynamic_method(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
