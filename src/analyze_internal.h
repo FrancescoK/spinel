@@ -167,6 +167,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
 /* 1 if `id` is any proc-creating literal: a proc/lambda/Proc.new call (above)
    or a `->(){}` LambdaNode. */
 int is_proc_create(Compiler *c, int id);
+int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
 
 /* Shared cached local-write index (analyze_pass.c): bucket walk over
    (scope, name) for "every write of local X in scope S" queries, instead of

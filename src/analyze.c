@@ -26048,6 +26048,19 @@ static void desugar_block_arg_order(Compiler *c) {
       }
       else av[k] = BO_HOIST(av[k]);
     }
+    /* `&(log; proc { ... })`: the sequence's statements run here, in turn,
+       and the proc literal they end in is the block itself -- hoisted whole,
+       the literal sat inside a temp's parentheses where nothing bound its
+       parameters, and they read the elements as Integers */
+    if (nt_kind(nt, be) == NK_ParenthesesNode) {
+      int pb = nt_ref(nt, be, "body");
+      int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+      if (ps && pn >= 2 && ns + pn < 255 &&
+          (nt_kind(nt, ps[pn - 1]) == NK_LambdaNode || is_proc_create(c, ps[pn - 1]))) {
+        for (int k = 0; k < pn - 1; k++) stm[ns++] = ps[k];
+        be = ps[pn - 1];
+      }
+    }
     int nbe = BO_HOIST(be);
     #undef BO_HOIST
     if (ns == 0 || ns >= 255) { free(av); continue; }
