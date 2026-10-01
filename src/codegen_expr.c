@@ -1722,7 +1722,16 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+    int ven = 0;
+    int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
     if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    /* an empty `[]` is built at the slot's representation, as the statement
+       form and the ivar twin below build it: its own default, an IntArray,
+       went into an sp_PolyArray *, sp_FloatArray * or sp_PtrArray * slot.
+       Array.new's block emits its non-tail statements here, so
+       `y = [] if i == 0` there stopped the C build. */
+    else if (lv && v_empty_array && ty_is_ptr_array(lv->type)) buf_puts(b, "sp_PtrArray_new()");
+    else if (lv && v_empty_array && emit_empty_container_for_slot(c, v, lv->type, b)) { }
     else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
              comp_ntype(c, v) != TY_POLY_ARRAY) {
       /* a typed array into a poly-array slot: convert, as emit_assign does
