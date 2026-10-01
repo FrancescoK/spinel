@@ -14390,10 +14390,32 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
         g_indent++;
         if (irn) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int lv_%s = _t%d;\n", irn, ti); }
+        /* a `next v` in the block is that element's value: the body runs in
+           a do/while(0) that `next` leaves after storing v in the slot the
+           push reads, as the yielding iterators route it */
+        /* (a narrowed pointer array keeps the plain form: its element slot
+           is not a type this carries) */
+        int an_next = bn > 0 && bb && !sp_streq(k, "Ptr") && subtree_has_own_next(nt, bbody);
+        const char *sv_anx = g_ie_next_var; int sv_anp = g_ie_res_poly; TyKind sv_ant = g_ie_next_ty;
+        char anbuf[32]; int anv = 0;
+        if (an_next) {
+          anv = ++g_tmp;
+          snprintf(anbuf, sizeof anbuf, "_t%d", anv);
+          TyKind et = sp_streq(k, "Poly") ? TY_POLY : ty_array_elem(at);
+          emit_indent(g_pre, g_indent);
+          if (et == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", anv);
+          else { emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", anv, (et == TY_INT || et == TY_FLOAT) ? nil_value(et) : default_value(et)); }
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n");
+          g_indent++;
+          g_ie_next_var = anbuf; g_ie_res_poly = et == TY_POLY;
+          g_ie_next_ty = (et == TY_INT || et == TY_FLOAT) ? et : TY_UNKNOWN;
+        }
         if (bn > 0 && bb) {
           TyKind elem_t = ty_array_elem(at);
           Buf vb; memset(&vb, 0, sizeof vb);
           for (int bi = 0; bi < bn - 1; bi++) {
+            /* a statement holding a `next` is control flow, not a value */
+            if (an_next) { emit_stmt(c, bb[bi], g_pre, g_indent); continue; }
             Buf sb; memset(&sb, 0, sizeof sb);
             emit_expr(c, bb[bi], &sb);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, sb.p ? sb.p : ""); buf_puts(g_pre, ";\n"); free(sb.p);
@@ -14403,11 +14425,25 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           int tail_strbuf = sp_streq(k, "Poly") && comp_ntype(c, bb[bn - 1]) == TY_STRBUF;
           if (tail_strbuf) emit_boxed(c, bb[bn - 1], &vb);
           else emit_expr(c, bb[bn - 1], &vb);
+          if (an_next) {
+            /* the tail lands in the slot too; the push below reads the slot */
+            Buf tb; memset(&tb, 0, sizeof tb);
+            TyKind vt0 = comp_ntype(c, bb[bn - 1]);
+            if (g_ie_res_poly && !tail_strbuf && vt0 != TY_POLY) emit_boxed_text(c, vt0 == TY_UNKNOWN ? TY_NIL : vt0, vb.p ? vb.p : "sp_box_nil()", &tb);
+            else buf_puts(&tb, vb.p ? vb.p : "0");
+            emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = %s;\n", anv, tb.p ? tb.p : "0");
+            free(tb.p); free(vb.p);
+            memset(&vb, 0, sizeof vb);
+            buf_printf(&vb, "_t%d", anv);
+            g_indent--;
+            emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
+            g_ie_next_var = sv_anx; g_ie_res_poly = sv_anp; g_ie_next_ty = sv_ant;
+          }
           emit_indent(g_pre, g_indent);
           if (sp_streq(k, "Poly")) {
             buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tr);
             TyKind vt = comp_ntype(c, bb[bn - 1]);
-            if (tail_strbuf) buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
+            if (tail_strbuf || an_next) buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");   /* the next slot is boxed already */
             else if (vt == TY_UNKNOWN) {
               /* comp_ntype may return UNKNOWN for e.g. empty [] literals.
                  emit_boxed handles those correctly (no extra g_pre side effects
