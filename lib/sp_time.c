@@ -11,6 +11,7 @@
 #include "sp_core.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -456,6 +457,32 @@ static long sp_time_offset_sec(sp_Time t) {
   return (long)sp_time_local_offset((time_t)t.tv_sec);
 }
 
+/* A year as Ruby writes it: zero-padded to four digits with the sign in
+   front ("0012", "-0012", "10000"); a positive `width` is the whole field,
+   sign included, as in "%4Y" ("-012"). C's %Y is not portable here: glibc
+   does not pad it at all, and macOS pads a negative year inside the sign
+   ("-012" for "-0012"). Returns the length written, as snprintf does. */
+static int sp_time_year_field(char *buf, size_t cap, long yr, int width) {
+  const char *sign = yr < 0 ? "-" : "";
+  unsigned long mag = yr < 0 ? 0UL - (unsigned long)yr : (unsigned long)yr;
+  int digits = width > 0 ? width - (yr < 0) : 4;
+  return snprintf(buf, cap, "%s%0*lu", sign, digits > 0 ? digits : 1, mag);
+}
+
+static int sp_time_year_str(char *buf, size_t cap, long yr) {
+  return sp_time_year_field(buf, cap, yr, -1);
+}
+
+/* buf <- the year, then C strftime of `rest` (fields that carry no year).
+   Returns the length, or 0 if it did not fit, as strftime does. */
+static size_t sp_time_year_then(char *buf, size_t cap, const struct tm *b, const char *rest) {
+  int yn = sp_time_year_str(buf, cap, (long)b->tm_year + 1900);
+  if (yn < 0 || (size_t)yn >= cap) return 0;
+  if (!*rest) return (size_t)yn;
+  size_t r = strftime(buf + yn, cap - (size_t)yn, rest, b);
+  return r ? (size_t)yn + r : 0;
+}
+
 /* Ruby-compatible strftime: C strftime handles the standard directives, but
    Ruby adds %L/%N (subsec), %s (epoch, which C's %s would take through a LOCAL
    mktime), %P (lowercase am/pm), the %:z/%::z colon offsets, and width/flag
@@ -538,11 +565,51 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
     else if (d == 'Z' && t.is_utc) { if (t.is_utc == 1) strcpy(val, "UTC"); else val[0] = 0; }
     /* Ruby's %Y is zero-padded to four digits; C's is not, so a year below
        1000 came out "1" where CRuby writes "0001". Ruby keeps the sign
-       outside the padding, so -1 is "-0001". */
-    else if (d == 'Y') {
+       outside the padding, so -1 is "-0001". The directives that contain
+       the year (%F, %c, %v) take it from the same place, and the century
+       and two-digit year round toward minus infinity, as Integer#div and
+       #% do: -12 is century -1, year 88. */
+    else if (d == 'Y' || d == 'G') {
       long yr = (long)tmv.tm_year + 1900;
-      if (yr < 0) snprintf(val, sizeof val, "-%04ld", -yr);
-      else snprintf(val, sizeof val, "%04ld", yr);
+      if (d == 'G') {
+        /* the ISO 8601 week-based year: C computes it, Ruby formats it */
+        char gb[32];
+        if (strftime(gb, sizeof gb, "%G", &tmv)) yr = strtol(gb, NULL, 10);
+      }
+      /* the bare directive pads to four digits; a width, `_` or `-` takes
+         the signed number and the padding below sizes it (the sign counts
+         toward the width, and zeros go after it) */
+      if (width > 0 || padsp || nopad) {
+        snprintf(val, sizeof val, "%ld", yr);
+        if (width <= 0 && padsp) width = 4 + (yr < 0);
+      }
+      else sp_time_year_str(val, sizeof val, yr);
+    }
+    else if (d == 'F') sp_time_year_then(val, sizeof val, &tmv, "-%m-%d");
+    else if (d == 'C' || d == 'y' || d == 'x' || d == 'D') {
+      long yr = (long)tmv.tm_year + 1900;
+      long cen = yr >= 0 ? yr / 100 : -((-yr + 99) / 100);
+      long yy = yr - cen * 100;
+      if (d == 'C') snprintf(val, sizeof val, "%02ld", cen);
+      else if (d == 'y') snprintf(val, sizeof val, "%02ld", yy);
+      else snprintf(val, sizeof val, "%02d/%02d/%02ld", tmv.tm_mon + 1, tmv.tm_mday, yy);
+    }
+    else if (d == 'c') {
+      size_t n = strftime(val, sizeof val, "%a %b %e %H:%M:%S ", &tmv);
+      if (n) sp_time_year_str(val + n, sizeof val - n, (long)tmv.tm_year + 1900);
+    }
+    else if (d == 'v') {
+      /* "%e-%^b-%4Y": the year four wide, sign included */
+      size_t n = strftime(val, sizeof val, "%e-%b-", &tmv);
+      for (size_t k = 0; k < n; k++) val[k] = (char)toupper((unsigned char)val[k]);
+      if (n) sp_time_year_field(val + n, sizeof val - n, (long)tmv.tm_year + 1900, 4);
+    }
+    else if (d == 'g') {
+      /* the ISO week-based year's last two digits, rounded as %y is */
+      char gb[32];
+      long gy = strftime(gb, sizeof gb, "%G", &tmv) ? strtol(gb, NULL, 10) : (long)tmv.tm_year + 1900;
+      long gc = gy >= 0 ? gy / 100 : -((-gy + 99) / 100);
+      snprintf(val, sizeof val, "%02ld", gy - gc * 100);
     }
     else if (strchr("aAbBcCdDeFgGhHIjklmMnprRSTtuUvVwWxXyYzZ", d)) {
       /* a standard Ruby directive: format the bare `%X` (we redo width/case
@@ -587,13 +654,16 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
         else for (size_t k = 0; k < z; k++) val[k] = ' ';
       }
     }
-    size_t vl = strlen(val);
+    size_t vl = strlen(val), v0 = 0;
     if (width > 0 && !nopad && vl < (size_t)width) {
       char pc = padsp ? ' ' : '0';
+      /* zeros go after a sign, as CRuby pads "%10s" of -5 to "-000000005";
+         spaces go before it */
+      if (pc == '0' && val[0] == '-' && oi < sizeof(out) - 2) { out[oi++] = '-'; v0 = 1; }
       for (size_t k = vl; k < (size_t)width && oi < sizeof(out) - 2; k++) out[oi++] = pc;
     }
     (void)tok;
-    for (size_t k = 0; k < vl && oi < sizeof(out) - 2; k++) out[oi++] = val[k];
+    for (size_t k = v0; k < vl && oi < sizeof(out) - 2; k++) out[oi++] = val[k];
   }
   out[oi] = 0;
   return sp_str_dup_external(out);
@@ -632,7 +702,7 @@ const char *sp_time_iso8601(sp_Time t) {
   struct tm b;
   int32_t off;
   sp_time_vtm(t, &b, &off, NULL);
-  size_t n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%S", &b);
+  size_t n = sp_time_year_then(buf, cap, &b, "-%m-%dT%H:%M:%S");
   if (n == 0) return sp_str_empty;
   sp_time_iso_zone(buf, n, cap, t, off);
   return sp_str_dup_external(buf);
@@ -648,7 +718,7 @@ const char *sp_time_iso8601_frac(sp_Time t, int64_t digits) {
   struct tm b;
   int32_t off;
   sp_time_vtm(t, &b, &off, NULL);
-  size_t n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%S", &b);
+  size_t n = sp_time_year_then(buf, cap, &b, "-%m-%dT%H:%M:%S");
   if (n == 0) return sp_str_empty;
   char fb[16]; snprintf(fb, sizeof fb, "%09ld", (long)t.tv_nsec);
   if (n + 1 + (size_t)digits < cap) {
@@ -680,19 +750,9 @@ static const char *sp_time_fmt(sp_Time t, int frac) {
   struct tm b;
   int32_t off;
   sp_time_vtm(t, &b, &off, NULL);
-  /* The year is written here rather than by C strftime, whose %Y does not
-     zero-pad below 1000: Time.utc(1,1,1).to_s is "0001-01-01 ..." in CRuby
-     and was "1-01-01 ..." here. The rest still goes through strftime. */
-  size_t n;
-  {
-    long yr = (long)b.tm_year + 1900;
-    int yn = (yr < 0) ? snprintf(buf, cap, "-%04ld", -yr) : snprintf(buf, cap, "%04ld", yr);
-    if (yn < 0 || (size_t)yn >= cap) { n = 0; }
-    else {
-      size_t r = strftime(buf + yn, cap - (size_t)yn, "-%m-%d %H:%M:%S", &b);
-      n = r ? (size_t)yn + r : 0;
-    }
-  }
+  /* the year by hand (sp_time_year_then): Time.utc(1,1,1).to_s is
+     "0001-01-01 ..." in CRuby, and C's %Y wrote "1-01-01 ..." */
+  size_t n = sp_time_year_then(buf, cap, &b, "-%m-%d %H:%M:%S");
   if (n == 0) {
     snprintf(buf, cap, "Time(%lld)", (long long)t.tv_sec);
     return sp_str_dup_external(buf);
