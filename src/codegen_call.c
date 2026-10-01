@@ -3459,6 +3459,12 @@ static void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
   buf_puts(b, "); })");
 }
 
+static void emit_exc_msg_arg(Compiler *c, int arg, Buf *b) {
+  if (arg < 0) buf_puts(b, "(&(\"\\xff\")[1])");
+  else if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
+  else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
+}
+
 /* Thread#raise / Fiber#raise: deliver an exception to the thread (it fires when
    the thread next runs) or inject it at the fiber's suspension point. The
    argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
@@ -3493,8 +3499,7 @@ static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, con
     /* the message is a String, or a boxed value (a runtime-name send's
        argument) stringified: the C parameter is a const char * */
     buf_puts(b, "\"RuntimeError\", ");
-    if (a0t == TY_STRING) emit_expr(c, argv[0], b);
-    else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+    emit_exc_msg_arg(c, argv[0], b);
     buf_puts(b, ", NULL");
   }
   else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
@@ -14641,8 +14646,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             buf_puts(b, "sp_signal_exc_new_m(");
             emit_boxed(c, argv[0], b);
             buf_puts(b, ", ");
-            if (comp_ntype(c, argv[1]) == TY_STRING) emit_expr(c, argv[1], b);
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[1], b); buf_puts(b, ")"); }
+            emit_exc_msg_arg(c, argv[1], b);
             buf_puts(b, ")");
             return 1;
           }
@@ -14653,11 +14657,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         }
         if (sp_streq(cn, "Interrupt")) {
           buf_puts(b, "sp_interrupt_new(");
-          if (argc >= 1) {
-            if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-          }
-          else buf_puts(b, "(&(\"\\xff\")[1])");
+          emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
           buf_puts(b, ")");
           return 1;
         }
@@ -14676,11 +14676,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           int has_status = argc >= 1 && (s0 == TY_INT || s0 == TY_BOOL);
           int msg_i = has_status ? 1 : 0;
           buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"SystemExit\", ", te4);
-          if (argc > msg_i) {
-            if (comp_ntype(c, argv[msg_i]) == TY_STRING) emit_expr(c, argv[msg_i], b);
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[msg_i], b); buf_puts(b, ")"); }
-          }
-          else buf_puts(b, "(&(\"\\xff\")[1])");   /* default message = class name */
+          emit_exc_msg_arg(c, argc > msg_i ? argv[msg_i] : -1, b);   /* default message = class name */
           buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d->result = sp_box_int(", te4, te4);
           if (has_status) {
             if (s0 == TY_BOOL) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1"); }
@@ -14710,11 +14706,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (!other && (key_v >= 0 || recv_v >= 0)) {
             int te3 = ++g_tmp;
             buf_printf(b, "({ sp_Exception *_t%d = sp_exc_new(\"%s\", ", te3, cn);
-            if (argc >= 2) {
-              if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-              else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-            }
-            else buf_puts(b, "(&(\"\\xff\")[1])");
+            emit_exc_msg_arg(c, argc >= 2 ? argv[0] : -1, b);
             buf_printf(b, "); SP_GC_ROOT(_t%d);", te3);
             if (key_v >= 0) {
               buf_printf(b, " _t%d->xkey = ", te3);
@@ -37869,11 +37861,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                        c->classes[ci].c_name, c->classes[ci].c_name, cn2);
           else
             buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-          if (argc >= 1) {
-            if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-          }
-          else buf_puts(b, "(&(\"\\xff\")[1])");
+          emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
           buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
         }
         return;
@@ -37910,11 +37898,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     if (cn && is_exc_name(cn)) {
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
-      if (argc >= 1) {
-        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-      }
-      else buf_puts(b, "(&(\"\\xff\")[1])");
+      emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
       buf_puts(b, ")");
       return;
     }
@@ -37929,11 +37913,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (tcn && is_exc_name(tcn)) {
       if (sp_streq(name, "exception")) {
         buf_printf(b, "sp_exc_new(\"%s\", ", tcn);
-        if (argc >= 1) {
-          if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
-          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
-        }
-        else buf_puts(b, "(&(\"\\xff\")[1])");
+        emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
         buf_puts(b, ")");
         return;
       }
