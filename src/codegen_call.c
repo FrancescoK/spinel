@@ -21416,10 +21416,13 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       if (check >= 0 && check < ac2 && av2[check] >= 0) {
         NodeKind ak3 = nt_kind(nt, av2[check]);
         if (want_int >= 0) {
-          if (ak3 == NK_StringNode) badcls = "String";
-          else if (ak3 == NK_SymbolNode) badcls = "Symbol";
-          else if (ak3 == NK_ArrayNode) badcls = "Array";
-          else if (ak3 == NK_HashNode) badcls = "Hash";
+          switch (ak3) {
+          case NK_StringNode: badcls = "String"; break;
+          case NK_SymbolNode: badcls = "Symbol"; break;
+          case NK_ArrayNode: badcls = "Array"; break;
+          case NK_HashNode: badcls = "Hash"; break;
+          default: break;
+          }
         }
         else {
           if (ak3 == NK_IntegerNode) badcls = "Integer";
