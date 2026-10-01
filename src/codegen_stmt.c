@@ -5333,6 +5333,11 @@ static void emit_case_int_label(Buf *b, long long v) {
   else buf_printf(b, "%lldLL", v);
 }
 
+void emit_poly_unboxed(Compiler *c, int node, TyKind t, const char *conv, Buf *b) {
+  if (t == TY_POLY) { buf_puts(b, conv); emit_expr(c, node, b); buf_puts(b, ")"); }
+  else emit_expr(c, node, b);
+}
+
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -5632,8 +5637,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             }
             else {
               buf_printf(b, "sp_str_eq(_t%d, ", t);
-              if (wat == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
-              else emit_expr(c, conds[j], b);
+              emit_poly_unboxed(c, conds[j], wat, "sp_poly_to_s(", b);
               buf_puts(b, ")");
             }
           }
@@ -6012,8 +6016,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           }
           else {
             buf_printf(b, "sp_str_eq(_t%d, ", t);
-            if (wat2 == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
-            else emit_expr(c, conds[j], b);
+            emit_poly_unboxed(c, conds[j], wat2, "sp_poly_to_s(", b);
             buf_puts(b, ")");
           }
         }
@@ -10299,8 +10302,7 @@ else {
       emit_indent(b, indent);
       if (ivt == TY_STRING) {
         buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
-        if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-        else emit_expr(c, val, b);
+        emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
         buf_puts(b, ");\n");
       }
       else if (ivt == TY_POLY && cpf) {
@@ -10313,8 +10315,7 @@ else {
         /* bitwise op-assign on a boxed slot: coerce to int, re-box */
         buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_to_i(_t%d%siv_%s) %s (",
                    trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op);
-        if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
-        else emit_expr(c, val, b);
+        emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
         buf_puts(b, ")));\n");
       }
       else if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) {
@@ -10378,8 +10379,7 @@ else {
           /* the reader answers a value, so the concat builds a new string and
              the writer stores it -- the same shape the string ivar slot takes */
           buf_printf(b, "%s(_t%d, sp_str_concat(%s(_t%d), ", nwm->csym, trecv, nrm->csym, trecv);
-          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-          else emit_expr(c, val, b);
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
           buf_puts(b, "));\n");
         }
         else if (nany && cpf) {
@@ -10390,8 +10390,7 @@ else {
           /* bitwise on a boxed attribute: coerce to int, re-box */
           buf_printf(b, "%s(_t%d, sp_box_int(sp_poly_to_i(%s(_t%d)) %s (",
                      nwm->csym, trecv, nrm->csym, trecv, op);
-          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
-          else emit_expr(c, val, b);
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
           buf_puts(b, ")));\n");
         }
         else if (rhst != TY_POLY && !bitop) {
@@ -10406,11 +10405,7 @@ else {
         }
         else {
           buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
-          if (rhst == TY_POLY) {
-            buf_puts(b, nint ? "sp_poly_to_i(" : "sp_poly_to_f(");
-            emit_expr(c, val, b); buf_puts(b, ")");
-          }
-          else emit_expr(c, val, b);
+          emit_poly_unboxed(c, val, rhst, nint ? "sp_poly_to_i(" : "sp_poly_to_f(", b);
           buf_puts(b, ");\n");
         }
         return;
@@ -10464,8 +10459,7 @@ else {
         if (ivt == TY_STRING) {
           buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, iv_c(rn));
           buf_puts(b, ", ");
-          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-          else emit_expr(c, val, b);
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
           buf_puts(b, "); break; }\n");
         }
         else if (ivt == TY_POLY && cpf) {
@@ -10481,8 +10475,7 @@ else {
           /* bitwise op-assign on a boxed slot: coerce to int, re-box */
           buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
           buf_printf(b, " = sp_box_int((sp_poly_to_i(_o->iv_%s) %s (", iv_c(rn), op);
-          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
-          else emit_expr(c, val, b);
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
           buf_puts(b, "))); break; }\n");
         }
         else {
@@ -13681,8 +13674,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
           buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, recv, b); buf_puts(b, ", ");
           emit_expr(c, argv[a], b); buf_puts(b, ")");
         }
-        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[a], b);
+        else emit_poly_unboxed(c, argv[a], at, "sp_poly_to_s(", b);
         buf_puts(b, ");\n");
       }
       return 1;
