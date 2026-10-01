@@ -6099,7 +6099,11 @@ int g_stmt_cur = -1, g_stmt_prev = -1;
    against the array's current length, and nothing before the closing
    `i += 1` writes it. The array cannot shrink inside the loop -- a loop the
    cache takes runs no code that could (hc_node_ok) -- and every write that
-   grows it refreshes the cached header. Records i and a in the region, or
+   grows it refreshes the cached header. The one place other code does run is
+   a poll: another thread at the safepoint, a finalizer at the finalizer poll,
+   either of which can shrink the array. So such a loop polls at the top of
+   its condition, ahead of `i < a.length`, not at the top of its body between
+   that test and the read (emit_while). Records i and a in the region, or
    leaves it as it was. */
 static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion *r) {
   const NodeTable *nt = c->nt;
@@ -6142,6 +6146,8 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   snprintf(r->bi, sizeof r->bi, "%s", in);
   snprintf(r->ba, sizeof r->ba, "%s", an);
 }
+
+int g_loop_polls_in_cond = 0;
 
 /* Is `recv[idx]` the read hc_bounded_index proved in range for this loop? */
 int hc_index_in_range(Compiler *c, int recv, int idx) {
@@ -6276,6 +6282,10 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_pre = &cpre; g_indent = indent + 1;
   emit_cond(c, pred, &ccond);
   g_pre = sv_pre; g_indent = sv_ind;
+  /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
+     a prelude has no single test to put them ahead of, so it keeps its checks */
+  int polls_in_cond = use_hc && hcr.bi[0] && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
+  if (use_hc && hcr.bi[0] && cpre.p && cpre.p[0]) hcr.bi[0] = 0;
   if (cpre.p && cpre.p[0]) {
     emit_indent(b, indent); buf_puts(b, "while (1) {\n");
     buf_puts(b, cpre.p);
@@ -6291,10 +6301,18 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   else {
     emit_indent(b, indent);
     buf_puts(b, "while (");
+    if (polls_in_cond) {
+      buf_puts(b, "({ ");
+      if (g_uses_threads) buf_printf(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint()%s; ", hc_mark());
+      if (g_uses_finalizers)
+        buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s; ", hc_mark());
+    }
     if (is_until) buf_puts(b, "!(");
     buf_puts(b, ccond.p ? ccond.p : "");
     if (is_until) buf_puts(b, ")");
+    if (polls_in_cond) buf_puts(b, "; })");
     buf_puts(b, ") {\n");
+    g_loop_polls_in_cond = polls_in_cond;
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent);
     buf_puts(b, "}\n");
