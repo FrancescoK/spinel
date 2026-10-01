@@ -6775,7 +6775,9 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   const char *lb = label ? " default:" : "";
   if (arm_pre) buf_printf(b, "%s { %s", lb, arm_pre);
   else buf_puts(b, lb);
-  if (void_obj) buf_printf(b, " %s;", ib.p);
+  /* a writer's dispatch (`x.body = v`) declares no result slot -- its value
+     is the argument's temp -- so tr < 0 says to run the arm for its effect */
+  if (void_obj || tr < 0) buf_printf(b, " %s;", ib.p);
   else buf_printf(b, " _t%d = %s;", tr, ib.p);
   buf_puts(b, arm_pre ? " } break;" : " break;");
   free(ib.p); free(arm_pre);
@@ -10682,7 +10684,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (!dl_open ||
             (!emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) &&
              !emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
-                                        ret, tv, tr, 0, b)))
+                                        ret, tv, is_setter_val ? -1 : tr, 0, b)))
           buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       }
       /* `[]` gets a default of its own. The arms above enumerate the kinds
