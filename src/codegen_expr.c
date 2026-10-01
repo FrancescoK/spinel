@@ -1826,8 +1826,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (cid2 < 0 && g_class_body_id >= 0) cid2 = g_class_body_id;
     if (!nm || v < 0) { buf_puts(b, "0"); return; }
     /* inside an instance_eval/exec splice the block scope has no class_id, so
-       the ivar belongs to the rebound receiver class (g_ie_class_id). */
-    int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id;
+       the ivar belongs to the rebound receiver class (g_ie_class_id); outside
+       one, a top-level ivar is Toplevel's (civ_Toplevel_x below), whose
+       shared-handle slot wraps a String value as any other's does */
+    int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id >= 0 ? g_ie_class_id : comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
     if (ivcls2 >= 0) {
       int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
