@@ -20925,6 +20925,66 @@ static int bam_binop_wrapper(const Scope *tm) {
          tm->pnames[1] && sp_streq(tm->pnames[1], "__bam_a");
 }
 
+/* `Hash.new` takes a default or a block, not both, and the one keyword
+   `capacity:` (desugar_hash_new_capacity drops it): CRuby raises
+   ArgumentError for an unknown keyword, then for a default beside a block.
+   The arguments run first. Spinel took a keyword hash for the default, or
+   dropped the default, and answered. */
+int emit_hash_new_arg_guard(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || !(sp_streq(name, "new") || sp_streq(name, "__hash_new_default")) || recv < 0 ||
+      nt_kind(nt, recv) != NK_ConstantReadNode || !nt_str(nt, recv, "name") ||
+      !sp_streq(nt_str(nt, recv, "name"), "Hash")) return 0;
+  int anode = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
+  int npos = argc;
+  char msg[256]; msg[0] = 0;
+  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+    npos = argc - 1;
+    int en = 0; const int *el = nt_arr(nt, argv[argc - 1], "elements", &en);
+    char keys[200]; keys[0] = 0;
+    int nbad = 0;
+    for (int e = 0; e < en; e++) {
+      int key = nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "key") : -1;
+      const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+      if (!kn) return 0;   /* a `**h` or a computed key: the run time's to judge */
+      if (sp_streq(kn, "capacity")) continue;
+      size_t kl = strlen(keys);
+      snprintf(keys + kl, sizeof keys - kl, "%s:%s", nbad ? ", " : "", kn);
+      nbad++;
+    }
+    if (nbad) snprintf(msg, sizeof msg, "unknown keyword%s: %s", nbad > 1 ? "s" : "", keys);
+  }
+  if (!msg[0] && npos >= 1 && nt_ref(nt, id, "block") >= 0 &&
+      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode)
+    snprintf(msg, sizeof msg, "wrong number of arguments (given %d, expected 0)", npos);
+  if (!msg[0]) return 0;
+  TyKind rty = comp_ntype(c, id);
+  const char *hn = ty_hash_cname(rty), *dv = default_value(rty);
+  buf_puts(b, "({ ");
+  for (int i = 0; i < argc; i++) {
+    if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, argv[i], "elements", &en);
+      for (int e = 0; e < en; e++) { buf_puts(b, "(void)("); emit_expr(c, nt_ref(nt, el[e], "value"), b); buf_puts(b, "); "); }
+      continue;
+    }
+    buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); ");
+  }
+  buf_puts(b, "sp_raise_cls(\"ArgumentError\", \"");
+  for (const char *q = msg; *q; q++) {
+    if (*q == '"' || *q == '\\') buf_printf(b, "\\%c", *q);
+    else if ((unsigned char)*q < 0x20) buf_printf(b, "\\%03o", (unsigned char)*q);
+    else buf_printf(b, "%c", *q);
+  }
+  buf_puts(b, "\"); ");
+  if (hn) buf_printf(b, "sp_%sHash_new(); })", hn);
+  else if (rty == TY_POLY || rty == TY_UNKNOWN || !dv) buf_puts(b, "sp_box_nil(); })");
+  else buf_printf(b, "%s; })", dv);
+  return 1;
+}
+
 /* The guards for an argument whose static class the method cannot take: raise
    the TypeError CRuby raises rather than put a pointer in a numeric slot
    (#3831, #3838, #3862, #3923).
@@ -27538,6 +27598,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (emit_arg_type_guards(c, id, b)) return;
   /* A local receiver its own argument reassigns (defined above). */
   if (emit_recv_snapshot(c, id, b)) return;
+  /* Hash.new's keyword and default/block rules (defined above) */
+  if (emit_hash_new_arg_guard(c, id, b)) return;
   /* Operands in Ruby's order, each held across the call (defined above). */
   if (emit_operands_in_order(c, id, b)) return;
   /* Proc#=== calls the proc; a Proc read out of a container arrives boxed,

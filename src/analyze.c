@@ -6432,6 +6432,42 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
   return changed;
 }
 
+/* `Hash.new(capacity: n)`: the capacity only sizes the table, so the
+   keyword is dropped and the call is the Hash.new it would be without it.
+   Dropped when its value is an Integer literal or a local read (nothing to
+   run); any other keyword is CRuby's ArgumentError
+   (emit_hash_new_arg_guard). The keyword argument went in as a default
+   value, and the call found no method. */
+static int desugar_hash_new_capacity(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = comp_kind_first(c, NK_CallNode); id >= 0; id = comp_kind_next(c, id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    if (!nm || !sp_streq(nm, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode ||
+        !nt_str(nt, r, "name") || !sp_streq(nt_str(nt, r, "name"), "Hash")) continue;
+    int argsn = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+    if (an == 0 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    int en = 0; const int *el = nt_arr(nt, av[an - 1], "elements", &en);
+    if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) continue;
+    int key = nt_ref(nt, el[0], "key"), val = nt_ref(nt, el[0], "value");
+    if (key < 0 || nt_kind(nt, key) != NK_SymbolNode || !nt_str(nt, key, "value") ||
+        !sp_streq(nt_str(nt, key, "value"), "capacity")) continue;
+    if (val < 0 || (nt_kind(nt, val) != NK_IntegerNode && nt_kind(nt, val) != NK_LocalVariableReadNode)) continue;
+    if (an == 1) nt_node_set_ref(nt, id, "arguments", -1);
+    else {
+      int keep[64];
+      if (an - 1 > 64) continue;
+      memcpy(keep, av, sizeof(int) * (size_t)(an - 1));
+      nt_node_set_arr(nt, argsn, "arguments", keep, an - 1);
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 static int pin_arg_position_hash_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -26746,6 +26782,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
     ch |= expand_literal_splat_args(c);        /* builtin/proc m(*[a,b]) -> m(a, b) */
+    ch |= desugar_hash_new_capacity(c);        /* Hash.new(capacity: n) -> Hash.new */
     ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
