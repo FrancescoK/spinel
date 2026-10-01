@@ -134,8 +134,9 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, hash_box_cls(t));
     return;
   }
-  /* a shared-mutable string HANDLE (#3227 phase 3) */
-  if (t == TY_STRBUF) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
+  /* a shared-mutable string HANDLE (#3227 phase 3); a NULL handle is a
+     nil (a nil argument, an omitted optional), as in the hash arm above */
+  if (t == TY_STRBUF) { buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
   /* An sp_int slot can hold the nil sentinel a nullable read left behind
      (`"a".rindex("/")`), so boxing it has to yield nil rather than a boxed
      INTPTR_MIN that then answers every Integer method. The temp keeps
@@ -1554,12 +1555,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
            own beside the value copy the override names. */
         int th = sblv && sblv->type == TY_STRBUF && sblv->str_shared ? ran_first_handle(node) : -1;
         if (th >= 0) {
-          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+          buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
           return;
         }
         if (sblv && sblv->type == TY_STRBUF && sblv->str_shared &&
             strbuf_slot_ref(c, node, srefS, sizeof srefS)) {
-          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
           return;
         }
       }
@@ -1588,12 +1589,14 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         if (blv0 && blv0->type == TY_POLY)
           buf_printf(b, "lv_%s", rename_local(bn0));
         else if (th0 >= 0)   /* ran first: the handle it read then, as above */
-          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
+          buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
         else {
           /* through emit_local_ref: a local a proc captures is its cell's
              handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
              declared) */
-          buf_puts(b, "sp_box_obj(");
+          /* a handle local holds NULL for nil (a nil argument bound to a
+             parameter that is the handle): box that as nil */
+          buf_puts(b, "sp_box_nullable_obj(");
           emit_local_ref(c, node, bn0, b);
           buf_puts(b, ", SP_BUILTIN_STRBUF)");
         }
@@ -1602,7 +1605,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       { char srefX[192];
         if (nt_kind(c->nt, node) == NK_InstanceVariableReadNode &&
             strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
-          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
           return;
         } }
       /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
@@ -1644,7 +1647,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
         c->strbuf_box[node] = sv_mh;
         if (got_h) {
-          buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
+          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
           return;
         }
       }

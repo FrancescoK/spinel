@@ -6020,6 +6020,18 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       /* nil, a default's or an argument's, is the NULL handle a nullable
          handle parameter reads as nil (`def initialize(o: nil)`) */
       if (comp_ntype(c, provided) == TY_NIL) { buf_puts(out, "NULL"); return; }
+      /* a boxed argument that holds nil at run time is the NULL handle too:
+         converted as a String first, it raised TypeError where CRuby binds
+         nil (`n = nil` beside a String, `def go(v) = run(v) { |t| ... }`) */
+      if (comp_ntype(c, provided) == TY_POLY) {
+        int tpv = ++g_tmp;
+        buf_printf(out, "({ sp_RbVal _t%d = ", tpv);
+        emit_expr(c, provided, out);
+        buf_printf(out, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_nil_p(_t%d) ? NULL : %s(sp_poly_arg_str_chk(_t%d)); })", tpv, tpv,
+                   p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
+                     ? "sp_String_new_fresh" : "sp_String_new_shared", tpv);
+        return;
+      }
       buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
                       ? "sp_String_new_fresh(" : "sp_String_new_shared(");
       emit_str_expr(c, provided, out);

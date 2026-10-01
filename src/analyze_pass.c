@@ -11571,6 +11571,14 @@ static int new_block_initialize(Compiler *c, int id, int *several) {
   return found;
 }
 
+/* The class method `K.run` names, for a constant receiver K. -1 if none. */
+static int const_recv_cmethod_mi(Compiler *c, int recv, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || !name || nt_kind(nt, recv) != NK_ConstantReadNode || !nt_str(nt, recv, "name")) return -1;
+  int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+  return cid >= 0 ? comp_cmethod_in_chain(c, cid, name, NULL) : -1;
+}
+
 /* `run(s, &method(:m))`: bind m's parameters from every place the block
    run receives is called -- a yield, a `blk.call` (block_sites), through a
    pure `...` forwarder (forwarding_yield_target), and through a call run
@@ -11601,6 +11609,7 @@ static int bind_method_obj_block_sites(Compiler *c, int ymi, int tmi, int call, 
     if (!un) continue;
     if (r < 0 || nt_kind(nt, r) == NK_SelfNode) t = comp_self_call_mi(c, u, un);
     else if (ty_is_object(infer_type(c, r))) t = comp_method_in_chain(c, ty_object_class(infer_type(c, r)), un, NULL);
+    else t = const_recv_cmethod_mi(c, r, un);
     if (t >= 0 && t != y) changed |= bind_method_obj_block_sites(c, t, tmi, u, depth + 1);
   }
   return changed;
@@ -12012,6 +12021,7 @@ int infer_block_params(Compiler *c) {
           if (cid >= 0) ymi = comp_method_in_chain(c, cid, "initialize", NULL);
         }
         else if (ty_is_object(infer_type(c, recv))) ymi = comp_method_in_chain(c, ty_object_class(infer_type(c, recv)), name, NULL);
+        else ymi = const_recv_cmethod_mi(c, recv, name);
       }
       if (ymi >= 0 && forwarding_yield_target(c, ymi, 0) >= 0) {
         changed |= bind_method_obj_block_sites(c, ymi, tmi, id, 0);

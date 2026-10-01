@@ -1958,9 +1958,10 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       Buf hb; memset(&hb, 0, sizeof hb);
       if (bl && bl->type == TY_STRBUF && bl->str_shared && emit_handle_var_ref(c, yargs[k], b)) {}
-      /* a boxed parameter takes the handle's own box */
+      /* a boxed parameter takes the handle's own box, or nil when the
+         variable holds none (the handle is NULL for a nil) */
       else if (bl && bl->type == TY_POLY && emit_handle_var_ref(c, yargs[k], &hb))
-        buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       else emit_block_arg_coerced(c, yargs[k], bl ? bl->type : TY_UNKNOWN, b);
       free(hb.p);
     }
