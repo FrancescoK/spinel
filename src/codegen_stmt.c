@@ -1909,6 +1909,33 @@ static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slo
   return 1;
 }
 
+/* An op-assign's right operand that is an element of a Float array the
+   loop holds the header of, for a slot that cannot be nil: in range of an
+   array that holds no nil the element is no nil either, so that read is the
+   plain load it always was, and only the rest (out of range, or an array
+   that may hold nil) takes a get that raises on a nil. A marked array's nils
+   set no flag, so it is not one. Answers 1 when it emitted the read. */
+static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  int vr = nt_ref(nt, v, "receiver"), va = nt_ref(nt, v, "arguments"), vc = 0;
+  const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
+  char hd[48], hn[48];
+  if (!vn || (!sp_streq(vn, "[]") && !sp_streq(vn, "at")) || vr < 0 || vc != 1 ||
+      nt_ref(nt, v, "block") >= 0 || comp_ntype(c, vr) != TY_FLOAT_ARRAY ||
+      infer_type(c, vav[0]) != TY_INT || nullable_int_elem_array(c, vr) ||
+      !hc_array_nilfree(c, vr, hd, hn, sizeof hd))
+    return 0;
+  int tk = ++g_tmp;
+  buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, vav[0], b);
+  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_operand(",
+             tk, hn, hd, tk);
+  emit_expr(c, vr, b);
+  buf_printf(b, ", _t%d, \"%s\"); })", tk, op);
+  return 1;
+}
+
 /* The scalar arms of `x OP= v` -- Integer, Bignum, Float -- on any slot a
    plain C lvalue names: a local, a global, a class variable, an ivar. `lval`
    names the slot and `t` its type. The global and class variable forms had
@@ -1917,10 +1944,18 @@ static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slo
 
    `capture` reads the slot ahead of an effectful rhs (op_assign_slot_src): a
    method may reassign a global, class variable or ivar before it returns,
-   and CRuby has already read it. A local keeps its own spelling. The caller
-   has emitted the indent. Answers 1 when it emitted the write. */
+   and CRuby has already read it. A local keeps its own spelling.
+
+   A Float slot's nil is a NaN payload every C operator carries through, so
+   `x += 1` on a nil Float answered nil where the binary `x + 1` raises
+   (SP_FLOAT_NIL_CK). `lhs_nil` says the slot can hold nil (its nullable
+   mark), and a rhs the marks call nilable is tested too: the same raise as
+   the binary form. Two Floats under + - * / test the result for NaN and
+   look at the operands only then (SP_FLOAT_NIL_CK_NAN); otherwise each side
+   that can be nil is tested. The caller has emitted the indent. Answers 1
+   when it emitted the write. */
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
-                          int v, int capture, Buf *b) {
+                          int v, int capture, int lhs_nil, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!op) return 0;
   TyKind vt = comp_ntype(c, v);
@@ -1948,7 +1983,11 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   }
   size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (t == TY_INT && fn && (sp_streq(op, "/") || sp_streq(op, "%"))) emit_int_divisor(c, v, &rb);
+  int nfread = 0;
+  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, &rb)) nfread = 1;
+  else if (t == TY_INT && fn && (sp_streq(op, "/") || sp_streq(op, "%"))) emit_int_divisor(c, v, &rb);
+  /* a boxed rhs of a Float op is kept boxed for the nil test below */
+  else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
   else if (vt == TY_POLY) {
     buf_puts(&rb, t == TY_FLOAT ? "sp_poly_to_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : "sp_poly_to_i(");
     emit_expr(c, v, &rb); buf_puts(&rb, ")");
@@ -1971,7 +2010,32 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised.
      Bitwise ops map straight to the C operator (fixed-width wrap, same as the
      binary `x << y` path). */
-  if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
+  int rnil = fop && !nfread && (vt == TY_POLY || ((vt == TY_FLOAT || vt == TY_INT) && nullable_int_value(c, v)));
+  /* + - * / of two Floats test the result for NaN first (SP_FLOAT_NIL_CK_NAN) */
+  if (fop && (lhs_nil || rnil) && vt == TY_FLOAT && !ffn) {
+    int k = ++g_tmp;
+    buf_printf(b, "{ sp_float _t%d = %s; sp_float _t%d_r = %s; sp_float _t%d_v = _t%d %s _t%d_r; ",
+               k, src, k, rhs, k, k, op, k);
+    if (lhs_nil) buf_printf(b, "SP_FLOAT_NIL_CK_NAN(_t%d_v, _t%d, _t%d_r, \"%s\"); ", k, k, k, op);
+    else buf_printf(b, "SP_FLOAT_NIL_CK_NAN_R(_t%d_v, _t%d_r, \"%s\"); ", k, k, op);
+    buf_printf(b, "%s = _t%d_v; }", lval, k);
+  }
+  else if (fop && (lhs_nil || rnil)) {
+    int k = ++g_tmp;
+    buf_printf(b, "{ sp_float _t%d = %s; %s _t%d_r = %s; ", k, src,
+               vt == TY_INT ? "sp_int" : vt == TY_POLY ? "sp_RbVal" : "sp_float", k, rhs);
+    buf_puts(b, "if (SP_UNLIKELY(");
+    if (lhs_nil) buf_printf(b, "sp_float_is_nil(_t%d) || ", k);
+    if (vt == TY_INT) buf_printf(b, "_t%d_r == SP_INT_NIL", k);
+    else if (vt == TY_POLY) buf_printf(b, "_t%d_r.tag == SP_TAG_NIL", k);
+    else buf_printf(b, "sp_float_is_nil(_t%d_r)", k);
+    buf_printf(b, ")) sp_raise_nil_float_op(sp_float_is_nil(_t%d), \"%s\"); ", k, op);
+    char rv[48];
+    snprintf(rv, sizeof rv, vt == TY_POLY ? "sp_poly_to_f(_t%d_r)" : "_t%d_r", k);
+    if (ffn) buf_printf(b, "%s = %s(_t%d, %s); }", lval, ffn, k, rv);
+    else buf_printf(b, "%s = _t%d %s %s; }", lval, k, op, rv);
+  }
+  else if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
   else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
   else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
@@ -2104,7 +2168,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     buf_printf(b, "%s = %s %s ", lval, lval, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
-  if (emit_scalar_op_assign(c, lval, t, op, v, cap, b)) return;
+  if (emit_scalar_op_assign(c, lval, t, op, v, cap, lv && lv->nullable_int, b)) return;
   if (t == TY_COMPLEX && (sp_streq(op, "+") || sp_streq(op, "*"))) {
     /* coerce the rhs like the binary path does: an Integer, a Float or a boxed
        value all have to reach sp_complex_* as an sp_Complex */
@@ -6068,7 +6132,7 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar. */
 enum { HC_INT, HC_FLOAT, HC_STR };
-typedef struct { char recv[200]; int kind; } HcEntry;
+typedef struct { char recv[200]; int kind; int nf; } HcEntry;   /* nf: hc_array_nilfree asked */
 typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32];
                  char bi[64], ba[64]; } HcRegion;  /* bi/ba: see hc_bounded_index */
 static HcRegion *g_hc = NULL;
@@ -6242,6 +6306,7 @@ static int hc_entry(Compiler *c, int recv, int kind) {
   if (g_hc->n >= (int)(sizeof g_hc->e / sizeof g_hc->e[0])) return -1;
   snprintf(g_hc->e[g_hc->n].recv, sizeof g_hc->e[0].recv, "%s", t);
   g_hc->e[g_hc->n].kind = kind;
+  g_hc->e[g_hc->n].nf = 0;
   return g_hc->n++;
 }
 
@@ -6251,6 +6316,17 @@ int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, siz
   snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
   snprintf(l, cap, "_hcl%d_%d", g_hc->id, e);
   snprintf(w, cap, "_hcw%d_%d", g_hc->id, e);
+  return 1;
+}
+
+/* The same cache, with a length that is 0 when the array may hold nil
+   (_hcn): an index below it reads an element that is no nil. */
+int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap) {
+  int e = hc_entry(c, recv, HC_FLOAT);
+  if (e < 0) return 0;
+  g_hc->e[e].nf = 1;
+  snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
+  snprintf(n, cap, "_hcn%d_%d", g_hc->id, e);
   return 1;
 }
 
@@ -6368,6 +6444,7 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       buf_printf(b, "%s *_hcd%d_%d; sp_int _hcl%d_%d;", et, r->id, i, r->id, i);
       if (r->e[i].kind != HC_STR) buf_printf(b, " int _hcw%d_%d;", r->id, i);
+      if (r->e[i].nf) buf_printf(b, " sp_int _hcn%d_%d;", r->id, i);
       buf_puts(b, "\n");
     }
     buf_printf(b, "#define _SP_HCR%d() ({ ", r->id);
@@ -6376,10 +6453,13 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
       if (r->e[i].kind == HC_STR)
         buf_printf(b, "{ const char *_s = %s; _hcd%d_%d = _s; _hcl%d_%d = _s ? (sp_int)sp_str_byte_len(_s) : 0; } ",
                    rv, r->id, i, r->id, i);
-      else
-        buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; } ",
+      else {
+        buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; ",
                    r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,
                    r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i);
+        if (r->e[i].nf) buf_printf(b, "_hcn%d_%d = _a && !SP_MAY_NIL(_a) ? _a->len : 0; ", r->id, i);
+        buf_puts(b, "} ");
+      }
     }
     buf_puts(b, "(void)0; })\n");
     emit_indent(b, indent + 1); buf_printf(b, "_SP_HCR%d();\n", r->id);
@@ -9877,7 +9957,8 @@ else {
     }
     else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
     else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1,
+                                   idx >= 0 && c->classes[sc].cvar_nullable_int[idx], b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ";\n");
@@ -9918,7 +9999,11 @@ else {
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
     if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
     TyKind vt = TY_UNKNOWN;
-    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
+    int vnil = 0;
+    if (sc >= 0) {
+      int iv = comp_ivar_index(&c->classes[sc], nm);
+      if (iv >= 0) { vt = c->classes[sc].ivar_types[iv]; vnil = c->classes[sc].ivar_nullable_int[iv]; }
+    }
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
@@ -10125,7 +10210,7 @@ else {
       /* An int ivar op-assign takes the overflow-checked helpers like the
          binary form (raw `@x *= y` wrapped where `@x * y` raised), and reads
          the ivar before an effectful rhs, which may reassign it. */
-      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, b)) return;
+      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, vnil, b)) return;
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
          scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
@@ -10230,7 +10315,7 @@ else {
       }
       else {
         char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
-        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, b)) return;
+        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, 0, b)) return;
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
@@ -10392,7 +10477,7 @@ else {
         }
         else {
           char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
-          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, b)) {
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, 0, b)) {
             emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
             continue;
           }
@@ -10671,7 +10756,7 @@ else {
     }
     else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
     else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ";\n");
