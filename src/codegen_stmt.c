@@ -1640,6 +1640,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     emit_unresolved_coerced(c, v, lv->type, b);
   }
   else {
+    if (lv) store_check(c, v, lv->type, "a local write", b);
     emit_expr(c, v, b);
   }
   buf_puts(b, ";\n");
@@ -4242,6 +4243,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   if (pred >= 0) sb = expr_buf(c, pred);
   emit_indent(b, indent); emit_ctype(c, pt, b);
   buf_printf(b, " _t%d = ", t);
+  if (pred >= 0) store_check(c, pred, pt, "a case/in subject's temp", b);
   buf_puts(b, sb.p ? sb.p : default_value(pt));
   free(sb.p);
   buf_puts(b, ";\n");
@@ -7307,7 +7309,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "_retv%d = ", ctx->lid);
         /* the FRAME's slot type, not g_ret_type: see EnsureCtx.retv_ty */
         if (ctx->retv_ty == TY_POLY && comp_ntype(c, a[0]) != TY_POLY) emit_boxed(c, a[0], b);
-        else emit_expr(c, a[0], b);
+        else { store_check(c, a[0], ctx->retv_ty, "a return through ensure", b); emit_expr(c, a[0], b); }
         buf_puts(b, "; ");
       }
     }
@@ -8229,6 +8231,7 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent,
 
 int g_line_map = 0;
 int g_gate_raise = 0;
+int g_check_stores = 0;   /* --check-stores: report raw stores across C types (store_check) */
 int g_debug = 0;  /* --debug build: emit user methods with external linkage so
                      -rdynamic names backtrace/caller frames (instance/class
                      methods only; toplevel sp_<name> stays static to avoid
@@ -9872,6 +9875,7 @@ else {
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
+      store_check(c, v, ivt, "an instance variable write", b);
       emit_obj_upcast_prefix(c, ivt, comp_ntype(c, v), b);
       emit_expr(c, v, b);
     }
@@ -10587,7 +10591,10 @@ else {
         unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
       emit_poly_array_from(c, v, b);
     }
-    else emit_expr(c, v, b);
+    else {
+      store_check(c, v, lv->type, isg ? "a global variable write" : "a constant write", b);
+      emit_expr(c, v, b);
+    }
     buf_puts(b, ";\n");
     if (!isg && lv->init_guarded) {
       emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
@@ -13070,7 +13077,7 @@ static void emit_hash_store_val(Compiler *c, int val, TyKind rt, Buf *b) {
   if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_hval_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_hval_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
   else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_hval_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
-  else emit_expr(c, val, b);
+  else { store_check(c, val, hvt, "a Hash element store", b); emit_expr(c, val, b); }
 }
 
 /* The receiver of a statement-position String mutator that it reassigns:
@@ -13933,7 +13940,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
-    else emit_expr(c, argv[1], b);
+    else { store_check(c, argv[1], et, "an Array element store", b); emit_expr(c, argv[1], b); }
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
@@ -14030,7 +14037,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         buf_puts(b, "), (&(\"\\xff\")[1]))");
       }
       else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[a], et, b);   /* a raise token, a void call */
-      else emit_expr(c, argv[a], b);
+      else { store_check(c, argv[a], et, "an Array push", b); emit_expr(c, argv[a], b); }
       buf_puts(b, ");\n");
     }
     if (has_splat) { emit_indent(b, indent); buf_puts(b, "}\n"); }
