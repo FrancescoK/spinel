@@ -13293,6 +13293,27 @@ static void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   else buf_printf(b, "sp_raise_poly(_t%d); })", kt);
 }
 
+/* A Data class's generated constructor given another count of positionals
+   than its members: CRuby's ArgumentError -- too many name the count, too
+   few the missing members -- as an arm of a Class-value `new` switch, which
+   had none for it and raised the default's NoMethodError. 1 when emitted. */
+static int emit_data_arity_arm(Compiler *c, int ci, int argc, Buf *b) {
+  ClassInfo *k = &c->classes[ci];
+  int np = k->nreaders;
+  if (!k->is_data || argc == np) return 0;
+  char am[512];
+  if (argc > np) {
+    if (np == 0) snprintf(am, sizeof am, "wrong number of arguments (given %d, expected 0)", argc);
+    else snprintf(am, sizeof am, "wrong number of arguments (given %d, expected 0..%d)", argc, np);
+  }
+  else {
+    size_t off = (size_t)snprintf(am, sizeof am, "missing keyword%s: ", np - argc > 1 ? "s" : "");
+    for (int j = argc; j < np && off < sizeof am; j++)
+      off += (size_t)snprintf(am + off, sizeof am - off, "%s:%s", j > argc ? ", " : "", k->readers[j]);
+  }
+  buf_printf(b, "case %d: sp_raise_cls(\"ArgumentError\", \"%s\"); break;", ci, am);
+  return 1;
+}
 /* The same, for arguments hoisted into the boxed temps `atmp`. */
 static void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed,
                                   Buf *b) {
@@ -38010,6 +38031,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "case %d: sp_raise_cls(\"ArgumentError\", \"struct size differs\"); break;", ci);
         continue;
       }
+      if (!kw_ctor && !nil_fill && initm < 0 && emit_data_arity_arm(c, ci, argc, b)) continue;
       if (!kw_ctor && !nil_fill) {
         if (initm < 0) {
           if (argc != np || nreq != np) continue;
@@ -38271,6 +38293,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "case %d: sp_raise_cls(\"ArgumentError\", \"struct size differs\"); break;", ci);
         continue;
       }
+      if (initm < 0 && !nil_fill && gen_ctor && emit_data_arity_arm(c, ci, argc, b)) continue;
       if (initm < 0) { if (!nil_fill && (argc != np || nreq != np)) continue; }
       else {
         if (!ctor_arm_takes(c, &c->scopes[initm], argc)) continue;

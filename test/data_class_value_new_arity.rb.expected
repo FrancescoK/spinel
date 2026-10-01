@@ -1,0 +1,5 @@
+[ArgumentError, "wrong number of arguments (given 1, expected 0)"]
+[ArgumentError, "missing keyword: :b"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+#<data P2 a=1, b=2>
+#<data P0>
