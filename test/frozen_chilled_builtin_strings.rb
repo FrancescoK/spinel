@@ -4,7 +4,8 @@
 # String() of a boolean, a boxed boolean's inspect and a boxed class's
 # #name. Symbol#to_s is chilled: not frozen, and a mutation goes through,
 # but +@ copies it, through a typed Symbol, id2name, String(), map, a block,
-# a boxed Symbol and a dynamic one, until its first mutation makes it plain.
+# a boxed Symbol and a dynamic one, until its first mutation makes it plain,
+# also one that leaves the bytes the symbol's name again.
 # A String built fresh (inspect, interpolation, dup) is aliased by +@.
 def al(s)
   t = +s
@@ -27,3 +28,4 @@ sb = [:r, 1][0]
 p [al(:sym.id2name), al(String(:sym)), al(syms.map(&:to_s)[0]), al(syms.map { |s| s.to_s }[1]), al(sb.to_s)]
 p [al("dy#{syms.size}".to_sym.to_s), al(:sym.inspect), al("#{:sym}"), al(:sym.to_s.dup)]
 m = :sym.to_s; m << "!"; n = +m; n << "?"; p [m, n, :sym.to_s]
+r = :sym.to_s; r << "!"; r.chop!; q = +r; q << "x"; p [r, q, :sym.to_s]
