@@ -521,6 +521,16 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     ms->class_id = class_id;
     ms->dm_subst_name = strdup(bv);
     ms->dm_subst_node = elems[k];
+    /* the define_method block's parameters are the method's, as for a
+       literal name (`|*args|`, `|w, fill = "-"|`): left out, the body read
+       parameters the method did not have */
+    int dpn = nt_ref(nt, dblk, "parameters");
+    if (dpn >= 0 && nt_kind(nt, dpn) == NK_BlockParametersNode) {
+      collect_def_params(c, dpn, ms);
+      int dps = nt_ref(nt, dpn, "parameters"), drn = 0;
+      if (dps >= 0) (void)nt_arr(nt, dps, "requireds", &drn);
+      ms->nrequired = drn;
+    }
     /* the loop var reads inside the body resolve to the literal type */
     LocalVar *lv = scope_local_intern(ms, bv);
     lv->type = lt;
