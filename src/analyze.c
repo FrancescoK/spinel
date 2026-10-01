@@ -21876,11 +21876,14 @@ static void nn_structure(Compiler *c) {
   /* the names of nn_named the program defines methods for, asked of the
      methods themselves: the facts can be computed while the analysis
      derives a builtin-only answer, under which an_user_defines_method
-     answers no */
+     answers no. A class's singleton methods (`def self.raise`) count too:
+     a receiverless call in a class method finds them first. */
   nn_user_named = 0;
   for (int i = 0; nn_named[i]; i++) {
     int own = comp_method_index(c, nn_named[i]) >= 0;
-    for (int k = 0; k < c->nclasses && !own; k++) own = comp_method_in_chain(c, k, nn_named[i], NULL) >= 0;
+    for (int k = 0; k < c->nclasses && !own; k++)
+      own = comp_method_in_chain(c, k, nn_named[i], NULL) >= 0 ||
+            comp_cmethod_in_chain(c, k, nn_named[i], NULL) >= 0;
     if (own) nn_user_named |= 1u << i;
   }
   /* reflection that reads or writes an ivar by name, or an Array reopened by
