@@ -10746,11 +10746,13 @@ else {
       buf_puts(b, "if (");
       if (!is_or) { /* &&= runs when the slot is truthy */ }
       else buf_puts(b, "!(");
-      if (lv->type == TY_INT)          buf_printf(b, "%s != SP_INT_NIL", gref);
-      else if (lv->type == TY_FLOAT)   buf_printf(b, "!sp_float_is_nil(%s)", gref);
-      else if (lv->type == TY_POLY)    buf_printf(b, "sp_poly_truthy(%s)", gref);
-      else if (lv->type == TY_CLASS)   buf_printf(b, "!sp_class_nil_p(%s)", gref);
-      else                             buf_puts(b, gref);
+      switch (lv->type) {
+      case TY_INT:   buf_printf(b, "%s != SP_INT_NIL", gref); break;
+      case TY_FLOAT: buf_printf(b, "!sp_float_is_nil(%s)", gref); break;
+      case TY_POLY:  buf_printf(b, "sp_poly_truthy(%s)", gref); break;
+      case TY_CLASS: buf_printf(b, "!sp_class_nil_p(%s)", gref); break;
+      default:       buf_puts(b, gref); break;
+      }
       if (is_or) buf_puts(b, ")");
       buf_printf(b, ") { gv_%s = ", rn);
       /* a poly slot boxes the value, as the plain write does: `$g ||= nil`
