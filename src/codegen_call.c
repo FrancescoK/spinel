@@ -3236,6 +3236,11 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
    (UNKNOWN type -- wrong name or arity for this receiver) are dropped. */
 static int g_dsend_active[64];
 static int g_dsend_depth = 0;
+static int dsend_name_diverges(Compiler *c, const char *nm) {
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, nm) && stmts_diverge(c, c->scopes[s].body)) return 1;
+  return 0;
+}
 static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int narm = 0; const int *arms = nt_arr(nt, id, "dyn_send_arms", &narm);
@@ -3279,10 +3284,13 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
     TyKind at = comp_ntype(c, arm);
-    if (at == TY_UNKNOWN || at == TY_VOID) continue;     /* did not resolve on this receiver/arity */
-    if (mo && method_obj_target_mi(c, arm) < 0) continue;
     const char *nm = nt_str(nt, arm, "dyn_name");
     if (!nm) continue;
+    if (at == TY_UNKNOWN || at == TY_VOID) {
+      if (!dsend_name_diverges(c, nm)) continue;     /* did not resolve on this receiver/arity */
+      at = TY_NIL;
+    }
+    if (mo && method_obj_target_mi(c, arm) < 0) continue;
     /* An arm whose argument contradicts the callee's --rbs seed raises when
        the name selects it; the typed call would reinterpret the value
        (check_seed_contradictions, #6672). */
