@@ -1298,6 +1298,7 @@ void emit_call(Compiler *c, int id, Buf *b);
 /* Decode a CallNode's positional arguments: sets *argc and returns the argv
    array (NULL when the node has no arguments). Shared by the call emitters. */
 const int *call_args(const NodeTable *nt, int id, int *argc);
+int poly_shl_root_slot(Compiler *c, int recv);   /* the boxed local/ivar a << chain starts at, or -1 */
 /* Emit `node` into a fresh buffer and return it (caller reads .p, frees it).
    Collapses the `Buf b; memset(&b,0,sizeof b); emit_expr(c,node,&b);` idiom. */
 Buf expr_buf(Compiler *c, int node);
