@@ -4168,14 +4168,15 @@ static const char *sp_cmperr_desc(sp_RbVal v) {
    container are no Integer, and reading them as one answered `1 & true` as
    1: the operator fails to coerce them ("true can't be coerced into
    Integer"; a Float too), the shift to convert them ("no implicit
-   conversion of true into Integer"). */
+   conversion of true into Integer"). A Class or Module is no Integer
+   either. */
 static SP_NOINLINE void sp_int_operand_fail(sp_RbVal v, int shift) {
   if (shift) sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_convert_src_name(v)));
   sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Integer", sp_cmperr_desc(v)));
 }
 static inline int sp_int_operand_bad(sp_RbVal v, int shift) {
   switch (v.tag) {
-    case SP_TAG_NIL: case SP_TAG_BOOL: case SP_TAG_STR: case SP_TAG_SYM: return 1;
+    case SP_TAG_NIL: case SP_TAG_BOOL: case SP_TAG_STR: case SP_TAG_SYM: case SP_TAG_CLASS: return 1;
     case SP_TAG_FLT: return !shift;
     case SP_TAG_OBJ: return sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id);
     default: return 0;
