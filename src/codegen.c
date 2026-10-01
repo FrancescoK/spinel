@@ -6174,6 +6174,102 @@ static int proc_owns_local(Compiler *c, int create, const char *nm) {
   return 0;
 }
 
+/* 1 when a parameter in this subtree is spelled exactly `nm`. The shadow
+   rename leaves a renamed parameter's node spelled NAME__bpNN, so this tells
+   it from an unrenamed name the enclosing scope also uses, which
+   subtree_has_param_named_pub matches under either spelling. */
+static int param_spelled(const NodeTable *nt, int id, const char *nm) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (ty && (strstr(ty, "ParameterNode") || sp_streq(ty, "LocalVariableTargetNode"))) {
+    const char *pn = nt_str(nt, id, "name");
+    if (pn && sp_streq(pn, nm)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (param_spelled(nt, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (param_spelled(nt, ids[k], nm)) return 1;
+  }
+  return 0;
+}
+
+/* 1 when `nm` is declared by a block nested in the proc body -- one of its
+   parameters, or a local Prism lists in its `locals` -- so the proc's frame
+   owns it as it owns its own locals (#4087). Such a block is inlined into the
+   proc function (`-> { (0...3).map { |i| keep { i } } }`), runs anew on every
+   call of the proc, and binds anew on every run. Taken as a capture instead,
+   it was the enclosing frame's one cell: the loop bound `lv_i`, which only
+   that frame declares, and the C build stopped; an Array.new block read a
+   cell nothing wrote; and a recursive call of the proc rebound a local the
+   caller still read. A nested lambda owns its own locals, so the walk stops
+   there. */
+static int nested_block_declares(Compiler *c, int id, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || !nm) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty || sp_streq(ty, "LambdaNode")) return 0;
+  if (sp_streq(ty, "BlockNode")) {
+    int pn = nt_ref(nt, id, "parameters");
+    if (param_spelled(nt, pn, nm)) return 1;
+    const char *locs = nt_str(nt, id, "locals");
+    size_t nl = strlen(nm);
+    for (const char *p = locs ? locs : ""; *p; ) {
+      const char *e = strchr(p, ',');
+      size_t l = e ? (size_t)(e - p) : strlen(p);
+      if (l == nl && memcmp(p, nm, nl) == 0) {
+        /* The list keeps a renamed parameter's raw NAME: that entry is the
+           parameter, not the enclosing scope's `nm`. Numbered and `it`
+           parameters have no node of their own, and the list carries their
+           renamed spelling. */
+        const char *pt = pn >= 0 ? nt_type(nt, pn) : NULL;
+        if (pt && (sp_streq(pt, "NumberedParametersNode") || sp_streq(pt, "ItParametersNode"))) return 1;
+        if (!subtree_has_param_named_pub(nt, pn, nm)) return 1;
+        break;
+      }
+      if (!e) break;
+      p = e + 1;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (nested_block_declares(c, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (nested_block_declares(c, ids[k], nm)) return 1;
+  }
+  return 0;
+}
+
+/* A cell the proc's own frame owns, allocated in its prologue (#4087). A
+   cell over an inlined block's parameter also gets the plain C slot the
+   loop binds (LocalVar.cell_shadow). */
+static void emit_proc_owned_cell(Compiler *c, Buf *pb, LocalVar *lv, const char *nm) {
+  if (lv->cell_shadow) declare_local_named(c, pb, lv, nm, 0);
+  const char *vs = cell_value_struct(lv->type);
+  buf_puts(pb, "    ");
+  emit_cell_elem_type(c, lv, pb);
+  buf_printf(pb, " *_cell_%s = (", nm);
+  emit_cell_elem_type(c, lv, pb);
+  buf_puts(pb, " *)sp_gc_alloc(sizeof(");
+  emit_cell_elem_type(c, lv, pb);
+  buf_puts(pb, "), NULL, ");
+  if (lv->type == TY_PROC) buf_puts(pb, "sp_cell_scan_procint");
+  else if (lv->type == TY_POLY) buf_puts(pb, "sp_cell_scan_rbval");
+  else if (lv->type != TY_FLOAT && !vs && cell_is_typed_ptr(c, lv)) buf_puts(pb, cell_scan_fn(lv->type));
+  else buf_puts(pb, "NULL");
+  buf_printf(pb, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", nm, nm);
+  if (lv->type == TY_FLOAT) buf_puts(pb, "0.0");
+  else if (lv->type == TY_POLY) buf_puts(pb, "sp_box_nil()");
+  else if (vs) buf_puts(pb, cell_value_struct_empty(lv->type));
+  else if (lv->type != TY_PROC && cell_is_typed_ptr(c, lv)) buf_puts(pb, "NULL");
+  else buf_puts(pb, "0");
+  buf_puts(pb, ";\n");
+}
+
 /* How an inlined method's PARAMETER is spelled as an assignment target, under
    the same rule emit_inlined_local_decl declares it by: a cell-promoted local
    is reached through `(*_cell_x)`, a plain one through `lv_x`. The three
@@ -6411,7 +6507,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
        invocation shared (so per-iteration closures all saw the last value),
        and the block-local reset then assigned a `_cell_x` no function here
        declared -- the C build stopped (#4087). The prologue declares it. */
-    if (lv && lv->is_cell && proc_owns_local(c, create, nm)) { nameset_add(&locals, nm); continue; }
+    if (lv && lv->is_cell && (proc_owns_local(c, create, nm) || nested_block_declares(c, body, nm))) {
+      nameset_add(&locals, nm);
+      continue;
+    }
     if (lv && lv->is_cell) {
       int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
       /* Float captures ride the capture struct (a real sp_float field), not the
@@ -7164,30 +7263,21 @@ else if (orecv >= 0 && onm) {
              invocation is a fresh frame, so allocating in the prologue IS the
              per-invocation freshness; a reset that does run re-allocates on
              top, which stays correct. */
-          const char *vs = cell_value_struct(lv->type);
-          buf_puts(pb, "    ");
-          emit_cell_elem_type(c, lv, pb);
-          buf_printf(pb, " *_cell_%s = (", nbuf);
-          emit_cell_elem_type(c, lv, pb);
-          buf_puts(pb, " *)sp_gc_alloc(sizeof(");
-          emit_cell_elem_type(c, lv, pb);
-          buf_puts(pb, "), NULL, ");
-          if (lv->type == TY_PROC) buf_puts(pb, "sp_cell_scan_procint");
-          else if (lv->type == TY_POLY) buf_puts(pb, "sp_cell_scan_rbval");
-          else if (lv->type != TY_FLOAT && !vs && cell_is_typed_ptr(c, lv)) buf_puts(pb, cell_scan_fn(lv->type));
-          else buf_puts(pb, "NULL");
-          buf_printf(pb, "); SP_GC_ROOT(_cell_%s); *_cell_%s = ", nbuf, nbuf);
-          if (lv->type == TY_FLOAT) buf_puts(pb, "0.0");
-          else if (lv->type == TY_POLY) buf_puts(pb, "sp_box_nil()");
-          else if (vs) buf_puts(pb, cell_value_struct_empty(lv->type));
-          else if (lv->type != TY_PROC && cell_is_typed_ptr(c, lv)) buf_puts(pb, "NULL");
-          else buf_puts(pb, "0");
-          buf_puts(pb, ";\n");
+          emit_proc_owned_cell(c, pb, lv, nbuf);
         }
       }
       if (!e) break;
       q = e + 1;
     } }
+  /* A celled local a block nested in the body declares: this frame owns it
+     too (nested_block_declares), and the block-local reset at the top of
+     each run of that block gives it a fresh cell. */
+  for (int i = 0; i < locals.n; i++) {
+    LocalVar *lv = scope_local(bs, locals.v[i]);
+    if (!lv || !lv->is_cell || nameset_has(&params, locals.v[i])) continue;
+    if (proc_owns_local(c, create, locals.v[i]) || !nested_block_declares(c, body, locals.v[i])) continue;
+    emit_proc_owned_cell(c, pb, lv, locals.v[i]);
+  }
   /* Splat rest and trailing post params. Both read the boxed side-channel:
      every call path now publishes all args boxed (yield's lean ABI was
      retired for this), so any position is recoverable regardless of the
