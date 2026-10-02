@@ -8743,8 +8743,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "scrub") && argc == 0) buf_printf(b, "sp_str_scrub(%s, 0)", r);
       else if (sp_streq(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s[/re/] -> the matched substring, or nil (NULL) on no match */
@@ -8894,30 +8892,13 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                       " ((_t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0) ? _t%d : _t%d); })",
                    tlo, tc, tlo, tlo, thi, tc, thi, thi, tc);
       }
-      else if (sp_streq(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
-      else if (sp_streq(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
-      else if (sp_streq(name, "to_r") && argc == 0) buf_printf(b, "sp_str_to_r(%s)", r);
-      else if (sp_streq(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
       /* force_encoding / encode! set state ON the receiver: CRuby raises on a
          frozen string whether or not the call would change anything (#3334).
          `b` and non-bang `encode` return a NEW string, so they never raise. */
-      /* zero-argument concat / prepend return the receiver; a frozen one still
-         raises, as CRuby checks before the (empty) append (#3339). */
-      else if ((sp_streq(name, "concat") || sp_streq(name, "prepend")) && argc == 0) {
-        /* the receiver once: it is a call with effects as often as a local */
-        int trc0 = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; sp_str_check_mutable(_t%d); _t%d; })", trc0, r, trc0, trc0);
-      }
       else if ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc <= 2) {
         char feref[1024];
         if (strbuf_slot_ref(c, recv, feref, sizeof feref)) emit_strbuf_force_encoding(c, name, feref, argv, argc, b);
         else emit_str_force_encoding(c, name, r, argv, argc, b);
-      }
-      else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
-               comp_ntype(c, argv[0]) == TY_STRING) {
-        /* `str =~ str` is a TypeError in CRuby, not a missing method: only a
-           Regexp (or an object answering =~) is a valid right operand */
-        buf_printf(b, "((void)(%s), sp_raise_cls(\"TypeError\", \"type mismatch: String given\"), (sp_bool)0)", r);
       }
       else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
                comp_ntype(c, argv[0]) == TY_NIL) {
@@ -8929,53 +8910,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "), sp_box_nil())");
         else buf_printf(b, "), %s)", raise_tail_value(comp_ntype(c, id)));
       }
-      else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
-               comp_ntype(c, argv[0]) == TY_BOOL) {
-        /* CRuby hands the operand back to the operand's own #=~, and
-           booleans have none: NoMethodError, naming the value */
-        buf_printf(b, "((void)(%s), sp_raise_cls(\"NoMethodError\", (", r);
-        emit_expr(c, argv[0], b);
-        buf_puts(b, ") ? \"undefined method '=~' for true\""
-                  " : \"undefined method '=~' for false\"), (sp_bool)0)");
-      }
-      else if (sp_streq(name, "b") && argc == 0) {
-        /* a fresh copy, not the receiver: CRuby's #b is never frozen, and
-           handing back a frozen literal made `s.b << x` raise FrozenError */
-        buf_printf(b, "sp_str_b(%s)", r);
-      }
-      else if (sp_streq(name, "b") && argc <= 2) buf_printf(b, "(%s)", r);
       /* encode with no argument is the receiver; with a destination it is a
          transcode between the two encodings the runtime models (#4439) */
-      else if (sp_streq(name, "encode") && argc == 0) buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "encode") && argc <= 3) emit_str_encode_call(c, r, argv, argc, b);
-      /* the answer is the receiver's own tag, not the constant UTF-8 this arm
-         used to fold to while discarding the receiver: pack and String#b tag
-         their answer BINARY, and every other reader of that tag agreed */
-      else if (sp_streq(name, "encoding") && argc == 0)
-        buf_printf(b, "sp_box_encoding(sp_str_is_binary(%s) ? sp_encoding_binary() : sp_encoding_utf8())", r);
-      else if (sp_streq(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
-      else if (sp_streq(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
-      else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
-               comp_ntype(c, argv[0]) == TY_POLY) {
-        /* runtime tag decides: a string argument compares, a boxed object
-           that answers #to_str converts and compares (rb_check_string_type),
-           anything else is nil (the call typed TY_POLY). The receiver is
-           bound and rooted first: #to_str allocates, and the receiver may be
-           a fresh string nothing else holds. The OPERAND is rooted one level
-           down, inside sp_poly_check_str, which is where this arm and the
-           runtime's own boxed comparison meet. */
-        int ta2 = ++g_tmp, tb2 = ++g_tmp, tc2 = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);"
-                      " sp_RbVal _t%d = ", ta2, r, ta2, tb2);
-        emit_expr(c, argv[0], b);
-        buf_printf(b, "; const char *_t%d = sp_poly_check_str(_t%d);"
-                      " (_t%d || _t%d.tag == SP_TAG_STR) ? ", tc2, tb2, tc2, tb2);
-        if (sp_streq(name, "casecmp"))
-          buf_printf(b, "sp_box_int(sp_str_casecmp(_t%d, _t%d ? _t%d : \"\"))", ta2, tc2, tc2);
-        else
-          buf_printf(b, "sp_box_bool(sp_str_casecmp(_t%d, _t%d ? _t%d : \"\") == 0)", ta2, tc2, tc2);
-        buf_puts(b, " : sp_box_nil(); })");
-      }
       /* an operand whose class answers #to_str: CRuby converts it and
          compares, where the arm below discarded it and answered nil. The
          answer is boxed because the conversion can still come back empty --
@@ -8998,19 +8935,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
            argument still evaluates for effect */
         buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
       }
-      else if (sp_streq(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
-      else if (sp_streq(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
-      /* byteslice(range): resolve endpoints against the bytesize (#2348) */
-      else if (sp_streq(name, "byteslice") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-        int trg = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", trg); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_str_byteslice_range(%s, _t%d.first, _t%d.last, _t%d.excl,"
-                      " _t%d.first == INTPTR_MIN, _t%d.last == INTPTR_MAX); })",
-                   r, trg, trg, trg, trg, trg);
-      }
-      /* single-index byteslice(i): nil at the bytesize boundary (#2333) */
-      else if (sp_streq(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice1(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "setbyte") && argc == 2) {
         /* copy-on-write: rebind an lvalue receiver to the mutated copy
            (a literal's bytes live in static storage, #2029) */
@@ -9036,24 +8960,13 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         }
         else { buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
-      else if (sp_streq(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
-      else if (sp_streq(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if ((sp_streq(name, "squeeze") || sp_streq(name, "delete") || sp_streq(name, "count")) && argc >= 2) {
         buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", name, r);
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
-      else if ((sp_streq(name, "tr") || sp_streq(name, "tr_s")) && argc == 2) {
-        buf_printf(b, "sp_str_%s(%s, ", name, r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
       else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
-      else if (sp_streq(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }
-      else if (sp_streq(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
-      else if (sp_streq(name, "lines") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
-        buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
       /* lines(sep, chomp: true): a separator and the keyword together (#3546) */
       else if (sp_streq(name, "lines") && argc == 2 &&
                comp_ntype(c, argv[0]) == TY_STRING && nt_type(nt, argv[1]) &&
@@ -9078,7 +8991,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
       else if (sp_streq(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
-      else if (sp_streq(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* unpack(fmt, offset: n): a trailing KeywordHashNode carries the offset. */
       else if ((sp_streq(name, "unpack") || sp_streq(name, "unpack1")) && argc == 2 &&
                nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") &&
@@ -9105,17 +9017,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         emit_str_expr(c, argv[0], b);
         buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
       }
-      else if (sp_streq(name, "sum") && argc <= 1) {
-        /* byte checksum: sum of byte values modulo 2**bits (default 16;
-           bits <= 0 or >= 64 leaves the sum untruncated like CRuby) */
-        int ts = ++g_tmp, tbits = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; sp_int _t%d = ", ts, r, tbits);
-        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "16");
-        /* every byte, a NUL included: the runtime reads the byte length (#4527) */
-        buf_printf(b, "; sp_str_sum_bits(_t%d, _t%d); })", ts, tbits);
-      }
       else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
-      else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
       /* promote mode types the call poly: a Bignum past sp_int */
       else if (sp_streq(name, "to_i") && argc <= 1 && comp_ntype(c, id) == TY_POLY) {
         buf_printf(b, "sp_str_to_i_promote(%s, ", r);
@@ -9124,40 +9026,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
       else if (sp_streq(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "to_f") && argc == 0)    buf_printf(b, "sp_str_to_f_cruby(%s)", r);  /* underscores (#2330) */
-      else if (sp_streq(name, "gsub") && argc == 2) {
-        buf_printf(b, "sp_str_gsub(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "sub") && argc == 2 && comp_ntype(c, argv[1]) == TY_STR_STR_HASH) {
-        buf_printf(b, "sp_str_sub_str_str_hash(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "sub") && argc == 2) {
-        /* pattern and replacement coerce to strings: an accessor / poly arg is
-           a tagged sp_RbVal, not a const char*, so emit_str_expr unboxes it
-           (#3198). */
-        buf_printf(b, "sp_str_sub(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "tr") && argc == 2) {
-        buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "center") && argc == 1) {
-        buf_printf(b, "sp_str_center(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "center") && argc == 2) {
-        buf_printf(b, "sp_str_center2(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "ljust") && argc == 1) {
-        buf_printf(b, "sp_str_ljust(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "ljust") && argc == 2) {
-        buf_printf(b, "sp_str_ljust2(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "rjust") && argc == 1) {
-        buf_printf(b, "sp_str_rjust(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "rjust") && argc == 2) {
-        buf_printf(b, "sp_str_rjust2(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      }
       /* String#eql?(x): byte-equal only when x is itself String-typed (no
          coercion, unlike ==). A poly arg checks its tag; any other concrete
          type is never equal. */
