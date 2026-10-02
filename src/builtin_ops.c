@@ -778,6 +778,42 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "start_with?", 1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "end_with?",   1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "match?",      1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
+
+  /* Method and Proc: the result kinds read off the name and arity.
+     call/()/[] (the target's or the proc's return), bind_call, receiver,
+     composition (<< / >>) and Proc identity against a Proc are typed in
+     infer_call_inner. */
+  { TY_METHOD, "to_proc",         0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
+  { TY_METHOD, "original_name",   0,   0, BF_ANY, TY_SYMBOL,     BOPE_NONE },  /* reflection (#3247) */
+  { TY_METHOD, "name",            0,   0, BF_ANY, TY_SYMBOL,     BOPE_NONE },
+  { TY_METHOD, "parameters",      0,   0, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },
+  { TY_METHOD, "source_location", 0,   0, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },
+  { TY_METHOD, "dup",             0,   0, BF_ANY, TY_METHOD,     BOPE_NONE },
+  { TY_METHOD, "clone",           0,   0, BF_ANY, TY_METHOD,     BOPE_NONE },
+  { TY_METHOD, "unbind",          0,   0, BF_ANY, TY_METHOD,     BOPE_NONE },
+  { TY_METHOD, "super_method",    0,   0, BF_ANY, TY_METHOD,     BOPE_NONE },
+  { TY_METHOD, "inspect",         0,   0, BF_ANY, TY_STRING,     BOPE_NONE },
+  { TY_METHOD, "to_s",            0,   0, BF_ANY, TY_STRING,     BOPE_NONE },
+  { TY_METHOD, "box",             0,   0, BF_ANY, TY_NIL,        BOPE_NONE },  /* namespace-less: never boxed */
+  { TY_METHOD, "owner",           0,   0, BF_ANY, TY_CLASS,      BOPE_NONE },  /* #2701 */
+  { TY_METHOD, "arity",           0,   0, BF_ANY, TY_INT,        BOPE_NONE },
+  { TY_METHOD, "==",              1,   1, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_METHOD, "eql?",            1,   1, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_METHOD, "equal?",          1,   1, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_METHOD, "bind",            1,   1, BF_ANY, TY_METHOD,     BOPE_NONE },  /* #2676 */
+  { TY_PROC,   "to_proc",         0,   0, BF_ANY, TY_PROC,       BOPE_NONE },  /* self (#3687) */
+  { TY_PROC,   "===",             1,   1, BF_ANY, TY_POLY,       BOPE_NONE },  /* the proc's value, boxed (#3818) */
+  { TY_PROC,   "parameters",      0,   1, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },  /* parameters(lambda:) is the same shape */
+  { TY_PROC,   "arity",           0,   0, BF_ANY, TY_INT,        BOPE_NONE },
+  { TY_PROC,   "lambda?",         0,   0, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_PROC,   "frozen?",         0,   0, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_PROC,   "source_location", 0,   0, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },  /* [file, line] */
+  { TY_PROC,   "inspect",         0,   0, BF_ANY, TY_STRING,     BOPE_NONE },
+  { TY_PROC,   "to_s",            0,   0, BF_ANY, TY_STRING,     BOPE_NONE },
+  { TY_PROC,   "freeze",          0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
+  { TY_PROC,   "dup",             0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
+  { TY_PROC,   "clone",           0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
+  { TY_PROC,   "itself",          0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

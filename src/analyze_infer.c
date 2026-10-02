@@ -3063,7 +3063,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        there. */
     return TY_POLY;
   }
-  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
+  if (recv >= 0 && rt == TY_METHOD) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
+  }
   /* A Method read out of a container answers these from its sp_BoundMethod;
      the value is boxed, so the call is poly (#3692). */
   if (recv >= 0 && argc == 0 && infer_type(c, recv) == TY_POLY &&
@@ -3086,37 +3089,18 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         !an_user_defines_or_reads(c, "call"))
       return TY_PROC;
   }
-  /* Proc#to_proc is self (#3687) */
-  if (recv >= 0 && rt == TY_PROC && argc == 0 && sp_streq(name, "to_proc")) return TY_PROC;
-  /* Method/UnboundMethod reflection (#3247) */
-  if (recv >= 0 && rt == TY_METHOD && argc == 0) {
-    if (sp_streq(name, "original_name")) return TY_SYMBOL;
-    if (sp_streq(name, "parameters") || sp_streq(name, "source_location")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_METHOD;
-    if (sp_streq(name, "unbind")) return TY_METHOD;
-    if (sp_streq(name, "super_method")) return TY_METHOD;
-    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "box")) return TY_NIL;  /* namespace-less: never boxed */
+  if (recv >= 0 && rt == TY_PROC) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
-  if (recv >= 0 && rt == TY_METHOD && argc == 1 &&
-      (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "equal?")))
-    return TY_BOOL;
   /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
   if (recv >= 0 && sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL &&
       method_obj_target_mi(c, id) >= 0) return TY_METHOD;
-  if (recv >= 0 && rt == TY_METHOD && argc == 1 && sp_streq(name, "bind")) return TY_METHOD;
-  /* Method#owner is a class value; #receiver is the bound receiver (#2701) */
-  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "owner")) return TY_CLASS;
+  /* Method#receiver is the bound receiver (#2701) */
   if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "receiver")) {
     int mn = method_recv_node(c, recv);
     int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
     if (mrecv >= 0) return infer_type(c, mrecv);
-  }
-  /* <method>.name -> the method name as a Symbol; .arity -> int */
-  if (recv >= 0 && rt == TY_METHOD && argc == 0) {
-    if (sp_streq(name, "name")) return TY_SYMBOL;
-    if (sp_streq(name, "arity")) return TY_INT;
-    if (sp_streq(name, "to_proc")) return TY_PROC;
   }
   /* <poly>.call(args): a boxed Proc publishes its result through the boxed
      return slot, so the value is genuinely dynamic -- type it poly and let
@@ -3159,7 +3143,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Proc#=== answers the proc's return VALUE (#3818). Typing it from the
      proc's body pins it to one shape, and a proc that arrives through a slot
      has no body to read, so the answer is boxed. */
-  if (recv >= 0 && rt == TY_PROC && sp_streq(name, "===") && argc == 1) return TY_POLY;
   if (recv >= 0 && rt == TY_PROC &&
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
     /* In a proc form, a call on the block parameter is the yield: the block is
@@ -3175,20 +3158,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       infer_type(c, argv[0]) == TY_PROC)
     return TY_PROC;
 
-  /* Proc introspection */
-  /* parameters(lambda: <bool/nil>) forces the view; same shape as parameters() */
-  if (recv >= 0 && rt == TY_PROC && argc == 1 && sp_streq(name, "parameters"))
-    return TY_POLY_ARRAY;
-  if (recv >= 0 && rt == TY_PROC && argc == 0) {
-    if (sp_streq(name, "arity")) return TY_INT;
-    if (sp_streq(name, "lambda?")) return TY_BOOL;
-    if (sp_streq(name, "parameters")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "source_location")) return TY_POLY_ARRAY;  /* [file, line] */
-    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "frozen?")) return TY_BOOL;
-    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "itself")) return TY_PROC;
-  }
   /* Proc identity: equal?/eql?/== against another Proc -> bool */
   if (recv >= 0 && rt == TY_PROC && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
