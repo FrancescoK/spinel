@@ -2759,9 +2759,6 @@ TyKind store_value_kind(Compiler *c, int node) {
 /* The C value class of a kind, whether a store fits as it is: repr.c
    (repr_store_class, repr_store_fits) */
 #define store_class(c, t) repr_store_class((c), (t))
-static int store_nil_fits(Compiler *c, int node, TyKind slot, int how) {
-  return repr_store_nil_fits(c, node, slot, how);
-}
 int store_fits(Compiler *c, TyKind from, TyKind to) { return repr_store_fits(c, from, to); }
 
 /* Report the raw store of `node` (rendered as a `from` value) into a slot of
@@ -2848,30 +2845,35 @@ static void rcc_note(Compiler *c, int node, TyKind from, TyKind slot, int how, i
 
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b) {
-  if (store_fits(c, from, slot) || (from == TY_NIL && store_nil_fits(c, node, slot, how))) {
+  /* the form is repr_coerce_text_form's (repr.c) */
+  switch (repr_coerce_text_form(c, node, from, slot, how)) {
+  case CF_FIT:
     buf_puts(b, text);
     RCCT(CF_FIT);
     return;
-  }
-  if (slot == TY_POLY) { emit_boxed_text(c, from, text, b); RCCT(CF_BOX); return; }
-  /* A value with no C type of its own -- a call that answers nothing, a
-     raise -- is evaluated for its effect, and the slot takes its nil */
-  if (from == TY_VOID || from == TY_NIL) {
+  case CF_BOX:
+    emit_boxed_text(c, from, text, b); RCCT(CF_BOX); return;
+  case CF_NIL_SENT:
+    /* A value with no C type of its own -- a call that answers nothing, a
+       raise -- is evaluated for its effect, and the slot takes its nil */
     buf_printf(b, "((void)(%s), %s)", text, raise_tail_value_c(c, slot));
     RCCT(CF_NIL_SENT);
     return;
-  }
-  if (slot == TY_BIGINT && from == TY_INT) {
+  case CF_INT2BIG: {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? NULL : sp_bigint_new_int(_t%d); })",
                t, text, t, t);
     RCCT(CF_INT2BIG);
     return;
   }
-  const char *fn = NULL;
-  if (how == CO_CONVERT && slot == TY_FLOAT)
-    fn = from == TY_BIGINT ? "sp_bigint_to_double" : from == TY_RATIONAL ? "sp_rational_to_f" : NULL;
-  if (fn) { buf_printf(b, "%s(%s)", fn, text); RCCT(CF_CONVERT); return; }
+  case CF_CONVERT:
+    /* a Bignum or a Rational operand a Float slot converts, as Ruby does */
+    buf_printf(b, "%s(%s)", from == TY_BIGINT ? "sp_bigint_to_double" : "sp_rational_to_f", text);
+    RCCT(CF_CONVERT);
+    return;
+  default:
+    break;
+  }
   char msg[512];
   Buf tb; memset(&tb, 0, sizeof tb);
   emit_ctype(c, slot, &tb);
