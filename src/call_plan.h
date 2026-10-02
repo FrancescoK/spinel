@@ -108,8 +108,8 @@ typedef struct {
   PolyArm *arm;
 } PolyPlan;
 
-/* The user-class arms of a blockless, zero-argument call on a poly
-   receiver (the plan's first slice of emit_poly_method_dispatch). Pure;
+/* The user-class arms of a call on a poly receiver, with or without
+   arguments (the plan's first slice of emit_poly_method_dispatch). Pure;
    kept per node where the node is read as itself. */
 const PolyPlan *cplan_poly(Compiler *c, int id);
 

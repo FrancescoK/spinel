@@ -1579,6 +1579,36 @@ void emit_unbox_poly_ret(Compiler *c, TyKind slot, const char *expr, Buf *b);
 void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b);
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
                           int blk_tmp0, Buf *b);
+/* The keywords of a call on a poly receiver, as its arms read them. */
+typedef struct {
+  int kwh, kwn, kwall;
+  const int *kwels, *kwtmp;
+  const TyKind *kwty;
+  int kwall_any;   /* kwall is a PolyPolyHash: a `**` may carry a key that is no Symbol */
+} PolyKw;
+/* The call's arguments as a poly-dispatch arm reads them: each positional
+   evaluated once into a temp ahead of the switch (a splat's temp the array
+   it spreads, argv tells which), and the keywords split off (PolyKw). */
+typedef struct {
+  const int *argv;
+  int pos_argc;
+  const int *atmp;
+  const TyKind *atmp_ty;
+  const PolyKw *kw;
+  /* per positional, the temp holding the handle its String variable had
+     when the argument ran, or 0 (emit_poly_shared_arg) */
+  const int *htmp;
+} PolyArgs;
+void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L);
+int  poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat, char *exp, size_t n);
+int  poly_kw_splat_ok(Compiler *c, int el);
+int  poly_kw_any_key(Compiler *c, int kwh);
+int  obj_class_unrelated(Compiler *c, int a, int b);
+int  poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int *argv,
+                          const TyKind *atmp_ty, TyKind *mret);
+int  emit_poly_user_arm_n(Compiler *c, int k, const char *call, TyKind mret, Scope *ms, TyKind ret,
+                          int tr, int is_setter_val, Buf *b);
+void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, Buf *b);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b);

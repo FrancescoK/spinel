@@ -63,8 +63,8 @@ done
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 # poly dispatch arms: the switch codegen wrote against the resolver's arms
 psum=$(grep ': plan-check: poly-arms: ' "$OUT" | sed 's/.*poly-arms: //' |
-  awk '{ s += $1; x += $3; m += $5; e += $7 }
-       END { printf "%d switches, %d poly-conflicts, %d poly-missing, %d poly-extra", s, x, m, e }')
+  awk '{ s += $1; a += $3; x += $5; m += $7; e += $9 }
+       END { printf "%d switches, %d arms, %d poly-conflicts, %d poly-missing, %d poly-extra", s, a, x, m, e }')
 grep ': plan-check: poly-conflict:' "$OUT" | head -20
 echo "plan-check: poly arms: $psum"
 ppc=$(grep -c ': plan-check: poly-conflict:' "$OUT")

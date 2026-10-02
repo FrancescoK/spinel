@@ -13,7 +13,7 @@
 typedef struct { int id; int n, cap; PolyArm *arm; } PaFrame;
 static PaFrame *g_pa;
 static int g_pa_n, g_pa_cap;
-static long g_pa_compared, g_pa_conflict, g_pa_missing, g_pa_extra;
+static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
 
 int pa_begin(int id) {
   if (g_pa_n == g_pa_cap) {
@@ -55,6 +55,7 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
   const char *nm = nt_str(c->nt, f->id, "name");
   char pt[400], ct[400];
   g_pa_compared++;
+  g_pa_arms += f->n;
   /* both lists are in class order: walk them together by key */
   int i = 0, j = 0;
   while (i < p->n || j < f->n) {
@@ -83,8 +84,8 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
 }
 
 void pa_report(void) {
-  fprintf(stderr, "plan-check: poly-arms: %ld switches, %ld conflicts, %ld missing, %ld extra\n",
-          g_pa_compared, g_pa_conflict, g_pa_missing, g_pa_extra);
+  fprintf(stderr, "plan-check: poly-arms: %ld switches, %ld arms, %ld conflicts, %ld missing, %ld extra\n",
+          g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra);
 }
 
 /* The user-class arms of a blockless zero-argument poly dispatch
@@ -353,5 +354,49 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
       buf_puts(b, "; break;");
       if (g_plan_check) pa_observe(PA_READER, k, -1, ivt, pconv);
     }
+  }
+}
+
+/* One user-class arm of a poly dispatch with arguments: `case k:` calling
+   `call`, its value (mret, from the method or its proc form ms) into the
+   result temp _t<tr> as the call's type ret takes it. The conversion
+   applied (PolyConv). */
+int emit_poly_user_arm_n(Compiler *c, int k, const char *call, TyKind mret, Scope *ms, TyKind ret,
+                         int tr, int is_setter_val, Buf *b) {
+  int conv = PC_SAME;
+  buf_printf(b, " case %d: ", k);
+  if (is_setter_val || mret == TY_VOID || mret == TY_NIL || method_is_void(ms)) {
+    buf_puts(b, call);  /* no usable value */
+    conv = PC_VOID;
+  }
+  else {
+    buf_printf(b, "_t%d = ", tr);
+    if (ret == TY_POLY && mret != TY_POLY) { emit_boxed_text(c, mret, call, b); conv = PC_BOX; }
+    else if (ret != TY_POLY && mret == TY_POLY) {
+      emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, call, b);
+      conv = PC_UNBOX;
+    }
+    else buf_puts(b, call);
+  }
+  buf_puts(b, "; break;");
+  return conv;
+}
+
+/* The builtin array arms of a poly `x[i]`: the element at index expression
+   idxref, into the result temp. */
+void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, Buf *b) {
+  if (ret == TY_POLY) {
+    /* An Integer or Float array answers a nil element, and any index
+       past its end, with its sentinel: the _or_nil box reads that as
+       nil. The plain box made `x[9]` the sentinel as a number -- nil?
+       false, and NaN for a Float array. */
+    buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_box_int_or_nil(sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+    buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_box_str(sp_StrArray_get((sp_StrArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+    buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = sp_box_float_or_nil(sp_FloatArray_get((sp_FloatArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
+    buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
+    buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = sp_PtrArray_get_box((sp_PtrArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
+  }
+  else {
+    buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
   }
 }

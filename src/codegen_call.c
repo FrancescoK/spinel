@@ -844,7 +844,7 @@ int sn_guard_pending(Compiler *c, int id) {
    conversion: their structs share no prefix by construction. */
 static int g_subdispatch_id = -1;   /* the call currently re-entered as poly (#4023) */
 static int g_cls_value_recv = -1;   /* a Class-typed receiver boxed for the class-tag dispatch */
-static int obj_class_unrelated(Compiler *c, int a, int b) {
+int obj_class_unrelated(Compiler *c, int a, int b) {
   if (a < 0 || b < 0 || a == b) return 0;
   for (int k = c->classes[a].parent; k >= 0; k = c->classes[k].parent) if (k == b) return 0;
   for (int k = c->classes[b].parent; k >= 0; k = c->classes[k].parent) if (k == a) return 0;
@@ -1237,27 +1237,6 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
    `if (tag == SP_TAG_CLASS) { switch ... }`, then `else ` on a line of its
    own, and returns 1 when any arm
    was built; emits nothing and returns 0 otherwise. */
-typedef struct {
-  int kwh, kwn, kwall;
-  const int *kwels, *kwtmp;
-  const TyKind *kwty;
-  int kwall_any;   /* kwall is a PolyPolyHash: a `**` may carry a key that is no Symbol */
-} PolyKw;
-/* The call's arguments as a poly-dispatch arm reads them: each positional
-   evaluated once into a temp ahead of the switch (a splat's temp the array
-   it spreads, argv tells which), and the keywords split off (PolyKw). */
-typedef struct {
-  const int *argv;
-  int pos_argc;
-  const int *atmp;
-  const TyKind *atmp_ty;
-  const PolyKw *kw;
-  /* per positional, the temp holding the handle its String variable had
-     when the argument ran, or 0 (emit_poly_shared_arg) */
-  const int *htmp;
-} PolyArgs;
-
-static void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L);
 static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
                                const PolyArgs *A, const char *selfd, const char *lead,
                                Buf *pre, Buf *cb);
@@ -1267,8 +1246,6 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa);
 static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const PolyKw *kw,
                                     int pos_argc, int gathered, Buf *b);
-static int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat_a,
-                          char *exp, size_t n);
 static int hoist_block_proc(Compiler *c, int cblk) {
   int t = ++g_tmp;
   Buf pb; memset(&pb, 0, sizeof pb);
@@ -6757,8 +6734,8 @@ void emit_poly_arity_raise(Buf *b, const char *msg) {
    callee given a key did too. A splat (`splat` >= 0) leaves the count to the
    run time, which the arm's gather judges ahead of the keywords
    (emit_poly_arm_args). Synthesized parameters keep the old judgement. */
-static int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat,
-                          char *exp, size_t n) {
+int poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat,
+                   char *exp, size_t n) {
   int judged = !m->cs_synth, need = m->nrequired;
   for (int i = 0; i < m->nparams; i++) {
     const char *pn = m->pnames ? m->pnames[i] : NULL;
@@ -6809,7 +6786,7 @@ int poly_arm_refuses_none(Compiler *c, int mi, char *exp, size_t n) {
    as for an inlined call, any splat gathers. A hash the callee takes as
    keywords, or refuses, is no positional at all: the layout is the
    positionals', and the plan judges the hash (poly_arm_count). */
-static void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L) {
+void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L) {
   int kwh = A->kw ? A->kw->kwh : -1;
   KwPlan P;
   kw_plan(c, ms, kwh, &P);
@@ -7294,7 +7271,7 @@ static int poly_kw_brings_none(Compiler *c, int src) {
    arm, which the arm's check raises, where the whole hash degraded to a
    positional and every keyword-only arm raised `wrong number of arguments`.
    So does an operand that brings no keywords (poly_kw_brings_none). */
-static int poly_kw_splat_ok(Compiler *c, int el) {
+int poly_kw_splat_ok(Compiler *c, int el) {
   const NodeTable *nt = c->nt;
   int src = nt_ref(nt, el, "value");
   if (src < 0) return poly_anon_kwrest(c, el) != NULL;
@@ -7305,7 +7282,7 @@ static int poly_kw_splat_ok(Compiler *c, int el) {
 
 /* 1 when a `**` of the keyword hash may carry a key that is no Symbol, so
    the arms' keyword hash has to hold any key. */
-static int poly_kw_any_key(Compiler *c, int kwh) {
+int poly_kw_any_key(Compiler *c, int kwh) {
   const NodeTable *nt = c->nt;
   int en = 0; const int *els = nt_arr(nt, kwh, "elements", &en);
   for (int e = 0; e < en; e++) {
@@ -7414,14 +7391,40 @@ static void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, int ran, Buf
   }
 }
 
+/* Does native class k's binding of name take a poly arm's n argument
+   temps of types atmp_ty? Its index into native_methods, or -1, with the
+   value type it answers in *mret. */
+int poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int *argv,
+                         const TyKind *atmp_ty, TyKind *mret) {
+  /* by the argument types too: puts(Array) takes the [:any] binding, not
+     the [:string] one declared first */
+  int nmi = comp_native_method_find_typed(c, k, name, n, 0, atmp_ty);
+  if (nmi < 0 || !native_takes(&c->native_methods[nmi], n)) return -1;
+  NativeMethod *nmet = &c->native_methods[nmi];
+  for (int ai = 0; ai < nmet->nargs; ai++) {
+    const char *spec = nmet->args[ai];
+    if (!spec || sp_streq(spec, "any")) continue;
+    if (sp_streq(spec, "regexp")) {
+      if (re_lit_index(c, argv[ai]) < 0 && atmp_ty[ai] != TY_REGEX) return -1;
+      continue;
+    }
+    TyKind aw = ffi_spec_to_ty(spec);
+    if (sp_streq(spec, "text")) aw = TY_STRING;
+    if (aw == TY_UNKNOWN) return -1;
+    if (!(atmp_ty[ai] == TY_POLY || atmp_ty[ai] == aw || (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) ||
+          (aw == TY_FLOAT && atmp_ty[ai] == TY_INT)))
+      return -1;
+  }
+  *mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
+  return nmi;
+}
+
 static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv,
                                 const int *atmp, const TyKind *atmp_ty, int tv,
                                 Buf *cb, TyKind *mret) {
   memset(cb, 0, sizeof *cb);
-  /* by the argument types too: puts(Array) takes the [:any] binding, not
-     the [:string] one declared first */
-  int nmi = comp_native_method_find_typed(c, k, name, n, 0, atmp_ty);
-  if (nmi < 0 || !native_takes(&c->native_methods[nmi], n)) return 0;
+  int nmi = poly_native_arm_fits(c, k, name, n, argv, atmp_ty, mret);
+  if (nmi < 0) return 0;
   NativeMethod *nmet = &c->native_methods[nmi];
   buf_printf(cb, "%s((%s *)_t%d.v.p", nmet->csym, c->classes[k].c_struct, tv);
   int ok = 1;
@@ -7476,20 +7479,25 @@ static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, con
   return 1;
 }
 
-static void emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
-                                      int tr, int is_setter_val, Buf *b) {
+/* the conversion it applied (PolyConv) */
+static int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
+                                     int tr, int is_setter_val, Buf *b) {
+  int conv = PC_SAME;
   /* a writer in `x = v` is called for effect, as the user-class arms
      below call it: the value is v, and the setter form declares no
      result temp to assign */
-  if (mret == TY_NIL || is_setter_val) buf_puts(b, call ? call : "");
+  if (mret == TY_NIL || is_setter_val) { buf_puts(b, call ? call : ""); conv = PC_VOID; }
   else {
     buf_printf(b, "_t%d = ", tr);
-    if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, call, b);
-    else if (ret != TY_POLY && mret == TY_POLY)
+    if (ret == TY_POLY && mret != TY_POLY) { emit_boxed_text(c, mret, call, b); conv = PC_BOX; }
+    else if (ret != TY_POLY && mret == TY_POLY) {
       emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, call, b);
+      conv = PC_UNBOX;
+    }
     else buf_puts(b, call ? call : "");
   }
   buf_puts(b, ";");
+  return conv;
 }
 
 static void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char *close) {
@@ -9360,6 +9368,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       size_t sw_start = b->len;
       emit_poly_dispatch_key_pick(c, tv, cls0_cand2, prim_cand2, poly_exc_cand(c, name), name, b);
       buf_puts(b, ") {");
+      int pa_frame = g_plan_check ? pa_begin(id) : -1;
       for (int k = 0; k < c->nclasses; k++) {
         /* native (C-backed) class arm: a declared method of this arity takes
            the hoisted temps in its native representation, as the zero-arg
@@ -9387,9 +9396,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
             TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
             buf_printf(b, " case %d: ", k);
-            emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+            int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
             buf_puts(b, " break;");
             free(cb.p);
+            if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
             continue;
           }
           if (!kw_pos || has_splat_arg || !c->classes[k].instantiated) continue;
@@ -9397,9 +9407,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (kwall < 0) {
             if (!poly_native_arm_call(c, k, name, argc, argv, atmp, atmp_ty, tv, &cb, &mret)) continue;
             buf_printf(b, " case %d: ", k);
-            emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+            int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
             buf_puts(b, " break;");
             free(cb.p);
+            if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
             continue;
           }
           Buf arm; memset(&arm, 0, sizeof arm);
@@ -9418,6 +9429,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_puts(&arm, " } break;");
           if (fit) buf_puts(b, arm.p);
           free(arm.p);
+          if (g_plan_check && fit) pa_observe(PA_NATIVE, k, -1, TY_UNKNOWN, PC_SAME);
           continue;
         }
         int defcls = -1;
@@ -9445,6 +9457,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
         if (arm_fit < 0) {
           buf_printf(b, " case %d: ", k); emit_poly_arity_raise(b, arm_exp); buf_puts(b, " break;");
+          if (g_plan_check) pa_observe(PA_ARITY, k, mi, TY_UNKNOWN, PC_VOID);
           continue;
         }
         /* Skip a method with no standalone definition (DCE-pruned, or inlined
@@ -9649,38 +9662,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           free(cb.p); cb = wb;
         }
         free(pdpre.p);
-        buf_printf(b, " case %d: ", k);
         /* a proc form carries its own inferred return type (#3399) */
         int pf8 = pfi8 >= 0;
         TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
-        if (is_setter_val || mret8 == TY_VOID || mret8 == TY_NIL ||
-            method_is_void(&c->scopes[pf8 ? pfi8 : mi])) buf_puts(b, cb.p);  /* no usable value */
-        else {
-          buf_printf(b, "_t%d = ", tr);
-          if (ret == TY_POLY && mret8 != TY_POLY) emit_boxed_text(c, mret8, cb.p, b);
-          else if (ret != TY_POLY && mret8 == TY_POLY)
-            emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, cb.p, b);
-          else buf_puts(b, cb.p);
-        }
-        buf_puts(b, "; break;");
+        int pconv = emit_poly_user_arm_n(c, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
+                                         is_setter_val, b);
         free(cb.p);
+        if (g_plan_check) pa_observe(pf8 ? PA_PROC_FORM : PA_USER, k, mi, mret8, pconv);
       }
-      if (is_index) {
-        if (ret == TY_POLY) {
-          /* An Integer or Float array answers a nil element, and any index
-             past its end, with its sentinel: the _or_nil box reads that as
-             nil. The plain box made `x[9]` the sentinel as a number -- nil?
-             false, and NaN for a Float array. */
-          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_box_int_or_nil(sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
-          buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_box_str(sp_StrArray_get((sp_StrArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
-          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = sp_box_float_or_nil(sp_FloatArray_get((sp_FloatArray *)_t%d.v.p, %s)); break;", tr, tv, idxref);
-          buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
-          buf_printf(b, " case SP_BUILTIN_PTR_ARRAY: _t%d = sp_PtrArray_get_box((sp_PtrArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
-        }
-        else {
-          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
-        }
-      }
+      if (g_plan_check) pa_end(c, pa_frame, cplan_poly(c, id));
+      if (is_index) emit_poly_index_cases(ret, tr, tv, idxref, b);
       /* IO#write on a poly value when a user class owns the name: a Socket or
          File from Socket.pair/File.open has no user-class arm in the switch,
          but the dispatch was still opened (some other class does define
