@@ -7200,14 +7200,24 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   const NodeTable *nt = c->nt;
   if (recv < 0 || !name) return 0;
   if (nt_ref(nt, id, "block") >= 0 && argc == 0) return 0;
-  if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
   if (argc > 0 && (!atmp || !atmp_ty)) return 0;
-  /* a splat is one temp holding the whole list, which no builtin emitter
-     reads as its arguments */
-  for (int a = 0; a < argc; a++)
-    if (nt_kind(nt, argv[a]) == NK_SplatNode ||
-        (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a]))
-      return 0;
+  /* A splat's temp is the whole list, already lowered to a PolyArray. The
+     builtin emitter reads the splat's expression, so that expression reads
+     the temp, typed as the PolyArray it is while the arm is emitted: the
+     list is not built twice, and the arm reads only the dispatch's temps,
+     which is what lets it move into the out-of-line function with them.
+     Without it a Hash beside a user `slice` had no arm for `slice(*keys)`
+     (#7051). */
+  int nsplat = 0;
+  for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      if (atmp_ty[a] != TY_POLY_ARRAY || nt_ref(nt, argv[a], "expression") < 0) return 0;
+      nsplat++;
+      continue;
+    }
+    if (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a]) return 0;
+  }
+  if (nsplat > 8 || g_pd_skip == id || g_n_argov + argc + nsplat + 1 > MAX_ARG_OVERRIDE) return 0;
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
                 ? c->poly_builtin_ty[id] : TY_UNKNOWN;
   /* `to_s` / `inspect` answer a String on every builtin receiver, with or
@@ -7224,7 +7234,19 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   int slot = g_n_argov++;
   g_argov_node[slot] = recv;
   snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tv);
+  int sx_ty_n = 0, sx_node[8]; TyKind sx_ty[8];
   for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) {
+      int sx = nt_ref(nt, argv[a], "expression");
+      int as = g_n_argov++;
+      g_argov_node[as] = sx;
+      snprintf(g_argov_text[as], sizeof g_argov_text[0], "_t%d", atmp[a]);
+      if (sx < c->node_cap && sx_ty_n < 8) {
+        sx_node[sx_ty_n] = sx; sx_ty[sx_ty_n++] = c->ntype[sx];
+        c->ntype[sx] = TY_POLY_ARRAY;
+      }
+      continue;
+    }
     if (!subtree_has_side_effect(c, argv[a])) continue;
     int as = g_n_argov++;
     g_argov_node[as] = argv[a];
@@ -7255,6 +7277,7 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
   g_unsup_probe = sv_probe; g_pre = sv_gpre;
   c->ntype[id] = sv_ty;
+  while (sx_ty_n > 0) { sx_ty_n--; c->ntype[sx_node[sx_ty_n]] = sx_ty[sx_ty_n]; }
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
   g_n_argov = slot;
   Buf ib; memset(&ib, 0, sizeof ib);
