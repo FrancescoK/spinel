@@ -24,8 +24,11 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
           caller rendered, x->rtext); a later $r repeats the same text
      $R   the receiver emitted again, for an arm that emitted it twice
      $T   the temp the family took before its arms (emit_builtin_op_tmp)
-     $t $u $v $w  temp numbers. The ones a row names are all taken (++g_tmp,
-          in that order) before anything is emitted, as the arms took them
+     $t $u $v $w $x $y $z  temp numbers. The ones a row names are all taken
+          (++g_tmp, in that order) before anything is emitted, as the arms
+          took them
+     $H   a Hash receiver's variant name, for sp_<H>Hash_* (ty_hash_cname)
+     $K   a Hash receiver's boxed class id (hash_box_cls)
      $eN  argument N by emit_expr
      $bN  argument N boxed (emit_boxed)
      $fN  argument N as a double (emit_float_expr)
@@ -34,9 +37,9 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
      $cN  argument N as an sp_Complex (emit_complex_coerce)
      $qN  argument N as an sp_Rational (emit_rat_coerce) */
 static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
-  static const char tnames[] = "tuvw";
-  int tn[4] = { 0, 0, 0, 0 };
-  for (int k = 0; k < 4; k++) {
+  static const char tnames[] = "tuvwxyz";
+  int tn[7] = { 0, 0, 0, 0, 0, 0, 0 };
+  for (int k = 0; k < 7; k++) {
     char pat[3] = { '$', tnames[k], 0 };
     if (strstr(x->op->arg, pat)) tn[k] = ++g_tmp;
   }
@@ -53,6 +56,14 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
         r = strndup(b->p ? b->p + mark : "", b->len - mark);
       }
       else buf_puts(b, r);
+      p++;
+    }
+    else if (p[0] == '$' && p[1] == 'H') {
+      buf_puts(b, ty_hash_cname(x->rt));
+      p++;
+    }
+    else if (p[0] == '$' && p[1] == 'K') {
+      buf_puts(b, hash_box_cls(x->rt));
       p++;
     }
     else if (p[0] == '$' && p[1] == 'T') {
@@ -157,11 +168,18 @@ static TyKind bop_arg_ntype(const void *ud, int i) {
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
                               const char *rtext, int t0, Buf *b) {
-  if (recv < 0 || !bop_covers(rt)) return 0;
+  if (recv < 0) return 0;
+  /* a Hash or Array receiver of any variant reads its family's rows */
+  TyKind lk = rt;
+  if (!bop_covers(rt)) {
+    if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
+    else if (ty_is_array(rt)) lk = BOP_ANY_ARRAY;
+    if (lk == rt || !bop_covers(lk)) return 0;
+  }
   int argc;
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs a = { c, argv };
-  const BuiltinOp *op = bop_find_arg(rt, name, argc, nt_ref(c->nt, id, "block") >= 0,
+  const BuiltinOp *op = bop_find_arg(lk, name, argc, nt_ref(c->nt, id, "block") >= 0,
                                      bop_arg_ntype, &a);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext, t0 };
