@@ -25238,6 +25238,29 @@ int nullable_int_value(Compiler *c, int v) {
    does not recognise answers "no". */
 static int aon_value(Compiler *c, int v, int depth);
 
+/* What a node on a local's write list means to the scans below: 1 for a
+   write that assigns its `value` (`x = v`, `x ||= v`, `x &&= v`), -1 for one
+   that assigns what an operator answered (`x += v`), which nothing here
+   reads, 0 for a write in a branch that was pruned, which assigns nothing. */
+static int aon_write_kind(const NodeTable *nt, int id) {
+  switch (nt_kind(nt, id)) {
+    case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode:
+    case NK_LocalVariableAndWriteNode: return 1;
+    case NK_LocalVariableOperatorWriteNode: return -1;
+    default: return 0;
+  }
+}
+
+/* A multiple assignment, a `for`, a rescue or a pattern binds a local
+   through a target, to a value the write list does not hold. */
+static int aon_local_is_target(Compiler *c, Scope *sc, const char *name) {
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableTargetNode, t) {
+    const char *tn = nt_str(c->nt, t, "name");
+    if (tn && sp_streq(tn, name) && comp_scope_of(c, t) == sc) return 1;
+  }
+  return 0;
+}
+
 /* Is every ELEMENT of the container-valued expression `v` an array or nil? */
 static int aon_container(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
@@ -25289,9 +25312,11 @@ static int aon_container(Compiler *c, int v, int depth) {
     int saw = 0;
     for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
       int id = lw_shared_node(r);
-      if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, id, "name");
       if (!wn || !sp_streq(wn, nm) || comp_scope_of(c, id) != sc) continue;
+      int wk = aon_write_kind(nt, id);
+      if (wk < 0) return 0;
+      if (!wk) continue;
       int wv = nt_ref(nt, id, "value");
       /* an empty literal carries no element evidence of its own; the stores
          below are what fill it */
@@ -25302,7 +25327,7 @@ static int aon_container(Compiler *c, int v, int depth) {
       if (!aon_container(c, wv, depth + 1)) return 0;
       saw = 1;
     }
-    if (!saw) return 0;
+    if (!saw || aon_local_is_target(c, sc, nm)) return 0;
     /* every store into it must put an array or nil there */
     NT_FOREACH_KIND(nt, NK_CallNode, w) {
       const char *wn2 = nt_str(nt, w, "name");
@@ -25422,13 +25447,15 @@ static void mark_array_or_nil_slots(Compiler *c) {
         int saw = 0, ok = 1;
         for (int r = lw_shared_first(c, lv->name, s); r >= 0 && ok; r = lw_shared_next(r)) {
           int id = lw_shared_node(r);
-          if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
           const char *wn = nt_str(nt, id, "name");
           if (!wn || !sp_streq(wn, lv->name) || comp_scope_of(c, id) != sc) continue;
+          int wk = aon_write_kind(nt, id);
+          if (wk < 0) { ok = 0; break; }
+          if (!wk) continue;
           saw = 1;
           if (!aon_value(c, nt_ref(nt, id, "value"), 0)) ok = 0;
         }
-        if (saw && ok) { lv->arr_or_nil = 1; changed = 1; }
+        if (saw && ok && !aon_local_is_target(c, sc, lv->name)) { lv->arr_or_nil = 1; changed = 1; }
       }
     }
     if (!changed) break;
