@@ -1109,6 +1109,12 @@ cli-opts-test: $(SPINEL)
 
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
+	for t in test/reject/string_hash_value_variable.rb test/reject/string_hash_pair_variable.rb test/reject/string_hash_values_variable.rb test/reject/string_hash_literal_captured.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
+	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/singleton_on_untraceable_recv.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
