@@ -29976,21 +29976,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Method#box: Spinel has no namespaces, so no method is ever boxed --
      nil, as CRuby answers for an unboxed method. Evaluate the receiver
      for effect (it may construct the Method). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
-      sp_streq(name, "box")) {
-    buf_puts(b, "((void)(");
-    emit_expr(c, recv, b);
-    buf_puts(b, "), sp_box_nil())");
-    return;
-  }
-  /* Method/UnboundMethod#inspect / #to_s: the stamped rendering (#3249). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
-      (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
-    buf_puts(b, "sp_method_desc_cstr(");
-    emit_expr(c, recv, b);
-    buf_puts(b, ")");
-    return;
-  }
+  /* Method's receiver-only arms (box, inspect/to_s, name, eql?/equal?,
+     dup/clone): builtin-op rows (builtin_ops.c) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
+      emit_builtin_op(c, id, recv, TY_METHOD, name, b)) return;
   /* Method#unbind: the same target with no self, re-rendered as an
      UnboundMethod (#3249). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
@@ -30471,29 +30460,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_method_to_proc(_t%d); })", tp, tp); }
     return;
   }
-  /* <method>.name -> the stored method name, interned to a Symbol (CRuby
-     Method#name returns a Symbol, not a String). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "name")) {
-    buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
-    return;
-  }
-  /* Method#eql? / #equal?: identity semantics, same as == (#3247). eql? does
-     not route through the ==/!= dispatcher, so it gets its own arm. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 1 &&
-      (sp_streq(name, "eql?") || sp_streq(name, "equal?"))) {
-    if (comp_ntype(c, argv[0]) == TY_METHOD) {
-      int ta5 = ++g_tmp, tb5 = ++g_tmp;
-      buf_printf(b, "({ sp_BoundMethod *_t%d = ", ta5); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_BoundMethod *_t%d = ", tb5); emit_expr(c, argv[0], b);
-      buf_printf(b, "; (sp_bool)(_t%d->self == _t%d->self && _t%d->fn == _t%d->fn); })",
-                 ta5, tb5, ta5, tb5);
-    }
-    else {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
-      emit_boxed(c, argv[0], b); buf_puts(b, "), (sp_bool)0)");
-    }
-    return;
-  }
   /* Method#original_name: the target scope's own name -- an alias-created
      method resolves through comp_method_in_chain, so the scope carries the
      original (#3247). Falls back to #name for an unresolved target. */
@@ -30510,13 +30476,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     else {
       buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
     }
-    return;
-  }
-  /* Method#dup / #clone: a bound method is immutable; the copy is the same
-     value (identity semantics for #arity etc.) (#3247). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
-      (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
-    emit_expr(c, recv, b);
     return;
   }
   /* Method#source_location: [file, line] of the target's def, from the same
@@ -31565,12 +31524,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                 " (sp_Proc *)NULL; })");
     return;
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "arity")) {
-    buf_puts(b, "sp_proc_arity("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "lambda?")) {
-    buf_puts(b, "sp_proc_lambda_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-  }
+  /* Proc's receiver-and-argument arms (arity, lambda?, inspect/to_s, the
+     identity and state predicates, freeze/dup/clone/itself): builtin-op
+     rows (builtin_ops.c) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
+      emit_builtin_op(c, id, recv, TY_PROC, name, b)) return;
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && sp_streq(name, "parameters")) {
     /* parameters() follows the receiver's own nature (mode -1); an explicit
        `lambda:` keyword forces the view: true -> lambda (kinds as stored),
@@ -31635,46 +31593,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     return;
     }
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
-      (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
-    buf_puts(b, "sp_proc_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-  }
-  /* Proc identity/state predicates: equal? compares by pointer; ==/eql?
-     compare the dup/clone lineage root, so a dup equals its original but two
-     distinct blocks differ (#3163). frozen? is false, freeze/dup/clone/itself
-     evaluate to the proc itself. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
-      sp_streq(name, "equal?") && comp_ntype(c, argv[0]) == TY_PROC) {
-    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
-      (sp_streq(name, "eql?") || sp_streq(name, "==")) &&
-      comp_ntype(c, argv[0]) == TY_PROC) {
-    buf_puts(b, "(sp_proc_root("); emit_expr(c, recv, b); buf_puts(b, ") == sp_proc_root(");
-    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "frozen?")) {
-    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "freeze")) {
-    int t = ++g_tmp;
-    buf_printf(b, "({ sp_Proc *_t%d = ", t); emit_expr(c, recv, b);
-    buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
-      (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
-    /* a distinct shallow copy, not the receiver (d.equal?(pr) is false);
-       clone keeps the frozen flag, dup drops it (#3048) */
-    buf_puts(b, "sp_proc_dup(");
-    emit_expr(c, recv, b);
-    buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
-    return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "itself")) {
-    emit_expr(c, recv, b); return;
-  }
-
   /* the concurrency handles: builtin-op rows (builtin_ops.c). nil? and
      itself sat above the Proc arms, which no handle reaches. */
   if (recv >= 0) {
@@ -40542,38 +40460,11 @@ else {
   /* Regexp VALUE receiver (a variable, or a literal in value position):
      rendering reads the pattern's retained source text at runtime. */
   /* Regexp#== / #eql? compare by pattern source (dup == original) (#2361) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
-      (sp_streq(name, "==") || sp_streq(name, "!=")) &&
-      comp_ntype(c, argv[0]) == TY_REGEX) {
-    buf_puts(b, sp_streq(name, "!=") ? "(!sp_re_eq((void *)(" : "(sp_re_eq((void *)(");
-    emit_expr(c, recv, b);
-    buf_puts(b, "), (void *)(");
-    emit_expr(c, argv[0], b);
-    buf_puts(b, ")))");
-    return;
-  }
-  /* Regexp#hash is the pattern source's, so an equal pattern built either way
-     serves as one Hash key (#3681) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0 && sp_streq(name, "hash")) {
-    /* the flags are part of the pattern's identity: /ab/ and /ab/i are not
-       eql?, so their hashes must differ (#3816) */
-    buf_puts(b, "(sp_int)sp_re_hash((void *)(");
-    emit_expr(c, recv, b); buf_puts(b, "))");
-    return;
-  }
-  /* #eql? is value equality too, like #== (only #equal? is identity) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
-      sp_streq(name, "eql?") && comp_ntype(c, argv[0]) == TY_REGEX) {
-    buf_puts(b, "sp_re_eq((void *)("); emit_expr(c, recv, b);
-    buf_puts(b, "), (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
-    return;
-  }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
-      comp_ntype(c, argv[0]) == TY_REGEX) {
-    buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
-    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
-  }
+  /* Regexp#==/!=/eql?/equal? against a Regexp (by pattern source; equal?
+     by identity), #hash (the source's, #3681/#3816) and the receiver-only
+     readers below: builtin-op rows (builtin_ops.c) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX &&
+      emit_builtin_op(c, id, recv, TY_REGEX, name, b)) return;
   /* A Regexp is never equal to an operand of any other type: answer false
      rather than rejecting the program (#3632). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
@@ -40604,15 +40495,6 @@ else {
         (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")))) &&
       emit_native_object_protocol(c, id, b)) return;
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
-    /* a Regexp is frozen; freeze/itself/dup evaluate to the pattern itself. */
-    if (sp_streq(name, "frozen?")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
-    if (sp_streq(name, "freeze") || sp_streq(name, "itself") || sp_streq(name, "dup") || sp_streq(name, "clone")) {
-      emit_expr(c, recv, b); return;
-    }
-    if (sp_streq(name, "source")) {
-      buf_puts(b, "sp_re_source_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
     if (sp_streq(name, "inspect")) {
       emit_null_guarded_call(c, recv, TY_REGEX, "sp_re_inspect_str", "SPL(\"nil\")", b);
       return;
@@ -40620,63 +40502,6 @@ else {
     if (sp_streq(name, "to_s")) {
       emit_null_guarded_call(c, recv, TY_REGEX, "sp_re_to_s_str", "sp_str_empty", b);
       return;
-    }
-    if (sp_streq(name, "names")) {
-      buf_puts(b, "sp_Regexp_names((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "options")) {
-      buf_puts(b, "sp_re_options((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "casefold?")) {
-      buf_puts(b, "sp_re_casefold_p((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    /* spinel does not enforce a match timeout; a Regexp's per-instance timeout
-       is unset (nil), matching the default a pattern is compiled with. */
-    if (sp_streq(name, "timeout")) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
-      return;
-    }
-    if (sp_streq(name, "named_captures")) {
-      /* {name => [group indices]}, built inline: sp_StrPolyHash is per-TU
-         static, so the hash must be constructed by the generated TU itself */
-      int tp = ++g_tmp, th = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ const void *_t%d = (const void *)(", tp); emit_expr(c, recv, b);
-      buf_printf(b, "); sp_StrPolyHash *_t%d = sp_StrPolyHash_new(); SP_GC_ROOT(_t%d);"
-                    " int _n%d = re_num_named((const mrb_regexp_pattern *)_t%d);"
-                    " for (int _t%d = 0; _t%d < _n%d; _t%d++) {"
-                    " int _g%d = 0; const char *_nm%d = re_named_name((const mrb_regexp_pattern *)_t%d, _t%d, &_g%d);"
-                    " if (_nm%d) {"
-                    " sp_RbVal _cur%d = sp_StrPolyHash_get(_t%d, _nm%d); sp_IntArray *_ia%d;"
-                    " if (_cur%d.tag == SP_TAG_NIL) { _ia%d = sp_IntArray_new();"
-                    " sp_StrPolyHash_set(_t%d, sp_str_dup(_nm%d), sp_box_int_array(_ia%d)); }"
-                    "\nelse _ia%d = (sp_IntArray *)_cur%d.v.p;"
-                    " sp_IntArray_push(_ia%d, _g%d); } } _t%d; })",
-                 th, th,
-                 ti, tp,
-                 ti, ti, ti, ti,
-                 ti, ti, tp, ti, ti,
-                 ti,
-                 ti, th, ti, ti,
-                 ti, ti,
-                 th, ti, ti,
-                 ti, ti,
-                 ti, ti, th);
-      return;
-    }
-  }
-  /* encoding/fixed_encoding? on a non-literal regexp value: the source is not
-     visible at compile time, so default to US-ASCII (the answer for any 7-bit
-     pattern, which is the supported domain). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
-    if (sp_streq(name, "encoding")) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b);
-      buf_puts(b, "), sp_box_encoding(sp_encoding_us_ascii()))"); return;
-    }
-    if (sp_streq(name, "fixed_encoding?")) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return;
     }
   }
   /* str.gsub(/re/) with no block/replacement -> an Enumerator over the
@@ -43935,66 +43760,11 @@ else {
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
-    /* #to_s answers a chilled String, one per symbol: not frozen, but +@
-       copies it (sp_sym_to_s_chilled) */
-    if (sp_streq(name, "to_s") || sp_streq(name, "id2name")) {
-      buf_puts(b, "sp_sym_to_s_chilled("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    /* #name answers the frozen name string */
-    if (sp_streq(name, "name")) {
-      buf_puts(b, "sp_str_uminus_val(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "inspect")) {
-      buf_puts(b, "sp_sym_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    if (sp_streq(name, "to_sym") || sp_streq(name, "intern") || sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
-    /* case-folding methods return a (re-interned) symbol */
-    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
-        sp_streq(name, "capitalize") || sp_streq(name, "swapcase")) {
-      buf_printf(b, "sp_sym_intern(sp_str_%s(sp_sym_to_s(", name); emit_expr(c, recv, b); buf_puts(b, ")))");
-      return;
-    }
-    if (sp_streq(name, "length") || sp_streq(name, "size")) {
-      /* character count, not bytes (multibyte symbol names) */
-      buf_puts(b, "sp_str_length(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return;
-    }
-    if (sp_streq(name, "empty?")) {
-      buf_puts(b, "(strlen(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")) == 0)");
-      return;
-    }
-    if (sp_streq(name, "==") || sp_streq(name, "!=")) {
-      buf_puts(b, name[0] == '=' ? "(" : "(!(");
-      emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b);
-      buf_puts(b, name[0] == '=' ? ")" : "))");
-      return;
-    }
-    /* case-insensitive compare over the symbols' names; a non-symbol
-       argument answers nil (evaluate both operands for side effects) */
-    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
-        comp_ntype(c, argv[0]) != TY_SYMBOL) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b);
-      buf_puts(b, "), (void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-      return;
-    }
-    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
-        comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      int q = sp_streq(name, "casecmp?");
-      if (q) buf_puts(b, "(");
-      buf_puts(b, "sp_str_casecmp(sp_sym_to_s("); emit_expr(c, recv, b);
-      buf_puts(b, "), sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))");
-      if (q) buf_puts(b, " == 0)");
-      return;
-    }
+    /* the arms that read only the receiver and the arguments: builtin-op
+       rows (builtin_ops.c) */
+    if (emit_builtin_op(c, id, recv, TY_SYMBOL, name, b)) return;
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
-    if (sp_streq(name, "succ") || sp_streq(name, "next")) {
-      buf_puts(b, "sp_sym_intern(sp_str_succ(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
-      return;
-    }
     if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
         nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
       /* :s[a..b] / :s[a...b] over the name; a beginless/endless bound is 0 /
@@ -44018,17 +43788,6 @@ else {
         (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
       buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      return;
-    }
-    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2) {
-      buf_puts(b, "sp_str_sub_range(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
-      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-      return;
-    }
-    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 1 &&
-        (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_POLY)) {
-      buf_printf(b, "sp_str_%s(sp_sym_to_s(", sp_streq(name, "start_with?") ? "start_with" : "end_with");
-      emit_expr(c, recv, b); buf_puts(b, "), "); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "match?") && argc == 1) {
