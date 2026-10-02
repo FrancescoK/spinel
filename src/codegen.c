@@ -10757,6 +10757,26 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
   return 1;
 }
 
+/* emit_super's target from the super's plan (call_plan.c) when the plan was
+   looked up in `owner` (the shadow's class, or the parent's chain), or -1.
+   The form's own lookup runs when this gives -1, and under --plan-check,
+   where super_plan_check holds the two against each other (`what` names the
+   form). */
+static int super_plan_mi(Compiler *c, int id, int owner) {
+  const CallPlan *spl = cplan_user(c, id);
+  return spl->via == UC_SUPER && spl->mi >= 0 && owner >= 0 && spl->owner_ci == owner ? spl->mi : -1;
+}
+
+static void super_plan_check(int id, const char *what, const char *name, int served, int mi, int dcls,
+                             int omi, int odef) {
+  if (!served) {
+    if (omi >= 0) fprintf(stderr, "plan-check: cplan-fallback: super node %d %s (%s)\n", id, name, what);
+  }
+  else if (omi != mi || odef != dcls)
+    fprintf(stderr, "plan-check: cplan-conflict: super node %d %s (%s): plan %d/%d, lookup %d/%d\n",
+            id, name, what, mi, dcls, omi, odef);
+}
+
 void emit_super(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
@@ -10771,11 +10791,23 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s",
                c->classes[s->class_id].c_name, mc(shadow),
                c->classes[s->class_id].c_name, g_self);
-    int smi = -1;
-    for (int k = c->nscopes - 1; k >= 1; k--) {
-      Scope *sc = &c->scopes[k];
-      if (sc->class_id == s->class_id && sc->name && sp_streq(sc->name, shadow))
-        { smi = k; break; }
+    /* the shadow's method in this class: the plan's, or the latest scope of
+       the shadow's name here */
+    int smi = super_plan_mi(c, id, s->class_id);
+    if (smi >= 0 && !(c->scopes[smi].class_id == s->class_id && c->scopes[smi].name &&
+                      sp_streq(c->scopes[smi].name, shadow)))
+      smi = -1;
+    int served = smi >= 0;
+    if (g_plan_check && served) cplan_served("super");
+    if (g_plan_check || !served) {
+      int omi = -1;
+      for (int k = c->nscopes - 1; k >= 1; k--) {
+        Scope *sc = &c->scopes[k];
+        if (sc->class_id == s->class_id && sc->name && sp_streq(sc->name, shadow))
+          { omi = k; break; }
+      }
+      if (g_plan_check) super_plan_check(id, "shadow", shadow, served, smi, 0, omi, 0);
+      if (!served) smi = omi;
     }
     if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
     if (ty && sp_streq(ty, "ForwardingSuperNode") && smi >= 0) {
@@ -10806,12 +10838,23 @@ void emit_super(Compiler *c, int id, Buf *b) {
     /* a later extend's copy: super reaches the earlier module's copy, kept in
        this class under its shadow name */
     const char *cshadow = comp_super_shadow(c, s);
-    if (cshadow) {
-      cmi = comp_cmethod_in_class(c, s->class_id, cshadow);
-      cdef = s->class_id;
-      uname = cshadow;
+    /* the plan's class method when it was looked up where this form looks */
+    cmi = super_plan_mi(c, id, cshadow ? s->class_id : p);
+    if (cmi >= 0 && !c->scopes[cmi].is_cmethod) cmi = -1;
+    int served = cmi >= 0;
+    if (served) cdef = cshadow ? s->class_id : c->scopes[cmi].class_id;
+    if (g_plan_check && served) cplan_served("super");
+    if (g_plan_check || !served) {
+      int odef = -1, omi;
+      if (cshadow) {
+        omi = comp_cmethod_in_class(c, s->class_id, cshadow);
+        odef = s->class_id;
+      }
+      else omi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &odef) : -1;
+      if (g_plan_check) super_plan_check(id, "class method", uname, served, cmi, cdef, omi, odef);
+      if (!served) { cmi = omi; cdef = odef; }
     }
-    else cmi = p >= 0 ? comp_cmethod_in_chain(c, p, uname, &cdef) : -1;
+    if (cshadow) uname = cshadow;
     if (cmi < 0) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
@@ -10840,7 +10883,18 @@ void emit_super(Compiler *c, int id, Buf *b) {
     return;
   }
   int defcls = -1;
-  int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
+  /* the plan's method when it was looked up in the parent's chain */
+  int mi = super_plan_mi(c, id, p);
+  if (mi >= 0 && c->scopes[mi].is_cmethod) mi = -1;
+  int served = mi >= 0;
+  if (served) defcls = c->scopes[mi].class_id;
+  if (g_plan_check && served) cplan_served("super");
+  if (g_plan_check || !served) {
+    int odef = -1;
+    int omi = p >= 0 ? comp_method_in_chain(c, p, uname, &odef) : -1;
+    if (g_plan_check) super_plan_check(id, "instance", uname ? uname : "?", served, mi, defcls, omi, odef);
+    if (!served) { mi = omi; defcls = odef; }
+  }
   if (g_plan_check && mi >= 0) ucall_observe(c, id, mi, defcls, 0);
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
