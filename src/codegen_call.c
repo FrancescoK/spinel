@@ -31688,6 +31688,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
+    /* the readers that render the receiver and the arguments: builtin-op rows */
+    if (emit_builtin_op(c, id, recv, TY_ENUMERATOR, name, b)) return;
     /* find_index(v) walks it only as far as the hit, so an endless one
        answers too */
     if (sp_streq(name, "find_index") && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -31699,19 +31701,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (comp_ntype(c, id) == TY_INT) buf_printf(b, "); _t%d; })", t);
       else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
       return;
-    }
-    if (sp_streq(name, "next") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "peek") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    /* #next_values / #peek_values return the yielded value(s) as an array (#2482). */
-    if (sp_streq(name, "next_values") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_next_values("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "peek_values") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_peek_values("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
     /* Enumerator#+ chains two enumerators (#2481): the concatenation of their
        element sequences, materialized. */
@@ -31726,23 +31715,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ")))); })"); }
       return;
     }
-    if (sp_streq(name, "rewind") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "feed") && argc == 1) {
-      buf_puts(b, "sp_Enumerator_feed("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
-    }
-    if (sp_streq(name, "size") && argc == 0) {
-      buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-      buf_puts(b, "sp_enum_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) {
-      buf_puts(b, "sp_Enumerator_take("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
-    }
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
       /* the hop a block of map and its kin reads (desugar_enum_block_yield_view) */
       const char *view = nt_str(nt, id, "enum_yield_view");
@@ -31751,21 +31723,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, ", %d)", sp_streq(view, "args")); return;
       }
       buf_puts(b, "sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
-    }
-    if (argc == 1 && (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
-        comp_ntype(c, argv[0]) == TY_ENUMERATOR) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-      emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
-    }
-    if (argc == 0 && sp_streq(name, "frozen?")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return; }
-    if (argc == 0 && sp_streq(name, "freeze")) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_Enumerator *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
-    }
-    if (argc == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
-    if (argc == 0 && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
-      buf_puts(b, "sp_Enumerator_dup("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
   }
 
