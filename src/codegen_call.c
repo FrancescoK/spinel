@@ -28328,6 +28328,27 @@ static int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const c
   return 1;
 }
 
+/* An Array or Hash reopen's own method of a builtin's name, called on a
+   receiver of that kind, through the boxed self those reopens take (the
+   dispatch at the end of emit_call_body, which only a name no builtin arm
+   claims ever reached): `class Array; def first = 9; end` then `[1, 2].first`
+   answered 1. Only a method the reopen defines itself under this very name,
+   as the analyzer types it; a yielding one has no function of its own and
+   goes through its proc form. Answers whether it emitted the call. */
+static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt, const char *nm, Buf *b) {
+  if (!ty_is_array(rt) && !ty_is_obj_array(rt) && !ty_is_hash(rt)) return 0;
+  const char *acn = ty_is_hash(rt) ? "Hash" : "Array";
+  int aci = comp_class_index(c, acn);
+  int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, nm, &adc) : -1;
+  if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, nm)) return 0;
+  if (c->scopes[ami].yields && emit_reopen_block_call(c, id, recv, ami, NULL, b)) return 1;
+  buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
+  emit_boxed(c, recv, b);
+  emit_args_filled(c, ami, nt_ref(c->nt, id, "arguments"), ", ", b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -28428,23 +28449,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           return;
         }
       }
-      /* Array and Hash the same, through the boxed self their reopens take
-         (the dispatch at the end of this function, which only a name no
-         builtin arm claims ever reached): `class Array; def first = 9; end`
-         then `[1, 2].first` answered 1. Only a method the reopen defines
-         itself, as the analyzer types it. */
-      if (ty_is_array(rtR) || ty_is_obj_array(rtR) || ty_is_hash(rtR)) {
-        const char *acn = ty_is_hash(rtR) ? "Hash" : "Array";
-        int aci = comp_class_index(c, acn);
-        int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, nmR, &adc) : -1;
-        if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, nmR)) {
-          buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
-          emit_boxed(c, recvR, b);
-          emit_args_filled(c, ami, nt_ref(ntR, id, "arguments"), ", ", b);
-          buf_puts(b, ")");
-          return;
-        }
-      }
+      /* Array and Hash the same (emit_array_hash_reopen_call) */
+      if (emit_array_hash_reopen_call(c, id, recvR, rtR, nmR, b)) return;
     }
   }
 
