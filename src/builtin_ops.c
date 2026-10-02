@@ -1790,8 +1790,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "each_slice",            1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },  /* a materialized Enumerator */
   { BOP_ANY_ARRAY, "each_cons",             1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
   { BOP_ANY_ARRAY, "cycle",                 1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_ARRAY_CYCLE_N },
-  { BOP_ANY_ARRAY, "slice_before",          1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { BOP_ANY_ARRAY, "slice_after",           1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "slice_before",          1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_ARRAY_SLICE_GROUPS, 0, 0, 0, 0, 3 },  /* stage 3: emit_blockless_enumerator */
+  { BOP_ANY_ARRAY, "slice_after",           1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_ARRAY_SLICE_GROUPS, 0, 0, 0, 0, 3 },
   { BOP_ANY_ARRAY, "each_with_object",      1, 127, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },  /* #2540 */
   { BOP_ANY_ARRAY, "chunk",                 0, 127, BF_REQUIRED, TY_ENUMERATOR, BOPE_NONE },  /* [key, run] pairs */
   { BOP_ANY_ARRAY, "select",                0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
@@ -1976,6 +1976,19 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "index",                 1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
   { BOP_ANY_ARRAY, "find_index",            1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
   { BOP_ANY_ARRAY, "rindex",                1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
+
+  /* Array, any kind: emit_call_body's Array arms that run long before
+     emit_array_call, each a row of its own stage looked up where its arm sat
+     (codegen_call_array.c). cycle with no count answers no kind: the rule
+     after the lookup reads whether the call is a chain's receiver. The
+     guarded rows are not read by inference, which answers *(String) and the
+     predicates with a Class from its own rules. */
+  { BOP_ANY_ARRAY, "cycle",                 0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_CYCLE_ENDLESS, 0, 0, 0, 0, 3 },  /* stage 3: emit_blockless_enumerator */
+  { BOP_ANY_ARRAY, "*",                     1,   1, BF_ANY,      TY_STRING,     BOPE_ARRAY_JOIN_STR, 0, BOP_K(TY_STRING), 0, 0, 4 },  /* stage 4: a join */
+  { BOP_ANY_ARRAY, "any?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },  /* stage 5: Class === element */
+  { BOP_ANY_ARRAY, "all?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
+  { BOP_ANY_ARRAY, "none?",                 1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
+  { BOP_ANY_ARRAY, "one?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

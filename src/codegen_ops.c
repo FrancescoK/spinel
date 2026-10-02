@@ -252,6 +252,10 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_SUM1] = emit_op_array_sum1,
   [BOPE_ARRAY_CONCAT] = emit_op_array_concat,
   [BOPE_ARRAY_INDEX_V] = emit_op_array_index_v,
+  [BOPE_ARRAY_CYCLE_ENDLESS] = emit_op_array_cycle_endless,
+  [BOPE_ARRAY_SLICE_GROUPS] = emit_op_array_slice_groups,
+  [BOPE_ARRAY_JOIN_STR] = emit_op_array_join_str,
+  [BOPE_ARRAY_PRED_CLASS] = emit_op_array_pred_class,
 };
 
 /* an argument's kind, for a row's argument guard */

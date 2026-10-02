@@ -99,6 +99,10 @@ typedef enum {
   BOPE_ARRAY_SUM1,        /* Array#sum(seed) without a block (poly) */
   BOPE_ARRAY_CONCAT,      /* Array#concat(*arrays) (poly) */
   BOPE_ARRAY_INDEX_V,     /* Array#index / find_index / rindex of a value (poly) */
+  BOPE_ARRAY_CYCLE_ENDLESS, /* Array#cycle with no count or block (stage 3) */
+  BOPE_ARRAY_SLICE_GROUPS, /* Array#slice_before / slice_after without a block (stage 3) */
+  BOPE_ARRAY_JOIN_STR,    /* Array#* with a String (stage 4) */
+  BOPE_ARRAY_PRED_CLASS,  /* Array#any? / all? / none? / one? with a Class (stage 5) */
   BOPE__COUNT
 } BopEmit;
 

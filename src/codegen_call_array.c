@@ -1361,3 +1361,80 @@ int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b) {
   }
   return 0;
 }
+
+/* The Array arms of emit_call_body's chain that run long before
+   emit_array_call, each a row of its own stage looked up where its arm sat:
+   stage 3 in emit_blockless_enumerator, stage 4 (Array#* with a String) and
+   stage 5 (any?/all?/none?/one? with a Class) in emit_call_body. */
+
+/* arr.cycle with no count and no block: an Enumerator over the elements
+   (stage 3) */
+int emit_op_array_cycle_endless(Compiler *c, const BopCtx *x, Buf *b) {
+  int tcy = ++g_tmp;
+  buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_cycle_endless(", tcy);
+  emit_boxed(c, x->recv, b);
+  buf_printf(b, "); _t%d->meth = SPL(\"cycle\"); _t%d; })", tcy, tcy);
+  return 1;
+}
+
+/* arr.slice_before(pat) / slice_after(pat) with no block -> a materialized
+   Enumerator over the groups (stage 3). CRuby's pattern form matches with
+   `pattern === element`: the boxed pattern dispatches through
+   sp_poly_case_eq (Range cover / Class is_a / Regexp match / value
+   equality, #2847). A Proc pattern would need a stored-proc call per element
+   and stays a loud reject. */
+int emit_op_array_slice_groups(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  TyKind spat = comp_ntype(c, argv[0]);
+  if (spat == TY_PROC)
+    unsupported(c, x->id, "slice_before/slice_after with a Proc pattern; use the block form");
+  buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
+  emit_boxed(c, x->recv, b); buf_puts(b, ", ");
+  emit_boxed(c, argv[0], b);
+  buf_printf(b, ", %d))", sp_streq(x->name, "slice_after") ? 1 : 0);
+  return 1;
+}
+
+/* Array#* (join): arr * sep_str -> the elements joined by the separator
+   (stage 4); the receiver is held across the separator */
+int emit_op_array_join_str(Compiler *c, const BopCtx *x, Buf *b) {
+  TyKind rt = x->rt;
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) k = "Str";
+  Buf rb; char tyj[32]; snprintf(tyj, sizeof tyj, "sp_%sArray *", k);
+  int ch = hold_recv_open(c, x->recv, 0, tyj, "SP_GC_ROOT", b, &rb);
+  buf_printf(b, "sp_%sArray_join(%s, ", k, rb.p); free(rb.p);
+  emit_expr(c, argv[0], b); buf_puts(b, ")");
+  if (ch) buf_puts(b, "; })");
+  return 1;
+}
+
+/* any?/all?/none?/one?(Class) over an array: Class === element membership
+   (the value-argument arms compare ==), stage 5. Walks the boxed elements so
+   every array kind is covered. The receiver is rooted for the walk: a
+   method's return or a chain is held by nothing else, and a collection
+   during the loop handed its slot on, so the elements it read were another
+   object's. */
+int emit_op_array_pred_class(Compiler *c, const BopCtx *x, Buf *b) {
+  const char *name = x->name;
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int ta = ++g_tmp, tc2 = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, x->recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Class _t%d = ", ta, tc2); emit_expr(c, argv[0], b);
+  buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
+  emit_poly_iter_obj_reject(c, ta, name, b);
+  buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
+  buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
+                " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                " if (sp_poly_is_a(sp_poly_each_elem(_t%d, _t%d), _t%d)) _t%d++; ",
+             tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tc2, tcnt);
+  if (sp_streq(name, "any?"))       buf_printf(b, "_t%d > 0; })", tcnt);
+  else if (sp_streq(name, "all?"))  buf_printf(b, "_t%d == _t%d; })", tcnt, tn);
+  else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tcnt);
+  else                              buf_printf(b, "_t%d == 1; })", tcnt);
+  return 1;
+}

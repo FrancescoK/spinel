@@ -21048,17 +21048,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     if (csl) buf_puts(b, "; })");
     return 1;
   }
-  /* arr.cycle with no count and no block: an Enumerator over the elements. A
-     bounded consumer (first(n) / take(n)) is served by its own arm before this
-     one, which is what the repetition is actually read through (#3758). */
-  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      ty_is_array(comp_ntype(c, recv)) && sp_streq(name, "cycle")) {
-    int tcy = ++g_tmp;
-    buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_cycle_endless(", tcy);
-    emit_boxed(c, recv, b);
-    buf_printf(b, "); _t%d->meth = SPL(\"cycle\"); _t%d; })", tcy, tcy);
-    return 1;
-  }
+  /* arr.cycle with no count and no block, and arr.slice_before(pat) /
+     slice_after(pat) with no block: stage-3 builtin-op rows (builtin_ops.c).
+     A bounded consumer of the cycle (first(n) / take(n)) is served by its own
+     arm before this one (#3758). */
+  if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) &&
+      emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 3, b)) return 1;
   /* arr.cycle(n) with no block -> a materialized Enumerator of the elements
      repeated n times (the unbounded blockless form stays a loud reject). */
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -21070,24 +21065,6 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     emit_int_expr(c, argv[0], b); buf_puts(b, ")");
     free(rcn.p);
     if (ccn) buf_puts(b, "; })");
-    return 1;
-  }
-  /* arr.slice_before(pat) / slice_after(pat) with no block -> a materialized
-     Enumerator over the groups. */
-  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      ty_is_array(comp_ntype(c, recv)) &&
-      (sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) {
-    /* CRuby's pattern form matches with `pattern === element`: the boxed
-       pattern dispatches through sp_poly_case_eq (Range cover / Class is_a /
-       Regexp match / value equality, #2847). A Proc pattern would need a
-       stored-proc call per element and stays a loud reject. */
-    TyKind spat = comp_ntype(c, argv[0]);
-    if (spat == TY_PROC)
-      unsupported(c, id, "slice_before/slice_after with a Proc pattern; use the block form");
-    buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
-    emit_boxed(c, recv, b); buf_puts(b, ", ");
-    emit_boxed(c, argv[0], b);
-    buf_printf(b, ", %d))", sp_streq(name, "slice_after") ? 1 : 0);
     return 1;
   }
   /* hash.each / hash.each_pair with no block -> an external Enumerator over the
@@ -41870,18 +41847,9 @@ else {
     }
   }
 
-  /* Array#* (join): arr * sep_str  ->  elements joined by separator string. */
-  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
-      comp_ntype(c, argv[0]) == TY_STRING) {
-    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
-    if (!k) k = "Str";
-    Buf rb; char tyj[32]; snprintf(tyj, sizeof tyj, "sp_%sArray *", k);
-    int ch = hold_recv_open(c, recv, 0, tyj, "SP_GC_ROOT", b, &rb);
-    buf_printf(b, "sp_%sArray_join(%s, ", k, rb.p); free(rb.p);
-    emit_expr(c, argv[0], b); buf_puts(b, ")");
-    if (ch) buf_puts(b, "; })");
-    return;
-  }
+  /* Array#* (join): arr * sep_str -> elements joined by the separator: a
+     stage-4 builtin-op row (builtin_ops.c) */
+  if (recv >= 0 && ty_is_array(rt) && emit_builtin_op_stage(c, id, recv, rt, name, 4, b)) return;
 
   if (emit_or_take_back(c, id, b, emit_array_arith_call)) return;
 
@@ -42071,31 +42039,9 @@ else {
     return;
   }
 
-  /* any?/all?/none?/one?(Class) over an array: Class === element membership
-     (the value-argument arms compare ==). Walks the boxed elements so every
-     array kind is covered. The receiver is rooted for the walk: a method's
-     return or a chain is held by nothing else, and a collection during the
-     loop handed its slot on, so the elements it read were another object's. */
-  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      ty_is_array(rt) && comp_ntype(c, argv[0]) == TY_CLASS &&
-      (sp_streq(name, "any?") || sp_streq(name, "all?") ||
-       sp_streq(name, "none?") || sp_streq(name, "one?"))) {
-    int ta = ++g_tmp, tc2 = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Class _t%d = ", ta, tc2); emit_expr(c, argv[0], b);
-    buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
-    emit_poly_iter_obj_reject(c, ta, name, b);
-    buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
-    buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
-                  " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                  " if (sp_poly_is_a(sp_poly_each_elem(_t%d, _t%d), _t%d)) _t%d++; ",
-               tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tc2, tcnt);
-    if (sp_streq(name, "any?"))       buf_printf(b, "_t%d > 0; })", tcnt);
-    else if (sp_streq(name, "all?"))  buf_printf(b, "_t%d == _t%d; })", tcnt, tn);
-    else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tcnt);
-    else                              buf_printf(b, "_t%d == 1; })", tcnt);
-    return;
-  }
+  /* any?/all?/none?/one?(Class) over an array: Class === element membership,
+     a stage-5 builtin-op row (builtin_ops.c) */
+  if (recv >= 0 && ty_is_array(rt) && emit_builtin_op_stage(c, id, recv, rt, name, 5, b)) return;
 
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
     /* Re-infer when stale cache has TY_POLY (e.g. block params temporarily pinned to element type). */
