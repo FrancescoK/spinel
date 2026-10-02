@@ -1393,12 +1393,11 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     emit_expr(c, v, b);
   }
   else if (comp_ntype(c, v) == TY_STRBUF) {
-    unsigned char sv = c->strbuf_box[v];
-    c->strbuf_box[v] = 0;
+    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
     buf_puts(b, "sp_String_new_shared(");
     emit_str_expr(c, v, b);
     buf_puts(b, ")");
-    c->strbuf_box[v] = sv;
+    view_pop(c, sv);
   }
   else if (comp_ntype(c, v) == TY_POLY || strbuf_boxed_elem_read(c, v)) {
     /* a container element read hands out the element's BOXED handle: take the
@@ -13309,9 +13308,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       Scope *rsN = rnN ? comp_scope_of(c, recv) : NULL;
       LocalVar *rlN = rsN ? scope_local(rsN, rnN) : NULL;
       if (rlN && rlN->type == TY_POLY) {
-        TyKind svNN = c->nilnarrow[recv];
         int vr = view_push(c, recv, TY_POLY);
-        c->nilnarrow[recv] = TY_UNKNOWN;
+        int vn = view_push_repr(c, recv, VR_NILNARROW, TY_UNKNOWN);
         /* the call's value is the poly arm's too (a String-typed call made
            an arm hold its boxed answer in a String temp) */
         int vi = view_push(c, id, TY_POLY);
@@ -13320,8 +13318,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         emit_call(c, id, b);
         buf_puts(b, ");\n");
         view_pop(c, vi);
+        view_pop(c, vn);
         view_pop(c, vr);
-        c->nilnarrow[recv] = svNN;
         return 1;
       }
     }
