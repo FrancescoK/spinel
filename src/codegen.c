@@ -30,10 +30,10 @@ const char *ty_nullable_builtin_id(TyKind t) {
    constructor assigns, a `return nil` method, a miss. A method nil answers
    differently (class, to_s, == nil) has to test for it. */
 int ty_null_is_nil(TyKind t) {
-  return t == TY_STRING || ty_is_array(t) || ty_is_ptr_array(t) || ty_is_hash(t) ||
-         t == TY_BIGINT || t == TY_REGEX || t == TY_MATCHDATA || t == TY_PROC ||
-         t == TY_CURRY || t == TY_METHOD || t == TY_FIBER || t == TY_IO ||
-         t == TY_EXCEPTION;
+  /* a builtin kind's ty_traits row says (types.c); an object array is a
+     pointer array, NULL for nil */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->null_is_nil : ty_is_obj_array(t);
 }
 
 int node_may_be_null_nil(Compiler *c, int node) {
