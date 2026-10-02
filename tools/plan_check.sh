@@ -38,6 +38,10 @@ uo=$(grep -c ': plan-check: ucall-unobserved:' "$OUT")
 ue=$(grep -c ': plan-check: ucall-unemitted:' "$OUT")
 uf=$(grep -c ': plan-check: ucall-refused:' "$OUT")
 ud=$(grep -c ': plan-check: ucall-dynamic:' "$OUT")
+# codegen sites that read the plan: a plan naming another method than the
+# site's own lookup is a conflict; a plan that cannot serve the site falls back
+pc=$(grep -c ': plan-check: cplan-conflict:' "$OUT")
+pf=$(grep -c ': plan-check: cplan-fallback:' "$OUT")
 # the resolver's per-program counts, summed
 rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: //' |
   awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) s[i] += $i }
@@ -46,8 +50,10 @@ rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: /
 [ "${1-}" = "-v" ] && cat "$OUT"
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
+grep ': plan-check: cplan-conflict:' "$OUT" | head -20
 rm -f "$OUT"
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
+echo "plan-check: plan readers: $pc conflicts, $pf fallbacks"
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
-[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ]

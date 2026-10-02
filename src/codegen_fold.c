@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "call_plan.h"
 
 /* Defined lower in this file; declared here so the collecting emitters above
    its definition (the hash block-walk binder, flat_map) can route a block's
@@ -96,7 +97,24 @@ static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
-  int mi = comp_method_index(c, name);
+  /* the target is the call's plan (call_plan.c): a top-level def, reached
+     bare or through a retargeted send. A plan of another kind does not
+     serve this site, which then takes the top-level def by name as it
+     always did; --plan-check reports both that fallback and any plan that
+     names another method than the by-name lookup. */
+  const CallPlan *pl = cplan_user(c, id);
+  int mi;
+  if (pl->mi >= 0 && (pl->via == UC_TOP || pl->via == UC_SEND_BLIND)) {
+    mi = pl->mi;
+    if (g_plan_check && mi != comp_method_index(c, name))
+      fprintf(stderr, "plan-check: cplan-conflict: emit_method_call node %d %s: plan %d, by name %d\n",
+              id, name ? name : "?", mi, comp_method_index(c, name));
+  }
+  else {
+    mi = comp_method_index(c, name);
+    if (g_plan_check)
+      fprintf(stderr, "plan-check: cplan-fallback: emit_method_call node %d %s\n", id, name ? name : "?");
+  }
   Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
   /* a top-level alias reaches the target's one function: hand it the spelled
      name for __callee__ (#3729) */
