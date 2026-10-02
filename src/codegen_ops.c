@@ -11,6 +11,7 @@
    more than once; every $r prints the same text, as the arms the rows
    replace did. */
 static char *op_recv_text(Compiler *c, const BopCtx *x) {
+  if (x->rtext) return strdup(x->rtext);
   Buf r; memset(&r, 0, sizeof r);
   emit_expr(c, x->recv, &r);
   if (!r.p) return strdup("");
@@ -54,12 +55,17 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_PSTATUS_EQ] = emit_op_pstatus_eq,
 };
 
-int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
+                         const char *rtext, Buf *b) {
   if (recv < 0 || !bop_covers(rt)) return 0;
   int argc;
   call_args(c->nt, id, &argc);
   const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(c->nt, id, "block") >= 0);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
-  BopCtx x = { id, recv, argc, rt, name, op };
+  BopCtx x = { id, recv, argc, rt, name, op, rtext };
   return bop_emitters[op->emit](c, &x, b);
+}
+
+int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+  return emit_builtin_op_text(c, id, recv, rt, name, NULL, b);
 }

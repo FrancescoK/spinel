@@ -4554,8 +4554,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          that later holds the boxed answer */
       if (at == TY_UNKNOWN) return TY_UNKNOWN;
     }
+    /* the plain readers: builtin-op rows (builtin_ops.c). Every one is a
+       known Time method, so no reopen of Object answers for it below. */
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
-        sp_streq(name, "getgm") ||
         sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
         sp_streq(name, "-")) return TY_TIME;
     if (sp_streq(name, "clamp") && argc == 2) return TY_TIME;  /* self or a bound */
@@ -4567,22 +4572,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
     if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
         argc == 0 && sp_feature_enabled("time")) return TY_STRING;
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
-        sp_streq(name, "zone") || sp_streq(name, "asctime") ||
-        sp_streq(name, "ctime")) return TY_STRING;
+    if (sp_streq(name, "strftime")) return TY_STRING;
     if (sp_streq(name, "to_f")) return TY_FLOAT;
     /* Integer 0 for a whole second, else a Rational -- boxed at the arm */
     if (sp_streq(name, "subsec")) return TY_POLY;
-    if (sp_streq(name, "utc?") || sp_streq(name, "gmt?") || sp_streq(name, "dst?") ||
-        sp_streq(name, "isdst") ||
-        sp_streq(name, "sunday?") || sp_streq(name, "monday?") ||
-        sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
        the result is poly (#2677). */
     if (sp_streq(name, "<=>") && argc == 1)
       return infer_type(c, argv[0]) == TY_TIME ? TY_INT : TY_POLY;
-    if (sp_streq(name, "class")) return TY_STRING;
     /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
        catch-all below swallows them */
     { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') return TY_BOOL; }

@@ -12205,15 +12205,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       if (mutate) buf_puts(b, ")");
     }
     else if (sp_streq(name, "localtime") || sp_streq(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
-    else if (sp_streq(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
-    else if (sp_streq(name, "mon") || sp_streq(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);
-    else if (sp_streq(name, "day") || sp_streq(name, "mday"))  buf_printf(b, "sp_time_mday(%s)", r);
-    else if (sp_streq(name, "hour")) buf_printf(b, "sp_time_hour(%s)", r);
-    else if (sp_streq(name, "min"))  buf_printf(b, "sp_time_min(%s)", r);
-    else if (sp_streq(name, "sec"))  buf_printf(b, "sp_time_sec(%s)", r);
-    else if (sp_streq(name, "wday")) buf_printf(b, "sp_time_wday(%s)", r);
-    else if (sp_streq(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
-    else if (sp_streq(name, "to_i") || sp_streq(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
+    /* the plain readers: builtin-op rows (builtin_ops.c) */
+    else if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
     else if (sp_streq(name, "to_f")) {
       /* hoist the receiver into a temp: emitting `r` twice would evaluate a
          side-effecting receiver (`c.utc`, which mutates the local) twice --
@@ -12228,23 +12221,13 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
                     ": sp_box_rational(sp_rational_new((sp_int)_t%d.tv_nsec, 1000000000)); })",
                  tt, r, tt, tt);
     }
-    else if (sp_streq(name, "tv_usec") || sp_streq(name, "usec")) buf_printf(b, "((sp_int)(%s).tv_nsec / 1000)", r);
-    else if (sp_streq(name, "tv_nsec") || sp_streq(name, "nsec")) buf_printf(b, "((sp_int)(%s).tv_nsec)", r);
-    else if (sp_streq(name, "utc?") || sp_streq(name, "gmt?")) buf_printf(b, "((%s).is_utc == 1)", r);
-    else if (sp_streq(name, "dst?") || sp_streq(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
-    else if (sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") || sp_streq(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
-    else if (sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
-    else if (sp_streq(name, "to_s")) buf_printf(b, "sp_time_to_s_v(%s)", r);
     else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) {
       if (argc == 1) { buf_printf(b, "sp_time_iso8601_frac(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else buf_printf(b, "sp_time_iso8601(%s)", r);
     }
-    else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "httpdate") && sp_feature_enabled("time")) buf_printf(b, "sp_time_httpdate(%s)", r);
     else if ((sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) && sp_feature_enabled("time"))
       buf_printf(b, "sp_time_rfc2822(%s)", r);
-    else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Time\")})");
-    else if (sp_streq(name, "getgm")) buf_printf(b, "sp_time_utc(%s)", r);  /* alias for getutc */
     else if (sp_streq(name, "xmlschema")) {
       if (argc == 1) { buf_printf(b, "sp_time_iso8601_frac(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else buf_printf(b, "sp_time_iso8601(%s)", r);
@@ -12261,16 +12244,6 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "0");
       buf_printf(b, ", %d)", mode);
     }
-    else if (sp_streq(name, "sunday?"))    buf_printf(b, "(sp_time_wday(%s) == 0)", r);
-    else if (sp_streq(name, "monday?"))    buf_printf(b, "(sp_time_wday(%s) == 1)", r);
-    else if (sp_streq(name, "tuesday?"))   buf_printf(b, "(sp_time_wday(%s) == 2)", r);
-    else if (sp_streq(name, "wednesday?")) buf_printf(b, "(sp_time_wday(%s) == 3)", r);
-    else if (sp_streq(name, "thursday?"))  buf_printf(b, "(sp_time_wday(%s) == 4)", r);
-    else if (sp_streq(name, "friday?"))    buf_printf(b, "(sp_time_wday(%s) == 5)", r);
-    else if (sp_streq(name, "saturday?"))  buf_printf(b, "(sp_time_wday(%s) == 6)", r);
-    /* asctime/ctime: the fixed C-style stamp, always in the receiver's own broken-down form */
-    else if (sp_streq(name, "asctime") || sp_streq(name, "ctime"))
-      buf_printf(b, "sp_time_strftime(%s, \"%%a %%b %%e %%H:%%M:%%S %%Y\")", r);
     else if (sp_streq(name, "eql?") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_TIME) {
         int tt = ++g_tmp, tu = ++g_tmp;
