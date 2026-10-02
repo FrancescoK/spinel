@@ -1600,6 +1600,22 @@ typedef struct {
   const int *htmp;
 } PolyArgs;
 void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L);
+/* can user arm ks take the argument temps' types (call_plan.c)? */
+int  cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc, const TyKind *atmp_ty,
+                        int kwall_any);
+/* a poly dispatch with arguments, as its user-class arms read it */
+typedef struct {
+  int argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk;
+  int is_setter_val, blk_tmp2, tv, tr;
+  TyKind ret;
+  const int *argv, *atmp, *htmp;
+  const TyKind *atmp_ty;
+  const PolyKw *kw;
+} PolyUserArgs;
+void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUserArgs *U, Buf *b);
+void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L, const PolyArgs *A, const char *selfd, const char *lead, Buf *pre, Buf *cb);
+int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv, const int *atmp, const TyKind *atmp_ty, int tv, Buf *cb, TyKind *mret);
+int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret, int tr, int is_setter_val, Buf *b);
 int  poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat, char *exp, size_t n);
 int  poly_kw_splat_ok(Compiler *c, int el);
 int  poly_kw_any_key(Compiler *c, int kwh);

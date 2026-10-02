@@ -198,6 +198,7 @@ typedef struct {
   TyKind ret;           /* the call's type the arms answer into */
   TyKind ntype;         /* the node's type it was resolved for */
   unsigned flags;       /* PPF_* */
+  int full;             /* every arm, not only the class arms (cplan_poly_arms) */
   int n;
   PolyArm *arm;
 } PolyPlan;
@@ -207,6 +208,10 @@ typedef struct {
    held and keyed (the plan's slice of emit_poly_method_dispatch so far).
    Pure; kept per node where the node is read as itself. */
 const PolyPlan *cplan_poly(Compiler *c, int id);
+/* The same plan, as far as emission reads it: the class arms (and the
+   receiver form). Cheaper: the builtin families and trials, which only the
+   --plan-check shadow compares, are left out. */
+const PolyPlan *cplan_poly_arms(Compiler *c, int id);
 /* The arms of the statement-level block dispatch (#2448) of the same call:
    each candidate class's method spliced with the block, and its default.
    Computed afresh: the same node may take this dispatch or the method

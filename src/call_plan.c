@@ -440,10 +440,29 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
   a->vty = (unsigned char)vty; a->conv = (unsigned char)conv; a->def = -1;
 }
 
+/* The classes a dispatch of name can take an arm for, ascending: the ones
+   whose chain has the method or a reader, and the native ones (the
+   memoized candidates); every class while an exception reopening can lend
+   its method to a class outside them. Into ks (sized nclasses). */
+static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
+  int n = 0;
+  if (any_exc_reopen(c)) {
+    for (int k = 0; k < c->nclasses; k++) ks[n++] = k;
+    return n;
+  }
+  int npc = 0;
+  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  for (int i = 0; i < npc; i++) ks[n++] = pcs[i].cls;
+  return n;
+}
+
 /* The arms emit_poly_user_arms0 writes, class by class, in its order. */
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
   int cap = 0;
-  for (int k = 0; k < c->nclasses; k++) {
+  int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  int nks = cpoly_arm_classes(c, name, ks);
+  for (int ki = 0; ki < nks; ki++) {
+    int k = ks[ki];
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
     if (c->classes[k].is_native_class) {
       int nmi = comp_native_method_find(c, k, name, 0, 0);
@@ -503,6 +522,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
       p->arm[p->n - 1].def = (short)rdcls;
     }
   }
+  free(ks);
 }
 
 static int cpoly_native_conv(TyKind mret, TyKind ret, int is_setter_val) {
@@ -512,7 +532,7 @@ static int cpoly_native_conv(TyKind mret, TyKind ret, int is_setter_val) {
 
 /* Can user arm `ks` take the call's argument types (arm_key_incompat in
    emit_poly_method_dispatch)? */
-static int cpoly_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
+int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
                               const TyKind *atmp_ty, int kwall_any) {
   for (int a = 0; a < ks->nparams; a++) {
     if (L->from[a] != ARG_NODE || L->arg[a] >= pos_argc) continue;
@@ -665,7 +685,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
 static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, const int *argv,
-                              TyKind ret, PolyPlan *p) {
+                              TyKind ret, PolyPlan *p, int full) {
   const NodeTable *nt = c->nt;
   int cap = 0;
   int has_splat_arg = 0;
@@ -709,8 +729,11 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
   PolyKw kw = { kwh, 0, kw_ds ? 0 : -1, NULL, NULL, NULL, kwall_any };
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
-  cpoly_prearms_n(c, id, name, argc, argv, ret, atmp_ty, kwall_any, is_setter_val, p, &cap);
-  for (int k = 0; k < c->nclasses; k++) {
+  if (full) cpoly_prearms_n(c, id, name, argc, argv, ret, atmp_ty, kwall_any, is_setter_val, p, &cap);
+  int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  int nks = cpoly_arm_classes(c, name, ks);
+  for (int ki = 0; ki < nks; ki++) {
+    int k = ks[ki];
     if (c->classes[k].is_native_class) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {
         const NativeMethod *rm = NULL;
@@ -756,15 +779,17 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
     Scope *ks = &c->scopes[pfi >= 0 ? pfi : mi];
     ArgLayout L;
     poly_arm_layout(c, ks, &pargs, &L);
-    int fits = cpoly_arm_args_fit(c, ks, &L, pos_argc, atmp_ty, kwall_any);
+    int fits = cplan_arm_args_fit(c, ks, &L, pos_argc, atmp_ty, kwall_any);
     arg_layout_free(&L);
     if (!fits) continue;
     TyKind mret = ks->ret;
     int conv = is_setter_val || mret == TY_VOID || mret == TY_NIL || method_is_void(ks) ? PC_VOID
              : cpoly_conv(ret, mret);
     cpoly_add(p, &cap, pfi >= 0 ? PA_PROC_FORM : PA_USER, k, mi, mret, conv);
+    p->arm[p->n - 1].def = (short)defcls;
   }
   free(atmp_ty);
+  free(ks);
 }
 
 /* The `default:` arm emit_poly_obj_default0 writes for a zero-argument
@@ -970,9 +995,9 @@ static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, Pol
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
 }
 
-static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
+static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
   free(p->arm);
-  p->arm = NULL; p->n = 0; p->flags = 0;
+  p->arm = NULL; p->n = 0; p->flags = 0; p->full = full;
   p->ntype = p->ret = comp_ntype(c, id);
   const char *name = nt_str(c->nt, id, "name");
   int recv = nt_ref(c->nt, id, "receiver");
@@ -982,8 +1007,9 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
   if (!name || recv < 0) return;
   if (argc == 0) {
     PolySpecials0 ps;
-    cpoly_flags0(c, id, name, p, &ps);
+    if (full) cpoly_flags0(c, id, name, p, &ps);
     cpoly_user_arms0(c, id, name, p->ret, p);
+    if (!full) return;
     int cap = p->n;
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
     cpoly_prearms0_blk(c, id, name, &ps, p->ret, p, &cap);
@@ -1002,20 +1028,25 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
     if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_trial(p, &cap, PT_ARRAY_FALLBACK);
     if (!done) cpoly_trial(p, &cap, PT_DEFAULT0);
   }
-  else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);
+  else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p, full);
 }
 
 static PolyPlan *g_pp_memo;
 static char **g_pp_name;
 static int g_pp_cap;
 
-const PolyPlan *cplan_poly(Compiler *c, int id) {
+static const PolyPlan *cplan_poly_level(Compiler *c, int id, int full);
+
+const PolyPlan *cplan_poly(Compiler *c, int id) { return cplan_poly_level(c, id, 1); }
+const PolyPlan *cplan_poly_arms(Compiler *c, int id) { return cplan_poly_level(c, id, 0); }
+
+static const PolyPlan *cplan_poly_level(Compiler *c, int id, int full) {
   static PolyPlan fresh;
   if (id < 0 || id >= c->node_cap) { free(fresh.arm); fresh.arm = NULL; fresh.n = 0; return &fresh; }
   const char *nm = nt_str(c->nt, id, "name");
   int plain = cplan_plain_ctx();
   if (plain && id < g_pp_cap && g_pp_name[id] && nm && sp_streq(g_pp_name[id], nm) &&
-      g_pp_memo[id].ntype == comp_ntype(c, id))
+      g_pp_memo[id].ntype == comp_ntype(c, id) && (g_pp_memo[id].full || !full))
     return &g_pp_memo[id];
 #ifndef NDEBUG
   int tmp0 = g_tmp;
@@ -1035,7 +1066,7 @@ const PolyPlan *cplan_poly(Compiler *c, int id) {
     free(g_pp_name[id]);
     g_pp_name[id] = nm ? strdup(nm) : NULL;
   }
-  cpoly_resolve(c, id, p);
+  cpoly_resolve(c, id, p, full);
 #ifndef NDEBUG
   assert(g_tmp == tmp0);   /* resolving emits nothing */
 #endif

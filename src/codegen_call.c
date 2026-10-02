@@ -1237,7 +1237,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
    `if (tag == SP_TAG_CLASS) { switch ... }`, then `else ` on a line of its
    own, and returns 1 when any arm
    was built; emits nothing and returns 0 otherwise. */
-static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
+void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
                                const PolyArgs *A, const char *selfd, const char *lead,
                                Buf *pre, Buf *cb);
 void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
@@ -7126,7 +7126,7 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
    the arm spells it at the call site, so each argument binds to a named
    local first and the parameter is renamed to it (#4431), a rest and a
    **kwrest too, so a keyword default can read them. */
-static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
+void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
                                const PolyArgs *A, const char *selfd, const char *lead,
                                Buf *pre, Buf *cb) {
   Buf *sv_pre = g_pre;
@@ -7378,7 +7378,7 @@ int poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int 
   return nmi;
 }
 
-static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv,
+int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv,
                                 const int *atmp, const TyKind *atmp_ty, int tv,
                                 Buf *cb, TyKind *mret) {
   memset(cb, 0, sizeof *cb);
@@ -7439,7 +7439,7 @@ static int poly_native_arm_call(Compiler *c, int k, const char *name, int n, con
 }
 
 /* the conversion it applied (PolyConv) */
-static int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
+int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
                                      int tr, int is_setter_val, Buf *b) {
   int conv = PC_SAME;
   /* a writer in `x = v` is called for effect, as the user-class arms
@@ -7923,307 +7923,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (g_plan_check)
         pa_flags(PPF_ROOT | (cls0_cand2 ? PPF_KEY_CLS0 : 0) | (prim_cand2 ? PPF_KEY_PRIM : 0) |
                  (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
-      for (int k = 0; k < c->nclasses; k++) {
-        /* native (C-backed) class arm: a declared method of this arity takes
-           the hoisted temps in its native representation, as the zero-arg
-           dispatch's arm and the typed-receiver call do. The argument
-           dispatch had no such arm, so a native object reached through a
-           poly slot answered NoMethodError for every call with an argument
-           while its zero-arg calls dispatched (#4504). Positional calls
-           only: a binding declares no keywords and no splat. */
-        if (c->classes[k].is_native_class) {
-          /* a lone splat goes whole to a binding that is all :rest */
-          if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 &&
-              c->classes[k].instantiated) {
-            const NativeMethod *rm = NULL;
-            for (int i = 0; i < c->n_native_methods && !rm; i++) {
-              const NativeMethod *m = &c->native_methods[i];
-              if (m->class_id == k && m->kind == 0 && m->rest && m->nargs == 0 && sp_streq(m->name, name))
-                rm = m;
-            }
-            if (!rm) continue;
-            Buf cb; memset(&cb, 0, sizeof cb);
-            int sp = stk >= 0 ? stk : atmp[0];
-            if (sp_streq(rm->ret, "string?")) buf_puts(&cb, "sp_box_nullable_str(");
-            buf_printf(&cb, "%s((%s *)_t%d.v.p, _t%d->len, _t%d->data)",
-                       rm->csym, c->classes[k].c_struct, tv, sp, sp);
-            if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
-            TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
-            buf_printf(b, " case %d: ", k);
-            int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
-            buf_puts(b, " break;");
-            free(cb.p);
-            if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
-            continue;
-          }
-          if (!kw_pos || has_splat_arg || !c->classes[k].instantiated) continue;
-          Buf cb; TyKind mret = TY_UNKNOWN;
-          if (kwall < 0) {
-            if (!poly_native_arm_call(c, k, name, argc, argv, atmp, atmp_ty, tv, &cb, &mret)) continue;
-            buf_printf(b, " case %d: ", k);
-            int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
-            buf_puts(b, " break;");
-            free(cb.p);
-            if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
-            continue;
-          }
-          Buf arm; memset(&arm, 0, sizeof arm);
-          int fit = 0;
-          buf_printf(&arm, " case %d: if (_t%d->len == 0) { ", k, kwall);
-          for (int n = pos_argc; n <= argc; n++) {
-            if (n == argc) buf_puts(&arm, " }\nelse { ");
-            if (poly_native_arm_call(c, k, name, n, argv, atmp, atmp_ty, tv, &cb, &mret) &&
-                (mret == TY_NIL || is_setter_val || ret == TY_POLY || mret == TY_POLY || mret == ret)) {
-              emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, &arm);
-              fit = 1;
-            }
-            else buf_printf(&arm, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", name, tv);
-            free(cb.p);
-          }
-          buf_puts(&arm, " } break;");
-          if (fit) buf_puts(b, arm.p);
-          free(arm.p);
-          if (g_plan_check && fit) pa_observe(PA_NATIVE, k, -1, TY_UNKNOWN, PC_SAME);
-          continue;
-        }
-        int defcls = -1;
-        int mi = comp_method_in_chain(c, k, name, &defcls);
-        /* an exception class with no method of its own for the name takes
-           the builtin reopening's (`class Exception; def brief`) */
-        if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
-          int xd = exc_arm_definer(c, k, name);
-          if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
-        }
-        if (mi < 0) continue;
-        /* the same widened arity a candidate was counted with above: a
-           keyword hash funds the DECLARED keyword params it names (#4205) */
-        char arm_exp[600];
-        int arm_fit = poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, splat_a,
-                                     arm_exp, sizeof arm_exp);
-        if (arm_fit == 0) continue;
-        /* A class no value can ever be (never `.new`/`.allocate`/`raise`d, no
-           Struct, no Marshal escape) cannot be this poly value's receiver, so
-           its arm is dead. Dropping it makes sp_<Class>_<name> an unreferenced
-           static the C compiler then DCEs -- spinel supplies the accurate
-           reference graph, the C compiler removes the code (#1608). A
-           primitive reopen's instances exist without any constructor, so it
-           keeps its arm (#4219). */
-        if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
-        if (arm_fit < 0) {
-          buf_printf(b, " case %d: ", k); emit_poly_arity_raise(b, arm_exp); buf_puts(b, " break;");
-          if (g_plan_check) pa_observe(PA_ARITY, k, mi, TY_UNKNOWN, PC_VOID);
-          continue;
-        }
-        /* Skip a method with no standalone definition (DCE-pruned, or inlined
-           at call sites because it yields): a `case` arm calling its absent
-           `sp_Class_method` symbol would dangle at link. The class can't be
-           this poly value's receiver anyway -- that is why it was pruned, and a
-           yielding method's value-position dispatch is moot here (issue #1583). */
-        if (!scope_has_callable_symbol(c, mi) && !scope_needs_proc_form(c, mi)) continue;
-        nd_callee(c, id, mi, defcls, 1);   /* one switch arm (#4557) */
-        /* A candidate whose concrete key parameter type is incompatible with the
-           concrete call-site key cannot be this poly value's receiver for that
-           key -- e.g. a Symbol-keyed user `[]` reached by a String key, where the
-           value's real class is a string-keyed Hash. Passing the key raw would be
-           a C pointer/integer type error (const char * into an sp_sym slot), so
-           skip the arm. Mirrors the key-type-mismatch handling for typed hashes. */
-        int arm_key_incompat = 0;
-        /* The arm calls the proc form when the method has one, and the proc
-           form is a separately inferred clone: its parameters carry the
-           types the C signature was emitted with, where the inlined original's
-           may have stayed unknown. `fetch(key, opts = {})` inlined at its
-           block sites had an untyped `opts`, so a Hash's `fetch("k", "")`
-           through a poly slot took the Cache arm and handed a String to its
-           sp_SymPolyHash * (#4492). */
-        Scope *ks = &c->scopes[scope_proc_form_of(c, mi) >= 0 ? scope_proc_form_of(c, mi) : mi];
-        /* which argument each parameter takes, decided once for this arm
-           (arg_layout): the type test below and the binding read the same */
-        PolyArgs pargs = { argv, pos_argc, atmp, atmp_ty, &kw, htmp };
-        ArgLayout L;
-        poly_arm_layout(c, ks, &pargs, &L);
-        if (splat_a >= 0 && !L.gather)
-          unsupported(c, id, "a splat into this parameter list, on a value of more than one type");
-        for (int a = 0; a < ks->nparams; a++) {
-          /* Only a parameter an argument's temp funds is tested: a keyword
-             binds by name, a rest packs any argument type into a PolyArray
-             (comparing it against a String arg dropped the whole arm, #3218),
-             and a gathered element arrives boxed and unboxes to each arm's
-             type. */
-          if (L.from[a] != ARG_NODE || L.arg[a] >= pos_argc) continue;
-          LocalVar *pv0 = (ks->pnames && ks->pnames[a])
-                            ? scope_local(ks, ks->pnames[a]) : NULL;
-          TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
-          int sa0 = L.arg[a];
-          TyKind at0 = atmp_ty[sa0];
-          /* a shared-handle parameter takes a String of either form: its
-             arm passes the handle (emit_poly_shared_arg) */
-          if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF))
-            continue;
-          int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
-          int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
-          if (pc && ac && pt0 != at0 &&
-              (pt0 == TY_STRING || at0 == TY_STRING ||
-               /* a heap pointer against a scalar, whatever the kinds: a mutable
-                  String (sp_String *) reaching an Integer-seeded `[]=` value
-                  slot was passed raw (#4929) */
-               needs_root(pt0) != needs_root(at0) ||
-               /* pointer/scalar C-representation mismatch: e.g. an int-typed
-                  param (bound by an unrelated poly==int) receiving a typed
-                  object arg -- the raw pass would be a C int-conversion
-                  error and semantic garbage; the arm cannot be this call's
-                  real target shape */
-               ty_is_object(pt0) != ty_is_object(at0) ||
-               /* two UNRELATED object classes. A subclass in an ancestor-typed
-                  slot is fine and gets a cast (#3418), but nothing converts
-                  between siblings -- and this arm cannot be the call's real
-                  target, since a receiver of that class would raise in CRuby
-                  rather than reinterpret the argument. Dropping it is also
-                  what the un-seeded build does, by diagnosing the body
-                  honestly instead (#3419). */
-               (ty_is_object(pt0) && ty_is_object(at0) &&
-                obj_class_unrelated(c, ty_object_class(pt0), ty_object_class(at0))) ||
-               /* a struct passed by value converts to nothing: a Range slice
-                  `s[0...-5]` on an untyped receiver was matching a seeded
-                  `#[](Symbol)` by name and handing sp_Range to an sp_sym slot
-                  (#3384). The arm passes its temps raw, so a disagreement here
-                  is always a hard C error, never a coercion that works. */
-               ty_is_struct_valued(pt0) || ty_is_struct_valued(at0) ||
-               /* two concretely different CONTAINER kinds. sp_StrStrHash * and
-                  sp_SymPolyHash * are different structs, so the raw pass is a
-                  hard C error, not a coercion that works -- the same argument
-                  the collapsed-keyword slot below already makes. Without it, a
-                  `merge` seeded Hash[String, String] on an unrelated class
-                  took the arm for a plain Hash's call and the build stopped
-                  inside that class (#4172). */
-               (ty_is_hash(pt0) && ty_is_hash(at0)) ||
-               (ty_is_array(pt0) && ty_is_array(at0)))) {
-            arm_key_incompat = 1; break;
-          }
-        }
-        /* The same test for the slot the COLLAPSED keyword hash funds. The
-           hash is built sym-keyed, so an arm whose parameter is a concretely
-           different hash kind cannot be this call's target -- passing the
-           pointer raw is a hard C error, not a coercion that works, and the
-           un-seeded build drops the arm for the same reason (#4033). */
-        { int kslot = L.kwh_slot;
-          if (kslot >= 0 && L.from[kslot] != ARG_BY_NAME && ks->pnames && ks->pnames[kslot]) {
-            LocalVar *kpv9 = scope_local(ks, ks->pnames[kslot]);
-            TyKind kpt9 = kpv9 ? kpv9->type : TY_UNKNOWN;
-            if (ty_is_hash(kpt9) && kpt9 != (kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH))
-              arm_key_incompat = 1;
-          } }
-        if (arm_key_incompat) { arg_layout_free(&L); continue; }
-        TyKind mret = c->scopes[mi].ret;
-        Buf cb; memset(&cb, 0, sizeof cb);
-        int pfi8 = scope_proc_form_of(c, mi);   /* yielding: call the clone (#3399) */
-        /* the proc form is a separately inferred clone whose parameter types
-           are the ones its C signature carries: read the arguments against
-           it, or a default `{}` for its sp_SymPolyHash * arrived boxed as a
-           PolyPolyHash (#4492) */
-        Scope *ms = &c->scopes[pfi8 >= 0 ? pfi8 : mi];
-        /* a by-value (value-type) class takes self BY VALUE: dereference the
-           boxed pointer rather than passing it, as the sibling arm at the
-           default-dispatch above already does (#2441). Passing the pointer
-           stopped the C build the moment ceaea73e gave `join` a user arm and
-           the user's class happened to be a value type (#4091). */
-        /* Sized for the longest class name a bundle produces: at 64 the cast
-           was silently truncated to `..._t2.v` and the build stopped. */
-        char selfpbuf2[320];  /* stack-local: nested inlines each need their own receiver buffer */
-        int self2_struct = 0;
-        /* A reopened primitive's method takes the unboxed value, not a struct
-           pointer -- read the matching union field instead of casting .v.p to
-           a non-existent sp_<Prim> struct (#4219), as the zero-arg dispatch's
-           arm already does. */
-        { const char *_dcn2 = c->classes[defcls].c_name;
-          if (sp_streq(_dcn2, "Integer"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.i", tv);
-          else if (sp_streq(_dcn2, "Numeric"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
-          else if (sp_streq(_dcn2, "NilClass"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-          else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
-          else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
-          else if (sp_streq(_dcn2, "Thread"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
-          else if (io_family_class(c, defcls)) {
-            if (c->scopes[mi].yields || (c->scopes[mi].blk_param && c->scopes[mi].blk_param[0]))
-              unsupported(c, id, "call");
-            snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_File *)_t%d.v.p)", tv);
-          }
-          /* a boxed exception is the runtime's sp_Exception, whatever its class */
-          else if (class_has_exc_name(c, defcls)) {
-            snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
-            self2_struct = 1; }
-          else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
-          else if (sp_streq(_dcn2, "Float"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
-          else if (sp_streq(_dcn2, "String"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_strbuf_deref(_t%d).v.s", tv);
-          else if (sp_streq(_dcn2, "Symbol"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
-          else if (sp_streq(_dcn2, "NilClass"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-          else if (sp_streq(_dcn2, "Object") || sp_streq(_dcn2, "Array"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
-          else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
-            snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.b", tv);
-          /* parenthesized: a default reading an ivar spells `<self>->iv_x`,
-             and a bare cast binds looser than `->` */
-          else {
-            snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_%s *)_t%d.v.p)", _dcn2, tv);
-            self2_struct = 1; } }
-        /* The ARGUMENT differs from the inline receiver: a by-value class
-           takes self BY VALUE, so the boxed pointer is dereferenced for the
-           call while g_self keeps the pointer form its ivar reads want. The
-           sibling arm at the default dispatch has spelled this out since
-           #2441; without it the C build stopped the moment ceaea73e gave
-           `join` a user arm and that user's class was a value type. */
-        buf_printf(&cb, "sp_%s_%s(%s%s", mc_reopen_cls(c, defcls, c->scopes[mi].name),
-                   mc(pfi8 >= 0 ? c->scopes[pfi8].name : c->scopes[mi].name),
-                   c->classes[defcls].is_value_type ? "*" : "", selfpbuf2);
-        const char *saved_self = g_self;
-        /* the defaults below read ivars off this receiver, whatever the
-           calling scope's own self is; a by-value class is the value form */
-        const char *saved_deref = g_self_deref;
-        char selfdbuf2[340];
-        snprintf(selfdbuf2, sizeof selfdbuf2, "%s", selfpbuf2);
-        if (self2_struct && c->classes[defcls].is_value_type) {
-          snprintf(selfdbuf2, sizeof selfdbuf2, "(*%s)", selfpbuf2);
-          g_self_deref = ".";
-        }
-        else if (self2_struct) g_self_deref = "->";
-        Buf pdpre; memset(&pdpre, 0, sizeof pdpre);
-        emit_poly_arm_args(c, &c->scopes[mi], ms, &L, &pargs, selfdbuf2, ", ", &pdpre, &cb);
-        arg_layout_free(&L);
-        g_self = saved_self; g_self_deref = saved_deref;
-        if (c->scopes[mi].nparams == 0 && c->scopes[mi].blk_param &&
-            c->scopes[mi].blk_param[0] && !c->scopes[mi].yields)
-          buf_puts(&cb, ", ");   /* self is the first argument; see the zero-arg dispatch */
-        if (scope_needs_proc_form(c, mi)) {
-          if (blk_tmp2 >= 0) buf_printf(&cb, ", _t%d", blk_tmp2);
-          else buf_puts(&cb, ", NULL");
-        }
-        else emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp2, &cb);
-        buf_puts(&cb, ")");
-        if (pdpre.len > 0) {
-          /* the bindings and the call in one statement expression, so the
-             arm stays a single expression for the boxing below */
-          Buf wb; memset(&wb, 0, sizeof wb);
-          buf_printf(&wb, "({ %s%s; })", pdpre.p ? pdpre.p : "", cb.p ? cb.p : "");
-          free(cb.p); cb = wb;
-        }
-        free(pdpre.p);
-        /* a proc form carries its own inferred return type (#3399) */
-        int pf8 = pfi8 >= 0;
-        TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
-        int pconv = emit_poly_user_arm_n(c, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
-                                         is_setter_val, b);
-        free(cb.p);
-        if (g_plan_check) pa_observe(pf8 ? PA_PROC_FORM : PA_USER, k, mi, mret8, pconv);
-      }
+      { PolyUserArgs U = { argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk,
+                           is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw };
+        emit_poly_user_arms_n(c, id, name, &U, b); }
       int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
       int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
       /* fetch with a block answers the block for a missing key: the
