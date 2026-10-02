@@ -11696,17 +11696,28 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         /* fetch(key) { } and merge!/update(other) { }: the block (a proc
            argument too) through a runtime arm */
         int fm_fetch = sp_streq(name, "fetch") && argc == 1;
-        int fm_merge = (sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1;
+        int fm_merge = (sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1;
+        int fm_splat = 0;
+        for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) fm_splat = 1;
         if (!sum_done && dl_open && ret == TY_POLY && (fm_fetch || fm_merge) &&
-            nt_ref(nt, id, "block") >= 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+            nt_ref(nt, id, "block") >= 0 && !fm_splat) {
           int fblk = poly_call_blk_proc(c, id, blk_tmp2);
           if (fblk >= 0) {
-            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
-            buf_printf(b, " _t%d = %s(_t%d, ", tr, fm_fetch ? "sp_poly_fetch_blk" : "sp_poly_hash_merge_blk", tv);
-            if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
-            else emit_boxed_text(c, atmp_ty[0], tn, b);
-            if (fm_fetch) buf_printf(b, ", _t%d); break;", fblk);
-            else buf_printf(b, ", _t%d, \"%s\"); break;", fblk, name);
+            buf_printf(b, " _t%d = ", tr);
+            /* merge!(h1, h2) { }: each Hash in turn, into the receiver */
+            int nm = fm_fetch ? 1 : argc;
+            for (int a = 0; a < nm; a++)
+              buf_puts(b, fm_fetch ? "sp_poly_fetch_blk(" : "sp_poly_hash_merge_blk(");
+            buf_printf(b, "_t%d", tv);
+            for (int a = 0; a < nm; a++) {
+              char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+              buf_puts(b, ", ");
+              if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
+              else emit_boxed_text(c, atmp_ty[a], tn, b);
+              if (fm_fetch) buf_printf(b, ", _t%d)", fblk);
+              else buf_printf(b, ", _t%d, \"%s\")", fblk, name);
+            }
+            buf_puts(b, "; break;");
             sum_done = 1;
           }
         }
@@ -22550,15 +22561,29 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        CRuby's NoMethodError -- accurate in both gate modes. */
     /* merge!/update(other) { } on a boxed value: the block (a proc argument
        too) resolves the keys both have, at run time */
-    if ((grt == TY_POLY || grt == TY_UNKNOWN) && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+    int msplat = 0;
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) msplat = 1;
+    if ((grt == TY_POLY || grt == TY_UNKNOWN) && argc >= 1 && !msplat && nt_ref(nt, id, "block") >= 0 &&
         nt_str(nt, id, "name") && (sp_streq(nt_str(nt, id, "name"), "merge!") ||
-                                   sp_streq(nt_str(nt, id, "name"), "update")) &&
-        nt_kind(nt, argv[0]) != NK_SplatNode) {
+                                   sp_streq(nt_str(nt, id, "name"), "update"))) {
       int mblk = poly_call_blk_proc(c, id, -1);
       if (mblk >= 0) {
-        buf_puts(b, "sp_poly_hash_merge_blk("); emit_boxed(c, recv, b);
-        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-        buf_printf(b, ", _t%d, \"%s\")", mblk, nt_str(nt, id, "name"));
+        /* the receiver, then each Hash, in Ruby's order; merged in turn */
+        int tm = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tm); emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tm);
+        int ta0 = g_tmp + 1;
+        for (int a = 0; a < argc; a++) {
+          int ta = ++g_tmp;
+          buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[a], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta);
+        }
+        buf_puts(b, " ");
+        for (int a = 0; a < argc; a++) buf_puts(b, "sp_poly_hash_merge_blk(");
+        buf_printf(b, "_t%d", tm);
+        for (int a = 0; a < argc; a++)
+          buf_printf(b, ", _t%d, _t%d, \"%s\")", ta0 + a, mblk, nt_str(nt, id, "name"));
+        buf_puts(b, "; })");
         return 1;
       }
     }

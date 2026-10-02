@@ -67,3 +67,11 @@ FrozenError
 {"a" => 10, "b" => 2, "c" => 1}
 {"a" => 10, "b" => 2, "c" => 1}
 "undefined method 'filter!' for an instance of Range"
+20
+[:blk, 5.5]
+20
+{"a" => 6, "b" => 4}
+6
+1
+{"a" => 6}
+9.9

@@ -101,3 +101,18 @@ p ar.fetch(9, &proc { |i| i * 2 }), ar.fetch(-1) { 0 }
 p g.merge!({"a" => 10}, &pr), g.update({"c" => 1}) { |k, o, n| 0 }
 w = [(1..2), U2.new][0]
 p((w.filter! { |x| x } rescue $!.message))
+
+# a Float index for fetch's block, several Hashes for merge!/update's
+a = [[10, 20], 1][0]
+p a.fetch(1.7) { |i| [:blk, i] }, a.fetch(5.5) { |i| [:blk, i] }, a.fetch(-1.2) { :x }
+h = [{"a" => 1}, 1][0]
+p h.update({"a" => 2}, {"a" => 3, "b" => 4}) { |k, o, n| o + n }
+class U3
+  def update(*a) = yield(1, 2, 3)
+  def fetch(*a) = yield(1)
+end
+p U3.new.update(1) { |a, b, c| a + b + c }, U3.new.fetch(1) { |x| x }
+g = [{"a" => 1}, U3.new][0]
+p g.update({"a" => 2}, {"a" => 3}) { |k, o, n| o * n }
+ar = [[10, 20], U3.new][0]
+p ar.fetch(9.9) { |i| i }

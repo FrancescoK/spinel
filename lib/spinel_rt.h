@@ -15795,8 +15795,10 @@ static sp_RbVal sp_poly_fetch_blk(sp_RbVal recv, sp_RbVal key, sp_Proc *blk) {
     if (sp_poly_has_key(recv, key)) return sp_poly_index_poly(recv, key);
     return sp_penum_call1(blk, key);
   }
-  if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id) && key.tag == SP_TAG_INT) {
-    sp_int n = sp_poly_length(recv), i = key.v.i;
+  if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
+    /* any Integer-convertible index, as the blockless fetch takes it; the
+       block gets the index as given */
+    sp_int n = sp_poly_length(recv), i = sp_poly_arg_int_chk(key);
     if (i < 0) i += n;
     if (i >= 0 && i < n) return sp_poly_arr_get(recv, i);
     return sp_penum_call1(blk, key);
