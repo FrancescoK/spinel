@@ -1317,25 +1317,26 @@ static void emit_poly_splat_param(Compiler *c, Scope *ms, int a, int sa, int st,
    outright whenever any class had a class method of the name
    (activesupport's Notifications: the module has its own `publish`, and
    Fanout forwards to each listener's). */
-static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
-                                      const int *atmp, const TyKind *atmp_ty, const int *htmp,
-                                      const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
+/* The class-side arms of a poly dispatch: each class whose class method of
+   the name a class-valued receiver can reach (into ccls/cmi, an arity
+   refusal's message into cexp, empty for a call), sized by
+   comp_cmethod_candidates. Their count; *wants_blk when one takes the
+   call's block as a proc. diag reports a splat the arms cannot spread
+   (the dispatch's own pass, not the resolver's). */
+int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const PolyArgs *A, int diag,
+                         int *ccls8, int *cmi8, char (*cexp8)[600], int *wants_blk) {
   const NodeTable *nt = c->nt;
+  const PolyKw *kw = A->kw;
+  const TyKind *atmp_ty = A->atmp_ty;
   int kwh = kw ? kw->kwh : -1;
-  int nc8 = 0, wants_blk = 0;
+  int nc8 = 0;
   int ncc8 = 0;
   const PolyCand *cc8 = comp_cmethod_candidates(c, name, &ncc8);   /* per name, not per site (#4966) */
-  int an = 0, argsn = nt_ref(nt, id, "arguments");
-  const int *argv = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
-  PolyArgs pargs = { argv, argc, atmp, atmp_ty, kw, htmp };
+  PolyArgs pargs = *A;
   int splat = -1;
-  for (int k = 0; argv && k < argc && k < an; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode) splat = k;
-  /* one arm per candidate class, however many: a binding with hundreds of
-     FFI::Struct subclasses reads `klass.layout` on any of them */
-  int *ccls8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
-  int *cmi8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
-  char (*cexp8)[600] = malloc(sizeof *cexp8 * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  for (int k = 0; A->argv && k < argc; k++)
+    if (nt_kind(nt, A->argv[k]) == NK_SplatNode) splat = k;
+  *wants_blk = 0;
   for (int ki = 0; ki < ncc8; ki++) {
     int k = cc8[ki].cls;
     if (is_builtin_reopen(c->classes[k].name)) continue;
@@ -1366,7 +1367,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       ArgLayout L;
       poly_arm_layout(c, ks, &pargs, &L);
       /* a splat binds through the gather (emit_poly_arm_args) */
-      if (splat >= 0 && !L.gather)
+      if (diag && splat >= 0 && !L.gather)
         unsupported(c, id, "a splat into this parameter list, on a value of more than one type");
       for (int a = 0; a < ks->nparams && !incompat8; a++) {
         const char *kpn = ks->pnames ? ks->pnames[a] : NULL;
@@ -1391,10 +1392,29 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       }
       arg_layout_free(&L);
       if (incompat8) continue;
-      if (ks->blk_param && ks->blk_param[0]) wants_blk = 1;
+      if (ks->blk_param && ks->blk_param[0]) *wants_blk = 1;
     }
     ccls8[nc8] = k; cmi8[nc8] = kmi; nc8++;
   }
+  return nc8;
+}
+
+int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
+                               const int *atmp, const TyKind *atmp_ty, const int *htmp,
+                               const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int ncc8 = 0;
+  (void)comp_cmethod_candidates(c, name, &ncc8);
+  int an = 0, argsn = nt_ref(nt, id, "arguments");
+  const int *argv = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+  PolyArgs pargs = { argv, argc, atmp, atmp_ty, kw, htmp };
+  /* one arm per candidate class, however many: a binding with hundreds of
+     FFI::Struct subclasses reads `klass.layout` on any of them */
+  int *ccls8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  int *cmi8 = malloc(sizeof(int) * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  char (*cexp8)[600] = malloc(sizeof *cexp8 * (size_t)(ncc8 > 0 ? ncc8 : 1));
+  int wants_blk = 0;
+  int nc8 = poly_cls_value_cands(c, id, name, argc, &pargs, 1, ccls8, cmi8, cexp8, &wants_blk);
   if (nc8 == 0) { free(ccls8); free(cmi8); free(cexp8); return 0; }
   if (wants_blk && blk_tmp < 0) blk_tmp = hoist_call_block_proc(c, id);
   buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { switch (_t%d.cls_id) {", tv, tv);
@@ -1409,6 +1429,7 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
     if (cexp8[i][0]) {
       emit_poly_arity_raise(b, cexp8[i]);
       buf_puts(b, " break;");
+      if (g_plan_check) pa_observe_at(id, PA_ARITY, PA_KEY_CLASS_VALUE + ccls8[i], cmi8[i], TY_UNKNOWN, PC_VOID);
       continue;
     }
     Scope *ks = &c->scopes[cmi8[i]];
@@ -1432,15 +1453,17 @@ static int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int
       free(cb.p); cb = wb;
     }
     free(pre.p);
-    if (tr < 0 || method_is_void(ks)) buf_puts(b, cb.p ? cb.p : "");
+    int pconv = PC_SAME;
+    if (tr < 0 || method_is_void(ks)) { buf_puts(b, cb.p ? cb.p : ""); pconv = PC_VOID; }
     else {
       buf_printf(b, "_t%d = ", tr);
-      if (ret == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, cb.p ? cb.p : "", b);
-      else if (ret != TY_POLY && kr == TY_POLY) emit_unbox_text(c, ret, cb.p ? cb.p : "", b);
+      if (ret == TY_POLY && kr != TY_POLY) { emit_boxed_text(c, kr, cb.p ? cb.p : "", b); pconv = PC_BOX; }
+      else if (ret != TY_POLY && kr == TY_POLY) { emit_unbox_text(c, ret, cb.p ? cb.p : "", b); pconv = PC_UNBOX; }
       else buf_puts(b, cb.p ? cb.p : "");
     }
     buf_puts(b, "; break;");
     free(cb.p);
+    if (g_plan_check) pa_observe_at(id, PA_USER, PA_KEY_CLASS_VALUE + ccls8[i], cmi8[i], kr, pconv);
   }
   /* a Struct or Data class with no `self.members` of its own answers its
      member names (the generated sp_cls_members), as emit_poly_call's arm
@@ -5886,9 +5909,9 @@ static void emit_bm_abi_args(Buf *b, const char *rb, int abi, const char *sig, i
    trailing argument is (_sp_proc_kwpos). Emits
    `if (<tag/cls is callable>) { <tr> = <expr>; }\nelse ` and returns 1 when
    emitted, 0 (nothing written) otherwise. */
-static int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
-                                     const int *atmp, const TyKind *atmp_ty, const char *guard,
-                                     int tv, int tr, TyKind ret, int kwpos, Buf *b) {
+int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
+                              const int *atmp, const TyKind *atmp_ty, const char *guard,
+                              int tv, int tr, TyKind ret, int kwpos, Buf *b) {
   if (!name ||
       !(sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
     return 0;
@@ -7668,103 +7691,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       const char *ebclose = (ret == TY_POLY) ? ")" : "";
       int pa_frame0 = g_plan_check ? pa_begin(id) : -1;
       emit_poly_prearms0(c, id, name, &ps, ret, tv, tr, b);
-      /* class 0 emits a `case 0:` arm here when it defines/inherits the method
-         (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
-         so a boxed scalar (cls_id 0) does not alias it (issue #1576). */
-      /* A candidate whose method takes `&blk` needs the call's block passed
-         to it. Materialize the proc ONCE, ahead of the switch, and hand the
-         same temp to every arm -- only one arm runs, and building it per arm
-         would allocate a proc per candidate class (#3399). Mirrors the
-         class-method cascade, which already does this. */
-      int blk_tmp0 = -1;
-      { int cblk0 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-        if (cblk0 >= 0) {
-          int npc0 = 0;
-          const PolyCand *pc0 = comp_poly_candidates(c, name, &npc0);   /* (#4966) */
-          for (int ki = 0; ki < npc0 && blk_tmp0 < 0; ki++) {
-            int k = pc0[ki].cls;
-            if (!c->classes[k].instantiated) continue;
-            int mi0 = pc0[ki].mi;
-            if (mi0 < 0) continue;
-            Scope *cm0 = &c->scopes[mi0];
-            /* a yielding candidate is reachable through its proc form */
-            if (!scope_has_callable_symbol(c, mi0) && !scope_needs_proc_form(c, mi0)) continue;
-            if ((cm0->blk_param && cm0->blk_param[0] && !cm0->yields) ||
-                scope_needs_proc_form(c, mi0)) {
-              /* `&blk` that survived the forwarding resolution names a REAL
-                 proc (this function's own block param), not a literal to
-                 materialize: write the proc expression itself. */
-              blk_tmp0 = hoist_block_proc(c, cblk0);
-            }
-          }
-        } }
-      /* A builtin Array receiver reaching a dispatch that exists only because
-         a USER class defines this name. Without an arm it falls to the raise:
-         `NoMethodError: undefined method 'map' for an instance of Array` at a
-         site where the block-carrying call is plainly Array#map. The builtin
-         is normally served by splicing the block inline, which is not
-         available here -- the block was materialized once as a proc and shared
-         by every arm, and a second spliced copy would disagree with whichever
-         arm ran. Drive the same proc over the elements instead (#3409).
-
-         Only reachable at all since a yielding method became dispatchable: a
-         non-yielding user `map` leaves a block-carrying call to the builtin
-         path entirely, which is why the same shape is correct without the
-         yield. */
-      { const char *pen_op = argc == 0 && nt_ref(nt, id, "block") >= 0
-                           ? poly_enum_op_for(name) : NULL;
-        /* A candidate that neither yields nor keeps a real &blk left no proc
-           materialized -- it ignores the block. The builtin arm still needs
-           one, so build it here; only one arm runs either way. */
-        if (pen_op && blk_tmp0 < 0) {
-          int cblk1 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-          if (cblk1 < 0) pen_op = NULL;
-          else blk_tmp0 = hoist_block_proc(c, cblk1);
-        }
-        if (pen_op) {
-          char pcall[160];
-          snprintf(pcall, sizeof pcall, "sp_poly_enum_proc(_t%d, %s, _t%d)", tv, pen_op, blk_tmp0);
-          /* an Integer Range walks through the same helper (its length and
-             members are known to it); without it a boxed Range fell to the
-             user-class switch's NoMethodError (#4840) */
-          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tr);
-          if (ret == TY_POLY) buf_puts(b, pcall);
-          else emit_unbox_text(c, ret, pcall, b);
-          buf_puts(b, "; }\nelse ");
-        } }
-      /* A boxed Mutex reaching a dispatch that exists because a user class
-         also defines `synchronize`: without an arm the Mutex fell to the
-         raise. The static arm (the lock/ensure shape in the synchronize
-         emitter) cannot serve it here, the block being a materialized proc
-         shared by every arm, so the runtime arm locks around the proc. */
-      if (sp_streq(name, "synchronize") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
-        if (blk_tmp0 < 0) {
-          int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-          if (cblk2 >= 0) blk_tmp0 = hoist_block_proc(c, cblk2);
-        }
-        if (blk_tmp0 >= 0) {
-          char mcall[96];
-          snprintf(mcall, sizeof mcall, "sp_Mutex_synchronize_proc((sp_mutex *)_t%d.v.p, _t%d)", tv, blk_tmp0);
-          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX) { _t%d = ", tv, tv, tr);
-          if (ret == TY_POLY) buf_puts(b, mcall);
-          else emit_unbox_text(c, ret, mcall, b);
-          buf_puts(b, "; }\nelse ");
-        }
-      }
-      /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
-      emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b);
+      int blk_tmp0 = emit_poly_prearms0_blk(c, id, name, &ps, ret, tv, tr, b);
       int cls0_cand = poly_key_cls0(c, name, 0, -1, 0, -1);
-      /* a class-valued receiver dispatches class-side, ahead of the instance
-         arms (#4218) */
-      if (!emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b) &&
-          is_cls_members) {
-        if (ret == TY_POLY || ret == TY_POLY_ARRAY)
-          buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_cls_members(_t%d)%s; else ",
-                     tv, tr, ret == TY_POLY ? "sp_box_poly_array(" : "", tv, ret == TY_POLY ? ")" : "");
-        else
-          buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) sp_raise_nomethod(sp_nomethod_msg(\"members\", _t%d)); else ",
-                     tv, tv);
-      }
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
       int prim_cand0 = poly_key_prim(c, name, 0, -1, 0, -1);
       /* a genuine String in a slot whose name a user class owns (#4816) */

@@ -704,6 +704,43 @@ static void cpoly_prearms0(Compiler *c, int id, const char *name, const PolySpec
     cpoly_family(p, cap, PB_SPLIT);
 }
 
+/* The class-side arms a class-valued receiver takes ahead of the instance
+   switch (emit_poly_cls_value_prearm). Their count. */
+static int cpoly_cls_value_arms(Compiler *c, int id, const char *name, int argc, const PolyArgs *A,
+                                TyKind ret, int has_tr, PolyPlan *p, int *cap) {
+  int ncc = 0;
+  (void)comp_cmethod_candidates(c, name, &ncc);
+  int *ccls = malloc(sizeof(int) * (size_t)(ncc > 0 ? ncc : 1));
+  int *cmi = malloc(sizeof(int) * (size_t)(ncc > 0 ? ncc : 1));
+  char (*cexp)[600] = malloc(sizeof *cexp * (size_t)(ncc > 0 ? ncc : 1));
+  int wants_blk = 0;
+  int n = poly_cls_value_cands(c, id, name, argc, A, 0, ccls, cmi, cexp, &wants_blk);
+  for (int i = 0; i < n; i++) {
+    Scope *ks = &c->scopes[cmi[i]];
+    if (cexp[i][0]) cpoly_add(p, cap, PA_ARITY, PA_KEY_CLASS_VALUE + ccls[i], cmi[i], TY_UNKNOWN, PC_VOID);
+    else
+      cpoly_add(p, cap, PA_USER, PA_KEY_CLASS_VALUE + ccls[i], cmi[i], ks->ret,
+                !has_tr || method_is_void(ks) ? PC_VOID : cpoly_conv(ret, ks->ret));
+  }
+  free(ccls); free(cmi); free(cexp);
+  return n;
+}
+
+/* The pre-arms emit_poly_prearms0_blk writes: a builtin container or a
+   Mutex driving the call's block as a proc, a callable value, a class
+   value's class-side arms, or else a Struct class's members. */
+static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
+                               PolyPlan *p, int *cap) {
+  int blk = nt_ref(c->nt, id, "block");
+  int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
+  if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
+  if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
+  if (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) cpoly_family(p, cap, PB_CALLABLE);
+  PolyArgs none = { NULL, 0, NULL, NULL, NULL, NULL };
+  if (!cpoly_cls_value_arms(c, id, name, 0, &none, ret, 1, p, cap) && ps->cls_members)
+    cpoly_family(p, cap, PB_CLS_MEMBERS);
+}
+
 /* How a zero-argument dispatch holds and keys its receiver, and the type
    its arms answer into (an OpenStruct member read makes an untyped call
    poly), as emit_poly_method_dispatch decides them. */
@@ -739,6 +776,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
     cpoly_user_arms0(c, id, name, p->ret, p);
     int cap = p->n;
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
+    cpoly_prearms0_blk(c, id, name, &ps, p->ret, p, &cap);
     cpoly_obj_default0(c, id, name, p->ret, p, &cap);
   }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);

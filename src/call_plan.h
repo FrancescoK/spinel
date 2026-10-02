@@ -91,6 +91,8 @@ typedef enum {
   /* the tag pre-arms of a zero-argument dispatch (emit_poly_prearms0) */
   PB_LEN, PB_EMPTY, PB_CLASS_NAMED, PB_CLASS_REFLECT, PB_OSTRUCT, PB_TO_A, PB_IO_REWIND,
   PB_IO_PUTS, PB_IOZ, PB_REDUCE, PB_INT_CHR, PB_STRT, PB_SPLIT,
+  /* ... and the rest of its pre-arms (emit_poly_prearms0_blk) */
+  PB_ENUM_PROC, PB_SYNC, PB_CALLABLE, PB_CLS_MEMBERS,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -116,6 +118,9 @@ typedef struct {
 #define PA_KEY_DEFAULT 0x7fff
 /* a builtin family's arm: above every class id */
 #define PA_KEY_BUILTIN 0x4000
+/* a class value's class-side arm, by its class (the pre-arm ahead of the
+   instance switch) */
+#define PA_KEY_CLASS_VALUE 0x2000
 
 /* how the dispatch holds its receiver and keys its switch */
 enum {
@@ -148,6 +153,9 @@ int  pa_begin(int id);
 void pa_resume(int frame);
 void pa_flags(unsigned flags);
 void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
+/* the same, only into node id's own frame: for a helper more than one
+   dispatch shares */
+void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv);
 void pa_end(Compiler *c, int frame, const PolyPlan *p);
 void pa_report(void);
 

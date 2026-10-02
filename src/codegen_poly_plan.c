@@ -47,6 +47,10 @@ void pa_observe(int kind, int key, int mi, TyKind vty, int conv) {
   a->vty = (unsigned char)vty; a->conv = (unsigned char)conv;
 }
 
+void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv) {
+  if (g_pa_n > 0 && g_pa[g_pa_n - 1].id == id) pa_observe(kind, key, mi, vty, conv);
+}
+
 static const char *pa_kind_name(int k) {
   static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum",
                                     "builtin" };
@@ -56,10 +60,12 @@ static const char *pa_kind_name(int k) {
 static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
   static const char *const fam[] = { "len", "empty", "class-named", "class-reflect", "ostruct", "to_a",
                                      "io-rewind", "io-puts", "io-zero", "reduce", "int-chr", "str-transform",
-                                     "split" };
+                                     "split", "enum-proc", "synchronize", "callable", "class-members" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
+  else if (a->key >= PA_KEY_CLASS_VALUE && a->key < PA_KEY_BUILTIN && a->key - PA_KEY_CLASS_VALUE < c->nclasses)
+    snprintf(kb, sizeof kb, "%s (class value)", c->classes[a->key - PA_KEY_CLASS_VALUE].name);
   else if (a->key >= PA_KEY_BUILTIN && a->key - PA_KEY_BUILTIN < (int)(sizeof fam / sizeof fam[0]))
     snprintf(kb, sizeof kb, "%s", fam[a->key - PA_KEY_BUILTIN]);
   else snprintf(kb, sizeof kb, "key %d", a->key);
@@ -974,4 +980,115 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
       buf_puts(b, "; }\nelse ");
     }
   }
+}
+
+/* The rest of a zero-argument poly dispatch's pre-arms, after the tag
+   chain (emit_poly_prearms0): the block a candidate takes, hoisted once as
+   a proc (its temp is the result), a builtin container or Mutex driving
+   that proc, a callable value, a class value's class-side arms. */
+int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
+                           int tv, int tr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int argc = 0;
+  /* class 0 emits a `case 0:` arm here when it defines/inherits the method
+     (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
+     so a boxed scalar (cls_id 0) does not alias it (issue #1576). */
+  /* A candidate whose method takes `&blk` needs the call's block passed
+     to it. Materialize the proc ONCE, ahead of the switch, and hand the
+     same temp to every arm -- only one arm runs, and building it per arm
+     would allocate a proc per candidate class (#3399). Mirrors the
+     class-method cascade, which already does this. */
+  int blk_tmp0 = -1;
+  { int cblk0 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+    if (cblk0 >= 0) {
+      int npc0 = 0;
+      const PolyCand *pc0 = comp_poly_candidates(c, name, &npc0);   /* (#4966) */
+      for (int ki = 0; ki < npc0 && blk_tmp0 < 0; ki++) {
+        int k = pc0[ki].cls;
+        if (!c->classes[k].instantiated) continue;
+        int mi0 = pc0[ki].mi;
+        if (mi0 < 0) continue;
+        Scope *cm0 = &c->scopes[mi0];
+        /* a yielding candidate is reachable through its proc form */
+        if (!scope_has_callable_symbol(c, mi0) && !scope_needs_proc_form(c, mi0)) continue;
+        if ((cm0->blk_param && cm0->blk_param[0] && !cm0->yields) ||
+            scope_needs_proc_form(c, mi0)) {
+          /* `&blk` that survived the forwarding resolution names a REAL
+             proc (this function's own block param), not a literal to
+             materialize: write the proc expression itself. */
+          blk_tmp0 = hoist_block_proc(c, cblk0);
+        }
+      }
+    } }
+  /* A builtin Array receiver reaching a dispatch that exists only because
+     a USER class defines this name. Without an arm it falls to the raise:
+     `NoMethodError: undefined method 'map' for an instance of Array` at a
+     site where the block-carrying call is plainly Array#map. The builtin
+     is normally served by splicing the block inline, which is not
+     available here -- the block was materialized once as a proc and shared
+     by every arm, and a second spliced copy would disagree with whichever
+     arm ran. Drive the same proc over the elements instead (#3409).
+
+     Only reachable at all since a yielding method became dispatchable: a
+     non-yielding user `map` leaves a block-carrying call to the builtin
+     path entirely, which is why the same shape is correct without the
+     yield. */
+  { const char *pen_op = argc == 0 && nt_ref(nt, id, "block") >= 0
+                       ? poly_enum_op_for(name) : NULL;
+    /* A candidate that neither yields nor keeps a real &blk left no proc
+       materialized -- it ignores the block. The builtin arm still needs
+       one, so build it here; only one arm runs either way. */
+    if (pen_op && blk_tmp0 < 0) {
+      int cblk1 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+      if (cblk1 < 0) pen_op = NULL;
+      else blk_tmp0 = hoist_block_proc(c, cblk1);
+    }
+    if (pen_op) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ENUM_PROC, -1, TY_UNKNOWN, PC_SAME);
+      char pcall[160];
+      snprintf(pcall, sizeof pcall, "sp_poly_enum_proc(_t%d, %s, _t%d)", tv, pen_op, blk_tmp0);
+      /* an Integer Range walks through the same helper (its length and
+         members are known to it); without it a boxed Range fell to the
+         user-class switch's NoMethodError (#4840) */
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tr);
+      if (ret == TY_POLY) buf_puts(b, pcall);
+      else emit_unbox_text(c, ret, pcall, b);
+      buf_puts(b, "; }\nelse ");
+    } }
+  /* A boxed Mutex reaching a dispatch that exists because a user class
+     also defines `synchronize`: without an arm the Mutex fell to the
+     raise. The static arm (the lock/ensure shape in the synchronize
+     emitter) cannot serve it here, the block being a materialized proc
+     shared by every arm, so the runtime arm locks around the proc. */
+  if (sp_streq(name, "synchronize") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+    if (blk_tmp0 < 0) {
+      int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+      if (cblk2 >= 0) blk_tmp0 = hoist_block_proc(c, cblk2);
+    }
+    if (blk_tmp0 >= 0) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_SYNC, -1, TY_UNKNOWN, PC_SAME);
+      char mcall[96];
+      snprintf(mcall, sizeof mcall, "sp_Mutex_synchronize_proc((sp_mutex *)_t%d.v.p, _t%d)", tv, blk_tmp0);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX) { _t%d = ", tv, tv, tr);
+      if (ret == TY_POLY) buf_puts(b, mcall);
+      else emit_unbox_text(c, ret, mcall, b);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
+  /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
+  if (emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b) && g_plan_check)
+    pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
+  /* a class-valued receiver dispatches class-side, ahead of the instance
+     arms (#4218) */
+  if (!emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b) &&
+      ps->cls_members) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLS_MEMBERS, -1, TY_UNKNOWN, PC_SAME);
+    if (ret == TY_POLY || ret == TY_POLY_ARRAY)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %ssp_cls_members(_t%d)%s; else ",
+                 tv, tr, ret == TY_POLY ? "sp_box_poly_array(" : "", tv, ret == TY_POLY ? ")" : "");
+    else
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) sp_raise_nomethod(sp_nomethod_msg(\"members\", _t%d)); else ",
+                 tv, tv);
+  }
+  return blk_tmp0;
 }
