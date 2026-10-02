@@ -141,6 +141,9 @@ typedef enum {
 /* the form emit_coerce stores `node` into a `slot` slot in (how: CO_HOLD
    or CO_CONVERT) */
 int repr_coerce_form(Compiler *c, int node, TyKind slot, int how);
+/* the same, with the kind of the value as stored (store_value_kind) through
+   from_out: emit_coerce's plan */
+int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_out);
 /* the form emit_coerce_text stores an already-rendered `from` value in */
 int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how);
 const char *repr_coerce_form_name(int form);

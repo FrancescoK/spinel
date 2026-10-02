@@ -2888,50 +2888,65 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 }
 
 void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, Buf *b) {
-  /* A boolean a builtin takes as a flag (`report_on_exception = v`) is the
-     value's truthiness, whatever its class: nil and false are false, 0 and
-     "" are true (emit_cond) */
-  if (how == CO_CONVERT && slot == TY_BOOL) { emit_cond(c, node, b); RCC(CF_CONVERT); return; }
-  TyKind from = store_value_kind(c, node);
-  /* An untyped empty container (a bare Array.new / Hash.new) is built at
-     the slot's kind ahead of the fit, which an untyped value always passes:
-     the bare `Array.new` went into a Float array slot as the general Array
-     it renders as */
-  if (from == TY_UNKNOWN && (ty_is_array(slot) || ty_is_hash(slot)) &&
-      emit_empty_literal_as(c, node, slot, b)) { RCC(CF_EMPTY_LIT); return; }
-  if (store_fits(c, from, slot) || (from == TY_NIL && store_nil_fits(c, node, slot, how))) {
+  /* repr_coerce_plan decides the form (repr.c), in this order: a boolean
+     flag's truthiness, an untyped empty container built at the slot's kind,
+     a value that fits written as it is (store_fits first, as cheap as it
+     was: the hot path), a boxed slot, an empty literal of another kind, a
+     nil literal's sentinel, an Integer widened into a Bignum, a boxed value
+     unboxed, and the conversions emit_coerce_text makes or refuses. */
+  TyKind from = TY_UNKNOWN;
+  int plan = repr_coerce_plan(c, node, slot, how, &from);
+  switch (plan) {
+  case CF_FIT:
     emit_expr(c, node, b);
     RCC(CF_FIT);
     return;
-  }
-  /* A boxed slot takes any value boxed, as it is */
-  if (slot == TY_POLY) { emit_boxed(c, node, b); RCC(CF_BOX); return; }
-  /* An empty `[]` or `{}` of another kind than the slot's is built at the
-     slot's */
-  if ((ty_is_array(slot) || ty_is_hash(slot)) && emit_empty_literal_as(c, node, slot, b)) { RCC(CF_EMPTY_LIT); return; }
-  /* nil literal into a sentinel slot: the slot's nil itself */
-  if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, raise_tail_value_c(c, slot)); RCC(CF_NIL_SENT); return; }
-  /* An Integer into a Bignum slot is the same Ruby value in the wide
-     representation, its nil sentinel kept as nil (emit_bigint_operand) */
-  if (slot == TY_BIGINT && from == TY_INT) { emit_bigint_operand_ext(c, node, b); RCC(CF_INT2BIG); return; }
-  /* A boxed value into a typed slot is unboxed, as the plain writes unbox
-     it: a scalar or a String through its conversion (emit_poly_rhs_coerced,
-     nil kept as the slot's nil), a container, an object or a Bignum through
-     the checked unbox, which converts or raises for a value of another class
-     rather than reading its memory, and a Class from its boxed form. A
-     struct-valued or other handle slot has no checked unbox, and is refused
-     below. */
-  if (from == TY_POLY && how == CO_HOLD) {
+  case CF_CONVERT:
+    /* A boolean a builtin takes as a flag (`report_on_exception = v`) is the
+       value's truthiness, whatever its class: nil and false are false, 0 and
+       "" are true (emit_cond) */
+    if (how == CO_CONVERT && slot == TY_BOOL) { emit_cond(c, node, b); RCC(CF_CONVERT); return; }
+    break;
+  case CF_EMPTY_LIT:
+    /* An untyped empty container (a bare Array.new / Hash.new) is built at
+       the slot's kind ahead of the fit, which an untyped value always
+       passes: the bare `Array.new` went into a Float array slot as the
+       general Array it renders as; an empty `[]` or `{}` of another kind
+       than the slot's is built at the slot's */
+    if (emit_empty_literal_as(c, node, slot, b)) { RCC(CF_EMPTY_LIT); return; }
+    break;
+  case CF_BOX:
+    /* A boxed slot takes any value boxed, as it is */
+    if (slot == TY_POLY) { emit_boxed(c, node, b); RCC(CF_BOX); return; }
+    break;
+  case CF_NIL_SENT:
+    /* nil literal into a sentinel slot: the slot's nil itself */
+    if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, raise_tail_value_c(c, slot)); RCC(CF_NIL_SENT); return; }
+    break;
+  case CF_INT2BIG:
+    /* An Integer into a Bignum slot is the same Ruby value in the wide
+       representation, its nil sentinel kept as nil (emit_bigint_operand) */
+    emit_bigint_operand_ext(c, node, b); RCC(CF_INT2BIG); return;
+  case CF_POLY_RHS:
+    /* A boxed value into a typed slot is unboxed, as the plain writes unbox
+       it: a scalar or a String through its conversion (emit_poly_rhs_coerced,
+       nil kept as the slot's nil) */
     if (emit_poly_rhs_coerced(c, slot, node, b)) { RCC(CF_POLY_RHS); return; }
-    if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
-        slot == TY_STRBUF || slot == TY_CLASS || (ty_is_object(slot) && !comp_ty_value_obj(c, slot))) {
-      Buf vb; memset(&vb, 0, sizeof vb);
-      emit_expr(c, node, &vb);
-      emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
-      free(vb.p);
-      RCC(CF_CHECKED_UNBOX);
-      return;
-    }
+    break;
+  case CF_CHECKED_UNBOX: {
+    /* a container, an object or a Bignum through the checked unbox, which
+       converts or raises for a value of another class rather than reading
+       its memory, and a Class from its boxed form. A struct-valued or other
+       handle slot has no checked unbox, and is refused below. */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_expr(c, node, &vb);
+    emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
+    free(vb.p);
+    RCC(CF_CHECKED_UNBOX);
+    return;
+  }
+  default:
+    break;
   }
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_expr(c, node, &vb);

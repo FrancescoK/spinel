@@ -333,9 +333,11 @@ int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int h
   return CF_REFUSE;
 }
 
-int repr_coerce_form(Compiler *c, int node, TyKind slot, int how) {
+int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_out) {
+  if (from_out) *from_out = TY_UNKNOWN;
   if (how == CO_CONVERT && slot == TY_BOOL) return CF_CONVERT;
   TyKind from = store_value_kind(c, node);
+  if (from_out) *from_out = from;
   int container = ty_is_array(slot) || ty_is_hash(slot);
   if (from == TY_UNKNOWN && container && repr_empty_lit_as(c, node, slot)) return CF_EMPTY_LIT;
   if (repr_store_fits(c, from, slot) || (from == TY_NIL && repr_store_nil_fits(c, node, slot, how)))
@@ -351,6 +353,10 @@ int repr_coerce_form(Compiler *c, int node, TyKind slot, int how) {
       return CF_CHECKED_UNBOX;
   }
   return repr_coerce_text_form(c, node, from, slot, how);
+}
+
+int repr_coerce_form(Compiler *c, int node, TyKind slot, int how) {
+  return repr_coerce_plan(c, node, slot, how, NULL);
 }
 
 const char *repr_coerce_form_name(int form) {
