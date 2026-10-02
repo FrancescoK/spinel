@@ -1173,7 +1173,7 @@ int is_blk_param_call(Compiler *c, int node, int mi) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node) || !sp_streq(nt_type(nt, node), "CallNode")) return 0;
   const char *nm = nt_str(nt, node, "name");
-  if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]"))) return 0;
+  if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, node, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");

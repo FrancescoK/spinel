@@ -7006,8 +7006,7 @@ int bind_coerce_operator_params(Compiler *c) {
      something else. */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    int isa = nm && (sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") ||
-                     sp_streq(nm, "instance_of?"));
+    int isa = nm && is_kind_query(nm);
     int rtq = nm && sp_streq(nm, "respond_to?");
     if (!isa && !rtq) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -7673,7 +7672,7 @@ int infer_param_types(Compiler *c) {
     /* <method>.to_proc stored as a Proc: its .call sites are likewise the
        only way the target method is reached, so bind their arg types to the
        target's params (the emitted trampoline calls the real C signature). */
-    if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
+    if (recv >= 0 && name && is_call_alias(name) &&
         infer_type(c, recv) == TY_PROC) {
       int *mns, bound = 0;
       int nmn = proc_to_proc_method_nodes(c, recv, &mns);
@@ -11015,7 +11014,7 @@ static int curry_chain(Compiler *c, int node, int *applied, int *arity, TyKind *
       *applied = 0;
       return 1;
     }
-    if (sp_streq(nm, "[]") || sp_streq(nm, "call") || sp_streq(nm, "()")) {
+    if (is_call_alias(nm)) {
       if (!curry_chain(c, recv, applied, arity, ret, depth + 1)) return 0;
       /* one application per argument: curry[a, b] applies two */
       int a2 = nt_ref(nt, node, "arguments");
@@ -12334,7 +12333,7 @@ int infer_block_params(Compiler *c) {
      to the proc's params (e.g. `t` gets TY_SYMBOL instead of the default TY_INT). */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
-    if (!cname || (!sp_streq(cname, "call") && !sp_streq(cname, "()") && !sp_streq(cname, "[]"))) continue;
+    if (!cname || !is_call_alias(cname)) continue;
     if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_PROC) continue;
@@ -13771,8 +13770,7 @@ int infer_return_types(Compiler *c) {
       const char *pty = pred >= 0 ? nt_type(nt, pred) : NULL;
       if (!pty || !sp_streq(pty, "CallNode")) continue;
       const char *pn = nt_str(nt, pred, "name");
-      if (!pn || (!sp_streq(pn, "is_a?") && !sp_streq(pn, "kind_of?") &&
-                  !sp_streq(pn, "instance_of?"))) continue;
+      if (!pn || !is_kind_query(pn)) continue;
       int prec = nt_ref(nt, pred, "receiver");
       if (prec < 0 || !nt_type(nt, prec) ||
           !sp_streq(nt_type(nt, prec), "LocalVariableReadNode")) continue;

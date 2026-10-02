@@ -1435,7 +1435,7 @@ int is_blockless_block_param_call(Compiler *c, int id) {
   const char *ty = nt_type(nt, id);
   if (!ty || !sp_streq(ty, "CallNode")) return 0;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]"))) return 0;
+  if (!nm || !is_call_alias(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");

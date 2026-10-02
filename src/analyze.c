@@ -962,7 +962,7 @@ int a_block_is_lifted(Compiler *c, int id) {
   /* a literal block on a first-class proc's .call is lifted onto the
      _sp_proc_blk side-channel as a real proc (#2648), so its captures need
      cells exactly like any other escaping block */
-  if ((sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+  if (is_call_alias(name) &&
       recv >= 0 && infer_type(c, recv) == TY_PROC) return 1;
   /* so is Fiber.blocking { }'s, which sp_Fiber_blocking_proc calls */
   if (sp_streq(name, "blocking") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
@@ -25842,7 +25842,7 @@ static void mark_nullable_int_locals(Compiler *c) {
           changed |= mark_nullable_params_of_call(c, id, imeth[k].mi);
       }
       else if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);
-      else if (recv >= 0 && cn && (sp_streq(cn, "call") || sp_streq(cn, "[]") || sp_streq(cn, "()"))) {
+      else if (recv >= 0 && cn && is_call_alias(cn)) {
         TyKind rt = infer_type(c, recv);
         int *mns = NULL;
         int nmn = rt == TY_METHOD ? method_recv_nodes(c, recv, &mns)
@@ -30337,7 +30337,7 @@ void analyze_program(Compiler *c) {
         int vnode = nt_ref(nt, id, "value");
         if (vnode < 0 || nt_kind(nt, vnode) != NK_CallNode) continue;
         const char *cn = nt_str(nt, vnode, "name");
-        if (!cn || !(sp_streq(cn, "call") || sp_streq(cn, "()") || sp_streq(cn, "[]"))) continue;
+        if (!cn || !is_call_alias(cn)) continue;
         int crecv = nt_ref(nt, vnode, "receiver");
         if (crecv < 0 || infer_type(c, crecv) != TY_PROC) continue;
         const char *nm = nt_str(nt, id, "name");

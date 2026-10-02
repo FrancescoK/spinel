@@ -1043,7 +1043,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
   PolyArgs A = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
   cpoly_cls_value_arms(c, id, name, pos_argc, &A, ret, !is_setter_val, p, cap);
   free(kwty);
-  int callable = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]");
+  int callable = is_call_alias(name);
   if (callable &&
       (ps.kw_pos && !ps.has_splat_arg ? (ps.kw_ds ? pos_argc : argc) <= SP_PROC_ARG_SLOTS
        : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
@@ -1304,7 +1304,7 @@ static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const Poly
   int live_blk = blk >= 0 && resolve_forwarded_block(c, blk) >= 0;
   if (live_blk && poly_enum_op_for(name)) cpoly_family(p, cap, PB_ENUM_PROC);
   if (live_blk && sp_streq(name, "synchronize")) cpoly_family(p, cap, PB_SYNC);
-  if (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) cpoly_family(p, cap, PB_CALLABLE);
+  if (is_call_alias(name)) cpoly_family(p, cap, PB_CALLABLE);
   PolyArgs none = { NULL, 0, NULL, NULL, NULL, NULL };
   if (!cpoly_cls_value_arms(c, id, name, 0, &none, ret, 1, p, cap) && ps->cls_members)
     cpoly_family(p, cap, PB_CLS_MEMBERS);

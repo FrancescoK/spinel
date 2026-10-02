@@ -240,7 +240,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      runtime accumulates int args, so completion typing covers int-returning
      procs; partial applications and other returns remain TY_CURRY). */
   if (rt == TY_PROC && sp_streq(name, "curry")) { *out = TY_CURRY; return 1; }
-  if (rt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()"))) {
+  if (rt == TY_CURRY && is_call_alias(name)) {
     int complete = 0; TyKind cret = TY_UNKNOWN;
     int traced = curry_apply_info(c, id, &complete, &cret);
     /* an untraceable base saturates (or not) at RUN time, so the call answers

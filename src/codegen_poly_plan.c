@@ -2877,7 +2877,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
                                             argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
   }
   else if (kwh >= 0 && !has_splat_arg &&
-           (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+           is_call_alias(name) &&
            argc <= SP_PROC_ARG_SLOTS) {
     /* The keyword split has no hash for a callable to take: build one
        from the per-key temps, only when the slot holds a callable, and
@@ -2896,7 +2896,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
   else if (splat_last)
     called = emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
                                               stk >= 0 ? stk : atmp[splat_a], tv, tr, ret, b);
-  else if (splat_a >= 0 && (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
+  else if (splat_a >= 0 && is_call_alias(name))
     unsupported(c, id, "a splat before other arguments into a method called on a value of more than one type");
   if (called && g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
   return blk_tmp2;

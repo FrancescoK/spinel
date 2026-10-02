@@ -2452,7 +2452,7 @@ int static_isa_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
   if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "CallNode")) return -1;
   const char *nm = nt_str(nt, pred, "name");
-  if (!nm || (!sp_streq(nm, "is_a?") && !sp_streq(nm, "kind_of?") && !sp_streq(nm, "instance_of?"))) return -1;
+  if (!nm || !is_kind_query(nm)) return -1;
   int recv = nt_ref(nt, pred, "receiver");
   if (recv < 0) return -1;
   TyKind rt = comp_ntype(c, recv);
@@ -6213,7 +6213,7 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
   if (rt == TY_INT || rt == TY_FLOAT) {
     if (ac == 0 && sp_streq(nm, "nil?")) return 1;
     if (ac == 1 && nt_kind(nt, av[0]) == NK_ConstantReadNode &&
-        (sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")))
+        is_kind_query(nm))
       return 1;
   }
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&

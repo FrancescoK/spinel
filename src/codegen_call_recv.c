@@ -8080,7 +8080,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   static int isa_nil_open = 0;
   if (!isa_nil_open && recv >= 0 && ty_is_object(rt) && argc == 1 &&
       !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      is_kind_query(name) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
       g_n_argov < MAX_ARG_OVERRIDE) {
     const char *ncn = isa_const_name(nt, argv[0]);
@@ -8123,7 +8123,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      is_kind_query(name) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
     const char *cn = isa_const_name(nt, argv[0]);
     if (cn) {
@@ -10199,8 +10199,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     /* is_a?/kind_of?/instance_of?/equal? via the boxed value's builtin identity
        (its class is "Range"; the helpers key on the SP_BUILTIN_FLOAT_RANGE tag) */
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-                      sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       int is_iof = sp_streq(name, "instance_of?");
       char cnq[192];
       const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);

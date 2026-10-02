@@ -11,6 +11,7 @@
 
 #include "node_table.h"
 #include "types.h"
+#include "builtin_names.h"
 
 /* require-gate (defined in spinel_parse.c). sp_feature_enabled(name) is 1 when
    feature `name` may be provided: always when the gate is off (g_require_gate

@@ -4094,7 +4094,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* A zero-argument application is legal: it applies nothing, and on a
        zero-arity base it is the call that realizes the curry (#3654). */
-    if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc == 0) {
+    if (crt == TY_CURRY && is_call_alias(name) && argc == 0) {
       int complete0 = 0; TyKind cret0 = TY_UNKNOWN;
       int traced0 = curry_apply_info(c, id, &complete0, &cret0);
       if (!traced0) {   /* run-time saturation, as above */
@@ -4107,7 +4107,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (complete0) buf_puts(b, ")");
       return 1;
     }
-    if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc >= 1) {
+    if (crt == TY_CURRY && is_call_alias(name) && argc >= 1) {
       /* The application that reaches the proc's arity realizes the curry to its
          (int) result; earlier applications return another curry. curry[a, b]
          chains one apply per argument. */
@@ -5686,7 +5686,7 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
                               const int *atmp, const TyKind *atmp_ty, const char *guard,
                               int tv, int tr, TyKind ret, int kwpos, Buf *b) {
   if (!name ||
-      !(sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
+      !is_call_alias(name))
     return 0;
   /* The callable ABI packs positional arguments into the boxed side channel,
      so the ceiling is that channel's: publishing past it would write out of
@@ -5870,7 +5870,7 @@ int emit_poly_callable_spread_prearm(Compiler *c, const char *name, int sa,
                                             const int *atmp, const TyKind *atmp_ty, int st,
                                             int tv, int tr, TyKind ret, Buf *b) {
   if (!name ||
-      !(sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
+      !is_call_alias(name))
     return 0;
   g_needs_proc_poly_argslot = 1;
   int ta = ++g_tmp;
@@ -25342,8 +25342,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        == and ===, the table's eql? for eql?, identity for equal?, a poly
        operand unwrapped in place */
     if (argc == 1 && emit_native_object_protocol(c, id, b)) return;
-    if ((sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-         sp_streq(name, "instance_of?")) && argc == 1 &&
+    if (is_kind_query(name) && argc == 1 &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
       const char *tcn = nt_str(nt, argv[0], "name");
       int yes;
@@ -25422,8 +25421,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      class/module, no builtin, and no defined value-constant cannot exist at
      runtime (whole-program), so evaluate the receiver for effect and raise. */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-       sp_streq(name, "instance_of?")) &&
+      is_kind_query(name) &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
     const char *tcn = nt_str(nt, argv[0], "name");
     /* Names CRuby defines that is_builtin_class_name doesn't list (the
@@ -26961,7 +26959,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
   /* An UNBOUND method is not callable: CRuby's NoMethodError (#2724). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+      is_call_alias(name) &&
       method_expr_is_unbound(c, recv)) {
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
     buf_printf(b, "); sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of UnboundMethod\")[1])); %s; })",
@@ -28246,7 +28244,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+      (is_call_alias(name) ||
        (sp_streq(name, "===") && argc == 1))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     /* `pr&.call(...)`: a nil proc answers nil and the call does not run. The
@@ -28895,8 +28893,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     /* A handle's class is a runtime property (a socket kind, a path-backed
        File, a bare stream), so the ancestor walk runs on the kind rather than
        on a static class id. */
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-                      sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       char icq[192];
       const char *icn = isa_match_name(nt, argv[0], icq, sizeof icq);
       if (icn) {
@@ -31814,7 +31811,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_backtrace_captured())");
       return;
     }
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       /* exception class names are registered fully qualified ("PG::Error"),
          so a nested-path argument must compare with the whole path -- the
          flat leaf name never matched (#3260) */
@@ -33192,7 +33189,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
     /* klass.is_a?/kind_of?(Module|Class|Object|BasicObject) */
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       int exact = sp_streq(name, "instance_of?");
       const char *cn2 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                         ? nt_str(nt, argv[0], "name") : NULL;
@@ -39473,7 +39470,7 @@ else {
   /* concrete builtin receiver: is_a?/kind_of?/instance_of? is known at compile
      time (evaluate the receiver for side effects, then yield the constant). */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      is_kind_query(name) &&
       isa_const_name(nt, argv[0])) {
     /* `[]` and a bare `Array.new` are arrays even when their element type (and
        so the inferred type) is still UNKNOWN -- treat them as such for the fold. */
@@ -39543,7 +39540,7 @@ else {
   /* poly.is_a?(class_var) where the argument is a TY_CLASS typed expression.
      Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      is_kind_query(name) &&
       comp_ntype(c, argv[0]) == TY_CLASS &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
@@ -39558,7 +39555,7 @@ else {
 
   /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      is_kind_query(name)) {
     const char *cty = nt_type(nt, argv[0]);
     char cnq[192];
     const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);
@@ -39619,7 +39616,7 @@ else {
       buf_puts(b, "), sp_SymPolyHash_new())");
       return;
     }
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       const char *cn = isa_const_name(nt, argv[0]);
       int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) : 0;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
@@ -40137,7 +40134,7 @@ else {
                  t2, t2, t2, t2, t2);
       return;
     }
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    if (argc == 1 && is_kind_query(name)) {
       const char *cn = isa_const_name(nt, argv[0]);
       buf_puts(b, cn && sp_streq(cn, "Hash") ? "1" : "0");
       return;

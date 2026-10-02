@@ -2836,8 +2836,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         /* object query methods on a bare {} fold to a bool (see codegen) */
         if (argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "frozen?") ||
                           sp_streq(name, "empty?") || sp_streq(name, "any?"))) return TY_BOOL;
-        if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-                          sp_streq(name, "instance_of?"))) return TY_BOOL;
+        if (argc == 1 && is_kind_query(name)) return TY_BOOL;
         if (argc == 0 && sp_streq(name, "to_h")) return TY_STR_POLY_HASH;   /* (#2410) */
         if (argc <= 1 && sp_streq(name, "sum")) {
           /* the empty collection answers the SEED itself, so the call is the
@@ -3089,7 +3088,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* <method>.call(args) / [] / bind_call(obj, args) -> the target's return
      type (bind_call = bind(obj).call(args), #3246). */
   if (recv >= 0 && rt == TY_METHOD &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+      (is_call_alias(name) ||
        (sp_streq(name, "===") && argc >= 1) ||
        (sp_streq(name, "bind_call") && argc >= 1))) {
     int mn = method_recv_node(c, recv);
@@ -3186,7 +3185,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      proc's body pins it to one shape, and a proc that arrives through a slot
      has no body to read, so the answer is boxed. */
   if (recv >= 0 && rt == TY_PROC &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
+      is_call_alias(name)) {
     /* In a proc form, a call on the block parameter is the yield: the block is
        a real proc supplied per call site, so its result is poly uniformly --
        the same reason the YieldNode arm answers poly there. Typing it from any
@@ -3278,7 +3277,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 0 && sp_streq(name, "subclasses")) return TY_POLY_ARRAY;
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
+    if (argc == 1 && is_kind_query(name)) return TY_BOOL;
     if (argc == 1 && sp_streq(name, "include?")) return TY_BOOL;
     if (argc == 1 && sp_streq(name, "class_variable_defined?")) return TY_BOOL;
     if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) return TY_POLY;
@@ -4144,8 +4143,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_OPENSTRUCT) {
     if (sp_streq(name, "to_h") && argc == 0) return TY_SYM_POLY_HASH;
     if (sp_streq(name, "respond_to?")) return TY_BOOL;
-    if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-        sp_streq(name, "instance_of?")) return TY_BOOL;
+    if (is_kind_query(name)) return TY_BOOL;
     if ((sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
