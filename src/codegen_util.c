@@ -2194,7 +2194,8 @@ const char *poly_rhs_unbox_fn(TyKind slot) {
 }
 /* emit_typed_sink_text's conversion of a boxed value into a typed element */
 const char *poly_sink_unbox_fn(TyKind slot) {
-  return slot == TY_INT ? "sp_poly_to_i" : slot == TY_FLOAT ? "sp_poly_to_f" : NULL;
+  const TyTraits *tr = ty_traits_of(slot);   /* the unbox_sink column (types.c) */
+  return tr ? tr->unbox_sink : NULL;
 }
 
 int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
