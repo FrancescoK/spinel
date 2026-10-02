@@ -3609,6 +3609,91 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
   return 0;
 }
 
+/* A String receiver (infer_call_inner's rules, in their order) */
+static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* string receiver methods */
+  if (recv >= 0 && rt == TY_STRING) {
+    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
+       It reads the mode, so it sits ahead of the to_i row. */
+    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
+    /* builtin-op rows (builtin_ops.c): the calls typed by name, arity and
+       block form */
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    /* casecmp/casecmp? with a statically non-string argument: CRuby answers
+       nil rather than raising, so the call types nil (the emitter drops the
+       comparison and evaluates the argument for effect). */
+    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1) {
+      TyKind at0 = infer_type(c, argv[0]);
+      if (at0 == TY_POLY) { *out = TY_POLY; return 1; }  /* runtime tag decides: boxed result or nil */
+      /* an operand that answers #to_str is converted and compared
+         (rb_check_string_type). The call is typed POLY, not the Integer or
+         boolean a String operand gives, because the conversion can still
+         answer nothing: a #to_str answering nil is CRuby's nil casecmp. The
+         emitter takes the same shape test, so both agree. */
+      if (ty_is_object(at0) && class_has_to_str_shape(c, ty_object_class(at0)))
+        { *out = TY_POLY; return 1; }
+      if (at0 != TY_STRING && at0 != TY_UNKNOWN) { *out = TY_NIL; return 1; }
+      { *out = sp_streq(name, "casecmp") ? TY_INT : TY_BOOL; return 1; }
+    }
+    if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) { *out = an_unpack1_lit_type(nt, argv[0]); return 1; }
+    /* byteindex/byterindex over a String or Regexp needle -> byte offset or
+       nil (SP_INT_NIL). */
+    if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
+        (argc == 1 || argc == 2) &&
+        (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_REGEX))
+      { *out = TY_INT; return 1; }
+    /* each_line and lines read their separator argument */
+    if (sp_streq(name, "each_line") && argc == 0 && nt_ref(nt, id, "block") < 0)
+      { *out = TY_ENUMERATOR; return 1; }
+    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+      { *out = TY_ENUMERATOR; return 1; }  /* each_line(chomp: ...) blockless */
+    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        infer_type(c, argv[0]) == TY_STRING)
+      { *out = TY_ENUMERATOR; return 1; }  /* each_line(sep) blockless */
+    if (sp_streq(name, "lines") && argc == 1 && infer_type(c, argv[0]) == TY_STRING)
+      { *out = TY_STR_ARRAY; return 1; }   /* lines(sep) */
+    if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
+        nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
+      { *out = TY_STR_ARRAY; return 1; }   /* lines(sep, chomp: true) (#3546) */
+    if (sp_streq(name, "each_line")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "lines")) { *out = nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY; return 1; }
+    if (sp_streq(name, "scan") && argc == 1) {
+      /* the block form iterates and returns self (the receiver string) */
+      if (nt_ref(nt, id, "block") >= 0) { *out = TY_STRING; return 1; }
+      /* scan with capture groups returns poly_array (array of arrays or
+         strings). Whether the rows are whole matches or capture rows is a
+         property of the pattern's SOURCE, and the pattern may be reached
+         through a name: a constant or a local bound to a literal is exactly as
+         visible as the literal, which is what an_regex_lit_src resolves (and
+         what codegen's re_lit_node resolves on its side). Reading only a direct
+         literal node left the two disagreeing the moment the pattern had a
+         name -- a capturing constant compiled to sp_re_scan_poly under a
+         str_array type (#3391). */
+      const char *rsrc = an_regex_lit_src(c, argv[0]);
+      if (rsrc) { *out = an_re_has_captures(rsrc) ? TY_POLY_ARRAY : TY_STR_ARRAY; return 1; }
+      /* A regex whose source is not visible at all -- an interpolated literal,
+         an inline `Regexp.new(s)`, a method's return -- can only be asked at
+         run time whether it captures, so take the shape that answers both:
+         sp_re_scan_poly pushes the whole match when the pattern has no groups
+         and a captures row when it does (#3389). */
+      if (infer_type(c, argv[0]) == TY_REGEX) { *out = TY_POLY_ARRAY; return 1; }
+      /* so is a BOXED pattern, a Regexp or a String only at run time, as the
+         poly-receiver rule already has it (sp_scan_boxed_poly) */
+      if (infer_type(c, argv[0]) == TY_POLY) { *out = TY_POLY_ARRAY; return 1; }
+      { *out = TY_STR_ARRAY; return 1; }
+    }
+    if (sp_streq(name, "gsub") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
+      { *out = TY_ENUMERATOR; return 1; }  /* blockless gsub(/re/): an Enumerator of matches */
+    if (sp_streq(name, "gsub")) { *out = TY_STRING; return 1; }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6366,86 +6451,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     return TY_STRING;
 
-  /* string receiver methods */
-  if (recv >= 0 && rt == TY_STRING) {
-    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
-       It reads the mode, so it sits ahead of the to_i row. */
-    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) return TY_POLY;
-    /* builtin-op rows (builtin_ops.c): the calls typed by name, arity and
-       block form */
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    /* casecmp/casecmp? with a statically non-string argument: CRuby answers
-       nil rather than raising, so the call types nil (the emitter drops the
-       comparison and evaluates the argument for effect). */
-    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1) {
-      TyKind at0 = infer_type(c, argv[0]);
-      if (at0 == TY_POLY) return TY_POLY;  /* runtime tag decides: boxed result or nil */
-      /* an operand that answers #to_str is converted and compared
-         (rb_check_string_type). The call is typed POLY, not the Integer or
-         boolean a String operand gives, because the conversion can still
-         answer nothing: a #to_str answering nil is CRuby's nil casecmp. The
-         emitter takes the same shape test, so both agree. */
-      if (ty_is_object(at0) && class_has_to_str_shape(c, ty_object_class(at0)))
-        return TY_POLY;
-      if (at0 != TY_STRING && at0 != TY_UNKNOWN) return TY_NIL;
-      return sp_streq(name, "casecmp") ? TY_INT : TY_BOOL;
-    }
-    if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
-    /* byteindex/byterindex over a String or Regexp needle -> byte offset or
-       nil (SP_INT_NIL). */
-    if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
-        (argc == 1 || argc == 2) &&
-        (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_REGEX))
-      return TY_INT;
-    /* each_line and lines read their separator argument */
-    if (sp_streq(name, "each_line") && argc == 0 && nt_ref(nt, id, "block") < 0)
-      return TY_ENUMERATOR;
-    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
-      return TY_ENUMERATOR;  /* each_line(chomp: ...) blockless */
-    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        infer_type(c, argv[0]) == TY_STRING)
-      return TY_ENUMERATOR;  /* each_line(sep) blockless */
-    if (sp_streq(name, "lines") && argc == 1 && infer_type(c, argv[0]) == TY_STRING)
-      return TY_STR_ARRAY;   /* lines(sep) */
-    if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
-        nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
-      return TY_STR_ARRAY;   /* lines(sep, chomp: true) (#3546) */
-    if (sp_streq(name, "each_line")) return TY_STRING;
-    if (sp_streq(name, "lines")) return nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY;
-    if (sp_streq(name, "scan") && argc == 1) {
-      /* the block form iterates and returns self (the receiver string) */
-      if (nt_ref(nt, id, "block") >= 0) return TY_STRING;
-      /* scan with capture groups returns poly_array (array of arrays or
-         strings). Whether the rows are whole matches or capture rows is a
-         property of the pattern's SOURCE, and the pattern may be reached
-         through a name: a constant or a local bound to a literal is exactly as
-         visible as the literal, which is what an_regex_lit_src resolves (and
-         what codegen's re_lit_node resolves on its side). Reading only a direct
-         literal node left the two disagreeing the moment the pattern had a
-         name -- a capturing constant compiled to sp_re_scan_poly under a
-         str_array type (#3391). */
-      const char *rsrc = an_regex_lit_src(c, argv[0]);
-      if (rsrc) return an_re_has_captures(rsrc) ? TY_POLY_ARRAY : TY_STR_ARRAY;
-      /* A regex whose source is not visible at all -- an interpolated literal,
-         an inline `Regexp.new(s)`, a method's return -- can only be asked at
-         run time whether it captures, so take the shape that answers both:
-         sp_re_scan_poly pushes the whole match when the pattern has no groups
-         and a captures row when it does (#3389). */
-      if (infer_type(c, argv[0]) == TY_REGEX) return TY_POLY_ARRAY;
-      /* so is a BOXED pattern, a Regexp or a String only at run time, as the
-         poly-receiver rule already has it (sp_scan_boxed_poly) */
-      if (infer_type(c, argv[0]) == TY_POLY) return TY_POLY_ARRAY;
-      return TY_STR_ARRAY;
-    }
-    if (sp_streq(name, "gsub") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
-      return TY_ENUMERATOR;  /* blockless gsub(/re/): an Enumerator of matches */
-    if (sp_streq(name, "gsub")) return TY_STRING;
-  }
+  { TyKind r; if (infer_string_recv_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* <int_array>.product(<int_array>)[.to_a].inspect -> a string */
   if (sp_streq(name, "inspect") && argc == 0 && recv >= 0) {
     int pr = recv;
