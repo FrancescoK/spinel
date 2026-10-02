@@ -9927,6 +9927,10 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
   int a_int = (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT);
   int b_int = (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT);
   if ((a_int && b.tag == SP_TAG_FLT) || (a.tag == SP_TAG_FLT && b_int)) return FALSE;
+  /* Array#eql? answers false for anything that is not an Array: unlike ==, it
+     does not defer to an operand that answers to_ary */
+  if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) &&
+      !(b.tag == SP_TAG_OBJ && sp_poly_is_array_kind(b.cls_id))) return FALSE;
   /* Array#eql? and Hash#eql? recurse per element / value with eql? (not ==),
      so [1, 2] is not eql? to [1, 2.0], nor {a: 1} to {a: 1.0}, even though
      they are ==. */
