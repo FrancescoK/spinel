@@ -9,6 +9,10 @@
 static CallPlan *g_cp_memo = NULL;
 static unsigned char *g_cp_have = NULL;
 static int g_cp_cap = 0;
+/* the name each memo entry was resolved under (a copy: a rename frees the
+   node's string). A node codegen renames for a re-entry (Array#slice emitted
+   as #[]) is resolved fresh, and not kept, while its name is not the memo's */
+static char **g_cp_name = NULL;
 
 /* a descendant of cid with its own `name`: the dispatch is a switch */
 static int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
@@ -340,7 +344,12 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   static CallPlan fresh;
   if (id < 0 || id >= c->node_cap) { cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE); return &fresh; }
   int plain = cplan_plain_ctx();
-  if (plain && id < g_cp_cap && g_cp_have[id]) return &g_cp_memo[id];
+  const char *nm = nt_str(c->nt, id, "name");
+  if (plain && id < g_cp_cap && g_cp_have[id]) {
+    const char *mn = g_cp_name[id];
+    if (mn ? nm && sp_streq(mn, nm) : !nm) return &g_cp_memo[id];
+    plain = 0;
+  }
 #ifndef NDEBUG
   int tmp0 = g_tmp;
 #endif
@@ -354,10 +363,14 @@ const CallPlan *cplan_user(Compiler *c, int id) {
     while (ncap <= id) ncap *= 2;
     g_cp_memo = realloc(g_cp_memo, (size_t)ncap * sizeof *g_cp_memo);
     g_cp_have = realloc(g_cp_have, (size_t)ncap);
+    g_cp_name = realloc(g_cp_name, (size_t)ncap * sizeof *g_cp_name);
     memset(g_cp_have + g_cp_cap, 0, (size_t)(ncap - g_cp_cap));
+    memset(g_cp_name + g_cp_cap, 0, (size_t)(ncap - g_cp_cap) * sizeof *g_cp_name);
     g_cp_cap = ncap;
   }
   g_cp_memo[id] = fresh;
+  free(g_cp_name[id]);
+  g_cp_name[id] = nm ? strdup(nm) : NULL;
   g_cp_have[id] = 1;
   return &g_cp_memo[id];
 }
