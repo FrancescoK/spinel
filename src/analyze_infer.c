@@ -1727,18 +1727,17 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind a0 = ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN;
   /* The table names the builtin's answer, and a program that reopened the
-     kind's class with its own method of the name runs that one instead. A
-     scalar's reopen is what codegen calls for such a site, so the site
-     answers its return type. An Array's or Hash's is not reached for a name
-     a builtin arm takes, so no answer would describe the site: decline it.
-     Typing it from the table read `class Array; def first = 9; end`'s
-     yield.first back as the element, a wrong value where the program had
-     failed to build. */
+     kind's class with its own method of the name runs that one instead.
+     That reopen is what codegen calls for such a site, so the site answers
+     its return type. An Array's or Hash's reopen of a builtin name is
+     dispatched too since #7078; declining it here, as before that, left the
+     yield typed as one site, and `yield.first` over a Hash reopen and an
+     Array block wrote the Array's element into the reopen's Symbol slot (a
+     C compile error). */
   { const char *rn = nt_str(nt, node, "name");
     /* a call an alias captured the builtin for (builtin_only) runs the builtin */
     int rmi = nt_int(nt, node, "builtin_only", 0) ? -1 : comp_builtin_kind_reopen_mi(c, rk, rn);
     if (rmi >= 0) {
-      if (ty_is_array(rk) || ty_is_obj_array(rk) || ty_is_hash(rk)) return 0;
       /* still settling in an early round is not a reason to decline: the
          site is answered by the reopen either way, and codegen reads the
          settled return */
