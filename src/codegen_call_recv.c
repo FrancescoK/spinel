@@ -858,6 +858,12 @@ static void emit_find_loop_head(Compiler *c, int id, const char *k, int ti, int 
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
 }
 
+/* The inspect label of a blockless combinator's Enumerator, CRuby's
+   `combination(2)` or an argless `permutation`; `tn` holds the count. */
+static void emit_combinator_enum_label(const char *name, int argc, int tn, Buf *b) {
+  if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
+  else buf_printf(b, "SPL(\"%s\")", name);
+}
 static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
   Buf cb; memset(&cb, 0, sizeof cb);
   (void)bb; (void)bn;
@@ -3953,8 +3959,7 @@ else {
         /* blockless: an Enumerator over those tuples (#3614) */
         buf_printf(b, " sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_poly_array(_t%d)); SP_GC_ROOT(_t%d);", te, tout, te);
         buf_printf(b, " sp_enum_with_src(_t%d, sp_box_int_array(_t%d), ", te, ta);
-        if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
-        else buf_printf(b, "SPL(\"%s\")", name);
+        emit_combinator_enum_label(name, argc, tn, b);
         buf_puts(b, "); })");
         return 1;
       }
@@ -3978,8 +3983,7 @@ else {
         buf_printf(b, "%s(_t%d, _t%d", combfn, ta, tn);
         buf_puts(b, ")))");
         buf_printf(b, "; SP_GC_ROOT(_t%d); sp_enum_with_src(_t%d, _t%d, ", te, te, ts);
-        if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
-        else buf_printf(b, "SPL(\"%s\")", name);
+        emit_combinator_enum_label(name, argc, tn, b);
         buf_puts(b, ")");
         buf_puts(b, "; })");
         return 1;
