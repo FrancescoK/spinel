@@ -1878,9 +1878,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -1909,9 +1909,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -2097,9 +2097,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -2213,7 +2213,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int v = view_push(c, recv, TY_POLY_ARRAY);
     /* and pin it for the inference too, the way the hash face does: the cached
        type alone does not survive a safe-navigation guard, whose re-emission
        asks again and re-establishes the receiver as poly -- the array emitters
@@ -2232,7 +2232,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     else emit_call(c, id, b);
     g_poly_redispatch_id = sv_rd;
     an_set_face_node(sv_face, sv_fk);
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -13576,7 +13576,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int v = view_push(c, recv, TY_POLY_ARRAY);
     /* find_all on the pair array is Enumerable select (a hash receiver only
        lands here through the redispatch, so the hash-returning Hash#select
        emitter is out of the picture) */
@@ -13591,16 +13591,16 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       emit_call(c, id, &db);
       buf_printf(b, "({ (void)(%s); ", db.p ? db.p : "0");
       free(db.p);
-      c->ntype[recv] = sv;
+      view_pop(c, v);
       g_n_argov--;              /* re-emit the REAL receiver, not the override */
       emit_expr(c, recv, b);
       g_n_argov++;
-      c->ntype[recv] = TY_POLY_ARRAY;
+      v = view_push(c, recv, TY_POLY_ARRAY);
       buf_puts(b, "; })");
     }
     else emit_call(c, id, b);
     if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "find_all");
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -13615,9 +13615,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
-    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_INT_ARRAY;
+    int v = view_push(c, recv, TY_INT_ARRAY);
     emit_call(c, id, b);
-    c->ntype[recv] = sv;
+    view_pop(c, v);
     g_n_argov--;
     return 1;
   }
@@ -13745,7 +13745,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "%s%d", tp, t);
   g_n_argov++;
   TyKind as = ty_poly_face_kind(kind);
-  TyKind sv = c->ntype[recv]; c->ntype[recv] = as;
+  int v = view_push(c, recv, as);
   int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
   an_set_face_node(recv, as);
   TyKind nat = infer_uncached(c, id);
@@ -13761,7 +13761,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   Buf cb; memset(&cb, 0, sizeof cb);
   emit_call(c, id, &cb);
   an_set_face_node(sv_face, sv_fk);
-  c->ntype[recv] = sv;
+  view_pop(c, v);
   g_n_argov--;
   const char *call = cb.p ? cb.p : "0";
   /* A typed emitter that declines the call's argument shape answers the
@@ -14063,11 +14063,11 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   g_argov_node[g_n_argov] = recv;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
   g_n_argov++;
-  TyKind svb = c->ntype[recv]; c->ntype[recv] = TY_STRING;
+  int v = view_push(c, recv, TY_STRING);
   nt_node_set_str((NodeTable *)nt, id, "name", plain);
   Buf nbb; memset(&nbb, 0, sizeof nbb); emit_call(c, id, &nbb);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
-  c->ntype[recv] = svb;
+  view_pop(c, v);
   g_n_argov--;
   buf_printf(b, "({ const char *_t%d = %s; ", tnb, nbb.p ? nbb.p : "\"\"");
   free(nbb.p);
@@ -14486,9 +14486,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       g_argov_node[g_n_argov] = recv;
       snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", trx);
       g_n_argov++;
-      TyKind svrx = c->ntype[recv]; c->ntype[recv] = TY_REGEX;
+      int v = view_push(c, recv, TY_REGEX);
       emit_call(c, id, b);
-      c->ntype[recv] = svrx;
+      view_pop(c, v);
       g_n_argov--;
       return 1;
     }
@@ -15336,9 +15336,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
           TyKind rty = comp_ntype(c, id);
           if (rty != TY_FLOAT) return 0;
           Buf pb2; memset(&pb2, 0, sizeof pb2);
-          c->ntype[id] = TY_POLY;
+          int v = view_push(c, id, TY_POLY);
           emit_expr(c, id, &pb2);
-          c->ntype[id] = rty;
+          view_pop(c, v);
           emit_unbox_text(c, TY_FLOAT, pb2.p ? pb2.p : "sp_box_nil()", b);
           free(pb2.p);
           return 1;
