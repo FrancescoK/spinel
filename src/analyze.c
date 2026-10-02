@@ -27528,6 +27528,50 @@ static void rewrite_builtin_alias_self_calls(Compiler *c) {
   }
 }
 
+/* A bare `@ivar` argument whose ivar is written from a local, handed to a
+   parameter the callee appends to: the callee would append to a copy, so
+   the program is refused (#6998). Runs once sharing analysis settles. */
+static void refuse_lent_ivar_copies(Compiler *c) {
+  for (int pass = 0; pass < 2; pass++)
+  for (int cu = comp_kind_first(c, pass ? NK_SuperNode : NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
+    int cmi = -1;
+    if (pass) {
+      if (nt_kind(c->nt, cu) != NK_SuperNode) continue;
+      Scope *sus = comp_scope_of(c, cu);
+      if (!sus || sus->class_id < 0 || !sus->name) continue;
+      cmi = a_super_target(c, sus);
+      if (cmi < 0) continue;
+    }
+    else {
+      if (nt_kind(c->nt, cu) != NK_CallNode) continue;
+      /* only a call we can pin to one body: the callee is what says whether the
+         argument is mutated, and a receiver we cannot resolve has no single one */
+      int curecv = nt_ref(c->nt, cu, "receiver");
+      if (curecv >= 0) {
+        NodeKind rk = nt_kind(c->nt, curecv);
+        if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+      }
+      const char *cun = nt_str(c->nt, cu, "name");
+      if (!cun) continue;
+      cmi = an_any_scope_by_name(c, cun);
+      if (cmi < 0) continue;
+    }
+    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
+      if (!an_param_mutated_in_place(c, cmi, j)) continue;
+      int spread5 = -1;
+      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
+      if (an5 < 0) continue;
+      if (nt_kind(c->nt, an5) == NK_InstanceVariableReadNode &&
+          (comp_ntype(c, an5) == TY_STRING || comp_ntype(c, an5) == TY_STRBUF) &&
+          ivar_written_from_local(c, an5) && !an_arg_is_shared_handle(c, an5))
+        unsupported_feature(c, an5, "a String instance variable written from a local is passed to an "
+                            "appending parameter (a String is not yet shared by reference through a "
+                            "lent instance variable written from a local). Return the String from the "
+                            "method and assign it, or append to it in the caller.");
+    }
+}
+}
+
 void analyze_program(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -31660,44 +31704,7 @@ void analyze_program(Compiler *c) {
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
-  for (int pass = 0; pass < 2; pass++)
-  for (int cu = comp_kind_first(c, pass ? NK_SuperNode : NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
-    int cmi = -1;
-    if (pass) {
-      if (nt_kind(c->nt, cu) != NK_SuperNode) continue;
-      Scope *sus = comp_scope_of(c, cu);
-      if (!sus || sus->class_id < 0 || !sus->name) continue;
-      cmi = a_super_target(c, sus);
-      if (cmi < 0) continue;
-    }
-    else {
-      if (nt_kind(c->nt, cu) != NK_CallNode) continue;
-      /* only a call we can pin to one body: the callee is what says whether the
-         argument is mutated, and a receiver we cannot resolve has no single one */
-      int curecv = nt_ref(c->nt, cu, "receiver");
-      if (curecv >= 0) {
-        NodeKind rk = nt_kind(c->nt, curecv);
-        if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
-      }
-      const char *cun = nt_str(c->nt, cu, "name");
-      if (!cun) continue;
-      cmi = an_any_scope_by_name(c, cun);
-      if (cmi < 0) continue;
-    }
-    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
-      if (!an_param_mutated_in_place(c, cmi, j)) continue;
-      int spread5 = -1;
-      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
-      if (an5 < 0) continue;
-      if (nt_kind(c->nt, an5) == NK_InstanceVariableReadNode &&
-          (comp_ntype(c, an5) == TY_STRING || comp_ntype(c, an5) == TY_STRBUF) &&
-          ivar_written_from_local(c, an5) && !an_arg_is_shared_handle(c, an5))
-        unsupported_feature(c, an5, "a String instance variable written from a local is passed to an "
-                            "appending parameter (a String is not yet shared by reference through a "
-                            "lent instance variable written from a local). Return the String from the "
-                            "method and assign it, or append to it in the caller.");
-    }
-  }
+  refuse_lent_ivar_copies(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
