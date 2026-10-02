@@ -3,6 +3,7 @@
    movement, no logic change. */
 
 #include "codegen_internal.h"
+#include "call_plan.h"
 
 /* The value of the block a `fetch` or `delete` runs when it finds nothing, as
    `({ bind; leading statements; setup; value; })`. `bind` sets the block's
@@ -9513,7 +9514,21 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    int mi = comp_method_in_chain(c, cid, name, NULL);
+    /* the method is the call's plan (call_plan.c) when the plan is the
+       receiver class's own lookup of the name; otherwise, and under
+       --plan-check as the assertion, the arm looks it up itself */
+    const CallPlan *opl = cplan_user(c, id);
+    int mi = opl->chain && opl->via == UC_INST && opl->owner_ci == cid ? opl->mi : -1;
+    if (g_plan_check || mi < 0) {
+      int omi = comp_method_in_chain(c, cid, name, NULL);
+      if (mi < 0) {
+        if (g_plan_check && omi >= 0)
+          fprintf(stderr, "plan-check: cplan-fallback: object-call node %d %s\n", id, name);
+        mi = omi;
+      }
+      else if (omi != mi)
+        fprintf(stderr, "plan-check: cplan-conflict: object-call node %d %s: plan %d, lookup %d\n", id, name, mi, omi);
+    }
     /* a demand-marked read through a simple hand-written reader
        (`def body = @body`) hands out the ivar HANDLE via a field access:
        the C reader function returns the safe copy (#3227 P5) */

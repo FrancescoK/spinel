@@ -30,6 +30,11 @@ typedef struct {
   unsigned char dispatch;  /* CplanDispatch */
   unsigned char by_name;   /* a switch over every class with a class method of
                               the name (a class held in a variable) */
+  unsigned char chain;     /* mi is the receiver class's own lookup of the
+                              name (comp_method_in_chain(owner_ci, name)), not
+                              a method reached another way (an operator's
+                              stand-in, a subclass's override of a reader, a
+                              reopen) */
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);

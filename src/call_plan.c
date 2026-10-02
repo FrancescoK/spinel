@@ -27,6 +27,7 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
+  p->chain = 0;
 }
 
 /* the class a builtin receiver kind is reopened as, or NULL */
@@ -130,6 +131,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int scls = self ? self->class_id : m->class_id;
       int virt = scls >= 0 && cplan_overridden(c, scls, name, m->is_cmethod);
       cplan_set(p, mi, scls, m->is_cmethod ? UC_CMETH : UC_INST, virt ? CP_VIRTUAL : CP_DIRECT);
+      /* an instance method comp_self_call_mi took from the self class's chain */
+      p->chain = !m->is_cmethod && self && self->class_id >= 0;
       return;
     }
     int imi = comp_included_method_index(c, name, id);
@@ -175,6 +178,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
       cplan_set(p, mi, cid, UC_INST, cplan_overridden(c, cid, name, 0) ? CP_VIRTUAL : CP_DIRECT);
+      p->chain = 1;
       return;
     }
     /* the operators an object answers through another of its methods:

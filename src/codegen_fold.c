@@ -10450,7 +10450,34 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
                           const char *selfptr, int argsNode, int blk_node, Buf *b) {
   const NodeTable *nt = c->nt;
   int defcls = cid;
-  int mi = comp_method_in_chain(c, cid, name, &defcls);
+  /* the target is the plan of the call being emitted (g_nd_call_id) when
+     this dispatch is that call's own -- its receiver class and its name --
+     and the plan is the class's own lookup; otherwise (an operator answered
+     through another method, a to_ary probe), and under --plan-check as the
+     assertion, the dispatch looks the name up itself */
+  const CallPlan *dpl = NULL;
+  int mi = -1;
+  if (g_nd_call_id >= 0) {
+    const char *cnm = nt_str(nt, g_nd_call_id, "name");
+    dpl = cplan_user(c, g_nd_call_id);
+    if (dpl->chain && dpl->via == UC_INST && dpl->owner_ci == cid && cnm && sp_streq(cnm, name)) {
+      mi = dpl->mi;
+      defcls = c->scopes[mi].class_id;
+    }
+    else dpl = NULL;
+  }
+  if (g_plan_check || mi < 0) {
+    int odef = cid;
+    int omi = comp_method_in_chain(c, cid, name, &odef);
+    if (mi < 0) {
+      if (g_plan_check && omi >= 0)
+        fprintf(stderr, "plan-check: cplan-fallback: dispatch node %d %s\n", g_nd_call_id, name);
+      mi = omi; defcls = odef;
+    }
+    else if (omi != mi || odef != defcls)
+      fprintf(stderr, "plan-check: cplan-conflict: dispatch node %d %s: plan %d/%d, lookup %d/%d\n",
+              g_nd_call_id, name, mi, defcls, omi, odef);
+  }
   Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
   /* An alias shares the definition's function, so `__callee__` in the body can
      only learn the spelled name from here (#3729). */
@@ -10496,6 +10523,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   int ret_is_void = (ret == TY_VOID || ret == TY_NIL);
   TyKind disp_ret = ret_is_void ? TY_INT : ret;
   int virtual = (is_scalar_ret(ret) || ret_is_void) && (impl_n > 1 || (!m && impl_n >= 1));
+  /* the plan's form says whether another implementation exists; the switch
+     is that, for a return the switch can carry (the per-arm form below stays
+     codegen's) */
+  if (g_plan_check && dpl && (dpl->dispatch == CP_VIRTUAL) != (impl_n > 1 || (!m && impl_n >= 1)))
+    fprintf(stderr, "plan-check: cplan-conflict: dispatch-form node %d %s: plan %s, implementations %d\n",
+            g_nd_call_id, name, dpl->dispatch == CP_VIRTUAL ? "virtual" : "direct", impl_n);
   nd_stamp(g_nd_call_id, virtual ? ND_SWITCH : ND_DIRECT);
   if (!virtual && m) nd_callee(c, g_nd_call_id, mi, defcls, 0);
   if (virtual && dispatch_arms_disagree(c, cid, name)) {
