@@ -4002,6 +4002,7 @@ int iter_recv_bind_once(Compiler *c, int node) {
 /* Set by emit_iter_value_expr around the Enumerator walk in emit_iteration_stmt: the temp
    that receives what `e.each { }` answers. */
 static int g_enum_walk_res = 0;
+static int g_poly_each_res = 0;
 void set_enum_walk_result(int tmp) { g_enum_walk_res = tmp; }
 
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
@@ -4066,7 +4067,10 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
   g_n_argov++;
   Buf body; memset(&body, 0, sizeof body);
+  int saved_res = g_poly_each_res;
+  g_poly_each_res = rt == TY_POLY && sp_streq(name, "each") ? ta : 0;
   int ok = emit_iteration_stmt(c, id, &body, 0);
+  g_poly_each_res = saved_res;
   g_n_argov--;
   if (!ok) { free(body.p); return 0; }
   /* The original receiver is read twice, once under the hop and once as the
@@ -4446,6 +4450,18 @@ static int emit_shadow_save(Compiler *c, TyKind t, const char *name, Buf *b, int
   int ts = ++g_tmp; Buf ot; memset(&ot, 0, sizeof ot); emit_ctype(c, t, &ot);
   emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot.p ? ot.p : "sp_RbVal", ts, name); free(ot.p);
   return ts;
+}
+
+/* Finish a boxed each walk. The result belongs to this loop alone; a
+   nested block can emit another each before this one publishes its value. */
+static void emit_poly_each_loop_body(Compiler *c, int body, int ta, Buf *b, int indent) {
+  int tres = g_poly_each_res; g_poly_each_res = 0;
+  emit_loop_body(c, body, b, indent + 1);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  if (tres) {
+    emit_indent(b, indent);
+    buf_printf(b, "_t%d = sp_poly_each_result(_t%d, _t%d);\n", tres, tres, ta);
+  }
 }
 
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
@@ -5438,8 +5454,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     }
     /* a paramless block (`each { ... }`) binds nothing; the loop still runs the
        body once per element for its side effect. */
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
+    emit_poly_each_loop_body(c, body, ta, b, indent);
     return 1;
   }
 
