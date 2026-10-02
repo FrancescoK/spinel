@@ -2134,8 +2134,11 @@ int diagnose_unsupported_call(Compiler *c, int id) {
   }
 
   /* Structural mutation of a class through an explicit receiver: the same
-     declarations INSIDE a `class` body (where they are receiverless) work. */
-  if (!why && rcn && comp_class_index(c, rcn) >= 0 &&
+     declarations INSIDE a `class` body (where they are receiverless) work.
+     Object counts though a program that never reopens it has no class entry
+     for it: `Object.include M` (or through `O = Object`) otherwise compiled
+     to a NoMethodError at run time. */
+  if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object")) &&
       (sp_streq(name, "include") || sp_streq(name, "prepend") ||
        sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
        sp_streq(name, "attr_writer") || sp_streq(name, "define_method"))) {
