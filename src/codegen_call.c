@@ -31809,7 +31809,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     /* a Random instance is an opaque object: #class, and identity #==/#equal? (#2524) */
     if (sp_streq(name, "class") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ((sp_Class){0, SPL(\"Random\")}))");
+      if (!node_may_be_null_nil(c, recv)) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ((sp_Class){0, SPL(\"Random\")}))");
+        return;
+      }
+      /* a NULL slot is nil, whose class is NilClass */
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_Random *_t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d ? ((sp_Class){0, SPL(\"Random\")}) : ((sp_Class){(sp_int)-1, SPL(\"NilClass\")}); })", tr);
       return;
     }
     /* equal? and eql? are identity; == compares by internal PRNG state
@@ -31838,6 +31845,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "==") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_RANDOM) {
         buf_puts(b, "sp_Random_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (comp_ntype(c, argv[0]) == TY_NIL) {
+        /* `r == nil`: a NULL slot is nil. The receiver is evaluated first,
+           then the argument, as Ruby orders them. */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_Random *_t%d = ", tr); emit_expr(c, recv, b);
+        buf_puts(b, "; (void)("); emit_expr(c, argv[0], b);
+        buf_printf(b, "); _t%d == NULL; })", tr);
       }
       else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)");
@@ -35723,8 +35738,14 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
          as Thread::Queue (#3466). */
       int tq2 = ++g_tmp;
       buf_printf(b, "({ sp_queue *_t%d = ", tq2); emit_expr(c, recv, b);
-      buf_printf(b, "; ((sp_Class){(sp_int)%d, sp_Queue_class_name(_t%d)}); })",
-                 builtin_class_id("Queue"), tq2);
+      /* a NULL slot is nil, whose class is NilClass */
+      if (node_may_be_null_nil(c, recv))
+        buf_printf(b, "; _t%d ? ((sp_Class){(sp_int)%d, sp_Queue_class_name(_t%d)})"
+                      " : ((sp_Class){(sp_int)-1, SPL(\"NilClass\")}); })",
+                   tq2, builtin_class_id("Queue"), tq2);
+      else
+        buf_printf(b, "; ((sp_Class){(sp_int)%d, sp_Queue_class_name(_t%d)}); })",
+                   builtin_class_id("Queue"), tq2);
       return;
     }
     case TY_MUTEX: cn = "Thread::Mutex"; break;
