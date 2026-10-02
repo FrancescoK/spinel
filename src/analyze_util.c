@@ -1493,6 +1493,23 @@ TyKind block_next_value_ty(Compiler *c, int node) {
   return r;
 }
 
+/* The value a block forwarded out of method `emi` (`callee(&)`,
+   `callee(&b)`, `callee(...)`) answers inside it. The forwarding call is one
+   node in emi's body, shared by every site emi is spliced into, so the first
+   concrete site's block type is not enough: when emi's sites' blocks answer
+   different kinds (`machine(:x) { "s" }` and `machine(:y) { 42 }`), the value
+   is only known at run time, as for a `&block.call` (#3793). Typed from the
+   first site, the second site's Integer was stored into the first site's
+   `const char *` and the C did not build. */
+static TyKind yvt_forwarded_value(Compiler *c, int emi) {
+  TyKind first = yield_value_type(c, emi);
+  if (g_yvt_unify_all || first == TY_UNKNOWN || first == TY_VOID) return first;
+  g_yvt_unify_all = 1;
+  TyKind all = yield_value_type(c, emi);
+  g_yvt_unify_all = 0;
+  return all != first && all != TY_UNKNOWN ? TY_POLY : first;
+}
+
 TyKind yield_value_type(Compiler *c, int mi) {
   for (int i = 0; i < g_yvt_depth; i++)
     if (g_yvt_mi[i] == mi) return TY_UNKNOWN;
@@ -1561,7 +1578,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
           continue;
         }
       }
-      TyKind ft = (emi >= 0 && emi != mi) ? yield_value_type(c, emi) : TY_UNKNOWN;
+      TyKind ft = (emi >= 0 && emi != mi) ? yvt_forwarded_value(c, emi) : TY_UNKNOWN;
       if (ft == TY_VOID) ft = TY_NIL;
       if (ft == TY_UNKNOWN && emi >= 0 && c->scopes[emi].is_proc_form) pf_fwd = 1;
       if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) {
@@ -2001,7 +2018,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
       Scope *encl = comp_scope_of(c, call_id);
       int emi = encl ? (int)(encl - c->scopes) : -1;
       if (emi >= 0 && emi != mi) {
-        TyKind ft = yield_value_type(c, emi);
+        TyKind ft = yvt_forwarded_value(c, emi);
         if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;
       }
     }
