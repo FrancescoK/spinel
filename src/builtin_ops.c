@@ -1041,6 +1041,9 @@ static int bop_index[BOP_NROWS];
 static int bop_indexed;
 
 static int bop_cmp_key(TyKind rt, const char *name, const BuiltinOp *r) {
+#ifdef SP_WORK_COUNT
+  g_nt_work++;   /* a probe is a name compare, as sp_streq counts one */
+#endif
   if (rt != r->recv) return rt < r->recv ? -1 : 1;
   return strcmp(name, r->name);
 }
