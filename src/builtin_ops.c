@@ -814,6 +814,111 @@ static const BuiltinOp bop_rows[] = {
   { TY_PROC,   "dup",             0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
   { TY_PROC,   "clone",           0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
   { TY_PROC,   "itself",          0,   0, BF_ANY, TY_PROC,       BOPE_NONE },
+
+  /* Integer and Float: the result kinds read off the name, arity and block
+     form. pow, clamp, coerce, Float#fdiv(Complex), Float <=> Rational,
+     Float#floor/ceil/round/truncate and the promote-mode widening read the
+     operands and stay in infer_call_inner. */
+  { TY_INT,   "ceil",        0, 127, BF_ANY,      TY_INT,         BOPE_NONE },  /* no precision: self */
+  { TY_INT,   "floor",       0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "round",       0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "truncate",    0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "divmod",      1,   1, BF_ANY,      TY_INT_ARRAY,   BOPE_NONE },
+  { TY_INT,   "allbits?",    1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "anybits?",    1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "nobits?",     1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "even?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "odd?",        0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "zero?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "positive?",   0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "negative?",   0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "finite?",     0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_INT,   "infinite?",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },  /* always nil (nullable int) */
+  { TY_INT,   "abs2",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },  /* the Complex projection (#2328) */
+  { TY_INT,   "real",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "imaginary",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "imag",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "conj",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "conjugate",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "i",           0,   0, BF_ANY,      TY_COMPLEX,     BOPE_NONE },
+  { TY_INT,   "to_c",        0,   0, BF_ANY,      TY_COMPLEX,     BOPE_NONE },
+  { TY_INT,   "arg",         0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* Integer 0 or Float PI */
+  { TY_INT,   "angle",       0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_INT,   "phase",       0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_INT,   "rect",        0,   0, BF_ANY,      TY_INT_ARRAY,   BOPE_NONE },
+  { TY_INT,   "rectangular", 0,   0, BF_ANY,      TY_INT_ARRAY,   BOPE_NONE },
+  { TY_INT,   "polar",       0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_INT,   "ord",         0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "to_int",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "pred",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "succ",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "next",        0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "numerator",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "denominator", 0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "bit_length",  0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "magnitude",   0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "nonzero?",    0,   0, BF_ANY,      TY_INT,         BOPE_NONE },  /* self or nil (nullable int) */
+  { TY_INT,   "ceildiv",     1, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "to_r",        0,   0, BF_ANY,      TY_RATIONAL,    BOPE_NONE },
+  { TY_INT,   "rationalize", 0,   1, BF_ANY,      TY_RATIONAL,    BOPE_NONE },
+  { TY_INT,   "times",       0, 127, BF_REQUIRED, TY_INT,         BOPE_NONE },  /* with a block: self */
+  { TY_INT,   "upto",        0, 127, BF_REQUIRED, TY_INT,         BOPE_NONE },
+  { TY_INT,   "downto",      0, 127, BF_REQUIRED, TY_INT,         BOPE_NONE },
+  { TY_INT,   "step",        0, 127, BF_REQUIRED, TY_INT,         BOPE_NONE },
+  { TY_INT,   "times",       0, 127, BF_NONE,     TY_RANGE,       BOPE_NONE },  /* without one: a range-like enumerator */
+  { TY_INT,   "upto",        0, 127, BF_NONE,     TY_RANGE,       BOPE_NONE },
+  { TY_INT,   "downto",      0, 127, BF_NONE,     TY_RANGE,       BOPE_NONE },
+  { TY_INT,   "chr",         0, 127, BF_ANY,      TY_STRING,      BOPE_NONE },
+  { TY_INT,   "[]",          1,   2, BF_ANY,      TY_INT,         BOPE_NONE },  /* a bit, or a bit-range field */
+  { TY_INT,   "fdiv",        1,   1, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_INT,   "div",         1,   1, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "modulo",      1,   1, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "remainder",   1,   1, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "gcd",         0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "lcm",         0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_INT,   "gcdlcm",      1,   1, BF_ANY,      TY_INT_ARRAY,   BOPE_NONE },
+  { TY_INT,   "digits",      0, 127, BF_ANY,      TY_INT_ARRAY,   BOPE_NONE },  /* face-table fallback only */
+  { TY_INT,   "to_s",        1,   1, BF_ANY,      TY_STRING,      BOPE_NONE },
+  { TY_FLOAT, "arg",         0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* Integer 0 or Float PI (#2316) */
+  { TY_FLOAT, "angle",       0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_FLOAT, "phase",       0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_FLOAT, "to_c",        0,   0, BF_ANY,      TY_COMPLEX,     BOPE_NONE },
+  { TY_FLOAT, "i",           0, 127, BF_ANY,      TY_COMPLEX,     BOPE_NONE },
+  { TY_FLOAT, "coerce",      1,   1, BF_ANY,      TY_FLOAT_ARRAY, BOPE_NONE },  /* [Float(other), self] */
+  { TY_FLOAT, "divmod",      1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },  /* [Integer, Float] */
+  { TY_FLOAT, "infinite?",   0, 127, BF_ANY,      TY_INT,         BOPE_NONE },  /* nil / 1 / -1 (nullable int) */
+  { TY_FLOAT, "nan?",        0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "finite?",     0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "positive?",   0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "negative?",   0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "zero?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },  /* self or nil */
+  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "real",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "conj",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "conjugate",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "next_float",  0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "prev_float",  0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "abs",         0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "magnitude",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "modulo",      0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "remainder",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "to_f",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
+  { TY_FLOAT, "imag",        0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_FLOAT, "imaginary",   0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_FLOAT, "rect",        0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_FLOAT, "rectangular", 0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_FLOAT, "polar",       0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_FLOAT, "numerator",   0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* an Integer, or the non-finite Float (#3011) */
+  { TY_FLOAT, "denominator", 0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
+  { TY_FLOAT, "to_r",        0,   0, BF_ANY,      TY_RATIONAL,    BOPE_NONE },
+  { TY_FLOAT, "rationalize", 0,   1, BF_ANY,      TY_RATIONAL,    BOPE_NONE },
+  { TY_FLOAT, "eql?",        1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

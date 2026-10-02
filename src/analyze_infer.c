@@ -6549,51 +6549,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_BIGINT;
     if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
       return TY_BIGINT;
-    if (sp_streq(name, "ceil") || sp_streq(name, "floor") ||
-        sp_streq(name, "round") || sp_streq(name, "truncate")) return TY_INT;  /* no precision arg -> self */
-    if (sp_streq(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */
-    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
-        sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
-        sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
-        sp_streq(name, "real?")) return TY_BOOL;
-    if (sp_streq(name, "infinite?") && argc == 0) return TY_INT;  /* always nil (nullable int) */
-    /* Numeric / Complex-projection on a real Integer (#2328) */
-    if ((sp_streq(name, "abs2") || sp_streq(name, "real") || sp_streq(name, "imaginary") ||
-         sp_streq(name, "imag") || sp_streq(name, "conj") || sp_streq(name, "conjugate")) && argc == 0)
-      return TY_INT;
-    if (sp_streq(name, "i") && argc == 0) return TY_COMPLEX;
-    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0)
-      return TY_POLY;  /* Integer 0 or Float PI */
-    if ((sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) return TY_INT_ARRAY;
-    if (sp_streq(name, "polar") && argc == 0) return TY_POLY_ARRAY;
-    if ((sp_streq(name, "ord") || sp_streq(name, "to_int")) && argc == 0) return TY_INT;
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     /* pow with a literal negative exponent yields the exact Rational */
     if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
         sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
         nt_int(nt, argv[0], "value", 0) < 0) return TY_RATIONAL;
     if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
-    if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
-    if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
-    if (sp_streq(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
-    /* Integer as a Rational: numerator is self, denominator is 1. */
-    if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
-    if ((sp_streq(name, "to_r") && argc == 0) ||
-        (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
-    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
-    /* times/upto/downto/step with a block return the receiver (self) */
-    if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
-         sp_streq(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
-    /* times/upto/downto without a block return a range-like enumerator */
-    if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto")) &&
-        nt_ref(nt, id, "block") < 0) return TY_RANGE;
-    if (sp_streq(name, "chr")) return TY_STRING;
-    if (sp_streq(name, "[]") && argc == 1) return TY_INT;  /* bit access */
-    if (sp_streq(name, "bit_length") && argc == 0) return TY_INT;
-    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
-    if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;  /* bit access / bit-range field */
-    if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* floor division */
-    if (sp_streq(name, "gcd") || sp_streq(name, "lcm")) return TY_INT;
+    if (sp_streq(name, "pow") && argc >= 1) return TY_INT;
     /* clamp keeps the applied operand's class: a Float bound can be returned, so
        the mixed int-receiver/float-bound form is poly; pure-int stays Integer. */
     if (sp_streq(name, "clamp")) {
@@ -6603,11 +6568,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       }
       return TY_INT;
     }
-    if (sp_streq(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */
-    if ((sp_streq(name, "modulo") || sp_streq(name, "remainder")) && argc == 1) return TY_INT;
-    if (sp_streq(name, "gcdlcm") && argc == 1) return TY_INT_ARRAY;  /* [gcd, lcm] */
-    if (sp_streq(name, "digits")) return TY_INT_ARRAY;   /* face-table fallback only, see codegen_call_recv.c */
-    if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
     if (sp_streq(name, "coerce") && argc == 1) {
       TyKind a0 = infer_type(c, argv[0]);
       if (a0 == TY_BIGINT) return TY_POLY_ARRAY;   /* [big, big] boxed pair (#2419) */
@@ -6660,41 +6620,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         }
       }
     }
-    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0)
-      return TY_POLY;  /* Integer 0 or Float PI (#2316) */
-    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
-    if (sp_streq(name, "coerce") && argc == 1) return TY_FLOAT_ARRAY;  /* [Float(other), self] */
-    if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;  /* [Integer, Float] */
-    if (sp_streq(name, "infinite?")) return TY_INT;   /* nil / 1 / -1 (nullable int) */
-    if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
-        sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
-        sp_streq(name, "zero?") || sp_streq(name, "integer?") ||
-        sp_streq(name, "real?")) return TY_BOOL;
-    if (sp_streq(name, "nonzero?")) return TY_POLY;   /* self (Float) or nil */
-    if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* integer floor-division */
-    /* Complex-view methods on a real Float */
-    if (sp_streq(name, "abs2") || sp_streq(name, "real") ||
-        sp_streq(name, "conj") || sp_streq(name, "conjugate")) return TY_FLOAT;
-    if (sp_streq(name, "imag") || sp_streq(name, "imaginary")) return TY_INT;
-    if (sp_streq(name, "rect") || sp_streq(name, "rectangular") ||
-        sp_streq(name, "polar")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "i")) return TY_COMPLEX;
     /* Float <=> Rational: compare via the rational's float value (#2596) */
     if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) return TY_INT;
     /* Float#fdiv(Complex) is self / c, a Complex */
     if (sp_streq(name, "fdiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) return TY_COMPLEX;
-    if (sp_streq(name, "next_float") || sp_streq(name, "prev_float") ||
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
-        sp_streq(name, "modulo") || sp_streq(name, "remainder") || sp_streq(name, "to_f") ||
-        (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
-    /* Float#numerator is an Integer when finite and the (non-finite) Float
-       itself otherwise, so it is boxed; #denominator is always an Integer
-       (1 for a non-finite value). (#3011) */
-    if (sp_streq(name, "numerator") && argc == 0) return TY_POLY;
-    if (sp_streq(name, "denominator") && argc == 0) return TY_INT;
-    if ((sp_streq(name, "to_r") && argc == 0) ||
-        (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
-    if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
        a mixed/int bound can return the Integer bound, so leave that poly. */
     if (sp_streq(name, "clamp") && argc == 2 &&
