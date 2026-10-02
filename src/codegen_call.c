@@ -25255,6 +25255,33 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
   }
 }
 
+/* Does `root`'s subtree hold node `target`? A def is its own scope. */
+static int subtree_holds(const NodeTable *nt, int root, int target) {
+  if (root < 0) return 0;
+  if (root == target) return 1;
+  if (nt_kind(nt, root) == NK_DefNode) return 0;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (subtree_holds(nt, nt_ref_at(nt, root, i), target)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int k = 0; k < n; k++) if (subtree_holds(nt, ids[k], target)) return 1;
+  }
+  return 0;
+}
+/* Can the Thread or Fiber argument read `arg` run more than once -- in a
+   loop, or in a block or lambda other than the thread's own (`blk`)? A
+   later run would then see the copy's appends missing. */
+static int thread_arg_runs_again(Compiler *c, int arg, int blk) {
+  const NodeTable *nt = c->nt;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (n == blk || (k != NK_WhileNode && k != NK_UntilNode && k != NK_ForNode &&
+                     k != NK_BlockNode && k != NK_LambdaNode)) continue;
+    if (subtree_holds(nt, n, arg)) return 1;
+  }
+  return 0;
+}
 static void refuse_string_copies(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -25468,7 +25495,8 @@ static void refuse_string_copies(Compiler *c, int id) {
               rk != NK_LocalVariableOrWriteNode && rk != NK_LocalVariableAndWriteNode) continue;
           if (comp_scope_of(c, rd) == vs && sp_streq(nt_str(nt, rd, "name"), vn)) reads++;
         }
-        if (reads == 1 && lv && !lv->is_param && !lv->is_block_param) continue;
+        if (reads == 1 && lv && !lv->is_param && !lv->is_block_param &&
+            !thread_arg_runs_again(c, args[k], blk)) continue;
       }
       const char *through = sp_streq(name, "new") ? "`Thread.new`" : "`Fiber#resume`";
       refuse_string_copy(c, args[k], "a block", proc_param_name(c, blk, k), through,
