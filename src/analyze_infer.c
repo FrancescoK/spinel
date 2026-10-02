@@ -1346,8 +1346,7 @@ int range_enum_redispatch(Compiler *c, int id) {
      int array performs identically (an int is always truthy) (#3859). The
      pattern-argument forms scan the same elements with `===`. */
   if (block < 0 && argc <= 1 &&
-      (sp_streq(name, "all?") || sp_streq(name, "any?") ||
-       sp_streq(name, "none?") || sp_streq(name, "one?"))) return 1;
+      is_quantifier(name)) return 1;
   /* blockless cycle(n) / each_entry: an Enumerator over the range's own ints,
      which the materialized array yields identically (#3840). A countless
      `cycle` never ends, so it keeps its own emitter. */
@@ -2848,8 +2847,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         }
         if (argc == 0 && (sp_streq(name, "min") || sp_streq(name, "max"))) return TY_POLY;
         if (argc == 0 && sp_streq(name, "minmax")) return TY_POLY_ARRAY;    /* (#2406) */
-        if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, "<=") ||
-                          sp_streq(name, ">") || sp_streq(name, ">="))) return TY_BOOL;  /* (#2399) */
+        if (argc == 1 && is_cmp_op(name)) return TY_BOOL;  /* (#2399) */
         rt = TY_STR_POLY_HASH;
       }
     }
@@ -5229,9 +5227,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        sp_poly_sub, which had no array case and answered "no implicit
        conversion of Array into Array" on two real Arrays (#3475). */
     if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && argc == 1 &&
-        (sp_streq(name, "-") || sp_streq(name, "&") || sp_streq(name, "|") ||
-         sp_streq(name, "difference") || sp_streq(name, "intersection") ||
-         sp_streq(name, "union")))
+        is_set_op(name))
       return TY_POLY_ARRAY;
     /* String operators with a poly operand are NOT poly arithmetic: `str % x`
        is printf formatting, `str + x` is concatenation, `str * n` is repeat --
@@ -5253,8 +5249,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* a user comparison operator answering something other than a bool
        (ruby-vips' Image#> builds an image) makes the boxed call's answer
        that value, not the builtin comparison's bool */
-    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-        sp_streq(name, ">=")) {
+    if (is_cmp_op(name)) {
       for (int k = 0; k < c->nclasses; k++) {
         if (c->classes[k].is_native_class) continue;
         int mi = comp_method_in_chain(c, k, name, NULL);
@@ -6084,8 +6079,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       }
       return (sfloat || bfloat) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
     }
-    if (sp_streq(name, "all?") || sp_streq(name, "any?") ||
-        sp_streq(name, "none?") || sp_streq(name, "one?")) return TY_BOOL;
+    if (is_quantifier(name)) return TY_BOOL;
     if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
       return range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY;
     if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
@@ -6671,9 +6665,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* array set operations: &, intersection, |, union, -, difference. The named
      forms are variadic (fold over each argument); the operators are binary. */
   if (recv >= 0 && argc >= 1 &&
-      (sp_streq(name, "&") || sp_streq(name, "intersection") ||
-       sp_streq(name, "|") || sp_streq(name, "union") ||
-       sp_streq(name, "-") || sp_streq(name, "difference"))) {
+      is_set_op(name)) {
     if (ty_is_array(rt) && a0 == rt) return rt;
     /* empty array [] arg (TY_UNKNOWN): result is same kind as receiver */
     if (ty_is_array(rt) && a0 == TY_UNKNOWN) return rt;

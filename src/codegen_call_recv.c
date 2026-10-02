@@ -3748,8 +3748,7 @@ else {
       }
       /* array.none?(a..b) / any?/all?/one? with a Range pattern -- membership
          test (===) over an integer array. */
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+      if (is_quantifier(name) &&
           argc == 1 && nt_ref(nt, id, "block") < 0 &&
           rt == TY_INT_ARRAY && comp_ntype(c, argv[0]) == TY_RANGE) {
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
@@ -3766,8 +3765,7 @@ else {
         return 1;
       }
       /* array.none?(/re/) / any?/all?/one? with a Regexp pattern over strings. */
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+      if (is_quantifier(name) &&
           argc == 1 && nt_ref(nt, id, "block") < 0 &&
           rt == TY_STR_ARRAY && re_lit_index(c, argv[0]) >= 0) {
         int rei = re_lit_index(c, argv[0]);
@@ -9834,8 +9832,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     }
     /* a poly operand (a `Time | nil` local past its nil guard, #4465) is
        checked at run time: a Time compares, anything else raises as below */
-    else if ((sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-              sp_streq(name, ">=")) && argc == 1 &&
+    else if (is_cmp_op(name) && argc == 1 &&
              (comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[0]) == TY_UNKNOWN)) {
       int tt = ++g_tmp, tu = ++g_tmp;
       buf_printf(b, "({ sp_Time _t%d = %s; sp_RbVal _t%d = ", tt, r, tu); emit_boxed(c, argv[0], b);
@@ -9843,8 +9840,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     }
     /* a relational comparison against a non-Time operand: CRuby's Comparable
        raises ArgumentError (its <=> returned nil). Evaluate the operand first. */
-    else if ((sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-              sp_streq(name, ">=")) && argc == 1) {
+    else if (is_cmp_op(name) && argc == 1) {
       buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
       buf_puts(b, "); sp_raise_cls(\"ArgumentError\", \"comparison of Time with an incompatible value failed\"); 0; })");
     }

@@ -39,3 +39,25 @@ int is_send_family(const char *n) {
 int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
 }
+
+int is_tap_alias(const char *n) {
+  return sp_streq(n, "tap") || sp_streq(n, "then") || sp_streq(n, "yield_self");
+}
+
+int is_quantifier(const char *n) {
+  return sp_streq(n, "all?") || sp_streq(n, "any?") || sp_streq(n, "none?") || sp_streq(n, "one?");
+}
+
+int is_set_op(const char *n) {
+  return sp_streq(n, "&") || sp_streq(n, "intersection") || sp_streq(n, "|") || sp_streq(n, "union") ||
+         sp_streq(n, "-") || sp_streq(n, "difference");
+}
+
+int is_combination_family(const char *n) {
+  return sp_streq(n, "combination") || sp_streq(n, "permutation") ||
+         sp_streq(n, "repeated_combination") || sp_streq(n, "repeated_permutation");
+}
+
+int is_visibility_name(const char *n) {
+  return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public");
+}

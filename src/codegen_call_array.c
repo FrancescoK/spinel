@@ -298,9 +298,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-         sp_streq(name, "|") || sp_streq(name, "union") ||
-         sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
+    if (is_set_op(name) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
       const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
       buf_printf(b, "sp_PolyArray_%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -309,9 +307,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
     }
     /* poly-array set-op with a typed-array argument (different element type):
        box the argument to a poly array, then run the poly op. */
-    if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-         sp_streq(name, "|") || sp_streq(name, "union") ||
-         sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+    if (is_set_op(name) && argc == 1 &&
         (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY)) {
       const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
       const char *conv = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
@@ -321,9 +317,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
       buf_puts(b, "))"); return 1;
     }
     /* poly-array receiver, POLY argument: same run-time coercion (#3475) */
-    if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-         sp_streq(name, "|") || sp_streq(name, "union") ||
-         sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+    if (is_set_op(name) && argc == 1 &&
         a0 == TY_POLY) {
       const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
       buf_printf(b, "sp_PolyArray_%s(", fn);
@@ -356,9 +350,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
     }
     return 0;
   }
-  if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-       sp_streq(name, "|") || sp_streq(name, "union") ||
-       sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
+  if (is_set_op(name) && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
     const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : ((sp_streq(name, "|") || sp_streq(name, "union")) ? "union" : "difference");
     /* empty literal [] arg: use a null pointer (safe for all sp_*Array_* set ops) */
     if (a0 == TY_UNKNOWN) { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", NULL)"); }
@@ -367,9 +359,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   }
   /* typed-array receiver, different-kind typed-array or poly-array argument:
      box both operands to poly and run the poly set op (result poly). */
-  if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-       sp_streq(name, "|") || sp_streq(name, "union") ||
-       sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+  if (is_set_op(name) && argc == 1 &&
       (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY || a0 == TY_POLY_ARRAY) && a0 != rt) {
     const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
     const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
@@ -391,9 +381,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
      array the set-op primitives take, anything else raises the TypeError
      CRuby raises. Without this arm the call had nowhere to go and `&`/`|`
      failed to compile (#3475). */
-  if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
-       sp_streq(name, "|") || sp_streq(name, "union") ||
-       sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+  if (is_set_op(name) && argc == 1 &&
       a0 == TY_POLY) {
     const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
     const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
@@ -972,8 +960,7 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
-         sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+    if (is_combination_family(name) &&
         (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
         nt_ref(nt, id, "block") < 0) {
       const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
@@ -992,8 +979,7 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
     }
     return 0;
   }
-  if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
-       sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
       rt == TY_INT_ARRAY && nt_ref(nt, id, "block") < 0) {
     const char *combfn = sp_streq(name, "combination") ? "sp_IntArray_combination"
@@ -1020,8 +1006,7 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
     buf_puts(b, "); })");
     return 1;
   }
-  if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
-       sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
       nt_ref(nt, id, "block") < 0) {
     /* any other element kind rides the boxed PolyArray implementation */
@@ -1150,8 +1135,7 @@ int emit_op_array_pred0(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-         sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+    if (is_quantifier(name) &&
         argc == 0 && nt_ref(nt, id, "block") < 0) {
       /* count truthy elements; a poly element may be nil/false */
       int t = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
@@ -1170,8 +1154,7 @@ int emit_op_array_pred0(Compiler *c, const BopCtx *x, Buf *b) {
     }
     return 0;
   }
-  if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-       sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+  if (is_quantifier(name) &&
       argc == 0 && nt_ref(nt, id, "block") < 0) {
     /* scalar-element arrays never hold nil/false: predicate is length-based.
        One that can hold the sentinel counts its truthy (non-nil) elements

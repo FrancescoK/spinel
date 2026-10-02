@@ -4383,7 +4383,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=")) {
+      if (is_cmp_op(name)) {
         buf_puts(b, "(sp_rational_cmp(sp_rational_new((sp_int)("); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_printf(b, ") %s 0)", name);
         return 1;
@@ -38936,8 +38936,7 @@ else {
      (an element read, a destructured multi-value return) had no arm at all and
      raised NoMethodError naming Array, the class that defines them (#3967). */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && rt == TY_POLY &&
-      (sp_streq(name, "any?") || sp_streq(name, "all?") ||
-       sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+      is_quantifier(name) &&
       !user_defines_or_reads(c, name)) {
     int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
@@ -39242,8 +39241,7 @@ else {
   }
 
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "<") || sp_streq(name, ">") ||
-       sp_streq(name, "<=") || sp_streq(name, ">="))) {
+      is_cmp_op(name)) {
     if ((rt == TY_BIGINT || comp_ntype(c, argv[0]) == TY_BIGINT) &&
         emit_float_bigint_cmp(c, recv, argv[0], name, b)) return;
     if ((rt == TY_BIGINT || comp_ntype(c, argv[0]) == TY_BIGINT) &&

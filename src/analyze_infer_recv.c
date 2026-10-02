@@ -1523,8 +1523,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     int has_blk = nt_ref(nt, id, "block") >= 0;
     if (!has_blk && argc == 0 && sp_streq(name, "minmax")) { *out = TY_POLY_ARRAY; return 1; }
     if (!has_blk && sp_streq(name, "product")) { *out = TY_POLY_ARRAY; return 1; }
-    if (!has_blk && (sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-                     sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")))
+    if (!has_blk && is_combination_family(name))
       { *out = TY_POLY_ARRAY; return 1; }
     /* the repeated pair's block form answers the receiver, which the
        re-dispatch hands back boxed */

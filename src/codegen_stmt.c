@@ -9282,7 +9282,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         /* These are class-body declarations handled at analysis time; skip.
            Exception: a visibility call naming a method the class does not
            define raises NameError when the body executes, per CRuby. */
-        if (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public")) {
+        if (is_visibility_name(nm)) {
           int vcid = g_class_body_id >= 0 ? g_class_body_id
                    : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
           if (vcid >= 0) {

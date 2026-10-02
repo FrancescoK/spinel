@@ -12076,8 +12076,7 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
     if (!tp_name || !tp_recv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     NT_FOREACH_KIND(nt, NK_CallNode, tcid) {
       const char *cn = nt_str(nt, tcid, "name");
-      if (!cn || (!sp_streq(cn, "tap") && !sp_streq(cn, "then") &&
-                  !sp_streq(cn, "yield_self"))) continue;
+      if (!cn || !is_tap_alias(cn)) continue;
       int blk = nt_ref(nt, tcid, "block");
       if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
       const char *pn = block_param_name(c, blk, 0);
@@ -14767,7 +14766,7 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
     }
     if (recv < 0) continue;
     int self = -1;
-    if (k == 0 && (sp_streq(itn, "tap") || sp_streq(itn, "then") || sp_streq(itn, "yield_self")))
+    if (k == 0 && is_tap_alias(itn))
       self = recv;
     else if (k == 1 && sp_streq(itn, "each_with_object") && an >= 1)
       self = av[0];
@@ -16248,7 +16247,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     /* `x.then { |u| ... }` (tap, yield_self) binds the receiver itself: a
        String the block appends to, or yields on to a block that does, is
        the variable's, which becomes the handle */
-    else if ((sp_streq(itn, "then") || sp_streq(itn, "tap") || sp_streq(itn, "yield_self")) &&
+    else if (is_tap_alias(itn) &&
              recv4 >= 0 && nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
       TyKind rt4 = infer_type(c, recv4);
       const char *sp4 = block_param_name(c, blk4, 0);
@@ -25669,7 +25668,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       const char *tn = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
       if (!tn || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
-      if (!sp_streq(tn, "then") && !sp_streq(tn, "yield_self") && !sp_streq(tn, "tap")) continue;
+      if (!is_tap_alias(tn)) continue;
       int bp = nt_ref(nt, blk, "parameters");
       int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
       int rn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &rn) : NULL;

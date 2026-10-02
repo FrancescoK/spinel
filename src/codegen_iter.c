@@ -1673,7 +1673,7 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       if (rl && rl->type == TY_STRBUF) return 1;
     } }
   if (nt_ref(nt, id, "block") < 0) return 0;
-  if (sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self"))
+  if (is_tap_alias(nm))
     return nt_ref(nt, id, "receiver") >= 0;
   /* a block-driving call to a user method that yields is spliced inline;
      its STATEMENT form is a plain compound whose value is void, so a block
@@ -5879,8 +5879,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      block to one parameter; a block it leaves as written (a `&.` call, a
      destructuring parameter it does not take) would bind m to the whole
      tuple and n to nil, so it is refused rather than answered differently. */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_FLOAT_ARRAY) && block >= 0 &&
       (block_lead_only(c, block) || block_rest_marker(c, block) ||
        block_opt_name(c, block, 0) || block_post_name(c, block, 0)))
@@ -5889,8 +5888,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
      sub-array as a fresh int_array. permutation also accepts the argless
      (full-length) form. */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       rt == TY_INT_ARRAY) {
     int is_perm = sp_streq(name, "permutation");
     const char *genfn = sp_streq(name, "permutation") ? "sp_IntArray_permutation"
@@ -5926,8 +5924,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* the same over a poly array: the runtime builds each sub-array boxed, and
      the block binds it boxed, or as the poly array a typed parameter holds
      (#4919) */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       rt == TY_POLY_ARRAY) {
     int is_perm = sp_streq(name, "permutation");
     const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
@@ -5964,8 +5961,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      sub-arrays, and a parameter typed Float array takes each one unboxed
      (the block was not emitted at all, and the call fell to the unresolved
      NoMethodError) */
-  if ((sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-       sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")) &&
+  if (is_combination_family(name) &&
       rt == TY_FLOAT_ARRAY) {
     int is_perm = sp_streq(name, "permutation");
     const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"

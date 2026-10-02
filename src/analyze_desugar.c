@@ -6652,7 +6652,7 @@ static int dm_stmt_call(NodeTable *nt, int s) {
   int args = nt_ref(nt, s, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (nm && nt_ref(nt, s, "receiver") < 0 && an == 1 && nt_kind(nt, av[0]) == NK_CallNode &&
-      (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public")))
+      is_visibility_name(nm))
     return av[0];
   return s;
 }
@@ -7146,7 +7146,7 @@ typedef struct { int def, st, top, tst, cond, cm, cls; const char *path, *vis; }
 static int cdef_vis_def(const NodeTable *nt, int id) {
   const char *nm = nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0 ? nt_str(nt, id, "name") : NULL;
   int an = 0;
-  const int *av = nm && (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public"))
+  const int *av = nm && is_visibility_name(nm)
                   ? nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an) : NULL;
   return an == 1 && nt_kind(nt, av[0]) == NK_DefNode ? av[0] : -1;
 }
@@ -8054,8 +8054,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
        truthiness (or, with one argument, a `===` pattern), never the
        block's; both stay on the existing emitter, the way a blockless,
        argumentless count does. */
-    if ((sp_streq(name, "any?") || sp_streq(name, "all?") ||
-         sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+    if (is_quantifier(name) &&
         nt_ref(nt, id, "block") < 0) continue;
     /* find_index without a block is either the value-argument form
        (`find_index(v)`, its own arity/emitter arm) or the blockless
@@ -9056,7 +9055,7 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
   *hash_pair = 0;
   *elem = TY_UNKNOWN;
   /* tap, then and yield_self yield the receiver, whatever it is */
-  if ((sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self")) && argc == 0) {
+  if (is_tap_alias(nm) && argc == 0) {
     *elem = rt;
     return rt == TY_UNKNOWN ? 0 : 1;
   }
@@ -9598,7 +9597,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     TyKind rt = infer_type(c, recv);
     /* a program's own tap or then, on any receiver, yields what it likes,
        and so does its own method of the name on a boxed receiver */
-    if ((rt == TY_POLY || sp_streq(nm, "tap") || sp_streq(nm, "then") || sp_streq(nm, "yield_self")) &&
+    if ((rt == TY_POLY || is_tap_alias(nm)) &&
         def_exists_by_name(nt, nm)) continue;
     if (bs_hash_guess(c, recv, rt, nm)) continue;
     TyKind elem; int hash_pair;

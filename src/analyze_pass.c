@@ -8003,8 +8003,7 @@ int infer_param_types(Compiler *c) {
       int mi3 = comp_method_in_chain(c, cid3, name, NULL);
       /* Comparable: `a < b` etc. on an object with `<=>` but no direct `<`
          bind the argument to `<=>` param instead. */
-      if (mi3 < 0 && (sp_streq(name, "<") || sp_streq(name, ">") ||
-                      sp_streq(name, "<=") || sp_streq(name, ">=")))
+      if (mi3 < 0 && is_cmp_op(name))
         mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
       /* a method the program adds to Object, which the class's chain stops
          short of: the call reaches it (codegen's Object fallback), so its
@@ -12200,8 +12199,7 @@ int infer_block_params(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
-    int yields_self = sp_streq(cname, "tap") || sp_streq(cname, "then") ||
-                      sp_streq(cname, "yield_self");
+    int yields_self = is_tap_alias(cname);
     /* An untyped receiver leaves the param untyped too -- body usage is what
        types it there (`[].tap { |a| a << 1 }` gets its array kind from the
        push). The SLOT still has to exist: codegen binds the param whether or

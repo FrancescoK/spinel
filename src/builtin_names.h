@@ -18,5 +18,10 @@ int is_basic_arith(const char *n);    /* + - * / (is_arith_op adds % and **) */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
+int is_tap_alias(const char *n);      /* tap then yield_self */
+int is_quantifier(const char *n);     /* all? any? none? one? */
+int is_set_op(const char *n);         /* & intersection | union - difference */
+int is_combination_family(const char *n);  /* combination permutation repeated_combination repeated_permutation */
+int is_visibility_name(const char *n);     /* private protected public */
 
 #endif
