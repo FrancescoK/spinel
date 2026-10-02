@@ -770,7 +770,8 @@ module LiteralProbe
       end
       bad = ([plant] - PLANTS) + ([needle] - NEEDLES) + (forms - FORMS)
       raise ArgumentError, "unknown --plant, --needle or --form #{bad.first.inspect}" unless bad.empty?
-      raise ArgumentError, "--bytes and --jobs take a positive number" unless cap.positive? && jobs.positive?
+      positive = [cap, jobs, timeout].all?(&:positive?)
+      raise ArgumentError, "--bytes, --jobs and --timeout take a positive number" unless positive
     rescue ArgumentError, TypeError => e
       warn "#{NAME}: #{e.message}"
       return 4
