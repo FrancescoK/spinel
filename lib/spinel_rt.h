@@ -13838,11 +13838,13 @@ static sp_RbVal sp_poly_to_h_val(sp_RbVal v) {
     sp_PolyPolyHash *out = sp_PolyPolyHash_new(); SP_GC_ROOT(out);
     for (sp_int i = 0; a && i < a->len; i++) {
       sp_RbVal e = a->data[i];
-      if (e.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(e.cls_id) ||
-          sp_poly_length(e) != 2) {
-        sp_raise_cls("TypeError", "wrong element type (expected array of size 2)");
-        return sp_box_nil();
-      }
+      if (e.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(e.cls_id))
+        sp_raise_cls("TypeError", sp_sprintf("wrong element type %s at %lld (expected array)",
+                                          sp_poly_class_name(e), (long long)i));
+      sp_int n = sp_poly_length(e);
+      if (n != 2)
+        sp_raise_cls("ArgumentError", sp_sprintf("wrong array length at %lld (expected 2, was %lld)",
+                                              (long long)i, (long long)n));
       sp_PolyPolyHash_set(out, sp_poly_arr_get(e, 0), sp_poly_arr_get(e, 1));
     }
     return sp_box_obj(out, SP_BUILTIN_POLY_POLY_HASH);
