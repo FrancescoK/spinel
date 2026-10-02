@@ -4201,26 +4201,34 @@ int desugar_array_at(Compiler *c) {
   return changed;
 }
 
-static void cow_tail_reread(Compiler *c, int id, int recv, const char *attr) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  for (int s = 0; s < c->nscopes; s++) {
-    int body = c->scopes[s].body, n = 0;
-    const int *st = body >= 0 && c->scopes[s].def_node >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    if (!st || n == 0 || st[n - 1] != id) continue;
-    int *nb = (int *)malloc(sizeof(int) * (size_t)(n + 1));
-    if (nb) memcpy(nb, st, sizeof(int) * (size_t)n);
-    int r = nb ? nt_clone_subtree(nt, recv) : -1, rd = r >= 0 ? nt_new_node(nt, "CallNode") : -1;
-    if (rd >= 0) {
-      nt_node_set_ref(nt, rd, "receiver", r);
-      nt_node_set_str(nt, rd, "name", attr);
-      nb[n] = rd;
-      nt_node_set_arr(nt, body, "body", nb, n + 1);
-      comp_grow_node_arrays(c);
-      c->nscope[r] = c->nscope[rd] = c->nscope[id];
-    }
-    free(nb);
-    return;
+/* Is `target` what `node` answers: the node itself, the last statement of a
+   body, or the end of an if/unless branch or a parenthesized group? */
+static int cow_in_tail(const NodeTable *nt, int node, int target) {
+  if (node < 0) return 0;
+  if (node == target) return 1;
+  switch (nt_kind(nt, node)) {
+  case NK_StatementsNode: {
+    int n = 0;
+    const int *st = nt_arr(nt, node, "body", &n);
+    return st && n > 0 && cow_in_tail(nt, st[n - 1], target);
   }
+  case NK_ParenthesesNode: return cow_in_tail(nt, nt_ref(nt, node, "body"), target);
+  case NK_ElseNode: return cow_in_tail(nt, nt_ref(nt, node, "statements"), target);
+  case NK_IfNode:
+    return cow_in_tail(nt, nt_ref(nt, node, "statements"), target) ||
+           cow_in_tail(nt, nt_ref(nt, node, "subsequent"), target);
+  case NK_UnlessNode:
+    return cow_in_tail(nt, nt_ref(nt, node, "statements"), target) ||
+           cow_in_tail(nt, nt_ref(nt, node, "else_clause"), target);
+  default: return 0;
+  }
+}
+
+/* The op-assign is what its method returns: its value is used. */
+static int cow_is_method_value(Compiler *c, int id) {
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].def_node >= 0 && cow_in_tail(c->nt, c->scopes[s].body, id)) return 1;
+  return 0;
 }
 
 /* `recv.attr op= value` where the writer is a hand-written `def attr=`.
@@ -4258,10 +4266,9 @@ int desugar_call_op_write(Compiler *c) {
     for (int k = 0; k < c->nclasses && !has_def_writer; k++)
       if (comp_method_in_chain(c, k, wname, NULL) >= 0 || comp_method_in_chain(c, k, attr, NULL) >= 0) has_def_writer = 1;
     char aname[300]; snprintf(aname, sizeof aname, "%s", attr);
-    if (!has_def_writer) {                         /* attr_writer: keep the store */
-      if (simple) cow_tail_reread(c, id, recv, aname);
-      continue;
-    }
+    /* attr_writer: keep the store, unless the method answers the op-assign's
+       value, which the writer call carries and the store does not */
+    if (!has_def_writer && !cow_is_method_value(c, id)) continue;
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {
       /* (__cow_N = recv; __cow_N.attr = __cow_N.attr op value) */
