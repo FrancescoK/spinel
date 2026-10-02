@@ -7,7 +7,9 @@
 #   make bench-compile  Time analysis/emission on a synthetic program at K=100, 200
 #   make optcarrot    End-to-end optcarrot integration test
 #   make check        Fast pre-commit: rebuild + tests
-#   make gate         Full pre-push: test || bench || optcarrot
+#   make gate         Full pre-push: test || bench || optcarrot (reuses the
+#                     passes of unchanged programs, see RUN_ONE_TEST)
+#   make gate-full    The same with GATE_CACHE=0: every program built and run
 #   make clean        Remove built binaries
 
 # COPT: optimization level override. Default -O2 for release builds.
@@ -52,7 +54,7 @@ RBS_LIB      = build/librbs.a
 
 .PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
-        regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench gc-phases-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
+        regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
 
 # `make all` includes the RBS extractor when vendor/rbs has been fetched
@@ -2194,6 +2196,52 @@ endif
 # PCH is dropped with it, since it was built under the other -O and would not
 # load anyway. The binaries are the same speed here -- these are wide-API tests
 # rather than loops, 0.023s vs 0.024s on the worst one.
+#
+# The result cache (tools/result_cache.sh). spinel always runs: the C it emits
+# is how the harness knows whether anything changed, and most commits change
+# the C of few programs (a refactor, none). When it is the same C as in a run
+# that PASSED, built the same way against the same runtime, with the same
+# expectations, the compile and the run are skipped and the stored PASS is
+# reused. The key of one program is the hash of
+#   - the generated C text and the .rb source;
+#   - its .expected, .err.expected, .args and .stdin (absent counts too);
+#   - the compile and link line as this recipe assembles it for THIS program
+#     ($(CC), CFLAGS/OPT, the -O0 override, the overflow and thread defines,
+#     the PCH flag, the archive and package objects picked, -l flags), and the
+#     timeout;
+#   - RESULT_CACHE_FP, computed once per run after the prerequisites are
+#     built: the content of both runtime archives, every bundled package
+#     object, both PCH files and build/spinel-timeout, every header under lib/
+#     and packages/, `$(CC) --version` and -dumpmachine, the OS and
+#     architecture, and LD_LIBRARY_PATH/LIBRARY_PATH;
+#   - RESULT_CACHE_HARNESS: bump it when this recipe's logic changes how a
+#     result is decided.
+# Only PASS is stored, never a failure, so a cached result can only repeat a
+# pass that this exact binary, run against these exact expectations, earned.
+# What a hit assumes:
+#   - spinel affects the outcome only through the C it writes (the C is
+#     hashed, not the compiler binary, which is the point);
+#   - the binary is a function of the key: the same C, headers, PCH, archives,
+#     objects, flags and compiler give the same program. libc, the system
+#     libraries a test links (-lssl, -lffi) and the kernel are out of scope;
+#   - the run is a function of the binary and its inputs. That does not hold
+#     for a program that reads the clock, the environment, the random source,
+#     files (a fixture a commit edits leaves the C alone), the network, other
+#     processes or threads' timing, or the GC's counters, so such a program is
+#     never cached: tools/result_cache.sh's `nocache` scans the test and every
+#     local file it requires for those identifiers, and `# spinel: no-cache` in
+#     a test opts out anything the scan does not see. A test without
+#     .expected compares against CRuby's run and is never cached either.
+# A reused pass leaves <test>.ok.cached beside the .ok, so
+# `ls build/test-results/*.cached | wc -l` counts what was skipped.
+# GATE_CACHE=0 (or `make gate-full`) runs everything. The entries live in
+# build/result-cache, one file per key written by rename, so concurrent runs
+# and configurations (CC=clang, -m32, OPT) share it safely; entries unused for
+# two weeks are pruned when the test results are cleared.
+GATE_CACHE ?= 1
+export GATE_CACHE
+RESULT_CACHE_HARNESS := 1
+RESULT_CACHE_FP = $(if $(filter 0,$(GATE_CACHE)),off,$(eval RESULT_CACHE_FP := $(shell RC_CC="$(CC)" tools/result_cache.sh fp $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) $(SPINEL_TIMEOUT)))$(RESULT_CACHE_FP))
 define RUN_ONE_TEST
 @mkdir -p build/test-results
 @# Raise the descriptor soft limit toward the hard one, best effort. A test
@@ -2214,7 +2262,8 @@ args=""; \
 if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 stdinf=/dev/null; \
 if [ -f "$<.stdin" ]; then stdinf="$<.stdin"; fi; \
-rm -f "$@.diff"; \
+rm -f "$@.diff" "$@.cached"; \
+ckey=""; hit=0; \
 $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
 { pchuse="$(PCH_USE_PLAIN)"; pchf="$(PCH_PLAIN)"; \
   if head -2 "$$cfile" | grep -q SP_TU_NO_POLY_RENDER; then pchuse="$(PCH_USE_NOPOLY)"; pchf="$(PCH_NOPOLY)"; fi; \
@@ -2226,13 +2275,25 @@ $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
   if grep -q SPINEL_USES_THREADS "$$cfile"; then \
     mtdef="$(MT_DEF)"; rtlib="$(SP_RT_MT_LIB)"; natobjs="$(BUNDLED_NATIVE_MT_OBJS)"; mtld="-lpthread"; pchuse=""; \
   fi; \
-  if [ -n "$(TEST_SINGLE_INVOKE)" ]; then \
+  if [ -f "$<.expected" ]; then \
+    ckey=$$(RC_CC="$(CC)" tools/result_cache.sh key "$<" "$$cfile" \
+      "$(RESULT_CACHE_FP)|$(RESULT_CACHE_HARNESS)|$(CC)|$(TEST_SINGLE_INVOKE)|$(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib|$$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS)|$(TIMEOUT10)" \
+      "$<.expected" "$<.err.expected" "$<.args" "$<.stdin"); \
+    if [ -n "$$ckey" ] && tools/result_cache.sh get "$$ckey" 2>/dev/null | grep -qx PASS; then hit=1; fi; \
+  fi; \
+  if [ $$hit = 1 ]; then \
+    :; \
+  elif [ -n "$(TEST_SINGLE_INVOKE)" ]; then \
     $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib "$$cfile" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   else \
     $(CC) $(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
     $(CC) $(CFLAGS) "$$cfile.o" $$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
   fi; }; \
-if [ $$? -eq 0 ]; then \
+built=$$?; \
+if [ $$built -eq 0 ] && [ $$hit = 1 ]; then \
+  echo PASS > "$@"; : > "$@.cached"; \
+  if [ -t 1 ]; then printf .; fi; \
+elif [ $$built -eq 0 ]; then \
   if [ -f "$<.expected" ]; then \
     LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
   else \
@@ -2253,6 +2314,7 @@ if [ $$? -eq 0 ]; then \
   fi; \
   if cmp -s "$$exp.n" "$$act.n" && cmp -s "$$experr.n" "$$acterr.n"; then \
     echo PASS > "$@"; \
+    if [ -n "$$ckey" ]; then echo PASS | tools/result_cache.sh put "$$ckey"; fi; \
     if [ -t 1 ]; then printf .; fi; \
   else \
     echo FAIL > "$@"; \
@@ -2282,6 +2344,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE
 
 clean-test-results:
 	@rm -rf build/test-results
+	@tools/result_cache.sh prune
 
 # ---- Expected-output regeneration ----
 # Snapshot each test's reference Ruby output so the test target uses the file
@@ -2873,6 +2936,10 @@ gate:
 	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory gate-legs
 	@echo "gate: ALL GREEN"
+
+# The gate without the result cache: every program compiled and run.
+gate-full:
+	+@$(MAKE) --no-print-directory gate GATE_CACHE=0
 
 gate-legs: gate-test gate-bench gate-optcarrot gate-rubyspec gate-props
 gate-test:
