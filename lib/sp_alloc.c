@@ -1098,6 +1098,15 @@ SP_CONSTRUCTOR static void sp_alloc_install_hooks(void) {
   sp_gc_str_sweep_hook = sp_str_sweep_gated;
   sp_gc_str_major_due_hook = sp_str_major_due;
   sp_gc_obj_retune_hook = sp_gc_retune_object;
+  /* SPINEL_GC_STRESS=2: the thresholds are pinned at zero, so every
+     allocation that can collect does. Set here, before main, and marked as
+     checked, so the allocators' own one-shot (2048) does not run after it. */
+  { const char *st = getenv("SPINEL_GC_STRESS");
+    if (st && atoi(st) >= 2) {
+      SP_GC_CTR_SET(sp_gc_threshold, 0); sp_gc_threshold_init = 0;
+      SP_GC_CTR_SET(sp_str_threshold, 0); sp_str_threshold_init = 0;
+      sp_gc_stress_pin = 1; sp_gc_stress_checked = 1; sp_str_stress_checked = 1;
+    } }
   sp_alloc_floors_from_env();
 }
 
