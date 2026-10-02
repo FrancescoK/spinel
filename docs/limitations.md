@@ -700,6 +700,8 @@ Not yet shared:
 - through `yield` into a capture-wrapper block, a String variable whose captured parameter appends to it without already being the shared handle, including a splatted yield;
 - through an Array's chained index into an appending block;
 
+- through a retained `scrub!` result that is appended to; `scrub!` with a block is also refused because the block would be ignored;
+
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a

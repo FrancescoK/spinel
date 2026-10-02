@@ -25261,6 +25261,10 @@ static void refuse_string_copies(Compiler *c, int id) {
   if (!name) return;
   g_refuse_call = id;
   int recv = nt_ref(nt, id, "receiver");
+  if (sp_streq(name, "scrub!") && recv >= 0 &&
+      (comp_recv_type(c, recv) == TY_STRING || comp_recv_type(c, recv) == TY_STRBUF) &&
+      nt_ref(nt, id, "block") >= 0)
+    unsupported_feature(c, id, "String#scrub! with a block is not yet supported: the block would be ignored");
   int av[16];
   int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
             sp_streq(name, "yield") || sp_streq(name, "===");
