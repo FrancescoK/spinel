@@ -35,6 +35,10 @@ const char *ty_nullable_builtin_id(TyKind t) {
        argument -- was evaluated for effect and answered nil (#3950). */
     case TY_REGEX:      return "SP_BUILTIN_REGEX";
     case TY_CURRY:      return "SP_BUILTIN_CURRY";
+    /* a generator and ARGF in a boxed slot keep their identity: without a
+       box id each was evaluated for effect and answered nil */
+    case TY_RANDOM:     return "SP_BUILTIN_RANDOM";
+    case TY_ARGF:       return "SP_BUILTIN_ARGF";
     /* TY_TMS is an unboxed VALUE type: it boxes by heap copy (sp_box_tms),
        never as a nullable pointer (#3132) */
     default:            return NULL;
