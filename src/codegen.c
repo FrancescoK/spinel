@@ -107,8 +107,6 @@ enum {
   RW_NONE,           /* nothing at the site explains a difference */
   RW_YIELD,          /* a yield boxed by the block of this call site */
   RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
-  RW_SYNTACTIC_NIL,  /* a nilable Integer/Float told by a name or a builtin's scope */
-  RW_PROMOTE,        /* --int-overflow=promote boxes every Integer nil-aware */
   RW_RAN_FIRST,      /* an argument that already ran: its temp */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
@@ -131,8 +129,6 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
   if (view_depth() > 0) cls = "view";
   else if (why == RW_YIELD) cls = "yield-site";
   else if (why == RW_TRANSPLANT) cls = "transplant";
-  else if (why == RW_SYNTACTIC_NIL) cls = "syntactic-nil";
-  else if (why == RW_PROMOTE) cls = "promote";
   else if (why == RW_RAN_FIRST) cls = "ran-first";
   else if (why == RW_LITERAL) cls = "literal";
   else if ((form == RF_INT_NIL || form == RF_FLT_NIL) &&
@@ -1888,21 +1884,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
              : t == TY_FLOAT ? (sp_streq(fn, "sp_box_float") ? RF_FLT : RF_FLT_NIL)
              : t == TY_BIGINT ? RF_BIGINT : t == TY_STRING ? RF_STR
              : t == TY_BOOL ? RF_BOOL : t == TY_SYMBOL ? RF_SYM : RF_STRUCT;
-    int why = RW_NONE;
-    /* which of the nil-aware arms chose the form: the analysis's flags
-       (nullable_int_value, a local's slot, box_nullable_arg) are what
-       repr_of reads; the promote mode, a builtin's name and a builtin's own
-       scope are not */
-    if (form == RF_INT_NIL || form == RF_FLT_NIL) {
-      int by_flag = nullable_int_value(c, node) || box_nullable_arg(c, node) ||
-                    (nt_kind(c->nt, node) == NK_LocalVariableReadNode &&
-                     call_returns_nullable_int(c, node));
-      if (form == RF_INT_NIL && g_promote_mode) why = RW_PROMOTE;
-      else if (!by_flag && (enum_builtin_node(c, node) ||
-                            (call_returns_nullable_int(c, node) &&
-                             nt_kind(c->nt, node) == NK_CallNode))) why = RW_SYNTACTIC_NIL;
-    }
-    RC(form, why);
+    /* repr_of's nil_scalar reads the same arms the switch above asks */
+    RC(form, RW_NONE);
   }
 }
 /* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under

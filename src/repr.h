@@ -41,7 +41,23 @@ typedef struct {
   unsigned poly_lift:1;   /* a poly read lifted to the shared handle */
   unsigned dyn_cls:1;     /* an object of a class with subclasses: its box
                              reads the class id from the object */
+  unsigned nil_scalar:1;  /* an Integer or Float whose box tests for the nil
+                             sentinel */
+  unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
+                               from */
 } Repr;
+
+/* Where a shared-mutable String's boxed form comes from. */
+typedef enum {
+  RS_NONE,
+  RS_HANDLE,     /* a variable's own handle: a local, an ivar, an ivar write */
+  RS_DEMANDED,   /* a call that renders the handle itself (a reader, a call
+                    answering its receiver) under a handle mark or demand */
+  RS_FRESH,      /* a String value wrapped in a fresh handle where one is
+                    demanded */
+  RS_ELEM,       /* an element a boxed container hands out, already a box */
+  RS_SLOT_POLY   /* a handle-marked read of a slot that settled poly */
+} ReprStrSrc;
 
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);

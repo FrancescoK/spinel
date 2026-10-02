@@ -4,6 +4,7 @@
 
 #include <string.h>
 #include "repr.h"
+#include "codegen_internal.h"
 
 static int repr_sealed_flag;
 
@@ -37,9 +38,76 @@ static int repr_dyn_cls(const Compiler *c, TyKind t) {
   if (!ty_is_object(t)) return 0;
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return 0;
+  /* an exception's object starts with its class name, not a class id, so
+     it is boxed with the static id (emit_boxed) */
+  if (c->classes[cid].is_value_type || class_is_exc_subclass((Compiler *)c, cid)) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (k != cid && c->classes[k].parent == cid) return 1;
   return 0;
+}
+
+/* An Integer or Float node whose box has to test for the nil sentinel, as
+   emit_boxed decides it: the analysis's answer for the node
+   (nullable_int_value, through call_returns_nullable_int, which also reads
+   a local's slot and a builtin's name), an Integer ivar read (every one is
+   nil-initialized), a parameter bound from such an ivar (box_nullable_arg),
+   a node in a Ruby-defined builtin (enum_builtin_node), and every Integer
+   under --int-overflow=promote. */
+static int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
+  Compiler *mc = (Compiler *)c;
+  if (t == TY_INT)
+    return g_promote_mode || call_returns_nullable_int(mc, node) ||
+           nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
+           box_nullable_arg(mc, node) || enum_builtin_node(mc, node);
+  if (t == TY_FLOAT)
+    return call_returns_nullable_int(mc, node) || box_nullable_arg(mc, node) ||
+           enum_builtin_node(mc, node);
+  return 0;
+}
+
+/* Where the boxed form of a shared-mutable String comes from, as emit_boxed
+   decides it for a node stored as (or holding) the handle. */
+static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
+  Compiler *mc = (Compiler *)c;
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  if (t == TY_STRING) {
+    /* a local promoted to the handle after the node types were final */
+    if (k != NK_LocalVariableReadNode) return RS_NONE;
+    const char *ln = nt_str(nt, node, "name");
+    Scope *s = ln ? comp_scope_of(mc, node) : NULL;
+    LocalVar *lv = s ? scope_local(s, ln) : NULL;
+    return lv && lv->type == TY_STRBUF && lv->str_shared ? RS_HANDLE : RS_NONE;
+  }
+  if (t != TY_STRBUF) return RS_NONE;
+  if (k == NK_LocalVariableReadNode) {
+    /* the mark can outlive the slot's type: a slot that settled poly holds
+       the box already */
+    const char *ln = nt_str(nt, node, "name");
+    Scope *s = ln ? comp_scope_of(mc, node) : NULL;
+    LocalVar *lv = s ? scope_local(s, ln) : NULL;
+    return lv && lv->type == TY_POLY ? RS_SLOT_POLY : RS_HANDLE;
+  }
+  if (k == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int cid = nm ? strbuf_ivar_owner(mc, node) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    if (iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF) return RS_HANDLE;
+  }
+  /* an ivar write's value is the slot */
+  if (k == NK_InstanceVariableWriteNode) return RS_HANDLE;
+  /* an element a boxed container hands out is a boxed handle already */
+  if (strbuf_boxed_elem_read(mc, node)) return RS_ELEM;
+  /* a reader call (or a call answering its receiver) that renders the
+     handle itself */
+  if (k == NK_CallNode) {
+    int r = nt_ref(nt, node, "receiver");
+    if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
+        (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))
+      return RS_DEMANDED;
+  }
+  /* a String value stored where a handle is demanded: a fresh one */
+  return RS_FRESH;
 }
 
 Repr repr_of(const Compiler *c, int node) {
@@ -55,39 +123,32 @@ Repr repr_of(const Compiler *c, int node) {
   r.demand = c->strbuf_handle_demand[node] != 0;
   r.read_raw = c->strbuf_read_raw ? c->strbuf_read_raw[node] != 0 : 0;
   r.poly_lift = c->poly_strbuf_lift ? c->poly_strbuf_lift[node] != 0 : 0;
-  TyKind kt = r.narrowed != TY_UNKNOWN ? r.narrowed : r.as_ty;
+  /* a node is boxed as the type it is stored as; a nil-guard narrowing is
+     read where the value is used, not where it is boxed */
+  TyKind kt = r.as_ty;
   r.kind = (unsigned char)repr_kind_of_type(c, kt);
   r.dyn_cls = repr_dyn_cls(c, kt);
-  /* a local's read is held as its slot is: the nil sentinel of a nilable
-     Integer or Float, the handle of a shared-mutable String */
-  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && r.narrowed == TY_UNKNOWN) {
-    const char *ln = nt_str(c->nt, node, "name");
-    Scope *s = ln ? comp_scope_of((Compiler *)c, node) : NULL;
-    LocalVar *lv = s ? scope_local(s, ln) : NULL;
-    if (lv) {
-      Repr sr = repr_of_slot(c, lv);
-      if (sr.kind == RK_SENTINEL && (kt == TY_INT || kt == TY_FLOAT)) {
-        r.kind = RK_SENTINEL;
-        r.may_nil = 1;
-      }
-      if (sr.kind == RK_STRBUF && (kt == TY_STRING || kt == TY_STRBUF)) {
-        r.kind = RK_STRBUF;
-        r.handle = 1;
-      }
-    }
+  if (repr_nil_scalar(c, node, kt)) {
+    r.kind = RK_SENTINEL;
+    r.may_nil = r.nil_scalar = 1;
   }
+  r.strbuf_src = (unsigned char)repr_strbuf_src(c, node, kt);
+  if (r.strbuf_src == RS_SLOT_POLY) r.kind = RK_BOXED;
+  else if (r.strbuf_src != RS_NONE) r.kind = RK_STRBUF;
   return r;
 }
 
 ReprForm repr_box_form(const Compiler *c, Repr r) {
-  TyKind t = r.narrowed != TY_UNKNOWN ? r.narrowed : r.as_ty;
+  TyKind t = r.as_ty;
   switch ((ReprKind)r.kind) {
   case RK_NONE:     return RF_NIL_EFFECT;
   case RK_BOXED:    return RF_PASS;
   case RK_SENTINEL: return t == TY_FLOAT ? RF_FLT_NIL : RF_INT_NIL;
   case RK_STRUCT:   return RF_STRUCT;
   case RK_VOBJ:     return RF_VOBJ;
-  case RK_STRBUF:   return r.handle ? RF_STRBUF_HANDLE : RF_STRBUF_FRESH;
+  case RK_STRBUF:
+    return r.strbuf_src == RS_ELEM ? RF_STRBUF_ELEM
+         : r.strbuf_src == RS_FRESH ? RF_STRBUF_FRESH : RF_STRBUF_HANDLE;
   case RK_SCALAR:
     switch (t) {
     case TY_INT:    return RF_INT;
