@@ -58,3 +58,12 @@ end
 
 # a method that returns nil, a bare puts, is not one of them
 p(puts("said") == nil)
+
+# nor is a method whose body is one: it is typed nil, not void, and returns
+def log = puts("logged")
+p(log == nil)
+puts "x#{log}y"
+class Logger2
+  def info = print("info\n")
+end
+p(Logger2.new.info == nil)
