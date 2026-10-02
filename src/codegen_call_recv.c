@@ -9296,35 +9296,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       else handled = 0;
     }
     else if (rt == TY_INT) {
-      /* a nullable int's to_s/inspect tests the value and converts it -- bind
-         the receiver to a temp first so a side-effecting `r` (e.g. ARGF.read,
-         a method call) is evaluated exactly once, not twice. */
-      if (sp_streq(name, "to_s") && argc == 0) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
-      }
-      else if (sp_streq(name, "inspect")) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
-      }
-      /* A miss on a specialized container hands this slot SP_INT_NIL, and the
-         conversions are the ones CRuby answers FOR nil rather than refusing:
-         `nil.to_i` is 0, `nil.to_f` is 0.0. Identity used to pass the sentinel
-         straight through, so `h["zz"].to_i` printed nil (#4070). The to_s and
-         inspect arms above already spell the same check. */
-      else if (sp_streq(name, "to_f")) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? 0.0 : ((sp_float)_t%d); })",
-                   _tn, r, _tn, _tn);
-      }
-      else if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? 0 : _t%d; })",
-                   _tn, r, _tn, _tn);
-      }
-      else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-                sp_streq(name, "round") || sp_streq(name, "truncate")) &&
-               argc == 0) buf_printf(b, "(%s)", r);
+      /* the arms that read only the receiver and the arguments: builtin-op
+         rows (builtin_ops.c) */
+      if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
       /* `round(half: mode)`, with or without a digit count. Only #round takes
          a tie-break mode; the other three reject the hash outright, and with
          a digit count as well it is the arity CRuby complains about first. */
@@ -9371,8 +9345,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                 sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
         buf_printf(b, "sp_int_%s(%s, ", name, r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "abs"))    buf_printf(b, "sp_int_abs(%s)", r);
-      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_int_chr(%s)", r);
       else if (sp_streq(name, "chr") && argc == 1) {
         /* Integer#chr(Encoding::X): the encoding argument is resolved at
            compile time from the constant path (Encoding values barely exist
@@ -9426,8 +9398,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         }
         else { buf_printf(b, "sp_int_bit((%s), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
-      else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
-      else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((sp_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
       else if (sp_streq(name, "[]") && argc == 2) {
         /* n[start, len]: the len-bit field starting at bit `start`. Routed
            through a runtime helper that clamps an out-of-range start/len so
@@ -9435,54 +9405,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "ord") || sp_streq(name, "to_int")) buf_printf(b, "(%s)", r);
-      else if (sp_streq(name, "integer?")) { buf_printf(b, "((void)(%s), TRUE)", r); }
-      /* Integer is always finite and real; #infinite? is nil (#2329) */
-      else if (sp_streq(name, "finite?")) buf_printf(b, "((void)(%s), TRUE)", r);
-      else if (sp_streq(name, "real?"))   buf_printf(b, "((void)(%s), TRUE)", r);
-      else if (sp_streq(name, "infinite?")) buf_printf(b, "((void)(%s), SP_INT_NIL)", r);
-      /* Numeric / Complex-projection methods on a real Integer (#2328) */
-      else if (sp_streq(name, "abs2"))    buf_printf(b, "sp_int_mul(%s, %s)", r, r);  /* overflow-checked (#2424) */
-      else if (sp_streq(name, "real"))    buf_printf(b, "(%s)", r);
-      else if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) buf_printf(b, "((void)(%s), 0)", r);
-      else if (sp_streq(name, "conj") || sp_streq(name, "conjugate")) buf_printf(b, "(%s)", r);
-      else if (sp_streq(name, "i") && argc == 0) buf_printf(b, "((sp_Complex){0.0, (sp_float)(%s), 0})", r);
-      /* arg/angle/phase: 0 (Integer) for >= 0, PI (Float) for < 0 -> poly */
-      else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
-        buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
-      else if ((sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
-        int o = ++g_tmp;
-        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_IntArray_push(_t%d, (%s)); sp_IntArray_push(_t%d, 0); _t%d; })",
-                   o, o, o, r, o, o);
-      }
-      else if (sp_streq(name, "polar") && argc == 0) {
-        int o = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_int((%s) < 0 ? -(%s) : (%s)));"
-                      " sp_PolyArray_push(_t%d, (%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0)); _t%d; })",
-                   o, o, o, r, r, r, o, r, o);
-      }
-      /* An Integer slot carries SP_INT_NIL for a miss on a specialized
-         container, and CRuby REFUSES these on nil rather than answering
-         false: `h["zz"].positive?` was a silent false (#4070). The
-         conversions nil does answer are checked further up. */
-      else if (sp_streq(name, "even?") || sp_streq(name, "odd?") ||
-               sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
-               sp_streq(name, "negative?")) {
-        const char *op = sp_streq(name, "even?") ? "% 2 == 0"
-                       : sp_streq(name, "odd?")  ? "% 2 != 0"
-                       : sp_streq(name, "zero?") ? "== 0"
-                       : sp_streq(name, "positive?") ? "> 0" : "< 0";
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ?"
-                      " (sp_raise_cls(\"NoMethodError\","
-                      " \"undefined method '%s' for nil\"), FALSE) : (_t%d ",
-                   _tn, r, _tn, name, _tn);
-        buf_puts(b, op);
-        buf_puts(b, "); })");
-      }
-      else if (sp_streq(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
       else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         /* a Float divisor divides as floats: [floor-quotient Integer, Float mod] */
         int tb = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
@@ -9553,7 +9475,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
       else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         int tb = ++g_tmp;
         buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
@@ -9594,7 +9515,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                       " sp_PolyArray_push(_t%d, sp_box_rational(_r)); _t%d; })",
                    tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
       }
-      else if (sp_streq(name, "size") && argc == 0) buf_puts(b, "((sp_int)sizeof(sp_int))");
       else if (sp_streq(name, "gcdlcm") && argc == 1 &&
                comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
@@ -9695,7 +9615,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
          deliberately stays on sp_poly_int_digits / this face table rather
          than an is_a? split, measured too costly; see
          desugar_builtin_scalar_calls's own comment). */
-      else if (sp_streq(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
       else if (sp_streq(name, "digits") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
         int tdb = ++g_tmp;
         buf_printf(b, "({ (void)("); emit_expr(c, argv[0], b);
@@ -9745,9 +9664,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         buf_printf(b, "pow((double)(%s), ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
-      else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
-      else if (sp_streq(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         if (a0 == TY_BIGINT) {
