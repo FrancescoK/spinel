@@ -184,7 +184,6 @@ void argov_reserve(void);
    so emit_object_call leaves the value temp out (see setter_value_open). */
 extern int  g_setter_stmt_id;
 extern int  g_sn_skip;   /* safe-nav re-entry marker (see codegen_util.c) */
-extern int  g_pd_skip;
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
 int subtree_may_allocate(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
@@ -1422,10 +1421,23 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
 
 /* codegen_view.c: a node's cached type overridden for one nested emission.
    view_push answers a token for the matching view_pop; a recovery point
-   saves view_depth() and view_unwind()s back to it after a refusal. */
+   saves view_mark() and view_unwind()s back to it after a refusal.
+   view_depth() counts the views of nodes open. */
 int view_push(Compiler *c, int id, TyKind t);
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
+int view_mark(void);
+/* The arm context a poly dispatch's builtin arm re-enters the call under,
+   pushed and popped like a view (view_push_arm / view_pop) and put back by
+   view_unwind: the node whose dispatch declines its own re-entry (the
+   method dispatch's g_pd_skip, the block dispatch's g_prbd_skip), and
+   g_poly_builtin_arm, under which no user class owns a name. */
+typedef struct { int pd_skip, prbd_skip, builtin_arm; } ArmCtx;
+extern ArmCtx g_arm;
+#define g_pd_skip (g_arm.pd_skip)
+#define g_prbd_skip (g_arm.prbd_skip)
+#define g_poly_builtin_arm (g_arm.builtin_arm)
+int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm);
 /* One representation flag of node id seen as v for one nested emission,
    restored by view_pop (or view_unwind on a refusal) like a type view. */
 enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW };
@@ -1568,7 +1580,6 @@ int recv_user_defines(Compiler *c, const char *name);
 int user_defines_or_reads(Compiler *c, const char *name);
 int native_class_defines(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
-extern int g_poly_builtin_arm;  /* emitting a poly dispatch's builtin arm */
 /* the poly dispatch's helpers shared with codegen_poly_plan.c and the
    resolver (call_plan.c) */
 int  class_is_prim_reopen(Compiler *c, int k);

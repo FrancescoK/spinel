@@ -16,17 +16,27 @@
    the type (repr.h): a String-handle mark or demand, a poly-to-handle lift,
    a read's nil narrowing. The emitters that re-enter with a flag lifted or
    forced push it as a view, so a refusal's view_unwind puts it back with
-   the rest. repr_of reads the flags live and memoizes nothing. */
+   the rest. repr_of reads the flags live and memoizes nothing.
+
+   view_push_arm does the same for the arm context a poly dispatch's
+   builtin arm re-enters the call under (g_arm: the node whose dispatch
+   declines its own re-entry, g_pd_skip and g_prbd_skip, and
+   g_poly_builtin_arm, under which no user class owns a name). It is no
+   view of a node: it counts toward neither view_depth nor view_epoch. */
 
 #include "codegen_internal.h"
 
 #define VIEW_MAX 256
 
-/* what an entry overrides: the node's type, or one representation flag */
-enum { VK_TYPE = -1 };
-static struct { Compiler *c; int id; int kind; int saved; } view_stack[VIEW_MAX];
+/* what an entry overrides: the node's type, one representation flag, or
+   the arm context */
+enum { VK_TYPE = -1, VK_ARM = -2 };
+static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; } view_stack[VIEW_MAX];
 static int view_sp;
+static int view_nodes;   /* the entries that view a node (all but VK_ARM) */
 static unsigned view_epoch_n;
+
+ArmCtx g_arm = { -1, -1, 0 };
 
 unsigned view_epoch(void) { return view_epoch_n; }
 
@@ -61,8 +71,33 @@ static int view_open(Compiler *c, int id, int kind, int v) {
   view_stack[tok].kind = kind;
   view_stack[tok].saved = view_read(c, kind, id);
   view_write(c, kind, id, v);
+  view_nodes++;
   view_epoch_n++;
   return tok;
+}
+
+int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm) {
+  if (view_sp >= VIEW_MAX) {
+    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
+    exit(1);
+  }
+  int tok = view_sp++;
+  view_stack[tok].c = NULL;
+  view_stack[tok].id = -1;
+  view_stack[tok].kind = VK_ARM;
+  view_stack[tok].arm_saved = g_arm;
+  g_arm.pd_skip = pd_skip;
+  g_arm.prbd_skip = prbd_skip;
+  g_arm.builtin_arm = builtin_arm;
+  return tok;
+}
+
+/* the entry on top, put back */
+static void view_close(int tok) {
+  if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
+  view_write(view_stack[tok].c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
+  view_nodes--;
+  view_epoch_n++;
 }
 
 int view_push(Compiler *c, int id, TyKind t) { return view_open(c, id, VK_TYPE, (int)t); }
@@ -74,12 +109,16 @@ void view_pop(Compiler *c, int tok) {
     fprintf(stderr, "spinel: internal error: codegen view popped out of order\n");
     exit(1);
   }
+  (void)c;
   view_sp--;
-  view_write(c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
-  view_epoch_n++;
+  view_close(tok);
 }
 
-int view_depth(void) { return view_sp; }
+int view_depth(void) { return view_nodes; }
+
+/* the stack's position, for view_unwind: every entry opened since, the arm
+   context's too */
+int view_mark(void) { return view_sp; }
 
 /* A refusal longjmps out of an emission past its view_pop. The recovery
    point saved the depth before it and puts back every view opened since,
@@ -87,8 +126,6 @@ int view_depth(void) { return view_sp; }
 void view_unwind(int depth) {
   while (view_sp > depth) {
     view_sp--;
-    view_write(view_stack[view_sp].c, view_stack[view_sp].kind, view_stack[view_sp].id,
-               view_stack[view_sp].saved);
-    view_epoch_n++;
+    view_close(view_sp);
   }
 }

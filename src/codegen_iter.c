@@ -3203,7 +3203,6 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
    pointer via g_inline_recv_expr. Returns 1 if handled. */
 /* the call whose builtin default arm is being emitted: it must not come
    back here and build the same switch again */
-static int g_prbd_skip = -1;
 /* Does a statement-level block call on a poly receiver take the block
    dispatch (#2448), and through which user classes? Their count into cand
    (at most max), or 0 when the dispatch does not apply. Shared with the
@@ -3487,8 +3486,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     int slot = g_n_argov++;
     g_argov_node[slot] = recv;
     snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", trecv);
-    int sv_skip = g_prbd_skip, sv_arm = g_poly_builtin_arm;
-    g_prbd_skip = id; g_poly_builtin_arm = 1;
+    int va = view_push_arm(g_pd_skip, id, 1);
     /* under the silent probe: a builtin emitter that refuses the call drops
        this arm, not the build */
     Buf *sv_gpre = g_pre;
@@ -3506,7 +3504,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
     g_nren = sv_nren; g_block_id = sv_block;
     g_unsup_probe = sv_probe; g_pre = sv_gpre;
-    g_prbd_skip = sv_skip; g_poly_builtin_arm = sv_arm;
+    view_pop(c, va);
     g_n_argov = slot;
     char rtok[300];
     snprintf(rtok, sizeof rtok, "sp_nomethod_msg(\"%s\"", name);

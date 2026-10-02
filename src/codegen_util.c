@@ -476,7 +476,6 @@ int  g_sn_skip = -1;
 /* poly-dispatch builtin-arm re-entry marker: the call node whose dispatch is
    currently emitting its builtin-container arm, so the re-entered emission
    does not build the same dispatch again (#3459). */
-int  g_pd_skip = -1;
 /* Node whose Class-tag dispatch is emitting its non-Class arm, so the
    re-entered emission takes the ordinary path instead of rebuilding it. */
 int  g_cls_tag_skip = -1;

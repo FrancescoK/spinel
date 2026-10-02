@@ -1942,7 +1942,6 @@ int recv_user_defines(Compiler *c, const char *name) {
    own the name are not candidates there and the builtin emitters must serve it
    as if the name were unowned -- the switch's own case labels keep the user
    receivers out (#3459). */
-int g_poly_builtin_arm = 0;
 
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers) {
   if (g_poly_builtin_arm) return 0;
@@ -3350,7 +3349,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -3423,7 +3422,7 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -3502,7 +3501,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -6208,8 +6207,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     g_argov_node[as] = argv[a];
     snprintf(g_argov_text[as], sizeof g_argov_text[0], "_t%d", atmp[a]);
   }
-  int sv_pd = g_pd_skip, sv_fb = g_poly_builtin_arm;
-  g_pd_skip = id; g_poly_builtin_arm = 1;
+  int va = view_push_arm(id, g_prbd_skip, 1);
   /* Some of these arms hoist a statement into the prelude -- the `const char
      *_tN = sp_poly_recv_s(recv, "<name>")` that roots the receiver's bytes
      across the call. Ahead of the dispatch that statement would run for
@@ -6226,7 +6224,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   }
   else emit_expr(c, id, &ib);
   view_pop(c, vw);
-  g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
+  view_pop(c, va);
   g_n_argov -= nov + 1;
   char *arm_pre = poly_arm_take_pre(sv_pre);
   /* an emission that fell through to the raise token adds nothing: leave the
@@ -6330,8 +6328,7 @@ int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
     g_argov_node[as] = argv[a];
     snprintf(g_argov_text[as], sizeof g_argov_text[0], "_t%d", atmp[a]);
   }
-  int sv_pd = g_pd_skip, sv_fb = g_poly_builtin_arm;
-  g_pd_skip = id; g_poly_builtin_arm = 1;
+  int va = view_push_arm(id, g_prbd_skip, 1);
   int vw = view_push(c, id, bt);
   /* Under the silent probe the dynamic-send arms use: a builtin emitter
      that refuses these arguments (Array#join given a user object, a
@@ -6354,7 +6351,7 @@ int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
   g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
   g_unsup_probe = sv_probe; g_pre = sv_gpre;
   view_pop(c, vw);
-  g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
+  view_pop(c, va);
   g_n_argov = slot;
   Buf ib; memset(&ib, 0, sizeof ib);
   if (ok && nb->p) {

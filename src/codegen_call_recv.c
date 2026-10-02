@@ -11127,7 +11127,7 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
-  int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
+  int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
   g_pre = pre; g_unsup_probe = 1;
   if (setjmp(g_unsup_recover) == 0) *nat = emit_face_arm(c, id, kind, flags, box, val);
   else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
