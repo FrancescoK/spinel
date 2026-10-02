@@ -20298,6 +20298,19 @@ static int io_builtin_name(const char *m) {
    Fiber, Thread, a class Struct.new or Data.define answered, keyed
    StructClass and DataClass -- and the Kernel functions a bare call
    reaches. */
+/* A builtin's instance methods of cls, up to cap -- the Method#arity
+   table's and the argument-count table's rows, which cover different
+   classes (IO's are only in the second): the names a send on a receiver of
+   that class can reach (desugar_dynamic_send). May repeat a name. */
+int builtin_method_names(const char *cls, const char **out, int cap) {
+  int n = 0;
+  for (int i = 0; sp_builtin_arity_tbl[i].cls && n < cap; i++)
+    if (sp_streq(sp_builtin_arity_tbl[i].cls, cls)) out[n++] = sp_builtin_arity_tbl[i].m;
+  for (int i = 0; sp_builtin_arity_spec_tbl[i].cls && n < cap; i++)
+    if (sp_streq(sp_builtin_arity_spec_tbl[i].cls, cls)) out[n++] = sp_builtin_arity_spec_tbl[i].m;
+  return n;
+}
+
 static const SpAritySpec
 sp_builtin_cmeth_arity_spec_tbl[] = {
   {"File","open",1,3,"1..3","1..3",1,3,"1..3","1..3"},
