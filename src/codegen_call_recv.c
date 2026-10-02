@@ -1328,13 +1328,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           if (subm) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
-          SbReaderSave svC = { 0, 0, TY_UNKNOWN };
+          int vC = -1, nC = 0;
           if (rd_call) {
-            /* as sb_reader_shim_open: the call reads as a plain String */
-            svC.box = c->strbuf_box[recv]; svC.demand = c->strbuf_handle_demand[recv];
-            svC.ty = c->ntype[recv];
-            c->strbuf_box[recv] = 0; c->strbuf_handle_demand[recv] = 0;
-            if (svC.ty == TY_STRBUF) c->ntype[recv] = TY_STRING;
+            /* as sb_reader_shim_open: the call reads as a plain String, its
+               marks lifted and its handle type dropped as views */
+            int was_sb = c->ntype[recv] == TY_STRBUF;
+            vC = view_push_repr(c, recv, VR_STRBUF_BOX, 0);
+            view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
+            nC = 2;
+            if (was_sb) { view_push(c, recv, TY_STRING); nC = 3; }
             g_argov_node[g_n_argov] = recv;
             snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
             g_n_argov++;
@@ -1342,8 +1344,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           emit_expr(c, id, &nbB);
           if (rd_call) {
             g_n_argov--;
-            c->strbuf_box[recv] = svC.box; c->strbuf_handle_demand[recv] = svC.demand;
-            c->ntype[recv] = svC.ty;
+            for (int k = nC - 1; k >= 0; k--) view_pop(c, vC + k);
           }
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
           /* The "did it change?" test has to run BEFORE the write: _tob is
