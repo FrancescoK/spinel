@@ -41,6 +41,9 @@ typedef enum {
   /* String (codegen_call_recv.c) */
   BOPE_STR_SET_N,         /* String#squeeze / #delete / #count over several sets */
   BOPE_STR_AFFIX_ANY,     /* String#start_with? / #end_with? over several candidates */
+  /* Hash (codegen_call_hash.c) */
+  BOPE_HASH_PATTERN,      /* any?/none?/one?/count with a pattern, no block */
+  BOPE_HASH_PATTERN_ALL,  /* all? with a pattern, no block */
   BOPE__COUNT
 } BopEmit;
 

@@ -1411,6 +1411,9 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b);
 /* String row emitters (codegen_call_recv.c) */
 int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b);
+/* Hash row emitters (codegen_call_hash.c) */
+int emit_op_hash_pattern(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_pattern_all(Compiler *c, const BopCtx *x, Buf *b);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,

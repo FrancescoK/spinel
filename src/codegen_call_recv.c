@@ -6186,16 +6186,11 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = comp_recv_type(c, recv);
   if (recv >= 0 && ty_is_hash(rt)) {
-    /* compare_by_identity? is always false for a value-keyed hash; the mutating
-       compare_by_identity cannot be honored (keys are compared by value) and is
-       rejected loudly rather than silently no-op'd. The receiver is still
-       evaluated, as CRuby evaluates it: a bare `0` dropped the call, so
-       `g.compare_by_identity?` never ran g -- its side effects and any
-       exception it raised were lost. */
-    if (sp_streq(name, "compare_by_identity?") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
-      return 1;
-    }
+    /* the arms that read only the receiver's variant, the receiver and the
+       arguments: builtin-op rows (builtin_ops.c, codegen_call_hash.c). The
+       arms below that stay read the argument nodes, the block or the
+       program's own methods, and none of them can take a call a row takes. */
+    if (emit_builtin_op(c, id, recv, rt, name, b)) return 1;
     /* compact!: drop nil-valued pairs in place; self when changed, nil
        when a no-op (only the poly-valued variants can hold nil) */
     if (sp_streq(name, "compact!") && argc == 0 &&
@@ -6227,54 +6222,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
                  tc2, hnc, th, tf,
                  tc2, th, hash_box_cls(rt));
       return 1;
-    }
-    /* any?(pattern) / none? / one? / count with one arg: compare each
-       [key, value] pair by == (sp_poly_eq covers array-vs-array value
-       equality, which is what a pair pattern is) */
-    if (argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "any?") || sp_streq(name, "none?") ||
-         sp_streq(name, "one?") || sp_streq(name, "count"))) {
-      int th = ++g_tmp, tv = ++g_tmp, tn = ++g_tmp, tc2 = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", th);
-      emit_boxed(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", th, tv);
-      emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = sp_poly_length(_t%d); sp_int _t%d = 0;",
-                 tv, tn, th, tc2);
-      /* a CLASS pattern is a kind-of test, not equality: `h.any?(Array)`
-         compared each pair to the class value and answered false (#3565).
-         #count is the exception: it counts elements EQUAL to its argument
-         (Enumerable#count uses ==, the predicates use ===), so a class
-         argument counts the class itself, not its instances (#3817). */
-      if (comp_ntype(c, argv[0]) == TY_CLASS && !sp_streq(name, "count"))
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
-                      " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
-                      " if (sp_poly_is_a(_t%d, (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++; }",
-                   ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
-      else
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
-                      " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
-                      " if (sp_poly_eq(_t%d, _t%d)) _t%d++; }",
-                   ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
-      if (sp_streq(name, "any?"))       buf_printf(b, " _t%d > 0; })", tc2);
-      else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc2);
-      else if (sp_streq(name, "one?"))  buf_printf(b, " _t%d == 1; })", tc2);
-      else                              buf_printf(b, " _t%d; })", tc2);
-      return 1;
-    }
-    /* blockless Enumerable predicates fold on the pair count (a pair is
-       always truthy, so all? is unconditionally true) */
-    if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "all?"))) {
-      const char *hn0 = ty_hash_cname(rt);
-      if (hn0) {
-        int th0 = ++g_tmp;
-        buf_printf(b, "({ sp_%sHash *_t%d = ", hn0, th0); emit_expr(c, recv, b);
-        if (sp_streq(name, "any?")) buf_printf(b, "; (_t%d && _t%d->len > 0); })", th0, th0);
-        else if (sp_streq(name, "none?")) buf_printf(b, "; (!_t%d || _t%d->len == 0); })", th0, th0);
-        else buf_printf(b, "; (void)_t%d; 1; })", th0);
-        return 1;
-      }
     }
     /* Hash#default_proc: wrap the stored Hash.new{} dproc (a raw C fn +
        captures pointer) in a first-class Proc via a per-variant trampoline
@@ -6328,20 +6275,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "), ");
       emit_expr(c, recv, b);
       buf_puts(b, ")");
-      return 1;
-    }
-    /* Hash#equal? -- object identity is pointer identity */
-    if (sp_streq(name, "equal?") && argc == 1) {
-      TyKind at0 = comp_ntype(c, argv[0]);
-      if (ty_is_hash(at0) || ty_is_array(at0)) {
-        Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
-        buf_printf(b, "((void *)(%s) == (void *)(%s))",
-                   rb.p ? rb.p : "0", ab.p ? ab.p : "0");
-        free(rb.p); free(ab.p);
-      }
-      else {
-        buf_puts(b, "0");
-      }
       return 1;
     }
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
@@ -6797,15 +6730,6 @@ else {
         buf_puts(b, "; })");
         return 1;
       }
-      if ((sp_streq(name, "length") || sp_streq(name, "size") ||
-           (sp_streq(name, "count") && nt_ref(nt, id, "block") < 0)) && argc == 0) {
-        buf_printf(b, "sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "empty?") && argc == 0) {
-        buf_printf(b, "(sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
-        return 1;
-      }
       /* an Array init concatenates the pairs onto it, flat (#3571) */
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
           (ty_is_array(comp_ntype(c, argv[0])) ||
@@ -6878,13 +6802,6 @@ else {
       if (sp_streq(name, "slice") && argc == 0) {
         buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
         buf_printf(b, "); sp_%sHash_new(); })", hn);
-        return 1;
-      }
-      /* blockless one? -> exactly one pair (#2354) */
-      if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sHash_length(_t%d) == 1; })", hn, t);
         return 1;
       }
       if ((sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
@@ -7674,30 +7591,6 @@ else {
         buf_puts(b, "sp_PolyArray_sort_pairs(");
         emit_hash_pairs_expr(c, recv, rt, hn, b);
         buf_puts(b, ")");
-        return 1;
-      }
-      /* Hash#all?/any?/none?/one? with a pattern argument (no block): test each
-         [key, value] pair with `pattern === pair`. An Array pattern (the common
-         destructured-pair form) compares by ==, served by sp_poly_eq; a CLASS
-         pattern is a kind-of test, and comparing the pair to the class value
-         by equality answered false for every pair (#3565). */
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
-          argc == 1 && nt_ref(nt, id, "block") < 0) {
-        int tp = ++g_tmp, tpat = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
-        emit_hash_pairs_expr(c, recv, rt, hn, b);
-        buf_printf(b, "; sp_RbVal _t%d = ", tpat); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; sp_int _t%d = 0;", tc);
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tp, ti);
-        if (comp_ntype(c, argv[0]) == TY_CLASS)
-          buf_printf(b, " if (sp_poly_is_a(_t%d->data[_t%d], (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++;", tp, ti, tpat, tc);
-        else
-          buf_printf(b, " if (sp_poly_eq(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
-        if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == _t%d->len; })", tc, tp);
-        else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
-        else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
-        else                              buf_printf(b, " _t%d == 1; })", tc);
         return 1;
       }
       /* Hash#shift: remove and return the first-inserted [key, value] pair, or

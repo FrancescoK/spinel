@@ -1619,8 +1619,38 @@ static const BuiltinOp bop_rows[] = {
      arity and block form, some derived from the receiver's kind. key,
      []=/store, fetch, dig, a blockless sum(init), map/collect with a block,
      transform_keys/values, merge, replace, merge!/update and invert read
-     the operands, the block or the variant, and stay in infer_hash_call. */
-  { BOP_ANY_HASH, "each",             0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
+     the operands, the block or the variant, and stay in infer_hash_call.
+
+     The codegen rows are emit_hash_call's arms that read only the
+     receiver's variant ($H, $K), the receiver and the arguments, looked up
+     at the head of its arms; the ones that branch on the variant or on an
+     operand's kind are custom emitters (codegen_call_hash.c). A codegen
+     row narrower than the inference row of its name answers what that row
+     does. */
+#define HASH_OR_ARRAY (BOP_K(TY_STR_INT_HASH) | BOP_K(TY_STR_STR_HASH) | BOP_K(TY_INT_INT_HASH) | \
+                       BOP_K(TY_INT_STR_HASH) | BOP_K(TY_SYM_POLY_HASH) | BOP_K(TY_STR_POLY_HASH) | \
+                       BOP_K(TY_POLY_POLY_HASH) | BOP_K(TY_INT_ARRAY) | BOP_K(TY_FLOAT_ARRAY) | \
+                       BOP_K(TY_STR_ARRAY) | BOP_K(TY_POLY_ARRAY) | BOP_K(TY_INT_ARRAY_ARRAY) | \
+                       BOP_K(TY_FLOAT_ARRAY_ARRAY))
+  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), 0)" },  /* always false; the receiver still runs */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", HASH_OR_ARRAY },  /* pointer identity */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "0" },
+  { BOP_ANY_HASH, "length",           0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
+  { BOP_ANY_HASH, "size",             0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
+  { BOP_ANY_HASH, "count",            0,   0, BF_NONE,     TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
+  { BOP_ANY_HASH, "count",            1,   1, BF_NONE,     TY_INT,         BOPE_HASH_PATTERN },  /* the pairs == the argument */
+  { BOP_ANY_HASH, "empty?",           0,   0, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "(sp_$HHash_length($r) == 0)" },
+  /* blockless predicates fold on the pair count (a pair is always truthy,
+     so all? is unconditionally true); with a pattern, each pair is tested */
+  { BOP_ANY_HASH, "any?",             0,   0, BF_NONE,     TY_BOOL,        BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; (_t$t && _t$t->len > 0); })" },
+  { BOP_ANY_HASH, "none?",            0,   0, BF_NONE,     TY_BOOL,        BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; (!_t$t || _t$t->len == 0); })" },
+  { BOP_ANY_HASH, "all?",             0,   0, BF_NONE,     TY_BOOL,        BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; (void)_t$t; 1; })" },
+  { BOP_ANY_HASH, "one?",             0,   0, BF_NONE,     TY_BOOL,        BOPE_TEMPLATE, "({ sp_$HHash * _t$t = $r; sp_$HHash_length(_t$t) == 1; })" },  /* #2354 */
+  { BOP_ANY_HASH, "any?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN },
+  { BOP_ANY_HASH, "none?",            1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN },
+  { BOP_ANY_HASH, "one?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN },
+  { BOP_ANY_HASH, "all?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN_ALL },
+  { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
   { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_value",       0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
