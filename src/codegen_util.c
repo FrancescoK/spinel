@@ -562,11 +562,10 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind rt;
   if (!sp_yield_site_type(c, recv, &rt)) return 0;
-  /* a site whose class reopens the name: the reopen's return type for a
-     scalar, nothing for an Array or Hash (yield_recv_chain_kind says why) */
+  /* a site whose class reopens the name: the reopen's return type, for an
+     Array or Hash as for a scalar (yield_recv_chain_kind says why) */
   { int rmi = nt_int(nt, id, "builtin_only", 0) ? -1 : comp_builtin_kind_reopen_mi((Compiler *)c, rt, op);
     if (rmi >= 0) {
-      if (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) return 0;
       TyKind rr = c->scopes[rmi].ret;
       if (rr == TY_UNKNOWN || rr == TY_VOID) return 0;
       *out = rr;
