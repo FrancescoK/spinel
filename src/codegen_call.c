@@ -4168,6 +4168,27 @@ static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, i
   buf_puts(b, "; } _out; })");
   return 1;
 }
+/* Kernel#Complex with a Boolean argument of known type: a Boolean is neither
+   a Complex nor a real component, so TypeError, where the float construction
+   in emit_complex_rational_call read false/true as 0/1. Both arguments run
+   first, and sp_complex_reject_bool picks CRuby's message. The caller skips
+   this under `exception:`, whose false answers nil (the call is typed unboxed
+   there); a call with any other keyword hash, which is not a component, is
+   declined here. Returns 1 when it emitted the raise. */
+static int emit_complex_bool_reject(Compiler *c, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *kt1 = argc == 2 ? nt_type(nt, argv[1]) : NULL;
+  if (kt1 && sp_streq(kt1, "KeywordHashNode")) return 0;
+  if (comp_ntype(c, argv[0]) != TY_BOOL && !(argc == 2 && comp_ntype(c, argv[1]) == TY_BOOL)) return 0;
+  int tr = ++g_tmp, ti = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_boxed(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, ti);
+  if (argc == 2) emit_boxed(c, argv[1], b);
+  else buf_puts(b, "sp_box_int(0)");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_complex_reject_bool(_t%d, _t%d, %d);"
+                " (sp_Complex){0, 0, 0}; })", ti, tr, ti, argc);
+  return 1;
+}
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4249,24 +4270,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                   " (sp_Complex){0, 0, 0}; })");
       return 1;
     }
-    /* A Boolean is neither a Complex nor a real component: TypeError, where
-       the float construction below read false/true as 0/1. Both arguments run
-       first, and sp_complex_reject_bool picks CRuby's message. Not under
-       `exception:`, whose false answers nil: the call is typed unboxed there.
-       Nor beside any other keyword hash, which is not a component. */
-    const char *kt1 = argc == 2 ? nt_type(nt, argv[1]) : NULL;
-    if (!soft_convert && !(kt1 && sp_streq(kt1, "KeywordHashNode")) &&
-        (comp_ntype(c, argv[0]) == TY_BOOL ||
-         (argc == 2 && comp_ntype(c, argv[1]) == TY_BOOL))) {
-      int tr = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, ti);
-      if (argc == 2) emit_boxed(c, argv[1], b);
-      else buf_puts(b, "sp_box_int(0)");
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_complex_reject_bool(_t%d, _t%d, %d);"
-                    " (sp_Complex){0, 0, 0}; })", ti, tr, ti, argc);
-      return 1;
-    }
+    if (!soft_convert && emit_complex_bool_reject(c, argc, argv, b)) return 1;
     /* A Complex component combines: CRuby's Complex(a, b) is a + b*i when
        either is not real, Complex(a.real, b.real) when both are, and
        Complex(a) is a itself. Which part comes out a Float follows CRuby's
