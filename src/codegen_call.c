@@ -25144,6 +25144,36 @@ static void refuse_string_copies(Compiler *c, int id) {
       }
       return;
     } }
+  /* Thread and Fiber arguments bind copies unless the read already boxes
+     the shared handle (#7002). */
+  { int blk = an_thread_arg_block(c, id);
+    int a = blk >= 0 ? nt_ref(nt, id, "arguments") : -1, ac = 0;
+    const int *args = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac && k < 16; k++) {
+      if (nt_kind(nt, args[k]) == NK_SplatNode || nt_kind(nt, args[k]) == NK_KeywordHashNode) break;
+      int shared;
+      if (!strvar_arg(c, args[k], &shared) || !dyn_block_appends(c, blk, k) ||
+          c->strbuf_box[args[k]] || local_is_handle(c, args[k])) continue;
+      /* A plain local read only here cannot observe the copy; a parameter
+         can still belong to the caller. */
+      if (nt_kind(nt, args[k]) == NK_LocalVariableReadNode) {
+        const char *vn = nt_str(nt, args[k], "name");
+        Scope *vs = comp_scope_of(c, args[k]);
+        LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+        int reads = 0;
+        for (int rd = 0; rd < nt->count && reads < 2; rd++) {
+          NodeKind rk = nt_kind(nt, rd);
+          if (rk != NK_LocalVariableReadNode && rk != NK_LocalVariableOperatorWriteNode &&
+              rk != NK_LocalVariableOrWriteNode && rk != NK_LocalVariableAndWriteNode) continue;
+          if (comp_scope_of(c, rd) == vs && sp_streq(nt_str(nt, rd, "name"), vn)) reads++;
+        }
+        if (reads == 1 && lv && !lv->is_param && !lv->is_block_param) continue;
+      }
+      const char *through = sp_streq(name, "new") ? "`Thread.new`" : "`Fiber#resume`";
+      refuse_string_copy(c, args[k], "a block", proc_param_name(c, blk, k), through,
+                         sp_streq(name, "new") ? "through `Thread.new`" : "through `Fiber#resume`");
+    }
+  }
   /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
      initialize's appended String parameter is the handle (ctor_convert_params),
      and the caller's String variable is pulled into it (ctor_pull_args), but
