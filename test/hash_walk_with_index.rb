@@ -29,3 +29,6 @@ rescue ArgumentError
   v - 1
 end
 p r
+
+# with_index(nil) counts from 0
+p h.select.with_index(nil) { |(k, v), i| i == 0 }

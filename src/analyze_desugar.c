@@ -2119,8 +2119,26 @@ int desugar_int_enum_with_index(Compiler *c) {
    A `|pair, i|` block takes `pair = [k, v]` first; transform_values,
    transform_keys and filter_map on an Array walk one value. each_with_index
    is with_index(0), and `h.transform_values.each { }` is the walk itself.
-   A block that breaks keeps its shape (the walk's break is not ready). */
+   A block that breaks keeps its shape (the walk's break is not ready), and so
+   does one that redoes (its counter would move twice), or an offset that is
+   not a plain Integer (nil and to_int need a conversion the counter lacks). */
 static int block_body_breaks(const NodeTable *nt, int node);
+static int hwi_redoes(const NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_RedoNode) return 1;
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (hwi_redoes(nt, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (hwi_redoes(nt, ids[j])) return 1;
+  }
+  return 0;
+}
 static int hwi_new_int(NodeTable *nt, long long v) {
   int n = nt_new_node(nt, "IntegerNode");
   if (n >= 0) nt_node_set_int(nt, n, "value", v);
@@ -2151,7 +2169,9 @@ int desugar_hash_iter_with_index(Compiler *c) {
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
     int body = nt_ref(nt, blk, "body");
     if (body >= 0 && nt_kind(nt, body) != NK_StatementsNode) continue;
-    if (block_body_breaks(nt, body)) continue;
+    if (block_body_breaks(nt, body) || hwi_redoes(nt, body)) continue;
+    if (wn == 1 && nt_kind(nt, wv[0]) == NK_NilNode) wn = 0;   /* with_index(nil) counts from 0 */
+    if (wn == 1 && (infer_type(c, wv[0]) != TY_INT || nullable_int_value(c, wv[0]))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     /* the to_a an Enumerator's block call goes through (enum_hop) */
