@@ -1184,6 +1184,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound compiled)"; ok=0; \
 	else grep -q "through a parameter it hands on" "$$tmp/fpc.out" || \
 	  { echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound rejected without saying why)"; sed -n 1,5p "$$tmp/fpc.out"; ok=0; }; fi; \
+	t=test/reject/string_nested_masgn_target.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_nested_masgn_target compiled)"; ok=0; \
+	else grep -q "through a nested multiple-assignment target" "$$tmp/sk.out" || \
+	  { echo "reject-test: FAIL (string_nested_masgn_target rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
+	t=test/reject/string_nested_masgn_deep.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_nested_masgn_deep compiled)"; ok=0; \
+	else grep -q "through a nested multiple-assignment target" "$$tmp/sk.out" || \
+	  { echo "reject-test: FAIL (string_nested_masgn_deep rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	t=test/reject/string_rest_splat_yield.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rsy.c" >"$$tmp/rsy.out" 2>&1; then \
 	  echo "reject-test: FAIL (a String gathered into a rest yielded with a splat compiled)"; ok=0; \
