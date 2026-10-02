@@ -2951,8 +2951,10 @@ int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out) {
    flows as poly (default_value's "0" would not assign to sp_RbVal), and a
    Range wants its brace form. */
 const char *raise_tail_value(TyKind t) {
-  if (t == TY_UNKNOWN || t == TY_VOID) return "sp_box_nil()";
-  return default_value(t);
+  /* a builtin kind's ty_traits row's zero_tail (types.c): its zero, and a
+     boxed nil for an untyped value; a user object's zero otherwise */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->zero_tail : default_value(t);
 }
 
 /* Compiler-aware form: a by-value object class's C representation is a bare
