@@ -12418,11 +12418,7 @@ int infer_block_params(Compiler *c) {
       int tmi = bx >= 0 && nt_kind(nt, bx) == NK_CallNode ? method_obj_target_mi(c, bx) : -1;
       int ymi = -1;
       if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
-        if (recv < 0) {
-          Scope *self = comp_scope_of(c, id);
-          if (self && self->class_id >= 0) ymi = comp_method_in_chain(c, self->class_id, name, NULL);
-          if (ymi < 0) ymi = comp_method_index(c, name);
-        }
+        if (recv < 0) ymi = comp_self_call_mi(c, id, name);
         else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                                            nt_kind(nt, recv) == NK_ConstantPathNode)) {
           int cid = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
