@@ -687,6 +687,8 @@ values too.
 
 Not yet shared:
 
+- through an Array's chained index into an appending block;
+
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
