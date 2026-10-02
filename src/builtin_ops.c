@@ -1492,7 +1492,6 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "append_as_bytes", 0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "b",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_b($r)", 0 },
-  { TY_STRING, "b",               1,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
   { TY_STRING, "b",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "encode",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
   { TY_STRING, "encode",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
@@ -2064,6 +2063,9 @@ static int bop_row_fits(const BuiltinOp *r, int argc, int has_block) {
   if (r->block == BF_REQUIRED && !has_block) return 0;
   return 1;
 }
+
+int bop_row_count(void) { return (int)(sizeof bop_rows / sizeof bop_rows[0]); }
+const BuiltinOp *bop_row(int i) { return i >= 0 && i < bop_row_count() ? &bop_rows[i] : NULL; }
 
 const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) {
   return bop_find_arg(rt, name, argc, has_block, NULL, NULL);

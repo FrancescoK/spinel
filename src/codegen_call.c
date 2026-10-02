@@ -1,5 +1,6 @@
 #include "codegen_internal.h"
 #include "codegen_poly.h"
+#include "builtin_ops.h"
 #include "call_plan.h"
 /* the `&.` proc call currently being emitted inside its own nil guard */
 static int g_sn_proc_node = -1;
@@ -16447,6 +16448,83 @@ static int arity_spec_row(const SpAritySpec *tbl, const char *cls, const char *n
     return 1;
   }
   return 0;
+}
+/* The arity table's class for a row's receiver kind, or NULL: the kinds the
+   table probes a receiver of. */
+static const char *bop_spec_class(TyKind k) {
+  if (k == BOP_ANY_ARRAY || (k >= 0 && ty_is_array(k))) return "Array";
+  if (k == BOP_ANY_HASH || (k >= 0 && ty_is_hash(k))) return "Hash";
+  switch (k) {
+  case TY_STRING: case TY_STRBUF: return "String";
+  case TY_INT: case TY_BIGINT: return "Integer";
+  case TY_FLOAT: return "Float";
+  case TY_SYMBOL: return "Symbol";
+  case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: return "Range";
+  case TY_TIME: return "Time";
+  case TY_COMPLEX: return "Complex";
+  case TY_RATIONAL: return "Rational";
+  case TY_REGEX: return "Regexp";
+  case TY_MATCHDATA: return "MatchData";
+  case TY_PROC: return "Proc";
+  case TY_METHOD: return "Method";
+  case TY_RANDOM: return "Random";
+  case TY_IO: return "File";
+  case TY_DIR: return "Dir";
+  case TY_FIBER: return "Fiber";
+  case TY_THREAD: return "Thread";
+  case TY_QUEUE: return "Queue";
+  case TY_MUTEX: return "Mutex";
+  case TY_CONDVAR: return "ConditionVariable";
+  case TY_ENUMERATOR: return "Enumerator";
+  case TY_EXCEPTION: return "Exception";
+  case TY_CLASS: return "Class";
+  case TY_NIL: return "NilClass";
+  default: return NULL;
+  }
+}
+/* rows whose count includes a keyword hash the positional arity table does
+   not count */
+static int bop_arity_kw_row(const char *cls, const char *name) {
+  static const char *const KW[][2] = {
+    {"Rational", "round"}, {"Rational", "floor"}, {"Rational", "ceil"}, {"Rational", "truncate"},  /* half: */
+    {"Proc", "parameters"},   /* lambda: */
+    {"String", "unpack"},     /* offset: */
+    {"Queue", "pop"}, {"Queue", "shift"}, {"Queue", "deq"},    /* timeout: */
+    {"Queue", "push"}, {"Queue", "<<"}, {"Queue", "enq"},      /* timeout: (SizedQueue's) */
+    {NULL, NULL}
+  };
+  for (int i = 0; KW[i][0]; i++) if (sp_streq(cls, KW[i][0]) && sp_streq(name, KW[i][1])) return 1;
+  return 0;
+}
+int builtin_ops_arity_check(void) {
+  int checked = 0, bad = 0;
+  for (int i = 0; i < bop_row_count(); i++) {
+    const BuiltinOp *r = bop_row(i);
+    if (r->argc_max == BOP_ARGC_ANY) continue;   /* the row leaves the count to the table */
+    const char *cls = bop_spec_class(r->recv);
+    if (!cls) continue;
+    const SpAritySpec *sp = NULL;
+    for (const SpAritySpec *t = sp_builtin_arity_spec_tbl; t->cls; t++)
+      if (sp_streq(t->cls, cls) && sp_streq(t->m, r->name)) { sp = t; break; }
+    if (!sp || (sp->min < 0 && sp->blk_min < 0)) continue;   /* no row, or unproved */
+    /* the bare and the block-carrying counts together: a row serves both */
+    int lo = sp->min >= 0 ? sp->min : sp->blk_min;
+    if (sp->min >= 0 && sp->blk_min >= 0 && sp->blk_min < lo) lo = sp->blk_min;
+    int hi = -2;
+    if (sp->min >= 0) hi = sp->max;
+    if (sp->blk_min >= 0 && hi != -1 && (sp->blk_max == -1 || sp->blk_max > hi)) hi = sp->blk_max;
+    checked++;
+    if (r->argc_min >= lo && (hi < 0 || r->argc_max <= hi)) continue;
+    if (bop_arity_kw_row(cls, r->name)) continue;
+    char his[16];
+    if (hi < 0) snprintf(his, sizeof his, "any");
+    else snprintf(his, sizeof his, "%d", hi);
+    fprintf(stderr, "check-bop-arity: %s#%s: row %d..%d, CRuby %d..%s\n", cls, r->name,
+            r->argc_min, r->argc_max, lo, his);
+    bad++;
+  }
+  fprintf(stderr, "check-bop-arity: %d rows checked, %d outside CRuby's counts\n", checked, bad);
+  return bad;
 }
 int builtin_arity_admits(const char *cls, const char *name, int argc) {
   char exp[64];
