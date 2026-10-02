@@ -15269,6 +15269,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
         sp_streq(name, "infinite?") ? "sp_poly_infinite" :
         sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
+        sp_streq(name, "nonzero?")  ? "sp_poly_nonzero" :
         sp_streq(name, "positive?") ? "sp_poly_positive_p" :
         sp_streq(name, "negative?") ? "sp_poly_negative_p" :
         sp_streq(name, "real?")     ? "sp_poly_real_p" :
