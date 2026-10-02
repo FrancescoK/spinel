@@ -2138,10 +2138,17 @@ int diagnose_unsupported_call(Compiler *c, int id) {
      Object counts though a program that never reopens it has no class entry
      for it: `Object.include M` (or through `O = Object`) otherwise compiled
      to a NoMethodError at run time. */
+  int restructure = 0;
   if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object")) &&
       (sp_streq(name, "include") || sp_streq(name, "prepend") ||
        sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
        sp_streq(name, "attr_writer") || sp_streq(name, "define_method"))) {
+    /* only the receiver's own class method of the name answers instead:
+       a method of that name in an unrelated class (`def include` in some
+       Foo) does not */
+    int rci = comp_class_index(c, rcn);
+    if (rci >= 0 && comp_cmethod_in_chain(c, rci, name, NULL) >= 0) return 0;
+    restructure = 1;
     static char buf[512];
     snprintf(buf, sizeof buf,
              "%s.%s(...) is not supported by AOT compilation: the class graph, ancestor "
@@ -2159,7 +2166,7 @@ int diagnose_unsupported_call(Compiler *c, int id) {
       return diagnose_unsupported_call(c, recv);
     return 0;
   }
-  if (diag_user_defines(c, name)) return 0;
+  if (!restructure && diag_user_defines(c, name)) return 0;
   unsupported_feature(c, id, why);
   return 1;
 }
