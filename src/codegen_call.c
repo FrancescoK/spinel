@@ -982,8 +982,7 @@ static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   int slot = g_n_argov++;
   g_argov_node[slot] = recv;
   snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_r%d", tv);
-  TyKind sv_ty = c->ntype[id];
-  c->ntype[id] = bt;
+  int vw = view_push(c, id, bt);
   Buf *nb = calloc(1, sizeof *nb);
   Buf *pb = calloc(1, sizeof *pb), *sv_gpre = g_pre;
   int sv_probe = g_unsup_probe;
@@ -996,7 +995,7 @@ static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   emit_state_release(sv_state, !ok);
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
   g_unsup_probe = sv_probe; g_pre = sv_gpre;
-  c->ntype[id] = sv_ty;
+  view_pop(c, vw);
   g_n_argov = slot;
   g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
   /* a statement the emission hoisted runs inside the arm, unless it roots
@@ -6876,8 +6875,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
      EVERY receiver, and before the dispatch assigns the receiver its temp,
      so it moves into the arm (poly_arm_take_pre). */
   size_t sv_pre = g_pre ? g_pre->len : 0;
-  TyKind sv_ty = c->ntype[id];
-  c->ntype[id] = bt;
+  int vw = view_push(c, id, bt);
   Buf ib; memset(&ib, 0, sizeof ib);
   if (ret == TY_POLY && bt != TY_POLY) {
     Buf nb; memset(&nb, 0, sizeof nb);
@@ -6886,7 +6884,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     free(nb.p);
   }
   else emit_expr(c, id, &ib);
-  c->ntype[id] = sv_ty;
+  view_pop(c, vw);
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
   g_n_argov -= nov + 1;
   char *arm_pre = poly_arm_take_pre(sv_pre);
@@ -7058,8 +7056,7 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   }
   int sv_pd = g_pd_skip, sv_fb = g_poly_builtin_arm;
   g_pd_skip = id; g_poly_builtin_arm = 1;
-  TyKind sv_ty = c->ntype[id];
-  c->ntype[id] = bt;
+  int vw = view_push(c, id, bt);
   /* Under the silent probe the dynamic-send arms use: a builtin emitter
      that refuses these arguments (Array#join given a user object, a
      separator no String can be) drops the arm, not the build -- the call
@@ -7080,7 +7077,7 @@ static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
   g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
   g_unsup_probe = sv_probe; g_pre = sv_gpre;
-  c->ntype[id] = sv_ty;
+  view_pop(c, vw);
   g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
   g_n_argov = slot;
   Buf ib; memset(&ib, 0, sizeof ib);
@@ -9069,8 +9066,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            the result back into the dispatch's poly slot. */
         TyKind bt9 = (c->poly_builtin_ty && id < c->node_cap)
                        ? c->poly_builtin_ty[id] : TY_UNKNOWN;
-        TyKind sv_ty = c->ntype[id];
-        if (bt9 != TY_UNKNOWN) c->ntype[id] = bt9;
+        int vw = bt9 != TY_UNKNOWN ? view_push(c, id, bt9) : -1;
         Buf ib9; memset(&ib9, 0, sizeof ib9);
         if (bt9 != TY_UNKNOWN && bt9 != TY_POLY) {
           Buf nb9; memset(&nb9, 0, sizeof nb9);
@@ -9079,7 +9075,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           free(nb9.p);
         }
         else emit_boxed(c, id, &ib9);
-        c->ntype[id] = sv_ty;
+        if (vw >= 0) view_pop(c, vw);
         g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
         g_n_argov--;
         /* an emission that fell through to the raise token adds nothing: leave
@@ -17242,7 +17238,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
      the wrapper takes the serial-addressed form after all: the two forms
      differ only in the preamble, the landing, and the name the breaks
      address, which is rewritten in the text. */
-  TyKind sv_cache = c->ntype[id]; c->ntype[id] = normal_ty;
+  int vw = view_push(c, id, normal_ty);
   char servar[24]; snprintf(servar, sizeof servar, light ? "_brklt%d" : "_brkser%d", tS);
   const char *sv_ser = g_brk_ser_var; g_brk_ser_var = servar;
   int sv_ebase = g_brk_ensure_base; g_brk_ensure_base = g_ensure_depth;
@@ -17279,7 +17275,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   g_indent--;
   g_pre = sv_pre;
   g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;
-  c->ntype[id] = sv_cache;
+  view_pop(c, vw);
   if (spilled_argov) g_n_argov--;
   free(inner.p); free(boxed.p);
   char thrown[32]; snprintf(thrown, sizeof thrown, "sp_brk_throw(_brklt%d", tS);
@@ -22385,14 +22381,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       g_argov_node[g_n_argov] = recv;
       snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tkv);
       g_n_argov++;
-      TyKind svk = c->ntype[recv]; c->ntype[recv] = kt;
+      int vw = view_push(c, recv, kt);
       int svkf = an_face_node(); TyKind svkk = an_face_kind();
       an_set_face_node(recv, kt);
       int svkn = g_handle_face_node; g_handle_face_node = id;
       emit_call(c, id, b);
       g_handle_face_node = svkn;
       an_set_face_node(svkf, svkk);
-      c->ntype[recv] = svk;
+      view_pop(c, vw);
       g_n_argov--;
       return 1;
     }
@@ -22420,7 +22416,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       g_argov_node[g_n_argov] = recv;
       snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", thv);
       g_n_argov++;
-      TyKind svh = c->ntype[recv]; c->ntype[recv] = TY_POLY_POLY_HASH;
+      int vw = view_push(c, recv, TY_POLY_POLY_HASH);
       /* and pin it for the inference too: the cached type alone does not hold,
          because anything under the re-emission that asks re-establishes it and
          the re-dispatch then finds no arm for a poly receiver (#4070 follow-up
@@ -22437,7 +22433,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       free(hib.p);
       g_pp_hash_node = sv_pp;
       an_set_face_node(sv_face, sv_fk);
-      c->ntype[recv] = svh;
+      view_pop(c, vw);
       g_n_argov--;
       return 1;
     }
@@ -22619,11 +22615,11 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           g_argov_node[g_n_argov] = recv;
           snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsd);
           g_n_argov++;
-          TyKind svsd = c->ntype[recv]; c->ntype[recv] = TY_POLY;
+          int vw = view_push(c, recv, TY_POLY);
           int svid = g_subdispatch_id; g_subdispatch_id = id;
           emit_call(c, id, b);
           g_subdispatch_id = svid;
-          c->ntype[recv] = svsd;
+          view_pop(c, vw);
           g_n_argov--;
           return 1;
         }
@@ -25528,9 +25524,9 @@ static void emit_call_held(Compiler *c, int id, Buf *b) {
   { TyKind et = tuple_elem_read_unboxed(c, id);
     if (et != TY_UNKNOWN && comp_ntype(c, id) == et &&
         comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_POLY_ARRAY) {
-      TyKind old = comp_sn_retype(c, id, TY_POLY);
+      int vw = view_push(c, id, TY_POLY);
       Buf ib = expr_buf(c, id);
-      comp_sn_retype(c, id, old);
+      view_pop(c, vw);
       emit_unbox_text(c, et, ib.p ? ib.p : "sp_box_nil()", b);
       free(ib.p);
       return;
@@ -26916,7 +26912,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ts);
     g_n_argov++;
-    TyKind sv_rt = c->ntype[recv]; c->ntype[recv] = ty_object(k);
+    int vw = view_push(c, recv, ty_object(k));
     int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
     an_set_face_node(recv, ty_object(k));
     int sv_node = g_ie_poly_node; g_ie_poly_node = id;
@@ -26931,7 +26927,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     g_ie_discard_value = sv_disc;
     g_ie_poly_node = sv_node;
     an_set_face_node(sv_face, sv_fk);
-    c->ntype[recv] = sv_rt;
+    view_pop(c, vw);
     g_n_argov--;
     g_pre = sv_pre; g_indent = sv_ind;
     emit_indent(g_pre, g_indent);
@@ -28348,11 +28344,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           hv_value_class(c, hrecv) >= 0) {
         int is_values = sp_streq(hn, "values");
         int sv_node = g_hv_read_node; g_hv_read_node = id;
-        TyKind sv_ty = c->ntype[id];
-        c->ntype[id] = is_values ? TY_POLY_ARRAY : TY_POLY;
+        int vw = view_push(c, id, is_values ? TY_POLY_ARRAY : TY_POLY);
         Buf inner; memset(&inner, 0, sizeof inner);
         emit_call(c, id, &inner);
-        c->ntype[id] = sv_ty;
+        view_pop(c, vw);
         g_hv_read_node = sv_node;
         if (is_values) buf_printf(b, "sp_PolyArray_to_obj_ptr(%s)", inner.p ? inner.p : "NULL");
         else emit_unbox_text(c, hwant, inner.p ? inner.p : "sp_box_nil()", b);
@@ -29946,10 +29941,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                poly one: a dispatch that reads it (`poly.include?` declares its
                accumulator from it) then renders the unboxed answer the box
                below expects, instead of an sp_RbVal the arms assign bools to. */
-            TyKind sv_ty = comp_sn_retype(c, id, nat);
+            int vw = view_push(c, id, nat);
             Buf vb; memset(&vb, 0, sizeof vb);
             emit_expr(c, id, &vb);
-            comp_sn_retype(c, id, sv_ty);
+            view_pop(c, vw);
             g_sn_skip = sv_skip3;
             g_n_argov--;
             emit_boxed_text(c, nat, vb.p ? vb.p : "", b);
@@ -30048,9 +30043,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (sn_ptr) emit_expr(c, id, b);
           else if (gbox) {
             Buf gvb; memset(&gvb, 0, sizeof gvb);
-            TyKind sv_g = comp_sn_retype(c, id, natg);
+            int vw = view_push(c, id, natg);
             emit_expr(c, id, &gvb);
-            comp_sn_retype(c, id, sv_g);
+            view_pop(c, vw);
             emit_boxed_text(c, natg, gvb.p ? gvb.p : "", b);
             free(gvb.p);
           }
@@ -30153,10 +30148,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           TyKind nat2 = ret2 == TY_POLY ? infer_uncached(c, id) : ret2;
           int sn_box = (ret2 == TY_POLY && nat2 != TY_POLY &&
                         nat2 != TY_UNKNOWN && nat2 != TY_VOID);
-          TyKind sv_ty2 = sn_box ? comp_sn_retype(c, id, nat2) : ret2;
+          int vw = sn_box ? view_push(c, id, nat2) : -1;
           Buf vb; memset(&vb, 0, sizeof vb);
           emit_expr(c, id, &vb);
-          if (sn_box) comp_sn_retype(c, id, sv_ty2);
+          if (vw >= 0) view_pop(c, vw);
           g_sn_skip = sv_skip;
           g_n_argov--;
           if (sn_box) emit_boxed_text(c, nat2, vb.p ? vb.p : "", b);
@@ -30179,10 +30174,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (ret3 == TY_POLY && g_sn_skip != id &&
             nat3 != TY_POLY && nat3 != TY_UNKNOWN && nat3 != TY_VOID) {
           int sv_skip3 = g_sn_skip; g_sn_skip = id;
-          TyKind sv_ty3 = comp_sn_retype(c, id, nat3);
+          int vw = view_push(c, id, nat3);
           Buf vb3; memset(&vb3, 0, sizeof vb3);
           emit_expr(c, id, &vb3);
-          comp_sn_retype(c, id, sv_ty3);
+          view_pop(c, vw);
           g_sn_skip = sv_skip3;
           emit_boxed_text(c, nat3, vb3.p ? vb3.p : "", b);
           free(vb3.p);
@@ -37389,11 +37384,11 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             g_argov_node[g_n_argov] = recv;
             snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsd);
             g_n_argov++;
-            TyKind svsd = c->ntype[recv]; c->ntype[recv] = TY_POLY;
+            int vw = view_push(c, recv, TY_POLY);
             int svcv = g_cls_value_recv; g_cls_value_recv = recv;
             int done9 = emit_unresolved_call(c, id, b);
             g_cls_value_recv = svcv;
-            c->ntype[recv] = svsd;
+            view_pop(c, vw);
             g_n_argov--;
             if (done9) return;
           }
