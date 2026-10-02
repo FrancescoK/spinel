@@ -2847,8 +2847,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   const char *ifn = (et == TY_INT) ? int_arith_fn(op) : NULL;
   /* bitwise ops on integers: &, |, ^, <<, >> -- use operator directly */
   int int_bitop = (et == TY_INT) && !ifn &&
-                  (sp_streq(op, "&") || sp_streq(op, "|") || sp_streq(op, "^") ||
-                   sp_streq(op, "<<") || sp_streq(op, ">>"));
+                  is_int_bit_op(op);
   int float_op = (et == TY_FLOAT) && is_basic_arith(op);
   int str_op = (et == TY_STRING) && sp_streq(op, "+");
   if (!ifn && !int_bitop && !float_op && !str_op) return 0;

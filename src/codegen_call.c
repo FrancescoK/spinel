@@ -13067,7 +13067,7 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     /* the same for an int `+`, `-`, `*` the inference typed poly under
        promote (#4681): sp_poly_add / sub / mul promote past the word */
     if (g_promote_mode && rt == TY_INT && a0 == TY_INT && res == TY_POLY &&
-        (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*"))) {
+        is_add_sub_mul(name)) {
       buf_printf(b, "sp_poly_%s(", sp_streq(name, "+") ? "add" : sp_streq(name, "-") ? "sub" : "mul");
       emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
@@ -38785,8 +38785,7 @@ else {
      <</>> take an int64 shift amount. The result stays a bignum -- a masked
      value can still exceed int64 (`bignum & MASK64`). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-       sp_streq(name, "<<") || sp_streq(name, ">>"))) {
+      is_int_bit_op(name)) {
     TyKind at0 = comp_ntype(c, argv[0]);
     if (emit_int_operand_fail(c, id, recv, argv[0], sp_streq(name, "<<") || sp_streq(name, ">>"), b)) return;
     /* Both operands are heap Bignums, and either side may allocate (and so
@@ -38816,8 +38815,7 @@ else {
      inference types these TY_INT); `<<` on a poly is handled earlier as the
      ambiguous shift/append via sp_poly_shl, so only &,|,^,>> reach here. */
   if (recv >= 0 && argc == 1 &&
-      ((rt == TY_INT && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-                         sp_streq(name, "<<") || sp_streq(name, ">>"))) ||
+      ((rt == TY_INT && is_int_bit_op(name)) ||
        (rt == TY_POLY && sp_streq(name, ">>")))) {
     TyKind at0 = comp_ntype(c, argv[0]);
     /* A `<<`/`>>` by a NEGATIVE (or >= word width) count is UB as a bare C shift

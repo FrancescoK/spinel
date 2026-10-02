@@ -118,3 +118,11 @@ int is_push_unshift(const char *n) {
 int is_len_alias(const char *n) {
   return sp_streq(n, "length") || sp_streq(n, "size");
 }
+
+int is_add_sub_mul(const char *n) {
+  return sp_streq(n, "+") || sp_streq(n, "-") || sp_streq(n, "*");
+}
+
+int is_int_bit_op(const char *n) {
+  return sp_streq(n, "&") || sp_streq(n, "|") || sp_streq(n, "^") || sp_streq(n, "<<") || sp_streq(n, ">>");
+}

@@ -6654,7 +6654,7 @@ static int hash_new_capacity_pure(Compiler *c, int n, int depth) {
     return (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING) &&
            hash_new_capacity_pure(c, recv, depth + 1);
   if (ac == 1 && rt == TY_INT && infer_type(c, av[0]) == TY_INT &&
-      (sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "*")))
+      is_add_sub_mul(nm))
     return hash_new_capacity_pure(c, recv, depth + 1) && hash_new_capacity_pure(c, av[0], depth + 1);
   return 0;
 }
@@ -24189,7 +24189,7 @@ static int nn_var_surely(Compiler *c, int k) {
       ok = nn_surely(c, nt_ref(nt, w, "value")); break;
     case NK_LocalVariableOperatorWriteNode: {
       const char *op = nt_str(nt, w, "binary_operator");
-      ok = op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*")) &&
+      ok = op && is_add_sub_mul(op) &&
            nn_surely(c, nt_ref(nt, w, "value"));
       break;
     }

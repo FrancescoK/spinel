@@ -886,8 +886,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
             else if (rbn == 0 && ty_is_numeric(it)) {
               const char *sop = fold_seed_op_sym(c, id, argc, argv);
               TyKind et = ty_array_elem(rt);
-              int arith = sop && (sp_streq(sop, "+") || sp_streq(sop, "-") || sp_streq(sop, "*") ||
-                                  sp_streq(sop, "/") || sp_streq(sop, "%") || sp_streq(sop, "**"));
+              int arith = sop && is_arith_op(sop);
               /* A seed of another class is not an accumulator this element type
                  can hold at all: `[1, 2, 3].reduce(0.5, :+)` accumulates Float
                  and a Bignum seed does not fit an sp_int. Those fold boxed, and

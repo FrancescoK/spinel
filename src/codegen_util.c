@@ -830,7 +830,7 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
   if (rt == TY_FLOAT && (at == TY_FLOAT || at == TY_INT)) { *out = TY_FLOAT; return 1; }
   if (rt == TY_INT && at == TY_FLOAT) { *out = TY_FLOAT; return 1; }
   if (rt == TY_INT && at == TY_INT) {
-    int promotes = sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*");
+    int promotes = is_add_sub_mul(op);
     if (g_promote_mode && promotes) return 0;
     *out = TY_INT; return 1;
   }

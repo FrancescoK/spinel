@@ -5232,8 +5232,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
        is printf formatting, `str + x` is concatenation, `str * n` is repeat --
        all yield a string. Defer them to the rt==TY_STRING path below. */
     if (!(rt == TY_STRING && (sp_streq(name, "%") || sp_streq(name, "+") || sp_streq(name, "*"))) &&
-        (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
-         sp_streq(name, "/") || sp_streq(name, "%") || sp_streq(name, "**")))
+        is_arith_op(name))
       return TY_POLY;
     /* unary numeric operators on a poly receiver: negation/unary-plus stay
        poly, bitwise complement yields int. Resolve them here so the poly
@@ -5672,8 +5671,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          user return from this union instead left the type and the emission
          disagreeing, and the two met at the assignment (#3502). */
       if (found && argc == 1 &&
-          (is_arith_op(name) || sp_streq(name, "<<") || sp_streq(name, ">>") ||
-           sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+          (is_arith_op(name) || is_int_bit_op(name)))
         return an_poly_concrete(c, name, TY_POLY);
       /* The user arms agreed on `r`, and the dispatch writes them into one C
          temp -- but it also emits whatever the BUILTIN surface answers for the
@@ -6715,7 +6713,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          the raising int helper in the mode whose contract is to promote
          (#4681). `/` and `%` cannot leave the word. */
       if (g_promote_mode && rt == TY_INT && a0 == TY_INT &&
-          (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*"))) {
+          is_add_sub_mul(name)) {
         long long pa, pb;
         if (!(infer_const_int_node(nt, recv, &pa) && infer_const_int_node(nt, argv[0], &pb)))
           return TY_POLY;
@@ -6796,8 +6794,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* integer bitwise operators */
   if (recv >= 0 && argc == 1 && rt == TY_INT &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-       sp_streq(name, "<<") || sp_streq(name, ">>"))) {
+      is_int_bit_op(name)) {
     /* --int-overflow=promote: an int `<<` whose operands are not both known
        constants can escape the word at run time and promote to a Bignum
        (codegen lowers it to sp_poly_shl), so the value is boxed. A
@@ -6816,8 +6813,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      int is exactly why the receiver was promoted to bigint; and `bignum & MASK`
      can still exceed int64, e.g. 0x9e37…c16 & ((1<<64)-1)). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-       sp_streq(name, "<<") || sp_streq(name, ">>")))
+      is_int_bit_op(name))
     return TY_BIGINT;
   /* Integer#bit_length on a Bignum answers an int (the bit count fits int64). */
   if (recv >= 0 && argc == 0 && rt == TY_BIGINT && sp_streq(name, "bit_length"))

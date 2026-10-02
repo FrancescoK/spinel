@@ -1995,11 +1995,8 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   TyKind vt = comp_ntype(c, v);
   const char *fn = t == TY_INT ? int_arith_fn(op)
                  : t == TY_BIGINT ? bigint_arith_fn(op) : NULL;
-  int bitop = t == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
-                              sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
-  int fop = t == TY_FLOAT && (sp_streq(op, "+") || sp_streq(op, "-") ||
-                              sp_streq(op, "*") || sp_streq(op, "/") ||
-                              sp_streq(op, "%") || sp_streq(op, "**"));
+  int bitop = t == TY_INT && is_int_bit_op(op);
+  int fop = t == TY_FLOAT && is_arith_op(op);
   /* Float `%` and `**` have no C operator: they take the helpers the binary
      form uses (floored modulo, a raising pow for a Complex result) */
   const char *ffn = !fop ? NULL
@@ -10114,7 +10111,7 @@ else {
     /* A bigint ivar has no C operator: `@n += 1` emitted pointer arithmetic on
        an incomplete struct. Route it through the bigint helpers, promoting an
        int operand at the boundary like every other bigint slot. */
-    if (vt == TY_BIGINT && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*"))) {
+    if (vt == TY_BIGINT && op && is_add_sub_mul(op)) {
       const char *fn = sp_streq(op, "+") ? "sp_bigint_add"
                      : sp_streq(op, "-") ? "sp_bigint_sub" : "sp_bigint_mul";
       buf_printf(b, "%s = %s(%s, ", ref, fn, ref);
@@ -10339,8 +10336,7 @@ else {
                     : op && sp_streq(op, "/") ? "sp_poly_div"
                     : op && sp_streq(op, "%") ? "sp_poly_mod"
                     : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
-    int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
-                       sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
+    int bitop = op && is_int_bit_op(op);
     int rdcls = -1;
     /* Ruby desugars `recv.attr op= v` into a reader call AND a writer call;
        an attr_reader-only attribute raises NoMethodError for `attr=`, so a
