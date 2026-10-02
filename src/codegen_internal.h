@@ -1467,6 +1467,11 @@ int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_fetch_values0(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_pred0(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_dig_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b);
 /* A typed array receiver of a compare (`ck` "cmp") or a blockless sum (`ck`
    "sum"), wrapped in the runtime's nil check where the array can hold the
    sentinel (codegen_call_recv.c) */

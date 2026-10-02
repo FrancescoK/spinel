@@ -2703,35 +2703,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-      TyKind init_t = comp_ntype(c, argv[0]);
-      /* an Array initial value concatenates one level ([[1],[2]].sum([])) */
-      if (ty_is_array(init_t)) {
-        buf_puts(b, "sp_PolyArray_sum_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_boxed(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-      /* a String initial value folds by concatenation ([str].sum("")) */
-      if (init_t == TY_STRING) {
-        buf_puts(b, "sp_PolyArray_sum_str("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-      /* a Float initial value folds to a Float (bare sp_float, not boxed) */
-      if (init_t == TY_FLOAT) {
-        buf_puts(b, "("); emit_float_expr(c, argv[0], b);
-        buf_puts(b, " + sp_PolyArray_sum_float("); emit_expr(c, recv, b); buf_puts(b, "))");
-        return 1;
-      }
-      /* an Integer (or poly) seed folds via sp_poly_add so Float/Rational/
-         Bignum elements promote the result instead of being dropped by the
-         int-only sum (matches the no-arg poly fold above) (#2959) */
-      buf_puts(b, "sp_poly_add(");
-      if (init_t == TY_POLY) emit_expr(c, argv[0], b);
-      else emit_boxed(c, argv[0], b);
-      buf_puts(b, ", sp_PolyArray_sum_poly("); emit_expr(c, recv, b); buf_puts(b, "))");
-      return 1;
-    }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "cycle") && argc == 1 &&
         nt_ref(nt, id, "block") < 0 && comp_ntype(c, id) == TY_ENUMERATOR) {
       /* the call is typed as an Enumerator, so it has to BE one: materializing
@@ -2765,36 +2736,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
       return 1;
     }
-    /* concat(*arrays): append each argument array's elements onto the receiver
-       in place, return the receiver. Coerce a typed-array argument to poly. */
-    if (rt == TY_POLY_ARRAY && sp_streq(name, "concat")) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
-      /* evaluate (and root) every argument left-to-right BEFORE any append, so a
-         side-effecting argument or one that reads the receiver sees pre-mutation
-         state, per Ruby's arg-before-call evaluation order. */
-      int base = g_tmp + 1; g_tmp += argc;
-      for (int ai = 0; ai < argc; ai++) {
-        TyKind at = comp_ntype(c, argv[ai]);
-        const char *from = at == TY_INT_ARRAY   ? "sp_PolyArray_from_int_array"
-                         : at == TY_STR_ARRAY   ? "sp_PolyArray_from_str_array"
-                         : at == TY_FLOAT_ARRAY ? "sp_PolyArray_from_float_array" : NULL;
-        buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
-        if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
-        else if (at == TY_POLY || at == TY_UNKNOWN) {
-          /* a boxed argument (a rest param widened to poly): unbox to the
-             working array through the runtime kind dispatch (#3317); one
-             that is no Array is CRuby's TypeError, not an empty list */
-          buf_puts(b, "sp_poly_set_operand("); emit_boxed(c, argv[ai], b); buf_puts(b, ")");
-        }
-        else emit_expr(c, argv[ai], b);   /* already a poly array */
-        buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
-      }
-      for (int ai = 0; ai < argc; ai++)
-        buf_printf(b, " sp_PolyArray_append_all(_t%d, _t%d);", t, base + ai);
-      buf_printf(b, " _t%d; })", t);
-      return 1;
-    }
     /* unshift/prepend(*elems): insert each element at the front (reverse order
        so the arg order is preserved), return the receiver. */
     if (rt == TY_POLY_ARRAY && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1) {
@@ -2815,17 +2756,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       for (int ai = argc - 1; ai >= 0; ai--)
         buf_printf(b, " sp_PolyArray_insert(_t%d, 0, _t%d);", t, base + ai);
       buf_printf(b, " _t%d; })", t);
-      return 1;
-    }
-    /* rindex(obj): last matching index, or nil (SP_INT_NIL sentinel, matching
-       the index/find_index int-or-nil convention). */
-    if (rt == TY_POLY_ARRAY && sp_streq(name, "rindex") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-      Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = sp_PolyArray_rindex(%s, ", t, rb.p); free(rb.p);
-      emit_boxed(c, argv[0], b);
-      buf_printf(b, "); _t%d < 0 ? SP_INT_NIL : _t%d; })", t, t);
-      if (ch) buf_puts(b, "; })");
       return 1;
     }
     /* each_index { |i| ... } - iterate with index (works for all array kinds) */
@@ -3002,25 +2932,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         nt_ref(nt, id, "block") >= 0 &&
         emit_array_block_index(c, id, recv, rt, "Poly", name, nt_ref(nt, id, "block"), b))
       return 1;
-    /* index(v) / find_index(v) on a poly array (no block) -> the first
-       position whose element == v (sp_poly_eq), or nil (SP_INT_NIL),
-       mirroring the count(v)/any?(v) idiom (doom: @map.sectors.index(sector)). */
-    if (rt == TY_POLY_ARRAY && (sp_streq(name, "index") || sp_streq(name, "find_index")) &&
-        argc == 1 && nt_ref(nt, id, "block") < 0) {
-      int trecv = ++g_tmp, ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
-      Buf ra = expr_buf(c, recv);
-      /* Root the receiver and the boxed needle: sp_poly_eq can allocate
-         (bigint promotion), so a collection may run mid-loop. */
-      buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", trecv, ra.p ? ra.p : "NULL", trecv); free(ra.p);
-      buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta);
-      buf_printf(b, " sp_int _t%d = SP_INT_NIL;", tres);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, trecv, ti);
-      buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) { _t%d = _t%d; break; }",
-                 trecv, ti, ta, tres, ti);
-      buf_printf(b, " _t%d; })", tres);
-      return 1;
-    }
     {
       int block = nt_ref(nt, id, "block");
       /* bsearch { |x| cond } - find-minimum mode. Every array kind including
@@ -3398,20 +3309,6 @@ else {
                         " (long long)_t%d, (long long)_t%d, (long long)_t%d)), %s); })",
                      ti, tn, tn, boxed ? "sp_box_nil()" : default_value(et));
         }
-        return 1;
-      }
-      if (sp_streq(name, "dig") && argc >= 2) {
-        /* multi-step (one step is arr[i], a builtin-op row): hand the whole
-           key list to the runtime walk, which stops at nil and raises
-           TypeError on a step that cannot be dug. Chaining index reads
-           instead read the scalar the first step answered as if it were an
-           array, so `[1].dig(0, 0)` answered 1 where Ruby raises (#3825). */
-        buf_puts(b, "sp_poly_dig_n(sp_box_obj(");
-        emit_expr(c, recv, b);
-        buf_printf(b, ", SP_BUILTIN_%s_ARRAY), %d, (sp_RbVal[]){",
-                   rt == TY_INT_ARRAY ? "INT" : rt == TY_FLOAT_ARRAY ? "FLT" : "STR", argc);
-        for (int di = 0; di < argc; di++) { if (di) buf_puts(b, ", "); emit_boxed(c, argv[di], b); }
-        buf_puts(b, "})");
         return 1;
       }
       if ((sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1) {
@@ -3887,28 +3784,6 @@ else {
           emit_filter_bang_result(name, trecv, torig, twp, box, b);
           return 1;
         }
-      }
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
-          argc == 0 && nt_ref(nt, id, "block") < 0) {
-        /* scalar-element arrays never hold nil/false: predicate is length-based.
-           One that can hold the sentinel counts its truthy (non-nil) elements
-           instead. */
-        if (elem_nil_sentinel(c, recv, rt)) {
-          /* sp_*Array_truthy_count: the length unless may_nil is set */
-          int ta = ++g_tmp, tn = ++g_tmp;
-          buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
-          buf_printf(b, "; sp_int _t%d = sp_%sArray_truthy_count(_t%d, %d); ", tn, k, ta, elem_nil_marked(c, recv, rt));
-          if (sp_streq(name, "all?"))       buf_printf(b, "_t%d == sp_%sArray_length(_t%d); })", tn, k, ta);
-          else if (sp_streq(name, "any?"))  buf_printf(b, "_t%d > 0; })", tn);
-          else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tn);
-          else                              buf_printf(b, "_t%d == 1; })", tn);
-          return 1;
-        }
-        const char *op = sp_streq(name, "all?") ? ">= 0" : sp_streq(name, "any?") ? "> 0"
-                       : sp_streq(name, "none?") ? "== 0" : "== 1";
-        buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_printf(b, ") %s)", op);
-        return 1;
       }
       /* array.none?(a..b) / any?/all?/one? with a Range pattern -- membership
          test (===) over an integer array. */
@@ -4434,24 +4309,6 @@ else {
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative sample number\");"
                       " sp_PolyArray_slice(_t%d, 0, _t%d); })", tn, t, tn);
-        return 1;
-      }
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
-          argc == 0 && nt_ref(nt, id, "block") < 0) {
-        /* count truthy elements; a poly element may be nil/false */
-        int t = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_int _t%d = 0; for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
-                      " if (sp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) _t%d++;",
-                   tn, ti, ti, t, ti, t, ti, tn);
-        const char *expr = sp_streq(name, "all?") ? "_t%d == sp_PolyArray_length(_t%d)"
-                         : sp_streq(name, "any?") ? "_t%d > 0"
-                         : sp_streq(name, "none?") ? "_t%d == 0" : "_t%d == 1";
-        buf_puts(b, " (");
-        if (sp_streq(name, "all?")) buf_printf(b, expr, tn, t);
-        else buf_printf(b, expr, tn);
-        buf_puts(b, "); })");
         return 1;
       }
       if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||

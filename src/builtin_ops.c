@@ -1951,6 +1951,16 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "product",               1,   1, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT },
   { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_FETCH_VALUES0 },
   { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_REQUIRED, TY_POLY_ARRAY, BOPE_ARRAY_FETCH_VALUES0 },
+  { BOP_ANY_ARRAY, "all?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
+  { BOP_ANY_ARRAY, "any?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
+  { BOP_ANY_ARRAY, "none?",                 0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
+  { BOP_ANY_ARRAY, "one?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
+  { BOP_ANY_ARRAY, "dig",                   2, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_DIG_N },
+  { BOP_ANY_ARRAY, "sum",                   1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_SUM1 },
+  { BOP_ANY_ARRAY, "concat",                1, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_CONCAT },
+  { BOP_ANY_ARRAY, "index",                 1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_INDEX_V },
+  { BOP_ANY_ARRAY, "find_index",            1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_INDEX_V },
+  { BOP_ANY_ARRAY, "rindex",                1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_INDEX_V },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

@@ -247,6 +247,11 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_COMBINATION] = emit_op_array_combination,
   [BOPE_ARRAY_PRODUCT] = emit_op_array_product,
   [BOPE_ARRAY_FETCH_VALUES0] = emit_op_array_fetch_values0,
+  [BOPE_ARRAY_PRED0] = emit_op_array_pred0,
+  [BOPE_ARRAY_DIG_N] = emit_op_array_dig_n,
+  [BOPE_ARRAY_SUM1] = emit_op_array_sum1,
+  [BOPE_ARRAY_CONCAT] = emit_op_array_concat,
+  [BOPE_ARRAY_INDEX_V] = emit_op_array_index_v,
 };
 
 /* an argument's kind, for a row's argument guard */

@@ -94,6 +94,11 @@ typedef enum {
   BOPE_ARRAY_COMBINATION, /* Array#combination / #permutation and the repeated forms, blockless */
   BOPE_ARRAY_PRODUCT,     /* Array#product without a block */
   BOPE_ARRAY_FETCH_VALUES0, /* Array#fetch_values with no keys (typed) */
+  BOPE_ARRAY_PRED0,       /* Array#all? / any? / none? / one? with no pattern or block */
+  BOPE_ARRAY_DIG_N,       /* Array#dig with two or more keys (typed) */
+  BOPE_ARRAY_SUM1,        /* Array#sum(seed) without a block (poly) */
+  BOPE_ARRAY_CONCAT,      /* Array#concat(*arrays) (poly) */
+  BOPE_ARRAY_INDEX_V,     /* Array#index / find_index / rindex of a value (poly) */
   BOPE__COUNT
 } BopEmit;
 
