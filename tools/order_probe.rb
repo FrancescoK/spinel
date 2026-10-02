@@ -104,6 +104,27 @@ module OrderProbe
       @compiles = 0
       @probed = 0
       @lock = Mutex.new
+      @stopped = false
+      @halt = -> { @stopped }
+    end
+
+    # Stops the probe: every compile in flight is killed, and it and every
+    # later one raise ProbeCommon::Stopped.
+    def stop
+      @stopped = true
+    end
+
+    # Waits for `threads` that compile. An interrupt, which reaches the main
+    # thread only, stops them first: a compile runs in a process group of
+    # its own, which the terminal's interrupt does not reach, and it would
+    # go on writing under a work directory the run has removed.
+    def finish(threads)
+      threads.each(&:join)
+    ensure
+      if threads.any?(&:alive?)
+        stop
+        threads.each(&:join)
+      end
     end
 
     # Compiles `src` to its type dump. The dump of a run before is taken out
@@ -112,7 +133,7 @@ module OrderProbe
       FileUtils.rm_f(json)
       log = "#{json}.log"
       argv = [PINNED, @spinel, src, "--emit-types", "-o", json, *@flags]
-      status, timed_out = ProbeCommon.run_timed(argv, @timeout, log, log)
+      status, timed_out = ProbeCommon.run_timed(argv, @timeout, log, log, @halt)
       @lock.synchronize { @compiles += 1 }
       said = File.exist?(log) ? File.binread(log) : ""
       rounds = said[/^\[fp\] rounds=(\d+(?: \(CAP\))?)/, 1]
@@ -424,7 +445,8 @@ module OrderProbe
       # names an Enumerable method: that is the tool's failure, not a finding.
       pre = File.join(work, "preflight.rb")
       File.write(pre, "p [3, 1, 2].each_slice(2).to_a\n")
-      first = probe.compile(pre, "#{pre}.json")
+      first = nil
+      probe.finish([Thread.new { first = probe.compile(pre, "#{pre}.json") }])
       raise "#{spinel} does not compile a one-line program (#{first.state}: #{first.message})" unless first.state == "ok"
 
       queue = Queue.new
@@ -432,11 +454,13 @@ module OrderProbe
       done = 0
       started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       progress = Mutex.new
-      Array.new(jobs) do
+      workers = Array.new(jobs) do
         Thread.new do
           while (f, i = (queue.pop(true) rescue nil))
             begin
               probe.check(f, i)
+            rescue ProbeCommon::Stopped
+              break
             rescue StandardError => e
               # one program the tool cannot read is one program left out
               probe.skip(f, "tool error: #{e.class}: #{e.message.lines.first.to_s.strip}")
@@ -447,7 +471,8 @@ module OrderProbe
             end
           end
         end
-      end.each(&:join)
+      end
+      probe.finish(workers)
       $stderr.puts
       took = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
       probe.findings.sort_by! { |f| [CLASSES.index(f.klass), probe.relative(f.path)] }
