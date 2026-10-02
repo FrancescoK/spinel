@@ -277,6 +277,9 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/repr.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
                build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
+# The decision registry (--decisions, --decisions-log; `make decisions-test`).
+SPINEL_HDRS += src/decide.h
+SPINEL_OBJ  += build/csrc/decide.o
 
 build/csrc:
 	@mkdir -p build/csrc
@@ -1063,6 +1066,83 @@ check-stores-test: $(SPINEL)
 	! grep -q 'store check' "$$tmp/c.out" || { echo "check-stores-test: FAIL (a store that converts was reported)"; grep 'store check' "$$tmp/c.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "check-stores-test: pass"; else exit 1; fi
+
+.PHONY: decisions-test
+# One of test-run's legs, named here beside its recipe.
+test-run: decisions-test
+# The decision registry (src/decide.c), on programs that between them take
+# every kind of keyed decision. A compile given its own log is the compile
+# unrestricted, to the byte; with every decision denied nothing is logged and
+# the program still prints its .expected, also with a collection at every
+# allocation, which is when a root that was wrongly dropped shows. Then the
+# keys themselves, a method's and an ivar's, and that denying a kind
+# with a whole-program switch of its own emits what the switch emits. Every
+# kind changes some program's C when it is denied: a key that gates nothing
+# would be named by no bisect.
+DECISION_TESTS = test/fixtures/decisions/sites.rb test/gc_root_elided_array_slot.rb \
+                 test/reader_read_only_no_copy.rb \
+                 test/poly_arm_kwrest_empty.rb
+DECISION_KINDS = gc-save inline-force pd-hoist root-elide root-frame strbuf-raw
+decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
+	@ok=1; tmp=$$(mktemp -d /tmp/spinel-decisions.XXXXXX); : > "$$tmp/none"; \
+	if $(SPINEL) --decisions="$$tmp/absent" test/fixtures/decisions/sites.rb -c -o "$$tmp/o.c" >"$$tmp/o.out" 2>&1; then \
+	  echo "decisions-test: FAIL (an allow-list that cannot be read was taken for an empty one)"; ok=0; \
+	else grep -q "cannot read decisions file '$$tmp/absent'" "$$tmp/o.out" || \
+	  { echo "decisions-test: FAIL (an unreadable allow-list refused without naming it)"; sed -n 1,3p "$$tmp/o.out"; ok=0; }; fi; \
+	for l in "$$tmp" ""; do \
+	  if $(SPINEL) --decisions="$$l" test/fixtures/decisions/sites.rb -c -o "$$tmp/o.c" >/dev/null 2>&1; then \
+	    echo "decisions-test: FAIL (--decisions='$$l', a directory or no name, was taken for a list)"; ok=0; fi; \
+	done; \
+	printf 'puts 1\n' > "$$tmp/one.rb"; echo stale > "$$tmp/one.log"; \
+	$(SPINEL) --decisions-log="$$tmp/one.log" "$$tmp/one.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1 && [ ! -s "$$tmp/one.log" ] || \
+	  { echo "decisions-test: FAIL (a program that takes no decision left a log)"; ok=0; }; \
+	for f in $(DECISION_TESTS); do \
+	  t=$$tmp/$$(basename $$f .rb); \
+	  $(SPINEL) $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.plain" && \
+	  $(SPINEL) --decisions-log="$$t.log" $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.logged" && \
+	  $(SPINEL) --decisions="$$t.log" --decisions-log="$$t.log2" $$f -c -o "$$t.c" >/dev/null 2>&1 || \
+	    { echo "decisions-test: FAIL ($$f does not compile)"; ok=0; continue; }; \
+	  cmp -s "$$t.plain" "$$t.logged" || { echo "decisions-test: FAIL ($$f: writing the log changed the C)"; ok=0; }; \
+	  cmp -s "$$t.plain" "$$t.c" && cmp -s "$$t.log" "$$t.log2" || \
+	    { echo "decisions-test: FAIL ($$f: a compile given its own log is not the compile that wrote it)"; ok=0; }; \
+	  $(SPINEL) --decisions="$$tmp/none" --decisions-log="$$t.log0" $$f -o "$$t.bin" >/dev/null 2>&1 || \
+	    { echo "decisions-test: FAIL ($$f does not build with every decision denied)"; ok=0; continue; }; \
+	  [ ! -s "$$t.log0" ] || { echo "decisions-test: FAIL ($$f: an empty allow-list still took $$(sed -n 1p "$$t.log0"))"; ok=0; }; \
+	  for stress in 0 1; do \
+	    if [ $$stress = 1 ]; then SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$t.bin" > "$$t.out" 2>/dev/null; \
+	    else $(TIMEOUT60) "$$t.bin" > "$$t.out" 2>/dev/null; fi; \
+	    cmp -s "$$t.out" $$f.expected || \
+	      { echo "decisions-test: FAIL ($$f is wrong with every decision denied, SPINEL_GC_STRESS=$$stress)"; ok=0; }; \
+	  done; \
+	done; \
+	cat "$$tmp"/*.log | sed 's/@.*//' | sort -u | tr '\n' ' ' > "$$tmp/kinds"; \
+	[ "$$(cat "$$tmp/kinds")" = "$$(echo $(DECISION_KINDS)) " ] || \
+	  { echo "decisions-test: FAIL (kinds logged: $$(cat "$$tmp/kinds"); a kind is not covered, or not listed in DECISION_KINDS)"; ok=0; }; \
+	for k in $(DECISION_KINDS); do \
+	  hit=0; \
+	  for f in $(DECISION_TESTS); do \
+	    t=$$tmp/$$(basename $$f .rb); \
+	    grep -q "^$$k@" "$$t.log" || continue; \
+	    grep -v "^$$k@" "$$t.log" > "$$t.allow"; \
+	    $(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1 && ! cmp -s "$$t.plain" "$$t.c" && hit=1; \
+	  done; \
+	  [ $$hit = 1 ] || { echo "decisions-test: FAIL (denying every $$k changes no program's C)"; ok=0; }; \
+	done; \
+	t=$$tmp/gc_root_elided_array_slot; f=test/gc_root_elided_array_slot.rb; \
+	for k in 'root-elide@Sprites#pixel:s' 'root-elide@Lut#load:@lut' 'gc-save@Lut#load' 'root-frame@main'; do \
+	  grep -qxF "$$k" "$$t.log" || { echo "decisions-test: FAIL ($$f took no $$k)"; ok=0; }; \
+	done; \
+	grep -Ev '^(root-elide|root-frame|inline-force|pd-hoist)@' "$$t.log" > "$$t.allow"; \
+	$(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.denied" && \
+	SPINEL_NO_PD_HOIST=1 SPINEL_LINE_MAP=1 $(SPINEL) --no-root-elision --no-root-frame --no-inline-hot $$f -c -o "$$t.c" >/dev/null 2>&1 && \
+	cmp -s "$$t.denied" "$$t.c" || \
+	  { echo "decisions-test: FAIL (denying the kinds that have a switch does not emit what the switches emit)"; ok=0; }; \
+	printf '# only this one\n\nroot-frame@Sprites#place\n' > "$$t.allow"; \
+	$(SPINEL) --decisions="$$t.allow" --decisions-log="$$t.log1" $$f -c -o "$$t.c" >/dev/null 2>&1; \
+	[ "$$(cat "$$t.log1")" = 'root-frame@Sprites#place' ] && [ "$$(grep -c 'SP_GC_ROOT_FRAME(_gcf)' "$$t.c")" = 1 ] || \
+	  { echo "decisions-test: FAIL (an allow-list of one method's root frame gave: $$(tr '\n' ' ' < "$$t.log1"))"; ok=0; }; \
+	rm -rf "$$tmp"; \
+	[ $$ok = 1 ] && echo "decisions-test: pass" || exit 1
 
 cli-opts-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-cliopts.XXXXXX); \

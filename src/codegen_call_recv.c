@@ -9465,7 +9465,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
              this read is typically in a loop: `ctx.buf.getbyte(i)` over a
              200 KB buffer copied the whole string once per row. Same type,
              same const char * -- the live buffer rather than a snapshot. */
-          else if (c->strbuf_read_raw[id])
+          else if (c->strbuf_read_raw[id] && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
             buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",

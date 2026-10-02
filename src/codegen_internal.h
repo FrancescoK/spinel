@@ -13,6 +13,7 @@
 #include "codegen.h"
 #include "compiler.h"
 #include "analyze.h"
+#include "decide.h"
 
 #include <stdio.h>
 #include <stdlib.h>

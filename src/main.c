@@ -23,6 +23,7 @@
 #include "analyze.h"
 #include "repr.h"
 #include "csplit.h"
+#include "decide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -363,6 +364,10 @@ static void usage(void) {
     "  --no-inline-hot  Do not force small leaf methods inline (default: do).\n"
     "                 Forcing is worth a sixth of optcarrot's frame rate and\n"
     "                 costs up to twice the C compile time\n"
+    "  --decisions-log=FILE  Write the key of each optimization decision that\n"
+    "              would be a miscompile if its check were wrong, one per line\n"
+    "  --decisions=FILE  Take only the decisions FILE lists (an empty file:\n"
+    "              none); `spinel bisect` searches the list for a wrong answer\n"
     "  --cc=CMD    C compiler (default: cc)\n"
     "  --jobs=N    compile the generated C as N units in parallel\n"
     "              (default: split only a unit of 4 MB or more; --jobs=1 never)\n"
@@ -482,6 +487,19 @@ int main(int argc, char **argv) {
        and a faster C compile, at the cost of a call per hot-loop method. */
     else if (sp_streq(a, "--no-inline-hot")) { g_inline_hot = 0; i++; }
     else if (sp_streq(a, "--no-write-barrier")) { g_no_write_barrier = 1; i++; }
+    /* The same bisecting hatch, one decision at a time (src/decide.c): take
+       only the listed decisions, or write down the ones taken. They travel
+       in the environment so that a compile some other tool starts, `spinel
+       diff` or an oracle script, is restricted the same way. */
+    else if (!strncmp(a, "--decisions=", 12) || !strncmp(a, "--decisions-log=", 16)) {
+      int log = a[11] == '-';
+      const char *path = a + (log ? 16 : 12);
+      /* no name is not no restriction: it would compile unrestricted and
+         be read as the answer under the list */
+      if (!*path) { fprintf(stderr, "spinel: %s needs a file\n", log ? "--decisions-log=" : "--decisions="); return 1; }
+      set_env(log ? "SPINEL_DECISIONS_LOG" : "SPINEL_DECISIONS", path);
+      i++;
+    }
     /* Library emission for host extensions (docs/internals/ext-design.md):
        --ext-init names the host-callable init function (emitted in place of
        main), --ext-entry designates the exported methods. */
@@ -701,6 +719,8 @@ int main(int argc, char **argv) {
   if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
   /* --check-stores reports each store at its Ruby line, so it needs them too */
   if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
+  /* A decision key names its site by position: forced the same way. */
+  if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
 
   /* Analyze-only emit modes write their artifact from inside codegen_program
      and produce an empty translation unit; route the output path via env. */
@@ -815,6 +835,7 @@ int main(int argc, char **argv) {
   }
   char *csrc = codegen_program(nt);
   nt_free(nt);
+  decide_write_log();
   if (seed_path[0]) remove(seed_path);
   if (!csrc) { fprintf(stderr, "spinel: codegen failed\n"); return 1; }
 
