@@ -17,12 +17,13 @@
 #
 # Exit status: 0 identical, 1 some file differs, 2 infrastructure error.
 set -u
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export LC_ALL=C
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 cd "$ROOT" || exit 2
 REV=${1-}
 [ -n "$REV" ] || { echo "usage: $0 <ref-rev>" >&2; exit 2; }
 SHA=$(git rev-parse --verify -q "$REV^{commit}") || { echo "cident: unknown revision $REV" >&2; exit 2; }
-JOBS=${CIDENT_JOBS:-$(nproc)}
+JOBS=${CIDENT_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 2)}
 NEW=$ROOT/bin/spinel
 [ -x "$NEW" ] || { echo "cident: build bin/spinel first" >&2; exit 2; }
 
@@ -34,8 +35,8 @@ list() {
 }
 
 # emit <spinel> <tree-root> <outdir>: C for every corpus file, or a .refused
-# marker where the compiler refuses it. Paths stay relative so that the
-# compiler's own tree resolves lib/ and packages/.
+# marker where the compiler refuses it. Both compilers read the same source
+# tree; each binary still resolves lib/ and packages/ from its own location.
 emit() {
   local sp=$1 tree=$2 out=$3
   mkdir -p "$out"
@@ -48,16 +49,21 @@ emit() {
 }
 
 REFDIR=$ROOT/build/cident/$SHA
-if [ ! -f "$REFDIR/.done" ]; then
+# Older caches compiled copied sources in the reference tree.
+if [ ! -f "$REFDIR/.same-source-v1" ]; then
   # The C embeds the compiler's own tree path in a few string literals,
   # together with their lengths. A reference tree at a path of the same
   # length as this one lets a plain rename make those bytes equal.
-  L=${#ROOT}
-  # the process id keeps two runs against the same revision (from two
-  # checkouts whose paths have the same length) out of each other's tree
-  WT=$(printf "/tmp/cident-%s-%s%0100d" "$$" "$SHA" 0 | cut -c1-"$L")
-  [ "$L" -ge 20 ] && [ ${#WT} -eq "$L" ] || { echo "cident: cannot place a reference tree beside $ROOT" >&2; exit 2; }
-  git worktree remove --force "$WT" >/dev/null 2>&1; rm -rf "$WT"
+  # Resolve /tmp first: on macOS it aliases /private/tmp, and require uses
+  # canonical paths. Reserve a unique directory rather than deleting one
+  # another invocation may still be using: concurrent runs against one
+  # revision get their own tree.
+  TMP=$(mktemp -d /tmp/spinel-cident.XXXXXXXX) || exit 2
+  TMP=$(cd "$TMP" && pwd -P)
+  L=$((${#ROOT} - ${#TMP} - 1))
+  [ "$L" -ge 1 ] || { rmdir "$TMP"; echo "cident: reference path is too long for $ROOT" >&2; exit 2; }
+  WT=$TMP/$(printf "%${L}s" "" | tr ' ' x)
+  trap 'git worktree remove --force "$WT" >/dev/null 2>&1; rmdir "$TMP"' EXIT
   git worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || { echo "cident: cannot check out $REV" >&2; exit 2; }
   [ -d "$ROOT/vendor" ] && [ ! -d "$WT/vendor" ] && cp -r "$ROOT/vendor" "$WT/vendor"
   ( cd "$WT" && make -j"$JOBS" -s >/dev/null 2>&1 ) || {
@@ -65,15 +71,21 @@ if [ ! -f "$REFDIR/.done" ]; then
   # The reference compiles this tree's corpus, so a test added by the change
   # under test is compared too (it is reported if the reference refuses it).
   rm -rf "$REFDIR"; mkdir -p "$REFDIR"
-  # Only the programs: the reference keeps its own lib/, builtins and
-  # package sources, which are part of what is being compared.
-  cp -r test benchmark "$WT/" 2>/dev/null
-  for d in packages/*/test; do mkdir -p "$WT/$d" && cp -r "$d/." "$WT/$d/"; done
-  [ -f "$OC" ] && mkdir -p "$WT/build" && cp "$OC" "$WT/$OC"
-  emit "$WT/bin/spinel" "$WT" "$REFDIR"
-  for c in "$REFDIR"/*.c; do [ -f "$c" ] && LC_ALL=C sed -i "s|$WT|$ROOT|g" "$c"; done
+  emit "$WT/bin/spinel" "$ROOT" "$REFDIR"
+  # Compiler-owned lib/ or prelude paths can still occur in strings. These
+  # canonical prefixes have equal byte lengths, so their C sizes stay valid.
+  PATTERN=$(printf '%s' "$WT" | sed 's/[][\\.^$*|]/\\&/g')
+  REPLACEMENT=$(printf '%s' "$ROOT" | sed 's/[\\&|]/\\&/g')
+  # sed -i takes no suffix argument only in GNU sed; BSD sed (macOS) reads the
+  # script as the suffix and fails, leaving the reference paths in place.
+  for c in "$REFDIR"/*.c; do
+    [ -f "$c" ] || continue
+    sed "s|$PATTERN|$REPLACEMENT|g" "$c" > "$c.tmp" && mv "$c.tmp" "$c" || exit 2
+  done
   git worktree remove --force "$WT" >/dev/null 2>&1
-  : > "$REFDIR/.done"
+  rmdir "$TMP"
+  trap - EXIT
+  : > "$REFDIR/.same-source-v1"
 fi
 
 NEWDIR=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cident-new.XXXXXX")
