@@ -725,6 +725,59 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "atime",          0, 127, BF_ANY, TY_TIME,     BOPE_NONE },
   { TY_IO, "ctime",          0, 127, BF_ANY, TY_TIME,     BOPE_NONE },
   { TY_IO, "birthtime",      0, 127, BF_ANY, TY_TIME,     BOPE_NONE },
+
+  /* Regexp: result kinds; emission stays in emit_call_body. */
+  { TY_REGEX, "match?",          0, 127, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "===",             0, 127, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "match",           0, 127, BF_REQUIRED, TY_POLY,          BOPE_NONE },  /* the block's value, nil on a miss (#3642) */
+  { TY_REGEX, "match",           0, 127, BF_NONE,     TY_MATCHDATA,     BOPE_NONE },
+  { TY_REGEX, "=~",              0, 127, BF_ANY,      TY_POLY,          BOPE_NONE },
+  { TY_REGEX, "~",               0,   0, BF_ANY,      TY_POLY,          BOPE_NONE },  /* ~ /re/ is /re/ =~ $_ */
+  { TY_REGEX, "source",          0, 127, BF_ANY,      TY_STRING,        BOPE_NONE },
+  { TY_REGEX, "inspect",         0, 127, BF_ANY,      TY_STRING,        BOPE_NONE },
+  { TY_REGEX, "to_s",            0, 127, BF_ANY,      TY_STRING,        BOPE_NONE },
+  { TY_REGEX, "names",           0, 127, BF_ANY,      TY_STR_ARRAY,     BOPE_NONE },
+  { TY_REGEX, "named_captures",  0, 127, BF_ANY,      TY_STR_POLY_HASH, BOPE_NONE },  /* {name => [group indices]} */
+  { TY_REGEX, "freeze",          0, 127, BF_ANY,      TY_REGEX,         BOPE_NONE },
+  { TY_REGEX, "dup",             0, 127, BF_ANY,      TY_REGEX,         BOPE_NONE },
+  { TY_REGEX, "clone",           0, 127, BF_ANY,      TY_REGEX,         BOPE_NONE },
+  { TY_REGEX, "itself",          0, 127, BF_ANY,      TY_REGEX,         BOPE_NONE },
+  { TY_REGEX, "frozen?",         0, 127, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "fixed_encoding?", 0, 127, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "casefold?",       0, 127, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "==",              1,   1, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "!=",              1,   1, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "equal?",          1,   1, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "eql?",            1,   1, BF_ANY,      TY_BOOL,          BOPE_NONE },
+  { TY_REGEX, "encoding",        0, 127, BF_ANY,      TY_POLY,          BOPE_NONE },  /* a boxed Encoding */
+  { TY_REGEX, "options",         0, 127, BF_ANY,      TY_INT,           BOPE_NONE },
+  { TY_REGEX, "timeout",         0, 127, BF_ANY,      TY_POLY,          BOPE_NONE },  /* nil: no per-instance timeout */
+
+  /* Symbol: result kinds; emission stays in emit_call_body. <=> and
+     casecmp/casecmp? are typed by the operand (nil for a non-Symbol). */
+  { TY_SYMBOL, "to_s",        0, 127, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "id2name",     0, 127, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "name",        0, 127, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "inspect",     0, 127, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "upcase",      0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "downcase",    0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "capitalize",  0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "swapcase",    0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "to_sym",      0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "intern",      0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "itself",      0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "succ",        0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "next",        0, 127, BF_ANY, TY_SYMBOL,  BOPE_NONE },
+  { TY_SYMBOL, "length",      0, 127, BF_ANY, TY_INT,     BOPE_NONE },
+  { TY_SYMBOL, "size",        0, 127, BF_ANY, TY_INT,     BOPE_NONE },
+  { TY_SYMBOL, "empty?",      0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_SYMBOL, "==",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_SYMBOL, "!=",          0, 127, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_SYMBOL, "[]",          1,   2, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "slice",       1,   2, BF_ANY, TY_STRING,  BOPE_NONE },
+  { TY_SYMBOL, "start_with?", 1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_SYMBOL, "end_with?",   1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_SYMBOL, "match?",      1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

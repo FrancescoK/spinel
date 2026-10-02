@@ -3778,24 +3778,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Regexp instance methods */
   if (recv >= 0 && rt == TY_REGEX) {
-    if (sp_streq(name, "match?") || sp_streq(name, "===")) return TY_BOOL;
-    /* the block form evaluates to the block's value (nil on a miss) (#3642) */
-    if (sp_streq(name, "match")) return nt_ref(nt, id, "block") >= 0 ? TY_POLY : TY_MATCHDATA;
-    if (sp_streq(name, "=~")) return TY_POLY;
-    if (sp_streq(name, "~") && argc == 0) return TY_POLY;   /* ~ /re/ == /re/ =~ $_ */
-    if (sp_streq(name, "source") || sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "names")) return TY_STR_ARRAY;
-    if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {name => [group indices]} */
-    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "itself")) return TY_REGEX;
-    if (sp_streq(name, "frozen?")) return TY_BOOL;
-    if ((sp_streq(name, "==") || sp_streq(name, "!=") ||
-         sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
-    if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
-    if (sp_streq(name, "options")) return TY_INT;
-    if (sp_streq(name, "casefold?")) return TY_BOOL;
-    if (sp_streq(name, "timeout")) return TY_POLY;   /* nil: no per-instance timeout */
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
   /* MatchData instance methods */
@@ -6077,18 +6061,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
-    if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "name")) return TY_STRING;
-    if (sp_streq(name, "inspect")) return TY_STRING;
-    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
-        sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
-        sp_streq(name, "to_sym") || sp_streq(name, "intern") ||
-        sp_streq(name, "itself")) return TY_SYMBOL;
-    if (sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
-    if (sp_streq(name, "empty?") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
-    if (sp_streq(name, "succ") || sp_streq(name, "next")) return TY_SYMBOL;
-    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
-    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?") || sp_streq(name, "match?")) && argc == 1)
-      return TY_BOOL;
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     /* Symbol#<=> is defined only between Symbols; String included, any other
        operand is not comparable and the result is nil (#3081) */
     if (sp_streq(name, "<=>") && argc == 1) {
