@@ -62,6 +62,7 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
    the cap means unbounded self-recursion -- report it instead of looping (#2908). */
 #define SP_INLINE_DEPTH_MAX 64
 static int g_inline_depth = 0;
+int inline_splice_depth(void) { return g_inline_depth; }
 
 /* --- inline parameter aliasing ------------------------------------------
    An inlined (yielding) method's String parameter that the body APPENDS to

@@ -62,7 +62,97 @@ void nd_stamp(int id, int kind) {
    wrong whenever two classes define it (#4557). Same gate as nd_stamp. */
 char **g_ndtarget = NULL;
 int g_ndtarget_cap = 0;
+
+/* --plan-check for user-method calls (#7100): the method codegen bound a
+   call to, compared with the one inference bound it to (c->ucall_inf), per
+   node. A node's observations accumulate (a switch stamps one per arm, a
+   body emitted more than once stamps again) and are classified once, at
+   the end (ucall_report):
+     conflict       codegen bound another method where nothing re-reads the
+                    node: view depth 0, no instance_exec scope move or
+                    class, no inline splice, the emitting class the node's
+                    own scope's class, not a lowered or proc-form body
+     respecialized  another method, but only where the node is re-read
+                    (any of the above)
+     virtual        a dispatch switch, one of whose arms is inference's
+     unrecorded     codegen bound a method inference bound none for
+     unobserved     inference bound a method, codegen stamped nothing */
+typedef struct { int mi; short owner; unsigned char seen, flags; } UcallObs;
+enum { UO_MATCH = 1, UO_ARM = 2, UO_MISS_PLAIN = 4, UO_MISS_RESPEC = 8 };
+static UcallObs *g_ucobs = NULL;
+static int g_ucobs_cap = 0;
+
+static int ucall_respec_ctx(Compiler *c, int id) {
+  if (view_depth() > 0 || comp_scope_move_depth() > 0 || g_ie_class_id >= 0 ||
+      inline_splice_depth() > 0 || g_current_scope_is_lowered)
+    return 1;
+  Scope *s = comp_scope_of(c, id);
+  int scls = s ? s->class_id : -1;
+  if (g_emitting_class_id >= 0 && g_emitting_class_id != scls) return 1;
+  if (s && scope_proc_form_of(c, (int)(s - c->scopes)) >= 0) return 1;
+  return 0;
+}
+
+void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
+  if (id < 0 || id >= c->node_cap || mi < 0 || mi >= c->nscopes) return;
+  if (id >= g_ucobs_cap) {
+    int ncap = g_ucobs_cap ? g_ucobs_cap : 1024;
+    while (ncap <= id) ncap *= 2;
+    g_ucobs = realloc(g_ucobs, (size_t)ncap * sizeof *g_ucobs);
+    memset(g_ucobs + g_ucobs_cap, 0, (size_t)(ncap - g_ucobs_cap) * sizeof *g_ucobs);
+    g_ucobs_cap = ncap;
+  }
+  UcallObs *o = &g_ucobs[id];
+  if (!o->seen) { o->seen = 1; o->mi = mi; o->owner = (short)owner_ci; }
+  if (add) o->flags |= UO_ARM;
+  const UCallInf *inf = &c->ucall_inf[id];
+  if (inf->via == UC_NONE) return;
+  if (inf->mi == mi) { o->flags |= UO_MATCH; return; }
+  int miss = ucall_respec_ctx(c, id) ? UO_MISS_RESPEC : UO_MISS_PLAIN;
+  if (!(o->flags & (UO_MISS_PLAIN | UO_MISS_RESPEC)) || miss == UO_MISS_PLAIN) {
+    o->mi = mi; o->owner = (short)owner_ci;
+  }
+  o->flags |= miss;
+}
+
+static void ucall_scope_name(Compiler *c, int mi, char *out, size_t n) {
+  if (mi < 0 || mi >= c->nscopes) { snprintf(out, n, "?"); return; }
+  Scope *m = &c->scopes[mi];
+  int ci = m->class_id;
+  if (ci >= 0 && ci < c->nclasses)
+    snprintf(out, n, "%s%s%s", c->classes[ci].name, m->is_cmethod ? "." : "#", m->name ? m->name : "?");
+  else snprintf(out, n, "%s", m->name ? m->name : "?");
+}
+
+void ucall_report(Compiler *c) {
+  static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
+                                          "send_blind", "ie", "included", "reopen" };
+  for (int id = 0; id < c->node_cap; id++) {
+    const UCallInf *inf = &c->ucall_inf[id];
+    const UcallObs *o = id < g_ucobs_cap ? &g_ucobs[id] : NULL;
+    int seen = o && o->seen;
+    if (inf->via == UC_NONE && !seen) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    char cg[256], in[256];
+    ucall_scope_name(c, seen ? o->mi : -1, cg, sizeof cg);
+    ucall_scope_name(c, inf->via != UC_NONE ? inf->mi : -1, in, sizeof in);
+    const char *vn = inf->via < sizeof via_name / sizeof via_name[0] ? via_name[inf->via] : "?";
+    if (inf->via == UC_NONE)
+      fprintf(stderr, "plan-check: ucall-unrecorded: node %d %s: codegen %s\n", id, nm ? nm : "?", cg);
+    else if (!seen)
+      fprintf(stderr, "plan-check: ucall-unobserved: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
+    else if (!(o->flags & (UO_MISS_PLAIN | UO_MISS_RESPEC))) continue;
+    else if ((o->flags & UO_ARM) && (o->flags & UO_MATCH))
+      fprintf(stderr, "plan-check: ucall-virtual: node %d %s: codegen switch, inference %s (%s)\n", id, nm ? nm : "?", in, vn);
+    else if (o->flags & UO_MISS_PLAIN)
+      fprintf(stderr, "plan-check: ucall-conflict: node %d %s: codegen %s, inference %s (%s)\n", id, nm ? nm : "?", cg, in, vn);
+    else
+      fprintf(stderr, "plan-check: ucall-respecialized: node %d %s: codegen %s, inference %s (%s)\n", id, nm ? nm : "?", cg, in, vn);
+  }
+}
+
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add) {
+  if (g_plan_check) ucall_observe(c, id, mi, owner_ci, add);
   static int on = -1;
   if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
   if (!on || id < 0 || mi < 0 || mi >= c->nscopes) return;
