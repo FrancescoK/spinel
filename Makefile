@@ -1538,7 +1538,8 @@ gc-phases-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # it out of reuse, so an object the roots lost reads back as 0xdb and stops the
 # next mark instead of answering right by luck. The host loses an object and a
 # string on purpose: it must run to the end without the level and at level 1,
-# and at level 2 print the poison and abort naming the root phase. Then the
+# and at level 2 print the poison and abort naming the root phase, with a
+# threshold floor asked for beside it too: the level is over the floors. Then the
 # other half of the contract: programs that root what they use answer the same
 # at level 2, alone and beside the full verifier, on both runtimes.
 GC_STRESS_TESTS := test/gc_root_frame_slots.rb \
@@ -1555,13 +1556,15 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	      echo "gc-stress-test: FAIL (SPINEL_GC_STRESS=$$lv: the host did not run to the end, exit $$rc)"; \
 	      diff -u test/gc-stress/expected "$$tmp/out" | head -10; ok=0; fi; \
 	  done; \
-	  SPINEL_GC_STRESS=2 $(TIMEOUT60) "$$tmp/lost" > "$$tmp/out" 2> "$$tmp/err"; rc=$$?; \
-	  if [ $$rc -eq 0 ]; then echo "gc-stress-test: FAIL (the mark took a freed object)"; ok=0; fi; \
-	  if ! cmp -s "$$tmp/out" test/gc-stress/expected_stress; then \
-	    echo "gc-stress-test: FAIL (a freed object or string read back unpoisoned)"; \
-	    diff -u test/gc-stress/expected_stress "$$tmp/out" | head -10; ok=0; fi; \
-	  if ! grep -q 'SPINEL_GC_STRESS: the mark reached a freed slot' "$$tmp/err" || ! grep -q 'phase = root' "$$tmp/err"; then \
-	    echo "gc-stress-test: FAIL (no report naming the root phase)"; head -5 "$$tmp/err"; ok=0; fi; \
+	  for kb in 0 64; do \
+	    SPINEL_GC_THRESHOLD_KB=$$kb SPINEL_GC_STRESS=2 $(TIMEOUT60) "$$tmp/lost" > "$$tmp/out" 2> "$$tmp/err"; rc=$$?; \
+	    if [ $$rc -eq 0 ]; then echo "gc-stress-test: FAIL (the mark took a freed object, SPINEL_GC_THRESHOLD_KB=$$kb)"; ok=0; fi; \
+	    if ! cmp -s "$$tmp/out" test/gc-stress/expected_stress; then \
+	      echo "gc-stress-test: FAIL (a freed object or string read back unpoisoned, SPINEL_GC_THRESHOLD_KB=$$kb)"; \
+	      diff -u test/gc-stress/expected_stress "$$tmp/out" | head -10; ok=0; fi; \
+	    if ! grep -q 'SPINEL_GC_STRESS: the mark reached a freed slot' "$$tmp/err" || ! grep -q 'phase = root' "$$tmp/err"; then \
+	      echo "gc-stress-test: FAIL (no report naming the root phase, SPINEL_GC_THRESHOLD_KB=$$kb)"; head -5 "$$tmp/err"; ok=0; fi; \
+	  done; \
 	else echo "gc-stress-test: FAIL (host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
 	for src in $(GC_STRESS_TESTS); do \
 	  bn=$$(basename "$$src" .rb); \

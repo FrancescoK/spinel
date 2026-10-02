@@ -157,8 +157,8 @@ gated one level further, on a threshold of its own.
 | String (young)        | 256 KB  | 2048 B                   |
 | String (old)          | 1 MB    | unchanged                |
 
-`SPINEL_GC_STRESS=2` pins the first two at 0 instead: every allocation after
-the first collects.
+`SPINEL_GC_STRESS=2` pins the first two at 0 instead, over any
+`SPINEL_GC_THRESHOLD_*KB` floor: every allocation after the first collects.
 
 After each collection the threshold is retuned from what the sweep actually
 recovered:
