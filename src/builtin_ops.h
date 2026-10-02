@@ -22,12 +22,9 @@ typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;
    only types the call; codegen leaves it to the legacy chain. */
 typedef enum {
   BOPE_NONE,
-  BOPE_STRUCT_FIELD,      /* (recv).name: a field of a by-value C struct */
-  BOPE_PTR_FIELD,         /* (recv)->arg */
-  BOPE_PTR_NONZERO,       /* ((recv)->arg != 0) */
-  BOPE_CALL_RECV,         /* arg(recv) */
-  BOPE_AFNAME_IS,         /* the Addrinfo's family name is arg */
-  BOPE_AFNAME_IS_NOT,     /* ... is not arg */
+  BOPE_TEMPLATE,          /* arg, with each $r replaced by the receiver */
+  BOPE_PSTATUS_SUCCESS,   /* Process::Status#success?: true, false or nil */
+  BOPE_PSTATUS_EQ,        /* Process::Status#== / #eql? with no operand */
   BOPE__COUNT
 } BopEmit;
 
@@ -36,9 +33,10 @@ typedef struct BuiltinOp {
   const char *name;
   signed char argc_min, argc_max;
   BopBlock block;
-  TyKind result;          /* what the call answers */
+  TyKind result;          /* what the call answers; TY_UNKNOWN: inference
+                             leaves the call to the rules after it */
   BopEmit emit;
-  const char *arg;        /* the emitter's operand: a field, a function, a name */
+  const char *arg;        /* BOPE_TEMPLATE's C text */
 } BuiltinOp;
 
 /* The row for `name` called with `argc` arguments (and a block when

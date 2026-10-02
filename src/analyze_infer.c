@@ -4189,25 +4189,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      rule sat, so the rules above still claim first */
   if (recv >= 0 && rt == TY_TMS) {
     const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op) return op->result;
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
-  /* Process::Status accessors. The runtime returns sp_int (with -1 for
-     the nil-or-false slot on exitstatus/termsig); the analyze pass keeps
-     Integer here and the codegen wraps -1 in sp_box_nil for those two.
-     Boolean predicates are TY_BOOL; the accessors that can be nil are
-     TY_INT (so `result[1].termsig.nil?` is well-typed). */
-  if (recv >= 0 && rt == TY_PROCESS_STATUS && argc == 0) {
-    if (sp_streq(name, "signaled?") || sp_streq(name, "exited?") ||
-        sp_streq(name, "coredump?"))
-      return TY_BOOL;
-    /* success? is nil, not false, when the process did not exit normally */
-    if (sp_streq(name, "success?")) return TY_POLY;
-    if (sp_streq(name, "exitstatus") || sp_streq(name, "termsig") ||
-        sp_streq(name, "pid"))
-      return TY_INT;
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect") ||
-        sp_streq(name, "class")) return TY_STRING;
-    if (sp_streq(name, "==")) return TY_BOOL;
+  /* Process::Status readers: builtin-op rows (builtin_ops.c) */
+  if (recv >= 0 && rt == TY_PROCESS_STATUS) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* The same names on a BOXED status -- which is how one normally arrives,
      since waitpid2 answers an Array and its second element is read out of a
@@ -4421,7 +4408,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Socket::Option and Addrinfo readers: builtin-op rows */
   if (recv >= 0 && (rt == TY_SOCKOPT || rt == TY_ADDRINFO)) {
     const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op) return op->result;
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
   if (recv >= 0 && rt == TY_IO) {
     /* answered true or false, whatever the name (the catch-all below is poly) */
