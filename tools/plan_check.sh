@@ -35,10 +35,12 @@ ur=$(grep -c ': plan-check: ucall-respecialized:' "$OUT")
 uv=$(grep -c ': plan-check: ucall-virtual:' "$OUT")
 uu=$(grep -c ': plan-check: ucall-unrecorded:' "$OUT")
 uo=$(grep -c ': plan-check: ucall-unobserved:' "$OUT")
+ue=$(grep -c ': plan-check: ucall-unemitted:' "$OUT")
+uf=$(grep -c ': plan-check: ucall-refused:' "$OUT")
 [ "${1-}" = "-v" ] && cat "$OUT"
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 rm -f "$OUT"
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
-echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved"
+echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused"
 [ "$nc" -eq 0 ] && [ "$uc" -eq 0 ]

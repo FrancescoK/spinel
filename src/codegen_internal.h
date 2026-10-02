@@ -889,6 +889,10 @@ void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add);
    them with inference's (codegen_util.c) */
 void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add);
 void ucall_report(Compiler *c);
+/* --plan-check: codegen emitted the call node id (whatever it bound) */
+void ucall_emitted(int id);
+/* --plan-check: codegen emitted the visibility refusal for node id */
+void ucall_refused(int id);
 /* how deep emit_inline_call_x is in spliced bodies (codegen_iter.c) */
 int inline_splice_depth(void);
 /* One refusal: where and what. Recorded in order for --emit-types. */

@@ -10326,6 +10326,7 @@ static void emit_super_block_arg(Compiler *c, int id, Scope *s, Scope *pm, int l
    Returns 1 if the expansion was emitted, 0 if it should fall through to a
    regular function call (parent doesn't yield, has early return, etc.). */
 int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
+  if (g_plan_check) ucall_emitted(id);
   Scope *s = comp_scope_of(c, id);
   if (s->class_id < 0 || !s->name) return 0;
   refuse_super_splat(c, id, a_super_target(c, s));
@@ -10656,6 +10657,7 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
 }
 
 void emit_super(Compiler *c, int id, Buf *b) {
+  if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
     if (ss && ss->class_id >= 0 && ss->name) refuse_super_splat(c, id, a_super_target(c, ss)); }
   Scope *s = comp_scope_of(c, id);

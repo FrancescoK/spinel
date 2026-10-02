@@ -1032,6 +1032,7 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
   }
   if (n == 1 && all_public && sp_streq(c->classes[ks[0]].name, "IO")) {
     int mi = comp_method_in_chain(c, ks[0], name, NULL);
+    if (g_plan_check) ucall_observe(c, id, mi, ks[0], 0);
     buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ks[0], c->scopes[mi].name), mc(c->scopes[mi].name));
     emit_expr(c, recv, b);
     emit_args_filled(c, mi, args, ", ", b);
@@ -1058,6 +1059,7 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
   buf_puts(b, "; ");
   for (int i = 0; i < n; i++) {
     int kmi = comp_method_in_chain(c, ks[i], name, NULL);
+    if (g_plan_check) ucall_observe(c, id, kmi, ks[i], 1);   /* one handle kind's arm */
     Buf cb; memset(&cb, 0, sizeof cb);
     buf_printf(&cb, "sp_%s_%s(_r%d", mc_reopen_cls(c, ks[i], c->scopes[kmi].name), mc(c->scopes[kmi].name), tv);
     emit_args_filled(c, kmi, args, ", ", &cb);
@@ -21160,7 +21162,14 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
   return 1;
 }
 
+static int emit_vis_refusal_x(Compiler *c, int id, Buf *b);
+/* --plan-check: a call refused for its visibility binds no method */
 int emit_vis_refusal(Compiler *c, int id, Buf *b) {
+  int r = emit_vis_refusal_x(c, id, b);
+  if (r && g_plan_check) ucall_refused(id);
+  return r;
+}
+static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
   const char *vrty = vrecv >= 0 ? nt_type(nt, vrecv) : NULL;
@@ -24583,6 +24592,7 @@ static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
   buf_printf(b, ")) ? sp_Enumerator_new_from(_e%d) : sp_poly_enum_for_each(_e%d); })", t, t);
 }
 void emit_call(Compiler *c, int id, Buf *b) {
+  if (g_plan_check) ucall_emitted(id);
   /* A call on a receiver that never hands back a value (a method whose
      every path raises): Ruby evaluates the receiver first, it raises, and
      neither the arguments nor the method run. Evaluate it for effect and
@@ -24934,6 +24944,7 @@ static int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
   if (!self || self->is_cmethod) return 0;
   int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
   if (mi < 0 || mi >= c->nscopes || c->scopes[mi].class_id != dispatch_cid || c->scopes[mi].is_cmethod) return 0;
+  if (g_plan_check) ucall_observe(c, id, mi, dispatch_cid, 0);
   buf_printf(b, "sp_%s_%s(%s", mc_reopen_cls(c, dispatch_cid, name), mc(name), g_self);
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
   buf_puts(b, ")");
@@ -27557,6 +27568,7 @@ static void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const cha
     free(pb.p);
   }
   Buf oc; memset(&oc, 0, sizeof oc);
+  if (g_plan_check) ucall_observe(c, id, pf, c->scopes[pf].class_id, 0);
   emit_method_cname(c, &c->scopes[pf], &oc);
   buf_printf(&oc, "(%s", recv_text);
   emit_args_filled(c, pf, nt_ref(nt, id, "arguments"), ", ", &oc);
@@ -27605,6 +27617,7 @@ static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt,
   int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, nm, &adc) : -1;
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, nm)) return 0;
   if (c->scopes[ami].yields && emit_reopen_block_call(c, id, recv, ami, NULL, b)) return 1;
+  if (g_plan_check) ucall_observe(c, id, ami, aci, 0);
   buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
   emit_boxed(c, recv, b);
   emit_args_filled(c, ami, nt_ref(c->nt, id, "arguments"), ", ", b);
@@ -27722,6 +27735,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
         if (miR >= 0 && rtR == TY_IO) { emit_io_reopen_call(c, id, recvR, nmR, b); return; }
         if (miR >= 0) {
+          if (g_plan_check) ucall_observe(c, id, miR, ciR, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ciR, nmR), mc(nmR));
           emit_expr(c, recvR, b);
           emit_args_filled(c, miR, nt_ref(ntR, id, "arguments"), ", ", b);
@@ -34523,6 +34537,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (own >= 0) {
         int defc = xcm;
         (void)comp_method_in_chain(c, xcm, c->scopes[own].name, &defc);
+        if (g_plan_check) ucall_observe(c, id, own, defc, 0);
         buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[defc].c_name,
                    mc(c->scopes[own].name), c->classes[defc].c_name);
         emit_expr(c, recv, b); buf_puts(b, "))");
@@ -34703,6 +34718,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         int xpoly = comp_ntype(c, id) == TY_POLY;
         for (int q = 0; q < xn; q++) {
           int mi = comp_method_in_chain(c, xr[q], name, NULL);
+          if (g_plan_check) ucall_observe(c, id, mi, xr[q], 1);   /* one definer's arm */
           if (q != xn - 1) buf_printf(b, "_xi%d == %d ? ", pk, q);
           Buf cb; memset(&cb, 0, sizeof cb);
           buf_printf(&cb, "sp_%s_%s(_t%d", mc_reopen_cls(c, xr[q], name), mc(name), xt);
@@ -35051,6 +35067,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int smi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
       if (smi >= 0) {
         Scope *ms = &c->scopes[smi];
+        if (g_plan_check) ucall_observe(c, id, smi, encl->class_id, 0);
         Buf cb; memset(&cb, 0, sizeof cb);
         emit_method_cname(c, ms, &cb);
         buf_puts(&cb, "(");
@@ -35103,6 +35120,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     int smi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
     if (smi >= 0) {
       Scope *ms = &c->scopes[smi];
+      if (g_plan_check) ucall_observe(c, id, smi, g_class_body_id, 0);
       emit_method_cname(c, ms, b);
       buf_puts(b, "(");
       const char *lead3 = emit_cmethod_self_cls_arg(c, smi, g_class_body_id, b);
@@ -35127,6 +35145,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     int imi = comp_included_method_index(c, name, id);
     if (imi >= 0) {
       Scope *ms = &c->scopes[imi];
+      if (g_plan_check) ucall_observe(c, id, imi, ms->class_id, 0);
       /* An INSTANCE method reached this way runs with self bound to main, which
          carries none of the module's state, so it takes a null receiver -- the
          emitted function still declares one (#3775). A body that reads an ivar
@@ -35228,6 +35247,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              implementation that answers Integer, assigned a raw sp_int into an
              sp_RbVal local (#4182). */
           Buf dcb; memset(&dcb, 0, sizeof dcb);
+          if (g_plan_check) ucall_observe(c, id, defmi, cid, 0);
           emit_method_cname(c, &c->scopes[defmi], &dcb);
           buf_puts(&dcb, "(");
           /* The one implementation still runs with self = the receiver's
@@ -37413,6 +37433,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           else if (!is_builtin_reopen(scn) && !comp_class_is_module(c, &c->classes[dispatch_cid]) &&
                    !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
           if (st != TY_UNKNOWN) {
+            if (g_plan_check) ucall_observe(c, id, omi, oc, 0);
             buf_printf(b, "sp_Object_%s(", mc(c->scopes[omi].name));
             if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
             else emit_boxed_text(c, st, g_self, b);
@@ -41792,6 +41813,15 @@ else {
          Int64). The value is an sp_RbVal here, so unbox it to the type the
          reader on it expects (#3781). */
       TyKind pres = comp_ntype(c, id);
+      /* --plan-check: the boxed operator dispatches at run time to every
+         class's own operator of the name: each is an arm, compared with the
+         operator inference bound the call to (a call it bound none for is a
+         poly operation, not a binding) */
+      if (g_plan_check && c->ucall_inf[id].via != UC_NONE)
+        for (int k = 0; k < c->nclasses; k++) {
+          int kmi = comp_method_in_class(c, k, name);
+          if (kmi >= 0) ucall_observe(c, id, kmi, k, 1);
+        }
       Buf pcall; memset(&pcall, 0, sizeof pcall);
       if (subtree_may_allocate(nt, argv[0])) {
         int th = ++g_tmp;
@@ -44423,6 +44453,7 @@ else {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
         if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return; }
         if (oc_mi >= 0) {
+          if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_expr(c, recv, b);
           emit_args_filled(c, oc_mi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44439,6 +44470,7 @@ else {
       int fc_mi = fc_ci >= 0 ? comp_method_in_chain(c, fc_ci, name, NULL) : -1;
       if (tc_mi >= 0 && fc_mi >= 0) {
         /* both defined: ternary dispatch */
+        if (g_plan_check) { ucall_observe(c, id, tc_mi, tc_ci, 1); ucall_observe(c, id, fc_mi, fc_ci, 1); }
         int bt = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "int _t%d = ", bt); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
@@ -44451,6 +44483,7 @@ else {
       }
       if (tc_mi >= 0) {
         /* only TrueClass defined */
+        if (g_plan_check) ucall_observe(c, id, tc_mi, tc_ci, 0);
         buf_printf(b, "sp_TrueClass_%s(", mc(name));
         emit_expr(c, recv, b);
         emit_args_filled(c, tc_mi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44459,6 +44492,7 @@ else {
       }
       if (fc_mi >= 0) {
         /* only FalseClass defined: ternary still needed */
+        if (g_plan_check) ucall_observe(c, id, fc_mi, fc_ci, 0);
         int bt = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "int _t%d = ", bt); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
@@ -44478,6 +44512,7 @@ else {
       int hc_mi = hc_ci >= 0 ? comp_method_in_chain(c, hc_ci, name, NULL) : -1;
       if (hc_mi >= 0 && emit_reopen_block_call(c, id, recv, hc_mi, NULL, b)) return;
       if (hc_mi >= 0) {
+        if (g_plan_check) ucall_observe(c, id, hc_mi, hc_ci, 0);
         buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
         emit_boxed(c, recv, b);
         emit_args_filled(c, hc_mi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44491,6 +44526,7 @@ else {
       int nc_ci = comp_class_index(c, "NilClass");
       int nc_mi = nc_ci >= 0 ? comp_method_in_chain(c, nc_ci, name, NULL) : -1;
       if (nc_mi >= 0) {
+        if (g_plan_check) ucall_observe(c, id, nc_mi, nc_ci, 0);
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
         buf_printf(b, "), sp_NilClass_%s(0", mc(name));
         emit_args_filled(c, nc_mi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44505,6 +44541,7 @@ else {
       int nm_mi = nm_ci >= 0 ? comp_method_in_chain(c, nm_ci, name, NULL) : -1;
       if (nm_mi >= 0 && emit_reopen_block_call(c, id, recv, nm_mi, NULL, b)) return;
       if (nm_mi >= 0) {
+        if (g_plan_check) ucall_observe(c, id, nm_mi, nm_ci, 0);
         buf_printf(b, "sp_Numeric_%s(", mc(c->scopes[nm_mi].name));
         emit_boxed(c, recv, b);
         emit_args_filled(c, nm_mi, nt_ref(nt, id, "arguments"), ", ", b);
@@ -44552,6 +44589,7 @@ else {
           TyKind want3 = comp_ntype(c, id);
           int void3 = method_is_void(&c->scopes[oc_mi3]) && want3 != TY_VOID &&
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
+          if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
           if (void3) buf_puts(b, "(");
           buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
           emit_boxed(c, recv, b);

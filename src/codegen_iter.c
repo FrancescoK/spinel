@@ -697,6 +697,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
 }
 
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
+  if (g_plan_check) ucall_emitted(id);
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");

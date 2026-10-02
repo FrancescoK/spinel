@@ -76,11 +76,37 @@ int g_ndtarget_cap = 0;
                     (any of the above)
      virtual        a dispatch switch, one of whose arms is inference's
      unrecorded     codegen bound a method inference bound none for
-     unobserved     inference bound a method, codegen stamped nothing */
+     unobserved     inference bound a method, codegen emitted the call and
+                    stamped nothing
+     unemitted      inference bound a method, codegen never emitted the call
+                    (dead code, or a call folded to its value)
+     refused        inference bound a method, codegen emitted the
+                    NoMethodError its visibility gives the call instead */
 typedef struct { int mi; short owner; unsigned char seen, flags; } UcallObs;
 enum { UO_MATCH = 1, UO_ARM = 2, UO_MISS_PLAIN = 4, UO_MISS_RESPEC = 8 };
 static UcallObs *g_ucobs = NULL;
 static int g_ucobs_cap = 0;
+/* the call nodes codegen emitted at all (emit_call, emit_super, a splice):
+   an inference binding at a node never emitted -- a method no code reaches,
+   a call folded away -- has nothing to compare with */
+static unsigned char *g_ucemit = NULL;
+static int g_ucemit_cap = 0;
+
+void ucall_emitted(int id) {
+  if (id < 0) return;
+  if (id >= g_ucemit_cap) {
+    int ncap = g_ucemit_cap ? g_ucemit_cap : 1024;
+    while (ncap <= id) ncap *= 2;
+    g_ucemit = realloc(g_ucemit, (size_t)ncap);
+    memset(g_ucemit + g_ucemit_cap, 0, (size_t)(ncap - g_ucemit_cap));
+    g_ucemit_cap = ncap;
+  }
+  if (!g_ucemit[id]) g_ucemit[id] = 1;
+}
+void ucall_refused(int id) {
+  ucall_emitted(id);
+  g_ucemit[id] = 2;
+}
 
 static int ucall_respec_ctx(Compiler *c, int id) {
   if (view_depth() > 0 || comp_scope_move_depth() > 0 || g_ie_class_id >= 0 ||
@@ -107,7 +133,11 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (add) o->flags |= UO_ARM;
   const UCallInf *inf = &c->ucall_inf[id];
   if (inf->via == UC_NONE) return;
-  if (inf->mi == mi) { o->flags |= UO_MATCH; return; }
+  /* a yielding method's proc-form clone is that method, taken as a function
+     with its block as a proc */
+  if (inf->mi == mi || (c->scopes[mi].is_proc_form && scope_proc_form_of(c, inf->mi) == mi)) {
+    o->flags |= UO_MATCH; return;
+  }
   int miss = ucall_respec_ctx(c, id) ? UO_MISS_RESPEC : UO_MISS_PLAIN;
   if (!(o->flags & (UO_MISS_PLAIN | UO_MISS_RESPEC)) || miss == UO_MISS_PLAIN) {
     o->mi = mi; o->owner = (short)owner_ci;
@@ -139,6 +169,10 @@ void ucall_report(Compiler *c) {
     const char *vn = inf->via < sizeof via_name / sizeof via_name[0] ? via_name[inf->via] : "?";
     if (inf->via == UC_NONE)
       fprintf(stderr, "plan-check: ucall-unrecorded: node %d %s: codegen %s\n", id, nm ? nm : "?", cg);
+    else if (!seen && id < g_ucemit_cap && g_ucemit[id] == 2)
+      fprintf(stderr, "plan-check: ucall-refused: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
+    else if (!seen && !(id < g_ucemit_cap && g_ucemit[id]))
+      fprintf(stderr, "plan-check: ucall-unemitted: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
     else if (!seen)
       fprintf(stderr, "plan-check: ucall-unobserved: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
     else if (!(o->flags & (UO_MISS_PLAIN | UO_MISS_RESPEC))) continue;
