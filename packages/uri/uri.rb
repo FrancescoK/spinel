@@ -165,7 +165,7 @@ module URI
       elsif v.respond_to?(:to_ary)
         values = []
         v.to_ary.each do |item|
-          values << (item.nil? ? "" : "#{key}=#{encode_www_form_component(item)}")
+          values << (item.nil? ? key : "#{key}=#{encode_www_form_component(item)}")
         end
         parts << values.join("&")
       else
