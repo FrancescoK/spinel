@@ -2,6 +2,7 @@
    lowering, split out of codegen_call.c. Pure code movement, no logic change. */
 
 #include "codegen_internal.h"
+#include "call_plan.h"
 
 /* A fused loop names the receiver expression twice: once in the bound check
    (re-run on every iteration) and once in each element read. That is only
@@ -695,18 +696,22 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   g_n_argov = argov_saved;
 }
 
-int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
-  if (g_plan_check) ucall_emitted(id);
-  const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver");
-  if (!name) return 0;
-  int mi, recv_class = -1;
+/* The method a call with a block is spliced from, and the self it binds: the
+   inline's own lookup, which the plan stands in for (inline_target_plan) and
+   --plan-check keeps as the assertion. */
+typedef struct {
+  int mi;
+  int recv_class;   /* the instance self is bound to */
   /* the class a CLASS METHOD is inlined for: no instance self to bind (which
      is what recv_class drives), but its body's bare `new` must still build
      this class rather than the host method's */
-  int cm_class = -1, cm_self_id = 0;
-  int implicit_self = 0;
+  int cm_class, cm_self_id;
+  int implicit_self;
+} InlineTarget;
+
+static void inline_target_lookup(Compiler *c, int id, const char *name, int recv, InlineTarget *t) {
+  const NodeTable *nt = c->nt;
+  t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
   if (recv < 0) {
     /* A bare call resolves to self first, as Ruby does and as the analyzer
        does (comp_self_call_mi): a top-level `def request` beside a class's
@@ -714,22 +719,21 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        arity, and the fallback called a symbol the self method never had
        because every other site inlined it (#4500). */
     Scope *encl = comp_scope_of(c, id);
-    mi = -1;
     /* inside an instance_eval/exec splice self is the rebound receiver */
-    if (g_ie_class_id >= 0 && (mi = comp_method_in_chain(c, g_ie_class_id, name, NULL)) >= 0)
-      recv_class = g_ie_class_id;
+    if (g_ie_class_id >= 0 && (t->mi = comp_method_in_chain(c, g_ie_class_id, name, NULL)) >= 0)
+      t->recv_class = g_ie_class_id;
     else if (encl && encl->class_id >= 0) {
-      if (encl->is_cmethod) mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
-      if (mi < 0) {
-        mi = comp_method_in_chain(c, encl->class_id, name, NULL);
-        if (mi >= 0) implicit_self = 1;
+      if (encl->is_cmethod) t->mi = comp_cmethod_in_chain(c, encl->class_id, name, NULL);
+      if (t->mi < 0) {
+        t->mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+        if (t->mi >= 0) t->implicit_self = 1;
       }
     }
     else if (g_class_body_id >= 0) {
-      mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
-      if (mi >= 0) cm_class = g_class_body_id;
+      t->mi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
+      if (t->mi >= 0) t->cm_class = g_class_body_id;
     }
-    if (mi < 0) mi = comp_method_index(c, name);   /* free function */
+    if (t->mi < 0) t->mi = comp_method_index(c, name);   /* free function */
     /* A method of a module included at the top level is callable bare, like
        a free function. A yielding one exists only inlined, so a call left to
        the top-level-include arm in emit_call named a function that was never
@@ -737,14 +741,13 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
        method here, and it runs with the module as self, as it does when
        called through the module. One that touches an instance variable is
        left to that arm, which refuses it: main holds no module state. */
-    if (mi < 0) {
+    if (t->mi < 0) {
       int imi = comp_included_method_index(c, name, id);
       if (imi >= 0 && !scope_uses_ivars(c, imi)) {
-        mi = imi;
-        if (c->scopes[imi].is_cmethod) cm_class = c->scopes[imi].class_id;
+        t->mi = imi;
+        if (c->scopes[imi].is_cmethod) t->cm_class = c->scopes[imi].class_id;
       }
     }
-    if (mi < 0) return 0;
   }
   else {
     TyKind rt = comp_ntype(c, recv);
@@ -755,31 +758,144 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
                                  sp_streq(rty, "ConstantPathNode")))
                         ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
-    if ((mi = class_reopen_cmethod(c, recv, name)) >= 0) {
-      cm_class = c->scopes[mi].class_id;
-      cm_self_id = builtin_class_id(cname);
+    if ((t->mi = class_reopen_cmethod(c, recv, name)) >= 0) {
+      t->cm_class = c->scopes[t->mi].class_id;
+      t->cm_self_id = builtin_class_id(cname);
     }
     else if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
-      mi = comp_cmethod_in_chain(c, ci, name, NULL);
-      cm_class = ci;
+      t->mi = comp_cmethod_in_chain(c, ci, name, NULL);
+      t->cm_class = ci;
     }
     else if (ty_is_object(rt)) {
       /* An instance receiver -- including a constant that holds an instance
          (e.g. `S = Set.new(...); S.each { }`), which is not a class name so
          falls through here rather than the class-method lookup above. */
-      recv_class = ty_object_class(rt);
-      mi = comp_method_in_chain(c, recv_class, name, NULL);
+      t->recv_class = ty_object_class(rt);
+      t->mi = comp_method_in_chain(c, t->recv_class, name, NULL);
     }
     else if (g_inline_recv_expr && g_inline_recv_class >= 0) {
       /* poly-receiver dispatch arm (#2448): self is pre-bound to a cast of the
          boxed receiver, and the concrete class is supplied out of band */
-      recv_class = g_inline_recv_class;
-      mi = comp_method_in_chain(c, recv_class, name, NULL);
+      t->recv_class = g_inline_recv_class;
+      t->mi = comp_method_in_chain(c, t->recv_class, name, NULL);
     }
-    else return 0;
   }
-  (void)implicit_self;
+}
+
+/* The same from the call's plan (call_plan.c), for the plans whose form says
+   the binding: a bare call on the enclosing class's chain, its class methods
+   in a class method, a class body's class method, a top-level method or an
+   included module's; a class constant's class method (a Class reopen's for a
+   builtin class); an instance receiver's own lookup. 0 for the rest (an
+   instance_exec self, which the plan does not take as an input, a poly arm's
+   class, a plan of another kind), which keep the lookup. `narrow` is
+   call_targets_yielding_method's shorter echo: a constant receiver only, and
+   no Class reopen. */
+static int inline_target_plan(Compiler *c, int id, const char *name, int recv, int narrow,
+                              InlineTarget *t) {
+  const NodeTable *nt = c->nt;
+  t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
+  if (g_ie_class_id >= 0) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  if (p->mi < 0) return 0;
+  if (recv < 0) {
+    Scope *encl = comp_scope_of(c, id);
+    int ecls = encl ? encl->class_id : -1;
+    /* a class body's own class methods come first (codegen's
+       g_class_body_id); the plan asked them first too when the call is that
+       body's (comp_cbody_call_mi) */
+    int top_ok = ecls >= 0 || g_class_body_id < 0 ||
+                 (c->node_cbody[id] == g_class_body_id && !(encl && encl->name));
+    if (ecls >= 0 && p->via == UC_INST && p->chain && p->owner_ci == ecls) {
+      t->mi = p->mi; t->implicit_self = 1;
+      return 1;
+    }
+    if (ecls >= 0 && encl->is_cmethod && p->via == UC_CMETH && p->owner_ci == ecls &&
+        c->scopes[p->mi].is_cmethod) {
+      t->mi = p->mi;
+      return 1;
+    }
+    if (ecls < 0 && g_class_body_id >= 0 && p->via == UC_CMETH && p->owner_ci == g_class_body_id &&
+        c->node_cbody[id] == g_class_body_id) {
+      t->mi = p->mi; t->cm_class = g_class_body_id;
+      return 1;
+    }
+    if (top_ok && p->via == UC_TOP) { t->mi = p->mi; return 1; }
+    if (top_ok && p->via == UC_INCLUDED) {
+      if (!scope_uses_ivars(c, p->mi)) {
+        t->mi = p->mi;
+        if (c->scopes[p->mi].is_cmethod) t->cm_class = c->scopes[p->mi].class_id;
+      }
+      return 1;
+    }
+    return 0;
+  }
+  const char *rty = nt_type(nt, recv);
+  const char *cname = (rty && (sp_streq(rty, "ConstantReadNode") ||
+                               sp_streq(rty, "ConstantPathNode")))
+                      ? nt_str(nt, recv, "name") : NULL;
+  if (narrow && !cname) {
+    TyKind rt = comp_ntype(c, recv);
+    if (p->via == UC_INST && p->chain && ty_is_object(rt) && p->owner_ci == ty_object_class(rt)) {
+      t->mi = p->mi; t->recv_class = p->owner_ci;
+      return 1;
+    }
+    return 0;
+  }
+  int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
+  if (p->via == UC_CMETH && !p->by_name && (cname || ci >= 0)) {
+    if (ci >= 0 && p->owner_ci == ci) { t->mi = p->mi; t->cm_class = ci; return 1; }
+    if (!narrow && cname && builtin_class_id(cname) && p->owner_ci == c->scopes[p->mi].class_id &&
+        p->owner_ci != ci) {
+      t->mi = p->mi; t->cm_class = p->owner_ci; t->cm_self_id = builtin_class_id(cname);
+      return 1;
+    }
+    return 0;
+  }
+  if (ci < 0 && p->via == UC_INST && p->chain) {
+    TyKind rt = comp_ntype(c, recv);
+    if (ty_is_object(rt) && p->owner_ci == ty_object_class(rt)) {
+      t->mi = p->mi; t->recv_class = p->owner_ci;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int inline_target_same(const InlineTarget *a, const InlineTarget *b) {
+  return a->mi == b->mi && a->recv_class == b->recv_class && a->cm_class == b->cm_class &&
+         a->cm_self_id == b->cm_self_id && a->implicit_self == b->implicit_self;
+}
+
+int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
+  if (g_plan_check) ucall_emitted(id);
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name) return 0;
+  /* the target is the call's plan where its form says the binding;
+     otherwise, and under --plan-check as the assertion, the lookup */
+  InlineTarget it;
+  int served = inline_target_plan(c, id, name, recv, 0, &it);
+  if (g_plan_check && served) cplan_served("inline-call");
+  if (g_plan_check || !served) {
+    InlineTarget ot;
+    inline_target_lookup(c, id, name, recv, &ot);
+    if (!served) {
+      if (g_plan_check && ot.mi >= 0)
+        fprintf(stderr, "plan-check: cplan-fallback: inline-call node %d %s%s\n", id, name,
+                g_ie_class_id >= 0 ? " (instance_exec self)" : "");
+      it = ot;
+    }
+    else if (!inline_target_same(&it, &ot))
+      fprintf(stderr, "plan-check: cplan-conflict: inline-call node %d %s: plan %d/%d/%d/%d/%d, "
+              "lookup %d/%d/%d/%d/%d\n", id, name, it.mi, it.recv_class, it.cm_class,
+              it.cm_self_id, it.implicit_self, ot.mi, ot.recv_class, ot.cm_class, ot.cm_self_id,
+              ot.implicit_self);
+  }
+  int mi = it.mi, recv_class = it.recv_class, cm_class = it.cm_class;
+  int cm_self_id = it.cm_self_id, implicit_self = it.implicit_self;
   if (mi < 0) return 0;
   /* `fwd(args) { block }` where fwd just forwards `target(...)`: a literal
      block can't reach a real-function forwarder, so retarget to `target`
@@ -3413,6 +3529,12 @@ static int call_targets_yielding_method(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int recv = nt_ref(nt, id, "receiver");
+  /* the call's plan where its form says the target (inline_target_plan);
+     otherwise, and under --plan-check as the assertion, the echo below */
+  InlineTarget it;
+  int served = inline_target_plan(c, id, name, recv, 1, &it);
+  if (g_plan_check && served) cplan_served("yielding-target");
+  if (served && !g_plan_check) return it.mi >= 0 && c->scopes[it.mi].yields;
   int mi = -1;
   if (recv < 0) {
     /* emit_inline_call_x's order: the instance_exec class, then the
@@ -3451,6 +3573,12 @@ static int call_targets_yielding_method(Compiler *c, int id) {
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
     else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
   }
+  if (served && it.mi != mi)
+    fprintf(stderr, "plan-check: cplan-conflict: yielding-target node %d %s: plan %d, lookup %d\n",
+            id, name, it.mi, mi);
+  if (!served && g_plan_check && mi >= 0)
+    fprintf(stderr, "plan-check: cplan-fallback: yielding-target node %d %s\n", id, name);
+  if (served) mi = it.mi;
   return mi >= 0 && c->scopes[mi].yields;
 }
 
