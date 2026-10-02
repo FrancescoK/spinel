@@ -2713,6 +2713,206 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* A constructor call: a class's .new, and the builtin constructors (infer_call_inner's rules, in their order) */
+static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
+  /* Class.new(...) -> an instance of that class; built-in .new constructors */
+  if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
+    const char *rty = nt_type(nt, recv);
+    /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
+    if (rty && sp_streq(rty, "ConstantPathNode")) {
+      const char *cn = nt_str(nt, recv, "name");
+      int ci = cn ? comp_class_index(c, cn) : -1;
+      if (ci >= 0) {
+        /* an exception-subclass instance keeps its concrete class (its custom
+           methods must dispatch); the exception-shaped queries route through
+           the base helpers like a specialized rescue var does */
+        if (class_inherits_builtin_exception(c, ci))
+          { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
+        int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
+        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        /* a reopened builtin (`class String; def ...`) keeps its builtin
+           representation: `String.new` is a String, not a user object (#3109) */
+        if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
+      }
+      /* a builtin exception by its whole path (Errno::ENOENT.new) */
+      if (cn && (is_builtin_exception_name(cn) || superclass_builtin_exc_name(nt, recv)))
+        { *out = TY_EXCEPTION; return 1; }
+      /* ::Array.new / ::String.new / ::StringIO.new etc. */
+      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = ty_array_of(infer_type(c, argv[1])); return 1; }
+      if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; }
+      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) { *out = TY_POLY; return 1; }
+      if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
+      if (cn && sp_streq(cn, "Hash"))
+        { *out = sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN; return 1; }
+      if (cn && sp_streq(cn, "Regexp")) { *out = TY_REGEX; return 1; }
+      if (cn && sp_streq(cn, "Fiber")) { *out = TY_FIBER; return 1; }
+      if (cn && sp_streq(cn, "File")) { *out = TY_IO; return 1; }   /* File.new is File.open (#2779) */
+      if (cn && sp_streq(cn, "IO")) { *out = TY_IO; return 1; }     /* IO.new(fd) is IO.for_fd */
+      if (cn && sp_streq(cn, "Dir")) { *out = TY_DIR; return 1; }   /* Dir.new is an open handle (#2821) */
+      /* the socket classes ARE IO handles (#2922) */
+      if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket") ||
+                 sp_streq(cn, "UDPSocket") || sp_streq(cn, "UNIXSocket") ||
+                 sp_streq(cn, "UNIXServer") || sp_streq(cn, "Socket")) &&
+          sp_feature_required("socket")) { *out = TY_IO; return 1; }
+      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) { *out = TY_OPENSTRUCT; return 1; }
+      /* A Mutex reached through a PATH is the same Mutex. `Thread::Mutex` is
+         CRuby's own name for the class, and the bare-constant branch types
+         `Mutex.new` TY_MUTEX -- but the path spelling fell into the boxed
+         catch-all below, so the local was declared sp_RbVal while the emitter
+         still wrote sp_Mutex_new() and the C did not compile (#4421).
+         Thread::Queue, Thread::SizedQueue and Thread::ConditionVariable were
+         never in that catch-all and have always worked through the path
+         spelling, which is what made this one look arbitrary rather than
+         missing. */
+      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor"))))
+        { *out = TY_MUTEX; return 1; }
+      if (cn && (sp_streq(cn, "Thread") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
+                 sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
+                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
+    }
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode") ||
+                (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {  /* inline Data.define(...).new (#2682) */
+      const char *cn = sp_streq(rty, "ConstantReadNode") ? nt_str(nt, recv, "name") : NULL;
+      int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
+      if (ci >= 0) {
+        /* an exception-subclass instance keeps its concrete class (its custom
+           methods must dispatch); the exception-shaped queries route through
+           the base helpers like a specialized rescue var does */
+        if (class_inherits_builtin_exception(c, ci))
+          { *out = (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci)); return 1; }
+        int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
+        if (ucnew >= 0) { *out = (TyKind)c->scopes[ucnew].ret; return 1; }
+        /* a reopened builtin keeps its builtin representation (#3109) */
+        if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
+      }
+      if (cn && is_builtin_exception_name(cn)) { *out = TY_EXCEPTION; return 1; }
+      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = ty_array_of(infer_type(c, argv[1])); return 1; }
+      if (cn && sp_streq(cn, "Array")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          /* Array.new(n) { body }: element type from last expression of block body */
+          int bbody = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+          if (bn > 0 && bb) {
+            TyKind et = infer_type(c, bb[bn - 1]);
+            if (et != TY_UNKNOWN) { *out = ty_array_of(et); return 1; }
+            /* Element type unsettled: stay UNKNOWN rather than latch
+               POLY_ARRAY. "I do not know what this holds yet" is not "it holds
+               anything" -- and the difference is permanent, because a
+               POLY_ARRAY binds monotonically into a callee parameter that can
+               never un-widen to the INT_ARRAY it really was.
+
+               That matters most where the answer feeds back into what it was
+               derived from. An extension-field add is
+               `Array.new(4) { |i| Field.add(a[i], b[i]) }`: answering
+               POLY_ARRAY on the round before Field.add's own return settles
+               makes the caller's accumulator poly, which makes this method's
+               own parameters poly, which makes `a[i]` poly -- and the cycle has
+               no way back. Waiting one round instead lets the concrete entry
+               point (an int-array literal, a zero element) propagate all the
+               way round, and the whole field settles on the Integer array.
+
+               The second stage, with g_infer_optimistic cleared, still answers
+               POLY_ARRAY for an element that genuinely never settles -- an
+               empty `[]`, a heterogeneous block. The narrower rule below is
+               what that stage keeps: an index param still being inferred gives
+               the element type once it arrives (#3157). */
+            if (g_infer_optimistic) { *out = TY_UNKNOWN; return 1; }
+            int bpn = a_proc_params_node(c, id);   /* id is the Array.new call */
+            int brn = 0; const int *breqs = bpn >= 0 ? nt_arr(nt, bpn, "requireds", &brn) : NULL;
+            if (brn > 0 && breqs) {
+              Scope *bsc = comp_scope_of(c, bb[bn - 1]);   /* the block's own scope */
+              const char *bpname = nt_str(nt, breqs[0], "name");
+              LocalVar *bplv = (bsc && bpname) ? scope_local(bsc, bpname) : NULL;
+              if (bplv && bplv->type == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
+            }
+          }
+        }
+        /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
+           empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
+        if (argc == 0 && blk < 0) { *out = TY_UNKNOWN; return 1; }
+        { *out = TY_POLY_ARRAY; return 1; }
+      }
+      if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; } /* Array.new / Array.new(n) */
+      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) { *out = TY_POLY; return 1; }  /* identity sentinel */
+      if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
+      /* Hash.new { |hash, key| default } : a poly-keyed poly hash with a
+         default-proc (the block computes the missing-key value). A default-block
+         hash is polymorphic by nature (keys are populated dynamically), so the
+         faithful PolyPoly variant boxes each key by value -- inspect then renders
+         symbol keys as `a:`, string keys as `"a"=>`, etc., all correctly. */
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) { *out = TY_POLY_POLY_HASH; return 1; }
+      if (cn && sp_streq(cn, "Hash")) {
+        /* argument-position Hash.new was renamed: PolyPoly; else key usage decides */
+        if (sp_streq(name, "__hash_new_default")) { *out = TY_POLY_POLY_HASH; return 1; }
+        /* keys of more than one class are written into it (#3927) */
+        if (c->hash_want && id < c->node_cap && c->hash_want[id] == TY_POLY_POLY_HASH)
+          { *out = TY_POLY_POLY_HASH; return 1; }
+        /* A Hash.new called on DIRECTLY has no key usage to decide it, and
+           staying unknown made every method on it an unresolved call
+           ("undefined method 'fetch' for unknown", #3823). The faithful
+           variant is the one the argument position already uses. */
+        if (node_is_call_receiver(c, id)) { *out = TY_POLY_POLY_HASH; return 1; }
+        /* ...and so does one placed straight into an array or hash literal
+           (`[Hash.new(4), 0]`): left unknown, the array took an Integer
+           element and the build failed */
+        if (node_is_container_elem(c, id)) { *out = TY_POLY_POLY_HASH; return 1; }
+        /* ...and a Hash.new that is a method's VALUE has no receiver use of
+           its own either, so it stayed unknown and the method emitted as
+           void: `def mk = Hash.new(0)` answered nothing, and every call on
+           the result reported Hash.new itself as undefined (#4291). The
+           value position is the same "nothing narrows it" case the receiver
+           scan above covers. */
+        {
+          Scope *hs = comp_scope_of(c, id);
+          if (hs && hs->body >= 0) {
+            int hbn = 0; const int *hbb = nt_arr(nt, hs->body, "body", &hbn);
+            /* ...but only when nothing else settles the method. The CALLERS
+               narrow a returned Hash.new -- `h = str_hash; h["k"] = "v"`
+               gives Hash[String, String] -- and answering the widest variant
+               here overrode that narrowing rather than filling in an unknown,
+               re-emitting every such helper as a poly hash (#4304).
+
+               Both halves below are load-bearing, and neither alone fixes it.
+               The wait: the callers' narrowing happens during the optimistic
+               rounds, so answering there latches the widest variant before
+               there is anything to stand aside for. The concrete test: once
+               the rounds have settled, a return that reached a real variant
+               is not the "nothing narrows it" case, and without this test the
+               final round widens it straight back. */
+            int narrowed = g_infer_optimistic ||
+                           (ty_is_hash(hs->ret) && hs->ret != TY_POLY_POLY_HASH);
+            if (hbb && hbn > 0 && hbb[hbn - 1] == id && !narrowed) { *out = TY_POLY_POLY_HASH; return 1; }
+          }
+        }
+        { *out = TY_UNKNOWN; return 1; }
+      }
+      if (cn && sp_streq(cn, "Regexp")) { *out = TY_REGEX; return 1; }
+      /* Builtin object types */
+      if (cn && sp_streq(cn, "Fiber")) { *out = TY_FIBER; return 1; }
+      /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
+      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) { *out = TY_THREAD; return 1; }
+      if (cn && (sp_streq(cn, "Queue") || sp_streq(cn, "SizedQueue"))) { *out = TY_QUEUE; return 1; }
+      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")))) { *out = TY_MUTEX; return 1; }
+      if (cn && sp_streq(cn, "ConditionVariable")) { *out = TY_CONDVAR; return 1; }
+      if (cn && sp_streq(cn, "Random")) { *out = TY_RANDOM; return 1; }
+      if (cn && sp_streq(cn, "File")) { *out = TY_IO; return 1; }   /* File.new is File.open (#2779) */
+      if (cn && sp_streq(cn, "IO")) { *out = TY_IO; return 1; }     /* IO.new(fd) is IO.for_fd */
+      if (cn && sp_streq(cn, "Dir")) { *out = TY_DIR; return 1; }   /* Dir.new is an open handle (#2821) */
+      /* the socket classes ARE IO handles (#2922) */
+      if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket") ||
+                 sp_streq(cn, "UDPSocket") || sp_streq(cn, "UNIXSocket") ||
+                 sp_streq(cn, "UNIXServer") || sp_streq(cn, "Socket")) &&
+          sp_feature_required("socket")) { *out = TY_IO; return 1; }
+      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) { *out = TY_OPENSTRUCT; return 1; }
+      if (cn && (sp_streq(cn, "Thread") ||
+                 sp_streq(cn, "IO") ||
+                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) { *out = TY_POLY; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -4331,201 +4531,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* Class.new(...) -> an instance of that class; built-in .new constructors */
-  if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
-    const char *rty = nt_type(nt, recv);
-    /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
-    if (rty && sp_streq(rty, "ConstantPathNode")) {
-      const char *cn = nt_str(nt, recv, "name");
-      int ci = cn ? comp_class_index(c, cn) : -1;
-      if (ci >= 0) {
-        /* an exception-subclass instance keeps its concrete class (its custom
-           methods must dispatch); the exception-shaped queries route through
-           the base helpers like a specialized rescue var does */
-        if (class_inherits_builtin_exception(c, ci))
-          return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
-        int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
-        /* a reopened builtin (`class String; def ...`) keeps its builtin
-           representation: `String.new` is a String, not a user object (#3109) */
-        if (!(cn && is_builtin_reopen(cn))) return ty_object(ci);
-      }
-      /* a builtin exception by its whole path (Errno::ENOENT.new) */
-      if (cn && (is_builtin_exception_name(cn) || superclass_builtin_exc_name(nt, recv)))
-        return TY_EXCEPTION;
-      /* ::Array.new / ::String.new / ::StringIO.new etc. */
-      if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
-      if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
-      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return TY_POLY;
-      if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "Hash"))
-        return sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN;
-      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
-      if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
-      if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
-      if (cn && sp_streq(cn, "IO")) return TY_IO;     /* IO.new(fd) is IO.for_fd */
-      if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
-      /* the socket classes ARE IO handles (#2922) */
-      if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket") ||
-                 sp_streq(cn, "UDPSocket") || sp_streq(cn, "UNIXSocket") ||
-                 sp_streq(cn, "UNIXServer") || sp_streq(cn, "Socket")) &&
-          sp_feature_required("socket")) return TY_IO;
-      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) return TY_OPENSTRUCT;
-      /* A Mutex reached through a PATH is the same Mutex. `Thread::Mutex` is
-         CRuby's own name for the class, and the bare-constant branch types
-         `Mutex.new` TY_MUTEX -- but the path spelling fell into the boxed
-         catch-all below, so the local was declared sp_RbVal while the emitter
-         still wrote sp_Mutex_new() and the C did not compile (#4421).
-         Thread::Queue, Thread::SizedQueue and Thread::ConditionVariable were
-         never in that catch-all and have always worked through the path
-         spelling, which is what made this one look arbitrary rather than
-         missing. */
-      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor"))))
-        return TY_MUTEX;
-      if (cn && (sp_streq(cn, "Thread") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
-                 sp_streq(cn, "Random") || sp_streq(cn, "IO") ||
-                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
-    }
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode") ||
-                (sp_streq(rty, "CallNode") && is_struct_call(c, recv)))) {  /* inline Data.define(...).new (#2682) */
-      const char *cn = sp_streq(rty, "ConstantReadNode") ? nt_str(nt, recv, "name") : NULL;
-      int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
-      if (ci >= 0) {
-        /* an exception-subclass instance keeps its concrete class (its custom
-           methods must dispatch); the exception-shaped queries route through
-           the base helpers like a specialized rescue var does */
-        if (class_inherits_builtin_exception(c, ci))
-          return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
-        int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
-        if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
-        /* a reopened builtin keeps its builtin representation (#3109) */
-        if (!(cn && is_builtin_reopen(cn))) return ty_object(ci);
-      }
-      if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
-      if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
-      if (cn && sp_streq(cn, "Array")) {
-        int blk = nt_ref(nt, id, "block");
-        if (blk >= 0) {
-          /* Array.new(n) { body }: element type from last expression of block body */
-          int bbody = nt_ref(nt, blk, "body");
-          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-          if (bn > 0 && bb) {
-            TyKind et = infer_type(c, bb[bn - 1]);
-            if (et != TY_UNKNOWN) return ty_array_of(et);
-            /* Element type unsettled: stay UNKNOWN rather than latch
-               POLY_ARRAY. "I do not know what this holds yet" is not "it holds
-               anything" -- and the difference is permanent, because a
-               POLY_ARRAY binds monotonically into a callee parameter that can
-               never un-widen to the INT_ARRAY it really was.
-
-               That matters most where the answer feeds back into what it was
-               derived from. An extension-field add is
-               `Array.new(4) { |i| Field.add(a[i], b[i]) }`: answering
-               POLY_ARRAY on the round before Field.add's own return settles
-               makes the caller's accumulator poly, which makes this method's
-               own parameters poly, which makes `a[i]` poly -- and the cycle has
-               no way back. Waiting one round instead lets the concrete entry
-               point (an int-array literal, a zero element) propagate all the
-               way round, and the whole field settles on the Integer array.
-
-               The second stage, with g_infer_optimistic cleared, still answers
-               POLY_ARRAY for an element that genuinely never settles -- an
-               empty `[]`, a heterogeneous block. The narrower rule below is
-               what that stage keeps: an index param still being inferred gives
-               the element type once it arrives (#3157). */
-            if (g_infer_optimistic) return TY_UNKNOWN;
-            int bpn = a_proc_params_node(c, id);   /* id is the Array.new call */
-            int brn = 0; const int *breqs = bpn >= 0 ? nt_arr(nt, bpn, "requireds", &brn) : NULL;
-            if (brn > 0 && breqs) {
-              Scope *bsc = comp_scope_of(c, bb[bn - 1]);   /* the block's own scope */
-              const char *bpname = nt_str(nt, breqs[0], "name");
-              LocalVar *bplv = (bsc && bpname) ? scope_local(bsc, bpname) : NULL;
-              if (bplv && bplv->type == TY_UNKNOWN) return TY_UNKNOWN;
-            }
-          }
-        }
-        /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
-           empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
-        if (argc == 0 && blk < 0) return TY_UNKNOWN;
-        return TY_POLY_ARRAY;
-      }
-      if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
-      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return TY_POLY;  /* identity sentinel */
-      if (cn && sp_streq(cn, "String")) return TY_STRING;
-      /* Hash.new { |hash, key| default } : a poly-keyed poly hash with a
-         default-proc (the block computes the missing-key value). A default-block
-         hash is polymorphic by nature (keys are populated dynamically), so the
-         faithful PolyPoly variant boxes each key by value -- inspect then renders
-         symbol keys as `a:`, string keys as `"a"=>`, etc., all correctly. */
-      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_POLY_POLY_HASH;
-      if (cn && sp_streq(cn, "Hash")) {
-        /* argument-position Hash.new was renamed: PolyPoly; else key usage decides */
-        if (sp_streq(name, "__hash_new_default")) return TY_POLY_POLY_HASH;
-        /* keys of more than one class are written into it (#3927) */
-        if (c->hash_want && id < c->node_cap && c->hash_want[id] == TY_POLY_POLY_HASH)
-          return TY_POLY_POLY_HASH;
-        /* A Hash.new called on DIRECTLY has no key usage to decide it, and
-           staying unknown made every method on it an unresolved call
-           ("undefined method 'fetch' for unknown", #3823). The faithful
-           variant is the one the argument position already uses. */
-        if (node_is_call_receiver(c, id)) return TY_POLY_POLY_HASH;
-        /* ...and so does one placed straight into an array or hash literal
-           (`[Hash.new(4), 0]`): left unknown, the array took an Integer
-           element and the build failed */
-        if (node_is_container_elem(c, id)) return TY_POLY_POLY_HASH;
-        /* ...and a Hash.new that is a method's VALUE has no receiver use of
-           its own either, so it stayed unknown and the method emitted as
-           void: `def mk = Hash.new(0)` answered nothing, and every call on
-           the result reported Hash.new itself as undefined (#4291). The
-           value position is the same "nothing narrows it" case the receiver
-           scan above covers. */
-        {
-          Scope *hs = comp_scope_of(c, id);
-          if (hs && hs->body >= 0) {
-            int hbn = 0; const int *hbb = nt_arr(nt, hs->body, "body", &hbn);
-            /* ...but only when nothing else settles the method. The CALLERS
-               narrow a returned Hash.new -- `h = str_hash; h["k"] = "v"`
-               gives Hash[String, String] -- and answering the widest variant
-               here overrode that narrowing rather than filling in an unknown,
-               re-emitting every such helper as a poly hash (#4304).
-
-               Both halves below are load-bearing, and neither alone fixes it.
-               The wait: the callers' narrowing happens during the optimistic
-               rounds, so answering there latches the widest variant before
-               there is anything to stand aside for. The concrete test: once
-               the rounds have settled, a return that reached a real variant
-               is not the "nothing narrows it" case, and without this test the
-               final round widens it straight back. */
-            int narrowed = g_infer_optimistic ||
-                           (ty_is_hash(hs->ret) && hs->ret != TY_POLY_POLY_HASH);
-            if (hbb && hbn > 0 && hbb[hbn - 1] == id && !narrowed) return TY_POLY_POLY_HASH;
-          }
-        }
-        return TY_UNKNOWN;
-      }
-      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
-      /* Builtin object types */
-      if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
-      /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
-      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_THREAD;
-      if (cn && (sp_streq(cn, "Queue") || sp_streq(cn, "SizedQueue"))) return TY_QUEUE;
-      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")))) return TY_MUTEX;
-      if (cn && sp_streq(cn, "ConditionVariable")) return TY_CONDVAR;
-      if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
-      if (cn && sp_streq(cn, "File")) return TY_IO;   /* File.new is File.open (#2779) */
-      if (cn && sp_streq(cn, "IO")) return TY_IO;     /* IO.new(fd) is IO.for_fd */
-      if (cn && sp_streq(cn, "Dir")) return TY_DIR;   /* Dir.new is an open handle (#2821) */
-      /* the socket classes ARE IO handles (#2922) */
-      if (cn && (sp_streq(cn, "TCPServer") || sp_streq(cn, "TCPSocket") ||
-                 sp_streq(cn, "UDPSocket") || sp_streq(cn, "UNIXSocket") ||
-                 sp_streq(cn, "UNIXServer") || sp_streq(cn, "Socket")) &&
-          sp_feature_required("socket")) return TY_IO;
-      if (cn && sp_streq(cn, "OpenStruct") && sp_feature_required("ostruct")) return TY_OPENSTRUCT;
-      if (cn && (sp_streq(cn, "Thread") ||
-                 sp_streq(cn, "IO") ||
-                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
-    }
-  }
+  { TyKind r; if (infer_new_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
   /* Regexp.compile is an alias for Regexp.new */
   if (recv >= 0 && sp_streq(name, "compile")) {
