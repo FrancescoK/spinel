@@ -5158,9 +5158,20 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
 
     /* --- body with optional guard --- */
     if (guard >= 0) {
+      /* The guard's preludes (an operand kept in a temp across a call that
+         allocates) run here, after the bindings they read. Routed through
+         g_pre they ran ahead of the whole case, before any arm had bound. */
+      Buf gpre;  memset(&gpre, 0, sizeof gpre);
+      Buf gcond; memset(&gcond, 0, sizeof gcond);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = &gpre; g_indent = body_indent;
+      emit_cond(c, guard, &gcond);  /* Ruby truthiness for every guard type (0/"" are truthy) */
+      g_pre = sv_pre; g_indent = sv_ind;
+      if (gpre.p) buf_puts(b, gpre.p);
       emit_indent(b, body_indent); buf_puts(b, arm_guard_negate ? "if (!(" : "if (");
-      emit_cond(c, guard, b);  /* Ruby truthiness for every guard type (0/"" are truthy) */
+      buf_puts(b, gcond.p ? gcond.p : "0");
       buf_puts(b, arm_guard_negate ? ")) {\n" : ") {\n");
+      free(gpre.p); free(gcond.p);
       if (value_cr >= 0) { emit_pm_body_value(c, stmts, rt, value_cr, b, body_indent + 1); emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl); }
       else if (tail) { emit_stmts_tail(c, stmts, b, body_indent + 1); emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl); }
       else { emit_stmts(c, stmts, b, body_indent + 1); emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl); }
