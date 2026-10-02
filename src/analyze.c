@@ -15634,6 +15634,32 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
   return changed;
 }
 
+/* Does the block of `itn` over `recv` bind the VALUE of a Hash local or a
+   Hash literal? It does for
+   `h.each_value { |v| }`, `h.each { |k, v| }` / `each_pair`, and an element
+   iterator over `h.values`. Answers the Hash's read in *hrecv and the
+   value's parameter position in *vi. */
+static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return 0;
+  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings */
+  const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  if (rn && sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0 &&
+      nt_ref(nt, recv, "block") < 0) {
+    if (!strbuf_elem_first_iterator(itn)) return 0;
+    recv = nt_ref(nt, recv, "receiver");
+    *vi = 0;
+  }
+  else if (sp_streq(itn, "each_value")) *vi = 0;
+  else if (sp_streq(itn, "each") || sp_streq(itn, "each_pair")) *vi = 1;
+  else return 0;
+  if (recv < 0 || (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_HashNode) ||
+      !ty_is_hash(infer_type(c, recv)))
+    return 0;
+  *hrecv = recv;
+  return 1;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -16168,7 +16194,53 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (sv4->type != TY_STRBUF || !sv4->str_shared) { sv4->type = TY_STRBUF; sv4->str_shared = 1; changed = 1; }
       continue;
     }
-    else if (!strbuf_elem_first_iterator(itn)) continue;
+    /* Hash value parameters still bind copies of stored String variables
+       (#7004); refuse the route instead of demanding new handles. */
+    else {
+      int hr, vi;
+      if (an_hash_value_block(c, itn, recv4, &hr, &vi)) {
+        const char *vp = block_param_name(c, blk4, vi);
+        Scope *vs = vp ? comp_scope_of(c, blk4) : NULL;
+        if (!vp || (strbuf_mut_kind(c, vp, vs) != 1 && !cap_wrap_mutates_param(c, blk4, vp) &&
+            !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), vp, 0))) continue;
+        int lit = nt_kind(nt, hr) == NK_HashNode;
+        const char *hn = lit ? NULL : nt_str(nt, hr, "name");
+        Scope *hs = lit ? NULL : comp_scope_of(c, hr);
+        for (int w = 0; w < (lit ? 1 : nt->count); w++) {
+          int stores[64], ns = 0;
+          if (lit) {
+            int en = 0; const int *el = nt_arr(nt, hr, "elements", &en);
+            for (int e = 0; e < en && ns < 64; e++)
+              if (nt_kind(nt, el[e]) == NK_AssocNode) stores[ns++] = nt_ref(nt, el[e], "value");
+          }
+          else {
+            ns = strbuf_container_store_values(c, w, hn, hs, 0, stores);
+            /* A store with a block is not rewritten to []=. */
+            if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name") &&
+                sp_streq(nt_str(nt, w, "name"), "store")) {
+              int wr = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
+              const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+              if (wr >= 0 && nt_kind(nt, wr) == NK_LocalVariableReadNode &&
+                  nt_str(nt, wr, "name") && sp_streq(nt_str(nt, wr, "name"), hn) &&
+                  comp_scope_of(c, wr) == hs && an == 2) stores[ns++] = av[1];
+            }
+          }
+          for (int e = 0; e < ns; e++) {
+            NodeKind sk = nt_kind(nt, stores[e]);
+            TyKind st = infer_type(c, stores[e]);
+            if ((st == TY_STRING || st == TY_STRBUF) &&
+                (sk == NK_LocalVariableReadNode || sk == NK_InstanceVariableReadNode ||
+                 sk == NK_GlobalVariableReadNode || sk == NK_ClassVariableReadNode))
+              unsupported_feature(c, w ? w : hr,
+                  "a String variable stored in a Hash is passed to an appending value block: "
+                  "a String is not yet shared by reference through a Hash's values. "
+                  "Append to the String before storing it in the Hash.");
+          }
+        }
+        continue;
+      }
+      if (!strbuf_elem_first_iterator(itn)) continue;
+    }
     if (recv4 < 0) continue;
     const char *bp4 = block_param_name(c, blk4, 0);
     if (!bp4) continue;

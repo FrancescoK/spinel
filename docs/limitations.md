@@ -687,6 +687,7 @@ values too.
 
 Not yet shared:
 
+- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`), a stored String variable when the value parameter appends to it;
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
