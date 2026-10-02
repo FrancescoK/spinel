@@ -1238,14 +1238,8 @@ int call_answers_no_value(Compiler *c, int node) {
 /* The unresolved-call token's conversion into a typed slot (a printf
    format of the token's text), or NULL for emit_unbox_text's */
 const char *token_unbox_fmt(TyKind target) {
-  switch (target) {
-  case TY_STRING: return "sp_poly_to_s(%s)";
-  case TY_FLOAT:  return "sp_poly_to_f(%s)";
-  case TY_SYMBOL: return "(sp_sym)sp_poly_to_i(%s)";
-  case TY_INT: case TY_BOOL: return "sp_poly_to_i(%s)";
-  case TY_POLY:   return "%s";                 /* already sp_RbVal */
-  default:        return NULL;
-  }
+  const TyTraits *tr = ty_traits_of(target);   /* the unbox_token column (types.c) */
+  return tr ? tr->unbox_token : NULL;
 }
 
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
