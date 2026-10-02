@@ -1497,13 +1497,10 @@ void emit_tail_lead(Buf *b) {
    types carry an in-band nil sentinel (NULL string, SP_INT_NIL, NaN float,
    (sp_sym)-1). Types with no sentinel fall back to the zero value. */
 const char *nil_value(TyKind t) {
-  switch (t) {
-    case TY_STRING: return "NULL";
-    case TY_INT:    return "SP_INT_NIL";
-    case TY_FLOAT:  return "sp_float_nil()";
-    case TY_POLY:   return "sp_box_nil()";
-    default:        return NULL;
-  }
+  /* a builtin kind's nil is its ty_traits row's (types.c): a String, an
+     Integer, a Float and a boxed value have one; any other kind, none */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->nil : NULL;
 }
 
 /* Does the program ask whether class variable `nm` ("@@x") is set yet --
