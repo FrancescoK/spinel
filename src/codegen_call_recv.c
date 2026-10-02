@@ -12612,43 +12612,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        mistaken for an uncoverable one */
     if (argc >= 1 && (a0 == TY_UNKNOWN || a0 == TY_POLY)) a0 = infer_type(c, argv[0]);
     int tr = ++g_tmp;
-    if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first") ||
-                      sp_streq(name, "min"))) {
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; _t%d.first; })", tr); return 1;
-    }
-    if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last") ||
-                      sp_streq(name, "max"))) {
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; _t%d.last; })", tr); return 1;
-    }
-    /* step(n) / %(n): every nth member, as an Enumerator (#3671) */
-    if (argc == 1 && (sp_streq(name, "step") || sp_streq(name, "%")) &&
-        nt_ref(nt, id, "block") < 0) {
-      int ta = ++g_tmp, tn = ++g_tmp, to = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_StrArray *_t%d = sp_srange_to_a(_t%d); SP_GC_ROOT(_t%d);", ta, tr, ta);
-      buf_printf(b, " sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", tn);
-      buf_printf(b, " sp_StrArray *_t%d = sp_StrArray_new(); SP_GC_ROOT(_t%d);", to, to);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d += _t%d)"
-                    " sp_StrArray_push(_t%d, sp_StrArray_get(_t%d, _t%d));",
-                 ti, ti, ta, ti, tn, to, ta, ti);
-      buf_printf(b, " sp_Enumerator_new_from(sp_box_str_array(_t%d)); })", to);
-      return 1;
-    }
-    /* min(n) / max(n): the n smallest or largest members (#3665) */
-    if (argc == 1 && (sp_streq(name, "min") || sp_streq(name, "max")) &&
-        nt_ref(nt, id, "block") < 0) {
-      int ta = ++g_tmp, tn = ++g_tmp;
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_StrArray *_t%d = sp_srange_to_a(_t%d); SP_GC_ROOT(_t%d);", ta, tr, ta);
-      buf_printf(b, " sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn);
-      if (sp_streq(name, "max")) buf_printf(b, " sp_StrArray_reverse_bang(_t%d);", ta);
-      buf_printf(b, " sp_StrArray_slice(_t%d, 0, _t%d); })", ta, tn);
-      return 1;
-    }
     if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
          sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
       const char *fn = sp_streq(name, "include?") || sp_streq(name, "member?") ?
@@ -12667,14 +12630,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
     }
-    if (sp_streq(name, "exclude_end?") && argc == 0) {
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bool)_t%d.excl; })", tr); return 1;
-    }
-    /* Range#size counts integer elements: nil for a string range (CRuby) */
-    if (sp_streq(name, "size") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_INT_NIL)"); return 1;
-    }
     if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
       if (a0 == TY_STR_RANGE) {
         int tr2 = ++g_tmp;
@@ -12690,25 +12645,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; if (!_t%d.last) sp_raise_cls(\"RangeError\", \"cannot convert endless range to a set\")", tr);
       buf_printf(b, "; sp_srange_to_a(_t%d); })", tr); return 1;
     }
-    if (sp_streq(name, "to_s") && argc == 0) {
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_srange_to_s(_t%d); })", tr); return 1;
-    }
-    if (sp_streq(name, "inspect") && argc == 0) {
-      buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_srange_inspect(_t%d); })", tr); return 1;
-    }
-    if (sp_streq(name, "class") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b);
-      buf_puts(b, "), ((sp_Class){0, SPL(\"Range\")}))"); return 1;
-    }
-    if (sp_streq(name, "frozen?") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_bool)1)"); return 1;
-    }
-    if (argc == 0 && (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
-                      sp_streq(name, "dup") || sp_streq(name, "clone"))) {
-      emit_expr(c, recv, b); return 1;
-    }
+    /* builtin-op rows (builtin_ops.c), after the arms that read the operand */
+    if (emit_builtin_op_tmp(c, id, recv, rt, name, tr, b)) return 1;
   }
   /* Float range (1.0..3.0): a distinct sp_FloatRange receiver. It is not
      iterable, so its face is endpoint reads, membership tests, step, and
@@ -12716,12 +12654,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_FLOAT_RANGE) {
     int a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     int tr = ++g_tmp;
-    /* begin/first, end/last, min, max (no arg) -> the float endpoints */
-    if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "first") ||
-                      sp_streq(name, "min"))) {
-      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; _t%d.first; })", tr); return 1;
-    }
     if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last"))) {
       int as_int2 = comp_ntype(c, id) == TY_INT;
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
@@ -12733,64 +12665,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       int as_int = comp_ntype(c, id) == TY_INT;
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
       buf_printf(b, "; %ssp_frange_max(_t%d); })", as_int ? "(sp_int)" : "", tr); return 1;
-    }
-    /* min(n)/max(n) enumerate, which a Float bound cannot (#3665) */
-    if (argc == 1 && (sp_streq(name, "min") || sp_streq(name, "max")) &&
-        nt_ref(nt, id, "block") < 0) {
-      buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
-      emit_expr(c, argv[0], b);
-      buf_puts(b, "); sp_raise_cls(\"TypeError\", \"can't iterate from Float\");"
-                  " sp_box_nil(); })");
-      return 1;
-    }
-    /* minmax reads the endpoints instead of iterating, which a Float begin
-       cannot do (#3690) */
-    if (argc == 0 && sp_streq(name, "minmax") && nt_ref(nt, id, "block") < 0) {
-      int tm = ++g_tmp;
-      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_float _t%d = sp_frange_max(_t%d);"
-                    " sp_FloatArray *_r%d = sp_FloatArray_new(); SP_GC_ROOT(_r%d);"
-                    " sp_FloatArray_push(_r%d, _t%d.first); sp_FloatArray_push(_r%d, _t%d);"
-                    " _r%d; })", tm, tr, tr, tr, tr, tr, tr, tm, tr);
-      return 1;
-    }
-    if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
-         sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
-      if (a0 == TY_INT || a0 == TY_FLOAT) {
-        buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_puts(b, "; sp_frange_cover(_t"); buf_printf(b, "%d, ", tr);
-        emit_float_expr(c, argv[0], b); buf_puts(b, "); })"); return 1;
-      }
-      if (a0 == TY_POLY) {
-        buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; sp_frange_cover_poly(_t%d, _a%d); })", tr, tr);
-        return 1;
-      }
-      /* a non-numeric argument can never be covered: false (eval for effect) */
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
-    }
-    if (sp_streq(name, "exclude_end?") && argc == 0) {
-      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bool)_t%d.excl; })", tr); return 1;
-    }
-    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) {
-      if (a0 == TY_FLOAT_RANGE) {
-        int tr2 = ++g_tmp;
-        buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_FloatRange _t%d = ", tr2); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_frange_eq(_t%d, _t%d); })", tr, tr2); return 1;
-      }
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
-    }
-    if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0) {
-      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_frange_inspect(_t%d); })", tr); return 1;
-    }
-    if (sp_streq(name, "step") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_FloatArray_from_step(_t%d.first, _t%d.last, ", tr, tr);
-      emit_float_expr(c, argv[0], b); buf_printf(b, ", _t%d.excl); })", tr); return 1;
     }
     /* Range#size counts the integers a range enumerates, so it answers only
        for an Integer begin -- and Infinity when the end is unbounded, which is
@@ -12808,21 +12682,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
                       " + (_t%d.excl ? 0 : 1)); })", tr, tr, tr, tr);
         return 1;
       }
-    }
-    if (sp_streq(name, "class") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b);
-      buf_puts(b, "), ((sp_Class){0, SPL(\"Range\")}))"); return 1;
-    }
-    if (sp_streq(name, "frozen?") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_bool)1)"); return 1;
-    }
-    if (argc == 0 && (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
-                      sp_streq(name, "dup") || sp_streq(name, "clone"))) {
-      emit_expr(c, recv, b); return 1;
-    }
-    /* a Range value is never nil */
-    if (sp_streq(name, "nil?") && argc == 0) {
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_bool)0)"); return 1;
     }
     /* is_a?/kind_of?/instance_of?/equal? via the boxed value's builtin identity
        (its class is "Range"; the helpers key on the SP_BUILTIN_FLOAT_RANGE tag) */
@@ -12848,30 +12707,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ((void)(");
       emit_expr(c, argv[0], b); buf_puts(b, "), (sp_bool)0))"); return 1;
     }
-    /* Every remaining enumerating form (each/map/to_a/sum/size/first(n)/...)
-       raises "can't iterate from Float" like CRuby. The receiver still
-       evaluates for its side effects; the value is the boxed nil the raise
-       never actually returns (infer types these as poly). */
-    {
-      static const char *const iter[] = {
-        "each", "map", "collect", "select", "filter", "reject", "to_a", "to_h",
-        "entries", "find", "detect", "find_index", "count", "sum", "sort",
-        "sort_by", "min_by", "max_by", "reduce", "inject", "each_with_index",
-        "flat_map", "collect_concat", "any?", "all?", "none?", "one?", "take",
-        "drop", "take_while", "drop_while", "filter_map", "partition",
-        "group_by", "each_with_object", "tally", "find_all", "zip", "grep",
-        "grep_v", "uniq", "reverse", "minmax", "join", "index", "size", "lazy",
-        "each_cons", "each_slice", "chunk", "chunk_while", "cycle",
-        "first", "last", NULL };
-      for (int k = 0; iter[k]; k++) {
-        if (sp_streq(name, iter[k])) {
-          buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
-          buf_puts(b, "); sp_raise_cls(\"TypeError\", \"can't iterate from Float\");"
-                      " sp_box_nil(); })");
-          return 1;
-        }
-      }
-    }
+    /* builtin-op rows (builtin_ops.c), after the arms that read the literal
+       or the operand: the endpoints, membership, step, and the enumerating
+       forms, which raise "can't iterate from Float" like CRuby */
+    if (emit_builtin_op_tmp(c, id, recv, rt, name, tr, b)) return 1;
   }
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {

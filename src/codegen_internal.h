@@ -1377,12 +1377,16 @@ typedef struct {
   const char *name;
   const struct BuiltinOp *op;
   const char *rtext;   /* the receiver's C when the caller already rendered it */
+  int t0;              /* a temp the caller took for the family ($T), or 0 */
 } BopCtx;
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b);
 /* the same, the receiver already rendered as rtext by a family that renders
    it once before its own arms */
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b);
+/* the same, with the temp t0 the family took before its arms ($T) */
+int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
+                        int t0, Buf *b);
 
 /* codegen_view.c: a node's cached type overridden for one nested emission.
    view_push answers a token for the matching view_pop; a recovery point
