@@ -4568,8 +4568,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
       char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
       if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
     }
-    if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
-      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
+    if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
+      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
     else emit_retf_return(eid, has_retval, b);
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);

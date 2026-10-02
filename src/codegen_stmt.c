@@ -7460,9 +7460,9 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
      frames are still open (a raising value must unwind into them), then pop the
      frames and return 0. Non-local proc `return` (g_proc_return_home) and the
      in-ensure deferral are handled above and return early before here. */
-  if (g_in_proc_body && g_result_var && g_result_poly) {
+  if (proc_ret_slot()) {
     emit_indent(b, indent);
-    buf_printf(b, "{ %s = ", g_result_var);
+    buf_printf(b, "{ %s = ", proc_ret_slot());
     if (n == 0) buf_puts(b, "sp_box_nil()");
     else if (n == 1) emit_boxed(c, a[0], b);
     else {
@@ -8241,8 +8241,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       /* inside a first-class proc body routing returns through the boxed slot
          (the universal proc return ABI) the deferred value returns through the
          slot, not a raw C return of an sp_RbVal from an sp_int function */
-      else if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
-        buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
+      else if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
+        buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
       /* a proc body with a typed result publishes through the same boxed
          slot: `lambda do ... :l ensure ... end` returned its sp_RbVal from
          the sp_int proc function and did not compile (found under #4547) */
@@ -9111,8 +9111,8 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
   int nargs = nt_ref(nt, id, "arguments");
   int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
   if (g_ensure_depth > 0) { emit_return_deferred(c, nv, nvc, b, indent); return 1; }
-  if (g_result_var && g_result_poly) {
-    emit_indent(b, indent); buf_printf(b, "%s = ", g_result_var);
+  if (proc_ret_slot()) {
+    emit_indent(b, indent); buf_printf(b, "%s = ", proc_ret_slot());
     if (nvc > 0) emit_boxed(c, nv[0], b); else buf_puts(b, "sp_box_nil()");
     buf_puts(b, ";\n");
     emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "return 0;\n");
