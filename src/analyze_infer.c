@@ -4225,31 +4225,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
-    if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
-    /* find/detect with a block: driven lazily via #next (works on infinite
-       generator enums like blockless Kernel#loop); nil on no match (#3236) */
-    if ((sp_streq(name, "find") || sp_streq(name, "detect")) &&
-        nt_ref(nt, id, "block") >= 0) return TY_POLY;
-    /* take_while rides the same lazy driver and collects the prefix (#3590) */
-    if (sp_streq(name, "take_while") && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
-    /* include?/member? scan through the driver and stop at the first hit */
-    if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1 &&
-        nt_ref(nt, id, "block") < 0) return TY_BOOL;
-    /* so does find_index(v), an int or nil */
-    if (sp_streq(name, "find_index") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_INT;
-    if (sp_streq(name, "next_values") || sp_streq(name, "peek_values")) return TY_POLY_ARRAY;   /* #2482 */
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
     if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
-    if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
-    if (sp_streq(name, "frozen?")) return TY_BOOL;
-    if ((sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "freeze") || sp_streq(name, "itself")) return TY_ENUMERATOR;
-    if (sp_streq(name, "feed") && argc == 1) return TY_NIL;   /* #feed returns nil */
-    /* blockless enum.with_index(off) is another materialized Enumerator (over
-       [element, index] pairs); the block/terminal-chain forms are typed below */
-    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
-    /* blockless enum.each_with_index / each_index -> a chained Enumerator (#2487) */
-    if ((sp_streq(name, "each_with_index") || sp_streq(name, "each_index")) &&
-        argc == 0 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     /* Stored-enumerator block form returns the underlying each return (the
        boxed source). Immediate chains (arr.each.with_index { } and the
        map/select shapes) keep their own typed arms below -- skip a blockless
@@ -4267,22 +4245,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       }
       if (!wchain) return TY_POLY;
     }
-    /* #size is nil for a generator with no size, an Integer for a materialized
-       snapshot, or whatever a stored size value/callable yields -- hence poly. */
-    if (sp_streq(name, "size")) return TY_POLY;
-    if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
-    if (sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
-    /* reject/select/filter/map with a block over the materialized pairs: a
-       generic Array (each_with_index.reject { |v, i| ... }, each_index.map { }). */
-    if ((sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter") ||
-         sp_streq(name, "map") || sp_streq(name, "collect")) &&
-        argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
-    /* block forms over the materialized pairs: sort_by is a reordered Array;
-       sum { } folds to a poly. */
-    if (sp_streq(name, "sort_by") && argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") >= 0) return TY_POLY;
-    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
   }
 
   /* Kernel#p returns its argument (one arg; several return the array), so it

@@ -370,6 +370,46 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "chunk",            0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },
   { TY_FLOAT_RANGE, "chunk_while",      0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },
   { TY_FLOAT_RANGE, "cycle",            0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },
+
+  /* Enumerator. The block forms run over the materialized pairs or the
+     lazy #next driver. Enumerator#+ and with_index with a block are typed
+     by their operand and receiver in infer_call_inner. */
+  { TY_ENUMERATOR, "next",            0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_ENUMERATOR, "peek",            0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },
+  { TY_ENUMERATOR, "find",            0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* lazily via #next, nil on no match (#3236) */
+  { TY_ENUMERATOR, "detect",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* lazily via #next, nil on no match (#3236) */
+  { TY_ENUMERATOR, "take_while",      0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },  /* the same lazy driver (#3590) */
+  { TY_ENUMERATOR, "include?",        1,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "member?",         1,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "find_index",      1,   1, BF_NONE,     TY_INT,         BOPE_NONE },
+  { TY_ENUMERATOR, "next_values",     0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },  /* #2482 */
+  { TY_ENUMERATOR, "peek_values",     0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },  /* #2482 */
+  { TY_ENUMERATOR, "rewind",          0, 127, BF_ANY,      TY_ENUMERATOR,  BOPE_NONE },
+  { TY_ENUMERATOR, "frozen?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "equal?",          1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "eql?",            1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "==",              1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_ENUMERATOR, "freeze",          0, 127, BF_ANY,      TY_ENUMERATOR,  BOPE_NONE },
+  { TY_ENUMERATOR, "itself",          0, 127, BF_ANY,      TY_ENUMERATOR,  BOPE_NONE },
+  { TY_ENUMERATOR, "feed",            1,   1, BF_ANY,      TY_NIL,         BOPE_NONE },
+  { TY_ENUMERATOR, "with_index",      0,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* over [element, index] pairs */
+  { TY_ENUMERATOR, "each_with_index", 0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* #2487 */
+  { TY_ENUMERATOR, "each_index",      0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* #2487 */
+  { TY_ENUMERATOR, "size",            0, 127, BF_ANY,      TY_POLY,        BOPE_NONE },  /* nil, an Integer or a stored size */
+  { TY_ENUMERATOR, "take",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "first",           1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "drop",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "reject",          0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "select",          0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "filter",          0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "map",             0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "collect",         0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "sort_by",         0,   0, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "sum",             0,   0, BF_REQUIRED, TY_POLY,        BOPE_NONE },
+  { TY_ENUMERATOR, "to_a",            0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "entries",         0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { TY_ENUMERATOR, "inspect",         0,   0, BF_ANY,      TY_STRING,      BOPE_NONE },
+  { TY_ENUMERATOR, "to_s",            0,   0, BF_ANY,      TY_STRING,      BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
