@@ -147,6 +147,15 @@ typedef struct BuiltinOp {
                                            hash, else the boxed key or nil */
 #define BOPR_HASH_INVERT ((TyKind)-16)  /* Hash#invert: a String=>String hash
                                            stays one, any other is the general hash */
+#define BOPR_ARRAY_SUM   ((TyKind)-17)  /* Array#sum, no seed or block: the element
+                                           kind; a String array's is boxed (it only
+                                           raises, or answers 0 when empty) */
+#define BOPR_ARRAY_INDEX ((TyKind)-18)  /* Array#index/find_index/rindex(v): an Int,
+                                           Str or Float array's boxed (nil on a miss),
+                                           any other's an Integer */
+#define BOPR_ARRAY_TUPLES ((TyKind)-19) /* blockless combination & co.: a poly array
+                                           materializes the tuples, any other array
+                                           answers an Enumerator */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
