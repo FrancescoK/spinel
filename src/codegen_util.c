@@ -2534,58 +2534,11 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
 }
 
 const char *c_type_name(TyKind t) {
+  /* a builtin kind's C type is its ty_traits row's (types.c); an object
+     array is the pointer array, a user object has none here */
   if (ty_is_obj_array(t)) return "sp_PtrArray *";
-  switch (t) {
-    case TY_INT:         return "sp_int";
-    case TY_BIGINT:      return "sp_Bigint *";
-    case TY_FLOAT:       return "sp_float";
-    case TY_BOOL:        return "sp_bool";
-    case TY_STRING:      return "const char *";
-    case TY_SYMBOL:      return "sp_sym";
-    case TY_RANGE:       return "sp_Range";
-    case TY_FLOAT_RANGE: return "sp_FloatRange";
-    case TY_STR_RANGE:   return "sp_StrRange";
-    case TY_TIME:        return "sp_Time";
-    case TY_COMPLEX:     return "sp_Complex";
-    case TY_RATIONAL:    return "sp_Rational";
-    case TY_MATCHDATA:   return "sp_MatchData *";
-    case TY_REGEX:       return "mrb_regexp_pattern *";
-    case TY_EXCEPTION:   return "sp_Exception *";
-    case TY_STRBUF:      return "sp_String *";
-    case TY_INT_ARRAY:   return "sp_IntArray *";
-    case TY_FLOAT_ARRAY: return "sp_FloatArray *";
-    case TY_STR_ARRAY:   return "sp_StrArray *";
-    case TY_STR_INT_HASH: return "sp_StrIntHash *";
-    case TY_STR_STR_HASH: return "sp_StrStrHash *";
-    case TY_INT_INT_HASH: return "sp_IntIntHash *";
-    case TY_INT_STR_HASH: return "sp_IntStrHash *";
-    case TY_SYM_POLY_HASH:  return "sp_SymPolyHash *";
-    case TY_STR_POLY_HASH:  return "sp_StrPolyHash *";
-    case TY_POLY_POLY_HASH: return "sp_PolyPolyHash *";
-    case TY_POLY:         return "sp_RbVal";
-    case TY_POLY_ARRAY:   return "sp_PolyArray *";
-    case TY_INT_ARRAY_ARRAY: return "sp_PtrArray *";
-    case TY_FLOAT_ARRAY_ARRAY: return "sp_PtrArray *";
-    case TY_PROC:         return "sp_Proc *";
-    case TY_CURRY:        return "sp_Curry *";
-    case TY_FIBER:        return "sp_Fiber *";
-    case TY_THREAD:       return "sp_thread *";
-    case TY_QUEUE:        return "sp_queue *";
-    case TY_MUTEX:        return "sp_mutex *";
-    case TY_CONDVAR:      return "sp_condvar *";
-    case TY_RANDOM:       return "sp_Random *";
-    case TY_DIR:          return "sp_Dir *";
-    case TY_ADDRINFO:     return "sp_Addrinfo *";
-    case TY_SOCKOPT:      return "sp_SockOpt *";
-    case TY_TMS:          return "sp_Tms";
-    case TY_OPENSTRUCT:   return "sp_OpenStruct *";
-    case TY_METHOD:       return "sp_BoundMethod *";
-    case TY_IO:           return "sp_File *";
-    case TY_ARGF:         return "sp_Argf *";
-    case TY_ENUMERATOR:   return "sp_Enumerator *";
-    case TY_CLASS:        return "sp_Class";
-    default:             return NULL;
-  }
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->ctype : NULL;
 }
 int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
