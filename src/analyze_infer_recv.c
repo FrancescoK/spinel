@@ -1826,18 +1826,6 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "replace") || sp_streq(name, "prepend") ||
        sp_streq(name, "concat")))
     { *out = TY_POLY; return 1; }
-  /* in-place string mutators on a poly value: self (boxed) or nil */
-  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-      !an_user_recv_defines_method(c, name) && name[0] && strlen(name) > 1 &&
-      name[strlen(name) - 1] == '!') {
-    static const char *const PBN[] = {
-      "upcase!","downcase!","capitalize!","swapcase!","strip!","lstrip!",
-      "rstrip!","chomp!","chop!","squeeze!","reverse!","succ!","next!",
-      "delete_prefix!","delete_suffix!","delete!","gsub!","sub!","tr!","tr_s!",
-      NULL };
-    for (int q = 0; PBN[q]; q++)
-      if (sp_streq(name, PBN[q])) { *out = TY_POLY; return 1; }
-  }
   /* Array#delete_at on a poly value: the removed element, boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) && sp_streq(name, "delete_at"))

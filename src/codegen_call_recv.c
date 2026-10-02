@@ -1290,12 +1290,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      while the statement form -- which asks strbuf_slot_ref directly, not the
      node type -- compiled. */
   if ((rt == TY_STRING || rt == TY_STRBUF) && recv >= 0) {
-    /* a String value-form bang (ty_str_bang_flags), which answers nil when
-       nothing changed unless it answers self (PF_STR_SELF); reverse! is
-       one too, though not yet a face row. The names are copied: the
-       node's name is rewritten to the plain form and back below. */
-    unsigned sb_fl = ty_str_bang_flags(name);
-    if (!sb_fl && sp_streq(name, "reverse!")) sb_fl = PF_STR_BANG | PF_STR_SELF;
+    /* a String value-form bang (ty_str_typed_bang_flags), which answers nil
+       when nothing changed unless it answers self (PF_STR_SELF). The names
+       are copied: the node's name is rewritten to the plain form and back
+       below. */
+    unsigned sb_fl = ty_str_typed_bang_flags(name);
     int sbi = sb_fl ? 0 : -1;
     char sb_bang[64], sb_plain[64];
     if (sbi >= 0) {

@@ -98,6 +98,9 @@ int ty_poly_hash_face_name(const char *nm);
    list of them: its PF_STR_BANG and PF_STR_SELF flags, or 0 for any other
    name. Its plain name is the bang without the '!' (str_bang_plain). */
 unsigned ty_str_bang_flags(const char *name);
+/* ty_str_bang_flags for a receiver known to be a String, which reverse!
+   joins */
+unsigned ty_str_typed_bang_flags(const char *name);
 void str_bang_plain(const char *bang, char *out, int n);
 
 typedef enum {

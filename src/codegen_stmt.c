@@ -13560,14 +13560,13 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     } \
   } while (0)
   if ((rt == TY_STRING || rt == TY_STRBUF) && argc == 0) {
-    /* a String bang that can answer nil (ty_str_bang_flags, not a
-       PF_STR_SELF one) and takes no argument, and reverse!, which is not a
-       face row yet; a bang that needs one (delete!, gsub!) keeps its
-       ArgumentError */
+    /* a String bang that takes no argument (ty_str_typed_bang_flags), but
+       not the face table's self-answering ones (succ!, next!), which this
+       transform does not cover; a bang that needs an argument (delete!,
+       gsub!) keeps its ArgumentError */
     const char *base = NULL;
     char st_plain[64];
-    unsigned st_fl = ty_str_bang_flags(name);
-    if (((st_fl && !(st_fl & PF_STR_SELF)) || sp_streq(name, "reverse!")) &&
+    if (ty_str_typed_bang_flags(name) && !(ty_str_bang_flags(name) & PF_STR_SELF) &&
         builtin_arity_admits("String", name, 0)) {
       str_bang_plain(name, st_plain, sizeof st_plain);
       base = st_plain;

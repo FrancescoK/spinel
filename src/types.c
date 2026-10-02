@@ -150,6 +150,14 @@ unsigned ty_str_bang_flags(const char *name) {
       return r->flags & (PF_STR_BANG | PF_STR_SELF);
   return 0;
 }
+unsigned ty_str_typed_bang_flags(const char *name) {
+  unsigned fl = ty_str_bang_flags(name);
+  /* reverse! is a String bang too, answering self, but its face rows are
+     the mutator kind's (PF_MUT | PF_VAL_SELF): Array has it as well, so a
+     boxed receiver's reverse! is either, and answers poly */
+  if (!fl && name && sp_streq(name, "reverse!")) fl = PF_STR_BANG | PF_STR_SELF;
+  return fl;
+}
 void str_bang_plain(const char *bang, char *out, int n) {
   size_t len = bang ? strlen(bang) : 0;
   if (len && bang[len - 1] == '!') len--;
