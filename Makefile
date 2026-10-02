@@ -1144,6 +1144,22 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
+	t=test/reject/string_yield_splat_captured.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ysc.c" >"$$tmp/ysc.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String yielded with a splat to a captured append compiled)"; ok=0; \
+	else grep -q "through a splat into a yield" "$$tmp/ysc.out" || \
+	  { echo "reject-test: FAIL (a String yielded with a splat to a captured append rejected without saying why)"; sed -n 1,5p "$$tmp/ysc.out"; ok=0; }; fi; \
+	t=test/reject/string_yield_captured_param.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ycp.c" >"$$tmp/ycp.out" 2>&1; then \
+	  echo "reject-test: FAIL (a String yielded to a captured append and read after compiled)"; ok=0; \
+	else grep -q "parameter .q. through .yield." "$$tmp/ycp.out" || \
+	  { echo "reject-test: FAIL (a String yielded to a captured append and read after rejected without saying why)"; sed -n 1,5p "$$tmp/ycp.out"; ok=0; }; fi; \
+	for t in test/reject/string_copy_yield_alias.rb test/reject/string_copy_yield_alias_append.rb test/reject/string_copy_yield_alias_concat.rb test/reject/string_copy_yield_alias_pp.rb test/reject/string_copy_yield_alias_print.rb test/reject/string_copy_yield_alias_tap.rb test/reject/string_copy_yield_repeat.rb test/reject/string_copy_yield_repeat_lambda.rb test/reject/string_copy_yield_target.rb test/reject/string_copy_yield_target_global.rb test/reject/string_copy_yield_target_ivar.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/copy.c" >"$$tmp/copy.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled an observable String copy)"; ok=0; \
+	  else grep -q "this call hands the proc a copy" "$$tmp/copy.out" || \
+	    { echo "reject-test: FAIL ($$t rejected without saying why)"; sed -n 1,5p "$$tmp/copy.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \

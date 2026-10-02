@@ -796,6 +796,7 @@ void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
 int splat_string_var(Compiler *c, const int *av, int ac, int *fs);
 void refuse_super_splat(Compiler *c, int id, int target);
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv);
+void refuse_yield_capwrap(Compiler *c, int args_node, int blk, int yc, const int *yv);
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly);
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc);
 int emit_spread_args(Compiler *c, const int *argv, int argc);

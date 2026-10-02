@@ -15417,6 +15417,15 @@ static int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
   return 0;
 }
 
+/* Whether `blk`'s parameter at position k of n is appended to through a
+   proc that captures it: the block is a capture wrapper whose lambda
+   appends (cap_wrap_mutates_param). A String yielded there is bound as a
+   copy, which the yield splice refuses where it shows. */
+int an_block_cap_wrap_appends(Compiler *c, int blk, int k, int n) {
+  const char *bp = block_param_at(c, blk, k, n);
+  return bp && cap_wrap_mutates_param(c, blk, bp);
+}
+
 /* Does the code under `node` hand local `vn` to a user method whose
    parameter there it appends to in place, is lent or is the handle? Asked
    in the fixpoint, before the lent slots are settled, so the method's own
@@ -20296,7 +20305,8 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     /* a block parameter a String value is yielded to, appended to
        through a local that names it: it takes the handle the alias
        shares, wrapped around the value (a yielded variable is pulled in
-       below) */
+       below). One a captured proc appends to is not shared: the splice
+       refuses that yield where its copy shows (refuse_yield_capwrap). */
     TyKind at = comp_ntype(c, av[k]);
     if (!pass && (at == TY_STRING || at == TY_STRBUF))
       for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {

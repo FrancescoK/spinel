@@ -703,6 +703,11 @@ Not yet shared:
   String held by a block parameter, by a variable a block or proc captures,
   or by a global or class variable, and through a proc, a `Method` or a
   class value's `new`, one held by an instance variable.
+- through a `yield` into a block whose parameter a lambda or proc inside
+  captures and appends to (`y(u) { |q| l = -> { q << "#" }; l.() }`), a
+  String variable, directly or through a splat, refused only where the
+  copy would show: the variable is read again after the call (or before
+  it, in a loop around it), or another name holds the String.
 
 A String is shared as well through a rest a method forwards (`def w(*a) =
 m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
