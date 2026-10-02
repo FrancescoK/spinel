@@ -30,10 +30,24 @@ TyKind ivar_value_ty(ClassInfo *ci, int iv) {
    it (under a safe-navigation guard the re-emission asks again, and the typed
    emitters then decline the very call they were re-entered to serve). One
    node at a time; -1 clears the pin. */
-static int g_face_node = -1;
-static TyKind g_face_kind = TY_UNKNOWN;
-void an_set_face_node(int node, TyKind kind) { g_face_node = node; g_face_kind = kind; }
-int an_face_node(void) { return g_face_node; }
+/* inference's own face pins (the face loop in infer_call), innermost last */
+static struct { int node; TyKind kind; } an_pin[16];
+static int an_npin;
+void an_face_push(int node, TyKind kind) {
+  if (an_npin >= 16) { fprintf(stderr, "spinel: internal error: face pins nested too deep\n"); exit(1); }
+  an_pin[an_npin].node = node; an_pin[an_npin].kind = kind; an_npin++;
+}
+void an_face_pop(void) { if (an_npin > 0) an_npin--; }
+TyKind face_of(int node) {
+  int fn; TyKind fk;
+  if (view_face_top(&fn, &fk)) return fn == node ? fk : TY_UNKNOWN;
+  if (an_npin > 0) return an_pin[an_npin - 1].node == node ? an_pin[an_npin - 1].kind : TY_UNKNOWN;
+  return TY_UNKNOWN;
+}
+int face_active(void) {
+  int fn; TyKind fk;
+  return view_face_top(&fn, &fk) || an_npin > 0;
+}
 
 /* What a receiver answers universally, as a RAW C scalar, with the type it
    answers. ONE table: the inference below reads it, and so does the
@@ -66,7 +80,6 @@ int an_poly_raw_argc(const char *name) {
   return -1;
 }
 
-TyKind an_face_kind(void) { return g_face_kind; }
 
 /* Per-tree memo for infer_type. The arms of infer_call_inner each re-ask the
    receiver's type, and the receiver of a call is often a call itself: on a
@@ -78,7 +91,7 @@ TyKind an_face_kind(void) { return g_face_kind; }
    collapses the repeats to one compute per node, and the fixpoint's
    re-inference across trees is untouched because every top-level call opens
    a fresh generation.
-   The transient modes are the exception: a pinned face (g_face_node), the
+   The transient modes are the exception: a pinned face (face_of), the
    builtin-only re-derivation (an_builtin_only), an instance_eval rebind
    (an_ie_class_id) and a `then`-block param pin (g_infer_blv_pin) make the
    SAME node answer differently for their duration, so while any is active
@@ -7157,12 +7170,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      if the receiver were that handle. Codegen unboxes it back to exactly that
      before re-dispatching, and checks the runtime cls_id first, so a value of
      any other kind still raises NoMethodError (#4158 follow-up). */
-  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 && argc == 0 &&
+  if (recv >= 0 && rt == TY_POLY && !face_active() && argc == 0 &&
       ty_poly_handle_face(name) != TY_UNKNOWN &&
       !an_user_defines_or_reads(c, name)) {
-    an_set_face_node(recv, ty_poly_handle_face(name));
+    an_face_push(recv, ty_poly_handle_face(name));
     TyKind kt = infer_call(c, id);
-    an_set_face_node(-1, TY_UNKNOWN);
+    an_face_pop();
     if (kt != TY_UNKNOWN) return kt;
   }
   /* Last resort for a boxed receiver: the face table. Answer as the typed
@@ -7172,7 +7185,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      owner gives the typed call's own type, owners that disagree give poly and
      the emission boxes each arm. A receiver of no owner's kind raises
      NoMethodError there, as it did before (#3449). */
-  if (recv >= 0 && rt == TY_POLY && g_face_node < 0 && !an_user_defines_or_reads(c, name)) {
+  if (recv >= 0 && rt == TY_POLY && !face_active() && !an_user_defines_or_reads(c, name)) {
     int blk = nt_ref(nt, id, "block") >= 0;
     unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
                    : ty_poly_face_owners(name, argc, blk, nt_call_args_plain(nt, id), 1) & PF_OWNERS;
@@ -7180,9 +7193,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       TyKind r = TY_UNKNOWN;
       for (unsigned bit = 1; bit & PF_OWNERS; bit <<= 1) {
         if (!(own & bit)) continue;
-        an_set_face_node(recv, ty_poly_face_kind(bit));
+        an_face_push(recv, ty_poly_face_kind(bit));
         TyKind ht = infer_call(c, id);
-        an_set_face_node(-1, TY_UNKNOWN);
+        an_face_pop();
         if (ht == TY_UNKNOWN) continue;
         /* a mutator that answers its receiver answers the box, not the copy
            its emitter worked on (see emit_face_arm) */
@@ -8896,7 +8909,7 @@ TyKind infer_type(Compiler *c, int id) {
      kind (the face table in types.h). Only that receiver node, only for the
      duration, and the cache is left untouched so the receiver's own type is
      unaffected. */
-  if (id == g_face_node) return g_face_kind;
+  { TyKind fk = face_of(id); if (fk != TY_UNKNOWN) return fk; }
   /* see an_builtin_answer: the asked call's receiver keeps its own type */
   if (an_builtin_only && id == an_bo_recv && id < c->node_cap && c->ntype[id] != TY_UNKNOWN)
     return c->ntype[id];
@@ -8907,7 +8920,7 @@ TyKind infer_type(Compiler *c, int id) {
       memset(g_imemo_stamp, 0, sizeof(unsigned) * (size_t)g_imemo_cap);
     g_imemo_gen = 1;
   }
-  int memo_ok = g_face_node < 0 && !an_builtin_only && an_ie_class_id < 0 &&
+  int memo_ok = !face_active() && !an_builtin_only && an_ie_class_id < 0 &&
                 g_infer_blv_pin == 0;
   if (memo_ok && id < g_imemo_cap && g_imemo_stamp[id] == g_imemo_gen)
     return g_imemo_val[id];

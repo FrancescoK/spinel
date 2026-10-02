@@ -1438,6 +1438,10 @@ extern ArmCtx g_arm;
 #define g_prbd_skip (g_arm.prbd_skip)
 #define g_poly_builtin_arm (g_arm.builtin_arm)
 int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm);
+/* A node pinned to one face kind for the inference asked under it,
+   pushed and popped like a view (view_pop) and put back by view_unwind
+   (face_of, analyze.h). */
+int view_push_face(int node, TyKind kind);
 /* A node bound to the text emit_expr writes for it instead (g_argov_*):
    view_bind answers the binding's slot; view_unbind(n) drops every binding
    from slot n up. */

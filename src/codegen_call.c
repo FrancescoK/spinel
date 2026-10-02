@@ -18770,12 +18770,11 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       free(krb.p);
       view_bind(recv, "_t%d", tkv);
       int vw = view_push(c, recv, kt);
-      int svkf = an_face_node(); TyKind svkk = an_face_kind();
-      an_set_face_node(recv, kt);
+      int fv = view_push_face(recv, kt);
       int svkn = g_handle_face_node; g_handle_face_node = id;
       emit_call(c, id, b);
       g_handle_face_node = svkn;
-      an_set_face_node(svkf, svkk);
+      view_pop(c, fv);
       view_pop(c, vw);
       view_unbind(g_n_argov - 1);
       return 1;
@@ -18807,8 +18806,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          because anything under the re-emission that asks re-establishes it and
          the re-dispatch then finds no arm for a poly receiver (#4070 follow-up
          -- `v&.entries` raised NoMethodError with the conversion already made) */
-      int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
-      an_set_face_node(recv, TY_POLY_POLY_HASH);
+      int fv = view_push_face(recv, TY_POLY_POLY_HASH);
       int sv_pp = g_pp_hash_node; g_pp_hash_node = id;
       if (hinl) {
         emit_call(c, id, &hib);
@@ -18818,7 +18816,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       else emit_call(c, id, b);
       free(hib.p);
       g_pp_hash_node = sv_pp;
-      an_set_face_node(sv_face, sv_fk);
+      view_pop(c, fv);
       view_pop(c, vw);
       view_unbind(g_n_argov - 1);
       return 1;
@@ -23320,8 +23318,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_%s %s_t%d = %s(sp_%s *)_t%d.v.p;\n", cn, val ? "" : "*", ts, val ? "*" : "", cn, tv);
     view_bind(recv, "_t%d", ts);
     int vw = view_push(c, recv, ty_object(k));
-    int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
-    an_set_face_node(recv, ty_object(k));
+    int fv = view_push_face(recv, ty_object(k));
     int sv_node = g_ie_poly_node; g_ie_poly_node = id;
     int sv_disc = g_ie_discard_value; g_ie_discard_value = !keep;
     int *snap = ie_body_retype(c, body, k);
@@ -23333,7 +23330,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
     ie_body_restore(c, snap);
     g_ie_discard_value = sv_disc;
     g_ie_poly_node = sv_node;
-    an_set_face_node(sv_face, sv_fk);
+    view_pop(c, fv);
     view_pop(c, vw);
     view_unbind(g_n_argov - 1);
     g_pre = sv_pre; g_indent = sv_ind;
@@ -26431,10 +26428,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              comes back poly while the value arm renders that face's C type. */
           if (ret2 == TY_POLY && natg == TY_POLY &&
               ty_poly_hash_face_name(nt_str(nt, id, "name"))) {
-            int svf = an_face_node(); TyKind svfk = an_face_kind();
-            an_set_face_node(recv, TY_POLY_POLY_HASH);
+            int fv = view_push_face(recv, TY_POLY_POLY_HASH);
             TyKind fac = infer_uncached(c, id);
-            an_set_face_node(svf, svfk);
+            view_pop(c, fv);
             /* a face that answers another hash boxes
                through a different entry point than emit_boxed_text picks */
             if (ty_is_array(fac) || fac == TY_ENUMERATOR) natg = fac;

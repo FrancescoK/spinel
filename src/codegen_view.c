@@ -23,6 +23,11 @@
    stack beside the views, popped by view_unbind, and a refusal's
    view_unwind drops the ones bound since its mark with the rest.
 
+   view_push_face pins a node to one face kind (the face table, types.h)
+   for the inference asked under it: face_of (analyze_infer.c) reads the
+   innermost pin, here or inference's own. Like the arm context it is no
+   view of a node's cached type.
+
    view_push_arm does the same for the arm context a poly dispatch's
    builtin arm re-enters the call under (g_arm: the node whose dispatch
    declines its own re-entry, g_pd_skip and g_prbd_skip, and
@@ -36,8 +41,9 @@
 
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
-enum { VK_TYPE = -1, VK_ARM = -2 };
+enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3 };
 static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; } view_stack[VIEW_MAX];
+static int view_face = -1;   /* the innermost face entry, or -1 */
 static int view_sp;
 static int view_nodes;   /* the entries that view a node (all but VK_ARM) */
 static unsigned view_epoch_n;
@@ -133,9 +139,32 @@ int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm) {
   return tok;
 }
 
+int view_push_face(int node, TyKind kind) {
+  if (view_sp >= VIEW_MAX) {
+    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
+    exit(1);
+  }
+  int tok = view_sp++;
+  view_stack[tok].c = NULL;
+  view_stack[tok].id = node;
+  view_stack[tok].kind = VK_FACE;
+  view_stack[tok].saved = (int)kind;
+  view_stack[tok].arm_saved.pd_skip = view_face;   /* the face it hides */
+  view_face = tok;
+  return tok;
+}
+
+int view_face_top(int *node, TyKind *kind) {
+  if (view_face < 0) return 0;
+  *node = view_stack[view_face].id;
+  *kind = (TyKind)view_stack[view_face].saved;
+  return 1;
+}
+
 /* the entry on top, put back */
 static void view_close(int tok) {
   if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
+  if (view_stack[tok].kind == VK_FACE) { view_face = view_stack[tok].arm_saved.pd_skip; return; }
   view_write(view_stack[tok].c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
   view_nodes--;
   view_epoch_n++;

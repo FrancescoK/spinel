@@ -186,9 +186,15 @@ TyKind infer_uncached(Compiler *c, int id);
 /* Pin/read the receiver node the inference should answer as `kind` while
    codegen re-enters a typed emitter for a boxed receiver (the face table in
    types.h). Node -1 clears the pin. */
-void an_set_face_node(int node, TyKind kind);
-int  an_face_node(void);
-TyKind an_face_kind(void);
+/* The face kind node is pinned to (the face table, types.h): the innermost
+   pin, codegen's on the view stack (view_push_face) or inference's own
+   (an_face_push / an_face_pop), answers for its node; TY_UNKNOWN for any
+   other node, or when none is pinned. face_active() says whether one is. */
+TyKind face_of(int node);
+int face_active(void);
+void an_face_push(int node, TyKind kind);
+void an_face_pop(void);
+int view_face_top(int *node, TyKind *kind);   /* codegen_view.c */
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 /* The name of a numbered block parameter (`_1`..`_9`) on this parameters node.

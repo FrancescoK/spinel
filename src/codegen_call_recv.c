@@ -2174,8 +2174,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        type alone does not survive a safe-navigation guard, whose re-emission
        asks again and re-establishes the receiver as poly -- the array emitters
        then decline the very call this arm re-entered to have them serve. */
-    int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
-    an_set_face_node(recv, TY_POLY_ARRAY);
+    int fv = view_push_face(recv, TY_POLY_ARRAY);
     /* The re-entry below is the SAME node, and neither the type nor the pin
        stops it reaching this arm again. Latch the node. */
     int sv_rd = g_poly_redispatch_id; g_poly_redispatch_id = id;
@@ -2187,7 +2186,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     else emit_call(c, id, b);
     g_poly_redispatch_id = sv_rd;
-    an_set_face_node(sv_face, sv_fk);
+    view_pop(c, fv);
     view_pop(c, v);
     view_unbind(g_n_argov - 1);
     return 1;
@@ -10967,8 +10966,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   view_bind(recv, "%s%d", tp, t);
   TyKind as = ty_poly_face_kind(kind);
   int v = view_push(c, recv, as);
-  int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
-  an_set_face_node(recv, as);
+  int fv = view_push_face(recv, as);
   TyKind nat = infer_uncached(c, id);
   /* A numeric iterator with a block answers its receiver, and the arm's
      expression bridge renders exactly that, in the owner's own kind -- but
@@ -10981,7 +10979,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     nat = as;
   Buf cb; memset(&cb, 0, sizeof cb);
   emit_call(c, id, &cb);
-  an_set_face_node(sv_face, sv_fk);
+  view_pop(c, fv);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
   const char *call = cb.p ? cb.p : "0";
@@ -11102,7 +11100,6 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   int sv_argov = g_n_argov;
   int sv_open_defaults = g_open_defaults;
   TyKind sv_ty = c->ntype[recv];
-  int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
   int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
@@ -11110,7 +11107,6 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   if (setjmp(g_unsup_recover) == 0) *nat = emit_face_arm(c, id, kind, flags, box, val);
   else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-  an_set_face_node(sv_face, sv_fk);
   c->ntype[recv] = sv_ty;
   view_unbind(sv_argov);
   g_open_defaults = sv_open_defaults;
