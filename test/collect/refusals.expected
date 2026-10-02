@@ -30,6 +30,12 @@ spinel: 1 refusal, nothing written
 == test/reject/bignum_div_rational.rb [promote] rc=1
 spinel: an Integer operand of a Bignum operation given a Rational, which no conversion keeps in its sp_int slot
 spinel: 1 refusal, nothing written
+== test/reject/bind_call_class_value_block_target.rb [default] rc=1
+spinel: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
+spinel: 1 refusal, nothing written
+== test/reject/bind_call_class_value_block_target.rb [promote] rc=1
+spinel: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
+spinel: 1 refusal, nothing written
 == test/reject/class_eval_on_class_in_method.rb [default] rc=1
 spinel: Class.class_eval is not supported here: methods are added to Class only by a top-level `class Class` or `Class.class_eval { ... }`
 == test/reject/class_eval_on_class_in_method.rb [promote] rc=1
@@ -185,6 +191,12 @@ spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed
 spinel: 1 refusal, nothing written
 == test/reject/instance_exec_refusal_moved_scope.rb [promote] rc=1
 spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed allocation registry to walk -- the GC tracks bytes, not a live-object index (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/io_reopen_yielding_call.rb [default] rc=1
+spinel: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/io_reopen_yielding_call.rb [promote] rc=1
+spinel: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
 spinel: 1 refusal, nothing written
 == test/reject/macro_alias_in_aliased_namespace.rb [default] rc=1
 spinel: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6

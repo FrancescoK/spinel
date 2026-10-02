@@ -689,6 +689,39 @@ const char *cplan_eval_what(Compiler *c, int id) {
   return "eval of a runtime string is not supported by AOT compilation (define the code statically)";
 }
 
+/* Two gaps a call's tables decide, refused as `unsupported(c, id, "call")`:
+   a call on an IO whose reopening of the name yields or takes a block (a
+   block-taking one has no standalone function to call: emit_io_reopen_call),
+   and a bind_call on a Class value known only at run time where some class
+   has no arm to build (class_value_bind_call_gap). */
+int cplan_io_reopen_yields(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || comp_ntype(c, recv) != TY_IO) return 0;
+  int ci = io_reopen_class(c, name);
+  if (ci < 0 || comp_method_in_chain(c, ci, name, NULL) < 0) return 0;
+  int ks[16], n = io_reopen_defs(c, name, 0, ks, 16);
+  for (int i = 0; i < n; i++) {
+    Scope *km = &c->scopes[comp_method_in_chain(c, ks[i], name, NULL)];
+    if (km->yields || (km->blk_param && km->blk_param[0])) return 1;
+  }
+  return 0;
+}
+
+int cplan_bind_call_gap(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "bind_call")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (recv < 0 || argc < 1 || nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
+  return class_value_instance_method_sym(c, recv) && class_value_bind_call_gap(c, recv);
+}
+
 static CallPlan *g_rf_memo = NULL;
 static unsigned char *g_rf_have = NULL;
 static int g_rf_cap = 0;
@@ -707,6 +740,7 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p) {
   if (!what) what = cplan_runtime_const_get_what(c, id);
   if (!what) what = cplan_binding_what(c, id);
   if (!what) what = cplan_eval_what(c, id);
+  if (!what && (cplan_io_reopen_yields(c, id) || cplan_bind_call_gap(c, id))) what = "call";
   if (what) {
     char msg[2400];
     p->rkind = (unsigned char)unsup_message(c, id, what, -1, msg, sizeof msg);

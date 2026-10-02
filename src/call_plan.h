@@ -74,6 +74,10 @@ const char *cplan_runtime_send_what(Compiler *c, int id);
 const char *cplan_runtime_const_get_what(Compiler *c, int id);
 const char *cplan_binding_what(Compiler *c, int id);
 const char *cplan_eval_what(Compiler *c, int id);
+/* the gaps refused as "call": an IO reopening that yields, a bind_call on a
+   Class value with a class no arm can be built for */
+int cplan_io_reopen_yields(Compiler *c, int id);
+int cplan_bind_call_gap(Compiler *c, int id);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an
