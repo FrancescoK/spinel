@@ -4123,10 +4123,19 @@ static void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) 
   emit_boxed(c, arg, b); buf_printf(b, "), %d)", v);
 }
 
-/* A nil numeric conversion returns nil only when exception is false. Keep
-   operand order and keyword validation, including for a boxed nil value. */
-static void emit_nullable_numeric_convert(Compiler *c, int arg, int exc,
-                                          const char *klass, Buf *b) {
+/* Rational(x, exception: f) / Complex(x, exception: f) whose operand may be
+   nil, when the inference typed the call poly: a nil operand answers nil only
+   when the flag is false. Keeps operand order and keyword validation,
+   including for a boxed nil value. Answers 0 (nothing emitted) for any other
+   shape, which keeps the path it had. */
+static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, int exc,
+                                         const char *klass, Buf *b) {
+  TyKind at = comp_ntype(c, argv[0]);
+  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || comp_ntype(c, id) != TY_POLY ||
+      !(at == TY_NIL || at == TY_POLY ||
+        ((at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, argv[0]))))
+    return 0;
+  int arg = argv[0];
   int tv = ++g_tmp, te = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, arg, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, te);
@@ -4149,6 +4158,7 @@ static void emit_nullable_numeric_convert(Compiler *c, int arg, int exc,
                tf, tc, tv, tf, tc, tf);
   }
   buf_puts(b, "; } _out; })");
+  return 1;
 }
 static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -4202,14 +4212,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       if (only_exc) { argc = 1; soft_convert = 1; }
     }
-    if (soft_convert && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
-        comp_ntype(c, id) == TY_POLY &&
-        (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[0]) == TY_POLY ||
-         ((comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_FLOAT) &&
-          nullable_int_value(c, argv[0])))) {
-      emit_nullable_numeric_convert(c, argv[0], exception_node, "Complex", b);
-      return 1;
-    }
+    if (soft_convert && emit_nullable_numeric_convert(c, id, argv, exception_node, "Complex", b)) return 1;
     /* Complex(str, exception: false): nil rather than a raise when the string
        does not parse (#3893) */
     if (soft_convert && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
@@ -4355,14 +4358,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       if (only_exc) { argc = 1; soft_convert_r = 1; }
     }
-    if (soft_convert_r && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
-        comp_ntype(c, id) == TY_POLY &&
-        (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[0]) == TY_POLY ||
-         ((comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_FLOAT) &&
-          nullable_int_value(c, argv[0])))) {
-      emit_nullable_numeric_convert(c, argv[0], exception_node, "Rational", b);
-      return 1;
-    }
+    if (soft_convert_r && emit_nullable_numeric_convert(c, id, argv, exception_node, "Rational", b)) return 1;
     /* Rational(str, exception: false): nil rather than a raise (#3893) */
     if (soft_convert_r && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
       int tr9 = ++g_tmp;
