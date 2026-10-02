@@ -38,10 +38,16 @@ uo=$(grep -c ': plan-check: ucall-unobserved:' "$OUT")
 ue=$(grep -c ': plan-check: ucall-unemitted:' "$OUT")
 uf=$(grep -c ': plan-check: ucall-refused:' "$OUT")
 ud=$(grep -c ': plan-check: ucall-dynamic:' "$OUT")
+# the resolver's per-program counts, summed
+rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: //' |
+  awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+$/) s[i] += $i }
+       END { printf "codegen %d agree %d differ %d respecialized %d none; inference %d agree %d differ %d none",
+             s[2], s[4], s[6], s[8], s[11], s[13], s[15] }')
 [ "${1-}" = "-v" ] && cat "$OUT"
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 rm -f "$OUT"
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
+echo "plan-check: resolver: $rsum"
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
 [ "$nc" -eq 0 ] && [ "$uc" -eq 0 ]

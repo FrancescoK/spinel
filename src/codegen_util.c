@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "call_plan.h"
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -84,9 +85,17 @@ int g_ndtarget_cap = 0;
                     NoMethodError its visibility gives the call instead
      dynamic        inference typed a boxed receiver's call over its
                     candidates, codegen emitted it through the run-time
-                    dispatch, which binds nothing statically */
-typedef struct { int mi; short owner; unsigned char seen, flags; } UcallObs;
+                    dispatch, which binds nothing statically
+   The resolver's plan (call_plan.c) is the third reading, compared with
+   both: a per-program ucall-resolver line counts agreement with codegen's
+   binding (agree, differ, respecialized as above, none: the resolver found
+   no method) and with inference's record (agree, differ, none), and each
+   disagreement outside a re-read context is listed. */
+typedef struct { int mi; short owner; unsigned char seen, flags; int rmi; unsigned char rflags; } UcallObs;
 enum { UO_MATCH = 1, UO_ARM = 2, UO_MISS_PLAIN = 4, UO_MISS_RESPEC = 8 };
+/* the resolver's plan (cplan_user) against codegen's binding */
+enum { UR_AGREE = 1, UR_DIFF_PLAIN = 2, UR_DIFF_RESPEC = 4, UR_NONE = 8,
+       UR_ARM_HIT = 16, UR_ARM_MISS = 32 };   /* a switch: some arm is the plan's, some is not */
 static UcallObs *g_ucobs = NULL;
 static int g_ucobs_cap = 0;
 /* the call nodes codegen emitted at all (emit_call, emit_super, a splice):
@@ -134,6 +143,24 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   UcallObs *o = &g_ucobs[id];
   if (!o->seen) { o->seen = 1; o->mi = mi; o->owner = (short)owner_ci; }
   if (add) o->flags |= UO_ARM;
+  /* the resolver: its method, an arm of the switch it plans, or the
+     proc-form clone of its method agrees */
+  { const CallPlan *pl = cplan_user(c, id);
+    int member = pl->mi >= 0 &&
+                 (cplan_virtual_member(c, id, pl, mi) || (add && pl->dispatch == CP_VIRTUAL) ||
+                  (c->scopes[mi].is_proc_form && scope_proc_form_of(c, pl->mi) == mi));
+    if (pl->mi < 0) o->rflags |= UR_NONE;
+    /* a switch's arms: agreement is the plan's method among them, decided
+       once every arm is in (the report) */
+    else if (add) {
+      o->rflags |= member ? UR_ARM_HIT : UR_ARM_MISS;
+      if (!member && !o->rmi) o->rmi = mi + 1;
+    }
+    else if (member) o->rflags |= UR_AGREE;
+    else {
+      o->rflags |= ucall_respec_ctx(c, id) ? UR_DIFF_RESPEC : UR_DIFF_PLAIN;
+      if (!o->rmi || !(o->rflags & UR_DIFF_PLAIN)) o->rmi = mi + 1;
+    } }
   const UCallInf *inf = &c->ucall_inf[id];
   if (inf->via == UC_NONE) return;
   /* a boxed receiver's union: any of its candidates is one of its arms */
@@ -171,7 +198,59 @@ static void ucall_scope_name(Compiler *c, int mi, char *out, size_t n) {
   else snprintf(out, n, "%s", m->name ? m->name : "?");
 }
 
+static void ucall_resolver_report(Compiler *c) {
+  int ac = 0, dc = 0, rc = 0, nc = 0, ai = 0, di = 0, ni = 0;
+  for (int id = 0; id < c->node_cap; id++) {
+    const UCallInf *inf = &c->ucall_inf[id];
+    const UcallObs *o = id < g_ucobs_cap ? &g_ucobs[id] : NULL;
+    int seen = o && o->seen;
+    if (inf->via == UC_NONE && !seen) continue;
+    const CallPlan *pl = cplan_user(c, id);
+    const char *nm = nt_str(c->nt, id, "name");
+    char rs[256], xs[256];
+    ucall_scope_name(c, pl->mi, rs, sizeof rs);
+    if (seen) {
+      /* a switch with the plan's method among its arms agrees; one without
+         it differs like a plain binding would */
+      int arm_diff = (o->rflags & UR_ARM_MISS) && !(o->rflags & UR_ARM_HIT);
+      if ((o->rflags & UR_DIFF_PLAIN) || arm_diff) {
+        dc++;
+        ucall_scope_name(c, o->rmi - 1, xs, sizeof xs);
+        fprintf(stderr, "plan-check: ucall-resolver-differ: node %d %s: resolver %s, codegen %s\n",
+                id, nm ? nm : "?", rs, xs);
+      }
+      else if (o->rflags & UR_DIFF_RESPEC) rc++;
+      else if (o->rflags & (UR_AGREE | UR_ARM_HIT)) ac++;
+      else {
+        nc++;
+        ucall_scope_name(c, o->mi, xs, sizeof xs);
+        fprintf(stderr, "plan-check: ucall-resolver-none: node %d %s: codegen %s\n", id, nm ? nm : "?", xs);
+      }
+    }
+    if (inf->via != UC_NONE) {
+      if (pl->mi < 0) {
+        ni++;
+        ucall_scope_name(c, inf->mi, xs, sizeof xs);
+        fprintf(stderr, "plan-check: ucall-resolver-none-inference: node %d %s: inference %s (%s)\n", id,
+                nm ? nm : "?", xs, inf->via < 10 ? (const char *[]){ "none", "top", "inst", "cmeth", "super",
+                "send_blind", "ie", "included", "reopen", "poly" }[inf->via] : "?");
+      }
+      else if (cplan_virtual_member(c, id, pl, inf->mi) ||
+               (inf->via == UC_POLY && pl->via == UC_POLY)) ai++;
+      else {
+        di++;
+        ucall_scope_name(c, inf->mi, xs, sizeof xs);
+        fprintf(stderr, "plan-check: ucall-resolver-differ-inference: node %d %s: resolver %s, inference %s\n",
+                id, nm ? nm : "?", rs, xs);
+      }
+    }
+  }
+  fprintf(stderr, "plan-check: ucall-resolver: codegen %d agree %d differ %d respecialized %d none;"
+                  " inference %d agree %d differ %d none\n", ac, dc, rc, nc, ai, di, ni);
+}
+
 void ucall_report(Compiler *c) {
+  ucall_resolver_report(c);
   static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
                                           "send_blind", "ie", "included", "reopen", "poly" };
   for (int id = 0; id < c->node_cap; id++) {
