@@ -28318,7 +28318,8 @@ static int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const c
   int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
   if (pf < 0) return 0;
   int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
-  if (nt_ref(nt, id, "block") >= 0 && cblk < 0) return 0;
+  /* a forwarded `&blk` resolves below 0 when the caller passed no block:
+     the clone's block parameter is then NULL (block_given? is false) */
   Buf rb; memset(&rb, 0, sizeof rb);
   if (box_fn) { buf_printf(&rb, "%s(", box_fn); emit_expr(c, recv, &rb); buf_puts(&rb, ")"); }
   else emit_boxed(c, recv, &rb);
