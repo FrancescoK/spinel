@@ -10380,6 +10380,8 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     fwd_yield_proc = fwd_pb.p;
   }
 
+  /* --plan-check: the super is spliced from mi */
+  if (g_plan_check) ucall_observe(c, id, mi, shadow ? s->class_id : defcls, 0);
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
@@ -10672,6 +10674,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (sc->class_id == s->class_id && sc->name && sp_streq(sc->name, shadow))
         { smi = k; break; }
     }
+    if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
     if (ty && sp_streq(ty, "ForwardingSuperNode") && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
@@ -10713,6 +10716,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
                  uname, scn2, raise_tail_value_c(c, comp_ntype(c, id)));
       return;
     }
+    if (g_plan_check) ucall_observe(c, id, cmi, cdef, 0);
     buf_printf(b, "sp_%s_s_%s(", c->classes[cdef].c_name, mc(uname));
     /* `super` in a class method keeps the receiving class: forward ours. */
     if (cmethod_takes_self_cls(c, cmi))
@@ -10734,6 +10738,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   }
   int defcls = -1;
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
+  if (g_plan_check && mi >= 0) ucall_observe(c, id, mi, defcls, 0);
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
     if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) &&

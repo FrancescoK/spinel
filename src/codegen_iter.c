@@ -900,6 +900,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int tag = ++g_tmp;
   if (g_inline_depth >= SP_INLINE_DEPTH_MAX)
     unsupported_feature(c, id, "a method that uses its block (yield or block.call) and calls itself recursively (inlining cannot terminate; no standalone function to fall back to)");
+  /* --plan-check: the call is spliced from mi (observed at the call's own
+     depth, before the body's) */
+  if (g_plan_check) ucall_observe(c, id, mi, recv_class >= 0 ? recv_class : cm_class, 0);
   g_inline_depth++;
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
