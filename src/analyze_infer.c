@@ -1921,19 +1921,20 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                              int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
-  if (g_plan_check && op && op->result != TY_UNKNOWN && id >= 0 && id < c->node_cap)
+  if (g_plan_check && !an_builtin_only && op && op->result != TY_UNKNOWN &&
+      id >= 0 && id < c->node_cap)
     c->bop_inf[id] = op;
   return op;
 }
 
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
-  if (g_plan_check && id >= 0 && id < c->node_cap) {
+  /* the builtin-only re-derivation (an_builtin_answer) asks what the call
+     would be with no user method: not the call's answer, so it neither
+     clears nor makes the call's records */
+  if (g_plan_check && !an_builtin_only && id >= 0 && id < c->node_cap) {
     c->bop_inf[id] = NULL;
-    /* the builtin-only re-derivation (an_builtin_answer) asks what the call
-       would be with no user method: not the call's answer, so it neither
-       clears nor makes the call's user-method record */
-    if (!an_builtin_only) c->ucall_inf[id].via = UC_NONE;
+    c->ucall_inf[id].via = UC_NONE;
   }
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
