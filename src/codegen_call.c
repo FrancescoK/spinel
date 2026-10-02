@@ -22713,7 +22713,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           for (int k = 0; k < nc; k++) {
             nd_callee(c, id, cmi[k], cdef[k], 1);
             int rarm = emit_reopen_arm_test(c, cmi[k], nm, rcls, NULL, b);
-            if (!rarm) buf_printf(b, "_t%d.cls_id == %d ? ", tv, ccls[k]);
+            if (!rarm) {
+              /* `obj.class` of a poly object is a Class value that carries
+                 its name (sp_poly_class_val): it names this class too */
+              const char *crn = class_ruby_name(c, ccls[k]);
+              if (!crn) crn = c->classes[ccls[k]].name;
+              buf_printf(b, "(_t%d.cls_id == %d || (_t%d.cls_id == SP_CLASS_BY_NAME && _t%d.v.s && "
+                            "strcmp(_t%d.v.s, \"%s\") == 0)) ? ", tv, ccls[k], tv, tv, tv, crn);
+            }
             Buf cb; memset(&cb, 0, sizeof cb);
             int ksym = cpf[k] >= 0 ? cpf[k] : cmi[k];
             buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[ksym].name));
