@@ -19212,6 +19212,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           nd_stamp(id, ND_SWITCH);
           char rcls[48];
           snprintf(rcls, sizeof rcls, "sp_unbox_class(_t%d)", tv);
+          int pa_frame = g_plan_check ? pa_begin(id) : -1;
           for (int k = 0; k < nc; k++) {
             nd_callee(c, id, cmi[k], cdef[k], 1);
             int rarm = emit_reopen_arm_test(c, cmi[k], nm, rcls, NULL, b);
@@ -19242,6 +19243,11 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             if (apre.p && apre.p[0]) { buf_puts(b, "({ "); buf_puts(b, apre.p); }
             if (mret == TY_POLY) buf_puts(b, cb.p ? cb.p : "sp_box_nil()");
             else emit_boxed_text(c, mret, cb.p ? cb.p : "0", b);
+            if (g_plan_check) {
+              pa_resume(pa_frame);
+              pa_observe(cpf[k] >= 0 ? PA_PROC_FORM : PA_USER, ccls[k], cmi[k], mret,
+                         mret == TY_POLY ? PC_SAME : PC_BOX);
+            }
             if (apre.p && apre.p[0]) buf_puts(b, "; })");
             free(apre.p);
             free(cb.p);
@@ -19266,6 +19272,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           }
           buf_printf(b, "%s) : %s; })", raise,
                      (eb2.p && eb2.p[0]) ? eb2.p : raise);
+          if (g_plan_check) pa_end(c, pa_frame, cplan_poly_cmeth(c, id));
           free(eb2.p);
           unhoist_dispatch_args(c, hoisted_n, hoisted_sv, hoisted_ty);
           free(ccls);

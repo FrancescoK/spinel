@@ -191,6 +191,10 @@ const PolyPlan *cplan_poly(Compiler *c, int id);
    Computed afresh: the same node may take this dispatch or the method
    dispatch. */
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
+/* The arms of the class-method tag switch of a call on a poly receiver
+   that may hold a Class (emit_unresolved_call): each class's class method
+   of the name, or its proc form. Computed afresh. */
+const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
 
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the

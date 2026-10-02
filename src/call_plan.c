@@ -1065,3 +1065,23 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   else cpoly_trial(&bp, &cap, PT_BD_DEFAULT);
   return &bp;
 }
+
+const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
+  static PolyPlan cp;
+  free(cp.arm);
+  cp.arm = NULL; cp.n = 0; cp.flags = 0;
+  cp.ntype = cp.ret = comp_ntype(c, id);
+  int cap = 0;
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name) return &cp;
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_cmethod_in_chain(c, k, name, NULL);
+    if (mi < 0) continue;
+    int pf = scope_proc_form_of(c, mi);
+    if (pf >= 0 && !proc_form_live(c, pf)) pf = -1;
+    if (!scope_has_callable_symbol(c, mi) && pf < 0) continue;
+    TyKind mret = c->scopes[pf >= 0 ? pf : mi].ret;
+    cpoly_add(&cp, &cap, pf >= 0 ? PA_PROC_FORM : PA_USER, k, mi, mret, mret == TY_POLY ? PC_SAME : PC_BOX);
+  }
+  return &cp;
+}
