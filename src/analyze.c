@@ -9270,7 +9270,15 @@ static int narrow_int_table_ivars(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
     for (int iv = 0; iv < cl->nivars; iv++) {
-      if (cl->ivar_int_table[iv]) continue;   /* already narrowed and pinned */
+      /* A table this pass pinned is vetted again on every round: what it
+         was pinned on can change. `@banks[0] = a1` pinned @banks while a1,
+         through a chain of methods written below their callees, still
+         answered the int array an append on a receiver not typed yet makes;
+         a1 then settled boxed, and the boxed row was read back as a bare
+         sp_IntArray *. narrow_object_arrays' own pin (ivar_oa_type) is
+         decided again by that pass. */
+      int pinned = cl->ivar_int_table[iv];
+      if (pinned && cl->ivar_oa_type[iv] != TY_UNKNOWN) continue;
       if (!ivl) {
         ivl = malloc(sizeof(int) * (size_t)(nt->count + 1));
         if (!ivl) return narrowed;
@@ -9303,7 +9311,7 @@ static int narrow_int_table_ivars(Compiler *c) {
           if (r >= 0 && r < nt->count) first_call[r] = u;
         }
       }
-      if (cl->ivar_types[iv] != TY_POLY_ARRAY) continue;
+      if (!pinned && cl->ivar_types[iv] != TY_POLY_ARRAY) continue;
       const char *ivn = cl->ivars[iv];
       if (!ivn || !ivn[0]) continue;
       if (class_ivar_pinned(cl, ivn)) continue;         /* an --rbs seed owns it */
@@ -9411,6 +9419,13 @@ static int narrow_int_table_ivars(Compiler *c) {
       if (ok && saw_table) {
         cl->ivar_types[iv] = TY_INT_ARRAY_ARRAY;
         cl->ivar_int_table[iv] = 1;
+        if (!pinned) narrowed = 1;
+      }
+      else if (pinned) {
+        /* back on the poly array its write reads, for the evidence of the
+           rounds to come */
+        cl->ivar_types[iv] = TY_POLY_ARRAY;
+        cl->ivar_int_table[iv] = 0;
         narrowed = 1;
       }
     }
