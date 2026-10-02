@@ -262,7 +262,7 @@ static TyKind bop_arg_ntype(const void *ud, int i) {
 }
 
 static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                              const char *rtext, int t0, Buf *b) {
+                              const char *rtext, int t0, int stage, Buf *b) {
   if (recv < 0) return 0;
   /* a Hash or Array receiver of any variant reads its family's rows */
   TyKind lk = rt;
@@ -274,8 +274,8 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
   int argc;
   const int *argv = call_args(c->nt, id, &argc);
   BopArgs a = { c, argv };
-  const BuiltinOp *op = bop_find_arg(lk, name, argc, nt_ref(c->nt, id, "block") >= 0,
-                                     bop_arg_ntype, &a);
+  const BuiltinOp *op = bop_find_stage(lk, name, argc, nt_ref(c->nt, id, "block") >= 0,
+                                       bop_arg_ntype, &a, stage);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext, t0 };
   if (!bop_emitters[op->emit](c, &x, b)) return 0;
@@ -285,14 +285,19 @@ static int emit_builtin_op_ex(Compiler *c, int id, int recv, TyKind rt, const ch
 
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, b);
 }
 
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, b);
 }
 
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, b);
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, 0, b);
+}
+
+int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
+                          int stage, Buf *b) {
+  return emit_builtin_op_ex(c, id, recv, rt, name, NULL, 0, stage, b);
 }

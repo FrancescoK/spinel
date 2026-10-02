@@ -119,6 +119,12 @@ typedef struct BuiltinOp {
   BopKinds arg0, arg1;    /* the kinds the first and second argument may
                              have (BOP_K), or 0 for any */
   unsigned char flags;    /* BOPF_* */
+  unsigned char stage;    /* the codegen lookup that emits the row: 0, the
+                             default, is the one each family has always had;
+                             a family whose arms sit at several distant
+                             places in the emission chain gives the rows of
+                             each place their own stage. Inference reads
+                             every row whatever its stage. */
 } BuiltinOp;
 
 /* The row answers for a boxed (poly) receiver too, behind a run-time class
@@ -160,6 +166,10 @@ const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block);
 typedef TyKind (*BopArgKind)(const void *ud, int i);
 const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_block,
                               BopArgKind arg_of, const void *ud);
+/* bop_find_arg over the rows of one stage only (codegen's lookups); a
+   negative stage reads every row, as bop_find_arg does */
+const BuiltinOp *bop_find_stage(TyKind rt, const char *name, int argc, int has_block,
+                                BopArgKind arg_of, const void *ud, int stage);
 
 /* Whether any row applies to receivers of kind rt: a caller checks this
    before reading the call's arguments, so receivers no row covers cost

@@ -1,5 +1,6 @@
 /* builtin_ops.c -- the builtin method rows (see builtin_ops.h). */
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include "builtin_ops.h"
@@ -1988,9 +1989,36 @@ static int bop_sort_cmp(const void *a, const void *b) {
   return i - j;
 }
 
+#ifndef NDEBUG
+/* Two emitting rows of one name in different stages must never both fit a
+   call: each would emit it at its own place in the chain, and which one ran
+   would depend on which lookup the call reached first. They are kept apart
+   by arity, by block form, or by an argument guard. */
+static int bop_kinds_meet(BopKinds a, BopKinds b) { return !a || !b || (a & b); }
+static void bop_check_stages(void) {
+  for (int i = 0; i < BOP_NROWS; i++) {
+    const BuiltinOp *x = &bop_rows[bop_index[i]];
+    for (int j = i + 1; j < BOP_NROWS; j++) {
+      const BuiltinOp *y = &bop_rows[bop_index[j]];
+      if (bop_cmp_key(x->recv, x->name, y) != 0) break;
+      if (x->stage == y->stage || x->emit == BOPE_NONE || y->emit == BOPE_NONE) continue;
+      int argc_meet = x->argc_min <= y->argc_max && y->argc_min <= x->argc_max;
+      int block_meet = !((x->block == BF_NONE && y->block == BF_REQUIRED) ||
+                         (x->block == BF_REQUIRED && y->block == BF_NONE));
+      assert(!(argc_meet && block_meet && bop_kinds_meet(x->arg0, y->arg0) &&
+               bop_kinds_meet(x->arg1, y->arg1)));
+      (void)argc_meet; (void)block_meet;
+    }
+  }
+}
+#endif
+
 static void bop_build_index(void) {
   for (int i = 0; i < BOP_NROWS; i++) bop_index[i] = i;
   qsort(bop_index, BOP_NROWS, sizeof bop_index[0], bop_sort_cmp);
+#ifndef NDEBUG
+  bop_check_stages();
+#endif
   bop_indexed = 1;
 }
 
@@ -2007,6 +2035,10 @@ const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) 
 
 const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_block,
                               BopArgKind arg_of, const void *ud) {
+  return bop_find_stage(rt, name, argc, has_block, arg_of, ud, -1);
+}
+const BuiltinOp *bop_find_stage(TyKind rt, const char *name, int argc, int has_block,
+                                BopArgKind arg_of, const void *ud, int stage) {
   if (!name) return NULL;
   if (!bop_indexed) bop_build_index();
   int lo = 0, hi = BOP_NROWS;
@@ -2022,6 +2054,7 @@ const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_blo
   for (int i = lo; i < BOP_NROWS; i++) {
     const BuiltinOp *r = &bop_rows[bop_index[i]];
     if (bop_cmp_key(rt, name, r) != 0) break;
+    if (stage >= 0 && r->stage != stage) continue;
     if (!bop_row_fits(r, argc, has_block)) continue;
     int ok = 1;
     for (int k = 0; k < 2 && ok; k++) {

@@ -1390,6 +1390,11 @@ int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *n
 /* the same, with the temp t0 the family took before its arms ($T) */
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b);
+/* emit_builtin_op over the rows of one stage (BuiltinOp.stage): a family
+   whose arms sit at several places in the chain looks each place's rows up
+   there; every other lookup reads stage 0 */
+int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
+                          int stage, Buf *b);
 
 /* codegen_view.c: a node's cached type overridden for one nested emission.
    view_push answers a token for the matching view_pop; a recovery point
