@@ -787,17 +787,36 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
    the binding: a bare call on the enclosing class's chain, its class methods
    in a class method, a class body's class method, a top-level method or an
    included module's; a class constant's class method (a Class reopen's for a
-   builtin class); an instance receiver's own lookup. 0 for the rest (an
-   instance_exec self, which the plan does not take as an input, a poly arm's
-   class, a plan of another kind), which keep the lookup. `narrow` is
+   builtin class); an instance receiver's own lookup. An instance_exec self
+   and a poly arm's receiver class are read into the plan (cplan_user_in).
+   0 for a plan of another kind, which keeps the lookup. `narrow` is
    call_targets_yielding_method's shorter echo: a constant receiver only, and
    no Class reopen. */
 static int inline_target_plan(Compiler *c, int id, const char *name, int recv, int narrow,
                               InlineTarget *t) {
   const NodeTable *nt = c->nt;
   t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
-  if (g_ie_class_id >= 0) return 0;
-  const CallPlan *p = cplan_user(c, id);
+  const CallPlan *p;
+  if (recv < 0 && g_ie_class_id >= 0) {
+    /* inside an instance_eval/exec splice self is the rebound receiver: its
+       class's lookup first, then the call as its own */
+    p = cplan_user_in(c, id, g_ie_class_id, CPX_IE);
+    if (p->chain && p->via == UC_INST && p->owner_ci == g_ie_class_id) {
+      t->mi = p->mi; t->recv_class = g_ie_class_id;
+      return 1;
+    }
+  }
+  else if (recv >= 0 && !narrow && g_inline_recv_expr && g_inline_recv_class >= 0 &&
+           !ty_is_object(comp_ntype(c, recv)) && self_class_static_ci(c, recv) < 0 &&
+           !(nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+    /* a poly arm (#2448): self is pre-bound to a cast of the boxed receiver,
+       and the concrete class is supplied out of band */
+    CallPlan q = *cplan_user_in(c, id, g_inline_recv_class, CPX_ARM);
+    t->recv_class = g_inline_recv_class;
+    if (q.chain && q.via == UC_INST && q.owner_ci == g_inline_recv_class) t->mi = q.mi;
+    return 1;
+  }
+  else p = cplan_user(c, id);
   if (p->mi < 0) return 0;
   if (recv < 0) {
     Scope *encl = comp_scope_of(c, id);
