@@ -2662,6 +2662,11 @@ BENCH_COMPILE_K ?= 100 200
 bench-compile: $(SPINEL)
 	@ruby tools/compile_scale.rb $(BENCH_COMPILE_K)
 
+# Compare generated C across the corpus and optcarrot: make cdiff REF=<rev>.
+.PHONY: cdiff
+cdiff: $(SPINEL)
+	@tools/cdiff.sh $(REF)
+
 bench: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@rm -rf build/bench-results; mkdir -p build/bench-results

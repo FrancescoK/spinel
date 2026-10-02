@@ -260,3 +260,16 @@ Exit status: 0 same, 1 a difference (`output-diff`, `exception-diff`,
 yet. Not normalized on purpose: Hash order (the language defines it),
 `object_id` values (indistinguishable from data) and `rand` (Spinel's
 generator is not CRuby's).
+
+## cdiff.sh
+
+`make cdiff REF=<rev>` (or `tools/cdiff.sh <rev>`) compares the generated C
+for `test/*.rb`, `benchmark/*.rb`, and optcarrot against a reference revision.
+Both compilers use `-c --no-line-map` so tree path lengths cannot change C
+function split boundaries.
+`tools/cdiff.sh <old-binary> --bin` uses an existing compiler in its own tree.
+Differences and programs only one side compiles fail the check; programs
+both sides refuse are skipped. Emission and comparison run in parallel,
+with sorted reports; `CDIFF_JOBS` overrides the host CPU count (fallback 1).
+The revision form builds the reference with the same job count. Optcarrot is
+cloned if needed and packed with Ruby, as in `make optcarrot`.
