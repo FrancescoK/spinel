@@ -10515,8 +10515,15 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   TyKind ret = m ? m->ret : TY_UNKNOWN;
   /* Unify return type across all descendant implementations so that even
      when the base method has TY_VOID/TY_UNKNOWN, a subclass override
-     with a real return type makes the dispatch virtual and typed. */
-  ret = dispatch_ret_over(c, cid, name, 0, mi, ret, -1);
+     with a real return type makes the dispatch virtual and typed. A
+     yielding override answers what this call's block makes it answer, as
+     inference typed the call (dispatch_ret_over), when the dispatch is the
+     call's own. */
+  {
+    const char *cnm = g_nd_call_id >= 0 ? nt_str(nt, g_nd_call_id, "name") : NULL;
+    ret = dispatch_ret_over(c, cid, name, 0, mi, ret,
+                            cnm && sp_streq(cnm, name) ? g_nd_call_id : -1);
+  }
   /* A yielding method answers what this call's block makes it answer, which
      its scope's return type (the last splice's) does not say: the arms are its
      proc-form clones, whose boxed value the switch unboxes into the call's type */

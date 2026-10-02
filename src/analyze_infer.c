@@ -1672,14 +1672,7 @@ static TyKind infer_call_inner(Compiler *c, int id);
    since codegen's dispatch switches over them all. */
 static TyKind an_self_call_ret(Compiler *c, Scope *self, const char *name, int mi, int id) {
   TyKind r = an_user_call(c, id, mi, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, self->class_id);
-  int nd = 0; const int *ds = comp_descendants(c, self->class_id, &nd);
-  for (int di = 0; di < nd; di++) {
-    int k = ds[di];
-    int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name) :
-                                 comp_method_in_class(c, k, name);
-    if (dmi >= 0) r = ty_unify(r, (TyKind)c->scopes[dmi].ret);
-  }
-  return r;
+  return dispatch_ret_over(c, self->class_id, name, self->is_cmethod, mi, r, id);
 }
 /* `k[]` or `k[1, 2, 3]` on a boxed receiver: no builtin `[]` takes that
    many arguments, so the call was left untyped; a Struct or Data class

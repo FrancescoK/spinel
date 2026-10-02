@@ -1282,18 +1282,11 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
       TyKind r = an_user_call(c, id, mi, UC_INST, cid);
-      /* Unify with descendant direct overrides: codegen dispatch emits a
-         cls_id switch over all overrides, so the result type must cover all. */
-      int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
-      for (int di = 0; di < nd; di++) {
-        int k = ds[di];
-        int dmi = comp_method_in_class(c, k, name);
-        /* a yielding override answers this call's block, not its last splice's */
-        if (dmi >= 0)
-          r = ty_unify(r, c->scopes[dmi].yields ? method_call_ret(c, dmi, id)
-                                                : (TyKind)c->scopes[dmi].ret);
-      }
-      { *out = r; return 1; }
+      /* codegen's dispatch switches over every implementation in the
+         subtree, so the result covers them all (a yielding one answers this
+         call's block, not its last splice's) */
+      *out = dispatch_ret_over(c, cid, name, 0, mi, r, id);
+      return 1;
     }
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) { *out = TY_STRING; return 1; }
   }
