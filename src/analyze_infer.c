@@ -2913,6 +2913,234 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
   return 0;
 }
 
+/* A class method called on a builtin class constant: Time, File, IO, Fiber, Thread, Random, Marshal, JSON, Encoding (infer_call_inner's rules, in their order) */
+static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
+  /* StringIO: a native-bound class (packages/stringio); no arms here. .new
+     resolves through the class table, .open is Ruby in the package, and
+     instance methods use the native_method declarations. */
+
+  /* Time.now / at / local / mktime / utc / gm -> a Time value */
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time") &&
+        (sp_streq(name, "now") || sp_streq(name, "at") || sp_streq(name, "local") ||
+         sp_streq(name, "mktime") || sp_streq(name, "utc") || sp_streq(name, "gm") ||
+         sp_streq(name, "new")))
+      { *out = TY_TIME; return 1; }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
+        (sp_streq(name, "start") || sp_streq(name, "compact")))
+      { *out = TY_NIL; return 1; }
+    /* Encoding.find(name): a boxed Encoding (nil for "internal") */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
+        sp_streq(name, "find") && argc == 1)
+      { *out = TY_POLY; return 1; }
+    /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {
+      if (sp_streq(name, "[]")) { *out = TY_BOOL; return 1; }
+      if (sp_streq(name, "[]=")) { *out = TY_POLY; return 1; }   /* the assignment's value: the RHS, boxed */
+      if (sp_streq(name, "warn")) { *out = TY_NIL; return 1; }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
+        sp_streq(name, "stat"))
+      { *out = TY_STR_INT_HASH; return 1; }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
+      if (sp_streq(name, "times") && argc == 0) { *out = TY_TMS; return 1; }
+      if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
+          sp_streq(name, "uid") || sp_streq(name, "gid") ||
+          sp_streq(name, "euid") || sp_streq(name, "egid") ||
+          sp_streq(name, "getsid") || sp_streq(name, "getpgrp") ||
+          (sp_streq(name, "getpriority") && argc == 2)) { *out = TY_INT; return 1; }
+      if (sp_streq(name, "groups") && argc == 0) { *out = TY_INT_ARRAY; return 1; }
+      if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {
+        /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
+           the result an Integer; the default and float units keep it Float. */
+        if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")) {
+          const char *u = nt_str(nt, argv[1], "value");
+          if (u && (sp_streq(u, "nanosecond") || sp_streq(u, "microsecond") ||
+                    sp_streq(u, "millisecond") || sp_streq(u, "second"))) { *out = TY_INT; return 1; }
+        }
+        { *out = TY_FLOAT; return 1; }
+      }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
+        sp_streq(name, "sqrt"))
+      { *out = TY_INT; return 1; }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
+      if (sp_streq(name, "dump") && argc == 1) { *out = TY_STRING; return 1; }
+      /* Marshal.dump(obj, io) writes the bytes to io and answers io (#4112) */
+      if (sp_streq(name, "dump") && argc == 2) { *out = TY_IO; return 1; }
+      if (sp_streq(name, "load") && argc == 1) { *out = TY_POLY; return 1; }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
+        (sp_streq(name, "sin") || sp_streq(name, "cos") || sp_streq(name, "tan") ||
+         sp_streq(name, "asin") || sp_streq(name, "acos") || sp_streq(name, "atan") ||
+         sp_streq(name, "atan2") || sp_streq(name, "sinh") || sp_streq(name, "cosh") ||
+         sp_streq(name, "tanh") || sp_streq(name, "asinh") || sp_streq(name, "acosh") ||
+         sp_streq(name, "atanh") || sp_streq(name, "exp") || sp_streq(name, "log") ||
+         sp_streq(name, "log2") || sp_streq(name, "log10") || sp_streq(name, "sqrt") ||
+         sp_streq(name, "cbrt") || sp_streq(name, "hypot") ||
+         sp_streq(name, "expm1") || sp_streq(name, "log1p") ||
+         sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
+         sp_streq(name, "gamma")))
+      { *out = TY_FLOAT; return 1; }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
+        (sp_streq(name, "lgamma") || sp_streq(name, "frexp")) && argc == 1)
+      { *out = TY_POLY_ARRAY; return 1; }  /* [log(|gamma|), sign] / [fraction, exponent] */
+    /* JSON.generate/dump return type comes from the native binding
+       (packages/json, inferred in the FFI/native block above), not a hardcoded
+       arm. */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
+        (sp_streq(name, "exist?") || sp_streq(name, "exists?")))
+      { *out = TY_BOOL; return 1; }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+      if (sp_streq(name, "pwd") || sp_streq(name, "home")) { *out = TY_STRING; return 1; }
+      if (sp_streq(name, "glob") || sp_streq(name, "entries") || sp_streq(name, "children")) { *out = TY_STR_ARRAY; return 1; }
+      if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
+        { *out = TY_INT; return 1; }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") &&
+        (sp_streq(nt_str(nt, recv, "name"), "File") ||
+         sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
+      if (sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname") ||
+          sp_streq(name, "read") || sp_streq(name, "binread") || sp_streq(name, "expand_path") ||
+          sp_streq(name, "join") || sp_streq(name, "realpath") ||
+          sp_streq(name, "realdirpath") || sp_streq(name, "ftype") ||
+          sp_streq(name, "path") || sp_streq(name, "absolute_path"))
+        { *out = TY_STRING; return 1; }
+      if (sp_streq(name, "exist?") || sp_streq(name, "exists?"))
+        { *out = TY_BOOL; return 1; }
+      if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
+          sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size") ||
+          sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate") ||
+          sp_streq(name, "chown") || sp_streq(name, "symlink") || sp_streq(name, "link") ||
+          sp_streq(name, "mkfifo") || sp_streq(name, "umask") || sp_streq(name, "utime") ||
+          sp_streq(name, "lutime") ||
+          sp_streq(name, "world_readable?") || sp_streq(name, "world_writable?"))
+        { *out = TY_INT; return 1; }   /* world_*? are nullable int (bits or nil) */
+      if (sp_streq(name, "readlink")) { *out = TY_STRING; return 1; }
+      if (sp_streq(name, "absolute_path?")) { *out = TY_BOOL; return 1; }
+      if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
+          sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?") ||
+          sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
+          sp_streq(name, "readable_real?") || sp_streq(name, "writable_real?") ||
+          sp_streq(name, "executable_real?") ||
+          sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?") ||
+          sp_streq(name, "owned?") || sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
+          sp_streq(name, "setgid?") || sp_streq(name, "sticky?") || sp_streq(name, "socket?") ||
+          sp_streq(name, "blockdev?") || sp_streq(name, "chardev?"))
+        { *out = TY_BOOL; return 1; }
+      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
+          sp_streq(name, "birthtime"))
+        { *out = TY_TIME; return 1; }
+      if (sp_streq(name, "readlines") || sp_streq(name, "split")) { *out = TY_STR_ARRAY; return 1; }
+      if (sp_streq(name, "stat") || sp_streq(name, "lstat")) { *out = TY_IO; return 1; }   /* the path-carrying stat handle */
+      /* File.open / File.new without a block -> a typed IO handle */
+      if (sp_streq(name, "open") || sp_streq(name, "new")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk < 0) { *out = TY_IO; return 1; }
+        /* Pin block param to TY_IO so body dispatch works (f.write, f.puts, etc.) */
+        const char *bp0 = block_param_name(c, blk, 0);
+        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
+        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+        if (blv) blv->type = TY_IO;
+        { *out = TY_POLY; return 1; }
+      }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Addrinfo") && sp_feature_required("socket")) {
+      if (((sp_streq(name, "tcp") || sp_streq(name, "udp")) && argc == 2) ||
+          ((sp_streq(name, "ip") || sp_streq(name, "unix")) && argc == 1))
+        { *out = TY_ADDRINFO; return 1; }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Socket") && sp_feature_required("socket")) {
+      if (sp_streq(name, "gethostname") && argc == 0) { *out = TY_STRING; return 1; }
+      if ((sp_streq(name, "pair") || sp_streq(name, "socketpair")) && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
+      if (sp_streq(name, "getaddrinfo") && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
+      /* The packed sockaddr is a byte String (it carries NUL), and
+         unpack answers [port, host] (#4137). */
+      if ((sp_streq(name, "sockaddr_in") || sp_streq(name, "pack_sockaddr_in")) && argc == 2) { *out = TY_STRING; return 1; }
+      if ((sp_streq(name, "sockaddr_un") || sp_streq(name, "pack_sockaddr_un")) && argc == 1) { *out = TY_STRING; return 1; }
+      if (sp_streq(name, "unpack_sockaddr_in") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+    }
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
+      /* IO.pipe -> [reader, writer], boxed IO handles (#2815) */
+      if (sp_streq(name, "pipe")) { *out = TY_POLY_ARRAY; return 1; }
+      if (sp_streq(name, "copy_stream") || sp_streq(name, "sysopen")) { *out = TY_INT; return 1; }
+      /* IO.new(fd, ...) is the descriptor form, same as IO.for_fd */
+      if ((sp_streq(name, "for_fd") || sp_streq(name, "new")) && argc >= 1) { *out = TY_IO; return 1; }
+      /* [ready_read, ready_write, ready_error] or nil on timeout */
+      if (sp_streq(name, "select") && argc >= 1) { *out = TY_POLY; return 1; }
+    }
+
+    /* <local>.yield(v) or bare <local>.yield: a generator yielder / fiber yield
+       returns the value the next resume (or Enumerator#feed) supplies -- poly.
+       Gated on a local receiver so Fiber.yield (const receiver) and the yield
+       keyword are untouched; without this the return is typed nil and
+       `x = y.yield` drops the fed value. Zero-arg `y.yield` is valid too. */
+    if (recv >= 0 && sp_streq(name, "yield") &&
+        rty && sp_streq(rty, "LocalVariableReadNode"))
+      { *out = TY_POLY; return 1; }
+    /* Fiber.new {} / Thread.new {} / Fiber.current etc.
+       Handles both bare Const and ::Const path forms. */
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      const char *cn2 = nt_str(nt, recv, "name");
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Enumerator") &&
+          nt_ref(nt, id, "block") >= 0) { *out = TY_ENUMERATOR; return 1; }
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Fiber")) { *out = TY_FIBER; return 1; }
+      /* Thread.new { block }: an eager green thread on the scheduler. */
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
+          nt_ref(nt, id, "block") >= 0)
+        { *out = TY_THREAD; return 1; }
+      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Queue") || sp_streq(cn2, "SizedQueue"))) { *out = TY_QUEUE; return 1; }
+      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || (sp_streq(cn2, "Monitor") && sp_feature_enabled("monitor")))) { *out = TY_MUTEX; return 1; }
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) { *out = TY_CONDVAR; return 1; }
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) { *out = TY_RANDOM; return 1; }
+      if (cn2 && sp_streq(cn2, "Enumerator") && sp_streq(name, "product"))
+        { *out = TY_ENUMERATOR; return 1; }   /* #2484; any number of factors */
+      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) { *out = TY_THREAD; return 1; }
+      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "main")) { *out = TY_THREAD; return 1; }
+      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "list")) { *out = TY_POLY_ARRAY; return 1; }
+      if (cn2 && sp_streq(cn2, "Thread") && (sp_streq(name, "pass") || sp_streq(name, "stop"))) { *out = TY_NIL; return 1; }
+      if (cn2 && sp_streq(cn2, "Thread") &&
+          (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) { *out = TY_BOOL; return 1; }
+      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) { *out = TY_FIBER; return 1; }
+      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) { *out = TY_POLY; return 1; }
+      /* Fiber.blocking? (1 or false), Fiber.blocking { } (the block's value),
+         and the scheduler, which is always nil */
+      if (cn2 && sp_streq(cn2, "Fiber") &&
+          (sp_streq(name, "blocking?") || sp_streq(name, "blocking") ||
+           sp_streq(name, "scheduler") || sp_streq(name, "current_scheduler"))) { *out = TY_POLY; return 1; }
+      /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
+         / Random.rand->float */
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand")) {
+        if (argc < 1) { *out = TY_FLOAT; return 1; }
+        TyKind rr0 = infer_type(c, argv[0]);
+        { *out = rr0 == TY_FLOAT ? TY_FLOAT : rr0 == TY_BIGINT ? TY_BIGINT : TY_INT; return 1; }
+      }
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) { *out = TY_STRING; return 1; }
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "new_seed")) { *out = TY_INT; return 1; }
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "urandom")) { *out = TY_STRING; return 1; }
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "srand")) { *out = TY_INT; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -4586,229 +4814,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* StringIO: a native-bound class (packages/stringio); no arms here. .new
-     resolves through the class table, .open is Ruby in the package, and
-     instance methods use the native_method declarations. */
-
-  /* Time.now / at / local / mktime / utc / gm -> a Time value */
-  if (recv >= 0) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time") &&
-        (sp_streq(name, "now") || sp_streq(name, "at") || sp_streq(name, "local") ||
-         sp_streq(name, "mktime") || sp_streq(name, "utc") || sp_streq(name, "gm") ||
-         sp_streq(name, "new")))
-      return TY_TIME;
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
-        (sp_streq(name, "start") || sp_streq(name, "compact")))
-      return TY_NIL;
-    /* Encoding.find(name): a boxed Encoding (nil for "internal") */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
-        sp_streq(name, "find") && argc == 1)
-      return TY_POLY;
-    /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {
-      if (sp_streq(name, "[]")) return TY_BOOL;
-      if (sp_streq(name, "[]=")) return TY_POLY;   /* the assignment's value: the RHS, boxed */
-      if (sp_streq(name, "warn")) return TY_NIL;
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
-        sp_streq(name, "stat"))
-      return TY_STR_INT_HASH;
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
-      if (sp_streq(name, "times") && argc == 0) return TY_TMS;
-      if (sp_streq(name, "pid") || sp_streq(name, "ppid") ||
-          sp_streq(name, "uid") || sp_streq(name, "gid") ||
-          sp_streq(name, "euid") || sp_streq(name, "egid") ||
-          sp_streq(name, "getsid") || sp_streq(name, "getpgrp") ||
-          (sp_streq(name, "getpriority") && argc == 2)) return TY_INT;
-      if (sp_streq(name, "groups") && argc == 0) return TY_INT_ARRAY;
-      if (sp_streq(name, "clock_gettime") || sp_streq(name, "clock_getres")) {
-        /* an integer unit (:nanosecond/:microsecond/:millisecond/:second) makes
-           the result an Integer; the default and float units keep it Float. */
-        if (argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "SymbolNode")) {
-          const char *u = nt_str(nt, argv[1], "value");
-          if (u && (sp_streq(u, "nanosecond") || sp_streq(u, "microsecond") ||
-                    sp_streq(u, "millisecond") || sp_streq(u, "second"))) return TY_INT;
-        }
-        return TY_FLOAT;
-      }
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
-        sp_streq(name, "sqrt"))
-      return TY_INT;
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
-      if (sp_streq(name, "dump") && argc == 1) return TY_STRING;
-      /* Marshal.dump(obj, io) writes the bytes to io and answers io (#4112) */
-      if (sp_streq(name, "dump") && argc == 2) return TY_IO;
-      if (sp_streq(name, "load") && argc == 1) return TY_POLY;
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
-        (sp_streq(name, "sin") || sp_streq(name, "cos") || sp_streq(name, "tan") ||
-         sp_streq(name, "asin") || sp_streq(name, "acos") || sp_streq(name, "atan") ||
-         sp_streq(name, "atan2") || sp_streq(name, "sinh") || sp_streq(name, "cosh") ||
-         sp_streq(name, "tanh") || sp_streq(name, "asinh") || sp_streq(name, "acosh") ||
-         sp_streq(name, "atanh") || sp_streq(name, "exp") || sp_streq(name, "log") ||
-         sp_streq(name, "log2") || sp_streq(name, "log10") || sp_streq(name, "sqrt") ||
-         sp_streq(name, "cbrt") || sp_streq(name, "hypot") ||
-         sp_streq(name, "expm1") || sp_streq(name, "log1p") ||
-         sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
-         sp_streq(name, "gamma")))
-      return TY_FLOAT;
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
-        (sp_streq(name, "lgamma") || sp_streq(name, "frexp")) && argc == 1)
-      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] / [fraction, exponent] */
-    /* JSON.generate/dump return type comes from the native binding
-       (packages/json, inferred in the FFI/native block above), not a hardcoded
-       arm. */
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
-        (sp_streq(name, "exist?") || sp_streq(name, "exists?")))
-      return TY_BOOL;
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
-      if (sp_streq(name, "pwd") || sp_streq(name, "home")) return TY_STRING;
-      if (sp_streq(name, "glob") || sp_streq(name, "entries") || sp_streq(name, "children")) return TY_STR_ARRAY;
-      if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
-        return TY_INT;
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") &&
-        (sp_streq(nt_str(nt, recv, "name"), "File") ||
-         sp_streq(nt_str(nt, recv, "name"), "FileTest"))) {
-      if (sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname") ||
-          sp_streq(name, "read") || sp_streq(name, "binread") || sp_streq(name, "expand_path") ||
-          sp_streq(name, "join") || sp_streq(name, "realpath") ||
-          sp_streq(name, "realdirpath") || sp_streq(name, "ftype") ||
-          sp_streq(name, "path") || sp_streq(name, "absolute_path"))
-        return TY_STRING;
-      if (sp_streq(name, "exist?") || sp_streq(name, "exists?"))
-        return TY_BOOL;
-      if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
-          sp_streq(name, "unlink") || sp_streq(name, "rename") || sp_streq(name, "size") ||
-          sp_streq(name, "size?") || sp_streq(name, "chmod") || sp_streq(name, "truncate") ||
-          sp_streq(name, "chown") || sp_streq(name, "symlink") || sp_streq(name, "link") ||
-          sp_streq(name, "mkfifo") || sp_streq(name, "umask") || sp_streq(name, "utime") ||
-          sp_streq(name, "lutime") ||
-          sp_streq(name, "world_readable?") || sp_streq(name, "world_writable?"))
-        return TY_INT;   /* world_*? are nullable int (bits or nil) */
-      if (sp_streq(name, "readlink")) return TY_STRING;
-      if (sp_streq(name, "absolute_path?")) return TY_BOOL;
-      if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
-          sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?") ||
-          sp_streq(name, "writable?") || sp_streq(name, "executable?") || sp_streq(name, "pipe?") ||
-          sp_streq(name, "readable_real?") || sp_streq(name, "writable_real?") ||
-          sp_streq(name, "executable_real?") ||
-          sp_streq(name, "identical?") || sp_streq(name, "fnmatch") || sp_streq(name, "fnmatch?") ||
-          sp_streq(name, "owned?") || sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
-          sp_streq(name, "setgid?") || sp_streq(name, "sticky?") || sp_streq(name, "socket?") ||
-          sp_streq(name, "blockdev?") || sp_streq(name, "chardev?"))
-        return TY_BOOL;
-      if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
-          sp_streq(name, "birthtime"))
-        return TY_TIME;
-      if (sp_streq(name, "readlines") || sp_streq(name, "split")) return TY_STR_ARRAY;
-      if (sp_streq(name, "stat") || sp_streq(name, "lstat")) return TY_IO;   /* the path-carrying stat handle */
-      /* File.open / File.new without a block -> a typed IO handle */
-      if (sp_streq(name, "open") || sp_streq(name, "new")) {
-        int blk = nt_ref(nt, id, "block");
-        if (blk < 0) return TY_IO;
-        /* Pin block param to TY_IO so body dispatch works (f.write, f.puts, etc.) */
-        const char *bp0 = block_param_name(c, blk, 0);
-        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
-        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = TY_IO;
-        return TY_POLY;
-      }
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        sp_streq(nt_str(nt, recv, "name"), "Addrinfo") && sp_feature_required("socket")) {
-      if (((sp_streq(name, "tcp") || sp_streq(name, "udp")) && argc == 2) ||
-          ((sp_streq(name, "ip") || sp_streq(name, "unix")) && argc == 1))
-        return TY_ADDRINFO;
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        sp_streq(nt_str(nt, recv, "name"), "Socket") && sp_feature_required("socket")) {
-      if (sp_streq(name, "gethostname") && argc == 0) return TY_STRING;
-      if ((sp_streq(name, "pair") || sp_streq(name, "socketpair")) && argc >= 2) return TY_POLY_ARRAY;
-      if (sp_streq(name, "getaddrinfo") && argc >= 2) return TY_POLY_ARRAY;
-      /* The packed sockaddr is a byte String (it carries NUL), and
-         unpack answers [port, host] (#4137). */
-      if ((sp_streq(name, "sockaddr_in") || sp_streq(name, "pack_sockaddr_in")) && argc == 2) return TY_STRING;
-      if ((sp_streq(name, "sockaddr_un") || sp_streq(name, "pack_sockaddr_un")) && argc == 1) return TY_STRING;
-      if (sp_streq(name, "unpack_sockaddr_in") && argc == 1) return TY_POLY_ARRAY;
-    }
-    if (rty && sp_streq(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
-      /* IO.pipe -> [reader, writer], boxed IO handles (#2815) */
-      if (sp_streq(name, "pipe")) return TY_POLY_ARRAY;
-      if (sp_streq(name, "copy_stream") || sp_streq(name, "sysopen")) return TY_INT;
-      /* IO.new(fd, ...) is the descriptor form, same as IO.for_fd */
-      if ((sp_streq(name, "for_fd") || sp_streq(name, "new")) && argc >= 1) return TY_IO;
-      /* [ready_read, ready_write, ready_error] or nil on timeout */
-      if (sp_streq(name, "select") && argc >= 1) return TY_POLY;
-    }
-
-    /* <local>.yield(v) or bare <local>.yield: a generator yielder / fiber yield
-       returns the value the next resume (or Enumerator#feed) supplies -- poly.
-       Gated on a local receiver so Fiber.yield (const receiver) and the yield
-       keyword are untouched; without this the return is typed nil and
-       `x = y.yield` drops the fed value. Zero-arg `y.yield` is valid too. */
-    if (recv >= 0 && sp_streq(name, "yield") &&
-        rty && sp_streq(rty, "LocalVariableReadNode"))
-      return TY_POLY;
-    /* Fiber.new {} / Thread.new {} / Fiber.current etc.
-       Handles both bare Const and ::Const path forms. */
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-      const char *cn2 = nt_str(nt, recv, "name");
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Enumerator") &&
-          nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Fiber")) return TY_FIBER;
-      /* Thread.new { block }: an eager green thread on the scheduler. */
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
-          nt_ref(nt, id, "block") >= 0)
-        return TY_THREAD;
-      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Queue") || sp_streq(cn2, "SizedQueue"))) return TY_QUEUE;
-      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || (sp_streq(cn2, "Monitor") && sp_feature_enabled("monitor")))) return TY_MUTEX;
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) return TY_CONDVAR;
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
-      if (cn2 && sp_streq(cn2, "Enumerator") && sp_streq(name, "product"))
-        return TY_ENUMERATOR;   /* #2484; any number of factors */
-      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
-      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "main")) return TY_THREAD;
-      if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "list")) return TY_POLY_ARRAY;
-      if (cn2 && sp_streq(cn2, "Thread") && (sp_streq(name, "pass") || sp_streq(name, "stop"))) return TY_NIL;
-      if (cn2 && sp_streq(cn2, "Thread") &&
-          (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) return TY_BOOL;
-      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
-      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
-      /* Fiber.blocking? (1 or false), Fiber.blocking { } (the block's value),
-         and the scheduler, which is always nil */
-      if (cn2 && sp_streq(cn2, "Fiber") &&
-          (sp_streq(name, "blocking?") || sp_streq(name, "blocking") ||
-           sp_streq(name, "scheduler") || sp_streq(name, "current_scheduler"))) return TY_POLY;
-      /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
-         / Random.rand->float */
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand")) {
-        if (argc < 1) return TY_FLOAT;
-        TyKind rr0 = infer_type(c, argv[0]);
-        return rr0 == TY_FLOAT ? TY_FLOAT : rr0 == TY_BIGINT ? TY_BIGINT : TY_INT;
-      }
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "new_seed")) return TY_INT;
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "urandom")) return TY_STRING;
-      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "srand")) return TY_INT;
-    }
-  }
+  { TyKind r; if (infer_builtin_cmethod_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
   /* Fiber: builtin-op rows (builtin_ops.c) */
   if (recv >= 0 && rt == TY_FIBER) {
