@@ -607,3 +607,9 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
   if (kind == 2 && is_equal) return 0;
   return 1;
 }
+
+/* ty_traits (types.h): generated from the functions each column names by
+   spinel --dump-traits, and checked against them by --check-traits. */
+const TyTraits ty_traits[TY_TRAITS_N] = {
+#include "ty_traits.inc"
+};

@@ -735,6 +735,14 @@ void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b);
 const char *ty_nullable_builtin_id(TyKind t);
 /* 1 iff a value of type t is a C pointer whose NULL is nil. */
 int ty_null_is_nil(TyKind t);
+void ty_traits_dump(Compiler *c);
+int ty_traits_check(Compiler *c);
+/* the per-kind spellings the boxers and the unboxers write (see ty_traits) */
+const char *ty_box_fn(TyKind t);
+const char *ty_box_nil_fn(TyKind t);
+const char *poly_rhs_unbox_fn(TyKind slot);
+const char *poly_sink_unbox_fn(TyKind slot);
+const char *token_unbox_fmt(TyKind target);
 /* A node of such a type may hold NULL: not a literal, not self. */
 int node_may_be_null_nil(Compiler *c, int node);
 /* `fn(recv)` with recv evaluated once, answering nil_c for a NULL recv. */

@@ -1252,6 +1252,19 @@ int call_answers_no_value(Compiler *c, int node) {
    A value that is NOT the token is emitted raw -- callers reach this only for a
    TY_UNKNOWN RHS, where a raw emit is exactly the prior behavior. Returns 1 if
    it coerced the token, 0 if it emitted raw. */
+/* The unresolved-call token's conversion into a typed slot (a printf
+   format of the token's text), or NULL for emit_unbox_text's */
+const char *token_unbox_fmt(TyKind target) {
+  switch (target) {
+  case TY_STRING: return "sp_poly_to_s(%s)";
+  case TY_FLOAT:  return "sp_poly_to_f(%s)";
+  case TY_SYMBOL: return "(sp_sym)sp_poly_to_i(%s)";
+  case TY_INT: case TY_BOOL: return "sp_poly_to_i(%s)";
+  case TY_POLY:   return "%s";                 /* already sp_RbVal */
+  default:        return NULL;
+  }
+}
+
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
@@ -1263,14 +1276,9 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
      slot's default instead. */
   int is_cls_tok = strncmp(past_open_parens(txt), "sp_raise_cls(", 13) == 0;
   if (is_tok) {
-    switch (target) {
-    case TY_STRING: buf_printf(b, "sp_poly_to_s(%s)", txt); break;
-    case TY_FLOAT: buf_printf(b, "sp_poly_to_f(%s)", txt); break;
-    case TY_SYMBOL: buf_printf(b, "(sp_sym)sp_poly_to_i(%s)", txt); break;
-    case TY_INT: case TY_BOOL: buf_printf(b, "sp_poly_to_i(%s)", txt); break;
-    case TY_POLY: buf_puts(b, txt); break;               /* already sp_RbVal */
-    default: emit_unbox_text(c, target, txt, b); break;  /* pointer/object/hash slot */
-    }
+    const char *tf = token_unbox_fmt(target);
+    if (tf) buf_printf(b, tf, txt);
+    else emit_unbox_text(c, target, txt, b);  /* pointer/object/hash slot */
   }
   else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
     buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
@@ -1377,6 +1385,35 @@ int call_returns_nullable_int(Compiler *c, int node) {
     }
   }
   return 0;
+}
+
+/* emit_boxed's box functions: a value boxed as it is (ty_box_fn), and one
+   whose slot can hold its nil (ty_box_nil_fn). NULL: no function box. */
+const char *ty_box_fn(TyKind t) {
+  switch (t) {
+  case TY_INT:         return "sp_box_int";
+  case TY_FLOAT:       return "sp_box_float";
+  case TY_BOOL:        return "sp_box_bool";
+  case TY_SYMBOL:      return "sp_box_sym";
+  case TY_STRING:      return "sp_box_str";
+  case TY_RANGE:       return "sp_box_range";
+  case TY_FLOAT_RANGE: return "sp_box_frange";
+  case TY_STR_RANGE:   return "sp_box_srange";
+  case TY_TMS:         return "sp_box_tms";
+  case TY_TIME:        return "sp_box_time";
+  case TY_COMPLEX:     return "sp_box_complex";
+  case TY_RATIONAL:    return "sp_box_rational";
+  case TY_CLASS:       return "sp_box_class";
+  default:             return NULL;
+  }
+}
+const char *ty_box_nil_fn(TyKind t) {
+  switch (t) {
+  case TY_INT:    return "sp_box_int_or_nil";
+  case TY_FLOAT:  return "sp_box_float_or_nil";
+  case TY_BIGINT: return "sp_box_bigint_or_nil";
+  default:        return NULL;
+  }
 }
 
 /* A shared-mutable String's box, by where its handle comes from
@@ -1722,7 +1759,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        --int-overflow=promote), so boxing it has to yield nil (#3493,
        #5085). Elsewhere a real number is never the sentinel and the plain
        box is the hot path (every Integer into a poly slot). */
-    buf_puts(b, t == TY_FLOAT ? "sp_box_float_or_nil(" : "sp_box_int_or_nil(");
+    buf_printf(b, "%s(", ty_box_nil_fn(t == TY_FLOAT ? TY_FLOAT : TY_INT));
     emit_expr(c, node, b);
     buf_puts(b, ")");
     RC(t == TY_FLOAT ? RF_FLT_NIL : RF_INT_NIL, RW_NONE);
@@ -1737,8 +1774,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       RC(RF_NIL_EFFECT, RW_NONE);
       return;
     }
-    const char *fn = t == TY_INT ? "sp_box_int" : t == TY_FLOAT ? "sp_box_float"
-                   : t == TY_BOOL ? "sp_box_bool" : "sp_box_sym";
+    const char *fn = ty_box_fn(t == TY_INT || t == TY_FLOAT || t == TY_BOOL ? t : TY_SYMBOL);
     buf_printf(b, "%s(", fn);
     emit_expr(c, node, b);
     buf_puts(b, ")");
@@ -1746,10 +1782,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   case RK_STRUCT: {
-    const char *fn = t == TY_RANGE ? "sp_box_range" : t == TY_FLOAT_RANGE ? "sp_box_frange"
-                   : t == TY_STR_RANGE ? "sp_box_srange" : t == TY_TMS ? "sp_box_tms"
-                   : t == TY_TIME ? "sp_box_time" : t == TY_COMPLEX ? "sp_box_complex"
-                   : t == TY_RATIONAL ? "sp_box_rational" : "sp_box_class";
+    const char *fn = ty_box_fn(t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
+                               t == TY_TMS || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL
+                               ? t : TY_CLASS);
     buf_printf(b, "%s(", fn);
     emit_expr(c, node, b);
     buf_puts(b, ")");
@@ -1821,12 +1856,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      never the NULL pointer, so the test costs one compare on a path that
      already allocates, and no analysis has to prove nilability. */
   if (t == TY_BIGINT) {
-    buf_puts(b, "sp_box_bigint_or_nil("); emit_expr(c, node, b); buf_puts(b, ")");
+    buf_printf(b, "%s(", ty_box_nil_fn(TY_BIGINT)); emit_expr(c, node, b); buf_puts(b, ")");
     RC(RF_BIGINT, RW_NONE);
     return;
   }
   if (t == TY_STRING) {
-    buf_puts(b, "sp_box_str("); emit_expr(c, node, b); buf_puts(b, ")");
+    buf_printf(b, "%s(", ty_box_fn(TY_STRING)); emit_expr(c, node, b); buf_puts(b, ")");
     RC(RF_STR, RW_NONE);
     return;
   }
@@ -13986,6 +14021,8 @@ char *codegen_program(const NodeTable *nt) {
   size_t isa_ext_at = 0;
   Compiler *c = comp_new(nt);
   analyze_program(c);
+  if (g_dump_traits) { ty_traits_dump(c); exit(0); }
+  if (g_check_traits) exit(ty_traits_check(c) ? 1 : 0);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
   /* From here on a yield reads the type of the block spliced at THIS site,
      not the union the node cache holds across sites (#3784). Installed after

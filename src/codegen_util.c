@@ -2188,6 +2188,21 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
   return 0;
 }
 
+/* emit_poly_rhs_coerced's conversion of a boxed value into a scalar or a
+   String slot (a String slot takes sp_poly_arg_str instead where the
+   program defines a #to_str); NULL for any other slot */
+const char *poly_rhs_unbox_fn(TyKind slot) {
+  return slot == TY_INT    ? "sp_poly_to_i_or_nil"
+       : slot == TY_BOOL   ? "sp_poly_to_i"
+       : slot == TY_FLOAT  ? "sp_poly_to_f_or_nil"
+       : slot == TY_SYMBOL ? "sp_poly_to_sym_or_nil"
+       : slot == TY_STRING ? "sp_poly_to_s" : NULL;
+}
+/* emit_typed_sink_text's conversion of a boxed value into a typed element */
+const char *poly_sink_unbox_fn(TyKind slot) {
+  return slot == TY_INT ? "sp_poly_to_i" : slot == TY_FLOAT ? "sp_poly_to_f" : NULL;
+}
+
 int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
   /* yield_site_type, not comp_ntype: a `yield` carries the union over every
      call site, and the block spliced HERE may already hand back the scalar
@@ -2218,12 +2233,8 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
     free(e.p);
     return 1;
   }
-  const char *fn = slot == TY_INT   ? "sp_poly_to_i_or_nil"
-                 : slot == TY_BOOL  ? "sp_poly_to_i"
-                 : slot == TY_FLOAT ? "sp_poly_to_f_or_nil"
-                 : slot == TY_SYMBOL ? "sp_poly_to_sym_or_nil"
-                 : slot == TY_STRING
-                     ? (prog_has_conv_method(c, "to_str", TY_STRING) ? "sp_poly_arg_str" : "sp_poly_to_s") : NULL;
+  const char *fn = slot == TY_STRING && prog_has_conv_method(c, "to_str", TY_STRING)
+                   ? "sp_poly_arg_str" : poly_rhs_unbox_fn(slot);
   if (!fn) return 0;
   buf_printf(b, "%s(", fn); emit_expr(c, v, b); buf_puts(b, ")");
   return 1;
@@ -2706,8 +2717,7 @@ void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b) {
    emitted as it is. `text` is the already-rendered expression. */
 void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, Buf *b) {
   TyKind vt = node >= 0 ? comp_ntype(c, node) : TY_UNKNOWN;
-  if (vt == TY_POLY && slot == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", text);
-  else if (vt == TY_POLY && slot == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", text);
+  if (vt == TY_POLY && poly_sink_unbox_fn(slot)) buf_printf(b, "%s(%s)", poly_sink_unbox_fn(slot), text);
   else if (vt == TY_BIGINT && slot == TY_INT) buf_printf(b, "sp_bigint_to_int(%s)", text);
   /* A block's value into a typed element (`fill { ... }`, a collect
      accumulator) is written as it is: where its class differs from the
