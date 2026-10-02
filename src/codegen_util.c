@@ -2955,6 +2955,17 @@ const char *raise_tail_value(TyKind t) {
   return tr ? tr->zero_tail : default_value(t);
 }
 
+/* Write a ty_traits rendering (types.h) with `expr` for $e and, for $t, the
+   one fresh temp the form takes, numbered on its first use. */
+void ty_traits_render(const char *cell, const char *expr, Buf *b) {
+  int tb = 0;
+  for (const char *p = cell; *p; p++) {
+    if (p[0] == '$' && p[1] == 'e') { buf_puts(b, expr); p++; continue; }
+    if (p[0] == '$' && p[1] == 't') { if (!tb) tb = ++g_tmp; buf_printf(b, "%d", tb); p++; continue; }
+    buf_printf(b, "%c", *p);
+  }
+}
+
 /* Compiler-aware form: a by-value object class's C representation is a bare
    struct, where default_value's NULL would be ill-typed C. */
 /* The TypeError Array#* raises for a count that is neither a String (join)

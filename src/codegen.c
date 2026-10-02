@@ -237,60 +237,29 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   }
 }
 
-/* Emit `expr` (a poly value) unboxed to its concrete C representation. */
+/* Emit `expr` (a poly value) unboxed to its concrete C representation.
+
+   A builtin kind reads its ty_traits row's unbox (types.c). The rows are
+   not all a pointer cast, for these reasons:
+   - String goes through sp_poly_unbox_s, not a bare `.v.s`: a mutable
+     String's box holds its handle there.
+   - Bignum goes through sp_poly_as_bigint: a poly slot holds a small Integer
+     inline, and the cast read it as an sp_Bigint pointer (#4590).
+   - Time, Process::Tms, Rational, Complex and the Range kinds are by-value
+     structs boxed behind a heap copy, so they unbox by dereferencing; the
+     cast turned a pointer straight into a struct (#3186, #3619).
+   - Class is a by-value struct, read by sp_unbox_class (#2797).
+   - The Int, Float and String arrays, the nested tables and the poly-valued
+     hashes are distinct C structs, so a boxed value of another kind is
+     converted by its sp_poly_as_* entry, which hands back the pointer when
+     the kind already matches; the cast read another struct's header
+     (#3998, #4424, #4486). */
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
-  if (t == TY_POLY) { buf_puts(b, expr); return; }
-  switch (t) {
-    case TY_INT:    buf_printf(b, "(%s).v.i", expr); return;
-    case TY_FLOAT:  buf_printf(b, "(%s).v.f", expr); return;
-    /* not a bare `.v.s`: a mutable String's box holds its handle there */
-    case TY_STRING: buf_printf(b, "sp_poly_unbox_s(%s)", expr); return;
-    case TY_BOOL:   buf_printf(b, "(%s).v.b", expr); return;
-    case TY_SYMBOL: buf_printf(b, "(sp_sym)(%s).v.i", expr); return;
-    /* NOT the bare `.v.p` cast: a poly slot holds a small Integer inline
-       (SP_TAG_INT), and under promote mode that is the common case -- the
-       cast then read the integer itself as an sp_Bigint pointer and the
-       program segfaulted on the first use (`(x >= 0) ? x : (x & M64)`,
-       whose two arms unify on Bignum, #4590). sp_poly_as_bigint hands an
-       already-Bignum value straight back and converts the rest, the same
-       shape the STRBUF line below uses. */
-    case TY_BIGINT: buf_printf(b, "sp_poly_as_bigint(%s)", expr); return;
-    case TY_STRBUF: buf_printf(b, "sp_poly_as_strbuf(%s)", expr); return;
-    default: break;
-  }
-  if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */
-  /* Process::Tms is boxed by heap copy too (sp_box_tms), so it unboxes by
-     dereferencing: the pointer cast the generic arm below emits cast a
-     pointer to a struct, and a Proc taking a Tms did not build */
-  if (t == TY_TMS) { buf_printf(b, "(*(sp_Tms *)(%s).v.p)", expr); return; }
-  /* Rational / Complex are by-value structs boxed behind a pointer, so unbox by
-     dereferencing -- not the pointer-cast the generic arm below would emit,
-     which casts a pointer straight to a struct (#3186). */
-  if (t == TY_RATIONAL) { buf_printf(b, "(*(sp_Rational *)(%s).v.p)", expr); return; }
-  if (t == TY_COMPLEX)  { buf_printf(b, "(*(sp_Complex *)(%s).v.p)", expr); return; }
-  /* the Range value types are boxed behind a pointer too, so they unbox by
-     dereferencing rather than by the pointer cast below (#3619) */
-  if (t == TY_RANGE)       { buf_printf(b, "(*(sp_Range *)(%s).v.p)", expr); return; }
-  if (t == TY_FLOAT_RANGE) { buf_printf(b, "(*(sp_FloatRange *)(%s).v.p)", expr); return; }
-  if (t == TY_STR_RANGE)   { buf_printf(b, "(*(sp_StrRange *)(%s).v.p)", expr); return; }
-  if (t == TY_CLASS) { buf_printf(b, "sp_unbox_class(%s)", expr); return; }  /* a by-value struct, not a pointer (#2797) */
-  /* A hash variant is a distinct C struct, so a boxed hash of ANOTHER variant
-     read through a pointer cast keeps its keys and reads its values as another
-     type's zero -- silently (#3998). Go through the converting entry, which
-     hands back the pointer itself when the variant already matches. */
-  /* The array kinds are separate C structs too, and had no converting entry:
-     a boxed PolyArray read through the pointer cast below became an IntArray's
-     header, and the caller printed memory. Same rule as the hash variants
-     below it, arriving late (#4424). */
-  if (t == TY_INT_ARRAY)   { buf_printf(b, "sp_poly_as_int_array(%s)", expr); return; }
-  if (t == TY_FLOAT_ARRAY) { buf_printf(b, "sp_poly_as_float_array(%s)", expr); return; }
-  if (t == TY_STR_ARRAY)   { buf_printf(b, "sp_poly_as_str_array(%s)", expr); return; }
-  /* a pointer array of this kind is handed back itself; any other array is
-     copied element by element, each checked against the kind (#4486) */
+  const TyTraits *tr = ty_traits_of(t);
+  if (tr) { ty_traits_render(tr->unbox, expr, b); return; }
+  /* an object array of this class is handed back itself; any other array
+     is copied element by element, each checked against the class (#4486) */
   if (ty_is_ptr_array(t))  { buf_printf(b, "sp_poly_as_ptr_array(%s, %s)", expr, ptr_array_stamp(c, t)); return; }
-  if (t == TY_STR_POLY_HASH)  { buf_printf(b, "sp_poly_as_str_poly_hash(%s)", expr); return; }
-  if (t == TY_SYM_POLY_HASH)  { buf_printf(b, "sp_poly_as_sym_poly_hash(%s)", expr); return; }
-  if (t == TY_POLY_POLY_HASH) { buf_printf(b, "sp_poly_as_poly_poly_hash(%s)", expr); return; }
   /* A boxed value read as a class-typed pointer: the tag and class are
      checked, because the alternative is reading another type's memory through
      the cast. A poly ivar that held an Array on one path and a Relation on

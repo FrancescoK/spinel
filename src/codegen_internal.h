@@ -992,6 +992,7 @@ int enum_builtin_node(Compiler *c, int node);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
+void ty_traits_render(const char *cell, const char *expr, Buf *b);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);
 void emit_bigint_operand_ext(Compiler *c, int node, Buf *b);
