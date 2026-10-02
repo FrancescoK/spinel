@@ -239,6 +239,27 @@ static int refuse_overwrite(const char *path) {
   return 1;
 }
 
+/* The decisions log is emptied before the source is read, so the same care
+   comes first there: `spinel --decisions-log=app.rb app.rb` would leave
+   nothing to compile. A log is lines of `kind@site` (src/decide.c); a file
+   that opens with anything else is not one, and is not replaced. */
+static int refuse_log_overwrite(const char *path) {
+  if (g_force_overwrite || !path || !*path) return 0;
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;                      /* new file: nothing to lose */
+  char head[64];
+  size_t n = fread(head, 1, sizeof head - 1, f);
+  fclose(f);
+  head[n] = 0;
+  size_t k = strspn(head, "abcdefghijklmnopqrstuvwxyz-");
+  if (n == 0 || (k > 0 && head[k] == '@')) return 0;   /* empty, or an earlier log */
+  fprintf(stderr,
+          "spinel: refusing to overwrite '%s': it is not a decisions log.\n"
+          "spinel:   Choose another --decisions-log path, or pass --force if\n"
+          "spinel:   you mean to replace it.\n", path);
+  return 1;
+}
+
 /* Whether the C compiler spells things clang's way. The two spellings of the
    caret suppression are not interchangeable -- gcc takes
    -fno-diagnostics-show-caret and refuses clang's -fno-caret-diagnostics, and
@@ -337,7 +358,8 @@ static void usage(void) {
     "  --link ARG  Extra link input (object/archive/-lLIB); repeatable\n"
     "  -v, --version  Print the compiler version and build revision\n"
     "  -c          C source only (don't compile)\n"
-    "  --force     with -c, overwrite an -o path spinel did not write\n"
+    "  --force     overwrite an -o path (with -c) or a --decisions-log path\n"
+    "              that spinel did not write\n"
     "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
     "  --require-gate  Refuse an unresolvable require instead of warning\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
@@ -721,6 +743,7 @@ int main(int argc, char **argv) {
   /* --check-stores reports each store at its Ruby line, so it needs them too */
   if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
   /* A decision key names its site by position: forced the same way. */
+  if (refuse_log_overwrite(getenv("SPINEL_DECISIONS_LOG"))) return 1;
   if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
 
   /* Analyze-only emit modes write their artifact from inside codegen_program

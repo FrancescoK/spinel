@@ -1096,9 +1096,16 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  if $(SPINEL) --decisions="$$l" test/fixtures/decisions/sites.rb -c -o "$$tmp/o.c" >/dev/null 2>&1; then \
 	    echo "decisions-test: FAIL (--decisions='$$l', a directory or no name, was taken for a list)"; ok=0; fi; \
 	done; \
-	printf 'puts 1\n' > "$$tmp/one.rb"; echo stale > "$$tmp/one.log"; \
+	printf 'puts 1\n' > "$$tmp/one.rb"; echo root-frame@stale > "$$tmp/one.log"; \
 	$(SPINEL) --decisions-log="$$tmp/one.log" "$$tmp/one.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1 && [ ! -s "$$tmp/one.log" ] || \
 	  { echo "decisions-test: FAIL (a program that takes no decision left a log)"; ok=0; }; \
+	cp "$$tmp/one.rb" "$$tmp/src.rb"; \
+	if $(SPINEL) --decisions-log="$$tmp/src.rb" "$$tmp/src.rb" -c -o "$$tmp/o.c" >"$$tmp/o.out" 2>&1; then \
+	  echo "decisions-test: FAIL (a log named as the source was written)"; ok=0; fi; \
+	cmp -s "$$tmp/one.rb" "$$tmp/src.rb" && grep -q "refusing to overwrite '$$tmp/src.rb'" "$$tmp/o.out" || \
+	  { echo "decisions-test: FAIL (a log named as the source was written over it)"; ok=0; }; \
+	$(SPINEL) --force --decisions-log="$$tmp/src.rb" "$$tmp/src.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1 && [ ! -s "$$tmp/src.rb" ] || \
+	  { echo "decisions-test: FAIL (--force did not let a log replace a file that is not one)"; ok=0; }; \
 	for f in $(DECISION_TESTS); do \
 	  t=$$tmp/$$(basename $$f .rb); \
 	  $(SPINEL) $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.plain" && \
