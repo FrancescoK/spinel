@@ -2250,6 +2250,21 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
     if (emi >= 0) return method_call_ret(c, emi, id);
   }
+  /* An Array or Hash reopen that defines a builtin's name owns it, as the
+     scalar reopens do: `class Array; def first = "arr"; end` makes
+     `[1, 2].first` answer "arr" in CRuby. The builtin rows below answered the
+     element type, and codegen, which reached the reopen only for a name no
+     builtin arm takes, called the builtin. Only a method the reopen itself
+     defines: an Object reopen's `first` does not displace Array#first. */
+  if (recv >= 0 && name && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) &&
+      nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "builtin_only", 0)) {
+    int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
+    int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
+    /* the reopen's own method under this very name: an alias taken before the
+       reopen (`alias orig_first first`) still names the builtin */
+    if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name))
+      return method_call_ret(c, ami, id);
+  }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
      (#4846). */
