@@ -1525,10 +1525,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       TyKind ft0 = iv0 >= 0 ? c->classes[g_emitting_class_id].ivar_types[iv0] : TY_UNKNOWN;
       if (ft0 != TY_POLY && ft0 != TY_UNKNOWN) {
         Buf ib; memset(&ib, 0, sizeof ib);
-        unsigned char sv_m0 = c->strbuf_box[node];
-        c->strbuf_box[node] = 0;
+        int sv_m0 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
         emit_expr(c, node, &ib);
-        c->strbuf_box[node] = sv_m0;
+        view_pop(c, sv_m0);
         emit_boxed_text(c, ft0, ib.p ? ib.p : "0", b);
         RC_TEXT(RW_TRANSPLANT);
         free(ib.p);
@@ -1757,10 +1756,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
          a string to wrap a fresh handle around (#3993). */
       if (nt_kind(c->nt, node) == NK_InstanceVariableWriteNode) {
         buf_puts(b, "sp_box_obj(");
-        unsigned char sv_mw = c->strbuf_box[node];
-        c->strbuf_box[node] = 0;
+        int sv_mw = view_push_repr(c, node, VR_STRBUF_BOX, 0);
         emit_expr(c, node, b);
-        c->strbuf_box[node] = sv_mw;
+        view_pop(c, sv_mw);
         buf_puts(b, ", SP_BUILTIN_STRBUF)");
         RC(RF_STRBUF_HANDLE, RW_NONE);
         return;
@@ -1770,10 +1768,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
          the container's own string rather than a fresh copy of it (#3941) */
       if (strbuf_boxed_elem_read(c, node)) {
         buf_puts(b, "sp_box_obj(sp_poly_as_strbuf(");
-        unsigned char sv_m2 = c->strbuf_box[node];
-        c->strbuf_box[node] = 0;
+        int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
         emit_expr(c, node, b);
-        c->strbuf_box[node] = sv_m2;
+        view_pop(c, sv_m2);
         buf_puts(b, "), SP_BUILTIN_STRBUF)");
         RC(RF_STRBUF_ELEM, RW_NONE);
         return;
@@ -1788,10 +1785,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
           nt_ref(c->nt, node, "receiver") >= 0 &&
           ty_is_object(comp_ntype(c, nt_ref(c->nt, node, "receiver")))) {
         char sref_h[1024];
-        unsigned char sv_mh = c->strbuf_box[node];
-        c->strbuf_box[node] = 1;
+        int sv_mh = view_push_repr(c, node, VR_STRBUF_BOX, 1);
         int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
-        c->strbuf_box[node] = sv_mh;
+        view_pop(c, sv_mh);
         if (got_h) {
           buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
           RC(RF_STRBUF_HANDLE, RW_NONE);
@@ -1804,10 +1800,9 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       { TyKind sv_probe = comp_ntype(c, node);
         (void)sv_probe;
         Buf eb0; memset(&eb0, 0, sizeof eb0);
-        unsigned char sv_mark = c->strbuf_box[node];
-        c->strbuf_box[node] = 0;   /* emit the plain string value */
+        int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
         emit_str_expr(c, node, &eb0);
-        c->strbuf_box[node] = sv_mark;
+        view_pop(c, sv_mark);
         buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
         free(eb0.p); }
       buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE); return;

@@ -1410,6 +1410,13 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
 int view_push(Compiler *c, int id, TyKind t);
 void view_pop(Compiler *c, int tok);
 int view_depth(void);
+/* One representation flag of node id seen as v for one nested emission,
+   restored by view_pop (or view_unwind on a refusal) like a type view. */
+enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW };
+int view_push_repr(Compiler *c, int id, int flag, int v);
+/* bumped by every view push, pop and unwind: a per-node memo of a decision
+   that reads the flags or the type keys on it */
+unsigned view_epoch(void);
 void view_unwind(int depth);
 /* The concurrency handles' row emitters (codegen_call_concurrency.c) */
 int emit_op_thread_set_report(Compiler *c, const BopCtx *x, Buf *b);
