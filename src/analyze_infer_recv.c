@@ -9,6 +9,7 @@
    array serves it -- and a bare TyKind return could not tell that from
    "declined". */
 #include "analyze_internal.h"
+#include "builtin_ops.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -272,38 +273,10 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (rt == TY_RATIONAL && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX &&
       (sp_streq(name, "+") || sp_streq(name, "-") ||
        sp_streq(name, "*") || sp_streq(name, "/"))) { *out = TY_COMPLEX; return 1; }
+  /* Complex: builtin-op rows (builtin_ops.c) */
   if (rt == TY_COMPLEX) {
-    if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) { *out = TY_FLOAT; return 1; }
-    /* real/imaginary/abs/abs2 box to poly: each component keeps its CRuby
-       class (Integer or Float) -- the class is a runtime property. */
-    if (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) { *out = TY_POLY; return 1; }
-    if (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular"))
-      { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
-        sp_streq(name, "-@") || sp_streq(name, "+@") ||
-        sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
-        sp_streq(name, "/") || sp_streq(name, "quo")) { *out = TY_COMPLEX; return 1; }
-    if (sp_streq(name, "**")) { *out = TY_COMPLEX; return 1; }
-    /* Complex is not Comparable and has no modulo: these raise NoMethodError
-       (typed Complex only so the raise expression has a consistent slot) (#2618) */
-    if (sp_streq(name, "%") || sp_streq(name, "modulo")) { *out = TY_COMPLEX; return 1; }
-    if (sp_streq(name, "==") || sp_streq(name, "!=")) { *out = TY_BOOL; return 1; }
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
-        sp_streq(name, "denominator")) { *out = TY_INT; return 1; }
-    if (sp_streq(name, "to_f")) { *out = TY_FLOAT; return 1; }
-    if (sp_streq(name, "to_r")) { *out = TY_RATIONAL; return 1; }
-    if (sp_streq(name, "numerator")) { *out = TY_COMPLEX; return 1; }
-    if (sp_streq(name, "zero?") || sp_streq(name, "real?") ||
-        sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
-        sp_streq(name, "eql?")) { *out = TY_BOOL; return 1; }
-    if (sp_streq(name, "nonzero?")) { *out = TY_POLY; return 1; }   /* self (Complex) or nil */
-    if (sp_streq(name, "infinite?")) { *out = TY_INT; return 1; }      /* 1 or nil (sentinel) */
-    if (sp_streq(name, "<=>") && argc == 1) { *out = TY_INT; return 1; }  /* -1/0/1 or nil (sentinel) */
-    if (sp_streq(name, "rationalize") && (argc == 0 || argc == 1)) { *out = TY_RATIONAL; return 1; }
-    if (sp_streq(name, "fdiv") && argc == 1) { *out = TY_COMPLEX; return 1; }
-    if (sp_streq(name, "coerce") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until
      it reaches the proc's arity, when it realizes to the proc's return type (the
@@ -393,9 +366,11 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
       { *out = TY_POLY_ARRAY; return 1; }
     }
-    if (sp_streq(name, "numerator") || sp_streq(name, "denominator")) { *out = TY_INT; return 1; }
-    if (sp_streq(name, "to_f") || sp_streq(name, "fdiv")) { *out = TY_FLOAT; return 1; }
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "div")) { *out = TY_INT; return 1; }
+    /* the kinds that do not depend on the arguments: builtin-op rows */
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
     /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
        positive precision keeps the Rational, and a non-literal precision boxes
        to poly so the class is chosen from the runtime value. */
@@ -416,25 +391,6 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = TY_INT; return 1; }   /* no digits -> Integer */
     }
-    if (sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
-        sp_streq(name, "negative?") || sp_streq(name, "finite?") ||
-        sp_streq(name, "integer?") || sp_streq(name, "real?")) { *out = TY_BOOL; return 1; }
-    if (sp_streq(name, "infinite?") || sp_streq(name, "imaginary") ||
-        sp_streq(name, "imag")) { *out = TY_INT; return 1; }
-    if (sp_streq(name, "nonzero?")) { *out = TY_POLY; return 1; }
-    if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) { *out = TY_POLY; return 1; }
-    if (sp_streq(name, "to_c")) { *out = TY_COMPLEX; return 1; }
-    /* Rational#i -> Complex(0, self). spinel's Complex holds two floats, so the
-       imaginary part renders as a float where CRuby keeps the exact Rational
-       (see docs/limitations.md). #2706 */
-    if (sp_streq(name, "i") && argc == 0) { *out = TY_COMPLEX; return 1; }
-    if (sp_streq(name, "rectangular") || sp_streq(name, "rect") || sp_streq(name, "polar")) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "coerce") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
-        sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs") ||
-        sp_streq(name, "real") || sp_streq(name, "conjugate") || sp_streq(name, "conj") ||
-        sp_streq(name, "abs2") || sp_streq(name, "magnitude")) { *out = TY_RATIONAL; return 1; }
     TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     /* a coercing user object on the right: coerce answers a pair of THAT
        class, so the result is its own operator's return -- the rule the
