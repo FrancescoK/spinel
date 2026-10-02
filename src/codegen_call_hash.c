@@ -338,7 +338,7 @@ int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b) {
     buf_puts(b, "; sp_exc_stage_recv(");
     emit_boxed_text(c, rt, htmp, b);
     buf_printf(b, "); sp_raise_key_not_found(_t%d); %s; })", tk,
-               vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+               vt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, vt));
     return 1;
   }
   buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
@@ -348,7 +348,7 @@ int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b) {
   emit_boxed_text(c, rt, htmp, b);
   buf_puts(b, "), sp_raise_key_not_found(");
   emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
-  buf_printf(b, "), %s); })", vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  buf_printf(b, "), %s); })", vt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, vt));
   return 1;
 }
 
@@ -581,7 +581,7 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
      read as a deleted value of zero (#4531) */
   buf_printf(b, "; %s _t%d = sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : %s;",
              c_type_name(vt), tv, hn, th, tk, hn, th, tk,
-             vt == TY_POLY ? "sp_box_nil()" : vt == TY_INT ? "SP_INT_NIL" : vt == TY_STRING ? "NULL" : default_value(vt));
+             vt == TY_POLY ? "sp_box_nil()" : vt == TY_INT ? "SP_INT_NIL" : vt == TY_STRING ? "NULL" : default_value_from_compiler(c, vt));
   buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
   return 1;
 }

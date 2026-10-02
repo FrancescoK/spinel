@@ -1544,7 +1544,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
        ty_unify), not the truthy 0 default_value gives every other place */
     if (lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
     else if (lv->type == TY_INT || lv->type == TY_FLOAT) buf_puts(b, nil_sentinel(lv->type));
-    else buf_puts(b, default_value(lv->type));
+    else buf_puts(b, default_value_from_compiler(c, lv->type));
   }
   else if (lv && lv->type == TY_STRBUF) {
     emit_strbuf_value(c, lv, v, b);
@@ -3909,7 +3909,7 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
      it is for a poly result and for a case whose only value is nil */
   if (n <= 0) {
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value(rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value_from_compiler(c, rt));
     return;
   }
   int last = bb[n - 1];
@@ -3952,7 +3952,7 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
        its side effect, then default the result, nil boxed as above */
     emit_stmt(c, last, b, indent);
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value(rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value_from_compiler(c, rt));
     return;
   }
   Buf le; memset(&le, 0, sizeof le);
@@ -3962,7 +3962,7 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
   g_indent = saved_gi;
   emit_indent(b, indent);
   buf_printf(b, "_t%d = ", cr);
-  buf_puts(b, le.p ? le.p : default_value(rt));
+  buf_puts(b, le.p ? le.p : default_value_from_compiler(c, rt));
   buf_puts(b, ";\n");
   free(le.p);
 }
@@ -4287,7 +4287,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
        temp (an empty `[]` the temp holds boxed) converts into it */
     emit_coerce_text(c, pred, store_value_kind(c, pred), pt, CO_HOLD, sb.p ? sb.p : "", "a case/in subject", b);
   }
-  else buf_puts(b, sb.p ? sb.p : default_value(pt));
+  else buf_puts(b, sb.p ? sb.p : default_value_from_compiler(c, pt));
   free(sb.p);
   buf_puts(b, ";\n");
   if (needs_root(pt)) {
@@ -5876,7 +5876,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      through emit_expr, which has no expression form for it. */
   if (n > 0 && (lt == TY_NIL || lt == TY_VOID || lt == TY_UNKNOWN)) {
     emit_stmt(c, bb[n - 1], b, 0);
-    buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+    buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, rt));
     return;
   }
   /* Emit the tail value with a CAPTURED prelude: a tail whose lowering hoists
@@ -5895,7 +5895,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   if (n > 0 && rt == TY_BIGINT && comp_ntype(c, bb[n - 1]) != TY_BIGINT)
     emit_bigint_operand_ext(c, bb[n - 1], &val);
   else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else emit_expr(c, bb[n - 1], &val); }
-  else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+  else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, rt));
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
   buf_printf(b, "_cr%d = ", cr);
@@ -5921,7 +5921,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
   int cr = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b);
-  buf_printf(b, " _cr%d = %s; ", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value(rt));
+  buf_printf(b, " _cr%d = %s; ", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
   int t = -1;
   TyKind pt = TY_UNKNOWN;
   if (pred >= 0) {
@@ -7029,7 +7029,7 @@ static void emit_ret_nil(Compiler *c, TyKind t, Buf *b) {
   else {
     const char *cn = c_type_name(t);
     if (cn && cn[0] && cn[strlen(cn) - 1] == '*') buf_puts(b, "NULL");
-    else buf_puts(b, default_value(t));
+    else buf_puts(b, default_value_from_compiler(c, t));
   }
 }
 
@@ -7271,7 +7271,7 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
   else if ((strncmp(txt, "(sp_raise_cls(", 14) == 0 ||
             strncmp(txt, "(sp_exc_stage_key(", 18) == 0) &&
            g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
-    buf_printf(b, "({ (void)%s; %s; })", txt, default_value(g_ret_type));
+    buf_printf(b, "({ (void)%s; %s; })", txt, default_value_from_compiler(c, g_ret_type));
   else buf_puts(b, txt);
   free(tmp.p);
 }
@@ -7363,7 +7363,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         const char *nilv = g_ret_type == TY_POLY ? "sp_box_nil()"
                          : g_ret_type == TY_INT ? "SP_INT_NIL"
                          : g_ret_type == TY_FLOAT ? "sp_float_nil()"
-                         : g_ret_type == TY_STRING ? "NULL" : default_value(g_ret_type);
+                         : g_ret_type == TY_STRING ? "NULL" : default_value_from_compiler(c, g_ret_type);
         buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
       }
     }
@@ -7537,7 +7537,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   else if (g_ret_type == TY_INT) buf_puts(b, "return SP_INT_NIL;\n");
   else if (g_ret_type == TY_FLOAT) buf_puts(b, "return sp_float_nil();\n");
   else if (g_ret_type == TY_STRING) buf_puts(b, "return NULL;\n");
-  else buf_printf(b, "return %s;\n", default_value(g_ret_type));
+  else buf_printf(b, "return %s;\n", default_value_from_compiler(c, g_ret_type));
 }
 
 /* An empty `[]` / `{}` literal, possibly wrapped in a freeze. Such a literal
@@ -8000,7 +8000,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       if (ty_is_object(g_ret_type) && comp_ty_value_obj(c, g_ret_type))
         buf_printf(b, " _retv%d = (sp_%s){0};", eid, c->classes[ty_object_class(g_ret_type)].c_name);
       else
-        buf_printf(b, " _retv%d = %s;", eid, default_value(g_ret_type));
+        buf_printf(b, " _retv%d = %s;", eid, default_value_from_compiler(c, g_ret_type));
       /* the deferred value waits in the slot while the ensure body runs,
          which may allocate */
       if (ty_gc_rootable(c, g_ret_type)) {
@@ -8049,7 +8049,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       /* an empty else clause is still the begin's value: nil */
       TyKind bt = comp_ntype(c, id);
       emit_indent(b, indent + 1);
-      buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value(bt));
+      buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, bt));
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
@@ -8262,7 +8262,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     /* an empty else clause is still the begin's value: nil */
     TyKind bt = comp_ntype(c, id);
     emit_indent(b, indent + 1);
-    buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value(bt));
+    buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, bt));
   }
 
   if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
@@ -9910,7 +9910,7 @@ else {
       case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
       case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
       case TY_STRING: buf_puts(b, "NULL"); break;
-      default: buf_puts(b, default_value(ivt)); break;
+      default: buf_puts(b, default_value_from_compiler(c, ivt)); break;
       }
     }
     else if ((v_empty_array || v_empty_hash) && emit_empty_literal_as(c, v, ivt, b)) {
@@ -10737,7 +10737,7 @@ else {
     emit_indent(b, indent);
     buf_printf(b, "cst_%s = ", nm);
     if (vty && sp_streq(vty, "NilNode"))
-      buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value(cv->type));
+      buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, cv->type));
     else if (v_empty_arr && cv->type == TY_POLY_ARRAY) {
       if (v_lit_frozen) { int _ft = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
@@ -11968,8 +11968,8 @@ else {
         else {
           buf_printf(b, "lv_%s = ", rename_local(rnm_j));
           TyKind tt = comp_ntype(c, rights[j]);
-          if (rjpoly) emit_boxed_src(c, tt, default_value(tt), b);
-          else buf_puts(b, default_value(tt));
+          if (rjpoly) emit_boxed_src(c, tt, default_value_from_compiler(c, tt), b);
+          else buf_puts(b, default_value_from_compiler(c, tt));
           buf_puts(b, ";\n");
         }
       }
@@ -11985,7 +11985,7 @@ else {
           if (ivt2 == TY_POLY && valt2 != TY_POLY) emit_boxed_tmp(c, valt2, tmps[ridx], b);
           else buf_printf(b, "_t%d", tmps[ridx]);
         }
-        else buf_puts(b, default_value(ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
+        else buf_puts(b, default_value_from_compiler(c, ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
         buf_puts(b, ";\n");
       }
       else {
@@ -12569,7 +12569,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       if (comp_ty_value_obj(c, rt))
         buf_printf(b, " _t%d = (sp_%s){0};", t, c->classes[ty_object_class(rt)].c_name);
       else
-        buf_printf(b, " _t%d = %s;", t, rt == TY_RANGE ? "(sp_Range){0}" : default_value(rt));
+        buf_printf(b, " _t%d = %s;", t, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
       /* the value sits in the temp while the ensure body runs, which may
          allocate; the root goes in front of the region so the landing's
          watermark restore keeps it. An empty ensure clause runs nothing between
@@ -12999,10 +12999,10 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, ", %s)", raise_tail_value_c(c, g_result_ty));
     else if (g_result_ty != TY_UNKNOWN && !ty_is_numeric(g_result_ty) &&
              g_result_ty != TY_BOOL && g_result_ty != TY_SYMBOL &&
-             default_value(g_result_ty) && default_value(g_result_ty)[0] == '(')
-      buf_printf(b, ", %s)", default_value(g_result_ty));
+             default_value_from_compiler(c, g_result_ty) && default_value_from_compiler(c, g_result_ty)[0] == '(')
+      buf_printf(b, ", %s)", default_value_from_compiler(c, g_result_ty));
     else if (g_result_ty == TY_INT || g_result_ty == TY_FLOAT)
-      buf_printf(b, ", %s)", default_value(g_result_ty));   /* the nil sentinel */
+      buf_printf(b, ", %s)", default_value_from_compiler(c, g_result_ty));   /* the nil sentinel */
     else buf_printf(b, ", (__typeof__(%s))0)", g_result_var);
   }
   else {

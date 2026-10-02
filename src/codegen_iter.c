@@ -1311,7 +1311,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
     /* a value-type object is a struct, whose zero is `{0}`, not NULL */
-    buf_printf(b, " _t%d = %s;\n", rtag, comp_ty_value_obj(c, rt) ? "{0}" : default_value(rt));
+    buf_printf(b, " _t%d = %s;\n", rtag, comp_ty_value_obj(c, rt) ? "{0}" : default_value_from_compiler(c, rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
     /* g_result_ty is the slot type a tail statement reads to pick its own
@@ -1904,12 +1904,12 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       else emit_unbox_text(c, kt, "_v", b);
       buf_puts(b, " : ");
       if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, kt, b); bi_method_side(bi); }
-      else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
+      else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, kt));
       buf_puts(b, "; })");
     }
     else if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
     else if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, kt, b); bi_method_side(bi); }
-    else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
+    else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, kt));
     buf_puts(b, as_expr ? "; " : ";\n");
   }
   /* `**kw` keyword-rest: the remaining pairs of the trailing yielded kwargs
@@ -2143,7 +2143,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
       emit_unbox_text(c, bt, eb.p ? eb.p : "", b);
     else
       buf_puts(b, eb.p ? eb.p : "");
-    if (!sure) buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+    if (!sure) buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, bt));
     free(eb.p);
     buf_puts(b, as_expr ? "; " : ";\n");
   }
@@ -2170,7 +2170,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
     LocalVar *ol = bsc ? scope_local(bsc, op) : NULL;
     TyKind ot = ol ? ol->type : TY_UNKNOWN;
     int dv = block_opt_default(c, blk, oi);
-    const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value(ot);
+    const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ot);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", oprbuf);
     Buf eb; memset(&eb, 0, sizeof eb);
@@ -2223,7 +2223,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
     bi_method_side(bi);
     LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
     TyKind qt = ql ? ql->type : TY_UNKNOWN;
-    const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value(qt);
+    const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, qt);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", qprbuf);
     int te = ++g_tmp;
@@ -2595,7 +2595,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     else {
       LocalVar *bl = scope_local(bsc, bp);
       TyKind bt = bl ? bl->type : TY_INT;
-      buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+      buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, bt));
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
@@ -2618,7 +2618,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     TyKind ot = ol ? ol->type : TY_UNKNOWN;
     int dv = block_opt_default(c, blk, oi);
     int yi = P + oi;
-    const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value(ot);
+    const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ot);
     /* An optional the block appends to, bound from a yield of a plain
        String variable: alias the variable, as a required parameter is
        aliased above, or the append lands in the optional's copy (#6179).
@@ -2708,7 +2708,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       const char *qpr = qprbuf;
       LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
       TyKind qt = ql ? ql->type : TY_UNKNOWN;
-      const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value(qt);
+      const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, qt);
       /* a post the block appends to aliases the variable yielded to it */
       if (poly_splat_tmp < 0 && ps_static + qi < yc &&
           emit_block_post_alias(c, blk, qp, qpr, ql, yargs[ps_static + qi], b, indent, as_expr, al))
@@ -3183,7 +3183,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if (ty_is_object(ft) && comp_ty_value_obj(c, ft))
         buf_printf(b, " (sp_%s){0};", c->classes[ty_object_class(ft)].c_name);
       else
-        buf_printf(b, " %s;", default_value(ft));
+        buf_printf(b, " %s;", default_value_from_compiler(c, ft));
     }
     buf_puts(b, "})");
   }
@@ -3899,7 +3899,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     if (rett == TY_VOID || rett == TY_UNKNOWN || rett == TY_NIL) rett = TY_POLY;
     tres = ++g_tmp;
     emit_indent(g_pre, g_indent); emit_ctype(c, rett, g_pre);
-    buf_printf(g_pre, " _t%d = %s;\n", tres, default_value(rett));
+    buf_printf(g_pre, " _t%d = %s;\n", tres, default_value_from_compiler(c, rett));
     if (needs_root(rett)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rett, tres, g_pre); buf_puts(g_pre, "\n"); }
   }
 
@@ -4476,7 +4476,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_indent(b, indent); buf_printf(b, "void *_excobj%d = NULL;\n", eid);
     if (has_retval) {
       emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
-      buf_printf(b, " _retv%d = %s;\n", eid, default_value(g_ret_type));
+      buf_printf(b, " _retv%d = %s;\n", eid, default_value_from_compiler(c, g_ret_type));
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type };
     emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
@@ -4641,7 +4641,7 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
     snprintf(get, sizeof get, "%s(sp_PolyArray_get(_t%d, _t%d + %d))",
              pt == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_f_or_nil", ta, ti, pj);
   else snprintf(get, sizeof get, "sp_%sArray_get(_t%d, _t%d + %d)", k, ta, ti, pj);
-  const char *nil = pt == TY_UNKNOWN ? NULL : nil_value(pt) ? nil_value(pt) : default_value(pt);
+  const char *nil = pt == TY_UNKNOWN ? NULL : nil_value(pt) ? nil_value(pt) : default_value_from_compiler(c, pt);
   emit_indent(b, indent);
   if (pj == 0 || pj < lit || !nil) buf_printf(b, "lv_%s = %s;\n", rpn, get);
   else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, get, nil);

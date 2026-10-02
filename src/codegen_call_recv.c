@@ -907,7 +907,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), (void)("); emit_expr(c, avI[0], b);
         buf_printf(b, "), sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Integer\"), ", knI);
         if (rtI == TY_UNKNOWN || rtI == TY_VOID || rtI == TY_NIL) buf_puts(b, "sp_box_nil()");
-        else buf_puts(b, default_value(rtI));
+        else buf_puts(b, default_value_from_compiler(c, rtI));
         buf_puts(b, ")");
         return 1;
       }
@@ -2814,7 +2814,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); int _tf%d = 0;\n",
                        tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p);
           }
-          emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tres, default_value(TY_POLY), tres);
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tres, default_value_from_compiler(c, TY_POLY), tres);
           emit_find_loop_head(c, id, "Poly", ti, trecv);
           /* Declare the block param in the loop body so the form is self-contained
              when this find is a parameter default hoisted to the call site (whose
@@ -3260,7 +3260,7 @@ else {
             if (boxed && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
             else emit_expr(c, bval, b);
           }
-          else buf_puts(b, boxed ? "sp_box_nil()" : default_value(et));
+          else buf_puts(b, boxed ? "sp_box_nil()" : default_value_from_compiler(c, et));
           buf_puts(b, "; }); })");
         }
         else {
@@ -3268,7 +3268,7 @@ else {
           buf_printf(b, " (sp_raise_cls(\"IndexError\","
                         " sp_sprintf(\"index %%lld outside of array bounds: -%%lld...%%lld\","
                         " (long long)_t%d, (long long)_t%d, (long long)_t%d)), %s); })",
-                     ti, tn, tn, boxed ? "sp_box_nil()" : default_value(et));
+                     ti, tn, tn, boxed ? "sp_box_nil()" : default_value_from_compiler(c, et));
         }
         return 1;
       }
@@ -4621,7 +4621,7 @@ static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b) {
   int t = ++g_tmp;
   char dest[32]; snprintf(dest, sizeof dest, "_t%d", t);
   buf_puts(b, "({ "); emit_ctype(c, vt, b);
-  buf_printf(b, " %s = %s;\n", dest, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  buf_printf(b, " %s = %s;\n", dest, vt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, vt));
   Buf *saved_pre = g_pre; int saved_ind = g_indent;
   g_pre = b;
   if (vt != TY_POLY) g_bv_dest_ty = vt;
@@ -4650,7 +4650,7 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   }
   g_pre = saved_pre;
   if (tv.p) buf_puts(b, tv.p);
-  else if (bval < 0) buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+  else if (bval < 0) buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, vt));
   free(tv.p);
   buf_puts(b, "; })");
 }
@@ -5059,7 +5059,7 @@ else {
           }
           emit_fallback_block_value(c, bb, bn, fbind.p,
                                     (vt == TY_POLY || mismatch) && bvt != TY_POLY,
-                                    (vt == TY_POLY || mismatch) ? "sp_box_nil()" : default_value(vt), 1, b);
+                                    (vt == TY_POLY || mismatch) ? "sp_box_nil()" : default_value_from_compiler(c, vt), 1, b);
           free(fbind.p);
           buf_puts(b, "; })");
           return 1;
@@ -8732,7 +8732,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        intermediate -- not a member read (#3919). */
     if (sp_streq(name, "dig") && sc->is_data) {
       TyKind dgr = comp_ntype(c, id);
-      const char *dgv = default_value(dgr);
+      const char *dgv = default_value_from_compiler(c, dgr);
       buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
       buf_printf(b, "); sp_raise_nomethod(sp_nomethod_msg(\"dig\", sp_box_obj((void *)0, %d))); %s; })",
                  ty_object_class(rt), dgv ? dgv : "0");
@@ -9195,7 +9195,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       TyKind ret_ty = comp_ntype(c, id);
       buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
                  name, c->classes[cid].name,
-                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value(ret_ty));
+                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret_ty));
       return 1;
     }
     /* instance_variable_get(:@x) / instance_variable_set(:@x, v) with a literal
@@ -11260,7 +11260,7 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", box, rb.p ? rb.p : "sp_box_nil()", box);
   free(rb.p);
-  buf_printf(b, "({ %s _t%d = %s; ", c_type_name(slot), tr, default_value(slot));
+  buf_printf(b, "({ %s _t%d = %s; ", c_type_name(slot), tr, default_value_from_compiler(c, slot));
   buf_puts(b, arms.p);
   buf_printf(b, "}\nelse sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _t%d; })", name, box, tr);
   free(arms.p);

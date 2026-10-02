@@ -709,7 +709,7 @@ static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
       return;
     }
   }
-  buf_puts(b, default_value(t));
+  buf_puts(b, default_value_from_compiler(c, t));
 }
 
 static int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp, Buf *b) {
@@ -4461,7 +4461,7 @@ void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKind dty,
     buf_puts(b, "(");
     emit_key_not_found(c, key_node, b);
     buf_puts(b, ", ");
-    buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+    buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, trt));
     buf_puts(b, ")");
   }
 }
@@ -6945,7 +6945,7 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
       }
       else {
         emit_ctype(c, pt, pre);
-        buf_printf(pre, " lv__pd%d_%d = %s; ", pd_uid, a, pa.p ? pa.p : default_value(pt));
+        buf_printf(pre, " lv__pd%d_%d = %s; ", pd_uid, a, pa.p ? pa.p : default_value_from_compiler(c, pt));
         if (needs_root(pt))
           buf_printf(pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv__pd%d_%d); " : "SP_GC_ROOT(lv__pd%d_%d); ", pd_uid, a);
         buf_printf(cb, "lv__pd%d_%d", pd_uid, a);
@@ -7656,7 +7656,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          instead and declares none). For `fetch(key, default)` the seed IS the
          supplied default, so a receiver whose runtime variant matches no switch
          arm (e.g. an empty `{}` that boxed as PolyPolyHash) still yields the
-         default rather than a bare default_value() (an empty string). */
+         default rather than a bare default_value_from_compiler(c, ) (an empty string). */
       size_t pd_from = b->len;   /* the region pd_hoist may move out of line */
       if (!is_setter_val) {
         emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
@@ -9201,7 +9201,7 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
         if (kw_temp < 0) {
           if (dflt) emit_arg_or_default(c, ks, a, -1, &cb);
           else buf_printf(&cb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
-                          pn, default_value(pt));
+                          pn, default_value_from_compiler(c, pt));
           continue;
         }
         buf_printf(&cb, "({ sp_bool _kwf; sp_RbVal _kwv = sp_poly_hash_probe(_t%d,"
@@ -9211,7 +9211,7 @@ static int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *a
         buf_puts(&cb, " : ");
         if (dflt) emit_arg_or_default(c, ks, a, -1, &cb);
         else buf_printf(&cb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
-                        pn, default_value(pt));
+                        pn, default_value_from_compiler(c, pt));
         buf_puts(&cb, "; })");
         continue;
       }
@@ -9733,7 +9733,7 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
     if (s->nparams > inp || (is && (is->rest_idx >= 0 || is->kwrest_idx >= 0))) {
       char am[128];
       arity_message(am, sizeof am, s->nparams, inp, inp, NULL);
-      buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value(ty_object(ci)));
+      buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value_from_compiler(c, ty_object(ci)));
       return;
     }
     buf_printf(b, "sp_%s_new(", k->c_name);
@@ -9769,7 +9769,7 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
   if (initm < 0 && argc > 0 && !sp_unknown_argc) {
     char am[128];
     arity_message(am, sizeof am, argc, 0, 0, NULL);
-    buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value(ty_object(ci)));
+    buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"%s\"), %s)", am, default_value_from_compiler(c, ty_object(ci)));
     return;
   }
   if (initm >= 0 && ctor_needs_self_defaults(c, initm, sp_unknown_argc ? 0 : argc)) {
@@ -9862,7 +9862,7 @@ static int emit_struct_member_temp(Compiler *c, ClassInfo *cls, int a, int vnode
   int t = ++g_tmp;
   emit_indent(g_pre, g_indent);
   emit_ctype(c, mt, g_pre);
-  buf_printf(g_pre, " _t%d = %s;", t, lv.p ? lv.p : default_value(mt));
+  buf_printf(g_pre, " _t%d = %s;", t, lv.p ? lv.p : default_value_from_compiler(c, mt));
   if (mt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
   else if (mt == TY_STR_RANGE)   /* two GC strings by value, as a String range local */
     buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", t, t);
@@ -10224,7 +10224,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
         for (int a = 0; a < cls->nmembers; a++) {
           if (a) buf_puts(b, ", ");
           if (!msg.p) buf_printf(b, "_t%d", pt[a]);
-          else buf_puts(b, default_value(cls->ivar_types[a]));
+          else buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a]));
         }
         buf_puts(b, ")");
         free(pt); free(msg.p);
@@ -10250,7 +10250,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
       buf_puts(b, "sp_raise_cls(\"ArgumentError\", ");
       emit_str_literal(b, msg.p);
       buf_printf(b, "); sp_%s_new(", cls->c_name);
-      for (int a = 0; a < cls->nmembers; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value(cls->ivar_types[a])); }
+      for (int a = 0; a < cls->nmembers; a++) { if (a) buf_puts(b, ", "); buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a])); }
       buf_puts(b, "); })");
       free(msg.p);
       return 1;
@@ -10271,7 +10271,7 @@ static int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv,
     buf_printf(b, "sp_%s_new(", cls->c_name);
     for (int a2 = 0; a2 < cls->nmembers; a2++) {
       if (a2) buf_puts(b, ", ");
-      buf_puts(b, default_value(cls->ivar_types[a2]));
+      buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a2]));
     }
     buf_puts(b, "); })");
     return 1;
@@ -10438,7 +10438,7 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
           else buf_puts(b, mv.p);
           free(mv.p);
         }
-        else buf_puts(b, default_value(cls->ivar_types[a]));
+        else buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a]));
         free(kb.p);
       }
       else if (vnode >= 0) {
@@ -10460,10 +10460,10 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
         char hv[128];
         snprintf(hv, sizeof hv, "(sp_poly_length(_t%d) ? _t%d : sp_box_nil())", splat_tmp, splat_tmp);
         if (a == 0) emit_unbox_text(c, cls->ivar_types[a], hv, b);
-        else buf_puts(b, default_value(cls->ivar_types[a]));
+        else buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a]));
       }
       else if (splat_tmp >= 0) emit_struct_kw_member(c, cls, a, splat_tmp, b);
-      else buf_puts(b, default_value(cls->ivar_types[a]));
+      else buf_puts(b, default_value_from_compiler(c, cls->ivar_types[a]));
     }
     buf_puts(b, ")");
     if (spread_over >= 0) {
@@ -11077,12 +11077,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") < 0) {
         /* Thread.new without a block is a ThreadError, not a NameError (#2978) */
         buf_printf(b, "(sp_raise_cls(\"ThreadError\", (&(\"\\xff\" \"must be called with a block\")[1])), %s)",
-                   default_value(comp_ntype(c, id)));
+                   default_value_from_compiler(c, comp_ntype(c, id)));
         return 1;
       }
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") < 0) {
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"tried to create Proc object without a block\")[1])), %s)",
-                   default_value(comp_ntype(c, id)));
+                   default_value_from_compiler(c, comp_ntype(c, id)));
         return 1;
       }
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) {
@@ -11418,7 +11418,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent);
           if (sp_streq(k, "Ptr")) { et = TY_UNKNOWN; buf_printf(g_pre, "void *_t%d = NULL;\n", anv); }
           else if (et == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", anv);
-          else { emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", anv, (et == TY_INT || et == TY_FLOAT) ? nil_value(et) : default_value(et)); }
+          else { emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", anv, (et == TY_INT || et == TY_FLOAT) ? nil_value(et) : default_value_from_compiler(c, et)); }
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n");
           g_indent++;
           g_ie_next_var = anbuf; g_ie_res_poly = et == TY_POLY;
@@ -11649,7 +11649,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn) {
         TyKind nret = comp_ntype(c, id);
         const char *ndflt = (is_scalar_ret(nret) && nret != TY_UNKNOWN)
-                            ? default_value(nret) : "sp_box_nil()";
+                            ? default_value_from_compiler(c, nret) : "sp_box_nil()";
         /* A constant that IS a known builtin class (a socket class Spinel
            recognizes but whose constructor it has not implemented) exists --
            the METHOD is what is missing, so say so. Only a genuinely undefined
@@ -14287,7 +14287,7 @@ static int emit_range_step_bad_stride(Compiler *c, int id, int recv, int arg,
   if (conv && at == TY_SYMBOL) cn = "Symbol";
   if (!cn && at != TY_SYMBOL && at != TY_BOOL) return 0;
   TyKind rty = comp_ntype(c, id);
-  const char *dv = default_value(rty);
+  const char *dv = default_value_from_compiler(c, rty);
   buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
   if ((at == TY_SYMBOL && !conv) || at == TY_BOOL) {
     buf_puts(b, "sp_raise_cls(\"TypeError\", sp_sprintf(");
@@ -16757,7 +16757,7 @@ static void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv
   int anode = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
   TyKind rty = comp_ntype(c, id);
-  const char *dv = default_value(rty);
+  const char *dv = default_value_from_compiler(c, rty);
   if (given < 0) given = argc;
   buf_puts(b, "({ ");
   if (eval_recv) { buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
@@ -16918,7 +16918,7 @@ int emit_native_splat_call(Compiler *c, int id, int cid, const char *name, int r
   if (!voidret) {
     buf_puts(b, " ");
     emit_ctype(c, ret, b);
-    const char *dv = default_value(ret);
+    const char *dv = default_value_from_compiler(c, ret);
     buf_printf(b, " _t%d = %s;", tr, dv ? dv : "0");
   }
   buf_puts(b, sw.p);
@@ -16969,7 +16969,7 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
     unsupported(c, id, msg);
   }
   TyKind rty = comp_ntype(c, id);
-  const char *dv = default_value(rty);
+  const char *dv = default_value_from_compiler(c, rty);
   buf_puts(b, "({ ");
   if (recv >= 0) { buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
   for (int a = 0; a < argc; a++) {
@@ -17292,7 +17292,7 @@ int emit_hash_new_arg_guard(Compiler *c, int id, Buf *b) {
     snprintf(msg, sizeof msg, "wrong number of arguments (given %d, expected 0)", npos);
   if (!msg[0]) return 0;
   TyKind rty = comp_ntype(c, id);
-  const char *hn = ty_hash_cname(rty), *dv = default_value(rty);
+  const char *hn = ty_hash_cname(rty), *dv = default_value_from_compiler(c, rty);
   buf_puts(b, "({ ");
   for (int i = 0; i < argc; i++) {
     if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) {
@@ -17339,7 +17339,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
     {
       if (badc) {
         TyKind rty5 = comp_ntype(c, id);
-        const char *dv5 = default_value(rty5);
+        const char *dv5 = default_value_from_compiler(c, rty5);
         /* A mutator checks frozen BEFORE it coerces its arguments, so a frozen
            receiver raises FrozenError however ill-typed the index is
            (core/array/element_set_spec: `a[:foo] = 1` on a frozen array). */
@@ -17491,7 +17491,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
         return 1;
       if (badcls && wants_int) {
         TyKind rty4 = comp_ntype(c, id);
-        const char *dv4 = default_value(rty4);
+        const char *dv4 = default_value_from_compiler(c, rty4);
         buf_puts(b, "({ (void)("); emit_expr(c, rr2, b); buf_puts(b, "); ");
         buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Integer\"); ", badcls);
         buf_printf(b, "%s; })", dv4 ? dv4 : "0");
@@ -17543,7 +17543,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       }
       if (badcls) {
         TyKind rty3 = comp_ntype(c, id);
-        const char *dv3 = default_value(rty3);
+        const char *dv3 = default_value_from_compiler(c, rty3);
         buf_puts(b, "({ (void)("); emit_expr(c, ar, b); buf_puts(b, "); ");
         buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into %s\"); ",
                    badcls, want_int >= 0 ? "Integer" : "Array");
@@ -17568,7 +17568,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       if (ak2 == NK_StringNode || ak2 == NK_SymbolNode || ak2 == NK_ArrayNode ||
           ak2 == NK_HashNode || ak2 == NK_NilNode || ak2 == NK_TrueNode || ak2 == NK_FalseNode) {
         TyKind rty2 = comp_ntype(c, id);
-        const char *dv2 = default_value(rty2);
+        const char *dv2 = default_value_from_compiler(c, rty2);
         buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"%s can't be coerced into Integer\"); %s; })",
                    ak2 == NK_NilNode ? "nil" : "String", dv2 ? dv2 : "0");
         return 1;
@@ -17642,7 +17642,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
           offk == NK_FalseNode ? "false" : "nil";
         const char *cn = nrt == TY_FLOAT ? "Float" : "Integer";
         TyKind rty = comp_ntype(c, id);
-        const char *dv = default_value(rty);
+        const char *dv = default_value_from_compiler(c, rty);
         buf_puts(b, "({ (void)("); emit_expr(c, nr, b); buf_puts(b, "); ");
         if (cmpform) {
           /* CRuby names the operand: a class for a String/Array, the value
@@ -18002,7 +18002,7 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
     for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
   buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s %s\")[1])), %s)",
              vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, is_mod ? "module" : "class", vrn,
-             default_value(comp_ntype(c, id)));
+             default_value_from_compiler(c, comp_ntype(c, id)));
   return 1;
 }
 
@@ -18062,7 +18062,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
     if (vbx >= 0 && nt_kind(nt, vbx) != NK_SymbolNode) { buf_puts(b, "(void)("); emit_expr(c, vbx, b); buf_puts(b, "), "); } }
   buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
              vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn,
-             default_value(comp_ntype(c, id)));
+             default_value_from_compiler(c, comp_ntype(c, id)));
   return 1;
 }
 
@@ -18251,7 +18251,7 @@ static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw) {
         emit_indent(g_pre, g_indent);
         if (vt == TY_POLY) buf_puts(g_pre, "sp_RbVal");
         else emit_ctype(c, vt, g_pre);
-        buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value(vt));
+        buf_printf(g_pre, " _t%d = %s;", ht, vb.p ? vb.p : default_value_from_compiler(c, vt));
         if (vt == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", ht);
         else if (needs_root(vt)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
         buf_puts(g_pre, "\n");
@@ -18385,7 +18385,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"undefined local variable or method '%s' for %s%s\"), %s)",
                  vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "",
-                 (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value(vret) : "sp_box_nil()");
+                 (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()");
       return 1;
     }
   }
@@ -18413,7 +18413,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
     buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])), %s)",
                name, ucn ? ucn : "Object",
-               (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value(uret) : "sp_box_nil()");
+               (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
     return 1;
   }
   if (recv >= 0) {
@@ -18846,7 +18846,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                 nm ? nm : "?", ty_name(grt),
                 g_gate_raise ? "NoMethodError (matching CRuby)" : "nil (CRuby would raise NoMethodError)");
       }
-      const char *dflt = (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value(ret) : "sp_box_nil()";
+      const char *dflt = (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value_from_compiler(c, ret) : "sp_box_nil()";
       /* a receiver of no type rooted in a bare name that resolves to nothing
          (`dir.upcase`, `dir.strip.upcase`) raises CRuby's NameError when it
          is evaluated, before this call could fail */
@@ -18928,7 +18928,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
                        gstage ? "_args" : "", nm ? nm : "?");
             emit_boxed(c, recv, b);
             if (gstage) EMIT_GATE_ARGS();
-            buf_printf(b, ")), %s)", ret_scalar ? default_value(ret) : dflt);
+            buf_printf(b, ")), %s)", ret_scalar ? default_value_from_compiler(c, ret) : dflt);
           }
           return 1;
         }
@@ -19695,7 +19695,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   buf_puts(b, "({ ");
   for (int i = 0; i < nb; i++) {
     emit_ctype(c, ty[i], b);
-    buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : default_value(ty[i]));
+    buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : default_value_from_compiler(c, ty[i]));
     if (ty[i] == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tmp[i]);
     else if (needs_root(ty[i])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tmp[i]);
     free(opb[i].p);
@@ -19988,7 +19988,7 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   Buf rb = expr_buf(c, recv);
   emit_indent(g_pre, g_indent);
   emit_ctype(c, t, g_pre);
-  buf_printf(g_pre, " _t%d = %s; ", tn, rb.p ? rb.p : default_value(t));
+  buf_printf(g_pre, " _t%d = %s; ", tn, rb.p ? rb.p : default_value_from_compiler(c, t));
   emit_gc_root_tmp(c, t, tn, g_pre);
   buf_puts(g_pre, "\n");
   free(rb.p);
@@ -21674,7 +21674,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   else buf_puts(b, "; { ");
   for (int i = 0; i < argc; i++) { buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); "); }
   buf_printf(b, "sp_raise_poly_nomethod(\"at\", _t%d); } %s; })", t,
-             ret == TY_RANGE ? "(sp_Range){0}" : default_value(ret));
+             ret == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret));
   return 1;
 }
 
@@ -22724,9 +22724,9 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
         buf_puts(pb, ";\n  else { ");
         if (hasdef) {
           if (dpre.p) buf_puts(pb, dpre.p);
-          buf_printf(pb, "_a%d = %s; }\n", j, dexpr.p ? dexpr.p : default_value(pt));
+          buf_printf(pb, "_a%d = %s; }\n", j, dexpr.p ? dexpr.p : default_value_from_compiler(c, pt));
         }
-        else buf_printf(pb, "_a%d = %s; }\n", j, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
+        else buf_printf(pb, "_a%d = %s; }\n", j, pt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, pt));
       }
       else {
         /* a post, read from the end, is there once the count is judged */
@@ -22749,8 +22749,8 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
           buf_puts(pb, ";\n  else { ");
           if (dpre.p) buf_puts(pb, dpre.p);
           buf_printf(pb, "_a%d = ", j);
-          if (hasdef) buf_puts(pb, dexpr.p ? dexpr.p : default_value(pt));
-          else buf_puts(pb, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
+          if (hasdef) buf_puts(pb, dexpr.p ? dexpr.p : default_value_from_compiler(c, pt));
+          else buf_puts(pb, pt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, pt));
           buf_puts(pb, "; }\n");
         }
       }
@@ -23079,7 +23079,7 @@ static int emit_ie_poly(Compiler *c, int id, Buf *b) {
   int tv = hoist_boxed_rooted(c, recv), tr = ++g_tmp;
   if (keep) {
     emit_indent(g_pre, g_indent); emit_ctype(c, ret, g_pre);
-    buf_printf(g_pre, " _t%d = %s;\n", tr, ret == TY_POLY ? "sp_box_nil()" : default_value(ret));
+    buf_printf(g_pre, " _t%d = %s;\n", tr, ret == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, ret));
   }
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   int arms = 0;
@@ -23555,7 +23555,7 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
      time; a Method call raises when it runs. */
   if (default_writes_body_local(c, tm) || callee_param_rename_overflow(c, tm)) {
     buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method 'call' for an instance of Method\"), %s)",
-               default_value(is_void ? comp_ntype(c, id) : tret));
+               default_value_from_compiler(c, is_void ? comp_ntype(c, id) : tret));
     return;
   }
   /* a default reading self or an ivar reads the bound receiver */
@@ -23593,17 +23593,16 @@ static void emit_bound_method_call(Compiler *c, int id, int recv, int target, Bu
      do rather than jump through it. */
   /* A pointer's NULL is cast to it: after the comma it is no null pointer
      constant, and the conditional took void * (`m.call(5).v` did not build).
-     A by-value object's is its zero value. */
-  const char *dflt = default_value(is_void ? comp_ntype(c, id) : tret);
+     A by-value object's zero is its struct's (default_value_from_compiler). */
+  const char *dflt = default_value_from_compiler(c, is_void ? comp_ntype(c, id) : tret);
   Buf dcast; memset(&dcast, 0, sizeof dcast);
   if (!is_void && sp_streq(dflt, "NULL")) {
     buf_puts(&dcast, "("); emit_ctype(c, tret, &dcast); buf_puts(&dcast, ")");
-    if (ty_is_object(tret) && comp_ty_value_obj(c, tret)) { buf_puts(&dcast, "{0}"); dflt = ""; }
   }
   buf_printf(b, "(!_t%d->fn ? (sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s' for an instance of Object\","
                 " _t%d->name ? _t%d->name : \"?\")), %s%s) : ", tr, tr, tr, dcast.p ? dcast.p : "", dflt);
   free(dcast.p);
-  if (is_void) buf_printf(b, "(%s(%s), %s))", cast.p, args.p ? args.p : "", default_value(comp_ntype(c, id)));
+  if (is_void) buf_printf(b, "(%s(%s), %s))", cast.p, args.p ? args.p : "", default_value_from_compiler(c, comp_ntype(c, id)));
   else buf_printf(b, "%s(%s))", cast.p, args.p ? args.p : "");
   free(cast.p); free(args.p);
 }
@@ -23640,7 +23639,7 @@ static void emit_bind_call(Compiler *c, int id, int target, const int *argv, int
     emit_args_run(c, argv, argc);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\");\n", cn);
-    const char *dv = default_value(comp_ntype(c, id));
+    const char *dv = default_value_from_compiler(c, comp_ntype(c, id));
     buf_puts(b, dv ? dv : "0");
     return;
   }
@@ -23671,7 +23670,7 @@ static void emit_bind_call(Compiler *c, int id, int target, const int *argv, int
   if (is_void) buf_puts(b, "(");
   emit_method_cname(c, tm, b);
   buf_printf(b, "(%s)", args.p ? args.p : "");
-  if (is_void) buf_printf(b, ", %s)", default_value(comp_ntype(c, id)));
+  if (is_void) buf_printf(b, ", %s)", default_value_from_compiler(c, comp_ntype(c, id)));
   free(args.p);
 }
 
@@ -23708,7 +23707,7 @@ static void emit_bind_call_arm(Compiler *c, int id, int target, const int *argv,
   if (apre.p && apre.p[0]) buf_puts(b, apre.p);
   TyKind kr = (TyKind)tm->ret;
   if (method_is_void(tm))
-    buf_printf(b, "%s; _t%d = %s;", call.p, tr, slot == TY_POLY ? "sp_box_nil()" : default_value(slot));
+    buf_printf(b, "%s; _t%d = %s;", call.p, tr, slot == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, slot));
   else {
     buf_printf(b, "_t%d = ", tr);
     if (slot == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, call.p, b);
@@ -23771,7 +23770,7 @@ static void emit_bind_call_boxed(Compiler *c, int id, int target, int kn, const 
   buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", to, ob.p ? ob.p : "sp_box_nil()", to);
   free(ob.p);
   emit_ctype(c, slot, b);
-  buf_printf(b, " _t%d = %s; ", tr, slot == TY_POLY ? "sp_box_nil()" : default_value(slot));
+  buf_printf(b, " _t%d = %s; ", tr, slot == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, slot));
   if (kn < 0) emit_bind_call_arm(c, id, target, argv, argc, to, tr, slot, b);
   else {
     buf_printf(b, "switch (_t%d.cls_id) {", tk);
@@ -24428,7 +24427,7 @@ static void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const cha
   else buf_puts(&oc, ", NULL)");
   TyKind want = comp_ntype(c, id), pr = (TyKind)c->scopes[pf].ret;
   if (method_is_void(&c->scopes[pf]))
-    buf_printf(b, "(%s, %s)", oc.p, want == TY_POLY ? "sp_box_nil()" : default_value(want));
+    buf_printf(b, "(%s, %s)", oc.p, want == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, want));
   else if (want == TY_POLY && pr != TY_POLY) emit_boxed_text(c, pr, oc.p, b);
   else if (want != TY_POLY && pr == TY_POLY && is_scalar_ret(want)) emit_unbox_text(c, want, oc.p, b);
   else buf_puts(b, oc.p);
@@ -24897,7 +24896,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ (void)("); emit_expr(c, bsrecv, b);
         buf_printf(b, "); sp_raise_cls(\"NoMethodError\", "
                       "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])); %s; })",
-                   bsnm, bscn, default_value(comp_ntype(c, id)));
+                   bsnm, bscn, default_value_from_compiler(c, comp_ntype(c, id)));
         return;
       }
     }
@@ -24988,7 +24987,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_printf(b, "({ (void)("); emit_expr(c, rv0, b);
           buf_printf(b, "); sp_raise_cls(\"ArgumentError\","
                         " (&(\"\\xff\" \"can't unfreeze %s\")[1])); %s; })",
-                     icn, default_value(comp_ntype(c, id)));
+                     icn, default_value_from_compiler(c, comp_ntype(c, id)));
           return;
         }
         int t1 = ++g_tmp;
@@ -24996,7 +24995,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_raise_cls(\"ArgumentError\", _t%d ?"
                       " (&(\"\\xff\" \"can't unfreeze TrueClass\")[1])"
                       " : (&(\"\\xff\" \"can't unfreeze FalseClass\")[1])); %s; })",
-                   t1, default_value(comp_ntype(c, id)));
+                   t1, default_value_from_compiler(c, comp_ntype(c, id)));
         return;
       }
     }
@@ -25166,7 +25165,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         !bsearch_float_ok &&
         ((comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) ||
          comp_ntype(c, rcv) == TY_FLOAT_RANGE)) {
-      const char *dv = default_value(comp_ntype(c, id));
+      const char *dv = default_value_from_compiler(c, comp_ntype(c, id));
       buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })",
                  dv ? dv : "0");
       return;
@@ -25502,7 +25501,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", t,
-                   bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+                   bt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, bt));
         /* rooted like the while form's: a `break <v>` stores it here and then
            runs the ensure bodies it leaves, which may allocate */
         if (bt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
@@ -25576,7 +25575,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       int ptr = proc_slot_is_ptr(bt);
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
-      buf_printf(g_pre, " _t%d = %s;\n", t, default_value(bt));
+      buf_printf(g_pre, " _t%d = %s;\n", t, default_value_from_compiler(c, bt));
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_check_depth();\n");
       int tag_kind = 0;
       if (argc == 1) {
@@ -25778,7 +25777,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (kcn) {
           buf_printf(b, "(sp_raise_cls(\"TypeError\","
                         " (&(\"\\xff\" \"no implicit conversion of %s into String\")[1])), %s)",
-                     kcn, default_value(comp_ntype(c, id)));
+                     kcn, default_value_from_compiler(c, comp_ntype(c, id)));
           return;
         }
       }
@@ -25790,7 +25789,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
-                   eac, default_value(comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
         buf_puts(b, ")");
         return;
       }
@@ -25800,7 +25799,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1..2)\")[1])), %s)",
-                   eac, default_value(comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
         buf_puts(b, ")");
         return;
       }
@@ -26090,7 +26089,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (rrt == TY_NIL) {
         /* nil&.foo always returns nil */
         TyKind ret = comp_ntype(c, id);
-        const char *dv = default_value(ret);
+        const char *dv = default_value_from_compiler(c, ret);
         buf_puts(b, dv ? dv : "0");
         return;
       }
@@ -26309,7 +26308,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         else if (ret2 == TY_INT) buf_puts(b, "SP_INT_NIL");
         else if (ret2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
         else if (ret2 == TY_STRING) buf_puts(b, "((const char *)NULL)");  /* string nil, not "" */
-        else buf_puts(b, default_value(ret2) ? default_value(ret2) : "0");
+        else buf_puts(b, default_value_from_compiler(c, ret2) ? default_value_from_compiler(c, ret2) : "0");
         buf_puts(b, " : (");
         if (g_n_argov < MAX_ARG_OVERRIDE) {
           int slot2 = view_bind(recv, "_sn%d", tsn2);
@@ -26888,7 +26887,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       method_expr_is_unbound(c, recv)) {
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
     buf_printf(b, "); sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of UnboundMethod\")[1])); %s; })",
-               name, default_value(comp_ntype(c, id)));
+               name, default_value_from_compiler(c, comp_ntype(c, id)));
     return;
   }
   /* UnboundMethod#bind_call(obj, args...) = bind(obj).call(args...): with a
@@ -27911,7 +27910,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (argc < adapter_argc) {
           char am[128];
           arity_message(am, sizeof am, argc, adapter_argc, adapter_argc + 1, NULL);
-          buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })", am, default_value(tret));
+          buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })", am, default_value_from_compiler(c, tret));
           return;
         }
       }
@@ -28191,7 +28190,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         view_unbind(g_n_argov - 1);
         const char *nilv = rty == TY_POLY || rty == TY_UNKNOWN ? "sp_box_nil()"
                          : rty == TY_INT ? "SP_INT_NIL"
-                         : rty == TY_FLOAT ? "sp_float_nil()" : default_value(rty);
+                         : rty == TY_FLOAT ? "sp_float_nil()" : default_value_from_compiler(c, rty);
         buf_printf(b, "(_t%d ? %s : %s)", tq, cb.p ? cb.p : nilv, nilv);
         free(cb.p);
         return;
@@ -31849,7 +31848,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               snprintf(hv, sizeof hv, "(sp_PolyPolyHash_length(_t%d) ? sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH) : sp_box_nil())",
                        kwf_mh, kwf_mh);
               if (a == 0) emit_unbox_text(c, ncls->ivar_types[a], hv, b);
-              else buf_puts(b, default_value(ncls->ivar_types[a]));
+              else buf_puts(b, default_value_from_compiler(c, ncls->ivar_types[a]));
             }
             else if (kw_ht >= 0) emit_struct_kw_member(c, ncls, a, kw_ht, b);
             else if (vnode >= 0) {
@@ -31865,7 +31864,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               }
               else emit_expr(c, vnode, b);
             }
-            else buf_puts(b, default_value(ncls->ivar_types[a]));
+            else buf_puts(b, default_value_from_compiler(c, ncls->ivar_types[a]));
           }
           buf_puts(b, ")");
           return;
@@ -33263,7 +33262,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           free(hp9.p);
           emit_ctype(c, slot9, b);
           buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
-                     slot9 == TY_POLY ? "sp_box_nil()" : default_value(slot9), tk9);
+                     slot9 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, slot9), tk9);
           char rcls9[24], rraise9[256];
           snprintf(rcls9, sizeof rcls9, "_t%d", tk9);
           snprintf(rraise9, sizeof rraise9, "sp_raise_nomethod(sp_sprintf(\"undefined method '%s' for %%s\", sp_class_to_s(_t%d)))", name, tk9);
@@ -33617,7 +33616,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (fvt && sp_streq(fvt, "FalseNode") && icn) {
           buf_puts(b, "((void)("); emit_expr(c, recv, b);
           buf_printf(b, "), (sp_raise_cls(\"ArgumentError\", \"can't unfreeze %s\"), %s))",
-                     icn, default_value(recv_t));
+                     icn, default_value_from_compiler(c, recv_t));
           return;
         }
         emit_expr(c, recv, b); return;
@@ -33812,7 +33811,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
               (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
             nal_tr = ++g_tmp;
             emit_indent(g_pre, g_indent); emit_ctype(c, nal_vt, g_pre);
-            buf_printf(g_pre, " _t%d = %s; ", nal_tr, comp_ty_value_obj(c, nal_vt) ? "{0}" : default_value(nal_vt));
+            buf_printf(g_pre, " _t%d = %s; ", nal_tr, comp_ty_value_obj(c, nal_vt) ? "{0}" : default_value_from_compiler(c, nal_vt));
             emit_gc_root_tmp(c, nal_vt, nal_tr, g_pre);
             buf_puts(g_pre, "\n");
           }
@@ -33859,7 +33858,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (--nal.lv[a]->inline_alias == 0) nal.lv[a]->is_cell = 0;
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         if (nal_tr >= 0) buf_printf(b, "_t%d", nal_tr);
-        else buf_puts(b, nbox ? "sp_box_nil()" : default_value(nbt));
+        else buf_puts(b, nbox ? "sp_box_nil()" : default_value_from_compiler(c, nbt));
         g_ie_nil_ivars = sv_nil_ie;
         return;
       }
@@ -34467,7 +34466,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_puts(&ab, "; })");
           continue;
         }
-        if (j >= argc) { buf_puts(&ab, default_value(pt)); continue; }   /* a nil-filled member */
+        if (j >= argc) { buf_puts(&ab, default_value_from_compiler(c, pt)); continue; }   /* a nil-filled member */
         snprintf(tn, sizeof tn, "_t%d", atmp[j]);
         if (pt != TY_POLY) emit_unbox_text(c, pt, tn, &ab);
         else buf_puts(&ab, tn);
@@ -34542,7 +34541,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         for (int mq = 0; mq < nmem; mq++) {
           if (mq) buf_puts(b, ", ");
           TyKind mt = c->classes[ci].ivar_types[mq];
-          buf_puts(b, (mt == TY_POLY || mt == TY_UNKNOWN) ? "sp_box_nil()" : default_value(mt));
+          buf_puts(b, (mt == TY_POLY || mt == TY_UNKNOWN) ? "sp_box_nil()" : default_value_from_compiler(c, mt));
         }
         buf_printf(b, "),%d);break;", ci);
         continue;
@@ -34709,7 +34708,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           if (mvi >= 0 && c->classes[ci].ivar_types[mvi] != TY_UNKNOWN)
             pt = c->classes[ci].ivar_types[mvi];
         }
-        if (j >= argc) { buf_puts(&ab, default_value(pt)); continue; }   /* a nil-filled member */
+        if (j >= argc) { buf_puts(&ab, default_value_from_compiler(c, pt)); continue; }   /* a nil-filled member */
         char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[j]);
         emit_unbox_text(c, pt, tn, &ab);
       }
@@ -36185,7 +36184,7 @@ else {
           if (scalar) {
             emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
             if (res == TY_POLY) buf_puts(b, "sp_box_nil()");
-            else buf_puts(b, default_value(res));
+            else buf_puts(b, default_value_from_compiler(c, res));
             buf_puts(b, "; ");
           }
         }
@@ -36197,7 +36196,7 @@ else {
          an int where an sp_RbVal was expected (#3385). */
       if (scalar && bn > 0) buf_printf(b, "_t%d; })", rv);
       else if (scalar && res == TY_POLY) buf_puts(b, "sp_box_nil(); })");
-      else if (scalar) { buf_puts(b, default_value(res)); buf_puts(b, "; })"); }
+      else if (scalar) { buf_puts(b, default_value_from_compiler(c, res)); buf_puts(b, "; })"); }
       else buf_puts(b, "0; })");
       return;
     }
@@ -37208,7 +37207,7 @@ else {
           buf_printf(b, "0; })");
           return;
         }
-        emit_ctype(c, res, b); buf_printf(b, " _t%d_r = %s; ", tcid, default_value(res));
+        emit_ctype(c, res, b); buf_printf(b, " _t%d_r = %s; ", tcid, default_value_from_compiler(c, res));
         for (int k = 0; k < ncand; k++) {
           int defcls = -1;
           int mi = comp_cmethod_in_chain(c, cand[k], name, &defcls);
@@ -37435,7 +37434,7 @@ else {
         (sp_streq(name, "=~") || sp_streq(name, "!~") ||
          sp_streq(name, "match?") || sp_streq(name, "match"))) {
       const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-      const char *dv9 = default_value(comp_ntype(c, id));
+      const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                  name, tn9, dv9 ? dv9 : "sp_box_nil()");
@@ -37647,7 +37646,7 @@ else {
               (sp_streq(name, "=~") || sp_streq(name, "!~") ||
                sp_streq(name, "match?") || sp_streq(name, "match"))) {
             const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-            const char *dv9 = default_value(comp_ntype(c, id));
+            const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
             buf_puts(b, "((void)("); emit_expr(c, recv, b);
             buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                        name, tn9, dv9 ? dv9 : "sp_box_nil()");
@@ -41502,7 +41501,7 @@ else {
           emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
           buf_puts(b, ")");
-          if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
+          if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, want3));
           return;
         }
       }
@@ -41541,7 +41540,7 @@ else {
     buf_puts(b, "({ ");
     /* result temp is declared before the setjmp so it survives the block scope;
        the body assigns into it. */
-    if (scalar) { emit_ctype(c, res, b); buf_printf(b, " _t%d = %s; ", rv, default_value(res)); }
+    if (scalar) { emit_ctype(c, res, b); buf_printf(b, " _t%d = %s; ", rv, default_value_from_compiler(c, res)); }
     if (is_mx) {
       mtmp = ++g_tmp; eid = ++g_tmp;
       has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
@@ -41551,7 +41550,7 @@ else {
       buf_printf(b, "; sp_Mutex_lock(_t%d); ", mtmp);
       buf_printf(b, "int _retf%d = 0; int _excf%d = 0; const char *_excmsg%d = NULL, *_exccls%d = NULL; ",
                  eid, eid, eid, eid);
-      if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value(g_ret_type)); }
+      if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value_from_compiler(c, g_ret_type)); }
       g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type };
       buf_puts(b, "sp_exc_check_depth(); sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; ");
       buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");

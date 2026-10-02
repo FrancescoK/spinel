@@ -1195,7 +1195,7 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
     else emit_unbox_text(c, target, txt, b);  /* pointer/object/hash slot */
   }
   else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
-    buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
+    buf_printf(b, "({ (void)%s; %s; })", txt, default_value_from_compiler(c, target));
     is_tok = 1;
   }
   /* A call to a method that answers no value is a `void` C call: raw, it put
@@ -4735,7 +4735,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     else {
       buf_puts(b, "  return ");
       if (ty_is_object(s->ret)) buf_puts(b, "NULL");
-      else buf_puts(b, default_value(s->ret));
+      else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n}\n");
     }
     return;
@@ -4767,7 +4767,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       emit_str_literal(b, s->name);
       buf_printf(b, ", sp_box_obj((void *)self, %d)));", sg_par);
       if (method_is_void(s)) buf_puts(b, " return; }\n");
-      else buf_printf(b, " return %s; }\n", default_value(s->ret) ? default_value(s->ret) : "0");
+      else buf_printf(b, " return %s; }\n", default_value_from_compiler(c, s->ret) ? default_value_from_compiler(c, s->ret) : "0");
     }
     if (pm >= 0) {
       Scope *ps = &c->scopes[pm];
@@ -4880,7 +4880,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     if (!is_void) {
       buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
       if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");
-      else buf_puts(b, default_value(s->ret));
+      else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n");
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
@@ -4925,8 +4925,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_printf(b, "%s;\n", s->ret == TY_INT   ? "SP_INT_NIL"
                             : s->ret == TY_FLOAT ? "sp_float_nil()"
                             : s->ret == TY_STRING ? "NULL"
-                                                  : default_value(s->ret));
-    else buf_printf(b, "%s;\n", default_value(s->ret));
+                                                  : default_value_from_compiler(c, s->ret));
+    else buf_printf(b, "%s;\n", default_value_from_compiler(c, s->ret));
   }
   g_result_var = sv_rv2; g_result_poly = sv_rp2;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
@@ -10501,7 +10501,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
+    buf_printf(b, " _t%d = %s;\n", rtag, default_value_from_compiler(c, rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
     TyKind srt = g_result_ty; g_result_ty = rt;
@@ -10928,7 +10928,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);
         emit_struct_super_spread(c, cls, sargv, an, &sb);
-        buf_printf(b, "((void)%s, %s)", sb.p, default_value(comp_ntype(c, id)));
+        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, comp_ntype(c, id)));
         free(sb.p);
         return;
       }
@@ -10988,7 +10988,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
             if (comp_ty_value_obj(c, ivt))
               buf_printf(b, "(sp_%s){0})", c->classes[ty_object_class(ivt)].c_name);
             else
-              buf_printf(b, "%s)", default_value(ivt));
+              buf_printf(b, "%s)", default_value_from_compiler(c, ivt));
           }
           else {
             TyKind at = comp_ntype(c, vnode);
@@ -11015,7 +11015,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         }
         buf_puts(b, ", ");
       }
-      buf_printf(b, "%s)", default_value(comp_ntype(c, id)));
+      buf_printf(b, "%s)", default_value_from_compiler(c, comp_ntype(c, id)));
       return;
     }
     /* `super()` from an initialize no ancestor defines reaches Object's, which
@@ -11028,7 +11028,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
       if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
-        buf_puts(b, default_value(comp_ntype(c, id)));
+        buf_puts(b, default_value_from_compiler(c, comp_ntype(c, id)));
         return;
       }
     }

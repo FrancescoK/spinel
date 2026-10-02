@@ -3455,7 +3455,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       if (ret == TY_POLY) emit_boxed_text(c, HV[hvi].vt, getx, b); else buf_puts(b, getx);
       buf_puts(b, " : ");
       if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
-      else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+      else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, trt));
       buf_puts(b, "; break;");
     }
     /* the poly value may be a generic PolyPolyHash keyed by (boxed) strings
@@ -3496,7 +3496,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     else buf_printf(b, "sp_poly_to_i(%s)", getx);
     buf_puts(b, " : ");
     if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);
-    else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+    else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, trt));
     buf_puts(b, "; break;");
     /* a symbol key against generic poly-keyed storage: an empty `{}`
        literal boxes as PolyPolyHash, so a symbol-keyed [] / fetch must

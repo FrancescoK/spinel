@@ -1803,7 +1803,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
         else if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) {
           emit_indent(b, indent);
           /* A value-type object is stored inline (sp_X, not sp_X*), so its
-             empty/nil reset is a zeroed struct -- default_value()'s blanket
+             empty/nil reset is a zeroed struct -- default_value_from_compiler(c, )'s blanket
              "NULL" would assign a pointer to a struct lvalue (#3267). */
           if (ty_is_object(lv->type) && c->classes[ty_object_class(lv->type)].is_value_type) {
             buf_printf(b, "lv_%s = (sp_%s){0};\n", rename_local(tmpn),
@@ -1811,7 +1811,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
           }
           else {
             const char *nv = nil_value(lv->type);
-            if (!nv) nv = lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type);
+            if (!nv) nv = lv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, lv->type);
             buf_printf(b, "lv_%s = %s;\n", rename_local(tmpn), nv);
           }
         }
@@ -2725,7 +2725,7 @@ const char *local_init_value(Compiler *c, LocalVar *lv) {
      resource idiom: `def self.open; r = new; begin; yield r; ensure; r.close;
      end; end` on a class small enough to be a value type. */
   if (comp_ty_value_obj(c, lv->type)) return "{0}";
-  return lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type);
+  return lv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, lv->type);
 }
 /* A value landing in a slot of type `slot`. An Integer or Float slot that
    also sees nil is a nullable scalar (ty_unify's nil join), and its nil is
