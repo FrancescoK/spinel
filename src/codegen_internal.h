@@ -1621,6 +1621,35 @@ typedef struct {
   int ncand, ncall_arm;
 } PolySpecials0;
 void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s);
+/* what a poly dispatch with arguments answers beside its user arms, and its
+   keyword split and user candidates (poly_specials_n) */
+typedef struct {
+  int index, fetch, pdelete, pdig, pvalues_at, pfirstn, include, intersect, arr_index, push, unshift, strdel, strpart, strsetop_n, pstore, strsplit, pred, strencode, strftime, pmerge, pjoin, ppack, cover, gcdlcm, ctryconv;
+  int has_splat_arg, kwh, pos_argc, kw_ds, kw_strkey, kw_pos, ncand;
+} PolySpecialsN;
+void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int *argv, PolySpecialsN *s);
+void poly_specials_n_splat(Compiler *c, const int *argv, PolySpecialsN *s, int *splat_a, int *splat_last);
+/* a poly dispatch's evaluated arguments, as its arms read them: the
+   positional temps and their types, the keyword temps (or the whole hash
+   kwall), the result temp and its type, the receiver temp */
+typedef struct {
+  int argc, pos_argc;
+  const int *argv, *atmp;
+  const TyKind *atmp_ty;
+  int kwall, kwn;
+  const int *kwels, *kwtmp;
+  const TyKind *kwty;
+  TyKind ret;
+  int tv, tr;
+  const char *idxref;   /* the index as a raw sp_int, for `[]` */
+} PolyTemps;
+void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
+int  emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
+                             int *atmp, TyKind *atmp_ty, const PolyKw *kw, const int *htmp, int is_setter_val,
+                             int splat_a, int splat_last, int stk, Buf *b);
+void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
+int  emit_poly_callable_spread_prearm(Compiler *c, const char *name, int sa, const int *atmp,
+                                      const TyKind *atmp_ty, int st, int tv, int tr, TyKind ret, Buf *b);
 void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
                         int tv, int tr, Buf *b);
 int  emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,

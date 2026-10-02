@@ -416,6 +416,10 @@ const CallPlan *cplan_user(Compiler *c, int id) {
 
 /* ---- CP_POLY ---- */
 
+static void cpoly_family(PolyPlan *p, int *cap, int fam);
+static int cpoly_cls_value_arms(Compiler *c, int id, const char *name, int argc, const PolyArgs *A,
+                                TyKind ret, int has_tr, PolyPlan *p, int *cap);
+
 static PolyConv cpoly_conv(TyKind ret, TyKind vty) {
   if (ret == TY_POLY && vty != TY_POLY) return PC_BOX;
   if (ret != TY_POLY && vty == TY_POLY) return PC_UNBOX;
@@ -530,6 +534,58 @@ static int cpoly_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int po
   return 1;
 }
 
+/* The pre-arms of a dispatch with arguments (emit_poly_prearms_n, then
+   emit_poly_prearms_n_blk): the tag pre-arm families, a class value's
+   class-side arms, a callable value's call. */
+static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, const int *argv, TyKind ret,
+                            const TyKind *atmp_ty, int kwall_any, int is_setter_val, PolyPlan *p, int *cap) {
+  const NodeTable *nt = c->nt;
+  PolySpecialsN ps;
+  poly_specials_n(c, id, name, argc, argv, &ps);
+  int splat_a = -1, splat_last = 0;
+  poly_specials_n_splat(c, argv, &ps, &splat_a, &splat_last);
+  int pos_argc = ps.pos_argc, kwh = ps.kwh;
+  if (ps.cover) cpoly_family(p, cap, PB_COVER);
+  if (ps.ctryconv) cpoly_family(p, cap, PB_TRY_CONVERT);
+  if (ps.gcdlcm) cpoly_family(p, cap, PB_GCDLCM);
+  if (ps.ppack && sp_streq(name, "unpack1")) cpoly_family(p, cap, PB_UNPACK1);
+  if (ps.include) cpoly_family(p, cap, PB_INCLUDE);
+  if (ps.strdel && (ret == TY_POLY || ret == TY_STRING)) cpoly_family(p, cap, PB_STR_DELETE);
+  if (ps.strpart && (ret == TY_POLY || ret == TY_STR_ARRAY)) cpoly_family(p, cap, PB_STR_PARTITION);
+  if (ps.strsetop_n &&
+      (sp_streq(name, "count") ? ret == TY_POLY || ret == TY_INT : ret == TY_POLY || ret == TY_STRING))
+    cpoly_family(p, cap, PB_STR_SETOP);
+  if (ps.pstore && ret == TY_POLY) cpoly_family(p, cap, PB_STORE);
+  if (ps.strencode && pos_argc <= 2 && (ret == TY_POLY || ret == TY_STRING)) cpoly_family(p, cap, PB_STR_ENCODE);
+  if (ps.strsplit && (ret == TY_STR_ARRAY || ret == TY_POLY_ARRAY || ret == TY_POLY))
+    cpoly_family(p, cap, PB_STR_SPLIT_N);
+  if (ps.index) cpoly_family(p, cap, PB_INT_BITREF);
+  /* the class-side arms read the keyword values' types when the keywords
+     split off one by one */
+  int kwn = 0;
+  const int *kwels = NULL;
+  TyKind *kwty = NULL;
+  if (kwh >= 0 && !ps.kw_ds) {
+    kwels = nt_arr(nt, kwh, "elements", &kwn);
+    kwty = malloc(sizeof(TyKind) * (size_t)(kwn > 0 ? kwn : 1));
+    for (int e = 0; e < kwn; e++) {
+      int val = nt_ref(nt, kwels[e], "value");
+      TyKind at = val >= 0 ? comp_ntype(c, val) : TY_NIL;
+      kwty[e] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
+    }
+  }
+  PolyKw kw = { kwh, kwn, ps.kw_ds ? 0 : -1, kwels, NULL, kwty, kwall_any };
+  PolyArgs A = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
+  cpoly_cls_value_arms(c, id, name, pos_argc, &A, ret, !is_setter_val, p, cap);
+  free(kwty);
+  int callable = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]");
+  if (callable &&
+      (ps.kw_pos && !ps.has_splat_arg ? (ps.kw_ds ? pos_argc : argc) <= SP_PROC_ARG_SLOTS
+       : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
+       : splat_last))
+    cpoly_family(p, cap, PB_CALLABLE);
+}
+
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
 static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, const int *argv,
                               TyKind ret, PolyPlan *p) {
@@ -576,6 +632,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
   PolyKw kw = { kwh, 0, kw_ds ? 0 : -1, NULL, NULL, NULL, kwall_any };
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
+  cpoly_prearms_n(c, id, name, argc, argv, ret, atmp_ty, kwall_any, is_setter_val, p, &cap);
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].is_native_class) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {

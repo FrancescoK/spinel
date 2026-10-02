@@ -66,7 +66,10 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default digits", "default array-transform", "default predicate",
                                      "default to_i/to_f", "default any?/none?", "default to_h",
                                      "each_index", "join", "alive?", "kill", "status", "queue", "io-read",
-                                     "io-flush", "io-close", "enum-to_a" };
+                                     "io-flush", "io-close", "enum-to_a",
+                                     "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
+                                     "str-partition", "str-setop", "store", "str-encode", "str-split",
+                                     "int-bitref" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
@@ -1548,4 +1551,615 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     buf_puts(b, "; break;");
   }
   return obj_default_done;
+}
+
+/* What a poly dispatch with arguments answers beside its user arms (its
+   pre-arms and builtin cases), how its trailing keyword hash splits off,
+   and its user candidates. Shared by the dispatch and the resolver
+   (cplan_poly). */
+void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int *argv, PolySpecialsN *s) {
+  const NodeTable *nt = c->nt;
+  /* the builtin-array `[]` / Integer#[] bit-ref arm applies to an integer
+     index; in promote mode that index variable may have widened to poly, so
+     accept poly too (the index is unboxed where it is used below). */
+  int is_index = sp_streq(name, "[]") && argc == 1 &&
+                 (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY);
+  /* `fetch(key[, default])` on a poly value that is actually a str/sym-keyed
+     hash: without a user `fetch` candidate the dispatch was skipped and the
+     call collapsed to default_value (an empty string), dropping the lookup.
+     The str/sym-keyed hash arms below handle it, so admit it here. */
+  /* Any key kind: the arms below cover the string- and symbol-keyed hashes,
+     and the default at the end of the switch answers for every other
+     receiver and key. Restricted to those key types, a `fetch` on a
+     float-keyed hash emitted no dispatch at all and raised NoMethodError. */
+  int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && nt_ref(nt, id, "block") < 0;
+  /* Names a user class can own, replacing the whole dispatch with its arms:
+     a Hash or Array arriving at the same call matched nothing and raised
+     NoMethodError naming its own class. They end in a runtime helper that
+     lets the receiver answer for itself (the default at the switch's end). */
+  /* A splatted list is one temp holding an array, not one temp per key, so
+     the arms below cannot address the keys at all -- and admitting the name
+     into the dispatch is what makes those temps exist. Leave the splat form
+     exactly as it was before this arm: whatever the general path emits. */
+  int has_splat_arg = 0;
+  for (int a = 0; a < argc; a++) {
+    const char *at2 = argv ? nt_type(nt, argv[a]) : NULL;
+    if (at2 && sp_streq(at2, "SplatNode")) { has_splat_arg = 1; break; }
+  }
+  int is_pdelete = sp_streq(name, "delete") && argc == 1 && !has_splat_arg;
+  int is_pdig = sp_streq(name, "dig") && argc >= 1 && !has_splat_arg;
+  int is_pvalues_at = sp_streq(name, "values_at") && argc >= 1 && !has_splat_arg;
+  /* `xs.first(n)` / `xs.last(n)` on a poly value that is a container at run
+     time: the zero-arg forms have had an arm for a long time, the counted
+     ones fell through to the raise (#3781 follow-up). */
+  int is_pfirstn = (sp_streq(name, "first") || sp_streq(name, "last")) &&
+                   argc == 1 && !has_splat_arg;
+  int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
+                    sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
+  /* intersect? on a poly value that is a builtin array. The typed-receiver
+     forms resolve, so only the union receiver was missing an arm and the
+     call raised NoMethodError naming Array -- which is what the receiver
+     was (#3414). Every array kind coerces to a poly array, so one arm
+     covers them all rather than one per element type. */
+  int is_intersect = sp_streq(name, "intersect?") && argc == 1;
+  /* index / rindex / find_index with a VALUE argument on a poly value that
+     is an array at run time. include? has had this arm for a long time; the
+     index family answering the position rather than a bool was simply never
+     added, so the call raised NoMethodError naming Array (#3409). */
+  int is_arr_index = ((sp_streq(name, "index") || sp_streq(name, "rindex") ||
+                       sp_streq(name, "find_index")) && argc == 1 &&
+                      nt_ref(nt, id, "block") < 0) ||
+                     /* the two-argument form is String's alone -- Array#index
+                        takes one argument -- so only the default arm below
+                        answers it, and the array cases stay out (#4149). */
+                     ((sp_streq(name, "index") || sp_streq(name, "rindex")) &&
+                      argc == 2 && nt_ref(nt, id, "block") < 0);
+  /* push/<</append on a poly value that is actually a builtin array: the
+     array-mutate statement path skips it when a user class also defines the
+     name (the value could be that object), so the switch needs a builtin-array
+     arm or the append is silently dropped. sp_poly_shl handles every array
+     kind; the user arms above cover the object case. */
+  int is_push = (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1;
+  /* unshift/prepend are the same arm at the other end: without one they fell
+     to the switch's NoMethodError default on a genuine Array (#4320). */
+  int is_unshift = (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1;
+  /* delete(chars) with a string arg: the poly value may be a string even
+     when a user class also defines `delete` (the bundled Set does), so the
+     switch needs a TAG_STR pre-arm routing to String#delete (doom's
+     `data[offset, 8].delete("\x00").upcase` WAD name fields). */
+  int is_strdel = sp_streq(name, "delete") && argc == 1 &&
+                  infer_type(c, argv[0]) == TY_STRING;
+  /* partition / rpartition on a TAG_STR receiver. They have no poly arm of
+     their own ahead of the name-collision test -- which is why `split`,
+     `upcase` and `strip` survived a same-named user method and these did
+     not -- so a genuine String fell to the switch's raising default and
+     answered NoMethodError, naming String, for a method String has
+     (#4413). A class nothing instantiates no longer takes the name away;
+     this is the same hole for one that IS instantiated. */
+  int is_strpart = (sp_streq(name, "partition") || sp_streq(name, "rpartition")) &&
+                   argc == 1 && infer_type(c, argv[0]) == TY_STRING;
+  /* The multi-set forms of count/delete/squeeze (String's alone) when a
+     user class also owns the name: the switch needs a TAG_STR pre-arm or
+     a genuine String receiver falls to its NoMethodError default, the
+     same hole the single-set delete had (#4195). String-typed sets only:
+     the temps below carry them as const char *. */
+  int is_strsetop_n = ((sp_streq(name, "count") || sp_streq(name, "squeeze"))
+                         ? argc >= 1     /* their 1-set form has no other pre-arm */
+                         : sp_streq(name, "delete") && argc >= 2) &&
+                      argc <= 8 && !has_splat_arg &&
+                      nt_ref(nt, id, "block") < 0;
+  if (is_strsetop_n)
+    for (int a = 0; a < argc; a++)
+      if (infer_type(c, argv[a]) != TY_STRING) { is_strsetop_n = 0; break; }
+  /* Hash#store when a user class also owns the name: a boxed hash takes
+     the runtime store, anything else its own arm or the default (#4195). */
+  int is_pstore = sp_streq(name, "store") && argc == 2 && !has_splat_arg &&
+                  nt_ref(nt, id, "block") < 0;
+  /* split(sep) on a TAG_STR receiver, when a user class also owns `split`
+     (the bundled Pathname does) and the dispatch therefore lost the String
+     arm. Same hole #3394 closed for the zero-arg form (#3401). */
+  int is_strsplit = sp_streq(name, "split") && argc == 1 &&
+                    nt_ref(nt, id, "block") < 0 &&
+                    (infer_type(c, argv[0]) == TY_STRING ||
+                     infer_type(c, argv[0]) == TY_NIL ||
+                     infer_type(c, argv[0]) == TY_REGEX);
+  int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, argc);
+  /* String#encode when a user class also owns `encode`: the TAG_STR receiver
+     needs a pre-arm, or a genuine String falls to the switch's raising
+     default -- `content.encode("UTF-8", "binary", invalid: :replace, ...)`
+     on an untyped value raised NoMethodError naming String once Active
+     Storage's Variation#encode existed (#4452). The same transcode the
+     typed and the unshadowed poly receivers take (sp_str_encode); the
+     positionals and keywords come from the evaluated temps below. */
+  int is_strencode = sp_streq(name, "encode") && argc >= 1 && !has_splat_arg &&
+                     nt_ref(nt, id, "block") < 0;
+  /* A trailing KeywordHashNode carries the call's keyword arguments: split
+     it off so the user-method arms match keyword params by NAME, not by
+     position (the whole hash used to flow into the *rest / first keyword
+     slot, garbling both -- #3268). Any key and `**` of a named hash, an
+     anonymous `**` or a literal are recognized. A key that is not a
+     literal Symbol is a keyword too: a String one no keyword parameter
+     takes, a computed one (`tr(:key) => 4`) whichever its value names.
+     The hash was left whole as one more positional, so `o.m(1, "s" => 2)`
+     against `def m(a, k: 1)` raised `wrong number of arguments` where
+     CRuby names the unknown keyword. Such a hash is built whole, of any
+     key, in source order, like one a `**` brings (kw_ds, kwall_any). */
+  int kwh = -1, pos_argc = argc, kw_ds = 0, kw_strkey = 0;
+  { const char *l_ty = nt_type(nt, argv[argc - 1]);
+    if (l_ty && sp_streq(l_ty, "KeywordHashNode")) {
+      int en = 0; const int *els = nt_arr(nt, argv[argc - 1], "elements", &en);
+      int plain = en > 0, nds = 0;
+      for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, els[e]) == NK_AssocSplatNode) {
+          if (!poly_kw_splat_ok(c, els[e])) { plain = 0; break; }
+          nds++;
+          continue;
+        }
+        int key = nt_ref(nt, els[e], "key");
+        if (key < 0) { plain = 0; break; }
+        if (nt_kind(nt, key) != NK_SymbolNode) kw_strkey = 1;
+      }
+      if (plain) { kwh = argv[argc - 1]; pos_argc = argc - 1; kw_ds = nds > 0 || kw_strkey; }
+    }
+  }
+  if (kw_ds) is_strencode = 0;
+  int kw_pos = kwh < 0 || kw_ds;
+  int ncand = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    /* a native class's methods are its declared bindings (#4504) */
+    if (c->classes[k].is_native_class) {
+      if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
+        for (int n = pos_argc; n <= argc; n++) {
+          int nmi = comp_native_method_find(c, k, name, n, 0);
+          if (nmi >= 0 && native_takes(&c->native_methods[nmi], n)) { ncand++; break; }
+        }
+      }
+      continue;
+    }
+    int mi = comp_method_in_chain(c, k, name, NULL);
+    /* Include if call supplies all required params (pad defaults / truncate
+       extras). A collapsed keyword hash funds one of them: without counting
+       it, `r.where(cond: 1)` reaching `def where(condition)` looked like an
+       arity mismatch, every arm was dropped, and the call lowered to the
+       unresolved-method raise (#4030). */
+    if (mi < 0) continue;
+    { char exp0[600];
+      if (poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, -1, exp0, sizeof exp0)) ncand++; }
+  }
+  /* strftime on a poly value that is really a Time: a nilable Time
+     (`created_at : Time?`) is held as a poly sp_RbVal, so `t.strftime(fmt)`
+     would otherwise lower to the unresolved-call raise even when the value
+     is a genuine Time. Give the switch a SP_BUILTIN_TIME arm so a real Time
+     formats and nil/anything-else raises NoMethodError, matching CRuby
+     (issue #2457, the family2 nilable value-method dispatch gap). Only when
+     no user class defines strftime, so the default-raise arm is unambiguous. */
+  int is_strftime = ncand == 0 && sp_streq(name, "strftime") && argc == 1 &&
+                    infer_type(c, argv[0]) == TY_STRING;
+  /* cover? on a container-read Range; gcdlcm on a container-read int
+     receiver (#3234): builtin pre-arms, no user candidates required */
+  /* `merge` on a poly value that is really a builtin Hash. A user class
+     owning the name replaces the whole dispatch with its arms, and a Hash
+     arriving at the same call matched nothing and raised NoMethodError
+     naming its own class (#4033). The braceless-keyword form is the one
+     that gets here, so the argument may be the collapsed hash rather than a
+     positional. */
+  int is_pmerge = sp_streq(name, "merge") && nt_ref(nt, id, "block") < 0 &&
+                  !has_splat_arg && (pos_argc >= 1 || kwh >= 0);
+  /* join on a poly value that is a builtin array, alongside the user arms.
+     The dedicated poly-join arm stands down when a user class owns the name
+     (#4071), so without this the Array case reached the raise. */
+  int is_pjoin = sp_streq(name, "join") && argc <= 1 && !has_splat_arg &&
+                 nt_ref(nt, id, "block") < 0;
+  /* ...but only where the argument could BE a separator. The arm passes the
+     call's own argument temp into sp_poly_join's const char * slot, so a
+     user object there did not compile -- and this arm exists precisely
+     because a user class owns the name, which is the program that passes
+     one (#4292). Without the arm the builtin case reaches the raise, which
+     is what CRuby answers for a non-String separator anyway. */
+  if (is_pjoin && argc == 1) {
+    TyKind jat = comp_ntype(c, argv[0]);
+    if (!(jat == TY_STRING || jat == TY_POLY || jat == TY_NIL || jat == TY_UNKNOWN))
+      is_pjoin = 0;
+  }
+  /* pack / unpack1 on a poly value that is a builtin container or string,
+     alongside the user arms: their own arms stand down when a user class owns
+     the name, and without these the builtin case reached the raise -- or, for
+     unpack1, read an object through a char * (#4071's shape). */
+  int is_ppack = (sp_streq(name, "pack") || sp_streq(name, "unpack1")) &&
+                 argc == 1 && !has_splat_arg && nt_ref(nt, id, "block") < 0;
+  /* ...and only where the argument could BE a format string, the same guard
+     the join arm above carries: the arm passes the call's own argument temp
+     into sp_poly_pack's const char * slot, so a user object there did not
+     compile -- and this arm exists precisely because a user class owns the
+     name, which is the program that passes one (#4319). Without the arm the
+     builtin case reaches the raise, which is what CRuby answers for a
+     non-String format anyway. */
+  if (is_ppack) {
+    TyKind pat = comp_ntype(c, argv[0]);
+    if (!(pat == TY_STRING || pat == TY_POLY || pat == TY_UNKNOWN)) is_ppack = 0;
+  }
+  /* Both arms answer a String, so they can only be emitted where the result
+     temp can hold one: the call typed from the user method alone (a Crate,
+     say) has no room for the builtin answer, and assigning it there did not
+     compile. Standing down leaves the builtin case at the raise, which is the
+     trade the dig / values_at arms below already make (#4319). */
+  if (is_ppack || is_pjoin) {
+    TyKind pjr = comp_ntype(c, id);
+    if (!(pjr == TY_POLY || pjr == TY_STRING || pjr == TY_UNKNOWN)) {
+      is_ppack = 0; is_pjoin = 0;
+    }
+  }
+  int is_cover = sp_streq(name, "cover?") && argc == 1 && !recv_user_defines(c, name);
+  int is_gcdlcm = sp_streq(name, "gcdlcm") && argc == 1 && !recv_user_defines(c, name);
+  /* try_convert on a class known only at run time: a constant receiver
+     has its typed emitter, but `[Array, 0][0].try_convert(x)` reached no
+     arm at all and the call lowered to the unresolved-method raise. The
+     runtime answers by the class's name, as the typed emitters answer by
+     the constant's (#2325, #2585). */
+  int is_ctryconv = sp_streq(name, "try_convert") && argc == 1 && !has_splat_arg && kw_pos &&
+                    nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name) &&
+                    comp_ntype(c, id) == TY_POLY;
+  s->index = is_index;
+  s->fetch = is_fetch;
+  s->pdelete = is_pdelete;
+  s->pdig = is_pdig;
+  s->pvalues_at = is_pvalues_at;
+  s->pfirstn = is_pfirstn;
+  s->include = is_include;
+  s->intersect = is_intersect;
+  s->arr_index = is_arr_index;
+  s->push = is_push;
+  s->unshift = is_unshift;
+  s->strdel = is_strdel;
+  s->strpart = is_strpart;
+  s->strsetop_n = is_strsetop_n;
+  s->pstore = is_pstore;
+  s->strsplit = is_strsplit;
+  s->pred = is_pred;
+  s->strencode = is_strencode;
+  s->strftime = is_strftime;
+  s->pmerge = is_pmerge;
+  s->pjoin = is_pjoin;
+  s->ppack = is_ppack;
+  s->cover = is_cover;
+  s->gcdlcm = is_gcdlcm;
+  s->ctryconv = is_ctryconv;
+  s->has_splat_arg = has_splat_arg;
+  s->kwh = kwh;
+  s->pos_argc = pos_argc;
+  s->kw_ds = kw_ds;
+  s->kw_strkey = kw_strkey;
+  s->kw_pos = kw_pos;
+  s->ncand = ncand;
+}
+
+/* A splatted argument: the first splat's position (splat_a) and whether it
+   is the last positional, alone (splat_last); the arms that read one value
+   per argument temp stand down. */
+void poly_specials_n_splat(Compiler *c, const int *argv, PolySpecialsN *s, int *splat_a, int *splat_last) {
+  const NodeTable *nt = c->nt;
+  int pos_argc = s->pos_argc;
+  if (s->has_splat_arg) {
+    int nspl = 0;
+    for (int a = 0; a < pos_argc; a++) {
+      if (nt_kind(nt, argv[a]) != NK_SplatNode) continue;
+      if ((*splat_a) < 0) (*splat_a) = a;
+      nspl++;
+    }
+    (*splat_last) = nspl == 1 && (*splat_a) == pos_argc - 1;
+    /* unshift inserts each value at its own index: after a splat that is
+       the run time's */
+    if (!(*splat_last)) s->unshift = 0;
+    /* the builtin arms below read their argument temps one value each,
+       but push and unshift, which spread the splat's temp themselves */
+    s->index = s->fetch = s->include = s->intersect = s->arr_index = 0;
+    s->strdel = s->strpart = s->strsplit = s->pred = 0;
+    s->strftime = s->cover = s->gcdlcm = s->pfirstn = 0;
+  }
+}
+
+/* The tag pre-arms of a poly dispatch with arguments, ahead of its cls_id
+   switch: a Range's cover?, a class's try_convert, an Integer's gcdlcm and
+   bit reference, a String's unpack1, include?, delete, partition, count
+   and squeeze, encode, split and index, a Hash's store. */
+void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int argc = T->argc, pos_argc = T->pos_argc, kwall = T->kwall, kwn = T->kwn;
+  const int *argv = T->argv, *atmp = T->atmp, *kwels = T->kwels, *kwtmp = T->kwtmp;
+  const TyKind *atmp_ty = T->atmp_ty, *kwty = T->kwty;
+  TyKind ret = T->ret;
+  int tv = T->tv, tr = T->tr;
+  const char *idxref = T->idxref;
+  int is_cover = ps->cover, is_ctryconv = ps->ctryconv, is_gcdlcm = ps->gcdlcm, is_ppack = ps->ppack;
+  int is_include = ps->include, is_strdel = ps->strdel, is_strpart = ps->strpart;
+  int is_strsetop_n = ps->strsetop_n, is_pstore = ps->pstore, is_strencode = ps->strencode;
+  int is_strsplit = ps->strsplit, is_index = ps->index;
+  /* Range#cover? on a runtime Range receiver (#3234) */
+  if (is_cover) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_COVER, -1, TY_UNKNOWN, PC_SAME);
+    const char *fn = atmp_ty[0] == TY_POLY ? "cover_poly" : atmp_ty[0] == TY_FLOAT ? "cover_f" : "include";
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                  " { _t%d = %ssp_range_%s((sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
+               tv, tv, tr,
+               ret == TY_POLY ? "sp_box_bool(" : "", fn, tv, atmp[0],
+               ret == TY_POLY ? ")" : "");
+  }
+  /* Klass.try_convert(x) on a class-tagged receiver, checked ahead of
+     the cls_id switch: no user class defines the name, so no arm below
+     answers it, and the default raises for every other receiver. */
+  if (is_ctryconv) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_TRY_CONVERT, -1, TY_UNKNOWN, PC_SAME);
+    char an[40]; snprintf(an, sizeof an, "_t%d", atmp[0]);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { ", tv);
+    if (kwall >= 0)
+      buf_printf(b, "if (_t%d->len == 0) { (void)sp_poly_class_try_convert(_t%d, sp_box_nil());"
+                    " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1)\"); } ",
+                 kwall, tv);
+    buf_printf(b, "_t%d = sp_poly_class_try_convert(_t%d, ", tr, tv);
+    /* a pattern temp has no boxed spelling in emit_boxed_text (it boxes
+       nil there); the node form's sp_box_regexp is the one to use */
+    if (atmp_ty[0] == TY_REGEX) buf_printf(b, "sp_box_regexp(%s)", an);
+    else emit_boxed_text(c, atmp_ty[0], an, b);
+    buf_puts(b, "); }\nelse ");
+  }
+  /* Integer#gcdlcm on a runtime int receiver (#3234): [gcd, lcm] */
+  if (is_gcdlcm) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_GCDLCM, -1, TY_UNKNOWN, PC_SAME);
+    char ax[64];
+    if (atmp_ty[0] == TY_POLY) snprintf(ax, sizeof ax, "sp_poly_to_i(_t%d)", atmp[0]);
+    else snprintf(ax, sizeof ax, "_t%d", atmp[0]);
+    int tg2 = ++g_tmp;
+    buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
+                  " sp_IntArray_push(_t%d, sp_gcd(_t%d.v.i, %s));"
+                  " sp_IntArray_push(_t%d, sp_lcm(_t%d.v.i, %s)); _t%d = ",
+               tv, tg2, tg2, tg2, tv, ax, tg2, tv, ax, tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_int_array(_t%d)", tg2);
+    else if (ret == TY_INT_ARRAY) buf_printf(b, "_t%d", tg2);
+    else buf_printf(b, "(sp_int)(uintptr_t)_t%d", tg2);
+    buf_puts(b, "; }\nelse ");
+  }
+  /* unpack1 on a TAG_STR receiver: its own poly arm stands down when a user
+     class owns the name, so the String case needs one here -- and the old
+     fallthrough read the receiver as a char * whatever it held. */
+  if (is_ppack && sp_streq(name, "unpack1")) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_UNPACK1, -1, TY_UNKNOWN, PC_SAME);
+    Buf ub; memset(&ub, 0, sizeof ub);
+    buf_printf(&ub, "sp_PolyArray_get(sp_str_unpack(_t%d.v.s, _t%d), 0)", tv, atmp[0]);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+    if (ret == TY_POLY) buf_puts(b, ub.p ? ub.p : "");
+    else emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, ub.p ? ub.p : "", b);
+    buf_puts(b, "; }\nelse ");
+    free(ub.p);
+  }
+  /* include? on a TAG_STR receiver: check tag before entering cls_id switch.
+     Boxed when a user arm widened the dispatch result to poly (#4072). */
+  /* A shared-string handle is a String too. The receiver temp is NOT
+     dereferenced at the spill -- the mutating arms sharing it need the
+     handle -- so this arm widens its own guard and reads the bytes with
+     sp_poly_recv_s. Without it a heap String fell through to the cls_id
+     switch and answered false, silently (#4279). */
+  /* String answers include? alone (member?/key? are NoMethodError), and
+     its argument must be a String: another class is CRuby's TypeError,
+     and a boxed one is checked at run time. */
+  if (is_include) if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INCLUDE, -1, TY_UNKNOWN, PC_SAME);
+  if (is_include && !sp_streq(name, "include?"))
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) sp_raise_poly_nomethod(\"%s\", _t%d);\nelse ",
+               tv, tv, name, tv);
+  else if (is_include && infer_type(c, argv[0]) == TY_STRING)
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), _t%d)%s; }\nelse ",
+               tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+               ret == TY_POLY ? ")" : "");
+  else if (is_include) {
+    Buf ab6; memset(&ab6, 0, sizeof ab6);
+    char tn6[24]; snprintf(tn6, sizeof tn6, "_t%d", atmp[0]);
+    if (atmp_ty[0] == TY_POLY) buf_puts(&ab6, tn6);
+    else emit_boxed_text(c, atmp_ty[0], tn6, &ab6);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = %ssp_str_include(sp_poly_recv_s(_t%d, \"include?\"), sp_poly_arg_str_chk(sp_poly_strbuf_deref(%s)))%s; }\nelse ",
+               tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab6.p ? ab6.p : "sp_box_nil()",
+               ret == TY_POLY ? ")" : "");
+    free(ab6.p);
+  }
+  /* delete(chars) on a TAG_STR receiver: String#delete, boxed when the
+     dispatch result stays poly. */
+  if (is_strdel && (ret == TY_POLY || ret == TY_STRING)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_DELETE, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_str(sp_str_delete(_t%d.v.s, _t%d))", tv, atmp[0]);
+    else buf_printf(b, "sp_str_delete(_t%d.v.s, _t%d)", tv, atmp[0]);
+    buf_puts(b, "; }\nelse ");
+  }
+  /* partition / rpartition on a TAG_STR receiver: sp_str_partition answers
+     the sp_StrArray CRuby's three-element result is, boxed when a user arm
+     widened the dispatch's result to poly. */
+  if (is_strpart && (ret == TY_POLY || ret == TY_STR_ARRAY)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_PARTITION, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+    if (ret == TY_POLY)
+      buf_printf(b, "sp_box_str_array(sp_str_%s(_t%d.v.s, _t%d))", name, tv, atmp[0]);
+    else
+      buf_printf(b, "sp_str_%s(_t%d.v.s, _t%d)", name, tv, atmp[0]);
+    buf_puts(b, "; }\nelse ");
+  }
+  /* the multi-set forms on a TAG_STR receiver (#4195) */
+  if (is_strsetop_n) {
+    int is_cnt = sp_streq(name, "count");
+    if ((is_cnt && (ret == TY_POLY || ret == TY_INT)) ||
+        (!is_cnt && (ret == TY_POLY || ret == TY_STRING))) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_SETOP, -1, TY_UNKNOWN, PC_SAME);
+      char sets[256]; int sl;
+      sl = snprintf(sets, sizeof sets, "(const char *[]){");
+      for (int a = 0; a < argc && sl < (int)sizeof sets - 16; a++)
+        sl += snprintf(sets + sl, sizeof sets - (size_t)sl, "%s_t%d", a ? ", " : "", atmp[a]);
+      snprintf(sets + sl, sizeof sets - (size_t)sl, "}, %d", argc);
+      char call[384];
+      snprintf(call, sizeof call, "sp_str_%s_n(_t%d.v.s ? _t%d.v.s : \"\", %s)",
+               is_cnt ? "count" : sp_streq(name, "delete") ? "delete" : "squeeze",
+               tv, tv, sets);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+      if (ret == TY_POLY) buf_printf(b, "%s(%s)", is_cnt ? "sp_box_int" : "sp_box_str", call);
+      else buf_puts(b, call);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
+  /* Hash#store on a boxed hash receiver (#4195) */
+  if (is_pstore && ret == TY_POLY) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STORE, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) { _t%d = sp_poly_store(_t%d, ", tv, tv, tr, tv);
+    char a0[32], a1[32];
+    snprintf(a0, sizeof a0, "_t%d", atmp[0]);
+    snprintf(a1, sizeof a1, "_t%d", atmp[1]);
+    if (atmp_ty[0] == TY_POLY) buf_puts(b, a0); else emit_boxed_text(c, atmp_ty[0], a0, b);
+    buf_puts(b, ", ");
+    if (atmp_ty[1] == TY_POLY) buf_puts(b, a1); else emit_boxed_text(c, atmp_ty[1], a1, b);
+    buf_puts(b, "); }\nelse ");
+  }
+  /* encode(enc[, from][, invalid:, undef:, replace:]) on a TAG_STR receiver */
+  if (is_strencode && pos_argc <= 2 && (ret == TY_POLY || ret == TY_STRING)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_ENCODE, -1, TY_UNKNOWN, PC_SAME);
+    Buf eb; memset(&eb, 0, sizeof eb);
+    buf_printf(&eb, "sp_str_encode(_t%d.v.s", tv);
+    for (int a = 0; a < 2; a++) {
+      buf_puts(&eb, ", ");
+      if (a < pos_argc) {
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+        if (atmp_ty[a] == TY_POLY) buf_puts(&eb, tn); else emit_boxed_text(c, atmp_ty[a], tn, &eb);
+      }
+      else buf_puts(&eb, "sp_box_nil()");
+    }
+    static const char *const EKW[] = { "invalid", "undef", "replace" };
+    for (int k = 0; k < 3; k++) {
+      buf_puts(&eb, ", ");
+      int found = -1;
+      for (int e = 0; e < kwn; e++) {
+        int key = nt_ref(nt, kwels[e], "key");
+        const char *kn = key >= 0 ? nt_str(nt, key, "value") : NULL;
+        if (kn && sp_streq(kn, EKW[k])) { found = e; break; }
+      }
+      if (found >= 0) {
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", kwtmp[found]);
+        if (kwty[found] == TY_POLY) buf_puts(&eb, tn); else emit_boxed_text(c, kwty[found], tn, &eb);
+      }
+      else buf_puts(&eb, "sp_box_nil()");
+    }
+    buf_puts(&eb, ")");
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s)", eb.p); else buf_puts(b, eb.p);
+    buf_puts(b, "; }\nelse ");
+    free(eb.p);
+  }
+  /* split(sep) on a TAG_STR receiver. A nil separator splits on
+     whitespace, as CRuby's does. */
+  if (is_strsplit && (ret == TY_STR_ARRAY || ret == TY_POLY_ARRAY || ret == TY_POLY)) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_SPLIT_N, -1, TY_UNKNOWN, PC_SAME);
+    TyKind sat = infer_type(c, argv[0]);
+    char call[192];
+    if (sat == TY_NIL) snprintf(call, sizeof call, "sp_str_split_ws(_t%d.v.s)", tv);
+    else if (sat == TY_REGEX) snprintf(call, sizeof call, "sp_re_split(_t%d, _t%d.v.s)", atmp[0], tv);
+    else snprintf(call, sizeof call, "sp_str_split_drop_trailing(_t%d.v.s, _t%d)", tv, atmp[0]);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+    if (ret == TY_STR_ARRAY) buf_puts(b, call);
+    else if (ret == TY_POLY_ARRAY) buf_printf(b, "sp_StrArray_to_poly_fmt(%s)", call);
+    else buf_printf(b, "sp_box_str_array(%s)", call);
+    buf_puts(b, "; }\nelse ");
+  }
+  /* Integer#[N] bit-extraction: poly recv may hold a tagged int */
+  if (is_index) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INT_BITREF, -1, TY_UNKNOWN, PC_SAME);
+    if (ret == TY_POLY)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> %s) & 1); }\nelse ", tv, tr, tv, idxref);
+    else
+      buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; }\nelse ", tv, tr, tv, idxref);
+    /* String#[int]: a poly value that is really a String (e.g. a method
+       with multiple return paths widened to poly) answers `[]` with the
+       single character at the index, or nil. The cls_id switch below only
+       covers SP_TAG_OBJ variants, so without this tag arm a String receiver
+       fell through and returned the seed (nil/0). */
+    if (ret == TY_POLY)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_box_nullable_str(sp_str_char_at_or_nil(_t%d.v.s, %s)); }\nelse ", tv, tr, tv, idxref);
+    else if (ret == TY_STRING)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_char_at_or_nil(_t%d.v.s, %s); }\nelse ", tv, tr, tv, idxref);
+  }
+}
+
+/* The pre-arms of a poly dispatch with arguments after its tag pre-arms:
+   the block a candidate takes, hoisted once as a proc (its temp is the
+   result), a class value's class-side arms, a callable value's call (with
+   the keyword split rebuilt as the trailing hash, or a lone splat spread).
+   atmp and atmp_ty are the dispatch's own: the callable's keyword hash
+   takes the slot after the positionals. */
+int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
+                            int *atmp, TyKind *atmp_ty, const PolyKw *kw, const int *htmp, int is_setter_val,
+                            int splat_a, int splat_last, int stk, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int argc = T->argc, pos_argc = T->pos_argc, kwall = T->kwall, kwh = ps->kwh;
+  const int *argv = T->argv;
+  TyKind ret = T->ret;
+  int tv = T->tv, tr = T->tr;
+  int kw_pos = ps->kw_pos, has_splat_arg = ps->has_splat_arg;
+  int called = 0;
+  /* class 0 emits a `case 0:` arm here when it defines/inherits the method
+     with its arity satisfied; guard the key so a boxed scalar (cls_id 0)
+     cannot alias it (issue #1576). */
+  /* Same shared-proc materialization the zero-arg dispatch does (#3399). */
+  int blk_tmp2 = -1;
+  { int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+    if (cblk2 >= 0) {
+      for (int k = 0; k < c->nclasses && blk_tmp2 < 0; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int mi2 = comp_method_in_chain(c, k, name, NULL);
+        if (mi2 < 0) continue;
+        Scope *cm2 = &c->scopes[mi2];
+        if (!scope_has_callable_symbol(c, mi2) && !scope_needs_proc_form(c, mi2)) continue;
+        if ((cm2->blk_param && cm2->blk_param[0] && !cm2->yields) ||
+            scope_needs_proc_form(c, mi2)) {
+          /* a forwarded &blk / anonymous & is a live proc, not a literal
+             to lower -- the same guard the other dispatch arms carry */
+          blk_tmp2 = hoist_block_proc(c, cblk2);
+        }
+      }
+    } }
+  /* a class-valued receiver dispatches class-side, ahead of the instance
+     arms (#4218). */
+  emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, kw, tv,
+                             is_setter_val ? -1 : tr, ret, blk_tmp2, b);
+  /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395);
+     the keyword split binds by name to a user candidate, so skip it. A
+     splatted argument is one temp holding an array, not one temp per
+     value, so the positional publish sequence below cannot spread it. */
+  if (kw_pos && !has_splat_arg) {
+    if (kwall >= 0) {
+      for (int e = 0; e < 2; e++) {
+        char kg[48];
+        snprintf(kg, sizeof kg, "_t%d->len %s 0 && ", kwall, e ? ">" : "==");
+        called |= emit_poly_callable_prearm(c, name, pos_argc + e, atmp, atmp_ty, kg, tv, tr, ret,
+                                            e ? 2 : pos_argc > 0 ? 1 : 0, b);
+      }
+    }
+    else called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret,
+                                            argc == 0 ? 0 : nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? 2 : 1, b);
+  }
+  else if (kwh >= 0 && !has_splat_arg &&
+           (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")) &&
+           argc <= SP_PROC_ARG_SLOTS) {
+    /* The keyword split has no hash for a callable to take: build one
+       from the per-key temps, only when the slot holds a callable, and
+       pass it as the trailing argument marked as keywords. */
+    int kht = ++g_tmp;
+    buf_printf(b, "sp_SymPolyHash *_t%d = NULL; SP_GC_ROOT(_t%d); "
+                  "if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_PROC"
+                  " || _t%d.cls_id == SP_BUILTIN_CURRY || _t%d.cls_id == SP_BUILTIN_METHOD)) _t%d = ",
+               kht, kht, tv, tv, tv, tv, kht);
+    emit_kwh_sym_hash(c, kw, NULL, b);
+    buf_puts(b, "; ");
+    atmp[pos_argc] = kht;
+    atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
+    called = emit_poly_callable_prearm(c, name, argc, atmp, atmp_ty, NULL, tv, tr, ret, 2, b);
+  }
+  else if (splat_last)
+    called = emit_poly_callable_spread_prearm(c, name, splat_a, atmp, atmp_ty,
+                                              stk >= 0 ? stk : atmp[splat_a], tv, tr, ret, b);
+  else if (splat_a >= 0 && (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
+    unsupported(c, id, "a splat before other arguments into a method called on a value of more than one type");
+  if (called && g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CALLABLE, -1, TY_UNKNOWN, PC_SAME);
+  return blk_tmp2;
 }
