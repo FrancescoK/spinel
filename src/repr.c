@@ -239,6 +239,127 @@ const char *repr_form_name(int form) {
   return form >= 0 && form < RF__COUNT ? names[form] : "?";
 }
 
+/* The C value class of a kind: what C allows between two of them. */
+int repr_store_class(const Compiler *c, TyKind t) {
+  switch (t) {
+    case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: return SC_ARITH;
+    case TY_POLY: return SC_BOXED;
+    case TY_UNKNOWN: case TY_VOID: case TY_NIL: return SC_NONE;
+    default: break;
+  }
+  if (ty_is_object(t)) return comp_ty_value_obj(c, t) ? SC_STRUCT : SC_PTR;
+  if (ty_is_struct_valued(t)) return SC_STRUCT;
+  return c_type_name(t) ? SC_PTR : SC_NONE;
+}
+
+/* Does a value of kind `from`, written as it is, keep its value in a slot of
+   kind `to`? The same C type does; so does an exact arithmetic widening
+   (an Integer into a Float slot, a boolean into an Integer one), a nil
+   literal's 0 in a pointer slot, which is NULL, and a subclass instance in
+   its ancestor's pointer slot. A nil fits as it is only where it is a
+   literal (repr_store_nil_fits). An untyped value's C type is whatever its
+   emitter chose (a boxed result, the gate's token, a super call's String),
+   which the kind does not say, so it is not checked. A void one fits
+   nothing. */
+/* A nil literal renders as 0, which is a pointer slot's NULL and a boolean's
+   false: it is written as it is there, and into an operand a builtin
+   converts itself (CO_CONVERT), whose nilable forms read the 0 as they
+   always have. Any other nil value -- a call that answers nil, kept for its
+   effect -- and a nil into a variable whose nil is a sentinel (an Integer,
+   a Float, a Symbol) takes the slot's nil. */
+int repr_store_nil_fits(Compiler *c, int node, TyKind slot, int how) {
+  return node >= 0 && nt_kind(c->nt, node) == NK_NilNode &&
+         (repr_store_class(c, slot) == SC_PTR || slot == TY_BOOL ||
+          (how == CO_CONVERT && repr_store_class(c, slot) == SC_ARITH));
+}
+
+int repr_store_fits(Compiler *c, TyKind from, TyKind to) {
+  if (from == to || to == TY_UNKNOWN || to == TY_VOID || from == TY_UNKNOWN) return 1;
+  int fc = repr_store_class(c, from), tc = repr_store_class(c, to);
+  if (from == TY_NIL) return 0;   /* see store_nil_fits */
+  if (fc == SC_NONE) return 0;
+  if (fc == SC_ARITH && tc == SC_ARITH) return from != TY_FLOAT || to == TY_FLOAT;
+  if (ty_is_object(from) && ty_is_object(to) && fc == SC_PTR && tc == SC_PTR)
+    return is_descendant(c, ty_object_class(from), ty_object_class(to));
+  Buf fb, tb;
+  memset(&fb, 0, sizeof fb); memset(&tb, 0, sizeof tb);
+  emit_ctype(c, from, &fb); emit_ctype(c, to, &tb);
+  int same = fb.p && tb.p && sp_streq(fb.p, tb.p);
+  free(fb.p); free(tb.p);
+  return same;
+}
+
+/* Would emit_empty_literal_as build `v` at the slot's kind? An empty
+   literal, a bare Array.new or Hash.new, for an Array or Hash slot it has
+   a constructor for. */
+static int repr_empty_lit_as(Compiler *c, int v, TyKind slot) {
+  const NodeTable *nt = c->nt;
+  const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+  if (!vty) return 0;
+  int n = 0;
+  if (sp_streq(vty, "ArrayNode")) {
+    nt_arr(nt, v, "elements", &n);
+    return !n && (ty_is_ptr_array(slot) || slot == TY_POLY_ARRAY || array_kind(slot));
+  }
+  if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode")) {
+    nt_arr(nt, v, "elements", &n);
+    return !n && ty_is_hash(slot) && ty_hash_cname(slot);
+  }
+  if (sp_streq(vty, "CallNode") && node_is_empty_container(nt, v)) {
+    const char *rn = nt_str(nt, nt_ref(nt, v, "receiver"), "name");
+    if (rn && sp_streq(rn, "Hash") && ty_is_hash(slot) && ty_hash_cname(slot)) return 1;
+    if (rn && sp_streq(rn, "Array"))
+      return ty_is_ptr_array(slot) || slot == TY_POLY_ARRAY || array_kind(slot);
+  }
+  return 0;
+}
+
+/* Does emit_poly_rhs_coerced take a boxed value into a `slot` slot? An
+   object through the checked unbox, a scalar or a String through its
+   conversion. */
+static int repr_poly_rhs_ok(TyKind slot) {
+  return ty_is_object(slot) || slot == TY_INT || slot == TY_BOOL || slot == TY_FLOAT ||
+         slot == TY_SYMBOL || slot == TY_STRING;
+}
+
+int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how) {
+  if (repr_store_fits(c, from, slot) || (from == TY_NIL && repr_store_nil_fits(c, node, slot, how)))
+    return CF_FIT;
+  if (slot == TY_POLY) return CF_BOX;
+  if (from == TY_VOID || from == TY_NIL) return CF_NIL_SENT;
+  if (slot == TY_BIGINT && from == TY_INT) return CF_INT2BIG;
+  if (how == CO_CONVERT && slot == TY_FLOAT && (from == TY_BIGINT || from == TY_RATIONAL))
+    return CF_CONVERT;
+  return CF_REFUSE;
+}
+
+int repr_coerce_form(Compiler *c, int node, TyKind slot, int how) {
+  if (how == CO_CONVERT && slot == TY_BOOL) return CF_CONVERT;
+  TyKind from = store_value_kind(c, node);
+  int container = ty_is_array(slot) || ty_is_hash(slot);
+  if (from == TY_UNKNOWN && container && repr_empty_lit_as(c, node, slot)) return CF_EMPTY_LIT;
+  if (repr_store_fits(c, from, slot) || (from == TY_NIL && repr_store_nil_fits(c, node, slot, how)))
+    return CF_FIT;
+  if (slot == TY_POLY) return CF_BOX;
+  if (container && repr_empty_lit_as(c, node, slot)) return CF_EMPTY_LIT;
+  if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) return CF_NIL_SENT;
+  if (slot == TY_BIGINT && from == TY_INT) return CF_INT2BIG;
+  if (from == TY_POLY && how == CO_HOLD) {
+    if (repr_poly_rhs_ok(slot)) return CF_POLY_RHS;
+    if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
+        slot == TY_STRBUF || slot == TY_CLASS || (ty_is_object(slot) && !repr_value_obj(c, slot)))
+      return CF_CHECKED_UNBOX;
+  }
+  return repr_coerce_text_form(c, node, from, slot, how);
+}
+
+const char *repr_coerce_form_name(int form) {
+  static const char *const names[CF__COUNT] = {
+    "FIT", "BOX", "EMPTY_LIT", "NIL_SENT", "INT2BIG", "POLY_RHS", "CHECKED_UNBOX", "CONVERT", "REFUSE",
+  };
+  return form >= 0 && form < CF__COUNT ? names[form] : "?";
+}
+
 int g_repr_check = 0;
 
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {

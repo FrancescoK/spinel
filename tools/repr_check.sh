@@ -13,6 +13,9 @@
 #   literal        an empty literal, Hash.new or a splat, boxed by its shape
 #   text-vs-node   boxed through emit_boxed_text with a type not the node's
 #   conflict       none of the above: repr_box_form and the boxer disagree
+# and for each store emit_coerce makes, its form against repr_coerce_form:
+#   coerce-view    an override of the node's type is active
+#   coerce-conflict  the store and the prediction disagree
 # The counts are reported and the commonest conflict shapes listed. The run
 # fails on a conflict, and when the C differs with the flag.
 set -u
@@ -51,8 +54,15 @@ echo "repr-check: $(count conflict) conflicts, $(count view) view, $(count yield
      "$(count transplant) transplant," \
      "$(count ran-first) ran-first, $(count late-slot) late-slot, $(count literal) literal," \
      "$(count text-vs-node) text-vs-node"
+echo "repr-check: top coerce conflict shapes (node kind, from->slot, emitted, predicted):"
+grep ': repr-check: coerce-conflict:' "$OUT" |
+  sed -E 's/.*: node [0-9]+ ([A-Za-z?]+) ([^:]+): emitted ([A-Z_0-9]+), predicted ([A-Z_0-9]+)$/\1 \2 \3 \4/' |
+  sort | uniq -c | sort -rn | head -15
+echo "repr-check: stores: $(count coerce-conflict) coerce-conflicts, $(count coerce-view) coerce-view"
 echo "repr-check: $ndiff programs whose C differs with the flag"
 nconf=$(count conflict)
+ncc=$(count coerce-conflict)
 grep ': repr-check: conflict:' "$OUT" | head -20
+grep ': repr-check: coerce-conflict:' "$OUT" | head -20
 rm -f "$OUT"
-[ "$ndiff" -eq 0 ] && [ "$nconf" -eq 0 ]
+[ "$ndiff" -eq 0 ] && [ "$nconf" -eq 0 ] && [ "$ncc" -eq 0 ]

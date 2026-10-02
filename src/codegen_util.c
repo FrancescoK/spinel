@@ -1,5 +1,6 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
+#include "repr.h"
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -2755,56 +2756,13 @@ TyKind store_value_kind(Compiler *c, int node) {
   return t;
 }
 
-/* The C value class of a kind: what C allows between two of them. */
-enum { SC_NONE, SC_ARITH, SC_PTR, SC_STRUCT, SC_BOXED };
-static int store_class(Compiler *c, TyKind t) {
-  switch (t) {
-    case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: return SC_ARITH;
-    case TY_POLY: return SC_BOXED;
-    case TY_UNKNOWN: case TY_VOID: case TY_NIL: return SC_NONE;
-    default: break;
-  }
-  if (ty_is_object(t)) return comp_ty_value_obj(c, t) ? SC_STRUCT : SC_PTR;
-  if (ty_is_struct_valued(t)) return SC_STRUCT;
-  return c_type_name(t) ? SC_PTR : SC_NONE;
-}
-
-/* Does a value of kind `from`, written as it is, keep its value in a slot of
-   kind `to`? The same C type does; so does an exact arithmetic widening
-   (an Integer into a Float slot, a boolean into an Integer one), a nil
-   literal's 0 in a pointer slot, which is NULL, and a subclass instance in
-   its ancestor's pointer slot. A nil fits as it is only where it is a
-   literal (store_nil_fits). An untyped value's C type is whatever its
-   emitter chose (a boxed result, the gate's token, a super call's String),
-   which the kind does not say, so it is not checked. A void one fits
-   nothing. */
-/* A nil literal renders as 0, which is a pointer slot's NULL and a boolean's
-   false: it is written as it is there, and into an operand a builtin
-   converts itself (CO_CONVERT), whose nilable forms read the 0 as they
-   always have. Any other nil value -- a call that answers nil, kept for its
-   effect -- and a nil into a variable whose nil is a sentinel (an Integer,
-   a Float, a Symbol) takes the slot's nil. */
+/* The C value class of a kind, whether a store fits as it is: repr.c
+   (repr_store_class, repr_store_fits) */
+#define store_class(c, t) repr_store_class((c), (t))
 static int store_nil_fits(Compiler *c, int node, TyKind slot, int how) {
-  return node >= 0 && nt_kind(c->nt, node) == NK_NilNode &&
-         (store_class(c, slot) == SC_PTR || slot == TY_BOOL ||
-          (how == CO_CONVERT && store_class(c, slot) == SC_ARITH));
+  return repr_store_nil_fits(c, node, slot, how);
 }
-
-int store_fits(Compiler *c, TyKind from, TyKind to) {
-  if (from == to || to == TY_UNKNOWN || to == TY_VOID || from == TY_UNKNOWN) return 1;
-  int fc = store_class(c, from), tc = store_class(c, to);
-  if (from == TY_NIL) return 0;   /* see store_nil_fits */
-  if (fc == SC_NONE) return 0;
-  if (fc == SC_ARITH && tc == SC_ARITH) return from != TY_FLOAT || to == TY_FLOAT;
-  if (ty_is_object(from) && ty_is_object(to) && fc == SC_PTR && tc == SC_PTR)
-    return is_descendant(c, ty_object_class(from), ty_object_class(to));
-  Buf fb, tb;
-  memset(&fb, 0, sizeof fb); memset(&tb, 0, sizeof tb);
-  emit_ctype(c, from, &fb); emit_ctype(c, to, &tb);
-  int same = fb.p && tb.p && sp_streq(fb.p, tb.p);
-  free(fb.p); free(tb.p);
-  return same;
-}
+int store_fits(Compiler *c, TyKind from, TyKind to) { return repr_store_fits(c, from, to); }
 
 /* Report the raw store of `node` (rendered as a `from` value) into a slot of
    kind `slot`, when it does not fit: once per node and site, on stderr at the
@@ -2868,29 +2826,52 @@ void store_check(Compiler *c, int node, TyKind slot, const char *what, Buf *b) {
    construct (`what`), the class it was given and the slot's C type. That is
    the rule of #6179: what Spinel compiles works, or it is refused; it never
    emits C that does not build, or a store that reads the wrong value. */
+/* --repr-check (R6): each store emit_coerce makes records its form
+   (CoerceForm), compared with repr_coerce_form's prediction. A store
+   emit_coerce_text makes for emit_coerce's last arm hands its form up; one
+   it makes on its own is compared with repr_coerce_text_form's. */
+static int rcc_depth;
+static int rcc_text_form = -1;
+static void rcc_note(Compiler *c, int node, TyKind from, TyKind slot, int how, int form, int text) {
+  if (!g_repr_check || form < 0) return;
+  int want = text ? repr_coerce_text_form(c, node, from, slot, how) : repr_coerce_form(c, node, slot, how);
+  if (want == form) return;
+  const char *nty = node >= 0 ? nt_type(c->nt, node) : NULL;
+  fprintf(stderr, "repr-check: %s: node %d %s %s->%s: emitted %s, predicted %s\n",
+          view_depth() > 0 ? "coerce-view" : "coerce-conflict", node, nty ? nty : "?",
+          ty_name(text ? from : store_value_kind(c, node)), ty_name(slot),
+          repr_coerce_form_name(form), repr_coerce_form_name(want));
+}
+#define RCC(form) rcc_note(c, node, TY_UNKNOWN, slot, how, (form), 0)
+#define RCCT(form) do { if (g_repr_check) { rcc_text_form = (form); \
+    if (rcc_depth == 0) rcc_note(c, node, from, slot, how, (form), 1); } } while (0)
+
 void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
                       const char *text, const char *what, Buf *b) {
   if (store_fits(c, from, slot) || (from == TY_NIL && store_nil_fits(c, node, slot, how))) {
     buf_puts(b, text);
+    RCCT(CF_FIT);
     return;
   }
-  if (slot == TY_POLY) { emit_boxed_text(c, from, text, b); return; }
+  if (slot == TY_POLY) { emit_boxed_text(c, from, text, b); RCCT(CF_BOX); return; }
   /* A value with no C type of its own -- a call that answers nothing, a
      raise -- is evaluated for its effect, and the slot takes its nil */
   if (from == TY_VOID || from == TY_NIL) {
     buf_printf(b, "((void)(%s), %s)", text, raise_tail_value_c(c, slot));
+    RCCT(CF_NIL_SENT);
     return;
   }
   if (slot == TY_BIGINT && from == TY_INT) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? NULL : sp_bigint_new_int(_t%d); })",
                t, text, t, t);
+    RCCT(CF_INT2BIG);
     return;
   }
   const char *fn = NULL;
   if (how == CO_CONVERT && slot == TY_FLOAT)
     fn = from == TY_BIGINT ? "sp_bigint_to_double" : from == TY_RATIONAL ? "sp_rational_to_f" : NULL;
-  if (fn) { buf_printf(b, "%s(%s)", fn, text); return; }
+  if (fn) { buf_printf(b, "%s(%s)", fn, text); RCCT(CF_CONVERT); return; }
   char msg[512];
   Buf tb; memset(&tb, 0, sizeof tb);
   emit_ctype(c, slot, &tb);
@@ -2910,28 +2891,29 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
   /* A boolean a builtin takes as a flag (`report_on_exception = v`) is the
      value's truthiness, whatever its class: nil and false are false, 0 and
      "" are true (emit_cond) */
-  if (how == CO_CONVERT && slot == TY_BOOL) { emit_cond(c, node, b); return; }
+  if (how == CO_CONVERT && slot == TY_BOOL) { emit_cond(c, node, b); RCC(CF_CONVERT); return; }
   TyKind from = store_value_kind(c, node);
   /* An untyped empty container (a bare Array.new / Hash.new) is built at
      the slot's kind ahead of the fit, which an untyped value always passes:
      the bare `Array.new` went into a Float array slot as the general Array
      it renders as */
   if (from == TY_UNKNOWN && (ty_is_array(slot) || ty_is_hash(slot)) &&
-      emit_empty_literal_as(c, node, slot, b)) return;
+      emit_empty_literal_as(c, node, slot, b)) { RCC(CF_EMPTY_LIT); return; }
   if (store_fits(c, from, slot) || (from == TY_NIL && store_nil_fits(c, node, slot, how))) {
     emit_expr(c, node, b);
+    RCC(CF_FIT);
     return;
   }
   /* A boxed slot takes any value boxed, as it is */
-  if (slot == TY_POLY) { emit_boxed(c, node, b); return; }
+  if (slot == TY_POLY) { emit_boxed(c, node, b); RCC(CF_BOX); return; }
   /* An empty `[]` or `{}` of another kind than the slot's is built at the
      slot's */
-  if ((ty_is_array(slot) || ty_is_hash(slot)) && emit_empty_literal_as(c, node, slot, b)) return;
+  if ((ty_is_array(slot) || ty_is_hash(slot)) && emit_empty_literal_as(c, node, slot, b)) { RCC(CF_EMPTY_LIT); return; }
   /* nil literal into a sentinel slot: the slot's nil itself */
-  if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, raise_tail_value_c(c, slot)); return; }
+  if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, raise_tail_value_c(c, slot)); RCC(CF_NIL_SENT); return; }
   /* An Integer into a Bignum slot is the same Ruby value in the wide
      representation, its nil sentinel kept as nil (emit_bigint_operand) */
-  if (slot == TY_BIGINT && from == TY_INT) { emit_bigint_operand_ext(c, node, b); return; }
+  if (slot == TY_BIGINT && from == TY_INT) { emit_bigint_operand_ext(c, node, b); RCC(CF_INT2BIG); return; }
   /* A boxed value into a typed slot is unboxed, as the plain writes unbox
      it: a scalar or a String through its conversion (emit_poly_rhs_coerced,
      nil kept as the slot's nil), a container, an object or a Bignum through
@@ -2940,21 +2922,26 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
      struct-valued or other handle slot has no checked unbox, and is refused
      below. */
   if (from == TY_POLY && how == CO_HOLD) {
-    if (emit_poly_rhs_coerced(c, slot, node, b)) return;
+    if (emit_poly_rhs_coerced(c, slot, node, b)) { RCC(CF_POLY_RHS); return; }
     if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
         slot == TY_STRBUF || slot == TY_CLASS || (ty_is_object(slot) && !comp_ty_value_obj(c, slot))) {
       Buf vb; memset(&vb, 0, sizeof vb);
       emit_expr(c, node, &vb);
       emit_unbox_nilable_text(c, slot, vb.p ? vb.p : "sp_box_nil()", b);
       free(vb.p);
+      RCC(CF_CHECKED_UNBOX);
       return;
     }
   }
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_expr(c, node, &vb);
+  rcc_depth++;
   emit_coerce_text(c, node, from, slot, how, vb.p ? vb.p : "", what, b);
+  rcc_depth--;
   free(vb.p);
+  RCC(rcc_text_form);
 }
+
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out) {
   if (!lv) return 0;
   TyKind t = lv->type;

@@ -111,4 +111,38 @@ const char *repr_form_name(int form);
 /* --repr-check is on */
 extern int g_repr_check;
 
+/* ---- Stores (R6) ----
+   The C value class of a kind, what C allows between two of them: a store
+   of one class into a slot of another converts, or does not fit. */
+enum { SC_NONE, SC_ARITH, SC_PTR, SC_STRUCT, SC_BOXED };
+int repr_store_class(const Compiler *c, TyKind t);
+/* Does a value of kind `from`, written as it is, keep its value in a slot
+   of kind `to` (store_fits)? */
+int repr_store_fits(Compiler *c, TyKind from, TyKind to);
+/* A nil literal written as it is into a slot of kind `slot` (store_nil_fits) */
+int repr_store_nil_fits(Compiler *c, int node, TyKind slot, int how);
+
+/* The form emit_coerce stores a value into a typed slot in. */
+typedef enum {
+  CF_FIT,           /* written as it is */
+  CF_BOX,           /* boxed into a poly slot */
+  CF_EMPTY_LIT,     /* an empty [] / {} / Array.new / Hash.new built at the slot's kind */
+  CF_NIL_SENT,      /* the slot's nil: a nil literal, or a value with no C type
+                       evaluated for its effect */
+  CF_INT2BIG,       /* an Integer widened into a Bignum slot */
+  CF_POLY_RHS,      /* a boxed value through its scalar conversion
+                       (emit_poly_rhs_coerced) */
+  CF_CHECKED_UNBOX, /* a boxed value through the checked unbox */
+  CF_CONVERT,       /* a conversion Ruby makes itself: truthiness, a Bignum
+                       or Rational to a Float */
+  CF_REFUSE,        /* no conversion keeps the value: refused */
+  CF__COUNT
+} CoerceForm;
+/* the form emit_coerce stores `node` into a `slot` slot in (how: CO_HOLD
+   or CO_CONVERT) */
+int repr_coerce_form(Compiler *c, int node, TyKind slot, int how);
+/* the form emit_coerce_text stores an already-rendered `from` value in */
+int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how);
+const char *repr_coerce_form_name(int form);
+
 #endif
