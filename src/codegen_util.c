@@ -3062,10 +3062,14 @@ void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
    the analyzer settled as void. */
 int call_never_returns(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  if (id < 0 || nt_kind(nt, id) != NK_CallNode || comp_ntype(c, id) != TY_VOID) return 0;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  /* a call on such a receiver never runs, whatever its own type
+     (`m.version - 1 > 2`: the `-` raises before `>` is reached) */
+  if (recv >= 0 && call_never_returns(c, recv)) return 1;
+  if (comp_ntype(c, id) != TY_VOID) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
-  int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 && (sp_streq(nm, "raise") || sp_streq(nm, "fail"))) return 1;
   int mi = -1;
   if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, id, nm);

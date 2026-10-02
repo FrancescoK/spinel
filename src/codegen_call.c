@@ -25659,6 +25659,21 @@ static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
   buf_printf(b, ")) ? sp_Enumerator_new_from(_e%d) : sp_poly_enum_for_each(_e%d); })", t, t);
 }
 void emit_call(Compiler *c, int id, Buf *b) {
+  /* A call on a receiver that never hands back a value (a method whose
+     every path raises): Ruby evaluates the receiver first, it raises, and
+     neither the arguments nor the method run. Evaluate it for effect and
+     answer the call's type's placeholder, as the raise-tail arm does.
+     Every arm below types the receiver from its void, so `m.version + "x"`,
+     `m.version < 3` and `m.version.size` were each refused by the arm for
+     their operator. */
+  { int nr = nt_ref(c->nt, id, "receiver");
+    if (nr >= 0 && call_never_returns(c, nr)) {
+      TyKind t = comp_ntype(c, id);
+      buf_puts(b, "((void)("); emit_expr(c, nr, b); buf_puts(b, ")");
+      if (t != TY_VOID) buf_printf(b, ", %s", raise_tail_value_c(c, t));
+      buf_puts(b, ")");
+      return;
+    } }
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
