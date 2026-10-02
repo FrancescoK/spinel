@@ -2432,6 +2432,12 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
     int ci2 = rn2 ? comp_class_index(c, rn2) : -1;
     if (ci2 >= 0) return comp_cmethod_in_chain(c, ci2, sym, NULL);
   }
+  /* `self.class.method(:cmeth)` in an instance method of a class nothing
+     inherits from: that class's class-side method */
+  if (rt == TY_CLASS) {
+    int ci3 = self_class_static_ci(c, recv);
+    if (ci3 >= 0) return comp_cmethod_in_chain(c, ci3, sym, NULL);
+  }
   return -1;
 }
 
