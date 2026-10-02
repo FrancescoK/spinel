@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "call_plan.h"
 /* the `&.` proc call currently being emitted inside its own nil guard */
 static int g_sn_proc_node = -1;
 
@@ -40363,11 +40364,35 @@ else {
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-      int defcls = -1;
-      int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
-      if (mi < 0 && (mi = class_reopen_cmethod(c, recv, name)) >= 0) {
+      int defcls = -1, mi = -1;
+      /* the target is the call's plan (call_plan.c): the constant's class
+         method, or a method the program adds to Class (its owner, not the
+         constant's class, is then the plan's) */
+      const CallPlan *pl = cplan_user(c, id);
+      if (pl->mi >= 0 && pl->via == UC_CMETH) {
+        mi = pl->mi;
         defcls = c->scopes[mi].class_id;
-        ci = builtin_class_id(nt_str(nt, recv, "name"));
+        if (pl->owner_ci != ci) ci = builtin_class_id(nt_str(nt, recv, "name"));
+      }
+      /* --plan-check keeps the arm's own lookup as the assertion; without a
+         plan it is the arm's answer */
+      if (g_plan_check || mi < 0) {
+        int oci = comp_class_index(c, nt_str(nt, recv, "name"));
+        int odef = -1;
+        int omi = oci >= 0 ? comp_cmethod_in_chain(c, oci, name, &odef) : -1;
+        if (omi < 0 && (omi = class_reopen_cmethod(c, recv, name)) >= 0) {
+          odef = c->scopes[omi].class_id;
+          oci = builtin_class_id(nt_str(nt, recv, "name"));
+        }
+        if (mi < 0) {
+          /* a method the plan did not serve */
+          if (g_plan_check && omi >= 0)
+            fprintf(stderr, "plan-check: cplan-fallback: cmethod-on-constant node %d %s\n", id, name ? name : "?");
+          mi = omi; defcls = odef; ci = oci;
+        }
+        else if (omi != mi || odef != defcls || oci != ci)
+          fprintf(stderr, "plan-check: cplan-conflict: cmethod-on-constant node %d %s: plan %d/%d/%d, arm %d/%d/%d\n",
+                  id, name ? name : "?", mi, defcls, ci, omi, odef, oci);
       }
       if (mi >= 0) {
         nd_callee(c, id, mi, defcls, 0);
