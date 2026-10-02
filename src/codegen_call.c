@@ -25036,6 +25036,37 @@ static void refuse_string_copies(Compiler *c, int id) {
   int av[16];
   int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
             sp_streq(name, "yield") || sp_streq(name, "===");
+  int ka = nt_ref(nt, id, "arguments"), kac = 0;
+  const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+  for (int k = 0; k < kac; k++) {
+    if (nt_kind(nt, kav[k]) != NK_KeywordHashNode) continue;
+    int en = 0; const int *el = nt_arr(nt, kav[k], "elements", &en);
+    for (int e = 1; e < en; e++) {
+      int value, shared;
+      const char *key = dyn_kw_elem_key(c, el[e], &value);
+      if (!key || !strvar_arg(c, value, &shared) || c->strbuf_box[value]) continue;
+      int repeated = 0;
+      for (int h = 0; h < e && !repeated; h++) {
+        int earlier;
+        const char *prev = dyn_kw_elem_key(c, el[h], &earlier);
+        repeated = prev && sp_streq(prev, key);
+      }
+      if (!repeated) continue;
+      int app = 0, j;
+      if (dyn && dyn_call_site(c, id)) {
+        DynReach r;
+        dyn_call_kw_reach(c, id, key, &r);
+        app = r.app;
+      }
+      else {
+        int mi = refuse_static_target(c, id, name);
+        app = mi >= 0 && dyn_method_kw_appends(c, mi, key, &j);
+      }
+      if (app)
+        refuse_string_copy(c, value, NULL, key, "a repeated keyword",
+                           "through a repeated keyword");
+    }
+  }
   refuse_changed_splat(c, id, name, recv, dyn);
   refuse_splat_nonlocal(c, id, name, recv, dyn);
   if (!dyn) refuse_unplaced_lead(c, id, name, recv);
