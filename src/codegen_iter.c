@@ -2911,6 +2911,31 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       free(tb.p); }
     buf_puts(b, "; ");
   }
+  else if (as_expr && !nx_own && bn3 > 0 &&
+           want_ty != TY_POLY && want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL &&
+           nt_kind(nt, unwrap_parens(c, bd3[bn3 - 1])) == NK_CallNode &&
+           comp_ntype(c, unwrap_parens(c, bd3[bn3 - 1])) == TY_UNKNOWN) {
+    /* An untyped call tail (a method no class answers) lowers to the gate's
+       NoMethodError raise, an sp_RbVal; spliced bare, it became the value of
+       a statement expression read into the yield's typed slot, and the C did
+       not compile when another site's block typed that slot (`try { 1 }` then
+       `try { obj.missing }`). The raise never returns, so coerce it to the
+       slot as emit_unresolved_coerced does for any typed store; the `next`
+       arm above drops the same tail for the same reason. */
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    { Buf tb; memset(&tb, 0, sizeof tb);
+      Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
+      emit_unresolved_coerced(c, bd3[bn3 - 1], want_ty, &tb);
+      g_pre = svp3; g_indent = svi3;
+      if (tb.p) buf_puts(b, tb.p);
+      free(tb.p); }
+    buf_puts(b, "; ");
+  }
   else {
     if (rd_lbl && block_of_body(c, bbody) >= 0) g_redo_pending = rd_lbl;
     else if (rd_lbl && as_expr) buf_printf(b, "_redo_%d: ; ", rd_lbl);
