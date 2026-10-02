@@ -904,8 +904,7 @@ int desugar_body_module_eval(Compiler *c) {
       int st = bb[i];
       int blk = nt_kind(nt, st) == NK_CallNode ? nt_ref(nt, st, "block") : -1;
       const char *nm = blk >= 0 ? nt_str(nt, st, "name") : NULL;
-      int is_eval = nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") ||
-                           sp_streq(nm, "class_exec") || sp_streq(nm, "module_exec")) &&
+      int is_eval = nm && is_class_eval_family(nm) &&
                     nt_kind(nt, blk) == NK_BlockNode && nt_ref(nt, blk, "parameters") < 0 &&
                     nt_ref(nt, st, "arguments") < 0;
       int recv = is_eval ? nt_ref(nt, st, "receiver") : -1;
@@ -2045,8 +2044,7 @@ int desugar_int_enum_with_index(Compiler *c) {
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     if (nt_ref(nt, recv, "block") >= 0) continue;
     const char *rnm = nt_str(nt, recv, "name");
-    if (!rnm || (!sp_streq(rnm, "times") && !sp_streq(rnm, "upto") &&
-                 !sp_streq(rnm, "downto"))) continue;
+    if (!rnm || !is_int_step(rnm)) continue;
     if (infer_type(c, recv) != TY_RANGE) continue;
     int base = nt->count;
     int blk = nt_ref(nt, id, "block");
@@ -7852,7 +7850,7 @@ int nested_row_iter_call(Compiler *c, int id) {
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   int np = 0;
   while (block_param_name(c, block, np)) np++;
-  if ((sp_streq(nm, "each") || sp_streq(nm, "reverse_each") || sp_streq(nm, "each_entry")) &&
+  if (is_each_walk(nm) &&
       argc == 0 && np <= 1) return 1;
   if (sp_streq(nm, "each_with_index") && argc == 0 && np <= 2) return 1;
   if ((sp_streq(nm, "map") || sp_streq(nm, "collect")) && argc == 0 && np <= 1) return 1;
@@ -9164,7 +9162,7 @@ static int bs_binds_rest(TyKind rt, const char *nm, int argc) {
   if (!arr && rt != TY_RANGE) return 0;
   if (sp_streq(nm, "map") || sp_streq(nm, "collect") || sp_streq(nm, "select") ||
       sp_streq(nm, "filter") || sp_streq(nm, "reject")) return 1;
-  return arr && (sp_streq(nm, "each") || sp_streq(nm, "each_entry") || sp_streq(nm, "reverse_each"));
+  return arr && is_each_walk(nm);
 }
 
 /* Does the emitter of builtin iterator `nm` spread the one Array a step
@@ -9783,7 +9781,7 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
     int r = nt_ref(nt, node, "receiver");
     const char *cn = nt_str(nt, node, "name");
     if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, r, "name"), bpn) &&
-        cn && (sp_streq(cn, "call") || sp_streq(cn, "yield") || sp_streq(cn, "()") || sp_streq(cn, "[]"))) {
+        cn && is_call_or_yield(cn)) {
       (*calls)++;
       args = nt_ref(nt, node, "arguments");
     }

@@ -1184,7 +1184,7 @@ void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, Buf *
 void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   const NodeTable *nt = c->nt;
   int argc = 0;
-  int is_lengthlike = sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count");
+  int is_lengthlike = is_count_alias(name);
   int is_empty = sp_streq(name, "empty?");
   /* A class-tagged poly value answers these with its class name (#2656); only
      when no user class defines them, or that user method is the real target. */
@@ -1850,7 +1850,7 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
   const char *ebopen = (ret == TY_POLY) ? "sp_box_bool(" : "";
   const char *ebclose = (ret == TY_POLY) ? ")" : "";
   /* built-in array receivers reaching a length-like poly dispatch */
-  if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) {
+  if (is_count_alias(name)) {
     emit_builtin_len_cases(b, tr, tv, bopen, bclose);
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_LEN_CASES, -1, TY_UNKNOWN, PC_SAME);
   }
@@ -2343,8 +2343,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      is an array at run time. include? has had this arm for a long time; the
      index family answering the position rather than a bool was simply never
      added, so the call raised NoMethodError naming Array (#3409). */
-  int is_arr_index = ((sp_streq(name, "index") || sp_streq(name, "rindex") ||
-                       sp_streq(name, "find_index")) && argc == 1 &&
+  int is_arr_index = (is_index_query(name) && argc == 1 &&
                       nt_ref(nt, id, "block") < 0) ||
                      /* the two-argument form is String's alone -- Array#index
                         takes one argument -- so only the default arm below

@@ -537,7 +537,7 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
     return 0;
   }
   if (recv == TY_INT) {
-    if (sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto")) {
+    if (is_int_step(name)) {
       BY_PUT(0, TY_INT); return 1;
     }
     return 0;

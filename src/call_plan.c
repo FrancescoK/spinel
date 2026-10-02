@@ -1312,7 +1312,7 @@ static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const Poly
 /* The builtin cases emit_poly_cases0 writes after the class arms (the
    container read re-entered as a builtin is a trial, not listed here). */
 static void cpoly_cases0(const char *name, const PolySpecials0 *ps, PolyPlan *p, int *cap) {
-  if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count"))
+  if (is_count_alias(name))
     cpoly_family(p, cap, PB_LEN_CASES);
   if (sp_streq(name, "clear")) cpoly_family(p, cap, PB_CLEAR);
   if (ps->empty) cpoly_family(p, cap, PB_EMPTY_CASES);

@@ -716,7 +716,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = TY_POLY; return 1; }
     }
     /* index returns nil on a miss -> poly (int-or-nil) */
-    if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) &&
+    if (is_index_query(name) &&
         (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) { *out = TY_POLY; return 1; }
     if (sp_streq(name, "index") || sp_streq(name, "find_index")) { *out = TY_INT; return 1; }
     if (sp_streq(name, "sum")) {
@@ -1513,7 +1513,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if ((sp_streq(name, "ceildiv") || sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1)
       { *out = TY_POLY; return 1; }
     if (sp_streq(name, "pow") && (argc == 1 || argc == 2)) { *out = TY_POLY; return 1; }
-    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1)
+    if (is_bits_query(name) && argc == 1)
       { *out = TY_BOOL; return 1; }
   }
   /* The Enumerable names a boxed receiver shares with Array: the emitter
@@ -1579,7 +1579,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                  : ((argc == 1 ||
                      (argc == 2 && !sp_streq(name, "find_index"))) &&
                     nt_ref(nt, id, "block") < 0)) &&
-      (sp_streq(name, "find_index") || sp_streq(name, "index") || sp_streq(name, "rindex")) &&
+      is_index_query(name) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_POLY; return 1; }
   /* String#chars on a poly value (a String read out of a container / pair):
@@ -1603,8 +1603,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      `reverse_each` is the same Enumerator over the elements reversed, and
      stayed unresolved the same way. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each") || sp_streq(name, "each_entry") ||
-       sp_streq(name, "reverse_each") ||
+      (is_each_walk(name) ||
        /* `v&.select` keeps the boxed answer, which holds the nil a nil
           receiver gives: an Enumerator slot reads it back as one */
        (poly_blockless_enum_name(name) && !call_is_safe_nav(nt, id))) &&

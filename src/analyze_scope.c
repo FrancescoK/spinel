@@ -839,8 +839,7 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   const char *ty = nt_type(nt, id);
   if (!ty || !sp_streq(ty, "CallNode")) return -1;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (!sp_streq(nm, "class_eval") && !sp_streq(nm, "module_eval") &&
-              !sp_streq(nm, "class_exec") && !sp_streq(nm, "module_exec"))) return -1;
+  if (!nm || !is_class_eval_family(nm)) return -1;
   int blk = nt_ref(nt, id, "block");
   if (blk < 0) return -1;
   int recv = nt_ref(nt, id, "receiver");
@@ -897,8 +896,7 @@ int class_reopen_cmethod(Compiler *c, int recv, const char *name) {
 }
 
 static int is_class_eval_name(const char *nm) {
-  return nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") ||
-                sp_streq(nm, "class_exec") || sp_streq(nm, "module_exec"));
+  return nm && is_class_eval_family(nm);
 }
 
 void desugar_class_reopen(Compiler *c) {

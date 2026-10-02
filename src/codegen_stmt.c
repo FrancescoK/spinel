@@ -12463,7 +12463,7 @@ static int num_iter_answers_recv(Compiler *c, int id) {
     return rt == TY_INT || rt == TY_FLOAT || rt == TY_RATIONAL || rt == TY_BIGINT ||
            rt == TY_RANGE;
   return rt == TY_INT &&
-         (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto"));
+         is_int_step(nm);
 }
 
 /* Does this statement list end in something that leaves the function -- a

@@ -1162,8 +1162,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     const char *pnm = nt_str(nt, recv, "name");
     int pin_recv = nt_ref(nt, recv, "receiver");
     if (pnm && pin_recv >= 0 && nt_ref(nt, recv, "block") < 0 &&
-        (sp_streq(pnm, "freeze") || sp_streq(pnm, "dup") || sp_streq(pnm, "clone") ||
-         sp_streq(pnm, "itself")) &&
+        is_self_copy(pnm) &&
         nt_type(nt, pin_recv) && sp_streq(nt_type(nt, pin_recv), "ArrayNode")) {
       int pen = 0; nt_arr(nt, pin_recv, "elements", &pen);
       if (pen == 0 &&
@@ -3607,8 +3606,7 @@ else {
         return 1;
       }
       int block = nt_ref(nt, id, "block");
-      if ((sp_streq(name, "find_index") || sp_streq(name, "index") ||
-           sp_streq(name, "rindex")) && block >= 0 &&
+      if (is_index_query(name) && block >= 0 &&
           emit_array_block_index(c, id, recv, rt, k, name, block, b))
         return 1;
       /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
@@ -3736,8 +3734,7 @@ else {
       }
       /* select! / filter! / keep_if / reject! / delete_if { |x| cond }: the
          in-place filter, on a typed or a poly array (emit_array_filter_loop) */
-      if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||
-           sp_streq(name, "reject!") || sp_streq(name, "delete_if")) && block >= 0) {
+      if (is_select_bang(name) && block >= 0) {
         const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
         int trecv, torig, twp;
         if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
@@ -3781,8 +3778,7 @@ else {
         else                              buf_printf(b, " _t%d == 1; })", tc);
         return 1;
       }
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
-           sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      if (is_quantifier_or_count(name) &&
           argc == 1 && nt_ref(nt, id, "block") < 0 &&
           comp_ntype(c, argv[0]) == TY_CLASS) {
         /* A class argument on a TYPED array: the predicates ask `Class === e`,
@@ -3812,8 +3808,7 @@ else {
           buf_printf(b, cls_all ? " _t%d == 1; })" : " (void)_t%d; FALSE; })", tlen);
         return 1;
       }
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
-           sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      if (is_quantifier_or_count(name) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* array.all?(v)/any?(v)/none?(v)/one?(v)/count(v) -- compare by == */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
@@ -4033,7 +4028,7 @@ else {
       if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
       if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
           a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
-      if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) && argc == 1 &&
+      if (is_index_query(name) && argc == 1 &&
           (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
         if (elem_mismatch) {
           buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -4270,8 +4265,7 @@ else {
                       " sp_PolyArray_slice(_t%d, 0, _t%d); })", tn, t, tn);
         return 1;
       }
-      if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
-           sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      if (is_quantifier_or_count(name) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* poly_array.all?(pat)/one?/any?/none?/count(pat) -- Enumerable's
            pattern form is `pat === element` (Range cover, Regexp match, Class
@@ -4459,8 +4453,7 @@ else {
       }
       /* select! / filter! / keep_if / reject! / delete_if { |x| cond }: the
          in-place filter (emit_array_filter_loop) */
-      if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||
-           sp_streq(name, "reject!") || sp_streq(name, "delete_if")) && nt_ref(nt, id, "block") >= 0) {
+      if (is_select_bang(name) && nt_ref(nt, id, "block") >= 0) {
         int trecv, torig, twp;
         if (emit_array_filter_loop(c, recv, nt_ref(nt, id, "block"), rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
           char box[64]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", trecv);
@@ -4778,8 +4771,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
          the loop is emit_hash_filter_loop's). Mutates in place; `!` forms
          yield nil when nothing was removed else self, keep_if/delete_if
          always yield self. */
-      if ((sp_streq(name, "delete_if") || sp_streq(name, "reject!") || sp_streq(name, "select!") ||
-           sp_streq(name, "filter!") || sp_streq(name, "keep_if")) &&
+      if (is_select_bang(name) &&
           nt_ref(nt, id, "block") >= 0) {
         int block = nt_ref(nt, id, "block");
         Buf rb = expr_buf(c, recv);
@@ -7268,7 +7260,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
       }
       else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
+      else if (is_bits_query(name) &&
                argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
         /* A Bignum mask exceeds int64, so an int receiver can never cover all
            its bits (allbits? is always false); anybits?/nobits? test the
@@ -11553,7 +11545,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_poly_int_powmod("); emit_boxed(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) {
+      else if (is_bits_query(name)) {
         buf_puts(b, "sp_poly_int_bits_test("); emit_boxed(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, argv[0], b);
         buf_printf(b, ", %d)", sp_streq(name, "allbits?") ? 0 : sp_streq(name, "anybits?") ? 1 : 2);

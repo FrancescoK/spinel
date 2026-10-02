@@ -3199,7 +3199,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Proc identity: equal?/eql?/== against another Proc -> bool */
   if (recv >= 0 && rt == TY_PROC && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+      is_equality_name(name) &&
       infer_type(c, argv[0]) == TY_PROC)
     return TY_BOOL;
   /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
@@ -3361,8 +3361,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       (argc == 0 ||
        (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
         sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
-      (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
-       sp_streq(name, "dup") || sp_streq(name, "clone")) &&
+      is_self_copy(name) &&
       /* a generated READER of the name owns it on a concrete object, as any
          reader does in CRuby: fall through to the member-read rule (#4190);
          so does a method the class defines itself, whose value is what its
@@ -4225,7 +4224,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "bytes")) return TY_STRING;
     if (sp_streq(name, "seed")) return TY_INT;
     if (sp_streq(name, "class")) return TY_CLASS;
-    if ((sp_streq(name, "==") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1)
+    if (is_equality_name(name) && argc == 1)
       return TY_BOOL;
   }
 
@@ -6871,7 +6870,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;
     if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
          sp_streq(name, "ceildiv")) && argc == 1) return TY_BIGINT;
-    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) &&
+    if (is_bits_query(name) &&
         argc == 1) return TY_BOOL;
     if (sp_streq(name, "gcdlcm") && argc == 1) return TY_POLY_ARRAY;
     /* to_r/rationalize/quo on a Bignum produce a boxed big Rational (#2469) */

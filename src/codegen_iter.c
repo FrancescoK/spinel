@@ -1412,7 +1412,7 @@ int is_block_call(Compiler *c, int id) {
   const char *ty = nt_type(nt, id);
   if (!ty || !sp_streq(ty, "CallNode")) return 0;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]") && !sp_streq(nm, "yield"))) return 0;
+  if (!nm || !is_call_or_yield(nm)) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");
@@ -5250,8 +5250,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* hash.delete_if / reject! / select! / filter! / keep_if { |k, v| cond }
      as a statement: the loop alone, its value unread (the expression form
      lives in emit_hash_call) */
-  if ((sp_streq(name, "delete_if") || sp_streq(name, "reject!") || sp_streq(name, "select!") ||
-       sp_streq(name, "filter!") || sp_streq(name, "keep_if")) && ty_is_hash(rt) && block >= 0) {
+  if (is_select_bang(name) && ty_is_hash(rt) && block >= 0) {
     Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
     int tr2, to2, tw2;
     int ok = emit_hash_filter_loop(c, recv, block, rt, name, rb2.p ? rb2.p : "NULL", b, indent, &tr2, &to2, &tw2);
@@ -5754,7 +5753,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
     return 1;
   }
-  if ((sp_streq(name, "each") || sp_streq(name, "each_entry") || sp_streq(name, "reverse_each")) &&
+  if (is_each_walk(name) &&
       (ty_is_array(rt) || ty_is_obj_array(rt))) {   /* an object array walks as sp_PtrArray (#4846) */
     const char *k = array_iter_kind(rt);
     if (!k) return 0;

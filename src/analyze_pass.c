@@ -9367,8 +9367,7 @@ int desugar_class_eval_value(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || (!sp_streq(nm, "class_eval") && !sp_streq(nm, "class_exec") &&
-                !sp_streq(nm, "module_eval") && !sp_streq(nm, "module_exec"))) continue;
+    if (!nm || !is_class_eval_family(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *cname = nt_str(nt, recv, "name");
@@ -12792,8 +12791,7 @@ int infer_block_params(Compiler *c) {
     }
     else if (sp_streq(name, "step") && (rt == TY_RATIONAL || rt == TY_BIGINT))
       pt = TY_POLY;  /* yields boxed Rational/Integer values (#2566); a Bignum receiver walks boxed too (#4779) */
-    else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
-         sp_streq(name, "downto")) && rt == TY_INT)
+    else if (is_int_step(name) && rt == TY_INT)
       pt = TY_INT;
     /* on a boxed receiver the block runs through the dispatch with its
        argument boxed; typed during inference, not only when emitted, so what
@@ -12942,8 +12940,7 @@ int infer_block_params(Compiler *c) {
               /* the index-finding family binds the element exactly as its
                  siblings do; it was left off, so a block param that no other
                  site typed stayed unknown and got no declaration (#3409) */
-              sp_streq(name, "find_index") || sp_streq(name, "index") ||
-              sp_streq(name, "rindex") ||
+              is_index_query(name) ||
               /* Same binding, same omission: every remaining sibling that
                  yields one element (or, for the pairwise ones, two). A param
                  no other site typed stayed unknown and got no declaration, so
@@ -13396,9 +13393,7 @@ int infer_block_params(Compiler *c) {
                          sp_streq(name, "group_by") || sp_streq(name, "sum") ||
                          /* Enumerable predicates/counters: a solo param is the
                             [k, v] pair, not the key (#2339) */
-                         sp_streq(name, "any?") || sp_streq(name, "all?") ||
-                         sp_streq(name, "none?") || sp_streq(name, "one?") ||
-                         sp_streq(name, "count"));
+                         is_quantifier_or_count(name));
         if (p0) {
           if (bp_widen(hs, p0, pair_solo ? TY_POLY : ty_hash_key(rt))) changed = 1;
         }

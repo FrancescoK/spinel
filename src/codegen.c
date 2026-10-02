@@ -1248,7 +1248,7 @@ int call_returns_nullable_int(Compiler *c, int node) {
   /* a proc's result comes back through the boxed slot and is read as the
      sentinel when the proc answered nil (`-> { return; 456 }.call`): box it
      back as nil */
-  if (sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") || sp_streq(nm, "yield")) {
+  if (is_call_or_yield(nm)) {
     int pr = nt_ref(nt, node, "receiver");
     if (pr >= 0 && comp_ntype(c, pr) == TY_PROC) return 1;
   }

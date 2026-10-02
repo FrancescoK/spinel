@@ -61,3 +61,56 @@ int is_combination_family(const char *n) {
 int is_visibility_name(const char *n) {
   return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public");
 }
+
+int is_select_bang(const char *n) {
+  return sp_streq(n, "select!") || sp_streq(n, "filter!") || sp_streq(n, "keep_if") ||
+         sp_streq(n, "reject!") || sp_streq(n, "delete_if");
+}
+
+int is_each_walk(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "reverse_each");
+}
+
+int is_index_query(const char *n) {
+  return sp_streq(n, "find_index") || sp_streq(n, "index") || sp_streq(n, "rindex");
+}
+
+int is_self_copy(const char *n) {
+  return sp_streq(n, "freeze") || sp_streq(n, "dup") || sp_streq(n, "clone") ||
+         sp_streq(n, "itself");
+}
+
+int is_int_step(const char *n) {
+  return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto");
+}
+
+int is_equality_name(const char *n) {
+  return sp_streq(n, "equal?") || sp_streq(n, "eql?") || sp_streq(n, "==");
+}
+
+int is_bits_query(const char *n) {
+  return sp_streq(n, "allbits?") || sp_streq(n, "anybits?") || sp_streq(n, "nobits?");
+}
+
+int is_count_alias(const char *n) {
+  return sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "count");
+}
+
+int is_class_eval_family(const char *n) {
+  return sp_streq(n, "class_eval") || sp_streq(n, "module_eval") || sp_streq(n, "class_exec") ||
+         sp_streq(n, "module_exec");
+}
+
+int is_call_or_yield(const char *n) {
+  return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]") || sp_streq(n, "yield");
+}
+
+int is_quantifier_or_count(const char *n) {
+  return sp_streq(n, "all?") || sp_streq(n, "any?") || sp_streq(n, "none?") ||
+         sp_streq(n, "one?") || sp_streq(n, "count");
+}
+
+int is_push_unshift(const char *n) {
+  return sp_streq(n, "<<") || sp_streq(n, "push") || sp_streq(n, "append") ||
+         sp_streq(n, "unshift");
+}

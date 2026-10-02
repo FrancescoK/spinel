@@ -17785,8 +17785,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
      array arm below uses. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       comp_ntype(c, recv) == TY_POLY && comp_ntype(c, id) == TY_ENUMERATOR &&
-      (sp_streq(name, "each") || sp_streq(name, "each_entry") ||
-       sp_streq(name, "reverse_each"))) {
+      is_each_walk(name)) {
     buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;
@@ -17825,8 +17824,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     /* a blockless map/select/reject is the same element snapshot; only its
        #inspect method name differs (the deferred block is supplied by a later
        block form, which the chain emitters match before this arm) */
-    if (!sp_streq(name, "each") && !sp_streq(name, "reverse_each") &&
-        !sp_streq(name, "each_entry")) {
+    if (!is_each_walk(name)) {
       int te = ++g_tmp;
       buf_puts(b, "({ ");
       if (argc) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
@@ -25932,9 +25930,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         return;
       }
       if (enm && eac == 0 && nt_ref(nt, id, "block") >= 0 &&
-          (sp_streq(enm, "delete_if") || sp_streq(enm, "reject!") ||
-           sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
-           sp_streq(enm, "filter!"))) {
+          is_select_bang(enm)) {
         int keep2 = sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
                     sp_streq(enm, "filter!");
         /* the bang trio answers nil when nothing changed (#2844) */
@@ -26055,7 +26051,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   }
   /* ENV.size/count/length -> environ entry count */
   if (recv >= 0 && argc == 0 &&
-      (sp_streq(name, "size") || sp_streq(name, "count") || sp_streq(name, "length"))) {
+      is_count_alias(name)) {
     const char *rty2 = nt_type(nt, recv);
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
@@ -27512,7 +27508,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      true. There is no materialized main-object value to emit for the
      receiver alone, but the comparison's answer is static (#3245). */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "==") || sp_streq(name, "eql?")) &&
+      is_equality_name(name) &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SelfNode") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "receiver")) {
@@ -33019,7 +33015,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     /* `equal?` joins them: a class is one object per name, so identity and
        equality are the same question here (#4271). */
-    if ((sp_streq(name, "==" ) || sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
+    if (is_equality_name(name) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
@@ -33630,8 +33626,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* identity methods -> the receiver itself */
   if (recv >= 0 &&
-      (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
-       sp_streq(name, "dup") || sp_streq(name, "clone")) &&
+      is_self_copy(name) &&
       /* a generated READER of the name owns it, as in CRuby (#4190), and so
          does a method the class defines itself: Nokogiri's Node#dup is a deep
          copy, and the built-in shallow copy took its place (#5450) */
@@ -37379,7 +37374,7 @@ else {
   if (recv >= 0 && (comp_ntype(c, recv) == TY_IO || comp_ntype(c, recv) == TY_DIR) &&
       ((argc == 0 && sp_streq(name, "to_s")) || (argc == 1 && sp_streq(name, "<=>")) ||
        (comp_ntype(c, recv) == TY_IO && argc == 1 &&
-        (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")))) &&
+        is_equality_name(name))) &&
       emit_native_object_protocol(c, id, b)) return;
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
     if (sp_streq(name, "inspect")) {
@@ -37890,7 +37885,7 @@ else {
     }
     {
       if (empty_recv) {
-        if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
+        if (is_count_alias(name) && argc == 0) { buf_puts(b, "0"); return; }
         if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
         if (sp_streq(name, "frozen?") && argc == 0) { buf_puts(b, "0"); return; }
         if (sp_streq(name, "class") && argc == 0) { buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Array\")})"); return; }
@@ -40084,8 +40079,7 @@ else {
   /* a predicate on an empty array literal folds to a constant: the block (if
      any) never runs, so empty all?/none? are true, any?/one? false */
   if (recv >= 0 && (argc == 0 || argc == 1) &&
-      (sp_streq(name, "all?") || sp_streq(name, "any?") ||
-       sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      is_quantifier_or_count(name) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (sp_streq(name, "count")) { buf_puts(b, "0"); return; }
@@ -41057,7 +41051,7 @@ else {
       emit_bigint_operand(c, argv[0], b); buf_puts(b, "))");
       free(rs.p); return;
     }
-    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) {
+    if (is_bits_query(name) && argc == 1) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = ", t); emit_bigint_operand(c, argv[0], b);
       /* the receiver expression below is unsequenced with this operand and can
