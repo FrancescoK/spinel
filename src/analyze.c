@@ -20736,6 +20736,40 @@ static int yield_splat_handles(Compiler *c) {
   return changed;
 }
 
+/* The literal block call `n` hands its arguments to as its parameters:
+   `Thread.new(a) { |x| }`, and a `resume` of a Fiber
+   made with one, `Fiber.new { |x| }.resume(a)` or through a local only ever
+   written so; -1 for another call. */
+static int an_fiber_new_block(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !sp_streq(nt_str(nt, v, "name"), "new")) return -1;
+  int r = nt_ref(nt, v, "receiver"), b = nt_ref(nt, v, "block");
+  if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode || !sp_streq(nt_str(nt, r, "name"), "Fiber")) return -1;
+  return b >= 0 && nt_kind(nt, b) == NK_BlockNode ? b : -1;
+}
+int an_thread_arg_block(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!nm || r < 0) return -1;
+  if (sp_streq(nm, "new")) {
+    int b = nt_ref(nt, n, "block");
+    return nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Thread") &&
+           b >= 0 && nt_kind(nt, b) == NK_BlockNode ? b : -1;
+  }
+  if (!sp_streq(nm, "resume")) return -1;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return an_fiber_new_block(c, r);
+  const char *vn = nt_str(nt, r, "name");
+  Scope *vs = vn ? comp_scope_of(c, r) : NULL;
+  int si = vs ? (int)(vs - c->scopes) : -1, blk = -1;
+  for (int w = si >= 0 ? comp_lvw_first_sc(c, si, vn) : -1; w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+    int b = nt_kind(nt, w) == NK_LocalVariableWriteNode ? an_fiber_new_block(c, nt_ref(nt, w, "value")) : -1;
+    if (b < 0 || (blk >= 0 && blk != b)) return -1;
+    blk = b;
+  }
+  return blk;
+}
 static int promote_dyncall_string_args(Compiler *c) {
   const NodeTable *nt = c->nt;
   dyn_memo_reset(c);
