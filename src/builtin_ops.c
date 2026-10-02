@@ -131,9 +131,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_MATCHDATA, "named_captures",   0,   0, BF_ANY, TY_STR_POLY_HASH,  BOPE_TEMPLATE, "sp_md_named_captures($r)" },
   { TY_MATCHDATA, "named_captures",   2, 127, BF_ANY, TY_STR_POLY_HASH,  BOPE_NONE },
   { TY_MATCHDATA, "nil?",             0, 127, BF_ANY, TY_BOOL,           BOPE_TEMPLATE, "($r == 0)" },
-  { TY_MATCHDATA, "hash",             0,   0, BF_ANY, TY_UNKNOWN,        BOPE_TEMPLATE, "sp_MatchData_hash($r)" },  /* content-based (#3014) */
-  { TY_MATCHDATA, "frozen?",          0,   0, BF_ANY, TY_UNKNOWN,        BOPE_TEMPLATE, "sp_gc_is_frozen((void *)($r))" },  /* the bit freeze sets (#3638) */
-  { TY_MATCHDATA, "freeze",           0,   0, BF_ANY, TY_UNKNOWN,        BOPE_TEMPLATE, "((sp_MatchData *)sp_gc_freeze((void *)($r)))" },
+  { TY_MATCHDATA, "hash",             0,   0, BF_ANY, TY_INT,            BOPE_TEMPLATE, "sp_MatchData_hash($r)" },  /* content-based (#3014) */
+  { TY_MATCHDATA, "frozen?",          0,   0, BF_ANY, TY_BOOL,           BOPE_TEMPLATE, "sp_gc_is_frozen((void *)($r))" },  /* the bit freeze sets (#3638) */
+  { TY_MATCHDATA, "freeze",           0,   0, BF_ANY, TY_MATCHDATA,      BOPE_TEMPLATE, "((sp_MatchData *)sp_gc_freeze((void *)($r)))" },
   { TY_MATCHDATA, "==",              1,   1, BF_ANY, TY_BOOL,           BOPE_TEMPLATE, "sp_MatchData_eq($r, $e0)", TY_MATCHDATA },
   { TY_MATCHDATA, "==",              1,   1, BF_ANY, TY_BOOL,           BOPE_TEMPLATE, "((void)($r), (void)($b0), 0)", TY_UNKNOWN },
   { TY_MATCHDATA, "eql?",            1,   1, BF_ANY, TY_BOOL,           BOPE_TEMPLATE, "sp_MatchData_eq($r, $e0)", TY_MATCHDATA },
@@ -498,8 +498,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_FIBER, "storage=",      1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE,
     "({ sp_RbVal _t$t = $b0; SP_GC_ROOT_RBVAL(_t$t); sp_Fiber_storage_assign($r, _t$t); _t$t; })" },
   { TY_FIBER, "blocking?",     0, 0,            BF_ANY, TY_BOOL,    BOPE_TEMPLATE, "sp_Fiber_blocking_p($r)" },
-  { TY_FIBER, "inspect",       0, 0,            BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
-  { TY_FIBER, "to_s",          0, 0,            BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
+  { TY_FIBER, "inspect",       0, 0,            BF_ANY, TY_STRING,  BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
+  { TY_FIBER, "to_s",          0, 0,            BF_ANY, TY_STRING,  BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
 
   /* Thread (a green thread on the scheduler). The universal queries come
      first for each handle kind (#3124). NULL encodes nil, as it does for an
