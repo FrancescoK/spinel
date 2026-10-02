@@ -687,6 +687,8 @@ values too.
 
 Not yet shared:
 
+- a String variable in an Array literal feeding an appended nested multiple-assignment target;
+
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
