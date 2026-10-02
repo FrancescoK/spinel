@@ -6223,60 +6223,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
                  tc2, th, hash_box_cls(rt));
       return 1;
     }
-    /* Hash#default_proc: wrap the stored Hash.new{} dproc (a raw C fn +
-       captures pointer) in a first-class Proc via a per-variant trampoline
-       that adapts the sp_proc_call ABI (boxed side-channel args) back to the
-       dproc signature. A hash without a dproc -- or a variant that cannot
-       carry one -- yields NULL (nil). */
-    if (sp_streq(name, "default_proc") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      const char *hnn = ty_hash_cname(rt);
-      int hdp_v = !hnn ? -1
-                : sp_streq(hnn, "SymPoly") ? 0
-                : sp_streq(hnn, "StrPoly") ? 1
-                : sp_streq(hnn, "PolyPoly") ? 2 : -1;
-      if (hdp_v < 0) {
-        buf_puts(b, "((void)(");
-        emit_expr(c, recv, b);
-        buf_puts(b, "), (sp_Proc *)NULL)");
-        return 1;
-      }
-      static char hdp_done[3];
-      if (!hdp_done[hdp_v]) {
-        hdp_done[hdp_v] = 1;
-        if (!g_needs_proc_poly_argslot) {
-          g_needs_proc_poly_argslot = 1;
-          buf_puts(&g_proc_protos, "extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];\n");
-        }
-        const char *kexpr = hdp_v == 0 ? "(sp_sym)sp_poly_to_i(_sp_proc_poly_args[1])"
-                          : hdp_v == 1 ? "_sp_proc_poly_args[1].v.s"
-                          : "_sp_proc_poly_args[1]";
-        buf_printf(&g_procs,
-          "static sp_int _hdp_tramp_%s(void *cap, sp_int argc, sp_int *args) {\n"
-          "  sp_%sHash *src = (sp_%sHash *)cap; (void)args;\n"
-          "  sp_%sHash *h = (argc >= 1 && _sp_proc_poly_args[0].tag == SP_TAG_OBJ)"
-          " ? (sp_%sHash *)_sp_proc_poly_args[0].v.p : src;\n"
-          "  _sp_proc_poly_ret = (src && src->dproc && argc >= 2)"
-          " ? src->dproc(h, %s, src->dproc_self) : sp_box_nil();\n"
-          "  return 0;\n}\n"
-          "static sp_Proc *_hdp_%s(sp_%sHash *h) {\n"
-          "  if (!h || !h->dproc) return NULL;\n"
-          "  return sp_proc_new_meta((void *)_hdp_tramp_%s, h, sp_bm_cap_scan, 2, FALSE, 0, NULL, NULL);\n}\n",
-          hnn, hnn, hnn, hnn, hnn, kexpr, hnn, hnn, hnn);
-      }
-      buf_printf(b, "_hdp_%s(", hnn);
-      emit_expr(c, recv, b);
-      buf_puts(b, ")");
-      return 1;
-    }
-    /* deconstruct_keys(keys or nil): CRuby returns the hash itself */
-    if (sp_streq(name, "deconstruct_keys") && argc == 1) {
-      buf_puts(b, "((void)(");
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, "), ");
-      emit_expr(c, recv, b);
-      buf_puts(b, ")");
-      return 1;
-    }
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
       unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
     const char *hn = ty_hash_cname(rt);
@@ -6299,89 +6245,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           emit_filter_bang_result(name, tr, torig, twp, box, b);
           return 1;
         }
-      }
-      /* Hash#to_proc: a Proc mapping a key to the hash value, closing over the
-         hash. Emit a per-variant lookup fn matching the sp_proc_call ABI. */
-      if (sp_streq(name, "to_proc") && argc == 0) {
-        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
-        int pn = ++g_proc_counter;
-        /* a PolyPolyHash key is an sp_RbVal, delivered on the proc's poly
-           side-channel (args[] carries only scalar bits); the get() takes it
-           directly. Scalar-keyed variants read the sp_int slot. */
-        const char *keyexpr = (kt == TY_SYMBOL) ? "(sp_sym)args[0]"
-                            : (kt == TY_STRING) ? "(const char *)(uintptr_t)args[0]"
-                            : (rt == TY_POLY_POLY_HASH) ? "_sp_proc_poly_args[0]"
-                            : "args[0]";
-        if (rt == TY_POLY_POLY_HASH) g_needs_proc_poly_argslot = 1;
-        buf_printf(&g_proc_protos, "static sp_int _hashproc_%d(void *cap, sp_int argc, sp_int *args);\n", pn);
-        buf_printf(&g_procs, "static sp_int _hashproc_%d(void *cap, sp_int argc, sp_int *args) {\n", pn);
-        /* the hash proc is a lambda: exactly one key, as CRuby's raises --
-           the old `argc < 1 -> return 0` left the return slot holding the
-           previous call's value */
-        buf_printf(&g_procs, "  if (argc != 1) sp_raise_cls(\"ArgumentError\","
-                   " sp_sprintf(\"wrong number of arguments (given %%lld, expected 1)\", (long long)argc));\n");
-        buf_printf(&g_procs, "  sp_%sHash *_h = (sp_%sHash *)cap;\n", hn, hn);
-        /* Universal return ABI: publish the boxed value into _sp_proc_poly_ret
-           for every value type; the .call site reads the slot back. */
-        buf_puts(&g_procs, "  _sp_proc_poly_ret = ");
-        { char _ge[256];
-          snprintf(_ge, sizeof _ge, "sp_%sHash_get(_h, %s)", hn, keyexpr);
-          emit_boxed_text(c, vt, _ge, &g_procs); }
-        buf_puts(&g_procs, ";\n  return 0;\n}\n");
-        buf_printf(b, "sp_proc_new_meta((void *)_hashproc_%d, (void *)(", pn);
-        emit_expr(c, recv, b);
-        /* CRuby's Hash#to_proc is a lambda: lambda? answers true and a
-           composed call enforces its 1-arity instead of reading a stale slot */
-        buf_puts(b, "), sp_hashproc_cap_scan, 1, TRUE, 1, NULL, NULL)");
-        return 1;
-      }
-      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
-        if (sp_streq(name, "clone")) {
-          /* clone carries the frozen flag over, dup does not (#3751) */
-          int ts = ++g_tmp, td = ++g_tmp;
-          buf_printf(b, "({ sp_%sHash *_t%d = ", hn, ts); emit_expr(c, recv, b);
-          buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_dup(_t%d);"
-                        " if (_t%d && sp_gc_is_frozen(_t%d)) sp_gc_freeze(_t%d);"
-                        " _t%d; })",
-                     hn, td, hn, ts, ts, ts, td, td);
-          return 1;
-        }
-        buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "[]") && argc == 1) {
-        TyKind arg_kt = comp_ntype(c, argv[0]);
-        TyKind hash_kt = ty_hash_key(rt);
-        /* key type mismatch: sym key on str-keyed hash (or vice versa) -- the key
-           can never exist in the hash, so always return the hash's default
-           value. A Symbol on a String-keyed hash was excepted here and
-           coerced to its name; that was an older Hash.new{} model (#4531). */
-        if (hash_kt != TY_POLY && hash_kt != TY_UNKNOWN &&
-            arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
-            !(hash_kt == TY_STRING && arg_kt == TY_STRBUF) &&
-            !hash_nil_key_stored(c, argv[0], hash_kt)) {
-          TyKind vt = ty_hash_val(rt);
-          int t = ++g_tmp;
-          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b); buf_puts(b, "; ");
-          buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); ");  /* the key still evaluates */
-          if (vt == TY_INT) buf_printf(b, "_t%d ? _t%d->default_v : SP_INT_NIL; })", t, t);
-          /* absent means the hash's default, which is nil unless one was
-             given -- not the empty string (#3790) */
-          else if (vt == TY_STRING) buf_printf(b, "_t%d ? _t%d->default_v : NULL; })", t, t);
-          else buf_printf(b, "_t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
-          return 1;
-        }
-        if (rt == TY_POLY_POLY_HASH) {
-          buf_printf(b, "sp_%sHash_get(", hn);
-          emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-        }
-        else {
-          /* int-valued hashes have a nullable get_opt; string-valued use get */
-          const char *getter = ty_hash_val(rt) == TY_INT ? "get_opt" : "get";
-          buf_printf(b, "sp_%sHash_%s(", hn, getter);
-          emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], ty_hash_key(rt), b); buf_puts(b, ")");
-        }
-        return 1;
       }
       if (sp_streq(name, "dig") && argc >= 1) {
         /* dig(*keys): the key list only exists at run time, so walk it there.
@@ -6486,11 +6349,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         int tr = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b);
         buf_printf(b, "; if (!_t%d) sp_nil_recv(\"fetch_values\"); sp_PolyArray_new(); })", tr);
-        return 1;
-      }
-      if (sp_streq(name, "values_at") && argc == 0) {
-        /* zero keys: an empty array; evaluate the receiver for effects (#2408) */
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())");
         return 1;
       }
       if ((sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) && argc >= 1) {
@@ -6601,8 +6459,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
       /* A block supersedes a positional default: CRuby warns and calls the
            block, where the default was being returned (#3566). Treating the
            two-argument-with-block form as the one-argument-with-block form is
-           exactly that rule. */
-      if (sp_streq(name, "fetch") && (argc == 1 || (argc == 2 && nt_ref(nt, id, "block") >= 0))) {
+           exactly that rule. fetch(key) without a block is a row. */
+      if (sp_streq(name, "fetch") && (argc == 1 || argc == 2) && nt_ref(nt, id, "block") >= 0) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0 && hash_key_misses(c, argv[0], ty_hash_key(rt))) {
           /* the block receives the missing key, and its parameter is typed
@@ -6658,33 +6516,6 @@ else {
           buf_puts(b, "; })");
           return 1;
         }
-        /* fetch(key) with no default raises KeyError on a miss */
-        TyKind vt = ty_hash_val(rt);
-        int th = ++g_tmp, tk = ++g_tmp;
-        char keytmp[32], htmp[32];
-        snprintf(keytmp, sizeof keytmp, "_t%d", tk);
-        snprintf(htmp, sizeof htmp, "_t%d", th);
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d)", th);   /* rooted across the key, as the array arms are */
-        if (hash_key_misses(c, argv[0], ty_hash_key(rt)) && !hash_nil_key_stored(c, argv[0], ty_hash_key(rt))) {
-          /* a key of a kind the table cannot hold: the KeyError names the
-             key itself, so box it once rather than look it up */
-          buf_printf(b, "; sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b);
-          buf_puts(b, "; sp_exc_stage_recv(");
-          emit_boxed_text(c, rt, htmp, b);
-          buf_printf(b, "); sp_raise_key_not_found(_t%d); %s; })", tk,
-                     vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-          return 1;
-        }
-        buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
-        buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : (",
-                   hn, th, tk, hn, th, tk);
-        buf_puts(b, "sp_exc_stage_recv(");
-        emit_boxed_text(c, rt, htmp, b);
-        buf_puts(b, "), sp_raise_key_not_found(");
-        emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
-        buf_printf(b, "), %s); })", vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
-        return 1;
       }
       if (sp_streq(name, "fetch") && argc == 2) {
         /* fetch(key, default) -> has_key? ? value : default */
@@ -6752,14 +6583,15 @@ else {
         emit_poly_sum_seed(c, recv, argv[0], b);
         return 1;
       }
-      if (sp_streq(name, "sum") && argc <= 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* Hash#sum without a block folds each [k,v] PAIR into the init value;
            `init + [k,v]` is Integer#+ Array -> TypeError, so only an empty hash
-           (which returns the init unchanged) is well-defined. */
+           (which returns the init unchanged) is well-defined. Without an init
+           value it is a row. */
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sHash_length(_t%d) == 0 ? (sp_int)(", hn, t);
-        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "0");
+        emit_int_expr(c, argv[0], b);
         buf_puts(b, ") : (sp_raise_cls(\"TypeError\", \"Array can't be coerced into Integer\"), (sp_int)0); })");
         return 1;
       }
@@ -6785,38 +6617,6 @@ else {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })", t, t, hash_box_cls(rt), t);
-        return 1;
-      }
-      /* to_hash answers the receiver itself, as CRuby's does; it made a
-         copy, so a write through the result missed the Hash */
-      if (sp_streq(name, "to_hash") && argc == 0) {
-        emit_expr(c, recv, b);
-        return 1;
-      }
-      /* no-arg merge -> a copy; no-arg slice -> an empty hash of the same
-         variant (#2340/#2349) */
-      if (sp_streq(name, "merge") && argc == 0) {
-        buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "slice") && argc == 0) {
-        buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
-        buf_printf(b, "); sp_%sHash_new(); })", hn);
-        return 1;
-      }
-      if ((sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
-           sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
-        TyKind arg_kt = comp_ntype(c, argv[0]);
-        TyKind hash_kt = ty_hash_key(rt);
-        if (hash_key_misses(c, argv[0], hash_kt) && !hash_nil_key_stored(c, argv[0], hash_kt)) {
-          /* a key of a class the table cannot hold: false, the receiver and
-             the key still evaluated */
-          buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b);
-          buf_puts(b, "); 0; })");
-          return 1;
-        }
-        buf_printf(b, "sp_%sHash_has_key(", hn);
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], hash_kt, b); buf_puts(b, ")");
         return 1;
       }
       if ((sp_streq(name, "value?") || sp_streq(name, "has_value?")) && argc == 1) {
@@ -6850,28 +6650,6 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      /* Hash#key(value): the first key mapping to value (sym-keyed hash). */
-      if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) {
-        buf_puts(b, "sp_SymPolyHash_key(");
-        emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_boxed(c, argv[0], b);
-        buf_puts(b, ")");
-        return 1;
-      }
-      /* Hash#key(value) for any variant: the first key whose value == the arg,
-         or nil. Scans the boxed [key, value] pair list. */
-      if (sp_streq(name, "key") && argc == 1) {
-        int tp = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
-        emit_hash_pairs_expr(c, recv, rt, hn, b);
-        buf_printf(b, "; sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; sp_RbVal _t%d = sp_box_nil();", tr);
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, tp, ti);
-        buf_printf(b, " sp_PolyArray *_pr = (sp_PolyArray *)_t%d->data[_t%d].v.p;", tp, ti);
-        buf_printf(b, " if (sp_poly_eq(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
-        buf_printf(b, " _t%d; })", tr);
-        return 1;
-      }
       if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
         int trp = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
@@ -6896,47 +6674,6 @@ else {
                       " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
                       " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
                    ti, ti, tn, ti, to, ti, th, th);
-        return 1;
-      }
-      if (sp_streq(name, "default") && argc <= 1) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
-        if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-          /* default(key): a hash built with a block calls its default_proc with
-             (self, key); default() (or a hash with no proc) returns default_v
-             (#2464). Only the poly-value variants carry a dproc. */
-          /* The proc takes the key in the hash's own key representation, so an
-             argument of another type cannot be handed to it -- passing an
-             Integer where a `const char *` key is expected did not even
-             typecheck. Such a key can never be in this hash, so answer the
-             plain default. */
-          TyKind dkt = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-          int dkey_ok = rt == TY_POLY_POLY_HASH ||
-                        (rt == TY_SYM_POLY_HASH && dkt == TY_SYMBOL) ||
-                        (rt == TY_STR_POLY_HASH && (dkt == TY_STRING || dkt == TY_STRBUF));
-          if (argc == 1 && dkey_ok) {
-            buf_printf(b, "; (_t%d && _t%d->dproc) ? _t%d->dproc(_t%d, ", t, t, t, t);
-            if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b);
-            else emit_expr(c, argv[0], b);
-            buf_printf(b, ", _t%d->dproc_self) : (_t%d ? _t%d->default_v : sp_box_nil()); })", t, t, t);
-          }
-          else if (argc == 1) {
-            buf_printf(b, "; (void)("); emit_expr(c, argv[0], b);
-            buf_printf(b, "); _t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
-          }
-          else {
-            buf_printf(b, "; _t%d ? _t%d->default_v : sp_box_nil(); })", t, t);
-          }
-        }
-        else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
-          buf_printf(b, "; (_t%d && _t%d->default_v != SP_INT_NIL) ? sp_box_int(_t%d->default_v) : sp_box_nil(); })", t, t, t);
-        }
-        else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-          buf_printf(b, "; (_t%d && _t%d->default_v) ? sp_box_str(_t%d->default_v) : sp_box_nil(); })", t, t, t);
-        }
-        else {
-          buf_printf(b, "; (void)_t%d; sp_box_nil(); })", t);
-        }
         return 1;
       }
       if (sp_streq(name, "default=") && argc == 1) {
@@ -6975,31 +6712,6 @@ else {
         buf_puts(b, " ");
         if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
         buf_puts(b, "; })"); return 1;
-      }
-      if (sp_streq(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
-        /* runtime returns sym ids as an IntArray; box into a poly (sym) array */
-        int ki = ++g_tmp, kp = ++g_tmp, ii = ++g_tmp;
-        buf_printf(b, "({ sp_IntArray *_t%d = sp_SymPolyHash_keys(", ki); emit_expr(c, recv, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ki, kp, kp);
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++)"
-                      " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)sp_IntArray_get(_t%d, _t%d)));",
-                   ii, ii, ki, ii, kp, ki, ii);
-        buf_printf(b, " _t%d; })", kp);
-        return 1;
-      }
-      if (sp_streq(name, "keys") && argc == 0) {
-        buf_printf(b, "sp_%sHash_keys(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "values") && argc == 0) {
-        buf_printf(b, "sp_%sHash_values(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        char fn[64]; snprintf(fn, sizeof fn, "sp_%sHash_inspect", hn);
-        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
-        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
       }
       /* merge!/update with no Hash has nothing to fold in and answers the
          receiver, after the nil and frozen checks; a block has no conflict to

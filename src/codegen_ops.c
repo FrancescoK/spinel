@@ -180,6 +180,15 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_STR_AFFIX_ANY] = emit_op_str_affix_any,
   [BOPE_HASH_PATTERN] = emit_op_hash_pattern,
   [BOPE_HASH_PATTERN_ALL] = emit_op_hash_pattern_all,
+  [BOPE_HASH_DEFAULT_PROC] = emit_op_hash_default_proc,
+  [BOPE_HASH_TO_PROC] = emit_op_hash_to_proc,
+  [BOPE_HASH_AREF] = emit_op_hash_aref,
+  [BOPE_HASH_HAS_KEY] = emit_op_hash_has_key,
+  [BOPE_HASH_KEY] = emit_op_hash_key,
+  [BOPE_HASH_DEFAULT] = emit_op_hash_default,
+  [BOPE_HASH_KEYS] = emit_op_hash_keys,
+  [BOPE_HASH_FETCH] = emit_op_hash_fetch,
+  [BOPE_HASH_TO_S] = emit_op_hash_to_s,
 };
 
 /* an argument's kind, for a row's argument guard */

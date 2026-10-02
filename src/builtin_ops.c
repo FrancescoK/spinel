@@ -1650,6 +1650,25 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "none?",            1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN },
   { BOP_ANY_HASH, "one?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN },
   { BOP_ANY_HASH, "all?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN_ALL },
+  /* the readers and copies */
+  { BOP_ANY_HASH, "[]",               1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_AREF },
+  { BOP_ANY_HASH, "fetch",            1,   1, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_FETCH },  /* KeyError on a miss */
+  { BOP_ANY_HASH, "has_key?",         1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
+  { BOP_ANY_HASH, "key?",             1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
+  { BOP_ANY_HASH, "include?",         1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
+  { BOP_ANY_HASH, "member?",          1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
+  { BOP_ANY_HASH, "key",              1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_KEY },
+  { BOP_ANY_HASH, "keys",             0,   0, BF_ANY,      BOPR_HASH_KEYS, BOPE_HASH_KEYS },
+  { BOP_ANY_HASH, "values",           0,   0, BF_ANY,      BOPR_HASH_VALS, BOPE_TEMPLATE, "sp_$HHash_values($r)" },
+  { BOP_ANY_HASH, "values_at",        0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "((void)($r), sp_PolyArray_new())" },  /* #2408 */
+  { BOP_ANY_HASH, "inspect",          0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_$HHash_inspect($r)" },
+  { BOP_ANY_HASH, "to_s",             0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_TO_S },
+  { BOP_ANY_HASH, "to_proc",          0,   0, BF_ANY,      TY_PROC,        BOPE_HASH_TO_PROC },  /* a lambda over the hash */
+  { BOP_ANY_HASH, "default_proc",     0,   0, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_DEFAULT_PROC },
+  { BOP_ANY_HASH, "dup",              0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)" },
+  { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })" },  /* the frozen flag too (#3751) */
+  { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_$HHash_dup($r)" },  /* a copy (#2340) */
+  { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
   { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
   { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
@@ -1676,7 +1695,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "one?",             0,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "any?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "all?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
-  { BOP_ANY_HASH, "deconstruct_keys", 1,   1, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "deconstruct_keys", 1,   1, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "((void)($b0), $r)" },  /* the hash itself */
   { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* self or nil */
   { BOP_ANY_HASH, "chunk",            0, 127, BF_REQUIRED, TY_ENUMERATOR,  BOPE_NONE },  /* of [key, [[k, v], ...]] pairs */
   { BOP_ANY_HASH, "to_proc",          0, 127, BF_ANY,      TY_PROC,        BOPE_NONE },
@@ -1691,7 +1710,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "clone",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "[]",               0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
   { BOP_ANY_HASH, "delete",           0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
-  { BOP_ANY_HASH, "default",          0,   1, BF_ANY,      TY_POLY,        BOPE_NONE },  /* default(key) too (#2409) */
+  { BOP_ANY_HASH, "default",          0,   1, BF_ANY,      TY_POLY,        BOPE_HASH_DEFAULT },  /* default(key) too (#2409) */
   { BOP_ANY_HASH, "length",           0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { BOP_ANY_HASH, "size",             0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { BOP_ANY_HASH, "count",            0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
@@ -1710,7 +1729,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "detect",           0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
   { BOP_ANY_HASH, "sort_by",          0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },  /* pairs ordered by the block value */
   { BOP_ANY_HASH, "sum",              0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* boxed accumulation */
-  { BOP_ANY_HASH, "sum",              0,   0, BF_NONE,     TY_INT,         BOPE_NONE },
+  { BOP_ANY_HASH, "sum",              0,   0, BF_NONE,     TY_INT,         BOPE_TEMPLATE, "({ sp_$HHash * _t$t = $r; sp_$HHash_length(_t$t) == 0 ? (sp_int)(0) : (sp_raise_cls(\"TypeError\", \"Array can't be coerced into Integer\"), (sp_int)0); })" },  /* 0 + [k, v] is a TypeError */
   { BOP_ANY_HASH, "select!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* self, or nil when nothing was removed */
   { BOP_ANY_HASH, "filter!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },
   { BOP_ANY_HASH, "reject!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },
@@ -1720,7 +1739,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "filter",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "reject",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* #2340/#2349/#2351 */
-  { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "$r" },  /* the receiver itself, not a copy */
   { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* a [key, value] pair, or nil (#2349) */

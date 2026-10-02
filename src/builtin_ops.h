@@ -44,6 +44,15 @@ typedef enum {
   /* Hash (codegen_call_hash.c) */
   BOPE_HASH_PATTERN,      /* any?/none?/one?/count with a pattern, no block */
   BOPE_HASH_PATTERN_ALL,  /* all? with a pattern, no block */
+  BOPE_HASH_DEFAULT_PROC, /* Hash#default_proc */
+  BOPE_HASH_TO_PROC,      /* Hash#to_proc */
+  BOPE_HASH_AREF,         /* Hash#[] */
+  BOPE_HASH_HAS_KEY,      /* has_key?/key?/include?/member? */
+  BOPE_HASH_KEY,          /* Hash#key */
+  BOPE_HASH_DEFAULT,      /* Hash#default, #default(key) */
+  BOPE_HASH_KEYS,         /* Hash#keys */
+  BOPE_HASH_FETCH,        /* fetch(key), no default, no block */
+  BOPE_HASH_TO_S,         /* Hash#to_s */
   BOPE__COUNT
 } BopEmit;
 
