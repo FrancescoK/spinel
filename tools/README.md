@@ -270,6 +270,30 @@ function split boundaries.
 `tools/cdiff.sh <old-binary> --bin` uses an existing compiler in its own tree.
 Differences and programs only one side compiles fail the check; programs
 both sides refuse are skipped. Emission and comparison run in parallel,
-with sorted reports; `CDIFF_JOBS` overrides the host CPU count (fallback 1).
+largest inputs first, with sorted reports; `CDIFF_JOBS` overrides the host
+CPU count (fallback 1).
 The revision form builds the reference with the same job count. Optcarrot is
 cloned if needed and packed with Ruby, as in `make optcarrot`.
+
+The revision form caches a source archive and successful reference build in
+`${CDIFF_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/spinel-cdiff}/ref-<sha>`,
+keyed by the resolved commit. It uses `CC="ccache cc"` or `CC="sccache cc"`
+when available. An interrupted build has no success stamp and is rebuilt.
+The archive keeps the binary beside its libraries without registering a Git
+worktree: remove the cache directory to reclaim its space, with no
+`git worktree prune` needed. Concurrent runs for the same reference fail
+with a cache-in-use message; after an uncatchable interruption, remove its
+`ref-<sha>.lock` directory once no run is using it.
+
+Successful reference emissions are cached by program path and SHA-256 of
+its contents (and this source tree's path, for embedded `__FILE__` strings).
+The packed optcarrot source has a stable cache path because fiber diagnostics
+embed that path in C. The cache stores normalized C alone: `cmp` reads it directly, avoiding a
+copy or a separate output hash on warm runs. Matching new C is discarded;
+differences retain both sides until the diff excerpt is printed. Failed
+emissions are retried. Each run prints build and emission cache hits.
+`tools/cdiff.sh <rev> --fresh` (or `tools/cdiff.sh --fresh <rev>`) rebuilds
+and refreshes both caches. Use it after changing required files, compiler
+build settings or the toolchain; the per-program key hashes the program
+itself, not its dependencies. `CDIFF_CACHE` overrides the cache location.
+The `--bin` form remains uncached.
