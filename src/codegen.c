@@ -170,14 +170,16 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
        then segfaults on the first field/method read (renderer draw_wall_column
        `texture.width`). A value-type object (a small Struct passed by value) is
        never NULL and `expr` is not a pointer, so the plain box is correct. */
+    /* the class id the object carries when it may be a subclass's, by the
+       rule emit_boxed follows (repr_dyn_cls): an exception keeps the static
+       id, since its object starts with its class name, not an id */
+    int dyn = repr_dyn_cls(c, t);
     if (comp_ty_value_obj(c, t))
       buf_printf(b, "sp_box_vobj_%s(%s)", c->classes[ty_object_class(t)].c_name, expr);
     else
       buf_printf(b, "sp_box_nullable_obj%s((void *)(%s), %d)",
-                 class_has_subclass(c, ty_object_class(t)) ? "_dyn" : "",
-                 expr, ty_object_class(t));
-    RCT(comp_ty_value_obj(c, t) ? RF_VOBJ
-        : class_has_subclass(c, ty_object_class(t)) ? RF_NULLABLE_DYN : RF_NULLABLE);
+                 dyn ? "_dyn" : "", expr, ty_object_class(t));
+    RCT(comp_ty_value_obj(c, t) ? RF_VOBJ : dyn ? RF_NULLABLE_DYN : RF_NULLABLE);
     return;
   }
   /* an object array boxes by reference, stamped with its element class */
