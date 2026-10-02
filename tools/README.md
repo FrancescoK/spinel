@@ -232,9 +232,9 @@ is a probe to run by hand, not a gate.
 [--seed S] [--control null|shift|ids] [--int-overflow promote] [--jobs J]
 [--out DIR] [--timeout SEC] [--keep] [FILE..]` asks whether the types
 spinel settles on follow the order a program's definitions are written in.
-Ruby gives the methods of a class body no order, and a slot typed in one
-order and boxed in the other prints the same answer from both binaries, so
-no test of the suite sees which it got. The probe takes each FILE (default
+They are not supposed to, and a slot typed in one order and boxed in the
+other prints the same answer from both binaries, so no test of the suite
+sees which it got. The probe takes each FILE (default
 `test/*.rb test/infer/*.rb benchmark/*.rb`), finds the runs of consecutive
 sibling `def`s in the bodies of the program, classes, modules and
 `class << x` (`order_permute.rb`; a `private def` and its five relatives

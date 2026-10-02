@@ -6,12 +6,11 @@
 #                             [--timeout SEC] [--keep] [FILE..]
 #
 # Spinel settles the types of a whole program at once, and a method's place
-# in its class is not supposed to be part of the answer: Ruby gives the
-# methods of a class body no order. The probe asks whether it is. It takes
-# each FILE (default test/*.rb test/infer/*.rb benchmark/*.rb), finds the
-# runs of sibling `def`s (tools/order_permute.rb), writes the program again
-# with each run in another order, compiles both with --emit-types, and
-# compares the type of every node through the line map
+# among its siblings is not supposed to be part of the answer. The probe
+# asks whether it is. It takes each FILE (default test/*.rb test/infer/*.rb
+# benchmark/*.rb), finds the runs of sibling `def`s (tools/order_permute.rb),
+# writes the program again with each run in another order, compiles both
+# with --emit-types, and compares the type of every node through the line map
 # (tools/order_types.rb). A slot typed in one order and boxed in the other
 # prints the same answer from both binaries, so no test of the suite sees
 # it; the type dump does.
