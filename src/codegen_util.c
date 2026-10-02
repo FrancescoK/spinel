@@ -263,9 +263,14 @@ static void ucall_resolver_report(Compiler *c) {
      wrong      the plan refuses the node and codegen says something else,
                 or emits the call
      codegen    codegen refuses a node the plan decides nothing for: its own
-                state decided it. Counted by kind: gap (the internal dump),
-                nomethod (CRuby's NoMethodError/NameError words), feature (a
-                documented limit)
+                state decided it. Counted by what is left: call (the final
+                fall-through's dump: which emitter declined), shape (any other
+                internal dump: a statement or value shape, a poly splat),
+                nomethod (CRuby's NoMethodError/NameError words, a rewording
+                of a refusal codegen decided), string-copy (a String handed
+                by value to something that appends to it: the refuse_*
+                family, anchored at the last call codegen emitted), feature
+                (any other documented limit)
      unreached  the plan refuses a call codegen never emitted outside a
                 probe (dead code, the rest of a unit a refusal abandoned, an
                 arm a probe dropped)
@@ -281,7 +286,7 @@ static int g_rf_done = 0;
 static void refuse_report(Compiler *c) {
   if (g_rf_done || !c) return;
   g_rf_done = 1;
-  int ok = 0, wrong = 0, gap = 0, nom = 0, feat = 0, unr = 0;
+  int ok = 0, wrong = 0, call = 0, shape = 0, nom = 0, strc = 0, feat = 0, unr = 0;
   int n = c->nt->count;
   unsigned char *seen = calloc((size_t)n + 1, 1);
   for (int i = 0; i < g_nrfobs; i++) {
@@ -296,8 +301,10 @@ static void refuse_report(Compiler *c) {
         fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen \"%s\"\n", id, p->msg, m);
       }
     }
-    else if (!strncmp(m, "unsupported ", 12) && strstr(m, ": node ")) gap++;
+    else if (!strncmp(m, "unsupported call: node ", 23)) call++;
+    else if (!strncmp(m, "unsupported ", 12) && strstr(m, ": node ")) shape++;
     else if (strstr(m, "(NoMethodError)") || strstr(m, "(NameError)")) nom++;
+    else if (strstr(m, "not yet shared by reference")) strc++;
     else feat++;
   }
   for (int id = 0; id < n; id++) {
@@ -311,8 +318,9 @@ static void refuse_report(Compiler *c) {
     else unr++;
   }
   free(seen);
-  fprintf(stderr, "plan-check: refuse: %d ok, %d wrong, %d codegen (%d gap, %d nomethod, %d feature), %d unreached\n",
-          ok, wrong, gap + nom + feat, gap, nom, feat, unr);
+  fprintf(stderr, "plan-check: refuse: %d ok, %d wrong, %d codegen (%d call, %d shape, %d nomethod, %d string-copy,"
+                  " %d feature), %d unreached\n",
+          ok, wrong, call + shape + nom + strc + feat, call, shape, nom, strc, feat, unr);
 }
 /* a refused run: the plan readers that served it too (ucall_report's) */
 static void refuse_report_at_exit(void) {

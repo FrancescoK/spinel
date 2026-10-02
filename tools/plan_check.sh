@@ -71,11 +71,12 @@ psum=$(grep ': plan-check: poly-arms: ' "$OUT" | sed 's/.*poly-arms: //' |
 grep ': plan-check: poly-conflict:' "$OUT" | head -20
 echo "plan-check: poly arms: $psum"
 ppc=$(grep -c ': plan-check: poly-conflict:' "$OUT")
-# refusals: the ones codegen reports against the plan's (CP_REFUSE)
+# refusals: the ones codegen reports against the plan's (CP_REFUSE); the
+# ones only codegen decides are counted by what is left (codegen_util.c)
 rfsum=$(grep ': plan-check: refuse: ' "$OUT" | sed 's/.*refuse: //' | tr -d '(),' |
-  awk '{ ok += $1; w += $3; cg += $5; g += $7; n += $9; f += $11; u += $13 }
-       END { printf "%d refuse-ok, %d refuse-wrong, %d refuse-codegen (%d gap, %d nomethod, %d feature), %d refuse-unreached",
-             ok, w, cg, g, n, f, u }')
+  awk '{ ok += $1; w += $3; cg += $5; a += $7; s += $9; n += $11; sc += $13; f += $15; u += $17 }
+       END { printf "%d refuse-ok, %d refuse-wrong, %d refuse-codegen (%d call, %d shape, %d nomethod, %d string-copy, %d feature), %d refuse-unreached",
+             ok, w, cg, a, s, n, sc, f, u }')
 grep ': plan-check: refuse-wrong:' "$OUT" | head -20
 echo "plan-check: refusals: $rfsum"
 rfw=$(grep -c ': plan-check: refuse-wrong:' "$OUT")
