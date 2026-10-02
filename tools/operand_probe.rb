@@ -101,7 +101,7 @@ module OperandProbe
   # its place among that call's wrapped operands (last for the last of
   # them). inner lists the operands of other calls it is written in, as
   # [call, wrapped operands of that call ahead of it], where there are any
-  # ahead.
+  # ahead and any still to run.
   Site = Struct.new(:id, :from, :to, :call, :pos, :last, :inner)
 
   # One call with two wrapped operands or more.
@@ -180,7 +180,8 @@ module OperandProbe
       end
       ahead = 0
       operands.each do |operand|
-        inside = this && ahead.positive? ? within + [[this.index, ahead]] : within
+        # an operand after the last wrapped one has none of the call's to wait for
+        inside = this && ahead.positive? && ahead < wrap.size ? within + [[this.index, ahead]] : within
         if wrap.any? { |w| w.equal?(operand) }
           loc = operand.location
           site = Site.new(@sites.size + 1, loc.start_offset, loc.end_offset, this.index, ahead, false, within)
