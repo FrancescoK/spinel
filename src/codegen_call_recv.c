@@ -12414,7 +12414,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_MATCHDATA) {
     Buf rs = expr_buf(c, recv);
     const char *r = rs.p ? rs.p : "";
-    if (sp_streq(name, "[]") && argc == 1 &&
+    /* the plain readers: builtin-op rows (builtin_ops.c) */
+    if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
+    else if (sp_streq(name, "[]") && argc == 1 &&
         (comp_ntype(c, argv[0]) == TY_RANGE ||
          (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")))) {
       /* md[range]: the groups over that index range (#2532) */
@@ -12462,12 +12464,6 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       emit_native_object_protocol_text(c, name, TY_MATCHDATA, r, comp_ntype(c, argv[0]), as.p ? as.p : "0", b);
       free(as.p);
     }
-    else if (sp_streq(name, "hash") && argc == 0) buf_printf(b, "sp_MatchData_hash(%s)", r);  /* content-based (#3014) */
-    /* a MatchData is a heap instance: frozen? reads the bit freeze sets (#3638
-       answered a flat false, which freeze then contradicted) */
-    else if (sp_streq(name, "frozen?") && argc == 0) buf_printf(b, "sp_gc_is_frozen((void *)(%s))", r);
-    else if (sp_streq(name, "freeze") && argc == 0) buf_printf(b, "((sp_MatchData *)sp_gc_freeze((void *)(%s)))", r);
-    else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
     /* named_captures(symbolize_names: true): symbol keys (#2530) */
     else if (sp_streq(name, "named_captures") && argc == 1) {
       /* symbolize_names: FALSE asks for the string keys the no-argument form
@@ -12478,7 +12474,6 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
         if (kvt && sp_streq(kvt, "FalseNode")) sym_on = 0; }
       buf_printf(b, sym_on ? "sp_md_named_captures_sym(%s)" : "sp_md_named_captures(%s)", r);
     }
-    else if (sp_streq(name, "inspect") && argc == 0) buf_printf(b, "sp_MatchData_inspect(%s)", r);   /* #2500 */
     /* MatchData#match(n) is the group substring, #match_length(n) its byte
        length (nil when the group did not participate) (#2501) */
     /* a Symbol or String argument names a group; the integer slot read the
@@ -12497,18 +12492,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "match_length") && argc == 1) { buf_printf(b, "sp_MatchData_match_length(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
     /* #deconstruct is the captures array; #deconstruct_keys the named captures
        as a symbol-keyed hash (#2503) */
-    else if (sp_streq(name, "deconstruct") && argc == 0) buf_printf(b, "sp_MatchData_captures(%s)", r);
     else if (sp_streq(name, "deconstruct_keys") && argc == 1) {
       buf_printf(b, "sp_md_deconstruct_keys(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");  /* filters by keys (#3015) */
     }
-    else if (sp_streq(name, "regexp") && argc == 0) buf_printf(b, "((mrb_regexp_pattern *)(%s)->pat)", r);   /* #2499 */
-    else if (sp_streq(name, "names") && argc == 0) buf_printf(b, "sp_MatchData_names(%s)", r);
-    else if (sp_streq(name, "string") && argc == 0) buf_printf(b, "sp_MatchData_string(%s)", r);
-    else if (sp_streq(name, "pre_match"))  buf_printf(b, "sp_MatchData_pre_match(%s)", r);
-    else if (sp_streq(name, "post_match")) buf_printf(b, "sp_MatchData_post_match(%s)", r);
-    else if (sp_streq(name, "to_s"))       buf_printf(b, "sp_MatchData_to_s(%s)", r);
-    else if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0)
-      buf_printf(b, "sp_MatchData_length(%s)", r);
     /* begin/end/offset/byte* accept a group NAME (String/Symbol) as well as an
        index; route those to the _name variant, which resolves the name like #[].
        A Symbol argument is passed as its interned string. */
@@ -12628,13 +12614,6 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       }
       buf_printf(b, " _t%d; })", at);
     }
-    /* no arguments selects nothing: an empty Array, as Array#values_at does
-       (#3846) */
-    else if (sp_streq(name, "values_at") && argc == 0)
-      buf_printf(b, "((void)(%s), sp_PolyArray_new())", r);
-    else if (sp_streq(name, "captures"))  buf_printf(b, "sp_MatchData_captures(%s)", r);
-    else if (sp_streq(name, "to_a"))      buf_printf(b, "sp_MatchData_to_a(%s)", r);
-    else if (sp_streq(name, "nil?"))      buf_printf(b, "(%s == 0)", r);
     /* a method the program adds to Object is every MatchData's too (`$~.me`
        under ruby/spec's `$~.should`): leave it to the Object reopening
        dispatch, which boxes the receiver -- a nil $~ included -- instead of

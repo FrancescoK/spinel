@@ -3800,18 +3800,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     if (sp_streq(name, "[]") && argc == 1 &&
         (comp_ntype(c, argv[0]) == TY_RANGE ||
          (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))))
       return TY_POLY_ARRAY;   /* md[range] (#2532) */
     if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
     if (sp_streq(name, "[]") && argc == 2) return TY_POLY_ARRAY;   /* md[start, length] (#2507) */
-    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;   /* (#2529) */
-    if (sp_streq(name, "inspect") && argc == 0) return TY_STRING;   /* (#2500) */
-    if (sp_streq(name, "match") && argc == 1) return TY_STRING;   /* group substring (#2501) */
-    if (sp_streq(name, "match_length") && argc == 1) return TY_POLY;   /* int or nil (#2501) */
-    if (sp_streq(name, "deconstruct") && argc == 0) return TY_POLY_ARRAY;   /* (#2503) */
-    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_SYM_POLY_HASH;   /* (#2503) */
     if (sp_streq(name, "named_captures") && argc == 1) {
       /* symbolize_names: false asks for the string keys (#3640) */
       int kv = kwh_lookup(nt, argv[0], "symbolize_names");
@@ -3819,17 +3817,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (kvt && sp_streq(kvt, "FalseNode")) return TY_STR_POLY_HASH;
       return TY_SYM_POLY_HASH;   /* symbolize (#2530) */
     }
-    if (sp_streq(name, "regexp") && argc == 0) return TY_REGEX;   /* (#2499) */
-    if (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
-    if (sp_streq(name, "bytebegin") || sp_streq(name, "byteend")) return TY_INT;
-    if (sp_streq(name, "offset") || sp_streq(name, "byteoffset")) return TY_INT_ARRAY;
-    if (sp_streq(name, "values_at")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "captures") || sp_streq(name, "to_a")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {String => String|nil} */
-    if (sp_streq(name, "names")) return TY_STR_ARRAY;
-    if (sp_streq(name, "string")) return TY_STRING;  /* the match subject */
-    if (sp_streq(name, "nil?")) return TY_BOOL;
   }
 
   /* StringIO: a native-bound class (packages/stringio); no arms here. .new
