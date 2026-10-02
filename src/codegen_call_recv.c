@@ -2403,15 +2403,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
        (works for typed and poly arrays alike, and range args) */
-    if (sp_streq(name, "values_at") && argc == 0) {
-      /* values_at with no indices is the empty array, of the receiver's kind
-         (matching the inferred type) (#2980) */
-      const char *an0 = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
-      if (an0) {
-        buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), sp_%sArray_new())", an0);
-        return 1;
-      }
-    }
     if (sp_streq(name, "values_at") && argc >= 1) {
       const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
       if (an) {
@@ -2539,52 +2530,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; if (!_t%d) sp_nil_recv(\"fetch_values\"); sp_PolyArray_new(); })", tr);
       return 1;
     }
-    /* drop(n) / take(n): subarrays via slice (all kinds incl. poly). */
-    if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) {
-      const char *dk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
-      if (dk) {
-        int t = ++g_tmp, tn = ++g_tmp;
-        /* The receiver is rooted across the count: a method's return or a
-           chain is held by nothing else, and a count that allocates let a
-           collection hand the array's slot on before the slice was cut. */
-        buf_printf(b, "({ sp_%sArray *_t%d = ", dk, t); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
-        /* a negative count raises ArgumentError; the no-block take/drop otherwise
-           silently returns a slice (a tail slice for drop). */
-        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to %s negative size\");",
-                   tn, name);
-        if (sp_streq(name, "take"))
-          buf_printf(b, " sp_%sArray_slice(_t%d, 0, _t%d); })", dk, t, tn);
-        else
-          buf_printf(b, " sp_%sArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", dk, t, tn, t, tn);
-        return 1;
-      }
-    }
     /* poly-array collection readers whose runtime backing already exists but
        whose typed-array forms live in the array_kind()-gated `if (k)` block
        below -- that gate is NULL for poly, so mirror them with explicit "Poly"
-       dispatch (as drop/take above do). All return a fresh poly array. */
-    if (rt == TY_POLY_ARRAY && sp_streq(name, "reverse") && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
-      buf_printf(b, "); sp_PolyArray_reverse_bang(_t%d); _t%d; })", t, t);
-      return 1;
-    }
+       dispatch. All return a fresh poly array. */
     if (rt == TY_POLY_ARRAY && sp_streq(name, "uniq") && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
       buf_printf(b, "); sp_PolyArray_uniq_bang(_t%d); _t%d; })", t, t);
-      return 1;
-    }
-    if (rt == TY_POLY_ARRAY && (sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) {
-      /* first(n)/last(n) -> subarray via slice; a negative n is an ArgumentError. */
-      int tn = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_PolyArray_slice(", tn);
-      emit_expr(c, recv, b);
-      if (sp_streq(name, "first")) buf_printf(b, ", 0, _t%d); })", tn);
-      else                        buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
       return 1;
     }
     /* poly-array max/min: boxed elements compared at runtime (numerics,
@@ -2845,10 +2799,6 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d->len - _t%d, _t%d); })", t, t, tn2, tn2);
       else
         buf_printf(b, " sp_PolyArray_slice_bang(_t%d, 0, _t%d); })", t, tn2);
-      return 1;
-    }
-    if (rt == TY_POLY_ARRAY && (sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {
-      buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "dig") && argc >= 1) {
@@ -3308,18 +3258,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* builtin-op rows (builtin_ops.c): the arms that read only the receiver's
+       kind, the receiver and the arguments, for the typed arrays and the
+       poly array alike. Every arm above that stays reads something a row
+       cannot: the operand nodes, a block, the call's own type, or a kind the
+       family does not share. */
+    if (emit_builtin_op(c, id, recv, rt, name, b)) return 1;
     if (k) {
-      if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
-           sp_streq(name, "deconstruct") || sp_streq(name, "flatten")) && argc == 0) {
-        /* a scalar-element array can't nest: these are identity */
+      if (sp_streq(name, "flatten") && argc == 0) {
+        /* a scalar-element array can't nest: flatten is identity, as
+           to_a / to_ary / entries / deconstruct are (builtin-op rows) */
         emit_expr(c, recv, b); return 1;
-      }
-      /* compact is NOT identity: a scalar array still holds the nil sentinel a
-         nullable read leaves behind, so `["a".rindex("/"), 1].compact` has to
-         drop that first element rather than keep it. */
-      if (sp_streq(name, "compact") && argc == 0) {
-        buf_printf(b, "sp_%sArray_compact(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
       }
       if (sp_streq(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
         /* arr[a..b] / arr[a...b] -> subarray */
@@ -3638,13 +3587,6 @@ else {
           return 1;
         }
       }
-      if (sp_streq(name, "clear") && argc == 0) {
-        /* empty the array in place, evaluate to it (Ruby returns self) */
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_cls(\"FrozenError\", sp_sprintf(\"can't modify frozen Array: %%s\", sp_%sArray_inspect(_t%d))); if (_t%d) _t%d->len = 0; _t%d; })", t, t, k, t, t, t, t);
-        return 1;
-      }
       if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* blockless cycle(n): the receiver repeated n times, materialized */
         int t = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp, tj = ++g_tmp, ti2 = ++g_tmp;
@@ -3672,11 +3614,6 @@ else {
           buf_printf(b, " sp_%sArray_slice_bang(_t%d, _t%d->len - _t%d, _t%d); })", k, t, t, tn2, tn2);
         else
           buf_printf(b, " sp_%sArray_slice_bang(_t%d, 0, _t%d); })", k, t, tn2);
-        return 1;
-      }
-      if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {
-        /* remove and return first/last element (nil sentinel when empty) */
-        buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if ((sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1) {
@@ -3730,10 +3667,6 @@ else {
         return 1;
       }
       /* non-mutating copy-then-operate methods */
-      if (sp_streq(name, "shuffle") && argc == 0) {
-        buf_printf(b, "sp_%sArray_shuffle(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
       /* in-place mutators that return self (raise FrozenError when frozen) */
       {
         const char *base = NULL;
@@ -3771,26 +3704,18 @@ else {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
         return 1;
       }
-      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && (argc == 0 || argc == 1)) {
-        /* a real copy: arrays are mutable, so dup/clone must not alias.
-           clone (unlike dup) carries the frozen flag over; the freeze:
-           keyword forces it. */
-        int fz = -1;  /* -1: dup semantics; -2: copy receiver's flag; 0/1: forced */
-        if (argc == 0) fz = sp_streq(name, "clone") ? -2 : -1;
-        else if (sp_streq(name, "clone") && nt_type(nt, argv[0]) &&
-                 sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
-          int fv = kwh_lookup(nt, argv[0], "freeze");
-          const char *fvt = fv >= 0 ? nt_type(nt, fv) : NULL;
-          if (fvt && sp_streq(fvt, "FalseNode")) fz = 0;
-          else if (fvt && sp_streq(fvt, "TrueNode")) fz = 1;
-          else if (fvt && sp_streq(fvt, "NilNode")) fz = -2;
-        }
-        if (argc == 1 && fz == -1) { /* not a recognized keyword: fall through */ }
-        else if (fz == -1) {
-          buf_printf(b, "sp_%sArray_dup(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-          return 1;
-        }
-        else {
+      if (sp_streq(name, "clone") && argc == 1 && nt_type(nt, argv[0]) &&
+          sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+        /* a real copy: arrays are mutable, so clone must not alias. The
+           freeze: keyword forces the frozen flag, or (nil) carries the
+           receiver's over; the plain dup and clone are builtin-op rows. */
+        int fz = -1;  /* -1: not a recognized keyword; -2: copy receiver's flag; 0/1: forced */
+        int fv = kwh_lookup(nt, argv[0], "freeze");
+        const char *fvt = fv >= 0 ? nt_type(nt, fv) : NULL;
+        if (fvt && sp_streq(fvt, "FalseNode")) fz = 0;
+        else if (fvt && sp_streq(fvt, "TrueNode")) fz = 1;
+        else if (fvt && sp_streq(fvt, "NilNode")) fz = -2;
+        if (fz != -1) {
           int ts = ++g_tmp, td = ++g_tmp;
           buf_printf(b, "({ sp_%sArray *_t%d = ", k, ts); emit_expr(c, recv, b);
           buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_dup(_t%d); ", k, td, k, ts);
@@ -3799,13 +3724,6 @@ else {
           buf_printf(b, "_t%d; })", td);
           return 1;
         }
-      }
-      if (sp_streq(name, "reverse") && argc == 0) {
-        /* copy + reverse in place; sp_*Array_dup exists for Int/Str/Float/Poly */
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_dup(", k, t, k); emit_expr(c, recv, b);
-        buf_printf(b, "); sp_%sArray_reverse_bang(_t%d); _t%d; })", k, t, t);
-        return 1;
       }
       if (sp_streq(name, "zip") && argc >= 1 && argc <= 16 && nt_ref(nt, id, "block") < 0) {
         /* recv.zip(b, c...) → [[recv[0],b[0],c[0],...], ...] as PolyArray of PolyArrays */
@@ -4043,16 +3961,6 @@ else {
           buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, "; })");
           return 1;
         }
-      }
-      /* insert(i) with no values leaves the array as it is and answers it;
-         only the value-carrying form had an emitter (#3855) */
-      if (sp_streq(name, "insert") && argc == 1) {
-        int t0 = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t0); emit_expr(c, recv, b);
-        /* rooted across the index it evaluates and discards */
-        buf_printf(b, "; SP_GC_ROOT(_t%d); (void)(", t0); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "); _t%d; })", t0);
-        return 1;
       }
       if (sp_streq(name, "insert") && argc >= 2 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
         /* insert(i, v1, v2, ...): normalize a negative index ONCE against the
@@ -4543,11 +4451,6 @@ else {
         else                              buf_printf(b, " _t%d; })", tc);
         return 1;
       }
-      if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) &&
-          argc == 0 && nt_ref(nt, id, "block") < 0) {
-        buf_printf(b, "sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
       if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
         /* count { |x| cond } -- loop and count truthy block results */
         int blk = nt_ref(nt, id, "block");
@@ -4579,10 +4482,6 @@ else {
           buf_printf(b, "_t%d", tcnt);
           return 1;
         }
-      }
-      if (sp_streq(name, "empty?") && argc == 0) {
-        buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
-        return 1;
       }
       /* A blockless SEEDLESS sum over Strings adds each element to the implied
          Integer 0, which CRuby rejects with "String can't be coerced into
@@ -4689,38 +4588,10 @@ else {
         if (cjn) buf_puts(b, "; })");
         return 1;
       }
-      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      if (sp_streq(name, "to_s") && argc == 0) {
         char fn[64]; snprintf(fn, sizeof fn, "sp_%sArray_inspect", k);
         /* the array's nil (NULL) answers nil.to_s, the empty string */
-        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b); return 1; }
-        buf_printf(b, "%s(", fn); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "first") && argc == 0) {
-        buf_printf(b, "sp_%sArray_get(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
-        return 1;
-      }
-      if (sp_streq(name, "first") && argc == 1) {
-        /* first(-1) is an ArgumentError in CRuby, not an empty slice */
-        int tn0 = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = ", tn0); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_%sArray_slice(", tn0, k);
-        emit_expr(c, recv, b);
-        buf_printf(b, ", 0, _t%d); })", tn0);
-        return 1;
-      }
-      if (sp_streq(name, "last") && argc == 1) {
-        /* slice's negative start counts from the end -> the last n elements;
-           a negative count is an ArgumentError in CRuby */
-        int tn = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_%sArray_slice(", tn, k);
-        emit_expr(c, recv, b);
-        buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
-        return 1;
-      }
-      if (sp_streq(name, "pop") && argc == 0) {
-        buf_printf(b, "sp_%sArray_pop(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        emit_null_guarded_call(c, recv, rt, fn, "sp_str_empty", b);
         return 1;
       }
       /* `[a, b, c].min` on a literal of Integers that cannot be nil: the
@@ -5088,12 +4959,6 @@ else {
         buf_printf(b, "sp_%sArray_union(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
       }
-      /* intersection / difference with no argument fold over nothing: a copy
-         of the receiver, the way the union form already answered (#3851) */
-      if ((sp_streq(name, "intersection") || sp_streq(name, "difference")) && argc == 0) {
-        buf_printf(b, "sp_%sArray_dup(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
       /* fetch_values with no keys reads nothing: an empty Array */
       if (sp_streq(name, "fetch_values") && argc == 0) {
         buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), sp_%sArray_new())", k);
@@ -5208,12 +5073,6 @@ else {
         else if (a0 == TY_BIGINT) emit_int_expr(c, argv[0], b);   /* a widened counter used as an index */
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "clear") && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_cls(\"FrozenError\", sp_sprintf(\"can't modify frozen Array: %%s\", sp_PolyArray_inspect(_t%d))); if (_t%d) _t%d->len = 0; _t%d; })", t, t, t, t, t, t);
         return 1;
       }
       if (sp_streq(name, "+") && argc == 1 && a0 == TY_POLY_ARRAY) {
@@ -5406,11 +5265,6 @@ else {
         else                              buf_printf(b, " _t%d; })", tc);
         return 1;
       }
-      if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0
-          && nt_ref(nt, id, "block") < 0) {
-        buf_puts(b, "sp_PolyArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
       if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
         /* count { |x| cond } on PolyArray */
         int blk = nt_ref(nt, id, "block");
@@ -5443,10 +5297,6 @@ else {
           return 1;
         }
       }
-      if (sp_streq(name, "empty?") && argc == 0) {
-        buf_puts(b, "(sp_PolyArray_length("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
-        return 1;
-      }
       if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc == 1) {
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
@@ -5459,14 +5309,6 @@ else {
           buf_printf(b, " sp_PolyArray_insert(_t%d, 0, ", t); emit_boxed(c, argv[a2], b); buf_puts(b, ");");
         }
         buf_printf(b, " _t%d; })", t);
-        return 1;
-      }
-      if (sp_streq(name, "insert") && argc == 1) {
-        int t0 = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", t0); emit_expr(c, recv, b);
-        /* rooted across the index it evaluates and discards */
-        buf_printf(b, "; SP_GC_ROOT(_t%d); (void)(", t0); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "); _t%d; })", t0);
         return 1;
       }
       if (sp_streq(name, "insert") && argc >= 2) {
@@ -5493,14 +5335,7 @@ else {
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "first") && argc == 0) {
-        buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", 0)");
-        return 1;
-      }
-      if ((sp_streq(name, "to_a") || sp_streq(name, "entries") || sp_streq(name, "to_ary") ||
-           sp_streq(name, "deconstruct")) && argc == 0) { emit_expr(c, recv, b); return 1; }
-      if ((sp_streq(name, "union") || sp_streq(name, "difference") || sp_streq(name, "intersection")) &&
-          argc == 0) {
+      if (sp_streq(name, "union") && argc == 0) {
         buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
@@ -5589,23 +5424,6 @@ else {
         buf_printf(b, "sp_PolyArray_include(%s, ", rb.p); free(rb.p);
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
         if (ch) buf_puts(b, "; })");
-        return 1;
-      }
-      if (sp_streq(name, "clone") && argc == 0) {
-        /* clone carries the frozen flag over (dup does not) */
-        int ts = ++g_tmp, td = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = ", ts); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_dup(_t%d); "
-                      "_t%d->frozen = _t%d ? _t%d->frozen : 0; _t%d; })",
-                   td, ts, td, ts, ts, td);
-        return 1;
-      }
-      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
-        buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "compact") && argc == 0) {
-        buf_puts(b, "sp_PolyArray_compact("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "compact!") && argc == 0) {
@@ -5708,9 +5526,8 @@ else {
         if (cjp) buf_puts(b, "; })");
         return 1;
       }
-      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-        if (sp_streq(name, "to_s")) { emit_null_guarded_call(c, recv, rt, "sp_PolyArray_inspect", "sp_str_empty", b); return 1; }
-        buf_puts(b, "sp_PolyArray_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
+      if (sp_streq(name, "to_s") && argc == 0) {
+        emit_null_guarded_call(c, recv, rt, "sp_PolyArray_inspect", "sp_str_empty", b);
         return 1;
       }
       if (sp_streq(name, "slice!") && argc == 2) {
@@ -5783,10 +5600,6 @@ else {
           (ty_is_array(a0) || a0 == TY_POLY)) {
         buf_puts(b, "sp_PolyArray_replace_from("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-      if (sp_streq(name, "shuffle") && argc == 0) {
-        buf_puts(b, "sp_PolyArray_shuffle("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
