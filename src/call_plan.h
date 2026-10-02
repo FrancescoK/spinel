@@ -68,6 +68,12 @@ const CallPlan *cplan_refuse(Compiler *c, int id);
 /* the documented-limit family: the node's message or NULL; *stop 0 when
    a limit down the receiver chain is the one to report */
 const char *cplan_feature_why(Compiler *c, int id, int *stop);
+/* the prepasses' refusals (a runtime send or const_get name, binding) and
+   Kernel#eval: the `what` codegen hands to `unsupported`, or NULL */
+const char *cplan_runtime_send_what(Compiler *c, int id);
+const char *cplan_runtime_const_get_what(Compiler *c, int id);
+const char *cplan_binding_what(Compiler *c, int id);
+const char *cplan_eval_what(Compiler *c, int id);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an

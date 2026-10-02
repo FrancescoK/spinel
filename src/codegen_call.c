@@ -2037,35 +2037,11 @@ int diagnose_unsupported_call(Compiler *c, int id) {
   return 0;
 }
 
+/* Kernel#eval of a runtime string (cplan_eval_what) */
 int diagnose_eval_call(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  const char *nty = nt_type(nt, id);
-  if (!nty || !sp_streq(nty, "CallNode")) return 0;
-  const char *name = nt_str(nt, id, "name");
-  if (!name || !sp_streq(name, "eval")) return 0;
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
-  if (argc < 1) return 0;
-  int recv = nt_ref(nt, id, "receiver");
-  if (recv >= 0) {
-    const char *rty = nt_type(nt, recv);
-    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return 0;
-    const char *rnm = nt_str(nt, recv, "name");
-    if (!rnm || !sp_streq(rnm, "Kernel")) return 0;
-  }
-  else {
-    /* A receiverless `eval(x)` is Kernel#eval only if nothing nearer owns the
-       name. A tree-walking interpreter calls its own `eval` from inside the
-       class that defines it, and refusing that is refusing the program the
-       method belongs to. */
-    Scope *self = comp_scope_of(c, id);
-    if (self && self->class_id >= 0 &&
-        comp_method_in_chain(c, self->class_id, "eval", NULL) >= 0) return 0;
-    if (comp_method_index(c, "eval") >= 0) return 0;
-  }
-  unsupported(c, id, "eval of a runtime string is not supported by AOT compilation (define the code statically)");
-  return 1;
+  const char *what = cplan_eval_what(c, id);
+  if (what) unsupported(c, id, what);
+  return 0;
 }
 
 /* Unbox the boxed proc result (_sp_proc_poly_ret, an sp_RbVal) to the call's

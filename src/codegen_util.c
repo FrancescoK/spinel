@@ -2486,18 +2486,12 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
   unsup_leave(file, ln, msg);
 }
 
-__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
-  /* Silent emittability probe (dynamic-send arm selection): unwind without a
-     diagnostic, the caller just drops this arm. */
-  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
-  refuse_at(c, id);
+/* The words `unsupported` refuses node id in, into msg; answers what the
+   refusal says the call is (CplanRefuse). self_ci is the class whose body
+   is being emitted (a bare name's NameError names it). Pure: the call plan
+   asks it too (cplan_refuse). */
+int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg, size_t cap) {
   const char *ty = nt_type(c->nt, id);
-  /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
-     line the parser stamped (the same position the #line machinery uses), so
-     the message is anchored to the .rb file instead of an opaque node id.
-     Falls back to the bare form when the position wasn't stamped. */
-  int ln; const char *file = unsup_pos(c, id, &ln);
-  char msg[2400];
   const char *mname = ty && sp_streq(ty, "CallNode") ? nt_str(c->nt, id, "name") : NULL;
   if (mname) {
     int recv = nt_ref(c->nt, id, "receiver");
@@ -2508,10 +2502,10 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
        through to method lookup. Name the enclosing class the way CRuby does. */
     if (recv < 0 && ac == 0 && nt_ref(c->nt, id, "block") < 0 &&
         nt_int(c->nt, id, "vcall", 0)) {
-      const char *cn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
-      snprintf(msg, sizeof msg, "undefined local variable or method '%s' for %s%s (NameError)",
+      const char *cn = self_ci >= 0 ? class_ruby_name(c, self_ci) : NULL;
+      snprintf(msg, cap, "undefined local variable or method '%s' for %s%s (NameError)",
                mname, cn ? "an instance of " : "main", cn ? cn : "");
-      unsup_leave(file, ln, msg);
+      return CR_NAMEERROR;
     }
     /* A call on a typed user object whose class chain has no such method is
        not a compiler gap: it is the program's NoMethodError, caught ahead of
@@ -2534,8 +2528,8 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
             !builtin_object_method_known(mname) &&
             !name_is_enumerable_module_method(mname) &&
             !an_user_defines_method(c, mname)) {
-          snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s (NoMethodError)", mname, bcn);
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for an instance of %s (NoMethodError)", mname, bcn);
+          return CR_NOMETHOD;
         }
       }
       /* A Class value no class answers: `searched_model.none` where the method
@@ -2558,8 +2552,8 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
         int ncc = 0;
         comp_cmethod_candidates(c, mname, &ncc);
         if (ncc == 0 && !builtin_object_method_known(mname) && !str_in(mname, module_surface)) {
-          snprintf(msg, sizeof msg, "undefined method '%s' for a Class: no class in the program defines a class method '%s' (NoMethodError)", mname, mname);
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for a Class: no class in the program defines a class method '%s' (NoMethodError)", mname, mname);
+          return CR_NOMETHOD;
         }
       }
       if (ty_is_object(rvt)) {
@@ -2571,20 +2565,35 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
             comp_method_in_chain(c, cid, mname, NULL) < 0 &&
             !builtin_object_method_known(mname)) {
           const char *cn = class_ruby_name(c, cid);
-          snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s (NoMethodError)", mname, cn ? cn : "Object");
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for an instance of %s (NoMethodError)", mname, cn ? cn : "Object");
+          return CR_NOMETHOD;
         }
       }
     }
-    int n = snprintf(msg, sizeof msg, "unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
+    int n = snprintf(msg, cap, "unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
                      what, id, ty, mname,
                      recv >= 0 ? nt_type(c->nt, recv) : "-",
                      recv >= 0 ? (int)comp_ntype(c, recv) : -1, ac);
-    if (ac > 0 && av && n > 0 && (size_t)n < sizeof msg)
-      snprintf(msg + n, sizeof msg - (size_t)n, " arg0ty%d", (int)comp_ntype(c, av[0]));
+    if (ac > 0 && av && n > 0 && (size_t)n < cap)
+      snprintf(msg + n, cap - (size_t)n, " arg0ty%d", (int)comp_ntype(c, av[0]));
   }
   else
-    snprintf(msg, sizeof msg, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
+    snprintf(msg, cap, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
+  return CR_GAP;
+}
+
+__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
+  /* Silent emittability probe (dynamic-send arm selection): unwind without a
+     diagnostic, the caller just drops this arm. */
+  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  refuse_at(c, id);
+  /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
+     line the parser stamped (the same position the #line machinery uses), so
+     the message is anchored to the .rb file instead of an opaque node id.
+     Falls back to the bare form when the position wasn't stamped. */
+  int ln; const char *file = unsup_pos(c, id, &ln);
+  char msg[2400];
+  unsup_message(c, id, what, g_emitting_class_id, msg, sizeof msg);
   /* Back to the driver's per-unit recovery point (when armed), abandoning
      this unit's discarded output, so one run surfaces every gap; else out.
      `unsupported` thus never returns. */

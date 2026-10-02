@@ -13419,22 +13419,9 @@ static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "binding")) return;  /* user-defined */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "binding")) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;             /* Kernel#binding is receiverless */
-    int args = nt_ref(nt, id, "arguments");
-    if (args >= 0) { int ac = 0; nt_arr(nt, args, "arguments", &ac); if (ac > 0) continue; }
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "binding is unsupported (no reified local environment in an "
-                       "AOT binary; only binding.local_variable_get(:name) for an "
-                       "in-scope name is)");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const char *what = cplan_binding_what(c, id);
+    if (what) unsupported(c, id, what);
   }
 }
 
@@ -13445,72 +13432,16 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int s = 0; s < c->nscopes; s++) {
-    const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "const_get")) return;   /* user-defined: normal dispatch */
-  }
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get")) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 1 || !av) continue;
-    NodeKind k = nt_kind(nt, av[0]);
-    if (k == NK_SymbolNode || k == NK_StringNode) continue;
-    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "const_get with a name known only at run time and no class or module "
-                       "receiver (an instance has no const_get; constants are resolved at compile time)");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const char *what = cplan_runtime_const_get_what(c, id);
+    if (what) unsupported(c, id, what);
   }
 }
 
 static void reject_runtime_send(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  static const char *const names[] = { "send", "__send__", "public_send", NULL };
-  for (int s = 0; s < c->nscopes; s++) {
-    const char *sn = c->scopes[s].name;
-    if (!sn) continue;
-    for (int k = 0; names[k]; k++)
-      if (sp_streq(sn, names[k])) return;  /* user-defined: leave to normal dispatch */
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
-    int is_send = 0;
-    for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) { is_send = 1; break; }
-    if (!is_send) continue;
-    if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
-    int args = nt_ref(nt, id, "arguments");
-    if (args < 0) continue;
-    int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
-    if (ac < 1 || !av) continue;
-    const char *a0 = nt_type(nt, av[0]);
-    /* a literal name should have been rewritten already; only a runtime name
-       (a variable, a method result, an interpolated string, ...) reaches here */
-    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
-    /* lowered to a static name-dispatch (desugar_dynamic_send) over the
-       program's literals AND the methods it defines: a computed name (an
-       interpolated `"#{name}="`, a concatenation) resolves there too, and a
-       name outside that set raises NoMethodError at the dispatch -- loud at
-       run time rather than here. On a receiver known to be a builtin the
-       set is that class's own methods; a builtin method reached through a
-       computed name on a receiver of no known class is the one shape it
-       does not cover. */
-    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn);
-      if (dn > 0 && (!an_send_name_is_computed(c, av[0]) || nt_int(nt, id, "dyn_send_complete", 0) > 0)) continue; }
-    /* Only diagnose a send that codegen will actually emit. A send in a dead
-       (unreachable) method is pruned before emission, so rejecting it would
-       fail otherwise-valid programs that merely contain an unused method.
-       walk_scope assigns every node -- including those inside blocks -- the
-       enclosing method's scope, and the emit loop emits a scope's body only
-       when it is reachable; mirror that gate here. */
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "send with a runtime method name (AOT needs a compile-time-known name)");
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const char *what = cplan_runtime_send_what(c, id);
+    if (what) unsupported(c, id, what);
   }
 }
 

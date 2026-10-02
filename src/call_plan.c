@@ -577,6 +577,118 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
 }
 
 
+/* The refusals the prepasses raise before any emission (reject_runtime_send,
+   reject_runtime_const_get, reject_binding in codegen.c) and Kernel#eval
+   (diagnose_eval_call): the `what` codegen hands to `unsupported`, or NULL.
+   The message is unsup_message's, with no class being emitted: the
+   prepasses run before any is. */
+
+/* a user method of the name: the call is that method, not the builtin */
+static int cplan_user_names(Compiler *c, const char *name) {
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return 1;
+  return 0;
+}
+/* a call in a method codegen emits: a dead method is pruned before emission,
+   so refusing a call in it would fail a program that merely contains it.
+   walk_scope assigns every node -- including those inside blocks -- the
+   enclosing method's scope, and the emit loop emits a scope's body only when
+   it is reachable */
+static int cplan_reachable(Compiler *c, int id) {
+  int sc = c->nscope[id];
+  return sc >= 0 && sc < c->nscopes && c->scopes[sc].reachable;
+}
+
+const char *cplan_runtime_send_what(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")))
+    return NULL;
+  if (nt_int(nt, id, "rt_probe", 0)) return NULL;  /* analysis-only respond_to? probe */
+  int args = nt_ref(nt, id, "arguments");
+  if (args < 0) return NULL;
+  int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
+  if (ac < 1 || !av) return NULL;
+  const char *a0 = nt_type(nt, av[0]);
+  /* a literal name should have been rewritten already; only a runtime name
+     (a variable, a method result, an interpolated string, ...) reaches here */
+  if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) return NULL;
+  /* lowered to a static name-dispatch (desugar_dynamic_send) over the
+     program's literals AND the methods it defines: a computed name (an
+     interpolated `"#{name}="`, a concatenation) resolves there too, and a
+     name outside that set raises NoMethodError at the dispatch -- loud at
+     run time rather than here. On a receiver known to be a builtin the
+     set is that class's own methods; a builtin method reached through a
+     computed name on a receiver of no known class is the one shape it
+     does not cover. */
+  { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn);
+    if (dn > 0 && (!an_send_name_is_computed(c, av[0]) || nt_int(nt, id, "dyn_send_complete", 0) > 0)) return NULL; }
+  if (!cplan_reachable(c, id)) return NULL;
+  /* user-defined: leave to normal dispatch */
+  if (cplan_user_names(c, "send") || cplan_user_names(c, "__send__") || cplan_user_names(c, "public_send"))
+    return NULL;
+  return "send with a runtime method name (AOT needs a compile-time-known name)";
+}
+
+const char *cplan_runtime_const_get_what(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "const_get")) return NULL;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1 || !av) return NULL;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k == NK_SymbolNode || k == NK_StringNode) return NULL;
+  { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) return NULL; }
+  if (!cplan_reachable(c, id)) return NULL;
+  if (cplan_user_names(c, "const_get")) return NULL;   /* user-defined: normal dispatch */
+  return "const_get with a name known only at run time and no class or module "
+         "receiver (an instance has no const_get; constants are resolved at compile time)";
+}
+
+const char *cplan_binding_what(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "binding")) return NULL;
+  if (nt_ref(nt, id, "receiver") >= 0) return NULL;             /* Kernel#binding is receiverless */
+  int args = nt_ref(nt, id, "arguments");
+  if (args >= 0) { int ac = 0; nt_arr(nt, args, "arguments", &ac); if (ac > 0) return NULL; }
+  if (!cplan_reachable(c, id)) return NULL;
+  if (cplan_user_names(c, "binding")) return NULL;  /* user-defined */
+  return "binding is unsupported (no reified local environment in an "
+         "AOT binary; only binding.local_variable_get(:name) for an "
+         "in-scope name is)";
+}
+
+const char *cplan_eval_what(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode) return NULL;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "eval")) return NULL;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (argc < 1) return NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return NULL;
+    const char *rnm = nt_str(nt, recv, "name");
+    if (!rnm || !sp_streq(rnm, "Kernel")) return NULL;
+  }
+  else {
+    /* A receiverless `eval(x)` is Kernel#eval only if nothing nearer owns the
+       name. A tree-walking interpreter calls its own `eval` from inside the
+       class that defines it, and refusing that is refusing the program the
+       method belongs to. */
+    Scope *self = comp_scope_of(c, id);
+    if (self && self->class_id >= 0 &&
+        comp_method_in_chain(c, self->class_id, "eval", NULL) >= 0) return NULL;
+    if (comp_method_index(c, "eval") >= 0) return NULL;
+  }
+  return "eval of a runtime string is not supported by AOT compilation (define the code statically)";
+}
+
 static CallPlan *g_rf_memo = NULL;
 static unsigned char *g_rf_have = NULL;
 static int g_rf_cap = 0;
@@ -590,7 +702,16 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p) {
      which codegen alone knows */
   const char *nm = why ? nt_str(c->nt, id, "name") : NULL;
   if (nm && (sp_streq(nm, "extend") || sp_streq(nm, "define_singleton_method"))) why = NULL;
-  if (why) { p->dispatch = CP_REFUSE; p->rkind = CR_FEATURE; p->msg = strdup(why); }
+  if (why) { p->dispatch = CP_REFUSE; p->rkind = CR_FEATURE; p->msg = strdup(why); return; }
+  const char *what = cplan_runtime_send_what(c, id);
+  if (!what) what = cplan_runtime_const_get_what(c, id);
+  if (!what) what = cplan_binding_what(c, id);
+  if (!what) what = cplan_eval_what(c, id);
+  if (what) {
+    char msg[2400];
+    p->rkind = (unsigned char)unsup_message(c, id, what, -1, msg, sizeof msg);
+    p->dispatch = CP_REFUSE; p->msg = strdup(msg);
+  }
 }
 
 const CallPlan *cplan_refuse(Compiler *c, int id) {

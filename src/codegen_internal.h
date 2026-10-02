@@ -933,6 +933,7 @@ void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
 int prog_has_conv_method(Compiler *c, const char *conv, TyKind want);
 
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what);
+int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg, size_t cap);
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 
 /* Compile a regexp literal with the engine and throw the result away, to
