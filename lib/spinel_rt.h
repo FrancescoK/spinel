@@ -3457,6 +3457,8 @@ static SP_INLINE sp_RbVal sp_poly_coll_chk(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
       v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL)
     sp_raise_poly_nomethod(m, v);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && strcmp(m, "[]=") == 0)
+    sp_raise_poly_nomethod(m, v);
   return v;
 }
 /* An Array method Hash and String lack (last, rotate, sample, join, ...)
@@ -15184,6 +15186,18 @@ static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i) {
   if (i >= w->walk_next) w->walk_next = i + 1;
   return (i >= 0 && i < w->walk_buf->len) ? w->walk_buf->data[i] : sp_box_nil();
 }
+/* A boxed Enumerator's each answers the completed walk's value, while
+   other boxed collections answer themselves. Reading the walk's fiber keeps
+   a generator from being run a second time just to obtain its result. */
+static sp_RbVal sp_poly_each_result(sp_RbVal recv, sp_RbVal walk) SP_UNUSED;
+static sp_RbVal sp_poly_each_result(sp_RbVal recv, sp_RbVal walk) {
+  if (recv.tag != SP_TAG_OBJ || recv.cls_id != SP_BUILTIN_ENUMERATOR) return recv;
+  if (sp_enum_is_walker(walk)) {
+    sp_Enumerator *w = (sp_Enumerator *)walk.v.p;
+    if (w->gen && w->fib) return w->fib->yielded_value;
+  }
+  return sp_enum_walk_result((sp_Enumerator *)recv.v.p);
+}
 /* Enumerator#find_index(v), and include? by way of it: a run of its own
    pulls one item at a time and keeps none it has passed, so an endless one
    answers at the hit without holding the prefix. SP_INT_NIL for no hit; an
@@ -16102,6 +16116,7 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
           case SP_PENUM_NONE: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(FALSE); break;
         }
       }
+      if (op == SP_PENUM_EACH) return sp_poly_each_result(recv, walk);
       if (op == SP_PENUM_EACH || op == SP_PENUM_EACH_WITH_INDEX) return recv;
       if (op == SP_PENUM_FIND || op == SP_PENUM_FIND_INDEX) return sp_box_nil();
       return sp_box_bool(op != SP_PENUM_ANY);
@@ -16116,6 +16131,8 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   switch (op) {
     case SP_PENUM_EACH:
       for (sp_int i = 0; i < n; i++) sp_penum_call1(blk, src->data[i]);
+      if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_ENUMERATOR)
+        return sp_poly_each_result(recv, walk);
       return recv;   /* Array#each answers the receiver */
     case SP_PENUM_EACH_WITH_INDEX:
       for (sp_int i = 0; i < n; i++) sp_penum_call2(blk, src->data[i], sp_box_int(i));
