@@ -24305,6 +24305,21 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
     if (nt_kind(c->nt, yargv[k]) == NK_KeywordHashNode) {
       int en = 0; const int *el = nt_arr(c->nt, yargv[k], "elements", &en);
       for (int e = 0; e < en; e++) {
+        if (nt_kind(c->nt, el[e]) == NK_AssocSplatNode) {
+          int hash = nt_ref(c->nt, el[e], "value");
+          int hn = 0;
+          const int *he = hash >= 0 && nt_kind(c->nt, hash) == NK_HashNode ? nt_arr(c->nt, hash, "elements", &hn) : NULL;
+          for (int h = 0; h < hn; h++) {
+            int value, shared;
+            const char *key = dyn_kw_elem_key(c, he[h], &value);
+            if (!key || !strvar_arg(c, value, &shared)) continue;
+            DynReach r;
+            dyn_value_kw_reach(c, g_yield_proc_expr, key, &r);
+            if (r.app)
+              refuse_string_copy(c, value, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
+                                 "through a splatted Hash literal (`**{ k: v }`)");
+          }
+        }
         int v;
         const char *key = dyn_kw_elem_key(c, el[e], &v);
         if (!key || v < 0 || !strvar_arg(c, v, &shared) || shared || local_is_handle(c, v)) continue;
@@ -25073,6 +25088,21 @@ static void refuse_string_copies(Compiler *c, int id) {
       if (nt_kind(nt, kav[k]) != NK_KeywordHashNode) continue;
       int en = 0; const int *el = nt_arr(nt, kav[k], "elements", &en);
       for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+          int hash = nt_ref(nt, el[e], "value");
+          int hn = 0;
+          const int *he = hash >= 0 && nt_kind(nt, hash) == NK_HashNode ? nt_arr(nt, hash, "elements", &hn) : NULL;
+          for (int h = 0; h < hn; h++) {
+            int value, shared;
+            const char *key = dyn_kw_elem_key(c, he[h], &value);
+            if (!key || !strvar_arg(c, value, &shared)) continue;
+            DynReach r;
+            dyn_call_kw_reach(c, id, key, &r);
+            if (r.app)
+              refuse_string_copy(c, value, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
+                                 "through a splatted Hash literal (`**{ k: v }`)");
+          }
+        }
         int v, shared;
         const char *key = dyn_kw_elem_key(c, el[e], &v);
         const char *kind = key && v >= 0 ? strvar_arg(c, v, &shared) : NULL;

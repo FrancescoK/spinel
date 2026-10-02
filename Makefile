@@ -1184,6 +1184,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound compiled)"; ok=0; \
 	else grep -q "through a parameter it hands on" "$$tmp/fpc.out" || \
 	  { echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound rejected without saying why)"; sed -n 1,5p "$$tmp/fpc.out"; ok=0; }; fi; \
+	t=test/reject/string_kwsplat_literal_dynamic.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_kwsplat_literal_dynamic compiled)"; ok=0; \
+	else grep -q "through a splatted Hash literal" "$$tmp/sk.out" || \
+	  { echo "reject-test: FAIL (string_kwsplat_literal_dynamic rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
+	t=test/reject/string_kwsplat_literal_yield.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_kwsplat_literal_yield compiled)"; ok=0; \
+	else grep -q "through a splatted Hash literal" "$$tmp/sk.out" || \
+	  { echo "reject-test: FAIL (string_kwsplat_literal_yield rejected without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	t=test/reject/string_rest_splat_yield.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/rsy.c" >"$$tmp/rsy.out" 2>&1; then \
 	  echo "reject-test: FAIL (a String gathered into a rest yielded with a splat compiled)"; ok=0; \
