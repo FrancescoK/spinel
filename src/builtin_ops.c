@@ -420,6 +420,12 @@ const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) 
 }
 
 int bop_covers(TyKind rt) {
-  for (int i = 0; i < BOP_NROWS; i++) if (bop_rows[i].recv == rt) return 1;
-  return 0;
+  if (!bop_indexed) bop_build_index();
+  int lo = 0, hi = BOP_NROWS;
+  while (lo < hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (bop_rows[bop_index[mid]].recv < rt) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < BOP_NROWS && bop_rows[bop_index[lo]].recv == rt;
 }
