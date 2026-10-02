@@ -1831,10 +1831,10 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "select!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },  /* self, or nil when nothing was removed */
   { BOP_ANY_ARRAY, "filter!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },
   { BOP_ANY_ARRAY, "reject!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },
-  { BOP_ANY_ARRAY, "flatten!",              1,   1, BF_ANY,      TY_POLY,       BOPE_NONE },  /* self or nil */
+  { BOP_ANY_ARRAY, "flatten!",              1,   1, BF_ANY,      TY_POLY,       BOPE_ARRAY_FLATTEN },  /* self or nil */
   { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_NONE,     TY_POLY,       BOPE_TEMPLATE, "sp_$AArray_uniq_bangq($r)" },  /* self, or nil when a no-op */
-  { BOP_ANY_ARRAY, "compact!",              0,   0, BF_NONE,     TY_POLY,       BOPE_NONE },
-  { BOP_ANY_ARRAY, "flatten!",              0,   0, BF_NONE,     TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "compact!",              0,   0, BF_NONE,     TY_POLY,       BOPE_ARRAY_COMPACT_BANG },
+  { BOP_ANY_ARRAY, "flatten!",              0,   0, BF_NONE,     TY_POLY,       BOPE_ARRAY_COMPACT_BANG },
   { BOP_ANY_ARRAY, "keep_if",               0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* always self */
   { BOP_ANY_ARRAY, "delete_if",             0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "each_index",            0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
@@ -1869,7 +1869,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "zip",                   0, 127, BF_REQUIRED, TY_NIL,        BOPE_NONE },  /* the block form returns nil */
   { BOP_ANY_ARRAY, "product",               1, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* the block form returns self */
   { BOP_ANY_ARRAY, "product",               1, 127, BF_ANY,      TY_POLY_ARRAY, BOPE_NONE },
-  { BOP_ANY_ARRAY, "product",               0,   0, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE },
+  { BOP_ANY_ARRAY, "product",               0,   0, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT },
   { BOP_ANY_ARRAY, "combination",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* block forms return self */
   { BOP_ANY_ARRAY, "permutation",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "repeated_combination",  0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
@@ -1933,6 +1933,24 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
   { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
   { BOP_ANY_ARRAY, "intersect?",            1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_INTERSECT_P },
+  { BOP_ANY_ARRAY, "sum",                   0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_SUM0 },
+  { BOP_ANY_ARRAY, "compact!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_ARRAY_COMPACT_BANG },
+  { BOP_ANY_ARRAY, "flatten!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_ARRAY_COMPACT_BANG },
+  { BOP_ANY_ARRAY, "flatten",               0,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_FLATTEN },
+  { BOP_ANY_ARRAY, "push",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PUSH },
+  { BOP_ANY_ARRAY, "<<",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PUSH },
+  { BOP_ANY_ARRAY, "append",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PUSH },
+  { BOP_ANY_ARRAY, "insert",                2, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_INSERT_N },
+  { BOP_ANY_ARRAY, "transpose",             0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_TRANSPOSE },
+  { BOP_ANY_ARRAY, "assoc",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_ASSOC },
+  { BOP_ANY_ARRAY, "rassoc",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_ASSOC },
+  { BOP_ANY_ARRAY, "combination",           1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_COMBINATION },
+  { BOP_ANY_ARRAY, "repeated_combination",  1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_COMBINATION },
+  { BOP_ANY_ARRAY, "repeated_permutation",  1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_COMBINATION },
+  { BOP_ANY_ARRAY, "permutation",           0,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_COMBINATION },
+  { BOP_ANY_ARRAY, "product",               1,   1, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT },
+  { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_FETCH_VALUES0 },
+  { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_REQUIRED, TY_POLY_ARRAY, BOPE_ARRAY_FETCH_VALUES0 },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

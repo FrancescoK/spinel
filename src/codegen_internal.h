@@ -1457,6 +1457,16 @@ int emit_op_array_minmax(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_sort(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_uniq(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_nmin(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_sum0(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_compact_bang(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_flatten(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_insert_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_fetch_values0(Compiler *c, const BopCtx *x, Buf *b);
 /* A typed array receiver of a compare (`ck` "cmp") or a blockless sum (`ck`
    "sum"), wrapped in the runtime's nil check where the array can hold the
    sentinel (codegen_call_recv.c) */

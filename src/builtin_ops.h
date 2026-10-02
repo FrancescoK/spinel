@@ -84,6 +84,16 @@ typedef enum {
   BOPE_ARRAY_SORT,        /* Array#sort */
   BOPE_ARRAY_UNIQ,        /* Array#uniq */
   BOPE_ARRAY_NMIN,        /* Array#min(n) / #max(n) without a block */
+  BOPE_ARRAY_SUM0,        /* Array#sum without a seed or a block */
+  BOPE_ARRAY_COMPACT_BANG, /* Array#compact! / #flatten! with no depth */
+  BOPE_ARRAY_FLATTEN,     /* Array#flatten / #flatten(depth) / #flatten!(depth) */
+  BOPE_ARRAY_PUSH,        /* Array#push / << / append of one value (poly) */
+  BOPE_ARRAY_INSERT_N,    /* Array#insert(i, v...) (poly) */
+  BOPE_ARRAY_TRANSPOSE,   /* Array#transpose (poly) */
+  BOPE_ARRAY_ASSOC,       /* Array#assoc / #rassoc (poly) */
+  BOPE_ARRAY_COMBINATION, /* Array#combination / #permutation and the repeated forms, blockless */
+  BOPE_ARRAY_PRODUCT,     /* Array#product without a block */
+  BOPE_ARRAY_FETCH_VALUES0, /* Array#fetch_values with no keys (typed) */
   BOPE__COUNT
 } BopEmit;
 

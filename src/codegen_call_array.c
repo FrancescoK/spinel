@@ -15,6 +15,13 @@ static const char *arr_kind(TyKind rt) {
   return rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
 }
 
+/* The inspect label of a blockless combinator's Enumerator, CRuby's
+   `combination(2)` or an argless `permutation`; `tn` holds the count. */
+static void emit_combinator_enum_label(const char *name, int argc, int tn, Buf *b) {
+  if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
+  else buf_printf(b, "SPL(\"%s\")", name);
+}
+
 /* shift(n) / pop(n): the removed subarray, via the slice! splice (pop takes
    the tail, shift the head; n clamps to the length) */
 int emit_op_array_shift_n(Compiler *c, const BopCtx *x, Buf *b) {
@@ -697,6 +704,435 @@ int emit_op_array_nmin(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, " _t%d = sp_%sArray_sort(_t%d); SP_GC_ROOT(_t%d);", t, k, t, t);
     if (want_max) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
     buf_printf(b, " sp_%sArray_slice(_t%d, 0, _t%d); })", k, t, tn);
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#sum without a seed or a block */
+int emit_op_array_sum0(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      /* fold via sp_poly_add so a Float (or Rational/Bignum) element promotes
+         the result instead of being dropped by the int-only sum (#2627) */
+      buf_puts(b, "sp_PolyArray_sum_poly("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    return 0;
+  }
+  /* A blockless SEEDLESS sum over Strings adds each element to the implied
+     Integer 0, which CRuby rejects with "String can't be coerced into
+     Integer". There is no sp_StrArray_sum, so the generic arms emitted a
+     call to a function that does not exist and the C compiler stopped on
+     its implicit declaration (#4327). An EMPTY receiver adds nothing and
+     answers the 0, which is why the test is at run time. A seed of any
+     class takes the boxed fold below, which reaches the same raise through
+     the operator itself. */
+  if (sp_streq(name, "sum") && rt == TY_STR_ARRAY && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    int ts = ++g_tmp;
+    buf_printf(b, "({ sp_StrArray *_t%d = ", ts); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); if (sp_StrArray_length(_t%d) != 0)"
+                  " sp_raise_cls(\"TypeError\", \"String can't be coerced into Integer\"); ", ts, ts);
+    buf_puts(b, "sp_box_int(0); })");
+    return 1;
+  }
+  if (sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    buf_printf(b, "sp_%sArray_sum(", k); emit_nil_ck_recv(c, recv, rt, "sum", 0, b); buf_puts(b, ", 0)");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#compact! / #flatten! with no depth: self when changed, nil when a
+   no-op (CRuby) */
+int emit_op_array_compact_bang(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) {
+    if (sp_streq(name, "compact!") && argc == 0) {
+      /* value form: self when changed, nil when a no-op (CRuby) */
+      buf_puts(b, "sp_PolyArray_compact_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    if (sp_streq(name, "flatten!") && argc == 0) {
+      /* value form: self when changed, nil when a no-op (CRuby) */
+      buf_puts(b, "sp_PolyArray_flatten_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    return 0;
+  }
+  if (sp_streq(name, "compact!") && argc == 0 && elem_nil_sentinel(c, recv, rt)) {
+    /* an Integer or Float array that can hold the sentinel -- its nil --
+       drops it in place, answering self when it did; the no-op fold
+       below is for one that cannot */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_%sArray_compact_bang(_t%d) ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
+               k, t, t, rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : "SP_BUILTIN_FLT_ARRAY");
+    return 1;
+  }
+  if ((sp_streq(name, "flatten!") || sp_streq(name, "compact!")) && argc == 0 &&
+      (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
+    /* a typed array can hold neither sub-arrays nor nils: both bangs are
+       always a no-op, and CRuby's no-op contract is nil */
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#flatten / #flatten(depth) / #flatten!(depth) */
+int emit_op_array_flatten(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) {
+    if (sp_streq(name, "flatten") && argc <= 1) {
+      if (argc == 1) {
+        /* held across the depth, which may allocate */
+        Buf rfl;
+        int cfl = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rfl);
+        buf_printf(b, "sp_PolyArray_flatten_n(%s, ", rfl.p);
+        /* a nil depth is legal and means "no limit" (flatten_n: < 0) */
+        if (comp_ntype(c, argv[0]) == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), (sp_int)-1)"); }
+        else emit_int_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        free(rfl.p);
+        if (cfl) buf_puts(b, "; })");
+      }
+      else { buf_puts(b, "sp_PolyArray_flatten("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      return 1;
+    }
+    if (sp_streq(name, "flatten!") && argc == 1) {
+      buf_puts(b, "sp_PolyArray_flatten_bangq_depth("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+    return 0;
+  }
+  if (sp_streq(name, "flatten") && argc == 0) {
+    /* a scalar-element array can't nest: flatten is identity, as
+       to_a / to_ary / entries / deconstruct are (builtin-op rows) */
+    emit_expr(c, recv, b); return 1;
+  }
+  if ((sp_streq(name, "flatten!") || sp_streq(name, "flatten")) && argc == 1) {
+    /* a typed (scalar-element) array has no nesting: flatten(n) copies,
+       flatten!(n) is a no-op returning nil */
+    if (name[7] == '!') {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_int_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+    }
+    else {
+      buf_puts(b, "((void)(");
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, "), sp_%sArray_dup(", k);
+      emit_expr(c, recv, b);
+      buf_puts(b, "))");
+    }
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#push / #<< / #append of one value onto a poly array */
+int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt != TY_POLY_ARRAY) return 0;
+  if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc == 1) {
+    buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#insert(i, v...) on a poly array: the inserted values box into the
+   sp_RbVal slots */
+int emit_op_array_insert_n(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt != TY_POLY_ARRAY) return 0;
+  if (sp_streq(name, "insert") && argc == 2 && rt == TY_POLY_ARRAY) {
+    /* poly array (outside the typed-kind block -- array_kind(POLY_ARRAY) is
+       NULL): the inserted value boxes into the sp_RbVal slot */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+    /* rooted across the index and the value, as the typed arm is */
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray_insert(_t%d, ", t, t); emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_printf(b, "); _t%d; })", t);
+    return 1;
+  }
+  if (sp_streq(name, "insert") && argc >= 2) {
+    int t = ++g_tmp, ti2 = ++g_tmp, to2 = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", t, ti2); emit_int_expr(c, argv[0], b);
+    buf_puts(b, ";");
+    /* normalize ONCE (per-element normalization would drift as the array
+       grows), keeping the too-negative IndexError the helper would raise */
+    buf_printf(b, " sp_int _t%d = _t%d; if (_t%d < 0) { _t%d += (_t%d ? _t%d->len : 0) + 1;"
+                  " if (_t%d < 0) sp_raise_cls(\"IndexError\","
+                  " sp_sprintf(\"index %%lld too small for array; minimum: %%lld\","
+                  " (long long)_t%d, (long long)(-((_t%d ? _t%d->len : 0) + 1)))); }",
+               to2, ti2, ti2, ti2, t, t, ti2, to2, t, t);
+    for (int a2 = 1; a2 < argc; a2++) {
+      buf_printf(b, " sp_PolyArray_insert(_t%d, _t%d + %d, ", t, ti2, a2 - 1);
+      emit_boxed(c, argv[a2], b); buf_puts(b, ");");
+    }
+    buf_printf(b, " _t%d; })", t);
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#transpose of a poly array */
+int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt != TY_POLY_ARRAY) return 0;
+  if (sp_streq(name, "transpose") && argc == 0) {
+    buf_puts(b, "sp_int_array_transpose("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#assoc / #rassoc on a poly array */
+int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt != TY_POLY_ARRAY) return 0;
+  if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
+    buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#combination / #permutation and their repeated forms without a block */
+int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) {
+    if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
+         sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+        (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
+        nt_ref(nt, id, "block") < 0) {
+      const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                         : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                         : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
+                         : "sp_PolyArray_repeated_combination";
+      int ta = ++g_tmp;
+      /* a poly-array receiver keeps materializing the tuples: an Enumerator
+         here would reach chain sites that read the array directly */
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); %s(_t%d, ", ta, combfn, ta);
+      if (argc == 1) emit_expr(c, argv[0], b);
+      else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+      buf_puts(b, "); })");
+      return 1;
+    }
+    return 0;
+  }
+  if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
+       sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+      (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
+      rt == TY_INT_ARRAY && nt_ref(nt, id, "block") < 0) {
+    const char *combfn = sp_streq(name, "combination") ? "sp_IntArray_combination"
+                       : sp_streq(name, "permutation") ? "sp_IntArray_permutation"
+                       : sp_streq(name, "repeated_permutation") ? "sp_IntArray_repeated_permutation"
+                       : "sp_IntArray_repeated_combination";
+    int ta = ++g_tmp, tc = ++g_tmp, tout = ++g_tmp, ti = ++g_tmp;
+    int tn = ++g_tmp, te = ++g_tmp;
+    buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
+    buf_printf(b, "sp_int _t%d = ", tn);
+    if (argc == 1) emit_int_expr(c, argv[0], b);
+    else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);   /* argless permutation: full length */
+    buf_printf(b, "; sp_PtrArray *_t%d = %s(_t%d, _t%d", tc, combfn, ta, tn);
+    /* the combinations are only in this temp until the loop below boxes
+       them, and the array it boxes them into allocates first */
+    buf_printf(b, "); SP_GC_ROOT(_t%d);", tc);
+    buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tout, tout);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tc, ti);
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int_array(_t%d->data[_t%d]));", tout, tc, ti);
+    /* blockless: an Enumerator over those tuples (#3614) */
+    buf_printf(b, " sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_poly_array(_t%d)); SP_GC_ROOT(_t%d);", te, tout, te);
+    buf_printf(b, " sp_enum_with_src(_t%d, sp_box_int_array(_t%d), ", te, ta);
+    emit_combinator_enum_label(name, argc, tn, b);
+    buf_puts(b, "); })");
+    return 1;
+  }
+  if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
+       sp_streq(name, "permutation") || sp_streq(name, "repeated_permutation")) &&
+      (argc == 1 || (sp_streq(name, "permutation") && argc == 0)) &&
+      nt_ref(nt, id, "block") < 0) {
+    /* any other element kind rides the boxed PolyArray implementation */
+    const char *combfn = sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                       : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                       : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
+                       : "sp_PolyArray_repeated_combination";
+    int ta = ++g_tmp, ts = ++g_tmp, tn = ++g_tmp, te = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", ts);
+    emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = ", ts, ta, ts, ta, tn);
+    if (argc == 1) emit_expr(c, argv[0], b);
+    else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_printf(b, "; sp_Enumerator *_t%d = ", te);
+    buf_puts(b, "sp_Enumerator_new_from(sp_box_poly_array(");
+    buf_printf(b, "%s(_t%d, _t%d", combfn, ta, tn);
+    buf_puts(b, ")))");
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_enum_with_src(_t%d, _t%d, ", te, te, ts);
+    emit_combinator_enum_label(name, argc, tn, b);
+    buf_puts(b, ")");
+    buf_puts(b, "; })");
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#product without a block: no operand on any array, one operand on
+   a poly array */
+int emit_op_array_product(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) {
+    if (sp_streq(name, "product") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      /* poly product with one list: all [x, y] pairs (an empty receiver or
+         argument yields []) */
+      int pta = ++g_tmp, ptb = ++g_tmp, ptr = ++g_tmp, pti = ++g_tmp, ptj = ++g_tmp, pte = ++g_tmp;
+      Buf pra = expr_buf(c, recv);
+      buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", pta, pra.p ? pra.p : "NULL", pta);
+      free(pra.p);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_enum_items_from(", ptb);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d);", ptb);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ptr, ptr);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", pti, pti, pta, pti);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ptj, ptj, ptb, ptj);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                    " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                    " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }",
+                 pte, pte, pte, pta, pti, pte, ptb, ptj, ptr, pte);
+      buf_printf(b, " _t%d; })", ptr);
+      return 1;
+    }
+    if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      /* product with no arguments: each element wrapped in its own array */
+      int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+      Buf ra = expr_buf(c, recv);
+      buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", ta, ra.p ? ra.p : "NULL", ta);
+      free(ra.p);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
+      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                    " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }",
+                 te, te, te, ta, ti, tr, te);
+      buf_printf(b, " _t%d; })", tr);
+      return 1;
+    }
+    return 0;
+  }
+  if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    /* product with no arguments: each element wrapped in its own array */
+    int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+    Buf ra = expr_buf(c, recv);
+    buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
+    free(ra.p);
+    buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {", ti, ti, k, ta, ti);
+    buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, ", te, te, te);
+    char ee[96]; snprintf(ee, sizeof ee, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+    emit_boxed_text(c, ty_array_elem(rt), ee, b);
+    buf_printf(b, "); sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }", tr, te);
+    buf_printf(b, " _t%d; })", tr);
+    return 1;
+  }
+  return 0;
+}
+
+/* Array#fetch_values with no keys on a typed array (a poly one is answered
+   ahead of the lookup, where a program defining fetch_values can take it) */
+int emit_op_array_fetch_values0(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = x->name;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = x->rt;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  const char *k = array_kind(rt);
+  int block = nt_ref(nt, id, "block");
+  (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  if (rt == TY_POLY_ARRAY) return 0;
+  /* fetch_values with no keys reads nothing: an empty Array */
+  if (sp_streq(name, "fetch_values") && argc == 0) {
+    buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), sp_%sArray_new())", k);
     return 1;
   }
   return 0;

@@ -237,6 +237,16 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_SORT] = emit_op_array_sort,
   [BOPE_ARRAY_UNIQ] = emit_op_array_uniq,
   [BOPE_ARRAY_NMIN] = emit_op_array_nmin,
+  [BOPE_ARRAY_SUM0] = emit_op_array_sum0,
+  [BOPE_ARRAY_COMPACT_BANG] = emit_op_array_compact_bang,
+  [BOPE_ARRAY_FLATTEN] = emit_op_array_flatten,
+  [BOPE_ARRAY_PUSH] = emit_op_array_push,
+  [BOPE_ARRAY_INSERT_N] = emit_op_array_insert_n,
+  [BOPE_ARRAY_TRANSPOSE] = emit_op_array_transpose,
+  [BOPE_ARRAY_ASSOC] = emit_op_array_assoc,
+  [BOPE_ARRAY_COMBINATION] = emit_op_array_combination,
+  [BOPE_ARRAY_PRODUCT] = emit_op_array_product,
+  [BOPE_ARRAY_FETCH_VALUES0] = emit_op_array_fetch_values0,
 };
 
 /* an argument's kind, for a row's argument guard */
