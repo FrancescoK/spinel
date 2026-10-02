@@ -13185,16 +13185,9 @@ int needs_root(TyKind t) { return t == TY_STRING || t == TY_STRBUF || t == TY_BI
    passed through unboxed (double-boxing is a classic silent-corruption bug). */
 /* Box a C-text expression `expr` of static type `t` into an sp_RbVal. */
 const char *hash_box_cls(TyKind t) {
-  switch (t) {
-    case TY_STR_INT_HASH:   return "SP_BUILTIN_STR_INT_HASH";
-    case TY_STR_STR_HASH:   return "SP_BUILTIN_STR_STR_HASH";
-    case TY_INT_STR_HASH:   return "SP_BUILTIN_INT_STR_HASH";
-    case TY_INT_INT_HASH:   return "SP_BUILTIN_INT_INT_HASH";
-    case TY_STR_POLY_HASH:  return "SP_BUILTIN_STR_POLY_HASH";
-    case TY_SYM_POLY_HASH:  return "SP_BUILTIN_SYM_POLY_HASH";
-    case TY_POLY_POLY_HASH: return "SP_BUILTIN_POLY_POLY_HASH";
-    default:                return NULL;
-  }
+  /* a Hash variant's boxed class id is its ty_traits row's (types.c) */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->hash_id : NULL;
 }
 
 /* The key and the value at position `_t<ti>` of the iteration order of the
