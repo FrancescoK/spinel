@@ -2554,13 +2554,10 @@ int is_scalar_ret(TyKind t) {
    parameter and an argument that disagree here can never be the same call --
    unlike the numeric scalars, where int-into-float is an ordinary conversion. */
 int ty_is_struct_valued(TyKind t) {
-  switch (t) {
-    case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE:
-    case TY_TIME: case TY_COMPLEX: case TY_RATIONAL:
-    case TY_TMS: case TY_CLASS:
-      return 1;
-    default: return 0;
-  }
+  /* a builtin kind's ty_traits row says (types.c); a user object's
+     by-value class is asked of the class (comp_ty_value_obj) */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->struct_valued : 0;
 }
 
 const char *native_c_type(const char *spec) {
