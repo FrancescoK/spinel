@@ -26230,6 +26230,23 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
   }
   return 0;
 }
+/* An arm of a dynamic send (`public_send(*args)`) on a receiver whose class
+   only the run time knows takes the rest of the list into whatever builtin
+   its name is: the counts come from CRuby's arity tables, over every class
+   with the name, so the arm dispatches on the length as the names above do.
+   A name taking any number is dispatched up to a cap. */
+static int splat_dyn_arm_range(Compiler *c, int id, const char *name, int with_block,
+                               int *lo, int *hi, int *variadic) {
+  if (!nt_int((NodeTable *)c->nt, id, "dyn_arm", 0)) return 0;
+  int l, h;
+  if (!builtin_name_arity_span(name, with_block, &l, &h)) return 0;
+  int v = 0;
+  if (h < 0 || h > l + 3) { h = l + 3; v = 1; }
+  if (lo) *lo = l;
+  if (hi) *hi = h;
+  if (variadic) *variadic = v;
+  return 1;
+}
 /* A node that can be copied into each arm of the dispatch without being
    evaluated more than once, or out of order, in the arm that runs. */
 static int splat_leaf_node(NodeTable *nt, int id) {
@@ -26261,11 +26278,19 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   NodeTable *nt = (NodeTable *)c->nt;
   const char *cnm = nt_str(nt, id, "name");
   int lo, hi, variadic;
-  if (!cnm || !splat_builtin_range(cnm, &lo, &hi, &variadic)) return 0;
-  /* a block stays with the call: an operator's one arm takes it as it
-     stands, which no other name's several arms can share */
+  if (!cnm) return 0;
   int oblk = nt_ref(nt, id, "block");
-  if (oblk >= 0 && !splat_binary_operator(cnm)) return 0;
+  /* counts from CRuby's tables are the block-carrying call's where there
+     is a block, so a dynamic send's arm keeps it: its arms already share
+     their one block node, and its length arms may as well */
+  int odyn = 0;
+  if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
+    if (!splat_dyn_arm_range(c, id, cnm, oblk >= 0, &lo, &hi, &variadic)) return 0;
+    odyn = 1;
+  }
+  /* a block stays with the call there, and with an operator's one arm; it
+     moves the counts of the names listed above (`sub(pat) { }`) */
+  if (oblk >= 0 && !splat_binary_operator(cnm) && !odyn) return 0;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
   const char *cop = nt_str(nt, id, "call_operator");
@@ -26301,7 +26326,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     if (hi > 8) return 0;
   }
-  if (oblk >= 0 && lo != hi) return 0;
+  if (oblk >= 0 && lo != hi && !odyn) return 0;
   int fixed = argc - 1;
   int base = nt->count;
   int encl = c->nscope[id];
@@ -26564,7 +26589,8 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     for (int j = 0; fixed_arity_builtins[j]; j++)
       if (sp_streq(cnm, fixed_arity_builtins[j])) { listed = 1; break; }
     if (splat_binary_operator(cnm)) listed = 1;
-    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL)) continue;
+    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL) &&
+        !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL)) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
