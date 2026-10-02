@@ -541,7 +541,9 @@ sp_int sp_process_waitpid(sp_int pid);   /* Process.wait / waitpid: the pid reap
 
 /* RUBY_PLATFORM's parts -- host arch + OS. Detected at C compile time
    so cross-builds report the target platform. Issue #890. */
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && defined(_WIN32)
+#  define SP_RUBY_ARCH "x64"      /* CRuby's spelling on Windows: x64-mingw-ucrt */
+#elif defined(__x86_64__) || defined(_M_X64)
 #  define SP_RUBY_ARCH "x86_64"
 #elif defined(__aarch64__) || defined(_M_ARM64)
 #  define SP_RUBY_ARCH "aarch64"
@@ -562,6 +564,8 @@ sp_int sp_process_waitpid(sp_int pid);   /* Process.wait / waitpid: the pid reap
 #  define SP_RUBY_OS "darwin"
 #elif defined(__FreeBSD__)
 #  define SP_RUBY_OS "freebsd"
+#elif defined(_WIN32)
+#  define SP_RUBY_OS "mingw-ucrt"
 #else
 #  define SP_RUBY_OS "unknown"
 #endif

@@ -11,6 +11,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#if defined(_WIN32)
+#include <spawn.h>
+#endif
 
 typedef int sp_bool;
 #ifndef TRUE
@@ -30,6 +33,20 @@ int sp_system_args(int argc, const char *const *argv) {
     return FALSE;
   }
   fflush(NULL);
+#if defined(_WIN32)
+  /* posix_spawn where there is no fork (see sp_process.c): a program that
+     cannot be started leaves $? at the 127 its failed exec exits with */
+  pid_t pid = 0;
+  {
+    int rc;
+    if (argc == 1) {
+      char *av[] = { (char *)"sh", (char *)"-c", (char *)argv[0], NULL };
+      rc = posix_spawn(&pid, "/bin/sh", NULL, NULL, av, environ);
+    }
+    else rc = posix_spawnp(&pid, argv[0], NULL, NULL, (char *const *)argv, environ);
+    if (rc != 0) { sp_last_status = 127 << 8; return FALSE; }
+  }
+#else
   pid_t pid = fork();
   if (pid < 0) {
     sp_last_status = -1;
@@ -44,6 +61,7 @@ int sp_system_args(int argc, const char *const *argv) {
     }
     _exit(127);
   }
+#endif
   /* Same rule as Process.waitpid2 (#4381): a blocking wait answers for the OS
      worker, and a started green thread is pinned to its worker, so it would
      stall the very thread that may have to drain this child's output before it

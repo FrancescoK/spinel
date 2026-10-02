@@ -420,6 +420,11 @@ sp_float sp_str_to_f_lenient(const char *s) { return sp_str_to_f_impl(s, 1); }
    primitives (Float#to_s / to_f) are locale-free via fp_uscale; this is only
    for the printf-compatible field/flag machinery libc handles best. */
 int sp_snprintf_c_float(char *buf, size_t size, const char *fmt, double v) {
+#if defined(_WIN32)
+  /* the UCRT's %a keeps every trailing zero of the mantissa ("0x1.0000000000000p+0");
+     MinGW-w64's own C99 printf trims as glibc does */
+  if (strpbrk(fmt, "aA")) return __mingw_snprintf(buf, size, fmt, v);
+#endif
   static locale_t sp_c_loc = (locale_t)0;
   if (!sp_c_loc) sp_c_loc = newlocale(LC_ALL_MASK, "C", (locale_t)0);
   if (sp_c_loc) {
