@@ -273,6 +273,15 @@ the tool's own error. Like the other probes it is a CRuby script to run
 by hand (it needs Prism, which Ruby 3.3 and later bundle), not a gate, and
 not one of the tools make builds.
 
+What it does not see: a node the compiler made up has no end position in
+the dump (2,377 of the 2.5 million records of `test/*.rb` on 1d303cb9, most
+of them from desugaring, a few grafted from a `class_eval` string), and some
+of those sit on the line of whichever definition needed them first, which
+follows the order. They are compared without their place, as a count of each
+kind, name and type, so two of them exchanging types go unseen. Keyed by
+where they start instead, the same pass finds no such exchange and reports
+three programs in which only the helper's line moved.
+
 ## Adding a tool
 
 Drop `tools/<name>.rb` (subset Ruby, `require_relative "tool_common"`
