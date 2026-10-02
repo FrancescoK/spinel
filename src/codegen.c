@@ -295,8 +295,10 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
    ruled out is narrowed to a concrete slot; emit_unbox_text stays the
    unguarded form for the many sites that have. */
 void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
-  if (t == TY_INT)   { buf_printf(b, "sp_poly_as_int_or_nil(%s)", expr); return; }
-  if (t == TY_FLOAT) { buf_printf(b, "sp_poly_as_float_or_nil(%s)", expr); return; }
+  /* a builtin kind's ty_traits row's unbox_nil (types.c): the guarded
+     sp_poly_as_int_or_nil / sp_poly_as_float_or_nil, the unbox otherwise */
+  const TyTraits *tr = ty_traits_of(t);
+  if (tr) { ty_traits_render(tr->unbox_nil, expr, b); return; }
   emit_unbox_text(c, t, expr, b);
 }
 
