@@ -3101,7 +3101,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 # missed pointed INTO that unit's stack frame, so the next unit's emission read
 # a dead frame: a SIGSEGV whose site moved with the optimization level, and,
 # short of that, a later method silently emitted with the wrong return
-# convention. Both are checked here (#4141).
+# convention. Both are checked here (#4141). tools/refusals.sh then compares
+# every message test/reject/ and test/collect/ print, in both overflow modes,
+# with test/collect/refusals.expected.
 collect-errors-test: $(SPINEL)
 	@tmp=$$(mktemp -d /tmp/spinel-collect.XXXXXX); ok=1; \
 	src=test/collect/gap_inside_capturing_proc.rb; \
@@ -3127,7 +3129,14 @@ collect-errors-test: $(SPINEL)
 	[ ! -f "$$tmp/g2.c" ] || { echo "collect-errors-test: FAIL (a refused program's C was written)"; ok=0; }; \
 	grep -q 'refusal, nothing written' "$$tmp/g2.err" || { echo "collect-errors-test: FAIL (the run did not close with the refusal count)"; ok=0; }; \
 	rm -rf "$$tmp"; \
+	tools/refusals.sh || ok=0; \
 	if [ $$ok -eq 1 ]; then echo "collect-errors-test: pass"; else exit 1; fi
+
+# The refusals the corpus prints (tools/refusals.sh --corpus): only the
+# programs that refuse are listed. It compiles the whole corpus twice, so it
+# is its own target rather than part of collect-errors-test.
+refusals-corpus-test: $(SPINEL)
+	@tools/refusals.sh --corpus
 
 alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	@tmp=$$(mktemp -d /tmp/spinel-alloc.XXXXXX); ok=1; \
