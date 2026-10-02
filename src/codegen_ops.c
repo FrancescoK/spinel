@@ -22,19 +22,28 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
    so the C is emitted in the order the arm the row replaces emitted it:
      $r   the receiver, emitted at its first occurrence (or the text the
           caller rendered, x->rtext); a later $r repeats the same text
-     $t   a fresh temp number (++g_tmp) taken at its first occurrence; a
-          later $t repeats it
+     $R   the receiver emitted again, for an arm that emitted it twice
+     $t $u $v $w  temp numbers. The ones a row names are all taken (++g_tmp,
+          in that order) before anything is emitted, as the arms took them
      $eN  argument N by emit_expr
      $bN  argument N boxed (emit_boxed)
      $fN  argument N as a double (emit_float_expr)
      $iN  argument N as an sp_int (emit_int_expr)
-     $sN  argument N as a String (emit_str_expr) */
+     $sN  argument N as a String (emit_str_expr)
+     $cN  argument N as an sp_Complex (emit_complex_coerce)
+     $qN  argument N as an sp_Rational (emit_rat_coerce) */
 static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
+  static const char tnames[] = "tuvw";
+  int tn[4] = { 0, 0, 0, 0 };
+  for (int k = 0; k < 4; k++) {
+    char pat[3] = { '$', tnames[k], 0 };
+    if (strstr(x->op->arg, pat)) tn[k] = ++g_tmp;
+  }
   char *r = NULL;
-  int t = 0;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   for (const char *p = x->op->arg; *p; p++) {
+    const char *tk = p[0] == '$' && p[1] ? strchr(tnames, p[1]) : NULL;
     if (p[0] == '$' && p[1] == 'r') {
       if (!r && x->rtext) { r = strdup(x->rtext); buf_puts(b, r); }
       else if (!r) {
@@ -45,20 +54,26 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
       else buf_puts(b, r);
       p++;
     }
-    else if (p[0] == '$' && p[1] == 't') {
-      if (!t) t = ++g_tmp;
-      buf_printf(b, "%d", t);
+    else if (p[0] == '$' && p[1] == 'R') {
+      emit_expr(c, x->recv, b);
       p++;
     }
-    else if (p[0] == '$' && (p[1] == 'e' || p[1] == 'b' || p[1] == 'f' ||
-                             p[1] == 'i' || p[1] == 's') &&
+    else if (tk) {
+      buf_printf(b, "%d", tn[tk - tnames]);
+      p++;
+    }
+    else if (p[0] == '$' && p[1] && strchr("ebficqs", p[1]) &&
              p[2] >= '0' && p[2] <= '9' && p[2] - '0' < argc) {
       int a = argv[p[2] - '0'];
-      if (p[1] == 'e') emit_expr(c, a, b);
-      else if (p[1] == 'b') emit_boxed(c, a, b);
-      else if (p[1] == 'i') emit_int_expr(c, a, b);
-      else if (p[1] == 's') emit_str_expr(c, a, b);
-      else emit_float_expr(c, a, b);
+      switch (p[1]) {
+      case 'e': emit_expr(c, a, b); break;
+      case 'b': emit_boxed(c, a, b); break;
+      case 'f': emit_float_expr(c, a, b); break;
+      case 'i': emit_int_expr(c, a, b); break;
+      case 's': emit_str_expr(c, a, b); break;
+      case 'c': emit_complex_coerce(c, a, b); break;
+      default:  emit_rat_coerce(c, a, b); break;
+      }
       p += 2;
     }
     else { char ch[2] = { *p, 0 }; buf_puts(b, ch); }
@@ -125,13 +140,14 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_FIBER_RESUME] = emit_op_fiber_resume,
   [BOPE_FIBER_TRANSFER] = emit_op_fiber_transfer,
   [BOPE_FIBER_RAISE] = emit_op_fiber_raise,
+  [BOPE_RATIONAL_ROUND] = emit_op_rational_round,
 };
 
-/* the first argument's kind, for a row's arg0 guard */
-typedef struct { const Compiler *c; int arg; } BopArg0;
-static TyKind bop_arg0_ntype(const void *ud) {
-  const BopArg0 *a = ud;
-  return comp_ntype(a->c, a->arg);
+/* an argument's kind, for a row's argument guard */
+typedef struct { const Compiler *c; const int *argv; } BopArgs;
+static TyKind bop_arg_ntype(const void *ud, int i) {
+  const BopArgs *a = ud;
+  return comp_ntype(a->c, a->argv[i]);
 }
 
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
@@ -139,9 +155,9 @@ int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *n
   if (recv < 0 || !bop_covers(rt)) return 0;
   int argc;
   const int *argv = call_args(c->nt, id, &argc);
-  BopArg0 a0 = { c, argc >= 1 ? argv[0] : -1 };
+  BopArgs a = { c, argv };
   const BuiltinOp *op = bop_find_arg(rt, name, argc, nt_ref(c->nt, id, "block") >= 0,
-                                     bop_arg0_ntype, &a0);
+                                     bop_arg_ntype, &a);
   if (!op || op->emit == BOPE_NONE || !bop_emitters[op->emit]) return 0;
   BopCtx x = { id, recv, argc, rt, name, op, rtext };
   if (!bop_emitters[op->emit](c, &x, b)) return 0;

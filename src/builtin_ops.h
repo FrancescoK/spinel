@@ -36,8 +36,15 @@ typedef enum {
   BOPE_FIBER_RESUME,      /* Fiber#resume */
   BOPE_FIBER_TRANSFER,    /* Fiber#transfer */
   BOPE_FIBER_RAISE,       /* Fiber#raise */
+  /* Complex and Rational (codegen_call_numeric.c) */
+  BOPE_RATIONAL_ROUND,    /* Rational#round/floor/ceil/truncate with digits or half: */
   BOPE__COUNT
 } BopEmit;
+
+/* A set of argument kinds, one bit per TyKind: BOP_K(TY_INT) | BOP_K(TY_FLOAT) */
+typedef unsigned long long BopKinds;
+#define BOP_K(k) (1ULL << (k))
+_Static_assert(TY_FLOAT_ARRAY_ARRAY < 64, "a BopKinds set holds a bit per TyKind");
 
 typedef struct BuiltinOp {
   TyKind recv;            /* receiver kind the row applies to */
@@ -48,8 +55,8 @@ typedef struct BuiltinOp {
                              leaves the call to the rules after it */
   BopEmit emit;
   const char *arg;        /* BOPE_TEMPLATE's C text */
-  TyKind arg0;            /* the kind the first argument must have, or
-                             TY_UNKNOWN for any */
+  BopKinds arg0, arg1;    /* the kinds the first and second argument may
+                             have (BOP_K), or 0 for any */
   unsigned char flags;    /* BOPF_* */
 } BuiltinOp;
 
@@ -80,16 +87,18 @@ typedef struct BuiltinOp {
    Rows of one name are tried narrowest arity first, and among rows of the
    same arity in the order they are written. So a codegen row for one arity
    comes before the wider row that only types the call for every arity, and
-   a row with an arg0 guard before the unguarded row of its arity. A row
-   with an arg0 guard never fits here: bop_find_arg checks the guard. */
+   a row with an argument guard before the unguarded row of its arity. A
+   row with an argument guard never fits here: bop_find_arg checks the
+   guard. */
 const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block);
 
-/* bop_find, with arg0_of(ud) answering the first argument's kind for the
-   rows that guard it. It is called at most once, and only when such a row
-   is a candidate, so a lookup that needs no argument's kind computes none. */
-typedef TyKind (*BopArgKind)(const void *ud);
+/* bop_find, with arg_of(ud, i) answering argument i's kind for the rows
+   that guard it. It is called at most once per argument, and only when
+   such a row is a candidate, so a lookup that needs no argument's kind
+   computes none. */
+typedef TyKind (*BopArgKind)(const void *ud, int i);
 const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_block,
-                              BopArgKind arg0_of, const void *ud);
+                              BopArgKind arg_of, const void *ud);
 
 /* Whether any row applies to receivers of kind rt: a caller checks this
    before reading the call's arguments, so receivers no row covers cost
