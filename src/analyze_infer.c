@@ -6371,35 +6371,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
-    if (sp_streq(name, "clear") && argc == 0) return TY_STRING;  /* empties + returns self (#2332) */
-    /* s[i] = v / s[i, n] = v / s[range] = v / s["sub"] = v as a VALUE: the
-       assigned string (#2370) */
-    if (sp_streq(name, "[]=") && (argc == 2 || argc == 3)) return TY_STRING;
-    if (sp_streq(name, "concat") && argc == 0) return TY_STRING;  /* self (#2309) */
-    if (sp_streq(name, "clone") && argc == 1) return TY_STRING;  /* clone(freeze: ...) */
-    if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
-    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
-        sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
-        sp_streq(name, "reverse") ||
-        ((sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) && argc == 1) ||
-        sp_streq(name, "strip") || sp_streq(name, "lstrip") ||
-        sp_streq(name, "rstrip") || sp_streq(name, "chomp") ||
-        sp_streq(name, "chop") || sp_streq(name, "chr") || sp_streq(name, "clamp") ||
-        sp_streq(name, "squeeze") || sp_streq(name, "tr") || sp_streq(name, "tr_s") ||
-        sp_streq(name, "succ") || sp_streq(name, "next") ||
-        sp_streq(name, "delete")) return TY_STRING;
-    if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
-    if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
-        sp_streq(name, "bytesplice") || sp_streq(name, "append_as_bytes") ||
-        sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode") ||
-        sp_streq(name, "encode!")) return TY_STRING;
-    if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
-    if (sp_streq(name, "index") && argc == 1) {
-      const char *aty = nt_type(nt, argv[0]);
-      /* nullable int (SP_INT_NIL on no match), matching the string-needle
-         form -- the emitter carries the same sentinel for a regexp needle */
-      if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_INT;
-      if (infer_type(c, argv[0]) == TY_REGEX) return TY_INT;
+    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
+       It reads the mode, so it sits ahead of the to_i row. */
+    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) return TY_POLY;
+    /* builtin-op rows (builtin_ops.c): the calls typed by name, arity and
+       block form */
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* casecmp/casecmp? with a statically non-string argument: CRuby answers
        nil rather than raising, so the call types nil (the emitter drops the
@@ -6417,41 +6396,16 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (at0 != TY_STRING && at0 != TY_UNKNOWN) return TY_NIL;
       return sp_streq(name, "casecmp") ? TY_INT : TY_BOOL;
     }
-    /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote) */
-    if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) return TY_POLY;
-    if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
-        sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
-        sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
-    if (sp_streq(name, "scrub") || sp_streq(name, "scrub!") || sp_streq(name, "crypt")) return TY_STRING;
-    if (sp_streq(name, "sum") && argc <= 1) return TY_INT;
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
-    if (sp_streq(name, "rindex")) return TY_INT;
     /* byteindex/byterindex over a String or Regexp needle -> byte offset or
        nil (SP_INT_NIL). */
     if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
         (argc == 1 || argc == 2) &&
         (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_REGEX))
       return TY_INT;
-    if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
-    /* value-form mutators: the post-mutation string; the no-change bang
-       contract carries nil as NULL through the nullable string. */
-    if (sp_streq(name, "gsub!") || sp_streq(name, "sub!") || sp_streq(name, "upcase!") ||
-        sp_streq(name, "downcase!") || sp_streq(name, "capitalize!") || sp_streq(name, "swapcase!") ||
-        sp_streq(name, "strip!") || sp_streq(name, "lstrip!") || sp_streq(name, "rstrip!") ||
-        sp_streq(name, "chomp!") || sp_streq(name, "chop!") || sp_streq(name, "squeeze!") ||
-        sp_streq(name, "tr!") || sp_streq(name, "delete!") || sp_streq(name, "reverse!") ||
-        sp_streq(name, "tr_s!") || sp_streq(name, "delete_prefix!") ||
-        sp_streq(name, "delete_suffix!") || sp_streq(name, "dedup") ||
-        sp_streq(name, "succ!") || sp_streq(name, "next!") ||
-        sp_streq(name, "concat") || sp_streq(name, "<<") || sp_streq(name, "prepend") ||
-        sp_streq(name, "insert") || sp_streq(name, "replace"))
-      return TY_STRING;
-    if (sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
-    if (sp_streq(name, "to_f"))  return TY_FLOAT;
-    if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
-    if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-         sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
-        nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    /* each_line and lines read their separator argument */
+    if (sp_streq(name, "each_line") && argc == 0 && nt_ref(nt, id, "block") < 0)
+      return TY_ENUMERATOR;
     if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
       return TY_ENUMERATOR;  /* each_line(chomp: ...) blockless */
@@ -6463,13 +6417,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "lines") && argc == 2 && infer_type(c, argv[0]) == TY_STRING &&
         nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode"))
       return TY_STR_ARRAY;   /* lines(sep, chomp: true) (#3546) */
-    if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
-    { int blk = nt_ref(nt, id, "block");
-      if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;
-      if (blk >= 0 && (sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) return TY_STRING;
-      /* the block form of split iterates and answers the receiver too */
-      if (blk >= 0 && sp_streq(name, "split")) return TY_STRING; }
-    if (sp_streq(name, "split") || sp_streq(name, "lines")) return TY_STR_ARRAY;
+    if (sp_streq(name, "each_line")) return TY_STRING;
+    if (sp_streq(name, "lines")) return nt_ref(nt, id, "block") >= 0 ? TY_STRING : TY_STR_ARRAY;
     if (sp_streq(name, "scan") && argc == 1) {
       /* the block form iterates and returns self (the receiver string) */
       if (nt_ref(nt, id, "block") >= 0) return TY_STRING;
@@ -6495,22 +6444,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       if (infer_type(c, argv[0]) == TY_POLY) return TY_POLY_ARRAY;
       return TY_STR_ARRAY;
     }
-    if (sp_streq(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
-    if (sp_streq(name, "bytes") || sp_streq(name, "codepoints")) return TY_INT_ARRAY;
-    if (sp_streq(name, "unpack") && (argc == 1 || argc == 2)) return TY_POLY_ARRAY;
-    if (sp_streq(name, "chars")) return TY_STR_ARRAY;
-    if (sp_streq(name, "intern") && argc == 0) return TY_SYMBOL;
-    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
     if (sp_streq(name, "gsub") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
       return TY_ENUMERATOR;  /* blockless gsub(/re/): an Enumerator of matches */
-    if (sp_streq(name, "gsub") || sp_streq(name, "sub") || sp_streq(name, "tr") ||
-        sp_streq(name, "center") || sp_streq(name, "ljust") || sp_streq(name, "rjust"))
-      return TY_STRING;
-    if (sp_streq(name, "*")) return TY_STRING;
-    /* in-place append / concat reassign the receiver and evaluate to it */
-    if ((sp_streq(name, "<<") || sp_streq(name, "concat") || sp_streq(name, "prepend")) && argc == 1)
-      return TY_STRING;
+    if (sp_streq(name, "gsub")) return TY_STRING;
   }
   /* <int_array>.product(<int_array>)[.to_a].inspect -> a string */
   if (sp_streq(name, "inspect") && argc == 0 && recv >= 0) {
