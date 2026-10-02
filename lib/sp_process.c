@@ -57,6 +57,11 @@
 #include <errno.h>
 #include <limits.h>
 
+#if defined(_WIN32)
+#include <spawn.h>
+#include <sys/stat.h>
+#endif
+
 #include "sp_alloc.h"   /* sp_PolyArray, sp_RbVal, sp_box_*, sp_raise_cls */
 #include "sp_process_status.h"   /* sp_ProcessStatus, sp_box_process_status */
 #include "sp_system.h"   /* sp_last_status: $? */
@@ -290,6 +295,64 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   }
   argv[ai] = NULL;
 
+#if defined(_WIN32)
+  /* posix_spawn, where there is no fork (lib/win32 answers it over
+     CreateProcess). The child's setup is the file actions -- the same dup2s and closes the fork
+     path makes, in the same order -- and the attributes: chdir, and a new
+     process group. There is no posix_spawn counterpart for the rlimits;
+     they are not applied on this path. The directory is checked here, so a
+     missing one raises naming it, as the fork path's chdir failure does;
+     posix_spawn reports an exec failure as its return value. */
+  {
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    (void)rlimit_cpu_set; (void)rlimit_cpu_val; (void)rlimit_as_set; (void)rlimit_as_val;
+    if (chdir_to) {
+      struct stat cst;
+      int sr = stat(chdir_to, &cst);
+      if (sr != 0 || !S_ISDIR(cst.st_mode)) {
+        int e = sr != 0 ? errno : ENOTDIR;
+        free(argv);
+        sp_last_status = 127 << 8;   /* as after the fork path's child fails its chdir */
+        errno = e;
+        sp_process_spawn_fail(owned, e == ENOENT ? "Errno::ENOENT" : e == ENOTDIR ? "Errno::ENOTDIR" :
+                              e == EACCES ? "Errno::EACCES" : "SystemCallError", sp_errf_path(e, chdir_to));
+      }
+    }
+    posix_spawn_file_actions_init(&fa);
+    posix_spawnattr_init(&at);
+    if (chdir_to) posix_spawn_file_actions_addchdir_np(&fa, chdir_to);
+    if (in_fd  >= 0 && in_fd  != 0) posix_spawn_file_actions_adddup2(&fa, in_fd, 0);
+    if (out_fd >= 0 && out_fd != 1) posix_spawn_file_actions_adddup2(&fa, out_fd, 1);
+    if (err_fd >= 0 && err_fd != 2) posix_spawn_file_actions_adddup2(&fa, err_fd, 2);
+    { int srcs[3] = { in_fd, out_fd, err_fd };
+      for (int i = 0; i < 3; i++) {
+        if (srcs[i] <= 2) continue;
+        int dup = 0;
+        for (int j = 0; j < i; j++) if (srcs[j] == srcs[i]) dup = 1;
+        if (!dup) posix_spawn_file_actions_addclose(&fa, srcs[i]);
+      } }
+    if (pgroup) {
+      posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
+      posix_spawnattr_setpgroup(&at, pgroup == 1 ? 0 : (pid_t)pgroup);
+    }
+    fflush(NULL);
+    pid_t pid = 0;
+    int rc = posix_spawnp(&pid, prog, &fa, &at, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    close_owned(owned);
+    free(argv);
+    if (rc != 0) {
+      /* $? reads the 127 a failed exec exits with under the fork path */
+      sp_last_status = 127 << 8;
+      errno = rc;
+      sp_raise_cls(rc == ENOENT ? "Errno::ENOENT" : rc == EACCES ? "Errno::EACCES" : "SystemCallError",
+                   sp_errf_path(rc, prog));
+    }
+    return (sp_int)pid;
+  }
+#else
   /* Pre-exec error pipe: the child writes the exec errno here if execve
      fails, so the parent can raise the matching Errno (CRuby raises
      Errno::ENOENT for "no such file or directory" instead of returning
@@ -382,6 +445,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
                  sp_errf_path(errno, fail[1] == 1 && chdir_to ? chdir_to : prog));
   }
   return (sp_int)pid;
+#endif
 }
 
 /* Kernel#exec / Process.exec: replace the process with the command, read
