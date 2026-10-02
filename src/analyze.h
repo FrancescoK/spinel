@@ -371,4 +371,5 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
    passes them as keywords, which such a method takes positionally. */
 int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
 int an_thread_arg_block(Compiler *c, int n);
+int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp);
 #endif

@@ -24978,9 +24978,27 @@ void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv) {
     /* past the masks' 16 positions, a parameter the block binds there (or
        its rest) is refused unasked */
     if (k >= 16 && !proc_param_name(c, blk, k) && !proc_has_rest(c, blk)) break;
-    if (k < 16 && !dyn_block_appends(c, blk, k)) continue;
+    if (k < 16 && !dyn_block_appends(c, blk, k) &&
+        (!proc_param_name(c, blk, k) ||
+         !cap_wrap_mutates_param(c, blk, proc_param_name(c, blk, k)))) continue;
     refuse_string_copy(c, sv, "a block", proc_param_name(c, blk, k), "a splat into a yield",
                        "through a splat into a yield");
+  }
+}
+
+/* A capture wrapper appends to a copy of a yielded String unless the
+   block's parameter already takes the shared handle (#7006). */
+void refuse_yield_capwrap(Compiler *c, int blk, int yc, const int *yv) {
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return;
+  for (int k = 0; k < yc; k++) {
+    NodeKind ak = nt_kind(c->nt, yv[k]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    int shared;
+    const char *bp = block_param_at(c, blk, k, yc);
+    if (!bp || !strvar_arg(c, yv[k], &shared) || block_param_is_handle(c, blk, k, yc) ||
+        !cap_wrap_mutates_param(c, blk, bp)) continue;
+    refuse_string_copy(c, yv[k], "a block", bp, "`yield` into a capture-wrapper block",
+                       "through `yield` into a capture-wrapper block");
   }
 }
 
@@ -25052,7 +25070,10 @@ static void refuse_rest_yield_copies(Compiler *c, int id, int t) {
     int shared;
     if (!strvar_arg(c, av[k], &shared) || shared || local_is_handle(c, av[k])) continue;
     int bk = ys + (k - m->rest_idx);
-    if (bk < 16 ? !dyn_block_appends(c, blk, bk) : !proc_param_name(c, blk, bk) && !proc_has_rest(c, blk)) continue;
+    if (bk < 16 ? !dyn_block_appends(c, blk, bk) &&
+                  (!proc_param_name(c, blk, bk) ||
+                   !cap_wrap_mutates_param(c, blk, proc_param_name(c, blk, bk)))
+                : !proc_param_name(c, blk, bk) && !proc_has_rest(c, blk)) continue;
     refuse_string_copy(c, av[k], "a block", proc_param_name(c, blk, bk), "a splat into a yield",
                        "through a splat into a yield");
   }
