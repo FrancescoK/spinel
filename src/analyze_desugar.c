@@ -3600,6 +3600,19 @@ int desugar_dynamic_send(Compiler *c) {
         for (int k = 0; k < ncand && k < 256; k++) dsend_add_name(&own, &nown, &cap, &seen, cand[k]);
         anh_free(&seen);
       }
+      else if (rt != TY_CLASS && builtin_class_of_type(rt)) {
+        /* a receiver known to be a builtin answers its class's own methods
+           (`io.public_send("#{k}=", v)`); the shape filter below keeps the
+           ones the name can spell. Not a Class value, whose own singleton
+           methods -- what such a send in a class body means -- are not
+           Class's. */
+        const char *bnames[512];
+        int nb = builtin_method_names(builtin_class_of_type(rt), bnames, 512);
+        int cap = 0; ANameHash seen; memset(&seen, 0, sizeof seen);
+        for (int k = 0; k < nb; k++) dsend_add_name(&own, &nown, &cap, &seen, bnames[k]);
+        anh_free(&seen);
+        if (nown == 0) continue;
+      }
       else continue;
       /* An interpolated name fixes part of itself -- `"#{name}="` ends in
          "=" -- and only a name of that shape can be meant: on a receiver
