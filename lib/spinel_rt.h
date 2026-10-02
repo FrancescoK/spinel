@@ -10792,8 +10792,13 @@ static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
     int all_sym = 1;
     for (sp_int i = 0; i < n && all_sym; i++) {
       sp_RbVal pair = sp_poly_arr_get(v, i);
-      if (!(pair.tag == SP_TAG_OBJ && sp_poly_is_array_kind(pair.cls_id) && sp_poly_length(pair) == 2))
-        sp_raise_cls("TypeError", "wrong element type (expected a [key, value] pair)");
+      /* CRuby's messages, as sp_poly_to_h_val raises them */
+      if (!(pair.tag == SP_TAG_OBJ && sp_poly_is_array_kind(pair.cls_id)))
+        sp_raise_cls("TypeError", sp_sprintf("wrong element type %s at %lld (expected array)",
+                                          sp_poly_class_name(pair), (long long)i));
+      if (sp_poly_length(pair) != 2)
+        sp_raise_cls("ArgumentError", sp_sprintf("wrong array length at %lld (expected 2, was %lld)",
+                                              (long long)i, (long long)sp_poly_length(pair)));
       if (sp_poly_arr_get(pair, 0).tag != SP_TAG_SYM) all_sym = 0;
     }
     if (!all_sym) {

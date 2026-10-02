@@ -867,6 +867,21 @@ static Buf block_cond_buf(Compiler *c, int block, const int *bb, int bn) {
   return cb;
 }
 
+/* to_h on an Array of Integers, Floats or Strings: no element is a pair, so
+   the call raises CRuby's TypeError, or answers {} when the Array is empty.
+   A program with a def, alias or define_method of to_h in a class or module
+   keeps the path it had. */
+static int emit_scalar_array_to_h(Compiler *c, int id, int recv, TyKind rt,
+                                  const char *name, int argc, Buf *b) {
+  if (!(rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) ||
+      !sp_streq(name, "to_h") || argc != 0 || nt_ref(c->nt, id, "block") >= 0 ||
+      an_user_recv_defines_method(c, "to_h"))
+    return 0;
+  buf_puts(b, "((sp_PolyPolyHash *)sp_poly_to_h_val(");
+  emit_boxed(c, recv, b); buf_puts(b, ").v.p)");
+  return 1;
+}
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
@@ -2216,17 +2231,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt)) {
-    /* Primitive typed arrays still have #to_h: their elements must be
-       validated as pairs (and an empty typed array returns an empty hash).
-       A program with a def, alias or define_method of to_h in a class or
-       module keeps the path it had. */
-    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) &&
-        sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        !an_user_recv_defines_method(c, "to_h")) {
-      buf_puts(b, "((sp_PolyPolyHash *)sp_poly_to_h_val(");
-      emit_boxed(c, recv, b); buf_puts(b, ").v.p)");
-      return 1;
-    }
+    if (emit_scalar_array_to_h(c, id, recv, rt, name, argc, b)) return 1;
     /* a nil / true / false OPERAND to the Array-expecting family is CRuby's
        TypeError ("no implicit conversion of nil into Array") -- concat fell
        to NoMethodError, product answered [] -- with every argument still
