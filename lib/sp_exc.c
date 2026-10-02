@@ -684,7 +684,11 @@ sp_int sp_errno_num(const char *cls) {
 int sp_syserr_kind(const char *cls, sp_int *num) {
   const char *cn = sp_exc_canonical_name(cls);
   for (int depth = 0; depth < 30 && cn; depth++) {
-    if (!strncmp(cn, "Errno::", 7)) {
+    /* a class of the program named into Errno (`class Errno::Mine <
+       Errno::ENOENT`) reads its parent's number, as CRuby reads the
+       inherited Errno constant */
+    const char *uparent = sp_user_exc_parent_fn ? sp_user_exc_parent_fn(cn) : NULL;
+    if (!strncmp(cn, "Errno::", 7) && !uparent) {
       /* a name this platform has no number for: CRuby still defines the
          class, with Errno 0 */
       sp_int n = sp_errno_num(cn);
@@ -692,8 +696,7 @@ int sp_syserr_kind(const char *cls, sp_int *num) {
       return SP_SYSERR_NUM;
     }
     if (!strcmp(cn, "SystemCallError")) return depth == 0 ? SP_SYSERR_BASE : SP_SYSERR_BARE;
-    const char *parent = sp_user_exc_parent_fn ? sp_user_exc_parent_fn(cn) : NULL;
-    cn = sp_exc_canonical_name(parent ? parent : sp_exc_parent_of_name(cn));
+    cn = sp_exc_canonical_name(uparent ? uparent : sp_exc_parent_of_name(cn));
   }
   return SP_SYSERR_NONE;
 }

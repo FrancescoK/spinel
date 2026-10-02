@@ -10737,7 +10737,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (class_is_syserr(c, s->class_id)) {
         char lead[64]; snprintf(lead, sizeof lead, "(sp_Exception *)%s, ", g_self);
         if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-          if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || nt_ref(c->nt, id, "block") >= 0)
+          /* a declared keyword (`def initialize(msg:)`) goes over as a Hash
+             of keywords, which the loop below would pass by position */
+          int pnd = s->def_node >= 0 ? nt_ref(c->nt, s->def_node, "parameters") : -1;
+          int nkwd = 0;
+          if (pnd >= 0) (void)nt_arr(c->nt, pnd, "keywords", &nkwd);
+          if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || nkwd > 0 || nt_ref(c->nt, id, "block") >= 0)
             unsupported(c, id, "a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize");
           if (s->nparams == 0) { buf_printf(b, "sp_syserr_super(%s0, NULL)", lead); return; }
           int t0 = g_tmp + 1;
@@ -13761,16 +13766,24 @@ static void buf_splice(Buf *b, size_t at, const char *s) {
    under SystemCallError, CRuby's TypeError where CRuby answers the
    constant's number. Refused rather than answered differently. */
 static void refuse_syserr_errno_const(Compiler *c) {
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    if (!class_is_syserr(c, ci)) continue;
-    int body = nt_ref(c->nt, c->classes[ci].def_node, "body");
+  /* any write in the class's body, however nested (`if ..; Errno = 13;
+     end`) and in any reopening of it: node_cbody names the class body */
+  static const NodeKind wk[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode,
+                                 NK_ConstantOperatorWriteNode, NK_ConstantAndWriteNode };
+  for (size_t w = 0; w < sizeof wk / sizeof wk[0]; w++) {
     int n = 0;
-    const int *st = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
-    for (int i = 0; i < n; i++)
-      if (nt_kind(c->nt, st[i]) == NK_ConstantWriteNode &&
-          sp_streq(nt_str(c->nt, st[i], "name"), "Errno"))
+    const int *st = nt_nodes_of_kind(c->nt, wk[w], &n);
+    for (int i = 0; i < n; i++) {
+      int ci = c->node_cbody[st[i]];
+      /* the name may come qualified (`MyErr__Errno`) when two classes
+         define one */
+      const char *wn = nt_str(c->nt, st[i], "name");
+      size_t wl = wn ? strlen(wn) : 0;
+      if (ci >= 0 && class_is_syserr(c, ci) && wn &&
+          (sp_streq(wn, "Errno") || (wl > 7 && sp_streq(wn + wl - 7, "__Errno"))))
         unsupported_feature(c, st[i], "an Errno constant defined in a subclass of SystemCallError "
                                       "(its errno is read from the Errno class above it)");
+    }
   }
   int kn = 0;
   const int *ks = nt_nodes_of_kind(c->nt, NK_ConstantPathWriteNode, &kn);
