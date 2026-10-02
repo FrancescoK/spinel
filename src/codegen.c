@@ -1373,22 +1373,8 @@ int call_returns_nullable_int(Compiler *c, int node) {
 /* emit_boxed's box functions: a value boxed as it is (ty_box_fn), and one
    whose slot can hold its nil (ty_box_nil_fn). NULL: no function box. */
 const char *ty_box_fn(TyKind t) {
-  switch (t) {
-  case TY_INT:         return "sp_box_int";
-  case TY_FLOAT:       return "sp_box_float";
-  case TY_BOOL:        return "sp_box_bool";
-  case TY_SYMBOL:      return "sp_box_sym";
-  case TY_STRING:      return "sp_box_str";
-  case TY_RANGE:       return "sp_box_range";
-  case TY_FLOAT_RANGE: return "sp_box_frange";
-  case TY_STR_RANGE:   return "sp_box_srange";
-  case TY_TMS:         return "sp_box_tms";
-  case TY_TIME:        return "sp_box_time";
-  case TY_COMPLEX:     return "sp_box_complex";
-  case TY_RATIONAL:    return "sp_box_rational";
-  case TY_CLASS:       return "sp_box_class";
-  default:             return NULL;
-  }
+  const TyTraits *tr = ty_traits_of(t);   /* the box column (types.c) */
+  return tr ? tr->box : NULL;
 }
 const char *ty_box_nil_fn(TyKind t) {
   switch (t) {
