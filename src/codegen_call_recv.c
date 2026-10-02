@@ -1290,19 +1290,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      while the statement form -- which asks strbuf_slot_ref directly, not the
      node type -- compiled. */
   if ((rt == TY_STRING || rt == TY_STRBUF) && recv >= 0) {
-    static const struct { const char *bang, *plain; int nil_nc; } SBANG[] = {
-      {"gsub!", "gsub", 1}, {"sub!", "sub", 1}, {"upcase!", "upcase", 1},
-      {"downcase!", "downcase", 1}, {"capitalize!", "capitalize", 1},
-      {"swapcase!", "swapcase", 1}, {"strip!", "strip", 1}, {"lstrip!", "lstrip", 1},
-      {"rstrip!", "rstrip", 1}, {"chomp!", "chomp", 1}, {"chop!", "chop", 1},
-      {"squeeze!", "squeeze", 1}, {"tr!", "tr", 1}, {"delete!", "delete", 1},
-      {"tr_s!", "tr_s", 1}, {"delete_prefix!", "delete_prefix", 1},
-      {"delete_suffix!", "delete_suffix", 1},
-      {"reverse!", "reverse", 0}, {"succ!", "succ", 0}, {"next!", "next", 0},
-      {NULL, NULL, 0}
-    };
-    int sbi = -1;
-    for (int j = 0; SBANG[j].bang; j++) if (sp_streq(name, SBANG[j].bang)) { sbi = j; break; }
+    /* a String value-form bang (ty_str_bang_flags), which answers nil when
+       nothing changed unless it answers self (PF_STR_SELF); reverse! is
+       one too, though not yet a face row. The names are copied: the
+       node's name is rewritten to the plain form and back below. */
+    unsigned sb_fl = ty_str_bang_flags(name);
+    if (!sb_fl && sp_streq(name, "reverse!")) sb_fl = PF_STR_BANG | PF_STR_SELF;
+    int sbi = sb_fl ? 0 : -1;
+    char sb_bang[64], sb_plain[64];
+    if (sbi >= 0) {
+      snprintf(sb_bang, sizeof sb_bang, "%s", name);
+      str_bang_plain(name, sb_plain, sizeof sb_plain);
+    }
+    int sb_nil_nc = !(sb_fl & PF_STR_SELF);
+    int sb_sub = sbi >= 0 && (sp_streq(sb_bang, "gsub!") || sp_streq(sb_bang, "sub!"));
     if (sbi >= 0) {
       int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
       /* A shared-mutable (STRBUF) local mutates its buffer IN PLACE so every
@@ -1323,9 +1324,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
              bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
              Cleared in the prelude, ahead of a block form's loop, which the
              emitter hoists there. */
-          int subm = sbi <= 1;
+          int subm = sb_sub;
           if (subm) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
-          nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
+          nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
           Buf nbB; memset(&nbB, 0, sizeof nbB);
           int vC = -1, nC = 0;
           if (rd_call) {
@@ -1343,18 +1344,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             view_unbind(g_n_argov - 1);
             for (int k = nC - 1; k >= 0; k--) view_pop(c, vC + k);
           }
-          nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
+          nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
           /* The "did it change?" test has to run BEFORE the write: _tob is
              sp_String_cstr, a pointer INTO the buffer rather than a snapshot
              of it, so comparing after set_bin compared the new content with
              itself and every successful mutation answered nil (#4014). */
           int tchg = ++g_tmp;
           buf_printf(b, "const char *_t%d = %s; ", tnb, nbB.p ? nbB.p : "");
-          if (SBANG[sbi].nil_nc)
+          if (sb_nil_nc)
             buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d)%s; ", tchg, tob, tnb, subm ? " || sp_re_sub_matched" : "");
           buf_printf(b, "sp_String_set_bin(_t%d, _t%d); ", tsb, tnb);
           free(nbB.p);
-          if (SBANG[sbi].nil_nc)
+          if (sb_nil_nc)
             buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
           else
             buf_printf(b, "_t%d; })", tnb);
@@ -1365,16 +1366,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
       /* an in-place mutator on a frozen string raises FrozenError (#3003) */
       buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
-      int subm2 = sbi <= 1;   /* gsub!/sub!: nil means no substitution, see above */
+      int subm2 = sb_sub;   /* gsub!/sub!: nil means no substitution, see above */
       if (subm2) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
-      nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
+      nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
       Buf nb; memset(&nb, 0, sizeof nb);
       emit_expr(c, id, &nb);
-      nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
+      nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
       buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
       free(nb.p);
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
-      if (SBANG[sbi].nil_nc)
+      if (sb_nil_nc)
         buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, subm2 ? " && !sp_re_sub_matched" : "", tn2);
       else
         buf_printf(b, "_t%d; })", tn2);

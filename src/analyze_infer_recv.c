@@ -1482,12 +1482,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* The String value-form mutators on a boxed receiver answer the mutated
      string (NULL for the no-change bang contract), like the typed path. */
   if (recv >= 0 && rt == TY_POLY && !an_user_defines_or_reads(c, name)) {
-    static const char *const PBANGN[] = {
-      "gsub!", "sub!", "upcase!", "downcase!", "capitalize!", "swapcase!",
-      "strip!", "lstrip!", "rstrip!", "chomp!", "chop!", "squeeze!", "tr!",
-      "delete!", "tr_s!", "delete_prefix!", "delete_suffix!", "succ!", "next!",
-      NULL };
-    for (int i = 0; PBANGN[i]; i++) if (sp_streq(name, PBANGN[i])) { *out = TY_STRING; return 1; }
+    if (ty_str_bang_flags(name)) { *out = TY_STRING; return 1; }
   }
   /* The names Regexp alone owns, on a boxed receiver: the emitter unboxes the
      pattern and dispatches through the typed emitter, so the answer is the

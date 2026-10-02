@@ -94,6 +94,11 @@ unsigned ty_poly_face_owner_flags(const char *name, int argc, int has_blk, int p
 /* Does the read-only Hash face answer `name` in some form? The face sites
    ask by name alone, before the call's shape is known. */
 int ty_poly_hash_face_name(const char *nm);
+/* A String value-form bang -- a PF_STR_BANG row of the face table, the one
+   list of them: its PF_STR_BANG and PF_STR_SELF flags, or 0 for any other
+   name. Its plain name is the bang without the '!' (str_bang_plain). */
+unsigned ty_str_bang_flags(const char *name);
+void str_bang_plain(const char *bang, char *out, int n);
 
 typedef enum {
   TY_UNKNOWN = 0,  /* not yet inferred, or an unsupported construct */

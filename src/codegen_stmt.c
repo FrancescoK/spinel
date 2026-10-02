@@ -13560,18 +13560,18 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     } \
   } while (0)
   if ((rt == TY_STRING || rt == TY_STRBUF) && argc == 0) {
+    /* a String bang that can answer nil (ty_str_bang_flags, not a
+       PF_STR_SELF one) and takes no argument, and reverse!, which is not a
+       face row yet; a bang that needs one (delete!, gsub!) keeps its
+       ArgumentError */
     const char *base = NULL;
-    if      (sp_streq(name, "chomp!"))      base = "chomp";
-    else if (sp_streq(name, "chop!"))       base = "chop";
-    else if (sp_streq(name, "upcase!"))     base = "upcase";
-    else if (sp_streq(name, "downcase!"))   base = "downcase";
-    else if (sp_streq(name, "capitalize!")) base = "capitalize";
-    else if (sp_streq(name, "swapcase!"))   base = "swapcase";
-    else if (sp_streq(name, "strip!"))      base = "strip";
-    else if (sp_streq(name, "lstrip!"))     base = "lstrip";
-    else if (sp_streq(name, "rstrip!"))     base = "rstrip";
-    else if (sp_streq(name, "reverse!"))    base = "reverse";
-    else if (sp_streq(name, "squeeze!"))    base = "squeeze";
+    char st_plain[64];
+    unsigned st_fl = ty_str_bang_flags(name);
+    if (((st_fl && !(st_fl & PF_STR_SELF)) || sp_streq(name, "reverse!")) &&
+        builtin_arity_admits("String", name, 0)) {
+      str_bang_plain(name, st_plain, sizeof st_plain);
+      base = st_plain;
+    }
     if (base) {
       const char *rty = nt_type(nt, recv);
       /* shared-mutable local: transform + replace the buffer in place (#3227) */

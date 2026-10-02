@@ -5194,75 +5194,6 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     if (wb) buf_puts(b, ")");
     return 1;
   }
-  /* In-place string mutators on a poly value: a shared-handle box mutates
-     its buffer in place, so the container the value came from observes it
-     (#3227 P3); any other tag raises NoMethodError. String args only (a
-     regex gsub! on a poly receiver stays unsupported). */
-  {
-    static const struct { const char *bang, *base; int an; int nil_nc; } PB[] = {
-      {"upcase!","upcase",0,1},{"downcase!","downcase",0,1},
-      {"capitalize!","capitalize",0,1},{"swapcase!","swapcase",0,1},
-      {"strip!","strip",0,1},{"lstrip!","lstrip",0,1},{"rstrip!","rstrip",0,1},
-      {"chomp!","chomp",0,1},{"chop!","chop",0,1},{"squeeze!","squeeze",0,1},
-      {"succ!","succ",0,0},{"next!","succ",0,0},
-      {"delete_prefix!","delete_prefix",1,1},{"delete_suffix!","delete_suffix",1,1},
-      {"delete!","delete",1,1},
-      {"gsub!","gsub",2,1},{"sub!","sub",2,1},{"tr!","tr",2,1},{"tr_s!","tr_s",2,1},
-      {NULL,NULL,0,0}
-    };
-    int pbi = -1;
-    for (int j = 0; PB[j].bang; j++)
-      if (sp_streq(name, PB[j].bang) && argc == PB[j].an) { pbi = j; break; }
-    /* argument suitability: a regexp literal is admitted only as
-       gsub!/sub!'s pattern (routed through the compiled-pattern helper);
-       any other non-string argument falls through to the default arm
-       rather than coercing into a const char* slot. */
-    int pb_re = 0;
-    if (pbi >= 0) {
-      for (int j = 0; j < argc; j++) {
-        if (j == 0 && re_lit_index(c, argv[0]) >= 0 &&
-            (sp_streq(name, "gsub!") || sp_streq(name, "sub!"))) { pb_re = 1; continue; }
-        TyKind at2 = comp_ntype(c, argv[j]);
-        if (at2 != TY_STRING && at2 != TY_STRBUF && at2 != TY_UNKNOWN) { pbi = -1; break; }
-        if (re_lit_index(c, argv[j]) >= 0) { pbi = -1; break; }
-      }
-    }
-    if (pbi >= 0) {
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _r%d; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) {"
-                    " sp_String *_m%d = (sp_String *)_t%d.v.p;"
-                    " const char *_o%d = sp_str_concat(sp_String_cstr(_m%d), (&(\"\\xff\")[1]));"
-                    " const char *_n%d = ",
-                 tv, tv, tv, tv, tv, tv, tv, tv);
-      if (pb_re) {
-        /* regex pattern: the compiled-pattern helper (gsub -> sp_re_gsub) */
-        buf_printf(b, "sp_re_%s(sp_re_pat_%d, _o%d",
-                   sp_streq(name, "gsub!") ? "gsub" : "sub",
-                   re_lit_index(c, argv[0]), tv);
-        for (int j = 1; j < argc; j++) {
-          buf_puts(b, ", ");
-          emit_str_expr(c, argv[j], b);
-        }
-      }
-      else {
-        buf_printf(b, "sp_str_%s(_o%d", PB[pbi].base, tv);
-        for (int j = 0; j < argc; j++) {
-          buf_puts(b, ", ");
-          emit_str_expr(c, argv[j], b);
-        }
-      }
-      buf_printf(b, "); sp_String_set_bin(_m%d, _n%d); ", tv, tv);
-      if (PB[pbi].nil_nc)
-        buf_printf(b, "_r%d = sp_str_eq(_o%d, _n%d) ? sp_box_nil() : _t%d;", tv, tv, tv, tv);
-      else
-        buf_printf(b, "_r%d = _t%d;", tv, tv);
-      buf_printf(b, " }\nelse { sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _r%d = sp_box_nil(); } _r%d; })",
-                 name, tv, tv, tv);
-      return 1;
-    }
-  }
   /* String#bytesplice(i, len, str) on a poly value: in-place byte splice
      on the shared handle (#3227). */
   if (sp_streq(name, "bytesplice") && argc == 3) {
@@ -16678,6 +16609,12 @@ static int arity_spec_row(const SpAritySpec *tbl, const char *cls, const char *n
     return 1;
   }
   return 0;
+}
+int builtin_arity_admits(const char *cls, const char *name, int argc) {
+  char exp[64];
+  exp[0] = 0;
+  if (!arity_spec_row(sp_builtin_arity_spec_tbl, cls, name, 0, argc, exp, sizeof exp)) return 1;
+  return exp[0] == 0;
 }
 
 /* Whether a reopened builtin -- Object, Kernel, Class, Module, the

@@ -1595,6 +1595,9 @@ int  poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max);
 int  poly_redispatch_kind(Compiler *c, int id, const char *name, int argc);
 int  face_arg_misfit(Compiler *c, unsigned kind, int arg);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
+/* Does CRuby take argc arguments to cls#name, by the instance arity table
+   (sp_builtin_arity_spec_tbl)? 1 for a name the table has no row for. */
+int builtin_arity_admits(const char *cls, const char *name, int argc);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b);
 void emit_brk_wrapped_call(Compiler *c, int id, Buf *b);

@@ -143,6 +143,21 @@ unsigned ty_poly_face_owner_flags(const char *name, int argc, int has_blk, int p
   }
   return fl;
 }
+unsigned ty_str_bang_flags(const char *name) {
+  if (!name) return 0;
+  for (const PolyFace *r = ty_poly_face_tbl; r->name; r++)
+    if ((r->flags & PF_STR_BANG) && sp_streq(name, r->name))
+      return r->flags & (PF_STR_BANG | PF_STR_SELF);
+  return 0;
+}
+void str_bang_plain(const char *bang, char *out, int n) {
+  size_t len = bang ? strlen(bang) : 0;
+  if (len && bang[len - 1] == '!') len--;
+  if (n <= 0) return;
+  if (len >= (size_t)n) len = (size_t)n - 1;
+  if (len) memcpy(out, bang, len);
+  out[len] = 0;
+}
 int ty_poly_hash_face_name(const char *nm) {
   if (!nm) return 0;
   for (const PolyFace *r = ty_poly_face_tbl; r->name; r++)
