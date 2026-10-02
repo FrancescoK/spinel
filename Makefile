@@ -3046,6 +3046,13 @@ install: all bin/spin
 	rm -rf $(SPNLDIR)/builtins
 	cp -r builtins $(SPNLDIR)/builtins
 	rm -rf $(SPNLDIR)/packages/*/build
+	@# cp -r keeps each file's mode, and a package object built through
+	@# sccache is 0640 whatever the umask (sccache 0.17 writes its outputs
+	@# that way, on a cache hit too). Installed by root, every program
+	@# requiring json, openssl, stringio, ... then failed to link for any
+	@# other user (errno 13 on the .o). Everything here is read by whoever
+	@# compiles, as the install -m 644 above already says for the runtime.
+	chmod -R a+rX $(SPNLDIR)/packages $(SPNLDIR)/builtins
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	ln -sf $(SPNLDIR)/spin   $(PREFIX)/bin/spin
