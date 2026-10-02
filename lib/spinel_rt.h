@@ -3383,6 +3383,23 @@ static sp_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_f
 /* sp_str_to_c: moved to lib/sp_cold.c */
 sp_Complex sp_str_to_c(const char *s);
 sp_Complex sp_str_to_c_strict(const char *s);
+/* Boolean rejection is local to Kernel#Complex, not generic Float coercion.
+   In a two-component call Strings are parsed before real-number validation. */
+static SP_NORETURN void sp_complex_reject_bool(sp_RbVal re, sp_RbVal im, int argc) {
+  SP_GC_ROOT_RBVAL(re); SP_GC_ROOT_RBVAL(im);
+  if (re.tag == SP_TAG_NIL || (argc == 2 && im.tag == SP_TAG_NIL))
+    sp_raise_cls("TypeError", "can't convert nil into Complex");
+  if (argc == 2) {
+    if (sp_poly_is_strbuf(re)) re = sp_poly_strbuf_deref(re);
+    if (sp_poly_is_strbuf(im)) im = sp_poly_strbuf_deref(im);
+    if (re.tag == SP_TAG_STR) (void)sp_str_to_c_strict(re.v.s);
+    if (im.tag == SP_TAG_STR) (void)sp_str_to_c_strict(im.v.s);
+    sp_raise_cls("TypeError", "not a real");
+  }
+  sp_raise_cls("TypeError", re.v.b ? "can't convert true into Complex" :
+                                  "can't convert false into Complex");
+}
+
 /* lib/sp_cold.c: while sp_convert_soft is set, an unparseable Complex/Rational
    string sets sp_convert_failed instead of raising (Kernel's exception: false). */
 extern sp_bool sp_convert_soft;
