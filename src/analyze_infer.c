@@ -4185,9 +4185,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
-  /* The receiver families kept as builtin-op rows (builtin_ops.c): this
-     sits where their rules sat, so the rules above still claim first */
-  if (recv >= 0 && bop_covers(rt)) {
+  /* Process::Tms: builtin-op rows (builtin_ops.c), looked up where its
+     rule sat, so the rules above still claim first */
+  if (recv >= 0 && rt == TY_TMS) {
     const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op) return op->result;
   }
@@ -4418,24 +4418,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* TY_IO (File/IO handle) instance methods */
-  if (recv >= 0 && rt == TY_SOCKOPT && argc == 0) {
-    if (sp_streq(name, "int") || sp_streq(name, "level") ||
-        sp_streq(name, "optname") || sp_streq(name, "family")) return TY_INT;
-    if (sp_streq(name, "bool")) return TY_BOOL;
-    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "class")) return TY_CLASS;
-  }
-  if (recv >= 0 && rt == TY_ADDRINFO && argc == 0) {
-    if (sp_streq(name, "ip_address") || sp_streq(name, "unix_path") ||
-        sp_streq(name, "afamily_name") || sp_streq(name, "to_sockaddr") ||
-        sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "ip_port") || sp_streq(name, "socktype") ||
-        sp_streq(name, "protocol") ||
-        sp_streq(name, "afamily") || sp_streq(name, "pfamily")) return TY_INT;
-    if (sp_streq(name, "class")) return TY_CLASS;
-    if (sp_streq(name, "ipv4?") || sp_streq(name, "ipv6?") ||
-        sp_streq(name, "unix?") || sp_streq(name, "ip?")) return TY_BOOL;
+  /* Socket::Option and Addrinfo readers: builtin-op rows */
+  if (recv >= 0 && (rt == TY_SOCKOPT || rt == TY_ADDRINFO)) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op) return op->result;
   }
   if (recv >= 0 && rt == TY_IO) {
     /* answered true or false, whatever the name (the catch-all below is poly) */

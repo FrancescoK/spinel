@@ -23,6 +23,11 @@ typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;
 typedef enum {
   BOPE_NONE,
   BOPE_STRUCT_FIELD,      /* (recv).name: a field of a by-value C struct */
+  BOPE_PTR_FIELD,         /* (recv)->arg */
+  BOPE_PTR_NONZERO,       /* ((recv)->arg != 0) */
+  BOPE_CALL_RECV,         /* arg(recv) */
+  BOPE_AFNAME_IS,         /* the Addrinfo's family name is arg */
+  BOPE_AFNAME_IS_NOT,     /* ... is not arg */
   BOPE__COUNT
 } BopEmit;
 
@@ -33,6 +38,7 @@ typedef struct BuiltinOp {
   BopBlock block;
   TyKind result;          /* what the call answers */
   BopEmit emit;
+  const char *arg;        /* the emitter's operand: a field, a function, a name */
 } BuiltinOp;
 
 /* The row for `name` called with `argc` arguments (and a block when

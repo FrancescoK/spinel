@@ -12,6 +12,36 @@ static const BuiltinOp bop_rows[] = {
   { TY_TMS, "stime",  0, 0, BF_ANY, TY_FLOAT, BOPE_STRUCT_FIELD },
   { TY_TMS, "cutime", 0, 0, BF_ANY, TY_FLOAT, BOPE_STRUCT_FIELD },
   { TY_TMS, "cstime", 0, 0, BF_ANY, TY_FLOAT, BOPE_STRUCT_FIELD },
+
+  /* Socket::Option. Spinel carries the integer-valued options only, so the
+     readers answer through the int the option holds. #class is typed here
+     and emitted by the generic class arm. */
+  { TY_SOCKOPT, "int",     0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD,   "value" },
+  { TY_SOCKOPT, "bool",    0, 0, BF_ANY, TY_BOOL,   BOPE_PTR_NONZERO, "value" },
+  { TY_SOCKOPT, "level",   0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD,   "level" },
+  { TY_SOCKOPT, "optname", 0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD,   "optname" },
+  { TY_SOCKOPT, "family",  0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD,   "family" },
+  { TY_SOCKOPT, "inspect", 0, 0, BF_ANY, TY_STRING, BOPE_CALL_RECV,   "sp_sockopt_inspect" },
+  { TY_SOCKOPT, "to_s",    0, 0, BF_ANY, TY_STRING, BOPE_CALL_RECV,   "sp_sockopt_inspect" },
+  { TY_SOCKOPT, "class",   0, 0, BF_ANY, TY_CLASS,  BOPE_NONE },
+
+  /* Addrinfo: the value is immutable, so each reader is a field read */
+  { TY_ADDRINFO, "ip_address",   0, 0, BF_ANY, TY_STRING, BOPE_PTR_FIELD, "ip" },
+  { TY_ADDRINFO, "unix_path",    0, 0, BF_ANY, TY_STRING, BOPE_PTR_FIELD, "ip" },
+  { TY_ADDRINFO, "afamily_name", 0, 0, BF_ANY, TY_STRING, BOPE_PTR_FIELD, "afname" },
+  { TY_ADDRINFO, "afamily",      0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD, "afamily" },
+  { TY_ADDRINFO, "pfamily",      0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD, "afamily" },
+  { TY_ADDRINFO, "ip_port",      0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD, "port" },
+  { TY_ADDRINFO, "socktype",     0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD, "socktype" },
+  { TY_ADDRINFO, "protocol",     0, 0, BF_ANY, TY_INT,    BOPE_PTR_FIELD, "protocol" },
+  { TY_ADDRINFO, "ipv4?",        0, 0, BF_ANY, TY_BOOL,   BOPE_AFNAME_IS,     "AF_INET" },
+  { TY_ADDRINFO, "ipv6?",        0, 0, BF_ANY, TY_BOOL,   BOPE_AFNAME_IS,     "AF_INET6" },
+  { TY_ADDRINFO, "unix?",        0, 0, BF_ANY, TY_BOOL,   BOPE_AFNAME_IS,     "AF_UNIX" },
+  { TY_ADDRINFO, "ip?",          0, 0, BF_ANY, TY_BOOL,   BOPE_AFNAME_IS_NOT, "AF_UNIX" },
+  { TY_ADDRINFO, "to_sockaddr",  0, 0, BF_ANY, TY_STRING, BOPE_CALL_RECV, "sp_addrinfo_to_sockaddr" },
+  { TY_ADDRINFO, "inspect",      0, 0, BF_ANY, TY_STRING, BOPE_CALL_RECV, "sp_addrinfo_inspect" },
+  { TY_ADDRINFO, "to_s",         0, 0, BF_ANY, TY_STRING, BOPE_CALL_RECV, "sp_addrinfo_inspect" },
+  { TY_ADDRINFO, "class",        0, 0, BF_ANY, TY_CLASS,  BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
