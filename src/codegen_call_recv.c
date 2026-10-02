@@ -2747,16 +2747,16 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         if (fit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
         else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
       }
-      IterStep st; emit_iter_step_open(c, fblk, 0, g_indent + 1, &st);
-      Buf vb; memset(&vb, 0, sizeof vb);
-      TyKind fvt = emit_iter_step_tail(c, &st, &vb);
+      /* A poly value is boxed by the step, once: boxed again here, with
+         the store begun, its setup lines landed inside the call. */
+      TyKind vt = comp_ntype(c, fbb[fbn - 1]);
+      IterStep st; emit_iter_step_open(c, fblk, sp_streq(fk, "Poly") && (vt == TY_POLY || vt == TY_UNKNOWN), g_indent + 1, &st);
+      Buf vb; memset(&vb, 0, sizeof vb); vt = emit_iter_step_tail(c, &st, &vb);
       emit_indent(g_pre, g_indent + 1);
       if (sp_streq(fk, "Poly")) {
-        TyKind vt = fvt;
         buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, ", trecv, ti);
         if (vt != TY_POLY && vt != TY_UNKNOWN) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
-        else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, fbb[fbn - 1], &bx);
-               buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+        else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         buf_puts(g_pre, ");\n");
       }
       else {
