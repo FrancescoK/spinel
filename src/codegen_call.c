@@ -28037,6 +28037,26 @@ static void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b) {
   else emit_unbox_text(c, want, tn, b);
 }
 
+/* Keep receiver-specific emitters behind one table so another type can move
+   without adding a dispatch chain. Use the caller's receiver type to preserve
+   the original arm's type snapshot and its place among the fallbacks. */
+static const struct {
+  TyKind recv_ty;
+  int (*emit)(Compiler *c, int id, int recv, const char *name, Buf *b);
+} recv_call_emitters[] = {
+  { TY_TMS, emit_tms_call },
+};
+
+int emit_call_by_recv_type(Compiler *c, int id, int recv, TyKind rt,
+                          const char *name, Buf *b) {
+  if (recv < 0) return 0;
+  for (size_t i = 0; i < sizeof recv_call_emitters / sizeof recv_call_emitters[0]; i++) {
+    if (recv_call_emitters[i].recv_ty == rt)
+      return recv_call_emitters[i].emit(c, id, recv, name, b);
+  }
+  return 0;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -43699,13 +43719,8 @@ else {
       return;
     }
   }
+  if (emit_call_by_recv_type(c, id, recv, rt, name, b)) return;
   /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
-  if (recv >= 0 && rt == TY_TMS && argc == 0 &&
-      (sp_streq(name, "utime") || sp_streq(name, "stime") ||
-       sp_streq(name, "cutime") || sp_streq(name, "cstime"))) {
-    buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ").%s", name);
-    return;
-  }
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
     int te = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", te);
