@@ -29,6 +29,8 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
           took them
      $H   a Hash receiver's variant name, for sp_<H>Hash_* (ty_hash_cname)
      $K   a Hash receiver's boxed class id (hash_box_cls)
+     $A   an Array receiver's element-kind name, for sp_<A>Array_* ("Poly"
+          for a poly array, else array_kind)
      $eN  argument N by emit_expr
      $bN  argument N boxed (emit_boxed)
      $fN  argument N as a double (emit_float_expr)
@@ -60,6 +62,11 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     }
     else if (p[0] == '$' && p[1] == 'H') {
       buf_puts(b, ty_hash_cname(x->rt));
+      p++;
+    }
+    else if (p[0] == '$' && p[1] == 'A') {
+      const char *ak = x->rt == TY_POLY_ARRAY ? "Poly" : array_kind(x->rt);
+      buf_puts(b, ak ? ak : "");
       p++;
     }
     else if (p[0] == '$' && p[1] == 'K') {
