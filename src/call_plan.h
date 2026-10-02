@@ -28,6 +28,8 @@ typedef struct {
   short owner_ci;          /* the class whose chain was searched, or -1 */
   unsigned char via;       /* UC_* */
   unsigned char dispatch;  /* CplanDispatch */
+  unsigned char by_name;   /* a switch over every class with a class method of
+                              the name (a class held in a variable) */
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);

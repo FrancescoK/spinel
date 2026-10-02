@@ -26,6 +26,7 @@ static int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
+  p->by_name = 0;
 }
 
 /* the class a builtin receiver kind is reopened as, or NULL */
@@ -40,8 +41,28 @@ static const char *cplan_reopen_class(TyKind rt) {
   case TY_THREAD: return "Thread";
   case TY_FIBER:  return "Fiber";
   case TY_CLASS:  return "Class";
+  case TY_BOOL:   return "TrueClass";
   default:        return NULL;
   }
+}
+
+/* a program's own Object method, for a name Object's builtin surface does
+   not answer itself */
+static void cplan_object_reopen(Compiler *c, const char *name, CallPlan *p) {
+  if (builtin_object_method_known(name)) return;
+  int oci = comp_class_index(c, "Object");
+  int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
+  if (omi >= 0) cplan_set(p, omi, oci, UC_REOPEN, CP_DIRECT);
+}
+
+/* the reopenings of builtin exception classes that define name: the first
+   stands for them, picked among at run time by the class name */
+static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
+  int xr[8];
+  int xn = exc_reopen_definers(c, name, xr, 8);
+  if (xn <= 0) return;
+  int mi = comp_method_in_chain(c, xr[0], name, NULL);
+  if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_VIRTUAL : CP_DIRECT);
 }
 
 static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
@@ -112,22 +133,73 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       return;
     }
     int imi = comp_included_method_index(c, name, id);
-    if (imi >= 0) cplan_set(p, imi, c->scopes[imi].class_id, UC_INCLUDED, CP_DIRECT);
+    if (imi >= 0) { cplan_set(p, imi, c->scopes[imi].class_id, UC_INCLUDED, CP_DIRECT); return; }
+    /* outside a class method, self reaches a program's own Object method */
+    Scope *self = comp_scope_of(c, id);
+    if (!(self && self->is_cmethod)) cplan_object_reopen(c, name, p);
     return;
   }
   const char *rty = nt_type(nt, recv);
-  if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-    int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
-    if (mi >= 0) cplan_set(p, mi, ci, UC_CMETH, CP_DIRECT);
-    return;
-  }
   TyKind rt = comp_ntype(c, recv);
+  /* a Class reopen's own method answers a class value first, as the
+     inference arm for Range / Time / IO / Class receivers does */
+  if (rt == TY_CLASS && !nt_int(nt, id, "builtin_only", 0)) {
+    int kci = comp_class_index(c, "Class");
+    int kmi = kci >= 0 ? comp_method_in_chain(c, kci, name, NULL) : -1;
+    if (kmi >= 0) { cplan_set(p, kmi, kci, UC_REOPEN, CP_DIRECT); return; }
+  }
+  int sci = self_class_static_ci(c, recv);   /* `self.class` naming one class */
+  if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
+    int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
+    int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
+    if (mi >= 0) { cplan_set(p, mi, ci, UC_CMETH, CP_DIRECT); return; }
+    /* a method the program adds to Class, on a builtin class constant */
+    int rmi = class_reopen_cmethod(c, recv, name);
+    if (rmi >= 0) { cplan_set(p, rmi, c->scopes[rmi].class_id, UC_CMETH, CP_DIRECT); return; }
+    /* a constant holding an instance is read by its type below */
+  }
+  /* a class held in a variable: a switch over every class with a class
+     method of the name */
+  else if (rt == TY_CLASS) {
+    int ncc = 0;
+    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+    for (int i = 0; i < ncc; i++)
+      if (ccs[i].mi >= 0) {
+        cplan_set(p, ccs[i].mi, ccs[i].cls, UC_CMETH, CP_VIRTUAL);
+        p->by_name = 1;
+        return;
+      }
+  }
   if (ty_is_object(rt)) {
     int cid = ty_object_class(rt);
     int mi = comp_method_in_chain(c, cid, name, NULL);
-    if (mi >= 0)
+    if (mi >= 0) {
       cplan_set(p, mi, cid, UC_INST, cplan_overridden(c, cid, name, 0) ? CP_VIRTUAL : CP_DIRECT);
+      return;
+    }
+    /* the operators an object answers through another of its methods:
+       `!=` through `==`, the comparisons through `<=>` */
+    const char *via_op = sp_streq(name, "!=") ? "==" :
+                         (sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
+                          sp_streq(name, ">=") || sp_streq(name, "between?") ||
+                          sp_streq(name, "clamp")) ? "<=>" : NULL;
+    int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
+    if (dmi >= 0) {
+      cplan_set(p, dmi, cid, UC_INST, cplan_overridden(c, cid, via_op, 0) ? CP_VIRTUAL : CP_DIRECT);
+      return;
+    }
+    /* a reader a subclass overrides with a method: the switch reaches the
+       override for that subclass */
+    if (comp_reader_in_chain(c, cid, name, NULL)) {
+      int nd = 0;
+      const int *ds = comp_descendants(c, cid, &nd);
+      for (int i = 0; i < nd; i++) {
+        int kmi = ds[i] != cid ? comp_method_in_class(c, ds[i], name) : -1;
+        if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_VIRTUAL); return; }
+      }
+    }
+    if (class_is_exc_subclass(c, cid)) cplan_exc_reopen(c, name, p);
+    if (p->mi < 0) cplan_object_reopen(c, name, p);
     return;
   }
   if (rt == TY_POLY) {
@@ -138,9 +210,21 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
       if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_VIRTUAL); return; }
     }
+    /* a boxed class value: the dispatch's class-method arms */
+    int ncc = 0;
+    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+    for (int i = 0; i < ncc; i++)
+      if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_VIRTUAL); return; }
     return;
   }
+  if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
   if (nt_int(nt, id, "builtin_only", 0)) return;
+  /* an IO handle's reopen: the File, IO or socket class that defines it */
+  if (rt == TY_IO) {
+    int eci = io_reopen_class(c, name);
+    int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
+    if (emi >= 0) { cplan_set(p, emi, eci, UC_REOPEN, CP_DIRECT); return; }
+  }
   const char *rc = cplan_reopen_class(rt);
   if (rc) {
     int ci = comp_class_index(c, rc);
@@ -170,11 +254,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
   const char *bcls = builtin_class_of_type(rt);
-  if (bcls && !builtin_method_known(bcls, name) && !builtin_object_method_known(name)) {
-    int oci = comp_class_index(c, "Object");
-    int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
-    if (omi >= 0) cplan_set(p, omi, oci, UC_REOPEN, CP_DIRECT);
-  }
+  if (bcls && !builtin_method_known(bcls, name)) cplan_object_reopen(c, name, p);
 }
 
 static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
@@ -190,12 +270,29 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->dispatch != CP_VIRTUAL) return 0;
   const char *name = nt_str(c->nt, id, "name");
   if (!name) return 0;
+  if (p->by_name) {
+    int ncc = 0;
+    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+    for (int i = 0; i < ncc; i++)
+      if (ccs[i].mi == mi) return 1;
+    return 0;
+  }
   if (p->via == UC_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
     for (int i = 0; i < npc; i++)
       if (pcs[i].mi == mi || (pcs[i].mi < 0 && comp_method_in_chain(c, pcs[i].cls, name, NULL) == mi))
         return 1;
+    int ncc = 0;
+    const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+    for (int i = 0; i < ncc; i++)
+      if (ccs[i].mi == mi) return 1;
+    return 0;
+  }
+  if (p->via == UC_REOPEN) {
+    int xr[8], xn = exc_reopen_definers(c, name, xr, 8);
+    for (int i = 0; i < xn; i++)
+      if (comp_method_in_chain(c, xr[i], name, NULL) == mi) return 1;
     return 0;
   }
   if (p->via == UC_IE) {
