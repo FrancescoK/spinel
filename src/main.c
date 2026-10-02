@@ -241,18 +241,25 @@ static int refuse_overwrite(const char *path) {
 
 /* The decisions log is emptied before the source is read, so the same care
    comes first there: `spinel --decisions-log=app.rb app.rb` would leave
-   nothing to compile. A log is lines of `kind@site` (src/decide.c); a file
-   that opens with anything else is not one, and is not replaced. */
+   nothing to compile. A log is lines of `kind@site` (src/decide.c), a kind
+   being lowercase words joined by hyphens (nn-read, root-frame); a file
+   that opens with anything else is not replaced.
+
+   Only a regular file is looked into. A pipe, a FIFO or /dev/stdout has
+   nothing to lose, and opening one to read it would wait for a writer that
+   is this process. */
 static int refuse_log_overwrite(const char *path) {
   if (g_force_overwrite || !path || !*path) return 0;
-  FILE *f = fopen(path, "rb");
-  if (!f) return 0;                      /* new file: nothing to lose */
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0) return 0;
+  /* one that cannot be read cannot be shown to be a log */
   char head[64];
-  size_t n = fread(head, 1, sizeof head - 1, f);
-  fclose(f);
+  size_t n = 0;
+  FILE *f = fopen(path, "rb");
+  if (f) { n = fread(head, 1, sizeof head - 1, f); fclose(f); }
   head[n] = 0;
   size_t k = strspn(head, "abcdefghijklmnopqrstuvwxyz-");
-  if (n == 0 || (k > 0 && head[k] == '@')) return 0;   /* empty, or an earlier log */
+  if (k > 2 && head[k] == '@' && head[0] != '-' && head[k - 1] != '-' && memchr(head, '-', k)) return 0;
   fprintf(stderr,
           "spinel: refusing to overwrite '%s': it is not a decisions log.\n"
           "spinel:   Choose another --decisions-log path, or pass --force if\n"

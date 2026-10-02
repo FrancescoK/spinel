@@ -1107,6 +1107,11 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  { echo "decisions-test: FAIL (a log named as the source was written over it)"; ok=0; }; \
 	$(SPINEL) --force --decisions-log="$$tmp/src.rb" "$$tmp/src.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1 && [ ! -s "$$tmp/src.rb" ] || \
 	  { echo "decisions-test: FAIL (--force did not let a log replace a file that is not one)"; ok=0; }; \
+	printf 'p@x\n' > "$$tmp/src.rb"; \
+	$(SPINEL) --decisions-log="$$tmp/src.rb" "$$tmp/one.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1; \
+	[ "$$(cat "$$tmp/src.rb")" = 'p@x' ] || { echo "decisions-test: FAIL (a file that opens with a word and @, not a kind, was taken for a log)"; ok=0; }; \
+	$(TIMEOUT10) $(SPINEL) --decisions-log=/dev/stdout test/gc_root_elided_array_slot.rb -c -o "$$tmp/o.c" 2>/dev/null | grep -qx 'root-frame@main' || \
+	  { echo "decisions-test: FAIL (a log sent to a pipe did not arrive)"; ok=0; }; \
 	n=$$(printf 'm%0700d' 0); \
 	printf 'class Sprites\n  def initialize; @s = [[1, 2], [3]]; end\n  def %sa(i) = @s[i].size\n  def %sb(i) = @s[i].first\nend\ns = Sprites.new\np s.%sa(0), s.%sb(1)\n' $$n $$n $$n $$n > "$$tmp/long.rb"; \
 	$(SPINEL) --decisions-log="$$tmp/long.keys" "$$tmp/long.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1; \
@@ -1136,6 +1141,8 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  { echo "decisions-test: FAIL (kinds logged: $$(cat "$$tmp/kinds"); a kind is not covered, or not listed in DECISION_KINDS)"; ok=0; }; \
 	for k in $(DECISION_KINDS); do \
 	  grep -q "^| \`$$k\` |" tools/README.md || { echo "decisions-test: FAIL ($$k has no row in tools/README.md)"; ok=0; }; \
+	  echo "$$k" | grep -Eq '^[a-z]+(-[a-z]+)+$$' || \
+	    { echo "decisions-test: FAIL ($$k is not lowercase words joined by hyphens: a log that opens with it would not be replaced)"; ok=0; }; \
 	  hit=0; \
 	  for f in $(DECISION_TESTS); do \
 	    t=$$tmp/$$(basename $$f .rb); \

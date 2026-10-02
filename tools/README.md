@@ -336,8 +336,8 @@ A method's class is the name the compiler knows it by: its last constant,
 or the path joined with `__` (`A__Foo#go`) when two classes share one.
 
 `--decisions-log=FILE` (`SPINEL_DECISIONS_LOG`) writes the keys a compile
-took, each once; it replaces an earlier log and refuses any other file
-(`--force` to replace one). `--decisions=FILE` (`SPINEL_DECISIONS`) is an allow-list
+took, each once; it replaces an earlier log and refuses a file that does
+not open with a key (`--force` to replace one). `--decisions=FILE` (`SPINEL_DECISIONS`) is an allow-list
 in the same format, `#` starting a comment line: a decision whose key is
 not listed is not taken, so an empty file denies them all and a compile
 given its own log is the compile that wrote it. With neither, the compiler
