@@ -82,7 +82,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default numeric(n)", "default str-index", "default find_index",
                                      "default first/last(n)", "default delete/dig/values_at",
                                      "default merge", "default aref2", "default aref/fetch",
-                                     "block map!" };
+                                     "block map!", "subclass re-entry" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");

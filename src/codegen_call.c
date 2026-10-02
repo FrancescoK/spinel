@@ -19309,6 +19309,11 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           g_argov_node[g_n_argov] = recv;
           snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsd);
           g_n_argov++;
+          if (g_plan_check) {   /* the re-entry, held against the plan before the view */
+            int pa_frame = pa_begin(id);
+            pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_SUBDISPATCH, -1, TY_UNKNOWN, PC_SAME);
+            pa_end(c, pa_frame, cplan_poly_sub(c, id));
+          }
           int vw = view_push(c, recv, TY_POLY);
           int svid = g_subdispatch_id; g_subdispatch_id = id;
           emit_call(c, id, b);

@@ -1085,3 +1085,28 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id) {
   }
   return &cp;
 }
+
+const PolyPlan *cplan_poly_sub(Compiler *c, int id) {
+  static PolyPlan sp;
+  free(sp.arm);
+  sp.arm = NULL; sp.n = 0; sp.flags = 0;
+  sp.ntype = sp.ret = comp_ntype(c, id);
+  int cap = 0;
+  const char *name = nt_str(c->nt, id, "name");
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (!name || recv < 0) return &sp;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return &sp;
+  int bcid = ty_object_class(rt);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == bcid) continue;
+    int anc = 0;
+    for (int p2 = c->classes[k].parent; p2 >= 0; p2 = c->classes[p2].parent)
+      if (p2 == bcid) { anc = 1; break; }
+    if (anc && (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL))) {
+      cpoly_family(&sp, &cap, PB_SUBDISPATCH);
+      break;
+    }
+  }
+  return &sp;
+}

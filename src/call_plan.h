@@ -132,6 +132,9 @@ typedef enum {
   /* the statement-level block dispatch's builtin default
      (emit_poly_recv_block_dispatch): map!/collect! over a builtin array */
   PB_BD_MAP_BANG,
+  /* a call on an object whose static class cannot answer the name while a
+     subclass can: re-entered with the receiver boxed (#4023) */
+  PB_SUBDISPATCH,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -195,6 +198,9 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id);
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */
 const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
+/* The re-entry of a call on an object whose static class cannot answer the
+   name while one of its subclasses can (#4023). Computed afresh. */
+const PolyPlan *cplan_poly_sub(Compiler *c, int id);
 
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the
