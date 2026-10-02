@@ -9152,7 +9152,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n"
               "  if (v.tag == SP_TAG_CLASS) {\n"
               "    const char *n = sp_class_val_name(v);\n"
-              "    if (strcmp(n, \"String\") == 0) return sp_box_str(sp_str_dup_external((&(\"\\xff\")[1])));\n"
+              "    if (strcmp(n, \"String\") == 0) return sp_box_str(sp_str_empty_binary());\n"
               "    if (strcmp(n, \"Array\") == 0) return sp_box_poly_array(sp_PolyArray_new());\n"
               "    if (strcmp(n, \"Hash\") == 0) return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);\n"
               "    if (strcmp(n, \"Object\") == 0) return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);\n"
