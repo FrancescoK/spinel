@@ -649,7 +649,9 @@ static inline int native_takes(const NativeMethod *m, int argc) {
    method scope, the class whose chain the binding arm searched (-1 for a
    top-level def), and which arm bound it. via 0 (UC_NONE): no binding. */
 enum { UC_NONE, UC_TOP, UC_INST, UC_CMETH, UC_SUPER, UC_SEND_BLIND, UC_IE,
-       UC_INCLUDED, UC_REOPEN };
+       UC_INCLUDED, UC_REOPEN,
+       UC_POLY };   /* a boxed receiver's dispatch: the first user candidate
+                       stands for the union the call was typed over */
 typedef struct { int mi; short owner_ci; unsigned char via; } UCallInf;
 
 typedef struct {

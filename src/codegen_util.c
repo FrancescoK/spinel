@@ -81,7 +81,10 @@ int g_ndtarget_cap = 0;
      unemitted      inference bound a method, codegen never emitted the call
                     (dead code, or a call folded to its value)
      refused        inference bound a method, codegen emitted the
-                    NoMethodError its visibility gives the call instead */
+                    NoMethodError its visibility gives the call instead
+     dynamic        inference typed a boxed receiver's call over its
+                    candidates, codegen emitted it through the run-time
+                    dispatch, which binds nothing statically */
 typedef struct { int mi; short owner; unsigned char seen, flags; } UcallObs;
 enum { UO_MATCH = 1, UO_ARM = 2, UO_MISS_PLAIN = 4, UO_MISS_RESPEC = 8 };
 static UcallObs *g_ucobs = NULL;
@@ -133,6 +136,20 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (add) o->flags |= UO_ARM;
   const UCallInf *inf = &c->ucall_inf[id];
   if (inf->via == UC_NONE) return;
+  /* a boxed receiver's union: any of its candidates is one of its arms */
+  if (inf->via == UC_POLY) {
+    const char *pnm = nt_str(c->nt, id, "name");
+    int npc = 0, ncc = 0;
+    const PolyCand *pcs = pnm ? comp_poly_candidates(c, pnm, &npc) : NULL;
+    for (int k = 0; k < npc; k++)
+      if (pcs[k].mi == mi ||
+          (pcs[k].mi < 0 && comp_method_in_chain(c, pcs[k].cls, pnm, NULL) == mi)) {
+        o->flags |= UO_MATCH | UO_ARM; return;
+      }
+    const PolyCand *ccs = pnm ? comp_cmethod_candidates(c, pnm, &ncc) : NULL;
+    for (int k = 0; k < ncc; k++)
+      if (ccs[k].mi == mi) { o->flags |= UO_MATCH | UO_ARM; return; }
+  }
   /* a yielding method's proc-form clone is that method, taken as a function
      with its block as a proc */
   if (inf->mi == mi || (c->scopes[mi].is_proc_form && scope_proc_form_of(c, inf->mi) == mi)) {
@@ -156,7 +173,7 @@ static void ucall_scope_name(Compiler *c, int mi, char *out, size_t n) {
 
 void ucall_report(Compiler *c) {
   static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
-                                          "send_blind", "ie", "included", "reopen" };
+                                          "send_blind", "ie", "included", "reopen", "poly" };
   for (int id = 0; id < c->node_cap; id++) {
     const UCallInf *inf = &c->ucall_inf[id];
     const UcallObs *o = id < g_ucobs_cap ? &g_ucobs[id] : NULL;
@@ -168,7 +185,10 @@ void ucall_report(Compiler *c) {
     ucall_scope_name(c, inf->via != UC_NONE ? inf->mi : -1, in, sizeof in);
     const char *vn = inf->via < sizeof via_name / sizeof via_name[0] ? via_name[inf->via] : "?";
     if (inf->via == UC_NONE)
-      fprintf(stderr, "plan-check: ucall-unrecorded: node %d %s: codegen %s\n", id, nm ? nm : "?", cg);
+      fprintf(stderr, "plan-check: ucall-unrecorded: node %d %s: codegen %s%s\n", id, nm ? nm : "?", cg,
+              (o->flags & UO_ARM) ? " (switch)" : "");
+    else if (!seen && inf->via == UC_POLY && id < g_ucemit_cap && g_ucemit[id] == 1)
+      fprintf(stderr, "plan-check: ucall-dynamic: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
     else if (!seen && id < g_ucemit_cap && g_ucemit[id] == 2)
       fprintf(stderr, "plan-check: ucall-refused: node %d %s: inference %s (%s)\n", id, nm ? nm : "?", in, vn);
     else if (!seen && !(id < g_ucemit_cap && g_ucemit[id]))

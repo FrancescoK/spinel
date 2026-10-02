@@ -1907,7 +1907,7 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
-  if (!g_plan_check || id < 0 || id >= c->node_cap) return;
+  if (!g_plan_check || an_builtin_only || id < 0 || id >= c->node_cap) return;
   c->ucall_inf[id].mi = mi;
   c->ucall_inf[id].owner_ci = (short)owner_ci;
   c->ucall_inf[id].via = (unsigned char)via;
@@ -1930,7 +1930,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   if (g_plan_check && id >= 0 && id < c->node_cap) {
     c->bop_inf[id] = NULL;
-    c->ucall_inf[id].via = UC_NONE;
+    /* the builtin-only re-derivation (an_builtin_answer) asks what the call
+       would be with no user method: not the call's answer, so it neither
+       clears nor makes the call's user-method record */
+    if (!an_builtin_only) c->ucall_inf[id].via = UC_NONE;
   }
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
@@ -2209,6 +2212,19 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  /* --plan-check: a boxed receiver's call is dispatched over every user
+     class's method of the name; the first candidate stands for that union
+     (an arm below that binds one method records it instead) */
+  if (g_plan_check && recv >= 0 && rt == TY_POLY && name && !an_builtin_only) {
+    int npc = 0;
+    const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+    for (int pi = 0; pi < npc; pi++) {
+      if (c->classes[pcs[pi].cls].is_native_class) continue;
+      /* a reader candidate written as a method (`def x = @x`) is that method */
+      int pmi = pcs[pi].mi >= 0 ? pcs[pi].mi : comp_method_in_chain(c, pcs[pi].cls, name, NULL);
+      if (pmi >= 0) { an_user_call_record(c, id, pmi, UC_POLY, pcs[pi].cls); break; }
+    }
+  }
   /* respond_to? on a boxed receiver is the compile-time fold
      (emit_call_body) unless a class that can be the value overrides it
      (respond_to_user_defined: an instantiated class with respond_to? in its
@@ -5669,7 +5685,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            candidate skipped the builtin answer for the name applies, and once
            the method's return does settle it unifies in on a later round. */
         if (mi >= 0 && c->scopes[mi].ret == TY_UNKNOWN) continue;
-        if (mi >= 0) { r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue; }
+        if (mi >= 0) {
+          if (!found) an_user_call_record(c, id, mi, UC_POLY, k);
+          r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue;
+        }
         int rdcls = pcs[pi].rdcls;
         if (rdcls >= 0) {
           /* resolve alias so `alias_method :required?, :required` reads the

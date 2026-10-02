@@ -1268,10 +1268,14 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
            passes the argument through a temp that is the expression's value).
            An argument not yet typed leaves the call to the method rule below,
            which the next round revisits. */
-        if (argc == 1 && call_is_setter_assign(c->nt, id) &&
-            comp_method_in_chain(c, cid, name, NULL) >= 0) {
+        int smi = argc == 1 && call_is_setter_assign(c->nt, id)
+                  ? comp_method_in_chain(c, cid, name, NULL) : -1;
+        if (smi >= 0) {
           TyKind rhsk = infer_type(c, argv[0]);
-          if (rhsk != TY_UNKNOWN) { *out = rhsk; return 1; }
+          if (rhsk != TY_UNKNOWN) {
+            an_user_call_record(c, id, smi, UC_INST, cid);
+            *out = rhsk; return 1;
+          }
         }
       }
     }
