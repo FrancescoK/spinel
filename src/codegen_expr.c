@@ -2445,10 +2445,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
        first, as a POLY local's marked read is (poly_strbuf_lift); an
        instance's field store takes its write barrier from gc_wb_insert. */
     if (c->poly_strbuf_lift[id] && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
-      c->poly_strbuf_lift[id] = 0;
+      int vl = view_push_repr(c, id, VR_POLY_LIFT, 0);
       Buf rl; memset(&rl, 0, sizeof rl);
       emit_expr_node(c, id, &rl);
-      c->poly_strbuf_lift[id] = 1;
+      view_pop(c, vl);
       emit_poly_lift_ref(rl.p ? rl.p : "", b);
       free(rl.p);
       return;
@@ -2470,9 +2470,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
        ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
     { char srefI[1024];
       int svm = c->strbuf_box[id];
-      c->strbuf_box[id] = 1;   /* let slot_ref resolve regardless of mark */
+      int vsm = view_push_repr(c, id, VR_STRBUF_BOX, 1);   /* let slot_ref resolve regardless of mark */
       int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
-      c->strbuf_box[id] = (unsigned char)svm;
+      view_pop(c, vsm);
       if (is_sb) {
         if (svm) buf_printf(b, "%s", srefI);
         else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
