@@ -7594,6 +7594,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          collect, and rooting it is pure cost on the hottest shape there is:
          an AST walker reads `node.left` through exactly this dispatch, and
          paying a root push and pop per read made one twice as slow (#282). */
+      /* how the receiver is held and the switch keyed is the plan's
+         (cplan_poly); the dispatch's own reading, below, is --plan-check's
+         assertion and what a plan for another result type falls back on */
+      const PolyPlan *pform = cplan_poly_arms(c, id);
+      int fserved = pform->ret == ret;
+      unsigned form = pform->flags & ~PPF_SEEN;
+      if (g_plan_check || !fserved) {
       int root_recv = ncall_arm > 0 || is_lengthlike || is_empty || is_pred ||
                       is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a ||
                       is_poly_to_h;
@@ -7610,6 +7617,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       unsigned sface = ty_poly_face_owners(name, argc, nt_ref(nt, id, "block") >= 0, 1, 1);
       int reads_value = (is_lengthlike || is_empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
                         !sp_str_mutator(name, SP_MUT_LOCAL);
+      unsigned oform = (root_recv ? PPF_ROOT : 0) | (reads_value ? PPF_DEREF : 0) |
+                       (poly_key_cls0(c, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
+                       (poly_key_prim(c, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
+                       (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
+      form = poly_form_check(id, name, "poly-form0", fserved, form, oform);
+      }
+      int root_recv = (form & PPF_ROOT) != 0, reads_value = (form & PPF_DEREF) != 0;
       buf_printf(b, "({ sp_RbVal _t%d = %s", tv, reads_value ? "sp_poly_strbuf_deref(" : "");
       emit_expr(c, recv, b);
       buf_puts(b, reads_value ? "); " : "; ");
@@ -7621,18 +7635,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int pa_frame0 = g_plan_check ? pa_begin(id) : -1;
       emit_poly_prearms0(c, id, name, &ps, ret, tv, tr, b);
       int blk_tmp0 = emit_poly_prearms0_blk(c, id, name, &ps, ret, tv, tr, b);
-      int cls0_cand = poly_key_cls0(c, name, 0, -1, 0, -1);
-      /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
-      int prim_cand0 = poly_key_prim(c, name, 0, -1, 0, -1);
       /* a genuine String in a slot whose name a user class owns (#4816) */
       emit_poly_str_prearm(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, b);
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand0, poly_exc_cand(c, name), name, b);
+      emit_poly_dispatch_key_pick(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+                                  (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame0);
-      if (g_plan_check)
-        pa_flags((root_recv ? PPF_ROOT : 0) | (reads_value ? PPF_DEREF : 0) | (cls0_cand ? PPF_KEY_CLS0 : 0) |
-                 (prim_cand0 ? PPF_KEY_PRIM : 0) | (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
+      if (g_plan_check) pa_flags(form);
       emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, b);
       if (g_plan_check) pa_resume(pa_frame0);
       emit_poly_cases0(c, id, recv, name, &ps, ret, tv, tr, b);
@@ -7905,11 +7915,18 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                            idxref };
       int pa_frame = g_plan_check ? pa_begin(id) : -1;
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
-      int cls0_cand2 = poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
-      /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
-      int prim_cand2 = poly_key_prim(c, name, argc, kwh, pos_argc, splat_a);
+      /* the key form is the plan's; the dispatch's own reading asserts it */
+      const PolyPlan *pform = cplan_poly_arms(c, id);
+      int fserved = pform->ret == ret;
+      unsigned form = pform->flags & ~PPF_SEEN;
+      if (g_plan_check || !fserved) {
+        unsigned oform = PPF_ROOT | (poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
+                         (poly_key_prim(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
+                         (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
+        form = poly_form_check(id, name, "poly-form-n", fserved, form, oform);
+      }
       /* a genuine String in a slot whose name a user class owns (#4816) */
       if (kw_pos && !has_splat_arg)
         emit_poly_str_prearm(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, b);
@@ -7917,12 +7934,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* where this switch starts, so its end can tell whether any arm below
          wrote the `default:` label (see the builtin default at the close) */
       size_t sw_start = b->len;
-      emit_poly_dispatch_key_pick(c, tv, cls0_cand2, prim_cand2, poly_exc_cand(c, name), name, b);
+      emit_poly_dispatch_key_pick(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+                                  (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame);
-      if (g_plan_check)
-        pa_flags(PPF_ROOT | (cls0_cand2 ? PPF_KEY_CLS0 : 0) | (prim_cand2 ? PPF_KEY_PRIM : 0) |
-                 (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
+      if (g_plan_check) pa_flags(form);
       { PolyUserArgs U = { argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk,
                            is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw };
         emit_poly_user_arms_n(c, id, name, &U, b); }

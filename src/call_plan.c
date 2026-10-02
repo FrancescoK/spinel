@@ -1007,7 +1007,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
   if (!name || recv < 0) return;
   if (argc == 0) {
     PolySpecials0 ps;
-    if (full) cpoly_flags0(c, id, name, p, &ps);
+    cpoly_flags0(c, id, name, p, &ps);
     cpoly_user_arms0(c, id, name, p->ret, p);
     if (!full) return;
     int cap = p->n;

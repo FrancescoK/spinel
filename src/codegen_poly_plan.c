@@ -4055,3 +4055,20 @@ int poly_redispatch_kind(Compiler *c, int id, const char *name, int argc) {
                    sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")));
   return ret_recv ? 2 : 1;
 }
+
+/* The receiver form a poly dispatch takes: the plan's (form) when the
+   plan answers the dispatch's result type (served), else the dispatch's
+   own reading (oform); --plan-check holds the two against each other. */
+unsigned poly_form_check(int id, const char *name, const char *site, int served, unsigned form, unsigned oform) {
+  if (!served) {
+    if (g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: %s node %d %s\n", site, id, name);
+    return oform;
+  }
+  if (g_plan_check) {
+    cplan_served(site);
+    if (form != oform)
+      fprintf(stderr, "plan-check: cplan-conflict: %s node %d %s: plan %#x, read %#x\n", site, id, name,
+              form, oform);
+  }
+  return form;
+}
