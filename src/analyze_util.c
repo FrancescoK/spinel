@@ -2406,10 +2406,15 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
       return ci >= 0 ? comp_method_in_chain(c, ci, sym, NULL) : -1;
     }
   }
-  if (recv < 0) {
-    int mi = comp_method_index(c, sym);
-    if (mi < 0) { Scope *s = comp_scope_of(c, node); if (s && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, sym, NULL); }
-    return mi;
+  /* a bare `method(:m)` names what a bare `m` would call: inside a class
+     method self is the class, so its class methods come first (Ruby's
+     method lookup, comp_self_call_mi) */
+  if (recv < 0) return comp_self_call_mi(c, node, sym);
+  /* `self.method(:m)` in a class method: self is the class */
+  if (nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *ss = comp_scope_of(c, node);
+    if (ss && ss->is_cmethod && ss->class_id >= 0)
+      return comp_cmethod_in_chain(c, ss->class_id, sym, NULL);
   }
   TyKind rt = infer_type(c, recv);
   /* a receiver whose method() was retargeted at a synthesized __bam_* wrapper
