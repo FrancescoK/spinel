@@ -2921,28 +2921,25 @@ int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out) {
   /* ...or when some write leaves the sentinel in it (`a = nil; a ||= 10`):
      the nil join keeps such a slot an sp_int, and its nil is the sentinel */
   if (lv->nullable_int) nil_init = 1;
-  switch (t) {
-    case TY_STRING: case TY_BIGINT: case TY_OPENSTRUCT:
-      buf_printf(out, "!%s", ref); return 1;
-    case TY_CLASS:
-      buf_printf(out, "sp_class_nil_p(%s)", ref); return 1;
-    case TY_INT:
-      if (!nil_init) return 0;
-      buf_printf(out, "%s == SP_INT_NIL", ref); return 1;
-    case TY_FLOAT:
-      if (!nil_init) return 0;
-      buf_printf(out, "sp_float_is_nil(%s)", ref); return 1;
-    /* value kinds with no in-band nil (and POLY/BOOL/SYMBOL, whose callers
-       test their own sentinel before reaching here) */
-    case TY_BOOL: case TY_SYMBOL: case TY_POLY:
-    case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_TIME:
-    case TY_COMPLEX: case TY_RATIONAL: case TY_TMS:
-      return 0;
-    default:
-      if (comp_ty_value_obj(c, t)) return 0;
-      if (t != TY_UNKNOWN && is_scalar_ret(t)) { buf_printf(out, "!%s", ref); return 1; }
-      return 0;
+  if (t == TY_INT || t == TY_FLOAT) {
+    if (!nil_init) return 0;
+    buf_printf(out, t == TY_INT ? "%s == SP_INT_NIL" : "sp_float_is_nil(%s)", ref);
+    return 1;
   }
+  /* any other builtin kind: its ty_traits row's nil_test_local (types.c),
+     NULL for a value kind with no in-band nil (and for POLY, BOOL and
+     SYMBOL, whose callers test their own sentinel before reaching here) */
+  const TyTraits *tr = ty_traits_of(t);
+  if (tr) {
+    if (!tr->nil_test_local) return 0;
+    ty_traits_render(tr->nil_test_local, ref, out);
+    return 1;
+  }
+  /* a user object is a pointer whose nil is NULL, unless its class is a
+     value type; an object array is a pointer too */
+  if (comp_ty_value_obj(c, t)) return 0;
+  if (is_scalar_ret(t)) { buf_printf(out, "!%s", ref); return 1; }
+  return 0;
 }
 /* The dead value closing a `({ ...; sp_raise_cls(...); V; })` arm. The raise
    never returns, so V only has to type-check in the slot: an UNKNOWN result
