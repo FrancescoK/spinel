@@ -1144,6 +1144,21 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
+	t=test/reject/string_thread_global_arg.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tga.c" >"$$tmp/tga.out" 2>&1; then \
+	  echo "reject-test: FAIL (a global handed to a thread's appending block compiled)"; ok=0; \
+	else grep -q "parameter .t. through .Thread.new." "$$tmp/tga.out" || \
+	  { echo "reject-test: FAIL (a global handed to a thread's block rejected without saying why)"; sed -n 1,5p "$$tmp/tga.out"; ok=0; }; fi; \
+	t=test/reject/string_fiber_local_arg.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/fla.c" >"$$tmp/fla.out" 2>&1; then \
+	  echo "reject-test: FAIL (a local read after a fiber's appending block compiled)"; ok=0; \
+	else grep -q "parameter .x. through .resume." "$$tmp/fla.out" || \
+	  { echo "reject-test: FAIL (a local read after a fiber's block rejected without saying why)"; sed -n 1,5p "$$tmp/fla.out"; ok=0; }; fi; \
+	t=test/reject/string_thread_ivar_arg.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tia.c" >"$$tmp/tia.out" 2>&1; then \
+	  echo "reject-test: FAIL (an ivar handed to a thread's appending block compiled)"; ok=0; \
+	else grep -q "parameter .t. through .Thread.new." "$$tmp/tia.out" || \
+	  { echo "reject-test: FAIL (an ivar handed to a thread's block rejected without saying why)"; sed -n 1,5p "$$tmp/tia.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
