@@ -1569,6 +1569,16 @@ int user_defines_or_reads(Compiler *c, const char *name);
 int native_class_defines(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
 extern int g_poly_builtin_arm;  /* emitting a poly dispatch's builtin arm */
+/* the poly dispatch's helpers shared with codegen_poly_plan.c and the
+   resolver (call_plan.c) */
+int  class_is_prim_reopen(Compiler *c, int k);
+int  exc_arm_definer(Compiler *c, int k, const char *name);
+int  poly_arm_refuses_none(Compiler *c, int mi, char *exp, size_t n);
+void emit_poly_arity_raise(Buf *b, const char *msg);
+void emit_unbox_poly_ret(Compiler *c, TyKind slot, const char *expr, Buf *b);
+void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b);
+void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
+                          int blk_tmp0, Buf *b);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b);

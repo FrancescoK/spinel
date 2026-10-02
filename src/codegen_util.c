@@ -253,6 +253,7 @@ static void ucall_resolver_report(Compiler *c) {
 void ucall_report(Compiler *c) {
   ucall_resolver_report(c);
   cplan_served_report();
+  pa_report();
   static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
                                           "send_blind", "ie", "included", "reopen", "poly" };
   for (int id = 0; id < c->node_cap; id++) {

@@ -69,4 +69,54 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base);
 /* whether mi is the plan's method or, for a switch, one of its arms */
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi);
 
+/* ---- CP_POLY: the arms of a dispatch on a boxed (poly) receiver ----
+   One arm per runtime class (or, later, builtin kind) the switch can take:
+   what answers there, the arm's value type, and how that value reaches the
+   call's own type. Nothing reads the list to emit yet; --plan-check holds
+   it against the arms emit_poly_method_dispatch writes (pa_begin /
+   pa_observe / pa_end, codegen_poly_plan.c). */
+typedef enum {
+  PA_USER,        /* the class's method */
+  PA_PROC_FORM,   /* a yielding method, through its proc-form clone */
+  PA_READER,      /* an attr reader's ivar load */
+  PA_NATIVE,      /* a native class's C binding */
+  PA_ARITY,       /* the call's count is refused: ArgumentError */
+  PA_SYNTH_ENUM   /* a Struct's synthesized each/each_pair: an Enumerator */
+} PolyArmKind;
+
+typedef enum {
+  PC_SAME,        /* the value as it is */
+  PC_BOX,         /* boxed into a poly result */
+  PC_UNBOX,       /* a poly value unboxed into a scalar result */
+  PC_VOID,        /* no value (a void method, a raise) */
+  PC_NUM,         /* a Bignum converted into an Integer or Float result */
+  PC_COPY,        /* a shared-mutable String copied into a String result */
+  PC_BOX_OR_NIL   /* an Integer ivar boxed with its nil sentinel */
+} PolyConv;
+
+typedef struct {
+  unsigned char kind;   /* PolyArmKind */
+  unsigned char conv;   /* PolyConv */
+  unsigned char vty;    /* the arm's value TyKind */
+  short key;            /* the runtime class id */
+  int mi;               /* the user method scope, or -1 */
+} PolyArm;
+
+typedef struct {
+  TyKind ret;           /* the call's type the arms answer into */
+  int n;
+  PolyArm *arm;
+} PolyPlan;
+
+/* The user-class arms of a blockless, zero-argument call on a poly
+   receiver (the plan's first slice of emit_poly_method_dispatch). Pure;
+   kept per node where the node is read as itself. */
+const PolyPlan *cplan_poly(Compiler *c, int id);
+
+/* --plan-check: the arms one emitted switch wrote, held against the plan */
+int  pa_begin(int id);
+void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
+void pa_end(Compiler *c, int frame, const PolyPlan *p);
+void pa_report(void);
+
 #endif

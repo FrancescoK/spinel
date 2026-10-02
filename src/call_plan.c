@@ -413,3 +413,134 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   g_cp_have[id] = 1;
   return &g_cp_memo[id];
 }
+
+/* ---- CP_POLY ---- */
+
+static PolyConv cpoly_conv(TyKind ret, TyKind vty) {
+  if (ret == TY_POLY && vty != TY_POLY) return PC_BOX;
+  if (ret != TY_POLY && vty == TY_POLY) return PC_UNBOX;
+  return PC_SAME;
+}
+
+static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind vty, int conv) {
+  if (p->n == *cap) {
+    *cap = *cap ? *cap * 2 : 8;
+    p->arm = realloc(p->arm, (size_t)*cap * sizeof *p->arm);
+  }
+  PolyArm *a = &p->arm[p->n++];
+  a->kind = (unsigned char)kind; a->key = (short)key; a->mi = mi;
+  a->vty = (unsigned char)vty; a->conv = (unsigned char)conv;
+}
+
+/* The arms emit_poly_user_arms0 writes, class by class, in its order. */
+static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
+  int cap = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
+    if (c->classes[k].is_native_class) {
+      int nmi = comp_native_method_find(c, k, name, 0, 0);
+      if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
+        TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
+        cpoly_add(p, &cap, PA_NATIVE, k, -1, mret, mret == TY_NIL ? PC_VOID : cpoly_conv(ret, mret));
+      }
+      else if (nmi >= 0 && c->native_methods[nmi].nargs > 0 && c->classes[k].instantiated)
+        cpoly_add(p, &cap, PA_ARITY, k, -1, TY_UNKNOWN, PC_VOID);
+      continue;
+    }
+    int defcls = -1;
+    int mi = comp_method_in_chain(c, k, name, &defcls);
+    if (mi < 0 && any_exc_reopen(c) && (class_has_exc_name(c, k) || class_is_exc_subclass(c, k))) {
+      int xd = exc_arm_definer(c, k, name);
+      if (xd >= 0) { defcls = xd; mi = comp_method_in_chain(c, xd, name, NULL); }
+    }
+    if (mi >= 0 && c->classes[k].is_struct && !c->classes[k].is_data && g_gen_obj_struct_values &&
+        ret == TY_POLY && nt_ref(c->nt, id, "block") < 0 &&
+        nt_str(c->nt, c->scopes[mi].def_node, "synth") &&
+        (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+      cpoly_add(p, &cap, PA_SYNTH_ENUM, k, mi, TY_ENUMERATOR, PC_SAME);
+      continue;
+    }
+    { char zexp[600]; int rdc0 = -1;
+      if (poly_arm_refuses_none(c, mi, zexp, sizeof zexp) && !comp_reader_in_chain(c, k, name, &rdc0)) {
+        cpoly_add(p, &cap, PA_ARITY, k, mi, TY_UNKNOWN, PC_VOID);
+        continue;
+      } }
+    if (mi >= 0 && c->scopes[mi].nrequired == 0 &&
+        (scope_has_callable_symbol(c, mi) || scope_needs_proc_form(c, mi)) &&
+        !(c->classes[defcls].name && sp_streq(c->classes[defcls].name, "Class"))) {
+      int pfi = scope_proc_form_of(c, mi);
+      Scope *ms = &c->scopes[pfi >= 0 ? pfi : mi];
+      TyKind cret = ms->ret;
+      int conv;
+      if (method_is_void(ms)) conv = PC_VOID;
+      else {
+        TyKind slotty = is_scalar_ret(ret) ? ret : TY_INT;
+        conv = cpoly_conv(ret, cret);
+        if (conv == PC_SAME && cret == TY_BIGINT && (slotty == TY_INT || slotty == TY_FLOAT)) conv = PC_NUM;
+      }
+      cpoly_add(p, &cap, pfi >= 0 ? PA_PROC_FORM : PA_USER, k, mi, cret, conv);
+      continue;
+    }
+    int rdcls = -1;
+    if (comp_reader_in_chain(c, k, name, &rdcls)) {
+      const char *rn = comp_resolve_alias(c, k, name);
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+      int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
+      TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
+      int conv = ret == TY_POLY && ivt == TY_INT ? PC_BOX_OR_NIL
+               : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
+               : cpoly_conv(ret, ivt);
+      cpoly_add(p, &cap, PA_READER, k, -1, ivt, conv);
+    }
+  }
+}
+
+static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
+  free(p->arm);
+  p->arm = NULL; p->n = 0;
+  p->ret = comp_ntype(c, id);
+  const char *name = nt_str(c->nt, id, "name");
+  int recv = nt_ref(c->nt, id, "receiver");
+  int argc = 0;
+  int args = nt_ref(c->nt, id, "arguments");
+  if (args >= 0) (void)nt_arr(c->nt, args, "arguments", &argc);
+  if (!name || recv < 0 || argc != 0) return;
+  cpoly_user_arms0(c, id, name, p->ret, p);
+}
+
+static PolyPlan *g_pp_memo;
+static char **g_pp_name;
+static int g_pp_cap;
+
+const PolyPlan *cplan_poly(Compiler *c, int id) {
+  static PolyPlan fresh;
+  if (id < 0 || id >= c->node_cap) { free(fresh.arm); fresh.arm = NULL; fresh.n = 0; return &fresh; }
+  const char *nm = nt_str(c->nt, id, "name");
+  int plain = cplan_plain_ctx();
+  if (plain && id < g_pp_cap && g_pp_name[id] && nm && sp_streq(g_pp_name[id], nm) &&
+      g_pp_memo[id].ret == comp_ntype(c, id))
+    return &g_pp_memo[id];
+#ifndef NDEBUG
+  int tmp0 = g_tmp;
+#endif
+  PolyPlan *p = &fresh;
+  if (plain) {
+    if (id >= g_pp_cap) {
+      int ncap = g_pp_cap ? g_pp_cap : 1024;
+      while (ncap <= id) ncap *= 2;
+      g_pp_memo = realloc(g_pp_memo, (size_t)ncap * sizeof *g_pp_memo);
+      g_pp_name = realloc(g_pp_name, (size_t)ncap * sizeof *g_pp_name);
+      memset(g_pp_memo + g_pp_cap, 0, (size_t)(ncap - g_pp_cap) * sizeof *g_pp_memo);
+      memset(g_pp_name + g_pp_cap, 0, (size_t)(ncap - g_pp_cap) * sizeof *g_pp_name);
+      g_pp_cap = ncap;
+    }
+    p = &g_pp_memo[id];
+    free(g_pp_name[id]);
+    g_pp_name[id] = nm ? strdup(nm) : NULL;
+  }
+  cpoly_resolve(c, id, p);
+#ifndef NDEBUG
+  assert(g_tmp == tmp0);   /* resolving emits nothing */
+#endif
+  return p;
+}
