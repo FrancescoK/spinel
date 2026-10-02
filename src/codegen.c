@@ -680,13 +680,21 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
 
 static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   const char *nty = nt_type(c->nt, node);
-  /* `*a` forwarded into a scalar int slot (a builtin arg): the value is the
-     splat's first element, not the array box. */
+  /* `*a` forwarded into a scalar int slot (a builtin arg): the one slot takes
+     the splat's one element. A splat of any other length is a different call
+     -- `a.slice(*[0, 2])` is slice(0, 2) -- which splat_dispatch_on_length
+     routes to its own arm where the builtin has one; what reaches here with
+     another length raises CRuby's arity error rather than reading element 0
+     and dropping the rest. The arity is the one the dispatch recorded on the
+     splat (`splat_lo`/`splat_hi`), else this slot's own 1. */
   if (nty && sp_streq(nty, "SplatNode")) {
     int inner = nt_ref(c->nt, node, "expression");
-    buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(sp_poly_to_poly_array(sp_splat_to_array(");
+    long long lo = nt_int(c->nt, node, "splat_lo", 1), hi = nt_int(c->nt, node, "splat_hi", 1);
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(sp_splat_to_array(", ta);
     if (inner >= 0) emit_boxed(c, inner, b); else buf_puts(b, "sp_box_nil()");
-    buf_puts(b, ")), 0))");
+    buf_printf(b, ")); if (_t%d->len != 1) sp_raise_arity(_t%d->len, %lld, %lld, 0);"
+                  " sp_poly_to_i(sp_PolyArray_get(_t%d, 0)); })", ta, ta, lo, hi, ta);
     return;
   }
   if (yield_site_type(c, node) == TY_POLY) {

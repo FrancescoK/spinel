@@ -25972,8 +25972,9 @@ static int splat_builtin_arity(const char *name) {
        on the receiver -- Hash#slice is variadic, Array#slice and String#slice
        take one argument or two -- so no single number is right. Expanding to
        1 dropped every Hash key after the first and dropped Array/String's
-       length argument (#4164). A slice splat is expanded only where the
-       length is statically known, and left alone otherwise. */
+       length argument (#4164). A slice splat is expanded where the length
+       is statically known and dispatched on it otherwise
+       (splat_dispatch_on_length). */
     { "fetch", 1 }, { "store", 2 }, { "insert", 2 },
     { "delete", 1 }, { "sub", 2 }, { "sub!", 2 }, { "gsub", 2 },
     { "gsub!", 2 }, { "[]", 1 }, { "[]=", 2 },
@@ -26017,6 +26018,12 @@ static int splat_recv_is_builtin_literal(NodeTable *nt, int id) {
    one argument and Array's or String's two. A variadic method (String#count,
    #delete, #start_with?) is dispatched up to a cap. 0 for an unlisted name. */
 static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic) {
+  /* variadic 2 marks a name some receiver takes any count of while the
+     others take lo..hi: Array's and String's slice take one argument or two,
+     Hash#slice any number of keys. The receiver is not typed yet, so the
+     counts in range get their arms and every other count keeps the original
+     splat call, which Hash#slice iterates and the one-or-two-argument forms
+     refuse with the arity error (emit_int_expr_ex). */
   static const struct { const char *name; int lo, hi, variadic; } tab[] = {
     { "fetch", 1, 2, 0 }, { "store", 2, 2, 0 }, { "delete", 1, 8, 1 }, { "insert", 1, 8, 1 },
     { "sub", 2, 2, 0 }, { "sub!", 2, 2, 0 }, { "gsub", 2, 2, 0 }, { "gsub!", 2, 2, 0 },
@@ -26030,6 +26037,11 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
     { "first", 0, 1, 0 }, { "last", 0, 1, 0 }, { "sum", 0, 1, 0 },
     { "ljust", 1, 2, 0 }, { "rjust", 1, 2, 0 }, { "center", 1, 2, 0 },
     { "to_s", 0, 1, 0 },
+    { "slice", 1, 2, 2 }, { "byteslice", 1, 2, 0 }, { "rotate", 0, 1, 0 },
+    { "digits", 0, 1, 0 }, { "pow", 1, 2, 0 }, { "sample", 0, 1, 0 },
+    { "pop", 0, 1, 0 }, { "shift", 0, 1, 0 }, { "round", 0, 1, 0 },
+    { "floor", 0, 1, 0 }, { "ceil", 0, 1, 0 }, { "truncate", 0, 1, 0 },
+    { "max", 0, 1, 0 }, { "min", 0, 1, 0 },
     { NULL, 0, 0, 0 }
   };
   for (int i = 0; tab[i].name; i++)
@@ -26078,18 +26090,26 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
   const char *cop = nt_str(nt, id, "call_operator");
   if (cop && sp_streq(cop, "&.")) return 0;
-  if (nt_kind(nt, ex) != NK_LocalVariableReadNode) return 0;
-  const char *anm = nt_str(nt, ex, "name");
-  if (!anm) return 0;
-  long long adepth = nt_int(nt, ex, "depth", 0);
+  /* A splat of anything but a local -- a constant, a method's result -- is
+     bound to a temporary as `[*ex]` (nil spreads to no arguments, a Range to
+     its elements), in its turn among the arguments, and the arms read that. */
+  int ex_local = nt_kind(nt, ex) == NK_LocalVariableReadNode;
+  const char *anm = ex_local ? nt_str(nt, ex, "name") : NULL;
+  if (ex_local && !anm) return 0;
+  long long adepth = ex_local ? nt_int(nt, ex, "depth", 0) : 0;
   int recv = nt_ref(nt, id, "receiver");
   /* a receiverless call is self's method, never one of these builtins */
   if (recv < 0) return 0;
+  /* the builtin's own counts, before a user method's widen them: what the
+     kept splat call of a variadic-2 name (slice) reports as its arity */
+  int blo = lo, bhi = hi;
   /* a user method of the name may own the call: the range widens to the
      counts it takes, so each arm calls whichever method the receiver has
      with the arguments it was given. One with a rest parameter takes any
-     count, which no range covers. */
-  if (!splat_recv_is_builtin_literal(nt, id)) {
+     count, which no range covers. A variadic-2 name (slice) needs no
+     widening: its other counts keep the splat call, which reaches the user
+     method as any splat call does. */
+  if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id)) {
     for (int si = 0; si < c->nscopes; si++) {
       Scope *s = &c->scopes[si];
       if (!s->name || !sp_streq(s->name, cnm)) continue;
@@ -26120,8 +26140,22 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, recv, "depth", 0);
   }
   int fargs[24];
+  char snm[64];
   for (int k = 0; k < argc; k++) {
     fargs[k] = argv[k];
+    if (k == sp_at && !ex_local) {
+      snprintf(snm, sizeof snm, "__spls%s", comp_node_tag(c, id));
+      scope_local_intern(comp_scope_of(c, id), snm);
+      int arr = nt_new_node(nt, "ArrayNode");
+      nt_node_set_arr(nt, arr, "elements", &argv[k], 1);
+      int w = nt_new_node(nt, "LocalVariableWriteNode");
+      nt_node_set_str(nt, w, "name", snm);
+      nt_node_set_int(nt, w, "depth", 0);
+      nt_node_set_ref(nt, w, "value", arr);
+      pre[npre++] = w;
+      anm = snm;
+      continue;
+    }
     if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
     snprintf(tn, sizeof tn, "__spla%s_%d", comp_node_tag(c, id), k);
     scope_local_intern(comp_scope_of(c, id), tn);
@@ -26140,13 +26174,59 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     snprintf(msg, sizeof msg, "spinel: a splat of more than %d arguments into %s is not supported",
              hi - fixed, cnm);
   else if (lo == hi)
-    snprintf(msg, sizeof msg, "wrong number of arguments (expected %d)", lo);
+    snprintf(msg, sizeof msg, ", expected %d)", lo);
   else
-    snprintf(msg, sizeof msg, "wrong number of arguments (expected %d..%d)", lo, hi);
+    snprintf(msg, sizeof msg, ", expected %d..%d)", lo, hi);
   int ecn = nt_new_node(nt, "ConstantReadNode");
   nt_node_set_str(nt, ecn, "name", variadic ? "NotImplementedError" : "ArgumentError");
   int emn = nt_new_node(nt, "StringNode");
   nt_node_set_str(nt, emn, "content", msg);
+  if (!variadic) {
+    /* CRuby's message counts what was given:
+       "wrong number of arguments (given " + (a.length + fixed).to_s + msg */
+    int ard = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ard, "name", anm);
+    nt_node_set_int(nt, ard, "depth", adepth);
+    int alen = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, alen, "name", "length");
+    nt_node_set_ref(nt, alen, "receiver", ard);
+    nt_node_set_ref(nt, alen, "arguments", -1);
+    nt_node_set_ref(nt, alen, "block", -1);
+    int given = alen;
+    if (fixed > 0) {
+      int fl = nt_new_node(nt, "IntegerNode");
+      nt_node_set_int(nt, fl, "value", fixed);
+      int fa = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, fa, "arguments", &fl, 1);
+      given = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, given, "name", "+");
+      nt_node_set_ref(nt, given, "receiver", alen);
+      nt_node_set_ref(nt, given, "arguments", fa);
+      nt_node_set_ref(nt, given, "block", -1);
+    }
+    int ts = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, ts, "name", "to_s");
+    nt_node_set_ref(nt, ts, "receiver", given);
+    nt_node_set_ref(nt, ts, "arguments", -1);
+    nt_node_set_ref(nt, ts, "block", -1);
+    int head = nt_new_node(nt, "StringNode");
+    nt_node_set_str(nt, head, "content", "wrong number of arguments (given ");
+    int pa = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, pa, "arguments", &ts, 1);
+    int p1 = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, p1, "name", "+");
+    nt_node_set_ref(nt, p1, "receiver", head);
+    nt_node_set_ref(nt, p1, "arguments", pa);
+    nt_node_set_ref(nt, p1, "block", -1);
+    int pb = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, pb, "arguments", &emn, 1);
+    int p2 = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, p2, "name", "+");
+    nt_node_set_ref(nt, p2, "receiver", p1);
+    nt_node_set_ref(nt, p2, "arguments", pb);
+    nt_node_set_ref(nt, p2, "block", -1);
+    emn = p2;
+  }
   int ea[2] = { ecn, emn };
   int eargs = nt_new_node(nt, "ArgumentsNode");
   nt_node_set_arr(nt, eargs, "arguments", ea, 2);
@@ -26155,6 +26235,31 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   nt_node_set_ref(nt, arm, "receiver", -1);
   nt_node_set_ref(nt, arm, "arguments", eargs);
   nt_node_set_ref(nt, arm, "block", -1);
+  if (variadic == 2) {
+    /* any other count keeps the splat call (see splat_builtin_range) */
+    int args[32];
+    for (int k = 0; k < argc; k++) {
+      if (k != sp_at) { args[k] = nt_clone_subtree(nt, fargs[k]); continue; }
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, rd, "name", anm);
+      nt_node_set_int(nt, rd, "depth", adepth);
+      int spn = nt_new_node(nt, "SplatNode");
+      nt_node_set_ref(nt, spn, "expression", rd);
+      nt_node_set_int(nt, spn, "splat_lo", blo);
+      nt_node_set_int(nt, spn, "splat_hi", bhi);
+      args[k] = spn;
+    }
+    int an = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, an, "arguments", args, argc);
+    arm = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, arm, "name", cnm);
+    if (nt_str(nt, id, "send_blind")) nt_node_set_str(nt, arm, "send_blind", "1");
+    if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, arm, "vis_enforce", "1");
+    nt_node_set_int(nt, arm, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
+    nt_node_set_ref(nt, arm, "receiver", nt_clone_subtree(nt, recv));
+    nt_node_set_ref(nt, arm, "arguments", an);
+    nt_node_set_ref(nt, arm, "block", -1);
+  }
   /* built from the longest count down, each arm the else of the next */
   int first_len = lo - fixed < 0 ? 0 : lo - fixed;
   for (int len = hi - fixed; len >= first_len; len--) {
@@ -26306,7 +26411,12 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
       for (int i = 0; i < n; i++) lit_el[i] = el0[i];
     }
     else if (sp_streq(ext, "LocalVariableReadNode")) n = splat_local_len(c, ex, id);
-    else continue;
+    else {
+      /* any other operand's length is the run time's: dispatch on it, or
+         leave the call as it stands */
+      splat_dispatch_on_length(c, id, argv, argc, sp_at, ex);
+      continue;
+    }
     int n_static = n >= 0;
     if (n < 0 && splat_dispatch_on_length(c, id, argv, argc, sp_at, ex)) continue;
     /* the optional-argument builtins added for the dispatch keep their old
