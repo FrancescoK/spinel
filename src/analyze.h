@@ -57,6 +57,8 @@ void dyn_value_kw_reach(Compiler *c, int v, const char *key, DynReach *r);
 int dyn_method_kw_appends(Compiler *c, int mi, const char *key, int *j_out);
 /* A keyword-hash element's Symbol key, and its value node in *val. */
 const char *dyn_kw_elem_key(Compiler *c, int el, int *val);
+/* The literal block a Thread.new or a Fiber's resume hands its arguments to, or -1. */
+int an_thread_arg_block(Compiler *c, int n);
 int dyn_call_site(Compiler *c, int n);
 void dyn_call_reach(Compiler *c, int n, int k, DynReach *r);
 void dyn_value_reach(Compiler *c, int v, int k, DynReach *r);

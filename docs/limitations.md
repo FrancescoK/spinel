@@ -703,6 +703,12 @@ Not yet shared:
   String held by a block parameter, by a variable a block or proc captures,
   or by a global or class variable, and through a proc, a `Method` or a
   class value's `new`, one held by an instance variable.
+- through `Thread.new(s) { |t| ... }` or a Fiber's first `resume(s)` into its
+  block's parameters, any String variable, refused only where the copy
+  would show: the variable is read again after the call (or before it, in a
+  loop around it), or another name holds the String (an instance, class or
+  global variable read elsewhere, a parameter a caller hands a variable, a
+  block's parameter, a captured local).
 
 A String is shared as well through a rest a method forwards (`def w(*a) =
 m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and

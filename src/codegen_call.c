@@ -24036,6 +24036,224 @@ static const char *strvar_arg(Compiler *c, int a, int *shared) {
   return NULL;
 }
 
+/* ---- Whether a copy can be told apart (#6765) --------------------------
+
+   A route that hands a String variable on as a copy is refused only where
+   the copy shows: another name holds the String (a parameter some caller
+   hands a String variable whose copy shows there; a block's parameter; a
+   local a block or proc captures; an instance, class or global variable
+   read anywhere else), or the local is
+   read again after `site`, or before it where that read can see the next
+   time `site` runs (a loop or a block around it) or keeps the String under
+   another name. A local read before `site` only to print it or as a
+   receiver cannot tell, and neither can one never read again: a program
+   that does nothing else compiles and is correct, and stays compiled. */
+/* The tree's nodes in source order (a walk from the root, children in the
+   order the table holds them) and each one's parent, for the program as it
+   stands; -1 for a node the walk does not reach. Rebuilt when the table
+   changes. */
+static int *g_tord, *g_tpar, g_tord_n = -1;
+static long g_tord_ver = -1;
+static void tree_order_build(const NodeTable *nt) {
+  if (g_tord_n == nt->count && g_tord_ver == (long)nt->version) return;
+  free(g_tord); free(g_tpar);
+  g_tord = malloc(sizeof(int) * (size_t)(nt->count + 1));
+  g_tpar = malloc(sizeof(int) * (size_t)(nt->count + 1));
+  int *stack = malloc(sizeof(int) * (size_t)(nt->count + 1));
+  if (!g_tord || !g_tpar || !stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nt->count; k++) { g_tord[k] = -1; g_tpar[k] = -1; }
+  int sp = 0, ord = 0;
+  if (nt->root_id >= 0 && nt->root_id < nt->count) stack[sp++] = nt->root_id;
+  while (sp > 0) {
+    int n = stack[--sp];
+    if (g_tord[n] >= 0) continue;
+    g_tord[n] = ord++;
+    const SpNode *nd = &nt->nodes[n];
+    /* pushed last-first so the first child is taken next */
+    for (int i = nd->na - 1; i >= 0; i--)
+      for (int j = nd->a[i].n - 1; j >= 0; j--) {
+        int ch = nd->a[i].ids[j];
+        if (ch >= 0 && ch < nt->count && g_tord[ch] < 0 && sp < nt->count) { g_tpar[ch] = n; stack[sp++] = ch; }
+      }
+    for (int i = nd->nr - 1; i >= 0; i--) {
+      int ch = nd->r[i].ref;
+      if (ch >= 0 && ch < nt->count && g_tord[ch] < 0 && sp < nt->count) { g_tpar[ch] = n; stack[sp++] = ch; }
+    }
+  }
+  free(stack);
+  g_tord_n = nt->count; g_tord_ver = (long)nt->version;
+}
+static int node_parent_scan(const NodeTable *nt, int n) {
+  tree_order_build(nt);
+  return n >= 0 && n < g_tord_n ? g_tpar[n] : -1;
+}
+/* 1 when `a` comes after `b` in the program; 1 too when the walk reaches
+   neither, which the callers read as "may" */
+static int node_after(const NodeTable *nt, int a, int b) {
+  tree_order_build(nt);
+  if (a < 0 || b < 0 || a >= g_tord_n || b >= g_tord_n || g_tord[a] < 0 || g_tord[b] < 0) return 1;
+  return g_tord[a] > g_tord[b];
+}
+/* A later read after a straight-line assignment sees the new value,
+   not the String handed to the call. The call itself may be that
+   assignment's RHS (the documented return-and-assign workaround). */
+static int strvar_read_rebound(Compiler *c, int arg, int site, int read) {
+  const NodeTable *nt = c->nt;
+  int st = site, rt = read, p;
+  while ((p = node_parent_scan(nt, st)) >= 0 && nt_kind(nt, p) != NK_StatementsNode) st = p;
+  int body = p;
+  while ((p = node_parent_scan(nt, rt)) >= 0 && nt_kind(nt, p) != NK_StatementsNode) rt = p;
+  if (body < 0 || p != body || st == rt) return 0;
+  int nc = 0;
+  const int *nv = nt_arr(nt, body, "body", &nc);
+  int after = 0;
+  for (int i = 0; i < nc; i++) {
+    if (nv[i] == rt) break;
+    if (nv[i] == st) after = 1;
+    NodeKind ak = nt_kind(nt, arg);
+    NodeKind wk = ak == NK_LocalVariableReadNode ? NK_LocalVariableWriteNode :
+                  ak == NK_InstanceVariableReadNode ? NK_InstanceVariableWriteNode :
+                  ak == NK_GlobalVariableReadNode ? NK_GlobalVariableWriteNode : NK_ClassVariableWriteNode;
+    if (!after || nt_kind(nt, nv[i]) != wk) continue;
+    const char *vn = nt_str(nt, nv[i], "name");
+    if (vn && sp_streq(vn, nt_str(nt, arg, "name")) && comp_scope_of(c, nv[i]) == comp_scope_of(c, arg))
+      return 1;
+  }
+  return 0;
+}
+/* A variable holding only frozen literals raises on either side of the
+   copy. Keep that run-time behavior, including a rescue of FrozenError. */
+static int strvar_frozen(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak = nt_kind(nt, arg);
+  const char *vn = nt_str(nt, arg, "name");
+  Scope *s = comp_scope_of(c, arg);
+  if (!vn || !s) return 0;
+  if (ak == NK_LocalVariableReadNode) {
+    LocalVar *lv = scope_local(s, vn);
+    if (!lv || lv->is_param || lv->is_block_param || lv->is_cell) return 0;
+  }
+  NodeKind wk = ak == NK_LocalVariableReadNode ? NK_LocalVariableWriteNode :
+                ak == NK_InstanceVariableReadNode ? NK_InstanceVariableWriteNode :
+                ak == NK_GlobalVariableReadNode ? NK_GlobalVariableWriteNode : NK_ClassVariableWriteNode;
+  int seen = 0;
+  for (int w = 0; w < nt->count; w++) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    Scope *ws = comp_scope_of(c, w);
+    if (ak == NK_LocalVariableReadNode && ws != s) continue;
+    if ((ak == NK_InstanceVariableReadNode || ak == NK_ClassVariableReadNode) && ws->class_id != s->class_id) continue;
+    NodeKind k = nt_kind(nt, w);
+    if (k == NK_LocalVariableTargetNode || k == NK_InstanceVariableTargetNode ||
+        k == NK_GlobalVariableTargetNode || k == NK_ClassVariableTargetNode) return 0;
+    int v = nt_ref(nt, w, "value");
+    if (v < 0) continue;
+    if (k != wk || nt_kind(nt, v) != NK_StringNode || !nt_int(nt, v, "fzl", 0)) return 0;
+    seen = 1;
+  }
+  return seen;
+}
+/* A reassigned formal need not still name the caller's String. Without
+   following its reaching writes, use only reads inside this method. */
+static int strvar_param_rebound(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, arg);
+  const char *vn = nt_str(nt, arg, "name");
+  if (!s || !vn) return 0;
+  for (int w = comp_lvw_first_sc(c, (int)(s - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (comp_scope_of(c, w) == s && sp_streq(nt_str(nt, w, "name"), vn)) return 1;
+  return 0;
+}
+/* A receiver or printed argument can acquire another name through the
+   call's result. Only a discarded result or a non-aliasing query is safe. */
+static int strvar_call_unseen(const NodeTable *nt, int call) {
+  int par = node_parent_scan(nt, call);
+  if (par >= 0 && nt_kind(nt, par) == NK_StatementsNode) return 1;
+  const char *n = nt_str(nt, call, "name");
+  if (!n) return 0;
+  if (nt_ref(nt, call, "receiver") < 0)
+    return sp_streq(n, "puts") || sp_streq(n, "print");
+  return sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "bytesize") ||
+         sp_streq(n, "empty?") || sp_streq(n, "frozen?");
+}
+static int strvar_copy_observed_d(Compiler *c, int arg, int site, int depth);
+static int param_callers_lend_var(Compiler *c, Scope *ms, const char *pn, int depth) {
+  const NodeTable *nt = c->nt;
+  int pi = -1;
+  for (int i = 0; i < ms->nparams; i++) if (ms->pnames && ms->pnames[i] && sp_streq(ms->pnames[i], pn)) pi = i;
+  if (pi < 0 || !ms->name || ms->rest_idx >= 0) return 1;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_SymbolNode && nt_str(nt, n, "value") && sp_streq(nt_str(nt, n, "value"), ms->name)) return 1;
+    if (k != NK_CallNode || !nt_str(nt, n, "name") || !sp_streq(nt_str(nt, n, "name"), ms->name)) continue;
+    int a = nt_ref(nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int i = 0; i < ac; i++) {
+      NodeKind ek = nt_kind(nt, av[i]);
+      if (ek == NK_SplatNode || ek == NK_KeywordHashNode || ek == NK_BlockArgumentNode) return 1;
+    }
+    int shared;
+    if (pi < ac && strvar_arg(c, av[pi], &shared) && strvar_copy_observed_d(c, av[pi], n, depth + 1)) return 1;
+  }
+  return 0;
+}
+static int strvar_copy_observed_d(Compiler *c, int arg, int site, int depth) {
+  const NodeTable *nt = c->nt;
+  if (strvar_frozen(c, arg)) return 0;
+  if (depth > 4) return 1;
+  NodeKind ak = nt_kind(nt, arg);
+  const char *vn = nt_str(nt, arg, "name");
+  if (!vn) return 1;
+  Scope *vs = comp_scope_of(c, arg);
+  int local = ak == NK_LocalVariableReadNode;
+  if (local) {
+    LocalVar *lv = scope_local(vs, vn);
+    if (!lv || lv->is_block_param || lv->is_cell) return 1;
+    if (lv->is_param && !strvar_param_rebound(c, arg) && param_callers_lend_var(c, vs, vn, depth)) return 1;
+  }
+  int again = 0;
+  for (int p = node_parent_scan(nt, site); p >= 0; p = node_parent_scan(nt, p)) {
+    NodeKind pk = nt_kind(nt, p);
+    if (pk == NK_DefNode || pk == NK_LambdaNode) { again = !local; break; }
+    if (pk == NK_ClassNode || pk == NK_ModuleNode) break;
+    if (pk == NK_WhileNode || pk == NK_UntilNode || pk == NK_ForNode || pk == NK_BlockNode) { again = 1; break; }
+  }
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (n == arg) continue;
+    if (local ? k != NK_LocalVariableReadNode && k != NK_LocalVariableOperatorWriteNode &&
+                k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode : k != ak) continue;
+    if (!nt_str(nt, n, "name") || !sp_streq(nt_str(nt, n, "name"), vn)) continue;
+    Scope *ns = comp_scope_of(c, n);
+    if (local && ns != vs) continue;
+    if ((ak == NK_InstanceVariableReadNode || ak == NK_ClassVariableReadNode) && ns->class_id != vs->class_id) continue;
+    if (ns != vs) return 1;
+    if (strvar_read_rebound(c, arg, site, n)) continue;
+    if (again || k != ak || node_after(nt, n, site)) return 1;
+    /* A read before the copy is safe only if the call keeps no alias. */
+    int par = node_parent_scan(nt, n);
+    if (par >= 0 && nt_kind(nt, par) == NK_CallNode) {
+      if (nt_ref(nt, par, "receiver") == n && strvar_call_unseen(nt, par)) continue;
+      const char *pn = nt_str(nt, par, "name");
+      if (nt_ref(nt, par, "receiver") < 0 && pn && strvar_call_unseen(nt, par) &&
+          (sp_streq(pn, "p") || sp_streq(pn, "puts") || sp_streq(pn, "print") || sp_streq(pn, "pp")))
+        continue;
+    }
+    if (par >= 0 && nt_type(nt, par) && sp_streq(nt_type(nt, par), "ArgumentsNode")) {
+      int gp = node_parent_scan(nt, par);
+      const char *pn = gp >= 0 && nt_kind(nt, gp) == NK_CallNode ? nt_str(nt, gp, "name") : NULL;
+      if (gp >= 0 && nt_ref(nt, gp, "receiver") < 0 && pn && strvar_call_unseen(nt, gp) &&
+          (sp_streq(pn, "p") || sp_streq(pn, "puts") || sp_streq(pn, "print") || sp_streq(pn, "pp")))
+        continue;
+    }
+    return 1;
+  }
+  return 0;
+}
+static int strvar_copy_observed(Compiler *c, int arg, int site) {
+  return strvar_copy_observed_d(c, arg, site, 0);
+}
+
 /* The node a refusal names: the argument, or the call when the argument is
    one a rewrite made and carries no position of its own, or else the last
    call emitted that has one (`[s].each(&method(:m))` is rewritten to a
@@ -25143,6 +25361,43 @@ static void refuse_string_copies(Compiler *c, int id) {
         }
       }
       return;
+    } }
+  /* `Thread.new(v) { |t| t << x }` and `Fiber.new { |t| t << x }.resume(v)`:
+     the block's parameter takes a box of a copy of the String, unless the
+     variable is already a shared handle, so the block's append would not
+     reach the caller's. Refused where the copy shows (#6765: no new
+     String-sharing rules until the share-by-default prototype lands). */
+  { int tblk = an_thread_arg_block(c, id);
+    /* Only a first resume feeds the Fiber's parameters. After an earlier
+       read the Fiber may already be suspended in Fiber.yield instead. */
+    int tr = nt_ref(nt, id, "receiver");
+    if (tblk >= 0 && sp_streq(name, "resume") && nt_kind(nt, tr) == NK_LocalVariableReadNode) {
+      const char *fn = nt_str(nt, tr, "name");
+      for (int r = comp_kind_first(c, NK_LocalVariableReadNode); r >= 0; r = comp_kind_next(c, r)) {
+        const char *rn = nt_str(nt, r, "name");
+        if (r != tr && rn && sp_streq(rn, fn) && comp_scope_of(c, r) == comp_scope_of(c, tr) &&
+            node_after(nt, tr, r)) { tblk = -1; break; }
+      }
+    }
+    int ta = tblk >= 0 ? nt_ref(nt, id, "arguments") : -1, tac = 0;
+    const int *tav = ta >= 0 ? nt_arr(nt, ta, "arguments", &tac) : NULL;
+    for (int k = 0; k < tac && k < 16; k++) {
+      if (nt_kind(nt, tav[k]) == NK_SplatNode || nt_kind(nt, tav[k]) == NK_KeywordHashNode) break;
+      int shared;
+      const char *kind = strvar_arg(c, tav[k], &shared);
+      if (!kind || !dyn_block_appends(c, tblk, k) || c->strbuf_box[tav[k]] || local_is_handle(c, tav[k]) ||
+          !strvar_copy_observed(c, tav[k], id)) continue;
+      int tr = nt_ref(nt, id, "receiver");
+      char thr[96];
+      if (nt_kind(nt, tr) == NK_ConstantReadNode) snprintf(thr, sizeof thr, "`%s.%s`", nt_str(nt, tr, "name"), name);
+      else snprintf(thr, sizeof thr, "`%s`", name);
+      char why[96]; snprintf(why, sizeof why, "from %s", kind);
+      /* the parameter as written, without the shadow rename's suffix */
+      const char *pn = proc_param_name(c, tblk, k);
+      char pb[96];
+      snprintf(pb, sizeof pb, "%.*s", pn && block_param_is_renamed(pn) ? (int)block_param_written_len(pn) : 95,
+               pn ? pn : "?");
+      refuse_string_copy(c, tav[k], "a block", pb, thr, why);
     } }
   /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
      initialize's appended String parameter is the handle (ctor_convert_params),
