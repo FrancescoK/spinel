@@ -440,10 +440,9 @@ int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
   int th = ran_first_handle(a);
   if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
   char ref[1024];
-  unsigned char svm = c->strbuf_box[a];
-  c->strbuf_box[a] = 1;
+  int svm = view_push_repr(c, a, VR_STRBUF_BOX, 1);
   int ok = strbuf_slot_ref(c, a, ref, sizeof ref);
-  c->strbuf_box[a] = svm;
+  view_pop(c, svm);
   if (!ok) return 0;
   buf_puts(b, ref);
   return 1;
@@ -1474,11 +1473,11 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   /* the shared handle, its read marked for a proc a yield of it may call,
      into a plain String parameter: the copy a plain read takes */
   else if (at == TY_STRBUF && ot == TY_STRING && nk == NK_LocalVariableReadNode) {
-    unsigned char svm = c->strbuf_box[node];
-    TyKind svt = c->ntype[node];
-    c->strbuf_box[node] = 0; c->ntype[node] = TY_STRING;
+    int svm = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    int svt = view_push(c, node, TY_STRING);
     emit_expr(c, node, b);
-    c->strbuf_box[node] = svm; c->ntype[node] = svt;
+    view_pop(c, svt);
+    view_pop(c, svm);
   }
   else emit_expr(c, node, b);
 }
