@@ -1378,6 +1378,115 @@ int call_returns_nullable_int(Compiler *c, int node) {
   return 0;
 }
 
+/* A shared-mutable String's box, by where its handle comes from
+   (repr_of's strbuf_src). */
+static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
+  if (t == TY_STRING) {
+    /* The node-type cache is finalized before the late handle passes run,
+       so a local promoted to a shared handle still reads as String here
+       while its C slot is an sp_String *. Box the HANDLE: sp_box_str would
+       hand the callee a copy, and the append would land in the copy (the
+       mixed case -- one callee reached with a reader argument and a plain
+       local -- printed the unchanged string). An argument that already ran
+       is the handle it read then: the slot read here is late, after a later
+       argument may have rebound it (`m(s, *xs, (s = +"q"; 1))` packed "q"
+       where CRuby passes the String s held first). */
+    char srefS[1024];
+    int th = ran_first_handle(node);
+    if (th >= 0) {
+      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+      RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+      return;
+    }
+    strbuf_slot_ref(c, node, srefS, sizeof srefS);
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
+  NodeKind k = nt_kind(c->nt, node);
+  if (rp->strbuf_src == RS_HANDLE && k == NK_LocalVariableReadNode) {
+    /* a marked container-store read of a shared-mutable string: box the
+       sp_String* HANDLE so later in-place mutation is visible through the
+       container (#3227 phase 3) */
+    const char *bn0 = nt_str(c->nt, node, "name");
+    Scope *bs0 = comp_scope_of(c, node);
+    LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
+    int th0 = blv0 && blv0->type == TY_STRBUF && blv0->str_shared ? ran_first_handle(node) : -1;
+    if (th0 >= 0) {   /* ran first: the handle it read then, as above */
+      buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
+      RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+      return;
+    }
+    /* through emit_local_ref: a local a proc captures is its cell's handle
+       (`f.call(k: s)` beside `-> { s }` named an lv_s nothing declared); a
+       handle local holds NULL for nil (a nil argument bound to a parameter
+       that is the handle): box that as nil */
+    buf_puts(b, "sp_box_nullable_obj(");
+    emit_local_ref(c, node, bn0, b);
+    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
+  if (rp->strbuf_src == RS_HANDLE && k == NK_InstanceVariableReadNode) {
+    char srefX[192];
+    if (strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
+  }
+  /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
+     so its value IS the slot -- the same handle the read above boxes, not
+     a string to wrap a fresh handle around (#3993). */
+  if (rp->strbuf_src == RS_HANDLE && k == NK_InstanceVariableWriteNode) {
+    buf_puts(b, "sp_box_obj(");
+    int sv_mw = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    emit_expr(c, node, b);
+    view_pop(c, sv_mw);
+    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
+  /* an element read is ALREADY a boxed handle when the container holds
+     one: pass it through (as a handle box either way) so the alias keeps
+     the container's own string rather than a fresh copy of it (#3941) */
+  if (rp->strbuf_src == RS_ELEM) {
+    buf_puts(b, "sp_box_obj(sp_poly_as_strbuf(");
+    int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    emit_expr(c, node, b);
+    view_pop(c, sv_m2);
+    buf_puts(b, "), SP_BUILTIN_STRBUF)");
+    RC(RF_STRBUF_ELEM, RW_NONE);
+    return;
+  }
+  /* A reader call whose ivar is now the shared handle already emits the
+     sp_String * itself, so box THAT handle. Wrapping a fresh one around
+     it fed sp_String_new_shared (a const char * value) a handle, and the
+     C build stopped -- the mixed case where one callee is reached with
+     both a reader argument and a container element. */
+  if (rp->strbuf_src == RS_DEMANDED) {
+    char sref_h[1024];
+    int sv_mh = view_push_repr(c, node, VR_STRBUF_BOX, 1);
+    int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
+    view_pop(c, sv_mh);
+    if (got_h) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
+  }
+  /* a demanded literal / expression store: wrap a FRESH handle so the
+     container element is mutable in place (#3227 P3) */
+  buf_puts(b, "sp_box_obj(sp_String_new_shared(");
+  { Buf eb0; memset(&eb0, 0, sizeof eb0);
+    int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
+    emit_str_expr(c, node, &eb0);
+    view_pop(c, sv_mark);
+    buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
+    free(eb0.p); }
+  buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE);
+}
+
 static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
@@ -1535,70 +1644,6 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       }
     }
   }
-  if (t == TY_POLY) {
-    emit_expr(c, node, b);
-    RC(RF_PASS, RW_NONE);
-    return;
-  }
-  /* Reference-backed builtins (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
-     Enumerator/Exception/Proc/Method) are nilable C pointers -- box NULL as nil
-     via sp_box_nullable_obj, not a truthy SP_TAG_OBJ over NULL. */
-  { const char *nbid = ty_nullable_builtin_id(t);
-    if (nbid) {
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_printf(b, "), %s)", nbid);
-      RC(RF_NULLABLE, RW_NONE);
-      return;
-    } }
-  if (ty_is_object(t)) {
-    /* A reference-type object is a nilable C pointer (a hash/cache lookup or a
-       method that can `return nil`, e.g. doom's TextureManager#[] boxing
-       build_composite's nullable result). Box via sp_box_nullable_obj so a
-       NULL pointer becomes SP_TAG_NIL rather than a truthy SP_TAG_OBJ over a
-       NULL v.p (which passes `unless x` then segfaults on the first field
-       read). A value-type object is never NULL and is not a pointer. */
-    int is_val = comp_ty_value_obj(c, t);
-    int ocid = ty_object_class(t);
-    /* A class with subclasses is only the STATIC type here: an inherited
-       method boxing `self` would stamp the defining class, and the boxed value
-       then dispatched as the parent (#3773). Read the id the object carries.
-       Exception subclasses are a special case: the runtime layout (sp_Exception
-       + ivars) starts with `cls_name` (a pointer), NOT a cls_id header, so
-       sp_box_nullable_obj_dyn's read of the first sizeof(sp_int) bytes reads
-       the low bits of a heap pointer. Use the static cls_id for them -- the
-       static type always matches the runtime type because `Class.new` is the
-       only path and it stamps the requested class. */
-    int subclassed = !is_val && class_has_subclass(c, ocid) && !class_is_exc_subclass(c, ocid);
-    if (is_val) buf_printf(b, "sp_box_vobj_%s(", c->classes[ocid].c_name);
-    else if (subclassed) buf_puts(b, "sp_box_nullable_obj_dyn((void *)(");
-    else buf_puts(b, "sp_box_nullable_obj((void *)(");
-    emit_expr(c, node, b);
-    buf_printf(b, is_val ? ")" : "), %d)", ocid);
-    RC(is_val ? RF_VOBJ : subclassed ? RF_NULLABLE_DYN : RF_NULLABLE, RW_NONE);
-    return;
-  }
-  if (ty_is_hash(t)) {
-    /* Nullable, for the same reason the object arm just above is: a hash slot
-       holding nil is a NULL pointer, and sp_box_obj wrapped that in a truthy
-       SP_TAG_OBJ -- so `h.nil?` answered false and the first read of it
-       dereferenced NULL (#4134). Kept in step with emit_boxed_text. */
-    const char *hid = hash_box_cls(t);
-    if (hid) {
-      buf_puts(b, "sp_box_nullable_obj((void *)(");
-      emit_expr(c, node, b);
-      buf_printf(b, "), %s)", hid);
-      RC(RF_NULLABLE, RW_NONE);
-      return;
-    }
-    unsupported(c, node, "boxing value into poly"); RC(RF_SPECIAL, RW_NONE); return;
-  }
-  /* regex values can appear in poly context (multi-typed local); evaluate for
-     side effects (e.g. Regexp.new(str)) and yield nil */
-  if (t == TY_REGEX) { buf_puts(b, "sp_box_regexp("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_NULLABLE, RW_NONE); return; }
-  /* class/module value: box into poly */
-  if (t == TY_CLASS) {
-    buf_puts(b, "sp_box_class("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_STRUCT, RW_NONE); return;
-  }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
@@ -1651,188 +1696,38 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       return;
     }
   }
-  const char *fn = NULL;
-  switch (t) {
-    /* A nullable-int sentinel (SP_INT_NIL) only flows into a poly box under
-       --int-overflow=promote (where int? widens to poly); in default/wrap mode
-       a real int is never the sentinel, so skip the per-box check there -- it is
-       on the hot path (every int boxed into poly, e.g. optcarrot's pixels). */
-    /* A parameter bound from an ivar read before anything had to assign it
-       (box_nullable_arg) boxes as nil too; its typed reads stay unchecked,
-       so the flag is asked here alone (#5085). */
-    case TY_INT:    fn = repr_nil_scalar(c, node, TY_INT) ? "sp_box_int_or_nil" : "sp_box_int"; break;
-    /* A float slot has its own reserved nil sentinel, and the same rule
-       applies: box it as nil where the value can be one, or it goes out as an
-       ordinary Float and no literal nil matches it (#3493). */
-    case TY_FLOAT:  fn = repr_nil_scalar(c, node, TY_FLOAT) ? "sp_box_float_or_nil" : "sp_box_float"; break;
-    /* NULL is a bigint slot's nil (nil_value), and boxing it as a Bignum made
-       a truthy Integer that printed 0 (#4800). Unconditional: a live Bignum is
-       never the NULL pointer, so the test costs one compare on a path that
-       already allocates, and no analysis has to prove nilability. */
-    case TY_BIGINT: fn = "sp_box_bigint_or_nil"; break;
-    case TY_STRING: {
-      /* The node-type cache is finalized before the late handle passes run,
-         so a local promoted to a shared handle still reads as String here
-         while its C slot is an sp_String *. Box the HANDLE: sp_box_str would
-         hand the callee a copy, and the append would land in the copy (the
-         mixed case -- one callee reached with a reader argument and a plain
-         local -- printed the unchanged string). */
-      const char *sbn = nt_kind(c->nt, node) == NK_LocalVariableReadNode
-                          ? nt_str(c->nt, node, "name") : NULL;
-      if (sbn) {
-        Scope *sbs = comp_scope_of(c, node);
-        LocalVar *sblv = sbs ? scope_local(sbs, sbn) : NULL;
-        char srefS[1024];
-        /* An argument that already ran is the handle it read then: the slot
-           read here is late, after a later argument may have rebound it
-           (`m(s, *xs, (s = +"q"; 1))` packed "q" where CRuby passes the
-           String s held first). The run took the handle into a temp of its
-           own beside the value copy the override names. */
-        int th = sblv && sblv->type == TY_STRBUF && sblv->str_shared ? ran_first_handle(node) : -1;
-        if (th >= 0) {
-          buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
-          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
-          return;
-        }
-        if (sblv && sblv->type == TY_STRBUF && sblv->str_shared &&
-            strbuf_slot_ref(c, node, srefS, sizeof srefS)) {
-          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
-          RC(RF_STRBUF_HANDLE, RW_NONE);
-          return;
-        }
-      }
-      fn = "sp_box_str";   break;
+  /* The rest dispatches on the value's representation (repr.h), the one
+     place the flags beside its type are read: whether a scalar can hold
+     its nil sentinel, where a shared String's handle comes from, whether
+     an object reads its class id from itself. */
+  Repr rp = repr_of(c, node);
+  switch ((ReprKind)rp.kind) {
+  case RK_BOXED:
+    /* a handle-marked read of a local that settled POLY already holds a
+       boxed value -- wrapping it as a raw handle would reinterpret an
+       sp_RbVal as sp_String* (#3325) */
+    if (rp.strbuf_src == RS_SLOT_POLY) {
+      buf_printf(b, "lv_%s", rename_local(nt_str(c->nt, node, "name")));
+      RC(RF_PASS, RW_NONE);
+      return;
     }
-    case TY_BOOL:   fn = "sp_box_bool";  break;
-    case TY_SYMBOL: fn = "sp_box_sym";   break;
-    case TY_RANGE:  fn = "sp_box_range"; break;
-    case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
-    case TY_STR_RANGE: fn = "sp_box_srange"; break;
-    case TY_TMS: fn = "sp_box_tms"; break;
-    case TY_STRBUF: {
-      /* a marked container-store read of a shared-mutable string: box the
-         sp_String* HANDLE so later in-place mutation is visible through the
-         container (#3227 phase 3). Marked nodes are local reads. */
-      const char *bn0 = nt_type(c->nt, node) &&
-                        sp_streq(nt_type(c->nt, node), "LocalVariableReadNode")
-                          ? nt_str(c->nt, node, "name") : NULL;
-      if (bn0) {
-        /* the mark can outlive the slot's own type: a local that settled
-           POLY already holds a boxed value -- wrapping it as a raw handle
-           would reinterpret an sp_RbVal as sp_String* (#3325) */
-        Scope *bs0 = comp_scope_of(c, node);
-        LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
-        int th0 = blv0 && blv0->type == TY_STRBUF && blv0->str_shared ? ran_first_handle(node) : -1;
-        if (blv0 && blv0->type == TY_POLY) {
-          buf_printf(b, "lv_%s", rename_local(bn0));
-          RC(RF_PASS, RW_NONE);
-        }
-        else if (th0 >= 0) {   /* ran first: the handle it read then, as above */
-          buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
-          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
-        }
-        else {
-          /* through emit_local_ref: a local a proc captures is its cell's
-             handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
-             declared) */
-          /* a handle local holds NULL for nil (a nil argument bound to a
-             parameter that is the handle): box that as nil */
-          buf_puts(b, "sp_box_nullable_obj(");
-          emit_local_ref(c, node, bn0, b);
-          buf_puts(b, ", SP_BUILTIN_STRBUF)");
-          RC(RF_STRBUF_HANDLE, RW_NONE);
-        }
-        return;
-      }
-      { char srefX[192];
-        if (nt_kind(c->nt, node) == NK_InstanceVariableReadNode &&
-            strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
-          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
-          RC(RF_STRBUF_HANDLE, RW_NONE);
-          return;
-        } }
-      /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
-         so its value IS the slot -- the same handle the read above boxes, not
-         a string to wrap a fresh handle around (#3993). */
-      if (nt_kind(c->nt, node) == NK_InstanceVariableWriteNode) {
-        buf_puts(b, "sp_box_obj(");
-        int sv_mw = view_push_repr(c, node, VR_STRBUF_BOX, 0);
-        emit_expr(c, node, b);
-        view_pop(c, sv_mw);
-        buf_puts(b, ", SP_BUILTIN_STRBUF)");
-        RC(RF_STRBUF_HANDLE, RW_NONE);
-        return;
-      }
-      /* an element read is ALREADY a boxed handle when the container holds
-         one: pass it through (as a handle box either way) so the alias keeps
-         the container's own string rather than a fresh copy of it (#3941) */
-      if (strbuf_boxed_elem_read(c, node)) {
-        buf_puts(b, "sp_box_obj(sp_poly_as_strbuf(");
-        int sv_m2 = view_push_repr(c, node, VR_STRBUF_BOX, 0);
-        emit_expr(c, node, b);
-        view_pop(c, sv_m2);
-        buf_puts(b, "), SP_BUILTIN_STRBUF)");
-        RC(RF_STRBUF_ELEM, RW_NONE);
-        return;
-      }
-      /* A reader call whose ivar is now the shared handle already emits the
-         sp_String * itself, so box THAT handle. Wrapping a fresh one around
-         it fed sp_String_new_shared (a const char * value) a handle, and the
-         C build stopped -- the mixed case where one callee is reached with
-         both a reader argument and a container element. */
-      if (nt_kind(c->nt, node) == NK_CallNode &&
-          comp_ntype(c, node) == TY_STRBUF &&
-          nt_ref(c->nt, node, "receiver") >= 0 &&
-          ty_is_object(comp_ntype(c, nt_ref(c->nt, node, "receiver")))) {
-        char sref_h[1024];
-        int sv_mh = view_push_repr(c, node, VR_STRBUF_BOX, 1);
-        int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
-        view_pop(c, sv_mh);
-        if (got_h) {
-          buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
-          RC(RF_STRBUF_HANDLE, RW_NONE);
-          return;
-        }
-      }
-      /* a demanded literal / expression store: wrap a FRESH handle so the
-         container element is mutable in place (#3227 P3) */
-      buf_puts(b, "sp_box_obj(sp_String_new_shared(");
-      { TyKind sv_probe = comp_ntype(c, node);
-        (void)sv_probe;
-        Buf eb0; memset(&eb0, 0, sizeof eb0);
-        int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
-        emit_str_expr(c, node, &eb0);
-        view_pop(c, sv_mark);
-        buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
-        free(eb0.p); }
-      buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE); return;
-    }
-    case TY_OPENSTRUCT:
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_OPENSTRUCT)"); RC(RF_NULLABLE, RW_NONE); return;
-    case TY_TIME:   fn = "sp_box_time";  break;
-    case TY_COMPLEX:  fn = "sp_box_complex";  break;
-    case TY_RATIONAL: fn = "sp_box_rational"; break;
-    /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
-    /* Array slots are nilable C pointers: a nil-defaulting param, a nullable
-       ivar, or `[x] if cond` in value position is NULL. Box NULL as a proper
-       nil, not a truthy OBJ wrapping NULL that passes `if x`/`unless x` and
-       then segfaults on the first access (#3275). A non-nil array is never
-       NULL, so the guard's untaken branch is free on the hot path. Matches
-       emit_boxed_text's array cases. */
-    case TY_INT_ARRAY:
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_INT_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
-    case TY_FLOAT_ARRAY:
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_FLT_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
-    case TY_STR_ARRAY:
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_STR_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
-    case TY_POLY_ARRAY:
-      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
-    case TY_NIL: {
+    emit_expr(c, node, b);
+    RC(RF_PASS, RW_NONE);
+    return;
+  case RK_SENTINEL:
+    /* The Integer or Float slot can hold its nil sentinel (repr_nil_scalar:
+       a nilable builtin's answer, an ivar read, a parameter bound from one,
+       a local assigned one, a Ruby-defined builtin, every Integer under
+       --int-overflow=promote), so boxing it has to yield nil (#3493,
+       #5085). Elsewhere a real number is never the sentinel and the plain
+       box is the hot path (every Integer into a poly slot). */
+    buf_puts(b, t == TY_FLOAT ? "sp_box_float_or_nil(" : "sp_box_int_or_nil(");
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
+    RC(t == TY_FLOAT ? RF_FLT_NIL : RF_INT_NIL, RW_NONE);
+    return;
+  case RK_SCALAR: {
+    if (t == TY_NIL) {
       const char *nty = nt_type(c->nt, node);
       if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); RC(RF_NIL_EFFECT, RW_NONE); return; }
       /* a nil-typed expression can still have side effects (e.g. a void-valued
@@ -1841,37 +1736,124 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       RC(RF_NIL_EFFECT, RW_NONE);
       return;
     }
-    default: break;
+    const char *fn = t == TY_INT ? "sp_box_int" : t == TY_FLOAT ? "sp_box_float"
+                   : t == TY_BOOL ? "sp_box_bool" : "sp_box_sym";
+    buf_printf(b, "%s(", fn);
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
+    RC(t == TY_INT ? RF_INT : t == TY_FLOAT ? RF_FLT : t == TY_BOOL ? RF_BOOL : RF_SYM, RW_NONE);
+    return;
   }
-  if (!fn) {
-    /* A kind narrow_object_arrays produces (an object array, a table of int
-       or float rows) has no boxed form: the one cls_id for them is type-
-       erased, so a reference box would read every element as #<Object>.
-       The untyped fallback below evaluates the value and yields nil, which
-       is exactly what a method answering the table on one path and nil on
-       another used to return (#4486). Refuse the shape instead. */
-    /* a nested table or an object array boxes by reference, stamped with what
-       its elements are, where it used to be refused (#4486) */
-    if (ty_is_ptr_array(t)) {
-      buf_puts(b, "sp_box_ptr_array_k((void *)("); emit_expr(c, node, b);
-      buf_printf(b, "), %s)", ptr_array_stamp(c, t));
-      RC(RF_PTR_ARRAY, RW_NONE);
-      return;
-    }
+  case RK_STRUCT: {
+    const char *fn = t == TY_RANGE ? "sp_box_range" : t == TY_FLOAT_RANGE ? "sp_box_frange"
+                   : t == TY_STR_RANGE ? "sp_box_srange" : t == TY_TMS ? "sp_box_tms"
+                   : t == TY_TIME ? "sp_box_time" : t == TY_COMPLEX ? "sp_box_complex"
+                   : t == TY_RATIONAL ? "sp_box_rational" : "sp_box_class";
+    buf_printf(b, "%s(", fn);
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
+    RC(RF_STRUCT, RW_NONE);
+    return;
+  }
+  case RK_VOBJ:
+    /* a value-type object is never NULL and is not a pointer */
+    buf_printf(b, "sp_box_vobj_%s(", c->classes[ty_object_class(t)].c_name);
+    emit_expr(c, node, b);
+    buf_puts(b, ")");
+    RC(RF_VOBJ, RW_NONE);
+    return;
+  case RK_STRBUF:
+    emit_boxed_strbuf(c, node, t, &rp, b);
+    return;
+  case RK_PTR:
+    break;
+  case RK_NONE:
+  default:
     /* TY_UNKNOWN (e.g. unrecognized stdlib class .new): evaluate for side-effects, yield nil */
     buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); RC(RF_NIL_EFFECT, RW_NONE); return;
   }
-  buf_printf(b, "%s(", fn);
-  emit_expr(c, node, b);
-  buf_puts(b, ")");
-  if (g_repr_check) {
-    int form = t == TY_INT ? (sp_streq(fn, "sp_box_int") ? RF_INT : RF_INT_NIL)
-             : t == TY_FLOAT ? (sp_streq(fn, "sp_box_float") ? RF_FLT : RF_FLT_NIL)
-             : t == TY_BIGINT ? RF_BIGINT : t == TY_STRING ? RF_STR
-             : t == TY_BOOL ? RF_BOOL : t == TY_SYMBOL ? RF_SYM : RF_STRUCT;
-    /* repr_of's nil_scalar reads the same arms the switch above asks */
-    RC(form, RW_NONE);
+  /* A pointer: NULL is nil. Reference-backed builtins (IO/Fiber/Thread/
+     Queue/Mutex/ConditionVariable/Enumerator/Exception/Proc/Method/Regexp/
+     Random/ARGF) box NULL as nil via sp_box_nullable_obj, not a truthy
+     SP_TAG_OBJ over NULL. */
+  { const char *nbid = ty_nullable_builtin_id(t);
+    if (nbid) {
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_printf(b, "), %s)", nbid);
+      RC(RF_NULLABLE, RW_NONE);
+      return;
+    } }
+  if (ty_is_object(t)) {
+    /* A reference-type object is a nilable C pointer (a hash/cache lookup or a
+       method that can `return nil`, e.g. doom's TextureManager#[] boxing
+       build_composite's nullable result). Box via sp_box_nullable_obj so a
+       NULL pointer becomes SP_TAG_NIL rather than a truthy SP_TAG_OBJ over a
+       NULL v.p (which passes `unless x` then segfaults on the first field
+       read). A class with subclasses is only the STATIC type here: an
+       inherited method boxing `self` would stamp the defining class, and the
+       boxed value then dispatched as the parent (#3773), so the box reads the
+       id the object carries (dyn_cls; an exception, whose object starts with
+       its class name, keeps the static id: repr_dyn_cls). */
+    buf_puts(b, rp.dyn_cls ? "sp_box_nullable_obj_dyn((void *)(" : "sp_box_nullable_obj((void *)(");
+    emit_expr(c, node, b);
+    buf_printf(b, "), %d)", ty_object_class(t));
+    RC(rp.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE, RW_NONE);
+    return;
   }
+  if (ty_is_hash(t)) {
+    /* Nullable, for the same reason the object arm just above is: a hash slot
+       holding nil is a NULL pointer, and sp_box_obj wrapped that in a truthy
+       SP_TAG_OBJ -- so `h.nil?` answered false and the first read of it
+       dereferenced NULL (#4134). Kept in step with emit_boxed_text. */
+    const char *hid = hash_box_cls(t);
+    if (hid) {
+      buf_puts(b, "sp_box_nullable_obj((void *)(");
+      emit_expr(c, node, b);
+      buf_printf(b, "), %s)", hid);
+      RC(RF_NULLABLE, RW_NONE);
+      return;
+    }
+    unsupported(c, node, "boxing value into poly"); RC(RF_SPECIAL, RW_NONE); return;
+  }
+  /* NULL is a bigint slot's nil (nil_value), and boxing it as a Bignum made
+     a truthy Integer that printed 0 (#4800). Unconditional: a live Bignum is
+     never the NULL pointer, so the test costs one compare on a path that
+     already allocates, and no analysis has to prove nilability. */
+  if (t == TY_BIGINT) {
+    buf_puts(b, "sp_box_bigint_or_nil("); emit_expr(c, node, b); buf_puts(b, ")");
+    RC(RF_BIGINT, RW_NONE);
+    return;
+  }
+  if (t == TY_STRING) {
+    buf_puts(b, "sp_box_str("); emit_expr(c, node, b); buf_puts(b, ")");
+    RC(RF_STR, RW_NONE);
+    return;
+  }
+  /* Array slots are nilable C pointers: a nil-defaulting param, a nullable
+     ivar, or `[x] if cond` in value position is NULL. Box NULL as a proper
+     nil, not a truthy OBJ wrapping NULL that passes `if x`/`unless x` and
+     then segfaults on the first access (#3275). A non-nil array is never
+     NULL, so the guard's untaken branch is free on the hot path. Matches
+     emit_boxed_text's array cases. */
+  { const char *aid = t == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : t == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY"
+                    : t == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : t == TY_POLY_ARRAY ? "SP_BUILTIN_POLY_ARRAY"
+                    : t == TY_OPENSTRUCT ? "SP_BUILTIN_OPENSTRUCT" : NULL;
+    if (aid) {
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_printf(b, "), %s)", aid);
+      RC(RF_NULLABLE, RW_NONE);
+      return;
+    } }
+  /* a nested table or an object array boxes by reference, stamped with what
+     its elements are, where it used to be refused (#4486) */
+  if (ty_is_ptr_array(t)) {
+    buf_puts(b, "sp_box_ptr_array_k((void *)("); emit_expr(c, node, b);
+    buf_printf(b, "), %s)", ptr_array_stamp(c, t));
+    RC(RF_PTR_ARRAY, RW_NONE);
+    return;
+  }
+  /* a pointer kind with no box: evaluate for side-effects, yield nil */
+  buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); RC(RF_NIL_EFFECT, RW_NONE);
 }
 /* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under
    --repr-check it keeps the nesting the recorder reads */
