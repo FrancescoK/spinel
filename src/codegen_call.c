@@ -41526,8 +41526,10 @@ else {
     }
   }
 
-  /* String#concat with no arguments returns the receiver unchanged (#2309) */
-  if (recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF) && sp_streq(name, "concat") && argc == 0) {
+  /* String#concat with no arguments returns the receiver unchanged (#2309):
+     a stage-1 builtin-op row (builtin_ops.c); the shared handle's arm stays */
+  if (recv >= 0 && rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 1, b)) return;
+  if (recv >= 0 && rt == TY_STRBUF && sp_streq(name, "concat") && argc == 0) {
     /* zero-argument concat returns the receiver, but CRuby checks frozen
        first -- the empty append is still a mutation attempt (#3339). The
        receiver once: a call with effects must not run twice. */
@@ -43180,11 +43182,9 @@ else {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)");
     return;
   }
-  /* nil? on a string: a nullable string carries NULL (e.g. a scan miss) */
-  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "nil?") && argc == 0) {
-    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
-    return;
-  }
+  /* nil? on a string: a nullable string carries NULL (e.g. a scan miss);
+     a stage-2 builtin-op row (builtin_ops.c) */
+  if (recv >= 0 && rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 2, b)) return;
   /* nil? on a float: a nullable float carries the NaN sentinel (e.g. first/
      last of an empty float array). A real float is never the sentinel. */
   if (recv >= 0 && rt == TY_FLOAT && sp_streq(name, "nil?") && argc == 0) {

@@ -1540,7 +1540,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "dedup",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "succ!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0 },
+  /* emit_call_body's arms ahead of the scalar chain: concat() (stage 1) and
+     nil? (stage 2), each looked up where its arm sat */
+  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, 0, 1 },
+  { TY_STRING, "nil?",            0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r) == 0)", 0, 0, 0, 2 },  /* a nullable String carries nil as NULL */
   { TY_STRING, "concat",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },  /* self (#2309) */
   { TY_STRING, "<<",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "prepend",         0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0 },
