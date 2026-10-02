@@ -13419,10 +13419,7 @@ static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
-    const char *what = cplan_binding_what(c, id);
-    if (what) unsupported(c, id, what);
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
 /* `const_get(name)` with a runtime name that the lowering could not reach:
@@ -13432,17 +13429,11 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
-    const char *what = cplan_runtime_const_get_what(c, id);
-    if (what) unsupported(c, id, what);
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
 }
 
 static void reject_runtime_send(Compiler *c) {
-  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
-    const char *what = cplan_runtime_send_what(c, id);
-    if (what) unsupported(c, id, what);
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 
 

@@ -85,12 +85,6 @@ const CallPlan *cplan_refuse(Compiler *c, int id);
 /* the documented-limit family: the node's message or NULL; *stop 0 when
    a limit down the receiver chain is the one to report */
 const char *cplan_feature_why(Compiler *c, int id, int *stop);
-/* the prepasses' refusals (a runtime send or const_get name, binding) and
-   Kernel#eval: the `what` codegen hands to `unsupported`, or NULL */
-const char *cplan_runtime_send_what(Compiler *c, int id);
-const char *cplan_runtime_const_get_what(Compiler *c, int id);
-const char *cplan_binding_what(Compiler *c, int id);
-const char *cplan_eval_what(Compiler *c, int id);
 /* the gaps refused as "call": an IO reopening that yields, a bind_call on a
    Class value with a class no arm can be built for */
 int cplan_io_reopen_yields(Compiler *c, int id);

@@ -2040,10 +2040,9 @@ int diagnose_unsupported_call(Compiler *c, int id) {
   return 0;
 }
 
-/* Kernel#eval of a runtime string (cplan_eval_what) */
+/* Kernel#eval of a runtime string (the plan's CRF_EVAL) */
 int diagnose_eval_call(Compiler *c, int id) {
-  const char *what = cplan_eval_what(c, id);
-  if (what) unsupported(c, id, what);
+  refuse_from_plan(c, id, CRF_EVAL, "refuse-eval");
   return 0;
 }
 

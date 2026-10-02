@@ -579,7 +579,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
 
 /* The refusals the prepasses raise before any emission (reject_runtime_send,
    reject_runtime_const_get, reject_binding in codegen.c) and Kernel#eval
-   (diagnose_eval_call): the `what` codegen hands to `unsupported`, or NULL.
+   (diagnose_eval_call): the `what` unsupported words them with, or NULL.
    The message is unsup_message's, with no class being emitted: the
    prepasses run before any is. */
 
@@ -599,7 +599,7 @@ static int cplan_reachable(Compiler *c, int id) {
   return sc >= 0 && sc < c->nscopes && c->scopes[sc].reachable;
 }
 
-const char *cplan_runtime_send_what(Compiler *c, int id) {
+static const char *cplan_runtime_send_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")))
@@ -630,7 +630,7 @@ const char *cplan_runtime_send_what(Compiler *c, int id) {
   return "send with a runtime method name (AOT needs a compile-time-known name)";
 }
 
-const char *cplan_runtime_const_get_what(Compiler *c, int id) {
+static const char *cplan_runtime_const_get_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "const_get")) return NULL;
@@ -646,7 +646,7 @@ const char *cplan_runtime_const_get_what(Compiler *c, int id) {
          "receiver (an instance has no const_get; constants are resolved at compile time)";
 }
 
-const char *cplan_binding_what(Compiler *c, int id) {
+static const char *cplan_binding_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || !sp_streq(nm, "binding")) return NULL;
@@ -660,7 +660,7 @@ const char *cplan_binding_what(Compiler *c, int id) {
          "in-scope name is)";
 }
 
-const char *cplan_eval_what(Compiler *c, int id) {
+static const char *cplan_eval_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return NULL;
   const char *name = nt_str(nt, id, "name");
