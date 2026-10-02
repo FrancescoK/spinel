@@ -159,6 +159,9 @@ typedef struct {
   unsigned char conv;   /* PolyConv */
   unsigned char vty;    /* the arm's value TyKind */
   short key;            /* the runtime class id, or PA_KEY_DEFAULT */
+  short def;            /* the class the arm reads from: the method's defining
+                           class (an exception reopening's for its definer), the
+                           reader's ivar class; -1 for others */
   int mi;               /* the user method scope, or -1 */
 } PolyArm;
 

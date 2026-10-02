@@ -437,7 +437,7 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
   }
   PolyArm *a = &p->arm[p->n++];
   a->kind = (unsigned char)kind; a->key = (short)key; a->mi = mi;
-  a->vty = (unsigned char)vty; a->conv = (unsigned char)conv;
+  a->vty = (unsigned char)vty; a->conv = (unsigned char)conv; a->def = -1;
 }
 
 /* The arms emit_poly_user_arms0 writes, class by class, in its order. */
@@ -487,6 +487,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
         if (conv == PC_SAME && cret == TY_BIGINT && (slotty == TY_INT || slotty == TY_FLOAT)) conv = PC_NUM;
       }
       cpoly_add(p, &cap, pfi >= 0 ? PA_PROC_FORM : PA_USER, k, mi, cret, conv);
+      p->arm[p->n - 1].def = (short)defcls;
       continue;
     }
     int rdcls = -1;
@@ -499,6 +500,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
                : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
                : cpoly_conv(ret, ivt);
       cpoly_add(p, &cap, PA_READER, k, -1, ivt, conv);
+      p->arm[p->n - 1].def = (short)rdcls;
     }
   }
 }
