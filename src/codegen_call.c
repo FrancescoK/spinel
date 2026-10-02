@@ -24663,18 +24663,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       Scope *rs = rn ? comp_scope_of(c, r) : NULL;
       LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
       if (rl && rl->type == TY_POLY) {
-        TyKind sv = c->ntype[r], svn = c->nilnarrow[r];
-        TyKind ct = comp_ntype(c, id), svc = c->ntype[id];
-        c->ntype[r] = TY_POLY;
-        c->nilnarrow[r] = TY_UNKNOWN;
-        c->ntype[id] = TY_POLY;
-        for (int i = 0; i < nch; i++) c->ntype[chain[i]] = TY_POLY;
+        TyKind ct = comp_ntype(c, id);
+        int vr = view_push(c, r, TY_POLY);
+        int vn = view_push_repr(c, r, VR_NILNARROW, TY_UNKNOWN);
+        int vc = view_push(c, id, TY_POLY);
+        int vch = nch > 0 ? view_push(c, chain[0], TY_POLY) : -1;
+        for (int i = 1; i < nch; i++) view_push(c, chain[i], TY_POLY);
         Buf pb; memset(&pb, 0, sizeof pb);
         emit_call(c, id, &pb);
-        for (int i = 0; i < nch; i++) c->ntype[chain[i]] = TY_STRING;
-        c->ntype[id] = svc;
-        c->ntype[r] = sv;
-        c->nilnarrow[r] = svn;
+        for (int i = nch - 1; i >= 0; i--) view_pop(c, vch + i);
+        view_pop(c, vc);
+        view_pop(c, vn);
+        view_pop(c, vr);
         /* the poly arms answer the box or the String by mutator */
         Buf vb; memset(&vb, 0, sizeof vb);
         buf_printf(&vb, "SP_BOX_STR_OR_POLY(%s)", pb.p ? pb.p : "sp_box_nil()");
@@ -27698,9 +27698,9 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                                          : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS)) {
     int tvD = ++g_tmp;
     buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
-    c->strbuf_box[id] = 0;
+    int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
     emit_call(c, id, b);
-    c->strbuf_box[id] = 1;
+    view_pop(c, vs);
     buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
                   " : sp_String_new_shared(_v%d); })", tvD);
     return;
