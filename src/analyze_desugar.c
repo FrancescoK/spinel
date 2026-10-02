@@ -11868,6 +11868,39 @@ static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *chang
   }
 }
 
+/* The instance methods a class body defines, wherever in the body they
+   stand: at its top, or under a guard (`def blank? = strip.empty? unless
+   method_defined?(:blank?)`). A nested class, module or singleton class is
+   another body. */
+static void rbself_defs(NodeTable *nt, int node, char **defs, int nd, int *changed, int is_array) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  if (k == NK_DefNode) {
+    if (nt_ref(nt, node, "receiver") < 0)
+      rbself_walk(nt, nt_ref(nt, node, "body"), defs, nd, changed, is_array);
+    return;
+  }
+  /* define_method(:name) { ... }: its block is an instance method's body */
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0 &&
+      sp_streq(nt_str(nt, node, "name") ? nt_str(nt, node, "name") : "", "define_method")) {
+    int blk = nt_ref(nt, node, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+      rbself_walk(nt, nt_ref(nt, blk, "body"), defs, nd, changed, is_array);
+    return;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) rbself_defs(nt, nt_ref_at(nt, node, i), defs, nd, changed, is_array);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) rbself_defs(nt, cp[j], defs, nd, changed, is_array);
+    free(cp);
+  }
+}
+
 int desugar_builtin_reopen_self_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -11889,12 +11922,7 @@ int desugar_builtin_reopen_self_calls(Compiler *c) {
         if (nt_kind(nt, bs2[k]) == NK_DefNode && nt_str(nt, bs2[k], "name"))
           defs[nd++] = (char *)nt_str(nt, bs2[k], "name");
     }
-    int body = nt_ref(nt, m, "body");
-    int bn = 0; const int *bs = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    for (int k = 0; k < bn; k++) {
-      if (nt_kind(nt, bs[k]) != NK_DefNode || nt_ref(nt, bs[k], "receiver") >= 0) continue;
-      rbself_walk(nt, nt_ref(nt, bs[k], "body"), defs, nd, &changed, sp_streq(cn, "Array"));
-    }
+    rbself_defs(nt, nt_ref(nt, m, "body"), defs, nd, &changed, sp_streq(cn, "Array"));
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
