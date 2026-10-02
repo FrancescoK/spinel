@@ -27,6 +27,9 @@
 #include <mach-o/dyld.h> /* _NSGetExecutablePath */
 #endif
 #include <prism.h>
+#if defined(_WIN32)
+char *sp_w32_overlay(char *content, const char *path);   /* lib/win32/sp_win32_driver.c */
+#endif
 
 /* ---- In-memory output buffer ----
    The final text AST is assembled into a growable byte buffer rather than a
@@ -4095,6 +4098,11 @@ else {
           if (of) fclose(of);
           else { free(content); content = NULL; }
         }
+#if defined(_WIN32)
+        /* what a native Windows build answers differently for this file:
+           lib/win32/overlay/<the same path>, appended (sp_win32_driver.c) */
+        if (content) content = sp_w32_overlay(content, gp);
+#endif
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
       }
       if (!content) {

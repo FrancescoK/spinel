@@ -8,6 +8,13 @@
 -include $(dir $(lastword $(MAKEFILE_LIST)))local.mk
 
 CC       ?= cc
+# A native Windows build (MinGW-w64 gcc, as MSYS2 and RubyInstaller ship it),
+# or a cross-build for Windows from another host (CC=x86_64-w64-mingw32-gcc:
+# the compile-only check), sets its toolchain and the lib/win32 shim up in
+# win32.mk; elsewhere every PLATFORM_ variable is empty.
+ifneq ($(filter Windows_NT,$(OS))$(findstring -w64-mingw32-,$(CC)),)
+include $(dir $(lastword $(MAKEFILE_LIST)))win32.mk
+endif
 # Auto-wrap CC with sccache or ccache when present. Skip when CC is
 # already wrapped -- the substring guard catches both "ccache" and
 # "sccache" since "ccache" is a substring of "sccache", so CI's
@@ -48,13 +55,13 @@ endif
 # runtime objects, the packages, bench) -- src/main.c says the same on the
 # generated program's own command line.
 FP_FLAGS = -ffp-contract=off
-CFLAGS   = $(OPT) -Wno-all -Wno-unknown-warning-option -Wno-alloc-size-larger-than -Wno-format-truncation $(FP_FLAGS)
+CFLAGS   = $(OPT) -Wno-all -Wno-unknown-warning-option -Wno-alloc-size-larger-than -Wno-format-truncation $(FP_FLAGS) $(PLATFORM_FLAGS)
 
 # The product build -- bin/spinel, libspinel_rt.a, and the generated
 # programs -- uses CFLAGS and never used LTO, so there is no LTO toggle.
 
 # Per-function sections let the linker strip unused bigint/regexp code.
-SEC_FLAGS = -ffunction-sections -fdata-sections $(FP_FLAGS)
+SEC_FLAGS = -ffunction-sections -fdata-sections $(FP_FLAGS) $(PLATFORM_FLAGS)
 # The target's word width, asked of the C compiler: 32 or 64. A 32-bit
 # target (`make CC='cc -m32'` on a 64-bit host, or a 32-bit host) gets a
 # 32-bit sp_int (lib/sp_types.h) and two things a Ruby needs there: 64-bit

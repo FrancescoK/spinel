@@ -38,3 +38,4 @@ CLAUDE.local.md
 # Downloaded gems
 *.gem
 .sccache/
+lib/win32/*.a
