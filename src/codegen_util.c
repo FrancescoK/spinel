@@ -562,6 +562,16 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind rt;
   if (!sp_yield_site_type(c, recv, &rt)) return 0;
+  /* a site whose class reopens the name: the reopen's return type for a
+     scalar, nothing for an Array or Hash (yield_recv_chain_kind says why) */
+  { int rmi = comp_builtin_kind_reopen_mi((Compiler *)c, rt, op);
+    if (rmi >= 0) {
+      if (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) return 0;
+      TyKind rr = c->scopes[rmi].ret;
+      if (rr == TY_UNKNOWN || rr == TY_VOID) return 0;
+      *out = rr;
+      return 1;
+    } }
   return ty_recv_builtin_result(op, ac, ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN, rt, out);
 }
 

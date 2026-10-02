@@ -1724,6 +1724,25 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
   int an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind a0 = ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+  /* The table names the builtin's answer, and a program that reopened the
+     kind's class with its own method of the name runs that one instead. A
+     scalar's reopen is what codegen calls for such a site, so the site
+     answers its return type. An Array's or Hash's is not reached for a name
+     a builtin arm takes, so no answer would describe the site: decline it.
+     Typing it from the table read `class Array; def first = 9; end`'s
+     yield.first back as the element, a wrong value where the program had
+     failed to build. */
+  { const char *rn = nt_str(nt, node, "name");
+    int rmi = comp_builtin_kind_reopen_mi(c, rk, rn);
+    if (rmi >= 0) {
+      if (ty_is_array(rk) || ty_is_obj_array(rk) || ty_is_hash(rk)) return 0;
+      /* still settling in an early round is not a reason to decline: the
+         site is answered by the reopen either way, and codegen reads the
+         settled return */
+      TyKind rr = method_call_ret(c, rmi, node);
+      *out = (rr == TY_UNKNOWN || rr == TY_VOID) ? TY_POLY : rr;
+      return 1;
+    } }
   return ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, rk, out);
 }
 static int yield_recv_builtin_every_site(Compiler *c, int call) {
