@@ -28193,6 +28193,57 @@ static void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b) {
   else emit_unbox_text(c, want, tn, b);
 }
 
+/* A reopened builtin's yielding method reached with the call's block: it
+   has no symbol of its own, being spliced where it can, so the call goes to
+   its proc form with the block as a proc (#5779). `recv_text` is the
+   receiver, boxed the way the reopening's methods take self. */
+static void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv_text, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* no block at the call: the clone's block parameter is NULL, which its
+     block_given? reads as false */
+  int tp = -1;
+  if (cblk >= 0) {
+    Buf pb; memset(&pb, 0, sizeof pb);
+    if (!emit_forwarded_proc_arg(c, cblk, &pb)) emit_proc_literal(c, cblk, &pb);
+    tp = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp, pb.p ? pb.p : "NULL", tp);
+    free(pb.p);
+  }
+  Buf oc; memset(&oc, 0, sizeof oc);
+  emit_method_cname(c, &c->scopes[pf], &oc);
+  buf_printf(&oc, "(%s", recv_text);
+  emit_args_filled(c, pf, nt_ref(nt, id, "arguments"), ", ", &oc);
+  if (tp >= 0) buf_printf(&oc, ", _t%d)", tp);
+  else buf_puts(&oc, ", NULL)");
+  TyKind want = comp_ntype(c, id), pr = (TyKind)c->scopes[pf].ret;
+  if (method_is_void(&c->scopes[pf]))
+    buf_printf(b, "(%s, %s)", oc.p, want == TY_POLY ? "sp_box_nil()" : default_value(want));
+  else if (want == TY_POLY && pr != TY_POLY) emit_boxed_text(c, pr, oc.p, b);
+  else if (want != TY_POLY && pr == TY_POLY && is_scalar_ret(want)) emit_unbox_text(c, want, oc.p, b);
+  else buf_puts(b, oc.p);
+  free(oc.p);
+}
+/* The Hash, Array and Numeric reopenings' share of the above, which only
+   the Object fallback had: a yielding method of theirs -- activesupport's
+   Array#in_groups_of, Hash#deep_merge -- named a function that was never
+   emitted, with a block or without one. `box_fn` boxes the receiver when
+   its kind needs a particular one (an Array's), else it is boxed by its
+   type. Answers whether it emitted the call. */
+static int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *box_fn, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+  if (pf < 0) return 0;
+  int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
+  if (nt_ref(nt, id, "block") >= 0 && cblk < 0) return 0;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (box_fn) { buf_printf(&rb, "%s(", box_fn); emit_expr(c, recv, &rb); buf_puts(&rb, ")"); }
+  else emit_boxed(c, recv, &rb);
+  emit_reopen_pf_call(c, id, pf, cblk, rb.p ? rb.p : "sp_box_nil()", b);
+  free(rb.p);
+  return 1;
+}
+
 static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -45678,6 +45729,7 @@ else {
     if (ty_is_hash(rt)) {
       int hc_ci = comp_class_index(c, "Hash");
       int hc_mi = hc_ci >= 0 ? comp_method_in_chain(c, hc_ci, name, NULL) : -1;
+      if (hc_mi >= 0 && emit_reopen_block_call(c, id, recv, hc_mi, NULL, b)) return;
       if (hc_mi >= 0) {
         buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
         emit_boxed(c, recv, b);
@@ -45704,6 +45756,7 @@ else {
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
       int nm_ci = comp_class_index(c, "Numeric");
       int nm_mi = nm_ci >= 0 ? comp_method_in_chain(c, nm_ci, name, NULL) : -1;
+      if (nm_mi >= 0 && emit_reopen_block_call(c, id, recv, nm_mi, NULL, b)) return;
       if (nm_mi >= 0) {
         buf_printf(b, "sp_Numeric_%s(", mc(c->scopes[nm_mi].name));
         emit_boxed(c, recv, b);
@@ -45721,6 +45774,7 @@ else {
           const char *box_fn = (rt == TY_INT_ARRAY) ? "sp_box_int_array" :
                                (rt == TY_STR_ARRAY) ? "sp_box_str_array" :
                                (rt == TY_FLOAT_ARRAY) ? "sp_box_float_array" : "sp_box_poly_array";
+          if (emit_reopen_block_call(c, id, recv, oc_mi2, box_fn, b)) return;
           buf_printf(b, "sp_Array_%s(", mc(c->scopes[oc_mi2].name));
           buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")");
           emit_args_filled(c, oc_mi2, nt_ref(nt, id, "arguments"), ", ", b);
@@ -45740,25 +45794,9 @@ else {
         int cblk3 = pf3 >= 0 && nt_ref(nt, id, "block") >= 0
                     ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
         if (cblk3 >= 0) {
-          Buf pb3; memset(&pb3, 0, sizeof pb3);
-          if (!emit_forwarded_proc_arg(c, cblk3, &pb3)) emit_proc_literal(c, cblk3, &pb3);
-          int tp3 = ++g_tmp;
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp3, pb3.p ? pb3.p : "NULL", tp3);
-          free(pb3.p);
-          Buf oc3; memset(&oc3, 0, sizeof oc3);
-          emit_method_cname(c, &c->scopes[pf3], &oc3);
-          buf_puts(&oc3, "(");
-          emit_boxed(c, recv, &oc3);
-          emit_args_filled(c, pf3, nt_ref(nt, id, "arguments"), ", ", &oc3);
-          buf_printf(&oc3, ", _t%d)", tp3);
-          TyKind want3 = comp_ntype(c, id), pr3 = (TyKind)c->scopes[pf3].ret;
-          if (method_is_void(&c->scopes[pf3]))
-            buf_printf(b, "(%s, %s)", oc3.p, want3 == TY_POLY ? "sp_box_nil()" : default_value(want3));
-          else if (want3 == TY_POLY && pr3 != TY_POLY) emit_boxed_text(c, pr3, oc3.p, b);
-          else if (want3 != TY_POLY && pr3 == TY_POLY && is_scalar_ret(want3)) emit_unbox_text(c, want3, oc3.p, b);
-          else buf_puts(b, oc3.p);
-          free(oc3.p);
+          Buf rb3; memset(&rb3, 0, sizeof rb3); emit_boxed(c, recv, &rb3);
+          emit_reopen_pf_call(c, id, pf3, cblk3, rb3.p ? rb3.p : "sp_box_nil()", b);
+          free(rb3.p);
           return;
         }
         if (oc_mi3 >= 0) {
