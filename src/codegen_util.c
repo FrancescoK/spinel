@@ -2189,11 +2189,8 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b) {
    String slot (a String slot takes sp_poly_arg_str instead where the
    program defines a #to_str); NULL for any other slot */
 const char *poly_rhs_unbox_fn(TyKind slot) {
-  return slot == TY_INT    ? "sp_poly_to_i_or_nil"
-       : slot == TY_BOOL   ? "sp_poly_to_i"
-       : slot == TY_FLOAT  ? "sp_poly_to_f_or_nil"
-       : slot == TY_SYMBOL ? "sp_poly_to_sym_or_nil"
-       : slot == TY_STRING ? "sp_poly_to_s" : NULL;
+  const TyTraits *tr = ty_traits_of(slot);   /* the unbox_rhs column (types.c) */
+  return tr ? tr->unbox_rhs : NULL;
 }
 /* emit_typed_sink_text's conversion of a boxed value into a typed element */
 const char *poly_sink_unbox_fn(TyKind slot) {
