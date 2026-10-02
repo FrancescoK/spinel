@@ -3319,6 +3319,296 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
   return 0;
 }
 
+/* A Range receiver, and a .lazy pipeline over a range or an array (infer_call_inner's rules, in their order) */
+static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* range receiver methods */
+  if (recv >= 0 && rt == TY_RANGE) {
+    /* a literal string range ("a".."z") yields strings, not ints */
+    if (sp_streq(name, "to_a")) {
+      int rn = an_unparen(nt, recv);
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
+          { *out = TY_STR_ARRAY; return 1; }
+      }
+    }
+    /* String-endpoint range accessors read/return strings, not ints (#2467) */
+    {
+      int rn = an_unparen(nt, recv);
+      if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int sl = local_sole_range_node(c, rn);
+        if (sl >= 0) rn = sl;
+      }
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        if (lo >= 0 && hi >= 0 &&
+            infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING) {
+          if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "end") ||
+                            sp_streq(name, "first") || sp_streq(name, "last") ||
+                            sp_streq(name, "min") || sp_streq(name, "max")))
+            { *out = TY_STRING; return 1; }
+          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last")))
+            { *out = TY_STR_ARRAY; return 1; }
+        }
+      }
+    }
+    if (sp_streq(name, "to_a") || sp_streq(name, "entries")) { *out = TY_INT_ARRAY; return 1; }  /* (#2414) */
+    if (sp_streq(name, "minmax")) { *out = TY_POLY_ARRAY; return 1; }   /* [nil, nil] when empty (#2412) */
+    /* `x..Float::INFINITY`: the int range records only "unbounded", but the
+       literal says what the bound was, so #end answers the Float (#3670) */
+    if (sp_streq(name, "end") && argc == 0) {
+      int _ri = an_unparen(nt, recv);
+      if (_ri >= 0 && nt_kind(nt, _ri) == NK_RangeNode &&
+          infer_endpoint_is_infinite(c, nt_ref(nt, _ri, "right")) &&
+          nt_ref(nt, _ri, "right") >= 0)
+        { *out = TY_FLOAT; return 1; }
+    }
+    /* an ENDLESS literal range: #end is nil (#2413) */
+    if (sp_streq(name, "end") && ({ int _rn = an_unparen(nt, recv);
+        _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
+        nt_ref(nt, _rn, "right") < 0; })) { *out = TY_POLY; return 1; }
+    /* step { } in value position returns the receiver range (#2415) */
+    if (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) { *out = TY_RANGE; return 1; }
+    if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
+        sp_streq(name, "cover?") || sp_streq(name, "exclude_end?") ||
+        sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "overlap?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "step")) {
+      /* step with a block walks the range and returns self */
+      if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
+      /* a float step, or a literal range with float bounds, yields floats */
+      int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
+      int rn = an_unparen(nt, recv);
+      int bfloat = 0;
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        bfloat = (lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
+                 (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
+      }
+      { *out = (sfloat || bfloat) ? TY_FLOAT_ARRAY : TY_INT_ARRAY; return 1; }
+    }
+    if (is_quantifier(name)) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
+      { *out = range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY; return 1; }
+    if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+        argc == 1 && nt_ref(nt, id, "block") < 0) { *out = TY_ENUMERATOR; return 1; }
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) { *out = TY_INT_ARRAY; return 1; }
+    if (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
+        sp_streq(name, "first") || sp_streq(name, "last") ||
+        sp_streq(name, "size") || sp_streq(name, "count") ||
+        sp_streq(name, "begin") || sp_streq(name, "end"))  { *out = TY_INT; return 1; }
+    if (sp_streq(name, "bsearch")) {
+      /* a float-bounded range yields a float member (or nil); an int range an
+         int member. The bound types are on the receiver's RangeNode. */
+      int brn = an_unparen(nt, recv);
+      if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
+        int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
+        /* both bounds must be real NUMERIC nodes (the float-bisection branch
+           needs a finite interval; a beginless/endless bound is nil) and at
+           least one float -> a float member */
+        TyKind blt = bl >= 0 ? infer_type(c, bl) : TY_NIL;
+        TyKind brt = br >= 0 ? infer_type(c, br) : TY_NIL;
+        if ((blt == TY_INT || blt == TY_FLOAT) && (brt == TY_INT || brt == TY_FLOAT) &&
+            (blt == TY_FLOAT || brt == TY_FLOAT)) { *out = TY_FLOAT; return 1; }
+      }
+      { *out = TY_INT; return 1; }  /* a member, or nil (nullable int) */
+    }
+    int block = nt_ref(nt, id, "block");
+    /* finite-range Enumerable methods that materialize to an int array in
+       codegen: select/reject/filter (fused loop). */
+    if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
+        block >= 0) { *out = TY_INT_ARRAY; return 1; }
+    if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
+      int body = nt_ref(nt, block, "body");
+      int bn = 0;
+      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      TyKind et = bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN;
+      TyKind bnt = ie_block_break_next_ty(c, body);
+      if (bnt != TY_UNKNOWN) et = (et == TY_UNKNOWN) ? bnt : ty_unify(et, bnt);
+      { *out = ty_array_of(et); return 1; }
+    }
+  }
+
+  /* A lazy chain answers Enumerator::Lazy for #class. The chain itself has no
+     runtime value, so this is the one non-forcing call it can serve (#3358). */
+  if (sp_streq(name, "class") && argc == 0 && recv >= 0 && chain_is_lazy_valued(c, recv))
+    { *out = TY_CLASS; return 1; }
+
+  /* (range).lazy[.select/reject{blk}].first(n) / .first. The chain may be held
+     in a variable (`p = src.lazy.select{}; p.first(n)`) -- resolve the alias to
+     the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
+  if (sp_streq(name, "first") || sp_streq(name, "last")) {
+    int lrecv = lazy_resolve_chain(c, recv);
+  if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
+    int lazy_src = -1;
+    int grouped = 0;   /* a terminal-adjacent each_cons/each_slice groups the stream */
+    {
+      /* peel the chain terminal-first: an optional grouping stage, then the
+         filtering stages, down to the blockless `lazy` (mirrors the shapes
+         emit_lazy_pipeline_expr fuses) */
+      int cur9 = lrecv;
+      const char *rname9 = nt_str(nt, cur9, "name");
+      if (rname9 && (sp_streq(rname9, "each_cons") || sp_streq(rname9, "each_slice")) &&
+          nt_ref(nt, cur9, "block") < 0) {
+        grouped = 1;
+        cur9 = nt_ref(nt, cur9, "receiver");
+      }
+      while (cur9 >= 0 && nt_type(nt, cur9) && sp_streq(nt_type(nt, cur9), "CallNode")) {
+        const char *nm9 = nt_str(nt, cur9, "name");
+        if (!nm9) break;
+        if (sp_streq(nm9, "lazy") && nt_ref(nt, cur9, "block") < 0) {
+          lazy_src = nt_ref(nt, cur9, "receiver");
+          break;
+        }
+        if (sp_streq(nm9, "select") || sp_streq(nm9, "reject") || sp_streq(nm9, "filter")) {
+          cur9 = nt_ref(nt, cur9, "receiver");
+          continue;
+        }
+        break;
+      }
+    }
+    (void)grouped;
+    TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
+    /* emit_lazy_pipeline_expr collects into a PolyArray; the counted form is
+       that array, the bare form its first (boxed) element (#2994). */
+    if (lazy_src >= 0 && lst == TY_RANGE)
+      { *out = (argc == 1) ? TY_POLY_ARRAY : TY_POLY; return 1; }
+    /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
+       take->first desugar produces) materializes n boxed elements; the bare
+       form is that array's first element, exactly as for a range source --
+       leaving it out typed `[1,2,3].lazy.first` nil and the pipeline's value
+       was discarded (#3357). */
+    if (lazy_src >= 0 &&
+        (ty_is_array(lst) ||
+         (lst == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+          sp_streq(nt_type(nt, lazy_src), "ArrayNode"))))
+      { *out = (argc == 1) ? TY_POLY_ARRAY : (argc == 0 ? TY_POLY : TY_UNKNOWN); return 1; }
+  }
+  }
+
+  /* `<source>.lazy.<ops>.size` -> the propagated source size: nil if any stage
+     changes the element count, Float::INFINITY for an unbounded endless source,
+     else Integer. (#2485) */
+  if (sp_streq(name, "size") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+    int cur = recv, lazy_src = -1, ok = 1, kill = 0, has_take = 0;
+    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+      const char *nm = nt_str(nt, cur, "name");
+      if (!nm) { ok = 0; break; }
+      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
+        if (sp_streq(nm, "take")) has_take = 1;
+        cur = nt_ref(nt, cur, "receiver"); continue;
+      }
+      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
+      if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { cur = nt_ref(nt, cur, "receiver"); continue; }
+      if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
+          sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
+          sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
+        kill = 1; cur = nt_ref(nt, cur, "receiver"); continue;
+      }
+      ok = 0; break;
+    }
+    /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
+    lazy_src = an_unparen(nt, lazy_src);
+    if (ok && lazy_src >= 0) {
+      TyKind st = infer_type(c, lazy_src);
+      int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
+      if (st == TY_RANGE || ty_is_array(st) || is_arr_lit) {
+        if (kill) { *out = TY_POLY; return 1; }   /* nil */
+        int endless = 0;
+        if (st == TY_RANGE && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode"))
+          endless = lazy_endpoint_is_infinite(c, nt_ref(nt, lazy_src, "right"));
+        if (endless && !has_take) { *out = TY_FLOAT; return 1; }   /* Float::INFINITY */
+        { *out = TY_INT; return 1; }
+      }
+    }
+  }
+
+  /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
+     filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
+  if ((sp_streq(name, "first") ||
+       sp_streq(name, "to_a") || sp_streq(name, "force")) &&
+      recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "CallNode") ||
+       (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
+        lazy_alias_chain(c, recv) >= 0)) &&
+      nt_ref(nt, id, "block") < 0 &&
+      !(sp_streq(name, "first") && argc > 1) &&
+      !((sp_streq(name, "to_a") || sp_streq(name, "force")) && argc != 0)) {
+    int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
+    /* the chain may be held in a variable (#3012); resolve it like the
+       first/last arm above does */
+    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+      int a = lazy_alias_chain(c, cur);
+      if (a >= 0) cur = a;
+    }
+    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
+      const char *nm = nt_str(nt, cur, "name");
+      if (!nm) { ok = 0; break; }
+      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
+        int lrcv9 = nt_ref(nt, cur, "receiver");
+        if (chain_is_lazy_valued(c, lrcv9)) { saw_op = 1; cur = lrcv9; continue; }
+        lazy_src = lrcv9;
+        break;
+      }
+      /* blockless counter stages fuse into the pipeline (codegen re-validates
+         the single integer argument). */
+      if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
+           (sp_streq(nm, "each_slice") && cur == recv) ||
+           sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index") ||
+           sp_streq(nm, "each_cons")) &&
+          nt_ref(nt, cur, "block") < 0) {
+        saw_op = 1; cur = nt_ref(nt, cur, "receiver");
+        if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+          int a9 = lazy_alias_chain(c, cur);
+          if (a9 >= 0) cur = a9;
+        }
+        continue;
+      }
+      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
+      if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
+          !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while") &&
+          !sp_streq(nm, "drop_while") &&
+          !sp_streq(nm, "filter_map") && !sp_streq(nm, "flat_map") &&
+          !sp_streq(nm, "collect_concat")) { ok = 0; break; }
+      saw_op = 1;
+      cur = nt_ref(nt, cur, "receiver");
+      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
+        int a = lazy_alias_chain(c, cur);
+        if (a >= 0) cur = a;
+      }
+    }
+    /* An endless range needs no `.lazy` to be one: there is no array to
+       materialize, so the pipeline over it is the only well-defined reading
+       (#3840). */
+    if (ok && lazy_src < 0 && saw_op) {
+      int rr = an_unparen(nt, cur);
+      if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
+          nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
+        lazy_src = rr;
+    }
+    /* `first` needs no stage between it and the lazy source: `e.lazy.first(2)`
+       is as well defined as `e.lazy.map { }.first(2)` (#3586) */
+    if (ok && (saw_op || sp_streq(name, "to_a") || sp_streq(name, "force") ||
+               sp_streq(name, "first")) && lazy_src >= 0) {
+      TyKind st = infer_type(c, lazy_src);
+      /* bare `first` unwraps to the single element, not the collected array */
+      TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
+      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
+          st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) { *out = res; return 1; }
+      /* a source only known at run time streams as an Enumerator over it
+         (sp_poly_lazy_src), unless the program defines a lazy of its own */
+      if (st == TY_POLY && !an_user_recv_defines_method(c, "lazy")) { *out = res; return 1; }
+      /* an empty array literal has no element type and so types UNKNOWN, but
+         the pipeline over it is still well defined -- it yields [] (#2996) */
+      if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) { *out = res; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6034,291 +6324,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return infer_type(c, argv[0]) == TY_SYMBOL ? TY_BOOL : TY_NIL;
   }
 
-  /* range receiver methods */
-  if (recv >= 0 && rt == TY_RANGE) {
-    /* a literal string range ("a".."z") yields strings, not ints */
-    if (sp_streq(name, "to_a")) {
-      int rn = an_unparen(nt, recv);
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
-        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
-        if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
-          return TY_STR_ARRAY;
-      }
-    }
-    /* String-endpoint range accessors read/return strings, not ints (#2467) */
-    {
-      int rn = an_unparen(nt, recv);
-      if (rn >= 0 && nt_type(nt, rn) && !sp_streq(nt_type(nt, rn), "RangeNode")) {
-        int sl = local_sole_range_node(c, rn);
-        if (sl >= 0) rn = sl;
-      }
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
-        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
-        if (lo >= 0 && hi >= 0 &&
-            infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING) {
-          if (argc == 0 && (sp_streq(name, "begin") || sp_streq(name, "end") ||
-                            sp_streq(name, "first") || sp_streq(name, "last") ||
-                            sp_streq(name, "min") || sp_streq(name, "max")))
-            return TY_STRING;
-          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last")))
-            return TY_STR_ARRAY;
-        }
-      }
-    }
-    if (sp_streq(name, "to_a") || sp_streq(name, "entries")) return TY_INT_ARRAY;  /* (#2414) */
-    if (sp_streq(name, "minmax")) return TY_POLY_ARRAY;   /* [nil, nil] when empty (#2412) */
-    /* `x..Float::INFINITY`: the int range records only "unbounded", but the
-       literal says what the bound was, so #end answers the Float (#3670) */
-    if (sp_streq(name, "end") && argc == 0) {
-      int _ri = an_unparen(nt, recv);
-      if (_ri >= 0 && nt_kind(nt, _ri) == NK_RangeNode &&
-          infer_endpoint_is_infinite(c, nt_ref(nt, _ri, "right")) &&
-          nt_ref(nt, _ri, "right") >= 0)
-        return TY_FLOAT;
-    }
-    /* an ENDLESS literal range: #end is nil (#2413) */
-    if (sp_streq(name, "end") && ({ int _rn = an_unparen(nt, recv);
-        _rn >= 0 && nt_type(nt, _rn) && sp_streq(nt_type(nt, _rn), "RangeNode") &&
-        nt_ref(nt, _rn, "right") < 0; })) return TY_POLY;
-    /* step { } in value position returns the receiver range (#2415) */
-    if (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) return TY_RANGE;
-    if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
-        sp_streq(name, "cover?") || sp_streq(name, "exclude_end?") ||
-        sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
-        sp_streq(name, "overlap?")) return TY_BOOL;
-    if (sp_streq(name, "step")) {
-      /* step with a block walks the range and returns self */
-      if (nt_ref(nt, id, "block") >= 0) return rt;
-      /* a float step, or a literal range with float bounds, yields floats */
-      int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
-      int rn = an_unparen(nt, recv);
-      int bfloat = 0;
-      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
-        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
-        bfloat = (lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
-                 (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
-      }
-      return (sfloat || bfloat) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
-    }
-    if (is_quantifier(name)) return TY_BOOL;
-    if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
-      return range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY;
-    if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
-        argc == 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return TY_INT_ARRAY;
-    if (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
-        sp_streq(name, "first") || sp_streq(name, "last") ||
-        sp_streq(name, "size") || sp_streq(name, "count") ||
-        sp_streq(name, "begin") || sp_streq(name, "end"))  return TY_INT;
-    if (sp_streq(name, "bsearch")) {
-      /* a float-bounded range yields a float member (or nil); an int range an
-         int member. The bound types are on the receiver's RangeNode. */
-      int brn = an_unparen(nt, recv);
-      if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
-        int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
-        /* both bounds must be real NUMERIC nodes (the float-bisection branch
-           needs a finite interval; a beginless/endless bound is nil) and at
-           least one float -> a float member */
-        TyKind blt = bl >= 0 ? infer_type(c, bl) : TY_NIL;
-        TyKind brt = br >= 0 ? infer_type(c, br) : TY_NIL;
-        if ((blt == TY_INT || blt == TY_FLOAT) && (brt == TY_INT || brt == TY_FLOAT) &&
-            (blt == TY_FLOAT || brt == TY_FLOAT)) return TY_FLOAT;
-      }
-      return TY_INT;  /* a member, or nil (nullable int) */
-    }
-    int block = nt_ref(nt, id, "block");
-    /* finite-range Enumerable methods that materialize to an int array in
-       codegen: select/reject/filter (fused loop). */
-    if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
-        block >= 0) return TY_INT_ARRAY;
-    if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
-      int body = nt_ref(nt, block, "body");
-      int bn = 0;
-      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      TyKind et = bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN;
-      TyKind bnt = ie_block_break_next_ty(c, body);
-      if (bnt != TY_UNKNOWN) et = (et == TY_UNKNOWN) ? bnt : ty_unify(et, bnt);
-      return ty_array_of(et);
-    }
-  }
-
-  /* A lazy chain answers Enumerator::Lazy for #class. The chain itself has no
-     runtime value, so this is the one non-forcing call it can serve (#3358). */
-  if (sp_streq(name, "class") && argc == 0 && recv >= 0 && chain_is_lazy_valued(c, recv))
-    return TY_CLASS;
-
-  /* (range).lazy[.select/reject{blk}].first(n) / .first. The chain may be held
-     in a variable (`p = src.lazy.select{}; p.first(n)`) -- resolve the alias to
-     the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
-  if (sp_streq(name, "first") || sp_streq(name, "last")) {
-    int lrecv = lazy_resolve_chain(c, recv);
-  if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
-    int lazy_src = -1;
-    int grouped = 0;   /* a terminal-adjacent each_cons/each_slice groups the stream */
-    {
-      /* peel the chain terminal-first: an optional grouping stage, then the
-         filtering stages, down to the blockless `lazy` (mirrors the shapes
-         emit_lazy_pipeline_expr fuses) */
-      int cur9 = lrecv;
-      const char *rname9 = nt_str(nt, cur9, "name");
-      if (rname9 && (sp_streq(rname9, "each_cons") || sp_streq(rname9, "each_slice")) &&
-          nt_ref(nt, cur9, "block") < 0) {
-        grouped = 1;
-        cur9 = nt_ref(nt, cur9, "receiver");
-      }
-      while (cur9 >= 0 && nt_type(nt, cur9) && sp_streq(nt_type(nt, cur9), "CallNode")) {
-        const char *nm9 = nt_str(nt, cur9, "name");
-        if (!nm9) break;
-        if (sp_streq(nm9, "lazy") && nt_ref(nt, cur9, "block") < 0) {
-          lazy_src = nt_ref(nt, cur9, "receiver");
-          break;
-        }
-        if (sp_streq(nm9, "select") || sp_streq(nm9, "reject") || sp_streq(nm9, "filter")) {
-          cur9 = nt_ref(nt, cur9, "receiver");
-          continue;
-        }
-        break;
-      }
-    }
-    (void)grouped;
-    TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
-    /* emit_lazy_pipeline_expr collects into a PolyArray; the counted form is
-       that array, the bare form its first (boxed) element (#2994). */
-    if (lazy_src >= 0 && lst == TY_RANGE)
-      return (argc == 1) ? TY_POLY_ARRAY : TY_POLY;
-    /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
-       take->first desugar produces) materializes n boxed elements; the bare
-       form is that array's first element, exactly as for a range source --
-       leaving it out typed `[1,2,3].lazy.first` nil and the pipeline's value
-       was discarded (#3357). */
-    if (lazy_src >= 0 &&
-        (ty_is_array(lst) ||
-         (lst == TY_UNKNOWN && nt_type(nt, lazy_src) &&
-          sp_streq(nt_type(nt, lazy_src), "ArrayNode"))))
-      return (argc == 1) ? TY_POLY_ARRAY : (argc == 0 ? TY_POLY : TY_UNKNOWN);
-  }
-  }
-
-  /* `<source>.lazy.<ops>.size` -> the propagated source size: nil if any stage
-     changes the element count, Float::INFINITY for an unbounded endless source,
-     else Integer. (#2485) */
-  if (sp_streq(name, "size") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
-    int cur = recv, lazy_src = -1, ok = 1, kill = 0, has_take = 0;
-    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
-      const char *nm = nt_str(nt, cur, "name");
-      if (!nm) { ok = 0; break; }
-      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
-      if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
-        if (sp_streq(nm, "take")) has_take = 1;
-        cur = nt_ref(nt, cur, "receiver"); continue;
-      }
-      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
-      if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { cur = nt_ref(nt, cur, "receiver"); continue; }
-      if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
-          sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
-          sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
-        kill = 1; cur = nt_ref(nt, cur, "receiver"); continue;
-      }
-      ok = 0; break;
-    }
-    /* unwrap `(1..n)` parentheses so the endless check sees the RangeNode */
-    lazy_src = an_unparen(nt, lazy_src);
-    if (ok && lazy_src >= 0) {
-      TyKind st = infer_type(c, lazy_src);
-      int is_arr_lit = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "ArrayNode");
-      if (st == TY_RANGE || ty_is_array(st) || is_arr_lit) {
-        if (kill) return TY_POLY;   /* nil */
-        int endless = 0;
-        if (st == TY_RANGE && nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode"))
-          endless = lazy_endpoint_is_infinite(c, nt_ref(nt, lazy_src, "right"));
-        if (endless && !has_take) return TY_FLOAT;   /* Float::INFINITY */
-        return TY_INT;
-      }
-    }
-  }
-
-  /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
-     filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
-  if ((sp_streq(name, "first") ||
-       sp_streq(name, "to_a") || sp_streq(name, "force")) &&
-      recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "CallNode") ||
-       (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
-        lazy_alias_chain(c, recv) >= 0)) &&
-      nt_ref(nt, id, "block") < 0 &&
-      !(sp_streq(name, "first") && argc > 1) &&
-      !((sp_streq(name, "to_a") || sp_streq(name, "force")) && argc != 0)) {
-    int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
-    /* the chain may be held in a variable (#3012); resolve it like the
-       first/last arm above does */
-    if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-      int a = lazy_alias_chain(c, cur);
-      if (a >= 0) cur = a;
-    }
-    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
-      const char *nm = nt_str(nt, cur, "name");
-      if (!nm) { ok = 0; break; }
-      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
-        int lrcv9 = nt_ref(nt, cur, "receiver");
-        if (chain_is_lazy_valued(c, lrcv9)) { saw_op = 1; cur = lrcv9; continue; }
-        lazy_src = lrcv9;
-        break;
-      }
-      /* blockless counter stages fuse into the pipeline (codegen re-validates
-         the single integer argument). */
-      if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
-           (sp_streq(nm, "each_slice") && cur == recv) ||
-           sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index") ||
-           sp_streq(nm, "each_cons")) &&
-          nt_ref(nt, cur, "block") < 0) {
-        saw_op = 1; cur = nt_ref(nt, cur, "receiver");
-        if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-          int a9 = lazy_alias_chain(c, cur);
-          if (a9 >= 0) cur = a9;
-        }
-        continue;
-      }
-      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
-      if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
-          !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while") &&
-          !sp_streq(nm, "drop_while") &&
-          !sp_streq(nm, "filter_map") && !sp_streq(nm, "flat_map") &&
-          !sp_streq(nm, "collect_concat")) { ok = 0; break; }
-      saw_op = 1;
-      cur = nt_ref(nt, cur, "receiver");
-      if (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "LocalVariableReadNode")) {
-        int a = lazy_alias_chain(c, cur);
-        if (a >= 0) cur = a;
-      }
-    }
-    /* An endless range needs no `.lazy` to be one: there is no array to
-       materialize, so the pipeline over it is the only well-defined reading
-       (#3840). */
-    if (ok && lazy_src < 0 && saw_op) {
-      int rr = an_unparen(nt, cur);
-      if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "RangeNode") &&
-          nt_ref(nt, rr, "right") < 0 && nt_ref(nt, rr, "left") >= 0)
-        lazy_src = rr;
-    }
-    /* `first` needs no stage between it and the lazy source: `e.lazy.first(2)`
-       is as well defined as `e.lazy.map { }.first(2)` (#3586) */
-    if (ok && (saw_op || sp_streq(name, "to_a") || sp_streq(name, "force") ||
-               sp_streq(name, "first")) && lazy_src >= 0) {
-      TyKind st = infer_type(c, lazy_src);
-      /* bare `first` unwraps to the single element, not the collected array */
-      TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
-      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
-          st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return res;
-      /* a source only known at run time streams as an Enumerator over it
-         (sp_poly_lazy_src), unless the program defines a lazy of its own */
-      if (st == TY_POLY && !an_user_recv_defines_method(c, "lazy")) return res;
-      /* an empty array literal has no element type and so types UNKNOWN, but
-         the pipeline over it is still well defined -- it yields [] (#2996) */
-      if (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
-          sp_streq(nt_type(nt, lazy_src), "ArrayNode")) return res;
-    }
-  }
+  { TyKind r; if (infer_range_lazy_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* hash receiver methods */
   if (recv >= 0 && sp_streq(name, "default") && argc <= 1 &&
