@@ -1074,8 +1074,9 @@ test-run: decisions-test
 # The decision registry (src/decide.c), on programs that between them take
 # every kind of keyed decision. A compile given its own log is the compile
 # unrestricted, to the byte; with every decision denied nothing is logged and
-# the program still prints its .expected, also with a collection at every
-# allocation, which is when a root that was wrongly dropped shows. Then the
+# the program still prints its .expected and exits 0, also with a collection
+# at every allocation, which is when a root that was wrongly dropped shows
+# (a crash after the last line printed is as wrong as a wrong line). Then the
 # keys themselves: a method's, an ivar's, one read's; and that denying a kind
 # with a whole-program switch of its own emits what the switch emits. Every
 # kind changes some program's C when it is denied: a key that gates nothing
@@ -1120,9 +1121,9 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  [ ! -s "$$t.log0" ] || { echo "decisions-test: FAIL ($$f: an empty allow-list still took $$(sed -n 1p "$$t.log0"))"; ok=0; }; \
 	  for stress in 0 1; do \
 	    if [ $$stress = 1 ]; then SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$t.bin" > "$$t.out" 2>/dev/null; \
-	    else $(TIMEOUT60) "$$t.bin" > "$$t.out" 2>/dev/null; fi; \
-	    cmp -s "$$t.out" $$f.expected || \
-	      { echo "decisions-test: FAIL ($$f is wrong with every decision denied, SPINEL_GC_STRESS=$$stress)"; ok=0; }; \
+	    else $(TIMEOUT60) "$$t.bin" > "$$t.out" 2>/dev/null; fi; rc=$$?; \
+	    [ $$rc -eq 0 ] && cmp -s "$$t.out" $$f.expected || \
+	      { echo "decisions-test: FAIL ($$f is wrong with every decision denied, SPINEL_GC_STRESS=$$stress, exit $$rc)"; ok=0; }; \
 	  done; \
 	done; \
 	cat "$$tmp"/*.log | sed 's/@.*//' | sort -u | tr '\n' ' ' > "$$tmp/kinds"; \
