@@ -1277,7 +1277,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
-      TyKind r = method_call_ret(c, mi, id);
+      TyKind r = an_user_call(c, id, mi, UC_INST, cid);
       /* Unify with descendant direct overrides: codegen dispatch emits a
          cls_id switch over all overrides, so the result type must cover all. */
       int nd = 0; const int *ds = comp_descendants(c, cid, &nd);
