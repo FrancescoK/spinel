@@ -2,6 +2,7 @@
 #include <limits.h>
 #include "analyze_internal.h"
 #include "repr.h"
+#include "decide.h"
 
 
 static int narrow_int_table_ivars(Compiler *c);  /* declared early: the fixpoint calls it */
@@ -23318,11 +23319,20 @@ static int nn_fresh(void) {
   if (nn_inferring && nn_done_epoch != nn_epoch && nn_c) nn_compute_now(nn_c, 0);
   return nn_ready;
 }
-static int nn_read_nonnil(int id) {
-  return id >= 0 && nn_fresh() && id < nn_cap && nn_nonnil[id];
+/* The two questions the rest of the compiler asks of the facts. Each fact
+   used is a decision (src/decide.c), keyed by the read's position and, for a
+   local, the name it was written with: a refused one leaves the read as
+   possibly nil, which is what it was before the fact was proven. */
+static int nn_read_nonnil(Compiler *c, int id, const char *name) {
+  if (!(id >= 0 && nn_fresh() && id < nn_cap && nn_nonnil[id])) return 0;
+  if (!g_decide_on) return 1;
+  char written[300];
+  snprintf(written, sizeof written, "%.*s", (int)block_param_written_len(name), name);
+  return decide_node(c->nt, id, "nn-read", written);
 }
-static int nn_index_inbounds(int id) {
-  return id >= 0 && nn_fresh() && id < nn_cap && nn_inb[id];
+static int nn_index_inbounds(Compiler *c, int id) {
+  return id >= 0 && nn_fresh() && id < nn_cap && nn_inb[id] &&
+         decide_node(c->nt, id, "nn-inb", NULL);
 }
 /* nullable_int_value as the slot's own marks answer it, without the facts:
    what the variable can hold anywhere, rather than at this read. */
@@ -24759,7 +24769,7 @@ int nullable_int_value(Compiler *c, int v) {
     return 0;
   }
   if (nt_kind(nt, v) == NK_CallNode) {
-    if (nn_index_inbounds(v)) return 0;
+    if (nn_index_inbounds(c, v)) return 0;
     if (nullable_int_call_name(nt_str(nt, v, "name"))) return 1;
     if (nn_call_unboxes_nil(c, v)) return 1;
     /* a missed element read is the sentinel in an int slot; only boxing is
@@ -24824,7 +24834,7 @@ int nullable_int_value(Compiler *c, int v) {
     const char *rn = nt_str(nt, v, "name");
     Scope *rs = rn ? comp_scope_of(c, v) : NULL;
     LocalVar *rv = rs ? scope_local(rs, rn) : NULL;
-    return rv && rv->nullable_int && !nn_read_nonnil(v);
+    return rv && rv->nullable_int && !nn_read_nonnil(c, v, rn);
   }
   /* `x &&= v` answers x's nil when x is nil, and `x ||= v` answers v when
      x is nil, so the value can be nil as the local or v can */

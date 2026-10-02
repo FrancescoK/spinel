@@ -1075,14 +1075,14 @@ test-run: decisions-test
 # unrestricted, to the byte; with every decision denied nothing is logged and
 # the program still prints its .expected, also with a collection at every
 # allocation, which is when a root that was wrongly dropped shows. Then the
-# keys themselves, a method's and an ivar's, and that denying a kind
+# keys themselves: a method's, an ivar's, one read's; and that denying a kind
 # with a whole-program switch of its own emits what the switch emits. Every
 # kind changes some program's C when it is denied: a key that gates nothing
 # would be named by no bisect.
-DECISION_TESTS = test/fixtures/decisions/sites.rb test/gc_root_elided_array_slot.rb \
-                 test/reader_read_only_no_copy.rb \
+DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
+                 test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
                  test/poly_arm_kwrest_empty.rb
-DECISION_KINDS = gc-save inline-force pd-hoist root-elide root-frame strbuf-raw
+DECISION_KINDS = gc-save inline-force nn-inb nn-read pd-hoist root-elide root-frame strbuf-raw
 decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-decisions.XXXXXX); : > "$$tmp/none"; \
 	if $(SPINEL) --decisions="$$tmp/absent" test/fixtures/decisions/sites.rb -c -o "$$tmp/o.c" >"$$tmp/o.out" 2>&1; then \
@@ -1141,6 +1141,11 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	$(SPINEL) --decisions="$$t.allow" --decisions-log="$$t.log1" $$f -c -o "$$t.c" >/dev/null 2>&1; \
 	[ "$$(cat "$$t.log1")" = 'root-frame@Sprites#place' ] && [ "$$(grep -c 'SP_GC_ROOT_FRAME(_gcf)' "$$t.c")" = 1 ] || \
 	  { echo "decisions-test: FAIL (an allow-list of one method's root frame gave: $$(tr '\n' ' ' < "$$t.log1"))"; ok=0; }; \
+	t=$$tmp/nil_narrowing; f=test/nil_narrowing.rb; k='nn-read@test/nil_narrowing.rb:39:8:v'; \
+	grep -vxF "$$k" "$$t.log" > "$$t.allow"; \
+	$(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1; \
+	[ "$$(grep -o SP_INT_NIL_CMP_CK "$$t.c" | wc -l)" -eq $$(( $$(grep -o SP_INT_NIL_CMP_CK "$$t.plain" | wc -l) + 1 )) ] || \
+	  { echo "decisions-test: FAIL (denying $$k did not put back that one read's nil check)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "decisions-test: pass" || exit 1
 
