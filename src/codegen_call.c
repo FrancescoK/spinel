@@ -16520,7 +16520,8 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
      the normal value path (its return value is the result, NOT the receiver
      -- name-matching alone would be wrong for a user `each`). */
   int self_ret = wrecv >= 0 && call_user_yield_mi(c, id) < 0 &&
-                 brk_iter_returns_self(wname);
+                 brk_iter_returns_self(wname) &&
+                 !(sp_streq(wname, "each") && comp_ntype(c, wrecv) == TY_POLY);
   /* `e.each { }` over an Enumerator walks the Enumerator itself (see
      emit_iteration_stmt): the marked `to_a` hop in front of it is never
      evaluated, so the Enumerator is what is held and answered */

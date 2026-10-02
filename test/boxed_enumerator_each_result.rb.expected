@@ -1,0 +1,17 @@
+3.5
+1.5
+[3.5, 1.5]
+[3.5, 1.5]
+NoMethodError
+[3.5, 1.5, nil, 9.5]
+:stopped
+[3.5, 1.5, nil, 9.5]
+7
+8
+:finished
+:finished
+7
+:finished
+8
+[1, 2]
+{a: 1}
