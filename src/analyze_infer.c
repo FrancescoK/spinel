@@ -4588,6 +4588,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
     if (self->class_id >= 0 && ie_class_of(c, id) < 0) {
+      /* inside a class method self is the class, so its class methods come
+         first, as comp_self_call_mi and the inline splice resolve the call:
+         an instance method or reader of the same name stood in for
+         `def self.go` and typed the call by the wrong body */
+      if (self->is_cmethod && !sp_streq(name, "new")) {
+        int cmi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+        if (cmi >= 0) return an_self_call_ret(c, self, name, cmi, id);
+      }
       { int rdcls2 = -1;
         if (comp_reader_in_chain(c, self->class_id, name, &rdcls2)) {
           const char *rname2 = comp_resolve_alias(c, self->class_id, name);
