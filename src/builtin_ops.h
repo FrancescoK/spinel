@@ -50,7 +50,13 @@ typedef struct BuiltinOp {
   const char *arg;        /* BOPE_TEMPLATE's C text */
   TyKind arg0;            /* the kind the first argument must have, or
                              TY_UNKNOWN for any */
+  unsigned char flags;    /* BOPF_* */
 } BuiltinOp;
+
+/* The row answers for a boxed (poly) receiver too, behind a run-time class
+   check: emit_poly_builtin_method emits these names unboxed, so inference
+   types the call with the row's result (bop_find_boxed). */
+#define BOPF_BOXED 1
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
@@ -77,5 +83,8 @@ const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_blo
    before reading the call's arguments, so receivers no row covers cost
    nothing. */
 int bop_covers(TyKind rt);
+
+/* The BOPF_BOXED row of kind rt for `name`, or NULL. */
+const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);
 
 #endif

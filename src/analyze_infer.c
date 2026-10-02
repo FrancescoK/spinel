@@ -4132,17 +4132,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      asked sp_poly_to_s for a poly the emitter had produced as an sp_int. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       !an_user_defines_or_reads(c, name)) {
-    if (sp_streq(name, "signaled?") || sp_streq(name, "exited?") ||
-        sp_streq(name, "coredump?"))
-      return TY_BOOL;
-    if (sp_streq(name, "success?")) return TY_POLY;
-    if (sp_streq(name, "exitstatus") || sp_streq(name, "termsig") ||
-        sp_streq(name, "pid"))
-      return TY_INT;
+    int blk = nt_ref(nt, id, "block") >= 0;
+    const BuiltinOp *op = bop_find_boxed(TY_PROCESS_STATUS, name, argc, blk);
     /* and a boxed Process::Tms's four CPU times, as on a typed one */
-    if (sp_streq(name, "utime") || sp_streq(name, "stime") ||
-        sp_streq(name, "cutime") || sp_streq(name, "cstime"))
-      return TY_FLOAT;
+    if (!op) op = bop_find_boxed(TY_TMS, name, argc, blk);
+    if (op) return op->result;
   }
   /* OpenStruct: dynamic members. A member read (any name, arg-less, no
      writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
