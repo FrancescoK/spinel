@@ -133,13 +133,20 @@ static int emit_op_pstatus_eq(Compiler *c, const BopCtx *x, Buf *b) {
      conflict    inference answered from a different row: the two halves
                  decided the call differently
      unrecorded  inference answered without a row (a rule ahead of the
-                 lookup, or a codegen-only row whose result is TY_UNKNOWN) */
+                 lookup, or a codegen-only row whose result is TY_UNKNOWN)
+     respecialized  inference's row is for another receiver kind: the node
+                 is emitted more than once with its receiver typed per copy
+                 (a yield's value, read per call site), and inference keeps
+                 the last copy's answer */
 static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *op) {
   if (view_depth() > 0 || id < 0 || id >= c->node_cap) return;
   const BuiltinOp *inf = c->bop_inf[id];
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
       bop_result(inf, rt) == bop_result(op, rt)) return;
-  if (inf)
+  if (inf && inf->recv != op->recv)
+    fprintf(stderr, "plan-check: respecialized: node %d %s#%s: codegen row %s, inference row %s\n",
+            id, ty_name(rt), op->name, ty_name(op->recv), ty_name(inf->recv));
+  else if (inf)
     fprintf(stderr, "plan-check: conflict: node %d %s#%s: codegen row %d..%d -> %s, inference row %s#%s -> %s\n",
             id, ty_name(rt), op->name, op->argc_min, op->argc_max, ty_name(bop_result(op, rt)),
             ty_name(inf->recv), inf->name, ty_name(bop_result(inf, rt)));

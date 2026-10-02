@@ -5,10 +5,11 @@
 #
 #   tools/plan_check.sh [-v]
 #
-# A "conflict" (inference answered the call from a different row) fails:
-# the two halves of the compiler decided the call differently. An
-# "unrecorded" call (inference answered without a row) is reported as a
-# count; -v lists both kinds.
+# A "conflict" (inference answered the call from a different row of the
+# same receiver kind) fails: the two halves of the compiler decided the
+# call differently. An "unrecorded" call (inference answered without a
+# row) and a "respecialized" one (the node is emitted per copy with its
+# receiver typed per copy) are reported as counts; -v lists all three.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -23,8 +24,9 @@ OUT=$(mktemp "${TMPDIR:-/tmp}/spinel-plan-check.XXXXXX")
   ' _ {} "$SP" > "$OUT"
 nc=$(grep -c ': plan-check: conflict:' "$OUT")
 nu=$(grep -c ': plan-check: unrecorded:' "$OUT")
+nr=$(grep -c ': plan-check: respecialized:' "$OUT")
 [ "${1-}" = "-v" ] && cat "$OUT"
 grep ': plan-check: conflict:' "$OUT" | head -20
 rm -f "$OUT"
-echo "plan-check: $nc conflicts, $nu unrecorded"
+echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 [ "$nc" -eq 0 ]
