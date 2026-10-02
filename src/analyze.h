@@ -19,6 +19,12 @@
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
 
+/* Set by main.c from --plan-check (#7100): inference records, per call node,
+   the builtin-op row it answered the call with (c->bop_inf), and codegen
+   reports on stderr every call it emitted through a row inference did not
+   choose. Off in every normal build. */
+extern int g_plan_check;
+
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
 extern int g_final_bind_pass;

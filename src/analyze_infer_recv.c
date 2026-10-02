@@ -77,7 +77,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* String range ("a".."e"): the endpoints answer natively; every traversal
      rides the materialized element array (#3064). */
   if (rt == TY_STR_RANGE) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     /* everything else is served by the element array (see the desugar) */
     { *out = TY_UNKNOWN; return 1; }
@@ -115,7 +115,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = argc == 0 ? TY_FLOAT : TY_POLY; return 1; }   /* first(n)/last(n) raise anyway */
     }
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
     /* A name with no row is genuinely undefined: leave it UNKNOWN. The
@@ -232,7 +232,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        sp_streq(name, "*") || sp_streq(name, "/"))) { *out = TY_COMPLEX; return 1; }
   /* Complex: builtin-op rows (builtin_ops.c) */
   if (rt == TY_COMPLEX) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until
@@ -325,7 +325,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     }
     /* the kinds that do not depend on the arguments: builtin-op rows */
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
     /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
@@ -442,7 +442,7 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && ty_is_hash(rt)) {
     /* builtin-op rows (builtin_ops.c) */
     {
-      const BuiltinOp *op = bop_find(BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
     }
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) { *out = TY_SYMBOL; return 1; }
@@ -634,7 +634,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     int block = nt_ref(nt, id, "block");
     /* builtin-op rows (builtin_ops.c) */
     {
-      const BuiltinOp *op = bop_find(BOP_ANY_ARRAY, name, argc, block >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
     }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);

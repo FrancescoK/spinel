@@ -1906,7 +1906,17 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
   return 0;
 }
 
+const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
+                             int argc, int has_block) {
+  const BuiltinOp *op = bop_find(rt, name, argc, has_block);
+  if (g_plan_check && op && op->result != TY_UNKNOWN && id >= 0 && id < c->node_cap)
+    c->bop_inf[id] = op;
+  return op;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
+  /* the call is inferred afresh: only the row this pass answers with counts */
+  if (g_plan_check && id >= 0 && id < c->node_cap) c->bop_inf[id] = NULL;
 
   /* a yielder push (`y << v` inside an Enumerator.new generator) lowers to a
      Fiber.yield, whose value is boxed -- never the array append it looks like */
@@ -3064,7 +3074,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     return TY_POLY;
   }
   if (recv >= 0 && rt == TY_METHOD) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* A Method read out of a container answers these from its sp_BoundMethod;
@@ -3090,7 +3100,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_PROC;
   }
   if (recv >= 0 && rt == TY_PROC) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
@@ -3747,14 +3757,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Regexp instance methods */
   if (recv >= 0 && rt == TY_REGEX) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     if (sp_streq(name, "[]") && argc == 1 &&
@@ -3998,7 +4008,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Fiber: builtin-op rows (builtin_ops.c) */
   if (recv >= 0 && rt == TY_FIBER) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
@@ -4021,7 +4031,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      that follow, which no handle reaches. */
   if (recv >= 0 && (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX ||
                     rt == TY_CONDVAR)) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
@@ -4084,12 +4094,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Process::Tms: builtin-op rows (builtin_ops.c), looked up where its
      rule sat, so the rules above still claim first */
   if (recv >= 0 && rt == TY_TMS) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* Process::Status readers: builtin-op rows (builtin_ops.c) */
   if (recv >= 0 && rt == TY_PROCESS_STATUS) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   /* The same names on a BOXED status -- which is how one normally arrives,
@@ -4128,7 +4138,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
     if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
     /* Stored-enumerator block form returns the underlying each return (the
@@ -4259,12 +4269,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   /* Socket::Option and Addrinfo readers: builtin-op rows */
   if (recv >= 0 && (rt == TY_SOCKOPT || rt == TY_ADDRINFO)) {
-    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   if (recv >= 0 && rt == TY_IO) {
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* sync= answers its argument, whatever it is; only its truth sets the mode */
@@ -4336,7 +4346,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* builtin-op rows (builtin_ops.c). Every row names a known Time (or
        Object) method, which the Object reopen check below never answers. */
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
@@ -6025,7 +6035,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* Symbol#<=> is defined only between Symbols; String included, any other
@@ -6377,7 +6387,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* builtin-op rows (builtin_ops.c): the calls typed by name, arity and
        block form */
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* casecmp/casecmp? with a statically non-string argument: CRuby answers
@@ -6487,7 +6497,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
       return TY_BIGINT;
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* pow with a literal negative exponent yields the exact Rational */
@@ -6563,7 +6573,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "fdiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) return TY_COMPLEX;
     if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
     {
-      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
     /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
