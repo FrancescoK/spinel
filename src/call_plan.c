@@ -340,6 +340,31 @@ static int cplan_plain_ctx(void) {
          inline_splice_depth() == 0;
 }
 
+const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
+  static CallPlan ctx;
+  if (self_ci < 0) return cplan_user(c, id);
+  cplan_set(&ctx, -1, -1, UC_NONE, CP_NONE);
+  if (id < 0 || id >= c->node_cap || self_ci >= c->nclasses || nt_kind(c->nt, id) != NK_CallNode)
+    return &ctx;
+  const char *name = nt_str(c->nt, id, "name");
+  int mi = name ? comp_method_in_chain(c, self_ci, name, NULL) : -1;
+  if (mi >= 0) {
+    cplan_set(&ctx, mi, self_ci, UC_INST, cplan_overridden(c, self_ci, name, 0) ? CP_VIRTUAL : CP_DIRECT);
+    ctx.chain = 1;
+    return &ctx;
+  }
+  if (flags & CPX_IE) {
+#ifndef NDEBUG
+    int tmp0 = g_tmp;
+#endif
+    cplan_resolve(c, id, &ctx);
+#ifndef NDEBUG
+    assert(g_tmp == tmp0);
+#endif
+  }
+  return &ctx;
+}
+
 const CallPlan *cplan_user(Compiler *c, int id) {
   static CallPlan fresh;
   if (id < 0 || id >= c->node_cap) { cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE); return &fresh; }

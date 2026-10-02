@@ -38,6 +38,18 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+
+/* The plan of the same call read in a context the node does not carry
+   itself: its self, or its receiver, is an instance of self_ci. That is an
+   instance_exec self (CPX_IE), a body emitted for an inheriting class
+   (CPX_EMIT), or a poly arm's receiver class (CPX_ARM). The plan is that
+   class's own lookup of the name (chain, UC_INST, a switch when a
+   descendant overrides it); a miss is no plan, except under CPX_IE, where
+   the call resolves as its own (the instance_exec receiver is asked first).
+   It is computed afresh and never kept: only cplan_user memoizes. A
+   self_ci < 0 is the node's own context, cplan_user. */
+enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4 };
+const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
 /* --plan-check: a codegen site that took its target from a plan counts it
    (site: a short constant name); cplan_served_report prints the counts */
 void cplan_served(const char *site);

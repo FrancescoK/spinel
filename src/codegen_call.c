@@ -24979,6 +24979,16 @@ static int implicit_self_reader_cid(Compiler *c, int id) {
   return dispatch_cid;
 }
 
+/* the user method a bare call reaches with self of class dispatch_cid, from
+   the call's plan, or -1 */
+static int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
+  const CallPlan *spl = cplan_user(c, id);
+  if (!(spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid))
+    spl = cplan_user_in(c, id, dispatch_cid,
+                        g_ie_class_id >= 0 ? CPX_IE : g_emitting_class_id >= 0 ? CPX_EMIT : 0);
+  return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
+}
+
 static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -25013,25 +25023,16 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     free(rb.p);
     return 1;
   }
-  /* the method is the call's plan (call_plan.c) when self is the call's own
-     scope's class and the plan is that class's own lookup. An instance_exec
-     self or a body emitted for an inheriting class dispatches through
-     another class, which the plan does not take as an input: that path, and
-     a plan of another kind, look the name up here, as --plan-check does for
-     the assertion. */
-  const CallPlan *spl = cplan_user(c, id);
-  int mi = dispatch_cid == self->class_id && spl->chain && spl->via == UC_INST &&
-           spl->owner_ci == dispatch_cid ? spl->mi : -1;
-  if (g_plan_check && mi >= 0) cplan_served("implicit-self");
-  if (g_plan_check || mi < 0) {
+  /* the method is the call's plan (call_plan.c) for self of dispatch_cid:
+     the node's own plan when it is that class's own lookup, otherwise the
+     plan read with that self (an instance_exec self, a body emitted for an
+     inheriting class, an instance_eval block whose self codegen keeps).
+     --plan-check holds it against the lookup. */
+  int mi = implicit_self_plan_mi(c, id, dispatch_cid);
+  if (g_plan_check) {
+    cplan_served("implicit-self");
     int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-    if (mi < 0) {
-      if (g_plan_check && omi >= 0)
-        fprintf(stderr, "plan-check: cplan-fallback: implicit-self node %d %s%s\n", id, name,
-                dispatch_cid != self->class_id ? " (dispatch class)" : "");
-      mi = omi;
-    }
-    else if (omi != mi)
+    if (omi != mi)
       fprintf(stderr, "plan-check: cplan-conflict: implicit-self node %d %s: plan %d, lookup %d\n",
               id, name, mi, omi);
   }
@@ -37328,25 +37329,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                      : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
     if (dispatch_cid >= 0) {
       if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return;
-      /* the method is the call's plan (call_plan.c) when self is the call's
-         own scope's class and the plan is that class's own lookup. An
-         instance_exec self or a body emitted for an inheriting class
-         dispatches through another class, which the plan does not take as
-         an input: that path, and a plan of another kind, look the name up
-         here, as --plan-check does for the assertion. */
-      const CallPlan *spl = cplan_user(c, id);
-      int mi = dispatch_cid == self->class_id && spl->chain && spl->via == UC_INST &&
-               spl->owner_ci == dispatch_cid ? spl->mi : -1;
-      if (g_plan_check && mi >= 0) cplan_served("implicit-self-late");
-      if (g_plan_check || mi < 0) {
+      /* the method is the call's plan for self of dispatch_cid
+         (implicit_self_plan_mi); --plan-check holds it against the lookup */
+      int mi = implicit_self_plan_mi(c, id, dispatch_cid);
+      if (g_plan_check) {
+        cplan_served("implicit-self-late");
         int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-        if (mi < 0) {
-          if (g_plan_check && omi >= 0)
-            fprintf(stderr, "plan-check: cplan-fallback: implicit-self-late node %d %s%s\n", id, name,
-                    dispatch_cid != self->class_id ? " (dispatch class)" : "");
-          mi = omi;
-        }
-        else if (omi != mi)
+        if (omi != mi)
           fprintf(stderr, "plan-check: cplan-conflict: implicit-self-late node %d %s: plan %d, lookup %d\n",
                   id, name, mi, omi);
       }
