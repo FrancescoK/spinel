@@ -3938,10 +3938,12 @@ else {
                            : sp_streq(name, "repeated_permutation") ? "sp_IntArray_repeated_permutation"
                            : "sp_IntArray_repeated_combination";
         int ta = ++g_tmp, tc = ++g_tmp, tout = ++g_tmp, ti = ++g_tmp;
+        int tn = ++g_tmp, te = ++g_tmp;
         buf_printf(b, "({ sp_IntArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-        buf_printf(b, "sp_PtrArray *_t%d = %s(_t%d, ", tc, combfn, ta);
+        buf_printf(b, "sp_int _t%d = ", tn);
         if (argc == 1) emit_int_expr(c, argv[0], b);
         else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);   /* argless permutation: full length */
+        buf_printf(b, "; sp_PtrArray *_t%d = %s(_t%d, _t%d", tc, combfn, ta, tn);
         /* the combinations are only in this temp until the loop below boxes
            them, and the array it boxes them into allocates first */
         buf_printf(b, "); SP_GC_ROOT(_t%d);", tc);
@@ -3949,7 +3951,11 @@ else {
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tc, ti);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int_array(_t%d->data[_t%d]));", tout, tc, ti);
         /* blockless: an Enumerator over those tuples (#3614) */
-        buf_printf(b, " sp_Enumerator_new_from(sp_box_poly_array(_t%d)); })", tout);
+        buf_printf(b, " sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_poly_array(_t%d)); SP_GC_ROOT(_t%d);", te, tout, te);
+        buf_printf(b, " sp_enum_with_src(_t%d, sp_box_int_array(_t%d), ", te, ta);
+        if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
+        else buf_printf(b, "SPL(\"%s\")", name);
+        buf_puts(b, "); })");
         return 1;
       }
       if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination") ||
@@ -3961,15 +3967,20 @@ else {
                            : sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
                            : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
                            : "sp_PolyArray_repeated_combination";
-        int ta = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", ta);
+        int ta = ++g_tmp, ts = ++g_tmp, tn = ++g_tmp, te = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", ts);
         emit_boxed(c, recv, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); ", ta);
-        buf_puts(b, "sp_Enumerator_new_from(sp_box_poly_array(");
-        buf_printf(b, "%s(_t%d, ", combfn, ta);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = ", ts, ta, ts, ta, tn);
         if (argc == 1) emit_expr(c, argv[0], b);
         else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+        buf_printf(b, "; sp_Enumerator *_t%d = ", te);
+        buf_puts(b, "sp_Enumerator_new_from(sp_box_poly_array(");
+        buf_printf(b, "%s(_t%d, _t%d", combfn, ta, tn);
         buf_puts(b, ")))");
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_enum_with_src(_t%d, _t%d, ", te, te, ts);
+        if (argc == 1) buf_printf(b, "sp_sprintf(\"%s(%%lld)\", (long long)_t%d)", name, tn);
+        else buf_printf(b, "SPL(\"%s\")", name);
+        buf_puts(b, ")");
         buf_puts(b, "; })");
         return 1;
       }
