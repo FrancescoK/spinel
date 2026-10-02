@@ -536,29 +536,43 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
   return 0;
 }
 
-/* A no-arg builtin method whose return type follows the receiver's type,
-   called on a yield: yield.abs on an Integer block returns Integer; on a
-   Float block, Float.  Unary minus on a String block is the deduplicated
-   frozen String, so a String site answers String for `-@`; a String has no
-   abs, and that site keeps the cached type. Like yield_operator_site_type,
-   only covers the set that analyze_infer.c's YU_RECEIVER arm widens to
-   TY_POLY; extend both in tandem. */
+/* A builtin whose result follows its receiver's kind, called on a yield:
+   yield.abs on an Integer block is an Integer, on a Float block a Float;
+   yield.first on a String Array block is a String. The call is lowered from
+   the current site's block type, so answer the type that lowering produces,
+   from the table analyze_infer.c's YU_RECEIVER arm also reads
+   (ty_recv_builtin_result): the analyzer made the yield poly exactly where
+   every site's kind is in it, so each site's value is boxed into the slot.
+   The receiver may itself be such a call (`yield.reverse.first`), typed per
+   site the same way one link down. Only where the analyzer took that path,
+   which it marks by typing the call poly: where some site's kind is not in
+   the table the call keeps one site's type, and answering the other site's
+   own kind here sent its value to the raise-tail arm, which dropped it for
+   nil (`-"ab"` at one site, `-5` at another, printed nil for the second). */
 static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *op = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!op || recv < 0 || nt_kind(nt, recv) != NK_YieldNode) return 0;
+  if (!op || recv < 0) return 0;
+  if (nt_kind(nt, recv) != NK_YieldNode && nt_kind(nt, recv) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
+  if (c->ntype[id] != TY_POLY) return 0;
   int an = nt_ref(nt, id, "arguments"), ac = 0;
-  if (an >= 0) nt_arr(nt, an, "arguments", &ac);
-  if (ac != 0) return 0;
-  if (!sp_streq(op, "abs") && !sp_streq(op, "-@")) return 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   TyKind rt;
   if (!sp_yield_site_type(c, recv, &rt)) return 0;
-  if (rt != TY_INT && rt != TY_FLOAT && !(rt == TY_STRING && sp_streq(op, "-@"))) return 0;
-  *out = rt;
-  return 1;
+  /* a site whose class reopens the name: the reopen's return type for a
+     scalar, nothing for an Array or Hash (yield_recv_chain_kind says why) */
+  { int rmi = nt_int(nt, id, "builtin_only", 0) ? -1 : comp_builtin_kind_reopen_mi((Compiler *)c, rt, op);
+    if (rmi >= 0) {
+      if (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) return 0;
+      TyKind rr = c->scopes[rmi].ret;
+      if (rr == TY_UNKNOWN || rr == TY_VOID) return 0;
+      *out = rr;
+      return 1;
+    } }
+  return ty_recv_builtin_result(op, ac, ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN, rt, out);
 }
 
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
