@@ -1384,10 +1384,12 @@ def allocator_library_path(prj)
   tmp = ENV["TMPDIR"].to_s
   tmp = "/tmp" if tmp == ""
   out = File.join(tmp, "spin-pkg-config-#{Process.pid}.out")
-  ok = system("pkg-config --libs-only-L #{lib} > #{out} 2>/dev/null")
+  # An argument vector, no shell: neither the name nor $TMPDIR is parsed.
+  pid = Process.spawn("pkg-config", "--libs-only-L", lib, out: out, err: File::NULL)
+  _, status = Process.waitpid2(pid)
   flags = File.exist?(out) ? File.read(out) : ""
   File.unlink(out) if File.exist?(out)
-  return "" unless ok
+  return "" unless status.success?
   dirs = []
   pkg_config_words(flags).each { |f| dirs.push(f[2, f.length - 2]) if f.start_with?("-L") && f.length > 2 }
   return "" if dirs.empty?
