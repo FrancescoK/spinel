@@ -162,9 +162,9 @@ module URI
       key = encode_www_form_component(k)
       if v.nil?
         parts << key
-      elsif v.is_a?(Array)
+      elsif v.respond_to?(:to_ary)
         values = []
-        v.each do |item|
+        v.to_ary.each do |item|
           values << (item.nil? ? "" : "#{key}=#{encode_www_form_component(item)}")
         end
         parts << values.join("&")
