@@ -3578,6 +3578,75 @@ static void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
   buf_puts(b, "); })");
 }
 
+/* Is class `ci` of the program below SystemCallError (through
+   Errno::ENOENT, say)? Its construction runs SystemCallError#initialize. */
+int class_is_syserr(Compiler *c, int ci) {
+  return ci >= 0 && ci < c->nclasses && class_is_exc_subclass(c, ci) &&
+         is_syserr_family_name(exc_builtin_parent(c, ci));
+}
+/* A call of the runtime's SystemCallError constructors on the arguments of
+   a `.new` / raise / super: `fn(lead argc, (sp_RbVal[]){...})`, each argument
+   boxed into a rooted temp first (a later argument's evaluation may
+   collect). The arity and the argument types are judged at run time, as
+   CRuby's initialize judges them. `lead` is empty or ends in ", ". */
+void emit_syserr_call(Compiler *c, int id, const char *fn, const char *lead,
+                      int argc, const int *argv, Buf *b) {
+  for (int a = 0; a < argc; a++) {
+    const char *aty = nt_type(c->nt, argv[a]);
+    if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode") ||
+                sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode")))
+      unsupported(c, id, "a splat, keyword or block argument to a SystemCallError constructor");
+  }
+  if (argc == 0) { buf_printf(b, "%s(%s0, NULL)", fn, lead); return; }
+  int t0 = g_tmp + 1;
+  g_tmp += argc;
+  buf_puts(b, "({ ");
+  for (int a = 0; a < argc; a++) {
+    buf_printf(b, "sp_RbVal _t%d = ", t0 + a);
+    emit_boxed(c, argv[a], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t0 + a);
+  }
+  buf_printf(b, "%s(%s%d, (sp_RbVal[]){", fn, lead, argc);
+  for (int a = 0; a < argc; a++) buf_printf(b, "%s_t%d", a ? ", " : "", t0 + a);
+  buf_puts(b, "}); })");
+}
+/* The runtime reader of an exception accessor CRuby defines on one class
+   of the hierarchy (KeyError#key, SystemCallError#errno, LoadError#path,
+   ...): each raises NoMethodError on an exception off that class, judged by
+   the runtime class, so a base-typed receiver and an instance of a program's
+   subclass read the same way. NULL for any other name. */
+static const char *exc_gated_acc_fn(const char *name) {
+  static const char *const T[][2] = {
+    {"key", "sp_exc_key_acc"}, {"receiver", "sp_exc_receiver_acc"},
+    {"args", "sp_exc_args_acc"}, {"reason", "sp_exc_reason_acc"},
+    {"exit_value", "sp_exc_exit_value_acc"}, {"tag", "sp_exc_tag_acc"},
+    {"value", "sp_exc_throw_value_acc"}, {"private_call?", "sp_exc_private_call_acc"},
+    {"status", "sp_exc_status_acc"}, {"success?", "sp_exc_success_acc"},
+    {"signo", "sp_exc_signo_acc"}, {"signm", "sp_exc_signm_acc"},
+    {"errno", "sp_exc_errno_acc"}, {"name", "sp_exc_name_acc"},
+    /* LoadError#path: a require is resolved at compile time, so no
+       LoadError the program raises carries a path -- nil, as a LoadError
+       raised by hand answers in CRuby */
+    {"path", "sp_exc_path_acc"},
+    {NULL, NULL}
+  };
+  for (int i = 0; T[i][0]; i++) if (sp_streq(name, T[i][0])) return T[i][1];
+  return NULL;
+}
+/* `Cls.new(...)` / `Cls.exception(...)` on a builtin class `cn` of the
+   SystemCallError family, or 0 off it */
+static int emit_syserr_family_new(Compiler *c, int id, const char *cn, int argc, const int *argv, Buf *b) {
+  if (!is_syserr_family_name(cn)) return 0;
+  if (sp_streq(cn, "SystemCallError")) {
+    emit_syserr_call(c, id, "sp_syserr_new_v", "", argc, argv, b);
+    return 1;
+  }
+  char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn);
+  buf_printf(b, "sp_exc_new(\"%s\", ", cn);
+  emit_syserr_call(c, id, "sp_syserr_msg_a", lead, argc, argv, b);
+  buf_puts(b, ")");
+  return 1;
+}
 static void emit_exc_msg_arg(Compiler *c, int arg, Buf *b) {
   if (arg < 0) buf_puts(b, "(&(\"\\xff\")[1])");
   else if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
@@ -3610,8 +3679,22 @@ static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, con
   }
   buf_printf(b, "%s(%s, ", fn, rtext);
   if (arg0_const) {
-    buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
-    if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
+    /* a builtin exception by its whole path (Errno::ENOENT), a class of the
+       program by its Ruby name */
+    int xc = comp_class_index(c, nt_str(nt, argv[0], "name"));
+    const char *cn = xc >= 0 ? class_ruby_name(c, xc) : superclass_builtin_exc_name(nt, argv[0]);
+    if (!cn) cn = nt_str(nt, argv[0], "name");
+    buf_printf(b, "\"%s\", ", cn);
+    if (xc >= 0 ? class_is_syserr(c, xc) : is_syserr_family_name(cn)) {
+      /* SystemCallError#initialize: the errno text (SystemCallError itself
+         wants a message) */
+      if (argc < 2 && sp_streq(cn, "SystemCallError")) buf_puts(b, "sp_syserr_new_v(0, NULL)->msg");
+      else {
+        char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn);
+        emit_syserr_call(c, argv[0], "sp_syserr_msg_a", lead, argc >= 2 ? 1 : 0, argv + 1, b);
+      }
+    }
+    else if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
     buf_puts(b, ", NULL");
   }
   else if (argc >= 1) {
@@ -13235,12 +13318,24 @@ static void emit_builtin_new_arms_text(Compiler *c, const char *pre, const char 
 static int emit_exc_sub_new_arm(Compiler *c, int ci, int argc, const int *atmp, int rt2, Buf *b) {
   if (!class_is_exc_subclass(c, ci) || comp_method_in_chain(c, ci, "initialize", NULL) >= 0) return 0;
   const char *cn = class_ruby_name(c, ci); if (!cn) cn = c->classes[ci].name;
-  buf_printf(b, "case %d: { sp_dyn_new_arity(%d, 1); const char *_m = ", ci, argc);
-  if (argc >= 1)
-    buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given("
-                  "_t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_to_s(_t%d)); ",
-               atmp[0], atmp[0], atmp[0], atmp[0]);
-  else buf_puts(b, "(&(\"\\xff\")[1]); ");
+  if (class_is_syserr(c, ci)) {
+    /* SystemCallError#initialize(msg = nil, func = nil): the errno text */
+    buf_printf(b, "case %d: { const char *_m = sp_syserr_msg_a(\"%s\", %d, ", ci, cn, argc);
+    if (argc == 0) buf_puts(b, "NULL); ");
+    else {
+      buf_puts(b, "(sp_RbVal[]){");
+      for (int a = 0; a < argc; a++) buf_printf(b, "%s_t%d", a ? ", " : "", atmp[a]);
+      buf_puts(b, "}); ");
+    }
+  }
+  else {
+    buf_printf(b, "case %d: { sp_dyn_new_arity(%d, 1); const char *_m = ", ci, argc);
+    if (argc >= 1)
+      buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given("
+                    "_t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_to_s(_t%d)); ",
+                 atmp[0], atmp[0], atmp[0], atmp[0]);
+    else buf_puts(b, "(&(\"\\xff\")[1]); ");
+  }
   if (c->classes[ci].nivars > 0)
     buf_printf(b, "_t%d = sp_box_obj(sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", _m), %d); } break; ",
                rt2, c->classes[ci].c_name, cn, ci);
@@ -14720,7 +14815,12 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
                          c->classes[ci].c_name, c->classes[ci].c_name, cn2);
             else
               buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-            if (argc >= 1) {
+            if (class_is_syserr(c, ci)) {
+              /* SystemCallError#initialize: the errno text, " - msg" */
+              char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn2);
+              emit_syserr_call(c, id, "sp_syserr_msg_a", lead, argc, argv, b);
+            }
+            else if (argc >= 1) {
               /* an explicitly given message stays, even empty (#3713) */
               if (comp_ntype(c, argv[0]) == TY_STRING) {
                 buf_puts(b, "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -14773,12 +14873,18 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
-      const char *cn = nt_str(nt, recv, "name");
+      /* a builtin exception by its whole path: Errno::ENOENT, not "ENOENT" */
+      const char *cn = superclass_builtin_exc_name(nt, recv);
+      if (!cn) cn = nt_str(nt, recv, "name");
       if (cn && is_exc_name(cn)) {
         /* a reopening's own initialize runs on the runtime's exception */
         { int rci = comp_class_index(c, cn);
           int rim = rci >= 0 ? exc_reopen_initialize(c, rci) : -1;
           if (rim >= 0) { emit_exc_reopen_construct(c, rci, rim, nt_ref(nt, id, "arguments"), -1, b); return 1; } }
+        /* SystemCallError#initialize builds the message from the errno:
+           Errno::ENOENT.new("x") is "No such file or directory - x", and
+           SystemCallError.new("x", 2) an Errno::ENOENT */
+        if (emit_syserr_family_new(c, id, cn, argc, argv, b)) return 1;
         /* SignalException.new(sig) / Interrupt.new(msg?): the message is the
            SIG-name and #signo is carried (#2762) */
         if (sp_streq(cn, "SignalException")) {
@@ -35065,7 +35171,17 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         /* a known user class raises under its qualified Ruby name (matching
            the constructor emission and the rescue-arm canonicalization) */
         const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
-        buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", rn ? rn : (cn ? RAISE_EXC_NAME(av[0], cn) : ""));
+        const char *effn = rn ? rn : (cn ? RAISE_EXC_NAME(av[0], cn) : "");
+        /* `raise E` is `raise E.new`: in the SystemCallError family its
+           initialize builds the errno text (SystemCallError.new itself
+           wants a message and raises ArgumentError) */
+        if ((xc >= 0 && class_is_syserr(c, xc)) || (xc < 0 && is_syserr_family_name(effn))) {
+          if (sp_streq(effn, "SystemCallError"))
+            buf_puts(b, "sp_raise_exc(sp_syserr_new_v(0, NULL))");
+          else
+            buf_printf(b, "sp_raise_cls(\"%s\", sp_syserr_msg_a(\"%s\", 0, NULL))", effn, effn);
+        }
+        else buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", effn);
       }
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
@@ -35132,6 +35248,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_puts(b, "sp_raise_exc(sp_signal_exc_new(");
           emit_boxed(c, av[1], b);
           buf_puts(b, "))");
+        }
+        /* `raise Errno::ENOENT, "x"` is Errno::ENOENT.new("x"): the errno
+           text, " - x" (SystemCallError.new("x") an unknown error) */
+        else if ((xc >= 0 && class_is_syserr(c, xc)) || (xc < 0 && is_syserr_family_name(effn))) {
+          if (sp_streq(effn, "SystemCallError")) {
+            buf_puts(b, "sp_raise_exc(");
+            emit_syserr_call(c, id, "sp_syserr_new_v", "", 1, &av[1], b);
+            buf_puts(b, ")");
+          }
+          else {
+            char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", effn);
+            buf_printf(b, "sp_raise_cls(\"%s\", ", effn);
+            emit_syserr_call(c, id, "sp_syserr_msg_a", lead, 1, &av[1], b);
+            buf_puts(b, ")");
+          }
         }
         else {
           /* an explicitly given message is kept even when empty, unlike the
@@ -35233,6 +35364,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "inspect") && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), "inspect", NULL) < 0) {
       buf_puts(b, "sp_exc_inspect((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    /* the readers CRuby defines on one class of the hierarchy (#errno on
+       SystemCallError, #path on LoadError, #key on KeyError, ...): an
+       instance of a program's subclass is an sp_Exception, and the runtime
+       reader judges its class as it does a base-typed one's -- the call fell
+       to the object dispatch, which knew none of them */
+    if (argc == 0 && exc_gated_acc_fn(name) && nt_ref(nt, id, "block") < 0 &&
+        comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0 &&
+        !comp_reader_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL)) {
+      if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
+          sp_streq(name, "name"))
+        g_uses_symbols = 1;  /* staged names intern back to symbols */
+      buf_printf(b, "%s((sp_Exception *)(", exc_gated_acc_fn(name));
+      emit_expr(c, recv, b);
+      buf_puts(b, "))");
       return;
     }
     /* the accessors every exception carries: an instance of a user subclass is
@@ -35563,28 +35710,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
     /* class-gated introspection accessors (#2753-#2756, #2770) */
     if (argc == 0) {
-      const char *accfn = NULL;
-      if (sp_streq(name, "key")) accfn = "sp_exc_key_acc";
-      else if (sp_streq(name, "receiver")) accfn = "sp_exc_receiver_acc";
-      else if (sp_streq(name, "args")) accfn = "sp_exc_args_acc";
-      else if (sp_streq(name, "reason")) accfn = "sp_exc_reason_acc";
-      else if (sp_streq(name, "exit_value")) accfn = "sp_exc_exit_value_acc";
-      else if (sp_streq(name, "tag")) accfn = "sp_exc_tag_acc";
-      else if (sp_streq(name, "value")) accfn = "sp_exc_throw_value_acc";
-      else if (sp_streq(name, "private_call?")) accfn = "sp_exc_private_call_acc";
-      else if (sp_streq(name, "status")) accfn = "sp_exc_status_acc";
-      else if (sp_streq(name, "success?")) accfn = "sp_exc_success_acc";
-      else if (sp_streq(name, "signo")) accfn = "sp_exc_signo_acc";
-      else if (sp_streq(name, "signm")) accfn = "sp_exc_signm_acc";
-      /* LoadError#path: a require is resolved at compile time, so no
-         LoadError the program raises carries a path -- nil, as a LoadError
-         raised by hand answers in CRuby */
-      if (sp_streq(name, "path")) {
-        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
-        return;
-      }
+      const char *accfn = exc_gated_acc_fn(name);
       if (accfn) {
-        if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key"))
+        if (sp_streq(name, "reason") || sp_streq(name, "tag") || sp_streq(name, "key") ||
+            sp_streq(name, "name"))
           g_uses_symbols = 1;  /* staged names intern back to symbols */
         buf_printf(b, "%s((sp_Exception *)(", accfn);
         emit_expr(c, recv, b);
@@ -38721,7 +38850,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                        c->classes[ci].c_name, c->classes[ci].c_name, cn2);
           else
             buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-          emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
+          if (class_is_syserr(c, ci)) {
+            /* SystemCallError#initialize: the errno text, " - msg" */
+            char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn2);
+            emit_syserr_call(c, id, "sp_syserr_msg_a", lead, argc, argv, b);
+          }
+          else emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
           buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
         }
         return;
@@ -38756,7 +38890,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         return;
       }
     }
+    if (ci < 0) {
+      const char *qn = superclass_builtin_exc_name(nt, recv);
+      if (qn) cn = qn;
+    }
     if (cn && is_exc_name(cn)) {
+      if (emit_syserr_family_new(c, id, cn, argc, argv, b)) return;
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
       emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
       buf_puts(b, ")");
@@ -38764,6 +38903,20 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Cls.exception(msg) is Cls.new for a builtin exception reached by its
+     path, too (Errno::ENOENT.exception) */
+  if (recv >= 0 && sp_streq(name, "exception") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
+      comp_class_index(c, nt_str(nt, recv, "name")) < 0) {
+    const char *qn = superclass_builtin_exc_name(nt, recv);
+    if (qn) {
+      if (emit_syserr_family_new(c, id, qn, argc, argv, b)) return;
+      buf_printf(b, "sp_exc_new(\"%s\", ", qn);
+      emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
+      buf_puts(b, ")");
+      return;
+    }
+  }
   /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
      constant). Handled before the Class.new dispatch since they are not `new`. */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
@@ -38772,6 +38925,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        Exception.to_tty? reports whether stderr is a terminal (#2757). */
     if (tcn && is_exc_name(tcn)) {
       if (sp_streq(name, "exception")) {
+        if (emit_syserr_family_new(c, id, tcn, argc, argv, b)) return;
         buf_printf(b, "sp_exc_new(\"%s\", ", tcn);
         emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
         buf_puts(b, ")");

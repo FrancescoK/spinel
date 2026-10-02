@@ -1333,6 +1333,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a constant of A read bare from a class A::B body compiled)"; ok=0; \
 	else grep -q "uninitialized constant A::B::LIMIT (NameError)" "$$tmp/bcp.out" || \
 	  { echo "reject-test: FAIL (a constant of A read bare from class A::B refused without saying why)"; sed -n 1,5p "$$tmp/bcp.out"; ok=0; }; fi; \
+	t=test/reject/systemcallerror_subclass_errno_const.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sce.c" >"$$tmp/sce.out" 2>&1; then \
+	  echo "reject-test: FAIL (an Errno constant in a subclass of SystemCallError compiled)"; ok=0; \
+	else grep -q "an Errno constant defined in a subclass of SystemCallError" "$$tmp/sce.out" || \
+	  { echo "reject-test: FAIL (an Errno constant in a subclass of SystemCallError refused without saying why)"; sed -n 1,5p "$$tmp/sce.out"; ok=0; }; fi; \
 	t=test/reject/dynamic_send_then_refusal.rb; \
 	$(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ds.c" >"$$tmp/ds.out" 2>&1; st=$$?; \
 	if [ $$st -ne 1 ] || ! grep -q "1 refusal," "$$tmp/ds.out"; then \
