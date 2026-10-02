@@ -28146,7 +28146,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         const char *acn = ty_is_hash(rtR) ? "Hash" : "Array";
         int aci = comp_class_index(c, acn);
         int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, nmR, &adc) : -1;
-        if (ami >= 0 && adc == aci) {
+        if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, nmR)) {
           buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
           emit_boxed(c, recvR, b);
           emit_args_filled(c, ami, nt_ref(ntR, id, "arguments"), ", ", b);

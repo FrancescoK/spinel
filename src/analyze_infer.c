@@ -2183,7 +2183,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       nt_ref(nt, id, "block") < 0 && !nt_int(nt, id, "builtin_only", 0)) {
     int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
     int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
-    if (ami >= 0 && adc == aci) return method_call_ret(c, ami, id);
+    /* the reopen's own method under this very name: an alias taken before the
+       reopen (`alias orig_first first`) still names the builtin */
+    if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name))
+      return method_call_ret(c, ami, id);
   }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it

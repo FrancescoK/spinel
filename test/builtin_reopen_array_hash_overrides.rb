@@ -53,3 +53,20 @@ p absolute { -2.5 }
 def negate = yield.-@
 p negate { 5 }
 p negate { 2.5 }
+
+# An alias taken before the reopen keeps naming the builtin; one taken after
+# names the reopen's method, as in CRuby.
+class Array
+  alias orig_sum sum
+  def sum = "arr-sum"
+  alias my_sum sum
+end
+class Hash
+  alias orig_values values
+  def values = "hash-values"
+end
+p [1, 2].orig_sum
+p [1, 2].sum
+p [1, 2].my_sum
+p({a: 1}.orig_values)
+p({a: 1}.values)

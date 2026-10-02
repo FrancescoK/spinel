@@ -559,13 +559,16 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   /* A reopen of the site's class that defines the name owns it, and the
      call there runs the reopen (the concrete-receiver dispatch in
      emit_call_body): answer what the reopen returns. Answering the builtin's
-     kind boxed `class Integer; def abs = "s"; end`'s String as an Integer. */
-  {
+     kind boxed `class Integer; def abs = "s"; end`'s String as an Integer.
+     Not for a call an alias captured the builtin for (builtin_only: `alias
+     orig_abs abs` before the reopen), which still runs the builtin, nor
+     through an alias that merely resolves to the reopen's name. */
+  if (!nt_int(nt, id, "builtin_only", 0)) {
     const char *rcn = rt == TY_INT ? "Integer" : rt == TY_FLOAT ? "Float"
                     : rt == TY_STRING ? "String" : NULL;
     int rci = rcn ? comp_class_index((Compiler *)c, rcn) : -1, rdc = -1;
     int rmi = rci >= 0 ? comp_method_in_chain((Compiler *)c, rci, op, &rdc) : -1;
-    if (rmi >= 0 && rdc == rci) {
+    if (rmi >= 0 && rdc == rci && c->scopes[rmi].name && sp_streq(c->scopes[rmi].name, op)) {
       TyKind rr = c->scopes[rmi].ret;
       if (rr == TY_UNKNOWN || rr == TY_VOID) return 0;
       *out = rr;
