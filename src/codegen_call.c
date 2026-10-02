@@ -32753,16 +32753,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "), (sp_int)0)");
       free(rb.p); return;
     }
-    if (sp_streq(name, "inspect") && argc == 0) {
-      buf_printf(b, "sp_File_inspect(%s)", r);
-      free(rb.p); return;
-    }
-    /* the readiness family answers nil on timeout, so a handle slot is
-       nullable and #nil? is a real question about it */
-    if (sp_streq(name, "nil?") && argc == 0) {
-      buf_printf(b, "((%s) == NULL)", r);
-      free(rb.p); return;
-    }
+    /* builtin-op rows (builtin_ops.c), over the receiver rendered above */
+    if (emit_builtin_op_text(c, id, recv, TY_IO, name, r, b)) { free(rb.p); return; }
     /* A handle's class is a runtime property (a socket kind, a path-backed
        File, a bare stream), so the ancestor walk runs on the kind rather than
        on a static class id. */
@@ -32779,79 +32771,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
          sp_streq(name, "wait_priority") || sp_streq(name, "wait")) && argc <= 2) {
       emit_io_wait(c, name, argc, argv, r, b);
-      free(rb.p); return;
-    }
-    /* size/ftype read the HANDLE so an lstat handle describes the link
-       itself rather than its target (#2986) */
-    if (argc == 0 && (sp_streq(name, "size") || sp_streq(name, "ftype"))) {
-      buf_printf(b, "sp_stat_%s(%s)", name, r);
-      free(rb.p); return;
-    }
-    /* the handle's own stat mode decides these too (#4616); birthtime keeps
-       the path helper, which carries the statx/st_birthtimespec portability */
-    if (argc == 0 && (sp_streq(name, "mtime") ||
-                      sp_streq(name, "atime") || sp_streq(name, "ctime"))) {
-      buf_printf(b, "sp_stat_handle_time(%s, %d)", r,
-                 sp_streq(name, "atime") ? 1 : sp_streq(name, "ctime") ? 2 : 0);
-      free(rb.p); return;
-    }
-    if (argc == 0 && sp_streq(name, "birthtime")) {
-      buf_printf(b, "sp_file_birthtime(sp_File_path(%s))", r);
-      free(rb.p); return;
-    }
-    /* File::Stat is carried as the IO handle itself, so its accessors ride the
-       same receiver. They used to be gated on the receiver TEXT still reading
-       `sp_file_stat_handle(...)`, which held only while the stat stayed an
-       unnamed temp: `st = f.stat; st.mode` lost the spelling and fell through
-       to the unsupported-call reject. None of these names is an IO method in
-       CRuby, so answering them for any handle costs nothing. */
-    if (argc == 0 && sp_streq(name, "mode")) {
-      buf_printf(b, "sp_stat_mode(%s)", r);
-      free(rb.p); return;
-    }
-    /* the rest of File::Stat's numeric fields and mode predicates (#3765) */
-    if (argc == 0) {
-      static const char *const sfield[] = { "uid", "gid", "nlink", "dev", "ino",
-                                            "blksize", "blocks", "rdev", NULL };
-      for (int k = 0; sfield[k]; k++)
-        if (sp_streq(name, sfield[k])) {
-          buf_printf(b, "sp_stat_field(%s, %d)", r, k);
-          free(rb.p); return;
-        }
-      static const char *const spred[] = { "pipe?", "zero?", "readable?", "writable?",
-                                           "executable?", "blockdev?", "chardev?",
-                                           "size?", NULL };
-      for (int k = 0; spred[k]; k++)
-        if (sp_streq(name, spred[k])) {
-          buf_printf(b, "sp_stat_pred(%s, %d)", r, k);
-          free(rb.p); return;
-        }
-    }
-    if (argc == 0 && (sp_streq(name, "file?") || sp_streq(name, "directory?") ||
-                      sp_streq(name, "symlink?") || sp_streq(name, "owned?") ||
-                      sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
-                      sp_streq(name, "setgid?") || sp_streq(name, "sticky?") ||
-                      sp_streq(name, "socket?"))) {
-      /* NOT the path helpers: those pick stat(2) or lstat(2) by the name
-         being asked, which discards which one made this handle (#4616) */
-      static const char *const tpred[] = { "file?", "directory?", "symlink?",
-                                           "owned?", "grpowned?", "setuid?",
-                                           "setgid?", "sticky?", "socket?", NULL };
-      for (int k = 0; tpred[k]; k++)
-        if (sp_streq(name, tpred[k])) {
-          buf_printf(b, "sp_stat_type_pred(%s, %d)", r, k);
-          free(rb.p); return;
-        }
-      free(rb.p); return;
-    }
-    if (argc == 0 && sp_streq(name, "lstat")) {
-      buf_printf(b, "sp_file_lstat_handle(sp_File_path(%s))", r);
-      free(rb.p); return;
-    }
-    if (argc == 1 && sp_streq(name, "chmod")) {
-      /* the instance form returns 0, not the class form's file count */
-      buf_puts(b, "({ sp_file_chmod("); emit_int_expr(c, argv[0], b);
-      buf_printf(b, ", sp_File_path(%s)); (sp_int)0; })", r);
       free(rb.p); return;
     }
     /* socket methods on the IO handle (#2922). The handle kind decides at run
@@ -33014,14 +32933,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         free(rb.p); return;
       }
     }
-    if (argc == 0 && sp_streq(name, "stat")) {
-      /* by path when the handle has one, else fstat(2) on the descriptor */
-      buf_printf(b, "sp_io_stat_handle(%s)", r);
-      free(rb.p); return;
-    }
     if (sp_streq(name, "read")) {
-      if (argc == 0) buf_printf(b, "sp_File_read(%s)", r);
-      else if (argc >= 2 && nt_type(nt, argv[1]) &&
+      if (argc >= 2 && nt_type(nt, argv[1]) &&
                sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
         /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
         const char *bnm = nt_str(nt, argv[1], "name");
@@ -33052,40 +32965,10 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
       /* readline raises EOFError at end of file (#2817) */
       int is_rdl = sp_streq(name, "readline");
-      if (argc == 0 && !is_rdl) buf_printf(b, "sp_File_gets(%s)", r);
-      else {
-        buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
-        emit_gets_sep_args(c, argv, argc, b);
-        buf_puts(b, ")");
-      }
+      buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
+      emit_gets_sep_args(c, argv, argc, b);
+      buf_puts(b, ")");
       free(rb.p); return;
-    }
-    if (sp_streq(name, "getc") && argc == 0) {
-      buf_printf(b, "sp_File_getc(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "readchar") && argc == 0) {
-      buf_printf(b, "sp_File_readchar(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "getbyte") && argc == 0) {
-      buf_printf(b, "sp_File_getbyte(%s)", r); free(rb.p); return;
-    }
-    /* fd-backed IO instance methods (#3038) */
-    if (sp_streq(name, "readbyte") && argc == 0) {
-      buf_printf(b, "sp_File_readbyte(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "ungetbyte") && argc == 1) {
-      buf_printf(b, "({ sp_File_ungetbyte(%s, ", r);
-      emit_int_expr(c, argv[0], b); buf_puts(b, "); sp_box_nil(); })");
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "binmode?") && argc == 0) {
-      buf_printf(b, "sp_File_binmode_p(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "to_io") && argc == 0) {
-      buf_printf(b, "(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "close_on_exec?") && argc == 0) {
-      buf_printf(b, "sp_File_close_on_exec_p(%s)", r); free(rb.p); return;
     }
     if ((sp_streq(name, "close_on_exec=") || sp_streq(name, "autoclose=")) && argc == 1) {
       int tv = ++g_tmp;
@@ -33098,11 +32981,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "sp_File_set_autoclose(%s, _t%d); ", r, tv);
       buf_printf(b, "_t%d; })", tv);
       free(rb.p); return;
-    }
-    if (sp_streq(name, "fcntl") && argc >= 1) {
-      buf_printf(b, "sp_File_fcntl(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")"); free(rb.p); return;
     }
     if (sp_streq(name, "pread") && argc >= 1) {
       /* pread(len, off, buf): CRuby fills the buffer argument; when it is a
@@ -33130,28 +33008,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                                ? "sp_File_pwrite_bin" : "sp_File_pwrite", r);
       emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")"); free(rb.p); return;
-    }
-    if (sp_streq(name, "advise") && argc >= 1) {
-      buf_printf(b, "({ sp_File_advise(%s, ", r);
-      /* the advice is a Symbol (:normal, :sequential, ...); read its name */
-      if (comp_ntype(c, argv[0]) == TY_SYMBOL) {
-        buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ", ");
-      if (argc >= 3) emit_int_expr(c, argv[2], b); else buf_puts(b, "0");
-      buf_puts(b, "); sp_box_nil(); })"); free(rb.p); return;
-    }
-    if ((sp_streq(name, "close_read") || sp_streq(name, "close_write")) && argc == 0) {
-      buf_printf(b, "({ sp_File_close_half(%s, %d); sp_box_nil(); })", r,
-                 sp_streq(name, "close_read") ? 1 : 0);
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "reopen") && argc >= 1 && comp_ntype(c, argv[0]) == TY_IO) {
-      buf_printf(b, "sp_File_reopen_io(%s, ", r); emit_expr(c, argv[0], b);
       buf_puts(b, ")"); free(rb.p); return;
     }
     if (sp_streq(name, "reopen") && argc >= 1) {
@@ -33200,10 +33056,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       }
       free(rb.p); return;
     }
-    if (sp_streq(name, "ungetc") && argc == 1) {
-      buf_printf(b, "sp_File_ungetc(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      free(rb.p); return;
-    }
     if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {
       /* (len, outbuf): CRuby fills the buffer and RETURNS it; when the buffer
          is a plain local, rebind it to the bytes read so the caller sees them
@@ -33222,49 +33074,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr);
         buf_printf(b, "; _t%d; })", tsr);
       }
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "flock") && argc == 1) {
-      buf_printf(b, "sp_File_flock(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      free(rb.p); return;
-    }
-    if ((sp_streq(name, "fsync") || sp_streq(name, "fdatasync")) && argc == 0) {
-      buf_printf(b, "sp_File_fsync(%s)", r); free(rb.p); return;
-    }
-    /* File#truncate(n): ftruncate(2) on this handle. The class-method form
-       truncates by path and cannot serve a handle whose path is absent. */
-    if (sp_streq(name, "truncate") && argc == 1) {
-      buf_printf(b, "sp_File_truncate(%s, ", r); emit_int_expr(c, argv[0], b);
-      buf_puts(b, ")"); free(rb.p); return;
-    }
-    if (sp_streq(name, "autoclose?") && argc == 0) {
-      buf_printf(b, "sp_File_autoclose_p(%s)", r); free(rb.p); return;
-    }
-    /* a closed handle raises, as CRuby's pid checks the stream first */
-    if (sp_streq(name, "pid") && argc == 0) {
-      int tp = ++g_tmp;
-      buf_printf(b, "({ sp_File *_t%d = %s; SP_IO_OPEN(_t%d); sp_box_nil(); })", tp, r, tp);
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "to_i") && argc == 0) {
-      buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "lineno") && argc == 0) {
-      buf_printf(b, "sp_File_lineno(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "lineno=") && argc == 1) {
-      buf_printf(b, "sp_File_set_lineno(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "pos=") && argc == 1) {
-      /* reposition; the assignment expression's value is the offset (#2798) */
-      int tp2 = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tp2); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_File_seek(%s, _t%d, 0); _t%d; })", r, tp2, tp2);
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "putc") && argc == 1) {
-      buf_printf(b, "sp_File_putc(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       free(rb.p); return;
     }
     if (sp_streq(name, "printf") && argc >= 1) {
@@ -33469,12 +33278,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "); _t%d; })", t);
       free(rb.p); return;
     }
-    if (sp_streq(name, "tty?") || sp_streq(name, "isatty")) {
-      buf_printf(b, "sp_File_tty_p(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "fileno")) {
-      buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
-    }
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return;
     }
@@ -33549,43 +33352,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_puts(b, "((sp_int)0)");
       free(rb.p); return;
     }
-    if (sp_streq(name, "close")) {
-      buf_printf(b, "({ sp_File_close(%s); sp_box_nil(); })", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "closed?")) {
-      buf_printf(b, "sp_File_closed_p(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) {
-      buf_printf(b, "sp_File_eof_p(%s)", r); free(rb.p); return;
-    }
-    if ((sp_streq(name, "seek") || sp_streq(name, "sysseek")) && argc >= 1) {
-      /* offset plus optional whence (IO::SEEK_SET/CUR/END -> 0/1/2; absolute
-         when omitted, matching Ruby's SEEK_SET default) */
-      buf_printf(b, "sp_File_%s(%s, ", name, r);
-      emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b);
-      else buf_puts(b, "0");
-      buf_puts(b, ")");
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "tell") || sp_streq(name, "pos")) {
-      buf_printf(b, "sp_File_tell(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "rewind")) {
-      buf_printf(b, "sp_File_rewind(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "path") || sp_streq(name, "to_path")) {
-      buf_printf(b, "sp_File_path(%s)", r); free(rb.p); return;
-    }
-    if (sp_streq(name, "sync")) {
-      /* CRuby's default is buffered (false) for a file, but a socket is
-         sync = true -- and spinel's socket writes really do bypass stdio, so
-         reporting false contradicted the implementation. Per-handle sync state
-         is still not modelled beyond that (#2792). */
-      buf_printf(b, "sp_File_sync_p(%s)", r);
-      free(rb.p); return;
-    }
     if (sp_streq(name, "sync=") && argc >= 1) {
       /* answers its argument; only its truth sets the mode */
       int ts2 = ++g_tmp;
@@ -33594,15 +33360,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_File_set_sync(%s, sp_poly_truthy(_t%d)); ", r, ts2);
       emit_unbox_or_keep(c, comp_ntype(c, id), ts2, b);
       buf_puts(b, "; })");
-      free(rb.p); return;
-    }
-    if (sp_streq(name, "flush") || sp_streq(name, "binmode")) {
-      /* flush/binmode return self, so they chain (#2799) */
-      int tfl = ++g_tmp;
-      buf_printf(b, "({ sp_File *_t%d = %s; ", tfl, r);
-      if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); ", tfl);
-      else buf_printf(b, "sp_File_set_binmode(_t%d); ", tfl);
-      buf_printf(b, "_t%d; })", tfl);
       free(rb.p); return;
     }
     if ((sp_streq(name, "each_line") || sp_streq(name, "each")) &&
