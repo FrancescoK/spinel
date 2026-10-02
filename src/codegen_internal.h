@@ -1657,6 +1657,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
                           int is_fetch, int blk_tmp2, int is_setter_val, Buf *b);
 int  poly_num_arm(const char *name, int argc);
 int  poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max);
+int  poly_redispatch_kind(Compiler *c, int id, const char *name, int argc);
 void emit_poly_last_default(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
                             const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, int done,
                             Buf *b);

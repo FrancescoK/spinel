@@ -135,6 +135,10 @@ typedef enum {
   /* a call on an object whose static class cannot answer the name while a
      subclass can: re-entered with the receiver boxed (#4023) */
   PB_SUBDISPATCH,
+  /* a sort_by, comparator, grouping or zip call re-entered as an Array call
+     over the receiver's elements (emit_array_call, #2935), answering the
+     receiver itself for the block forms of each_slice and its kin */
+  PB_REDISPATCH, PB_REDISPATCH_RECV,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -201,6 +205,9 @@ const PolyPlan *cplan_poly_cmeth(Compiler *c, int id);
 /* The re-entry of a call on an object whose static class cannot answer the
    name while one of its subclasses can (#4023). Computed afresh. */
 const PolyPlan *cplan_poly_sub(Compiler *c, int id);
+/* The re-entry of a call on a poly receiver as an Array call (#2935).
+   Computed afresh. */
+const PolyPlan *cplan_poly_redispatch(Compiler *c, int id);
 
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the

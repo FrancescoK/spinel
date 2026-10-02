@@ -82,7 +82,8 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default numeric(n)", "default str-index", "default find_index",
                                      "default first/last(n)", "default delete/dig/values_at",
                                      "default merge", "default aref2", "default aref/fetch",
-                                     "block map!", "subclass re-entry" };
+                                     "block map!", "subclass re-entry", "array re-entry",
+                                     "array re-entry (receiver)" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
@@ -3306,4 +3307,50 @@ void emit_poly_last_default(Compiler *c, int id, int recv, const char *name, int
     pa_observe(PA_TRIAL, PA_KEY_TRIAL + (done < 0 ? PT_DEFAULT_N : PT_DEFAULT0), -1, TY_UNKNOWN, kept);
   if (!kept && done == 0)
     buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
+}
+
+/* Does a call on a poly receiver re-enter as an Array call, its elements
+   materialized (#2935, #4290)? 1 for the sort_by, comparator and grouping
+   forms, 2 for the block forms that answer the receiver (each_slice,
+   each_cons, the repeated pair), 0 for any other. */
+int poly_redispatch_kind(Compiler *c, int id, const char *name, int argc) {
+  const NodeTable *nt = c->nt;
+  int takes = (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sort_by")) ||
+       /* and the COMPARATOR-block forms. `sort` blockless has an arm of its
+          own above; with a block it had none, so a method whose parameter
+          sees two element types -- which is what makes it poly rather than a
+          poly ARRAY -- raised NoMethodError naming Array, on the first call,
+          having printed nothing (#4290). The array emitters serve the
+          comparator block on a poly array. */
+       (nt_ref(nt, id, "block") >= 0 && argc == 0 && !user_defines_or_reads(c, name) &&
+        (sp_streq(name, "sort") || sp_streq(name, "min") || sp_streq(name, "max"))) ||
+       (nt_ref(nt, id, "block") < 0 && argc == 1 && !user_defines_or_reads(c, name) &&
+        (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
+         sp_streq(name, "combination") || sp_streq(name, "permutation") ||
+         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation"))) ||
+       /* and their BLOCK forms, which had no arm of their own and fell to the
+          loud NoMethodError -- the array emitters they re-dispatch to serve
+          the block and the blockless shape alike. */
+       (nt_ref(nt, id, "block") >= 0 && argc == 1 && !user_defines_or_reads(c, name) &&
+        (sp_streq(name, "zip") ||
+         /* the repeated pair, which the array emitters serve as they do
+            combination's; the boxed receiver had no arm and raised */
+         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation") ||
+         /* each_slice / each_cons answer the receiver, and the wrapper that
+            hands it back re-enters this node -- which a pending safe-nav guard
+            re-enters too, and the two do not compose: the inner pass finds no
+            emitter and bakes a NoMethodError whose argument does not even
+            typecheck. Leave the guarded shape on its existing path (it raises
+            at run time, as it did before) rather than failing the build. */
+         sp_streq(name, "each_cons") || sp_streq(name, "each_slice")));
+  if (!takes) return 0;
+  /* `each_slice(n) { }` / `each_cons(n) { }` answer the RECEIVER, and for a
+     Hash that is the hash itself, not the pairs the re-dispatch materializes
+     from it. Bind the receiver once, materialize from that binding, and hand
+     the binding back -- the same shape emit_iter_value_expr uses for a
+     receiver rewritten to `__enum_to_a`. */
+  int ret_recv = (nt_ref(nt, id, "block") >= 0 &&
+                  (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
+                   sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")));
+  return ret_recv ? 2 : 1;
 }

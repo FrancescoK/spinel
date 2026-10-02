@@ -1110,3 +1110,19 @@ const PolyPlan *cplan_poly_sub(Compiler *c, int id) {
   }
   return &sp;
 }
+
+const PolyPlan *cplan_poly_redispatch(Compiler *c, int id) {
+  static PolyPlan rp;
+  free(rp.arm);
+  rp.arm = NULL; rp.n = 0; rp.flags = 0;
+  rp.ntype = rp.ret = comp_ntype(c, id);
+  int cap = 0;
+  const char *name = nt_str(c->nt, id, "name");
+  int recv = nt_ref(c->nt, id, "receiver");
+  int argc = 0;
+  (void)call_args(c->nt, id, &argc);
+  if (!name || recv < 0 || comp_recv_type(c, recv) != TY_POLY) return &rp;
+  int kind = poly_redispatch_kind(c, id, name, argc);
+  if (kind) cpoly_family(&rp, &cap, kind == 2 ? PB_REDISPATCH_RECV : PB_REDISPATCH);
+  return &rp;
+}

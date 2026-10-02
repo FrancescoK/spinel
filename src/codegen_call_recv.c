@@ -2153,45 +2153,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   /* The blockless grouping enumerators take the same route: CRuby answers an
      Enumerator, spinel materializes it, so re-dispatching as the array form
      gives the groups a later .map / .to_a can walk. */
-  if (recv >= 0 && rt == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE &&
-      g_poly_redispatch_id != id &&
-      ((nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sort_by")) ||
-       /* and the COMPARATOR-block forms. `sort` blockless has an arm of its
-          own above; with a block it had none, so a method whose parameter
-          sees two element types -- which is what makes it poly rather than a
-          poly ARRAY -- raised NoMethodError naming Array, on the first call,
-          having printed nothing (#4290). The array emitters serve the
-          comparator block on a poly array. */
-       (nt_ref(nt, id, "block") >= 0 && argc == 0 && !user_defines_or_reads(c, name) &&
-        (sp_streq(name, "sort") || sp_streq(name, "min") || sp_streq(name, "max"))) ||
-       (nt_ref(nt, id, "block") < 0 && argc == 1 && !user_defines_or_reads(c, name) &&
-        (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
-         sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation"))) ||
-       /* and their BLOCK forms, which had no arm of their own and fell to the
-          loud NoMethodError -- the array emitters they re-dispatch to serve
-          the block and the blockless shape alike. */
-       (nt_ref(nt, id, "block") >= 0 && argc == 1 && !user_defines_or_reads(c, name) &&
-        (sp_streq(name, "zip") ||
-         /* the repeated pair, which the array emitters serve as they do
-            combination's; the boxed receiver had no arm and raised */
-         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation") ||
-         /* each_slice / each_cons answer the receiver, and the wrapper that
-            hands it back re-enters this node -- which a pending safe-nav guard
-            re-enters too, and the two do not compose: the inner pass finds no
-            emitter and bakes a NoMethodError whose argument does not even
-            typecheck. Leave the guarded shape on its existing path (it raises
-            at run time, as it did before) rather than failing the build. */
-         sp_streq(name, "each_cons") || sp_streq(name, "each_slice"))))) {
+  int rd_kind = recv >= 0 && rt == TY_POLY && g_n_argov < MAX_ARG_OVERRIDE && g_poly_redispatch_id != id
+                ? poly_redispatch_kind(c, id, name, argc) : 0;
+  if (rd_kind) {
     int ta = ++g_tmp;
-    /* `each_slice(n) { }` / `each_cons(n) { }` answer the RECEIVER, and for a
-       Hash that is the hash itself, not the pairs the re-dispatch materializes
-       from it. Bind the receiver once, materialize from that binding, and hand
-       the binding back -- the same shape emit_iter_value_expr uses for a
-       receiver rewritten to `__enum_to_a`. */
-    int ret_recv = (nt_ref(nt, id, "block") >= 0 &&
-                    (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
-                     sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")));
+    int ret_recv = rd_kind == 2;
+    if (g_plan_check) {   /* the re-entry, held against the plan before the view */
+      int pa_frame = pa_begin(id);
+      pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + (ret_recv ? PB_REDISPATCH_RECV : PB_REDISPATCH), -1, TY_UNKNOWN,
+                 PC_SAME);
+      pa_end(c, pa_frame, cplan_poly_redispatch(c, id));
+    }
     int tbox = ret_recv ? ++g_tmp : 0;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     if (ret_recv) {
