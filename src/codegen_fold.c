@@ -10452,26 +10452,35 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   const NodeTable *nt = c->nt;
   int defcls = cid;
   /* the target is the plan of the call being emitted (g_nd_call_id) when
-     this dispatch is that call's own -- its receiver class and its name --
-     and the plan is the class's own lookup; otherwise (an operator answered
+     this dispatch is that call's own name: the node's own plan when it is
+     cid's lookup, otherwise the plan read with cid for its self or
+     receiver (an instance_exec self, a body emitted for an inheriting
+     class, a poly arm). A dispatch under another name (an operator answered
      through another method, a to_ary probe), and under --plan-check as the
-     assertion, the dispatch looks the name up itself */
+     assertion, looks the name up itself */
+  CallPlan dpc;
   const CallPlan *dpl = NULL;
-  int mi = -1;
+  int mi = -1, served = 0;
   if (g_nd_call_id >= 0) {
     const char *cnm = nt_str(nt, g_nd_call_id, "name");
-    dpl = cplan_user(c, g_nd_call_id);
-    if (dpl->chain && dpl->via == UC_INST && dpl->owner_ci == cid && cnm && sp_streq(cnm, name)) {
-      mi = dpl->mi;
-      defcls = c->scopes[mi].class_id;
+    if (cnm && sp_streq(cnm, name)) {
+      dpc = *cplan_user(c, g_nd_call_id);
+      if (!(dpc.chain && dpc.via == UC_INST && dpc.owner_ci == cid))
+        dpc = *cplan_user_in(c, g_nd_call_id, cid,
+                             g_ie_class_id == cid ? CPX_IE : g_emitting_class_id == cid ? CPX_EMIT : CPX_ARM);
+      served = 1;
+      if (dpc.chain && dpc.via == UC_INST && dpc.owner_ci == cid) {
+        mi = dpc.mi;
+        defcls = c->scopes[mi].class_id;
+        dpl = &dpc;
+      }
       if (g_plan_check) cplan_served("dispatch");
     }
-    else dpl = NULL;
   }
-  if (g_plan_check || mi < 0) {
+  if (g_plan_check || !served) {
     int odef = cid;
     int omi = comp_method_in_chain(c, cid, name, &odef);
-    if (mi < 0) {
+    if (!served) {
       if (g_plan_check && omi >= 0)
         fprintf(stderr, "plan-check: cplan-fallback: dispatch node %d %s\n", g_nd_call_id, name);
       mi = omi; defcls = odef;
