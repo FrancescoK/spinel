@@ -250,7 +250,84 @@ static void ucall_resolver_report(Compiler *c) {
                   " inference %d agree %d differ %d none\n", ac, dc, rc, nc, ai, di, ni);
 }
 
+/* --plan-check for refusals (#7100, CP_REFUSE): each refusal codegen
+   reports outside a probe (unsup_leave), at the node it names, held against
+   the call plan's (cplan_refuse). Classified once, at the end:
+     ok         both refuse the node, in the same words
+     wrong      the plan refuses the node and codegen says something else,
+                or emits the call
+     codegen    codegen refuses a node the plan decides nothing for: its own
+                state decided it. Counted by kind: gap (the internal dump),
+                nomethod (CRuby's NoMethodError/NameError words), feature (a
+                documented limit)
+     unreached  the plan refuses a call codegen never emitted (dead code, or
+                the rest of a unit a refusal abandoned)
+   A refusal raised while analysis runs is not codegen's and is not held.
+   The report is printed by ucall_report, or at exit for a refused run. */
+typedef struct { int id; char *msg; } RefuseObs;
+static RefuseObs *g_rfobs = NULL;
+static int g_nrfobs = 0, g_rfobs_cap = 0;
+static Compiler *g_rfc = NULL;   /* the compiler, once codegen refuses */
+static int g_rf_node = -1;       /* the node the refusal being reported names */
+static int g_rf_done = 0;
+
+static void refuse_report(Compiler *c) {
+  if (g_rf_done || !c) return;
+  g_rf_done = 1;
+  int ok = 0, wrong = 0, gap = 0, nom = 0, feat = 0, unr = 0;
+  int n = c->nt->count;
+  unsigned char *seen = calloc((size_t)n + 1, 1);
+  for (int i = 0; i < g_nrfobs; i++) {
+    int id = g_rfobs[i].id;
+    const char *m = g_rfobs[i].msg;
+    if (id >= 0 && id < n) seen[id] = 1;
+    const CallPlan *p = cplan_refuse(c, id);
+    if (p->dispatch == CP_REFUSE) {
+      if (sp_streq(p->msg, m)) ok++;
+      else {
+        wrong++;
+        fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen \"%s\"\n", id, p->msg, m);
+      }
+    }
+    else if (!strncmp(m, "unsupported ", 12) && strstr(m, ": node ")) gap++;
+    else if (strstr(m, "(NoMethodError)") || strstr(m, "(NameError)")) nom++;
+    else feat++;
+  }
+  for (int id = 0; id < n; id++) {
+    if (seen[id] || nt_kind(c->nt, id) != NK_CallNode) continue;
+    const CallPlan *p = cplan_refuse(c, id);
+    if (p->dispatch != CP_REFUSE) continue;
+    if (id < g_ucemit_cap && g_ucemit[id]) {
+      wrong++;
+      fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen emitted the call\n", id, p->msg);
+    }
+    else unr++;
+  }
+  free(seen);
+  fprintf(stderr, "plan-check: refuse: %d ok, %d wrong, %d codegen (%d gap, %d nomethod, %d feature), %d unreached\n",
+          ok, wrong, gap + nom + feat, gap, nom, feat, unr);
+}
+static void refuse_report_at_exit(void) { refuse_report(g_rfc); }
+
+/* unsupported / unsupported_feature: the node a codegen refusal names */
+static void refuse_at(Compiler *c, int id) {
+  if (!g_plan_check || !g_scopes_settled) return;
+  if (!g_rfc) { g_rfc = c; atexit(refuse_report_at_exit); }
+  g_rf_node = id;
+}
+static void refuse_observe(const char *msg) {
+  if (!g_rfc || g_rf_node < 0) return;
+  if (g_nrfobs == g_rfobs_cap) {
+    g_rfobs_cap = g_rfobs_cap ? g_rfobs_cap * 2 : 16;
+    g_rfobs = realloc(g_rfobs, (size_t)g_rfobs_cap * sizeof *g_rfobs);
+  }
+  g_rfobs[g_nrfobs].id = g_rf_node;
+  g_rfobs[g_nrfobs++].msg = strdup(msg);
+  g_rf_node = -1;
+}
+
 void ucall_report(Compiler *c) {
+  refuse_report(c);
   ucall_resolver_report(c);
   cplan_served_report();
   pa_report();
@@ -343,6 +420,7 @@ static void diag_record(const char *file, int line, const char *msg) {
    is armed (the unit is abandoned), else out of the process. */
 static __attribute__((noreturn)) void unsup_leave(const char *file, int line, const char *msg) {
   diag_record(file, line, msg);
+  refuse_observe(msg);
   if (line > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, line, msg);
   else fprintf(stderr, "spinel: %s\n", msg);
   if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
@@ -2396,6 +2474,7 @@ const char *rename_local(const char *nm) {
    noise when the answer is "this is a documented limit". #2652 / #2667 / #2668 */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg) {
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   unsup_leave(file, ln, msg);
 }
@@ -2404,6 +2483,7 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
   /* Silent emittability probe (dynamic-send arm selection): unwind without a
      diagnostic, the caller just drops this arm. */
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  refuse_at(c, id);
   const char *ty = nt_type(c->nt, id);
   /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
      line the parser stamped (the same position the #line machinery uses), so

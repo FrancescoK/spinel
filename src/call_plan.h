@@ -22,10 +22,20 @@ typedef enum {
   CP_DIRECT,    /* one method, whatever the receiver's runtime class */
   CP_SWITCH,    /* a switch on the runtime class: a descendant has its own
                    implementation, or a boxed receiver */
-  CP_PER_ARM    /* a switch whose arms take the call's arguments differently,
+  CP_PER_ARM,   /* a switch whose arms take the call's arguments differently,
                    so each arm lays them out for itself (an instance dispatch:
                    dispatch_arms_disagree) */
+  CP_REFUSE     /* the compiler refuses the call (cplan_refuse): rkind, msg */
 } CplanDispatch;
+
+/* what a refusal says the call is */
+typedef enum {
+  CR_NONE,
+  CR_FEATURE,    /* a documented limit (unsupported_feature) */
+  CR_NOMETHOD,   /* the program's NoMethodError, proved at compile time */
+  CR_NAMEERROR,  /* the program's NameError (an undefined bare name) */
+  CR_GAP         /* a codegen gap (unsupported) */
+} CplanRefuse;
 
 typedef struct {
   int mi;                  /* the method scope, or -1 */
@@ -39,9 +49,22 @@ typedef struct {
                               a method reached another way (an operator's
                               stand-in, a subclass's override of a reader, a
                               reopen) */
+  unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
+  const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+
+/* ---- CP_REFUSE: a call the compiler refuses ----
+   Whether codegen refuses the call node id, and in which words, decided
+   from the node, scope and class tables and the settled types alone. The
+   plan names the node the refusal is reported at: a refusal codegen
+   raises for an outer call at its receiver is the receiver's plan. The
+   answer is dispatch CP_REFUSE with rkind and msg, or CP_NONE (no refusal
+   the plan can decide; codegen may still refuse on its own state). It
+   never runs inference and never emits. --plan-check holds it against the
+   refusals codegen reports (refuse_observe, codegen_util.c). */
+const CallPlan *cplan_refuse(Compiler *c, int id);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an

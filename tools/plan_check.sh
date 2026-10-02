@@ -18,8 +18,10 @@ SP=$ROOT/bin/spinel
 JOBS=${PLAN_CHECK_JOBS:-$(nproc)}
 OUT=$(mktemp "${TMPDIR:-/tmp}/spinel-plan-check.XXXXXX")
 PARTS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-plan-check-parts.XXXXXX")
-# one file per program: the parallel jobs' lines must not interleave
-{ ls test/*.rb benchmark/*.rb packages/*/test/*.rb 2>/dev/null
+# one file per program: the parallel jobs' lines must not interleave. The
+# refused programs (test/reject, test/collect) are compiled too, for the
+# refusal shadow (refuse-*)
+{ ls test/*.rb benchmark/*.rb packages/*/test/*.rb test/reject/*.rb test/collect/*.rb 2>/dev/null
   [ -f build/optcarrot-single.rb ] && echo build/optcarrot-single.rb; } |
   xargs -P "$JOBS" -I{} sh -c '
     "$2" -c --no-line-map --plan-check "$1" -o /dev/null 2>&1 | grep "^plan-check:" | sed "s|^|$1: |" \
@@ -69,5 +71,13 @@ psum=$(grep ': plan-check: poly-arms: ' "$OUT" | sed 's/.*poly-arms: //' |
 grep ': plan-check: poly-conflict:' "$OUT" | head -20
 echo "plan-check: poly arms: $psum"
 ppc=$(grep -c ': plan-check: poly-conflict:' "$OUT")
+# refusals: the ones codegen reports against the plan's (CP_REFUSE)
+rfsum=$(grep ': plan-check: refuse: ' "$OUT" | sed 's/.*refuse: //' | tr -d '(),' |
+  awk '{ ok += $1; w += $3; cg += $5; g += $7; n += $9; f += $11; u += $13 }
+       END { printf "%d refuse-ok, %d refuse-wrong, %d refuse-codegen (%d gap, %d nomethod, %d feature), %d refuse-unreached",
+             ok, w, cg, g, n, f, u }')
+grep ': plan-check: refuse-wrong:' "$OUT" | head -20
+echo "plan-check: refusals: $rfsum"
+rfw=$(grep -c ': plan-check: refuse-wrong:' "$OUT")
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ]

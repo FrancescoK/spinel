@@ -40,6 +40,7 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
   p->chain = 0;
+  p->rkind = CR_NONE; p->msg = NULL;
 }
 
 /* the class a builtin receiver kind is reopened as, or NULL */
@@ -413,6 +414,15 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   g_cp_name[id] = nm ? strdup(nm) : NULL;
   g_cp_have[id] = 1;
   return &g_cp_memo[id];
+}
+
+/* ---- CP_REFUSE ---- */
+
+const CallPlan *cplan_refuse(Compiler *c, int id) {
+  static CallPlan none;
+  (void)c; (void)id;
+  cplan_set(&none, -1, -1, UC_NONE, CP_NONE);
+  return &none;
 }
 
 /* ---- CP_POLY ---- */
