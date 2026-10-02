@@ -26,7 +26,9 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
           later $t repeats it
      $eN  argument N by emit_expr
      $bN  argument N boxed (emit_boxed)
-     $fN  argument N as a double (emit_float_expr) */
+     $fN  argument N as a double (emit_float_expr)
+     $iN  argument N as an sp_int (emit_int_expr)
+     $sN  argument N as a String (emit_str_expr) */
 static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
   char *r = NULL;
   int t = 0;
@@ -48,11 +50,14 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, "%d", t);
       p++;
     }
-    else if (p[0] == '$' && (p[1] == 'e' || p[1] == 'b' || p[1] == 'f') &&
+    else if (p[0] == '$' && (p[1] == 'e' || p[1] == 'b' || p[1] == 'f' ||
+                             p[1] == 'i' || p[1] == 's') &&
              p[2] >= '0' && p[2] <= '9' && p[2] - '0' < argc) {
       int a = argv[p[2] - '0'];
       if (p[1] == 'e') emit_expr(c, a, b);
       else if (p[1] == 'b') emit_boxed(c, a, b);
+      else if (p[1] == 'i') emit_int_expr(c, a, b);
+      else if (p[1] == 's') emit_str_expr(c, a, b);
       else emit_float_expr(c, a, b);
       p += 2;
     }
