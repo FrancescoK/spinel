@@ -10516,13 +10516,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   /* Unify return type across all descendant implementations so that even
      when the base method has TY_VOID/TY_UNKNOWN, a subclass override
      with a real return type makes the dispatch virtual and typed. */
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!is_descendant(c, k, cid)) continue;
-    int kd = -1;
-    int kmi = comp_method_in_chain(c, k, name, &kd);
-    if (kmi >= 0 && (TyKind)c->scopes[kmi].ret != TY_UNKNOWN)
-      ret = ty_unify(ret, (TyKind)c->scopes[kmi].ret);
-  }
+  ret = dispatch_ret_over(c, cid, name, 0, mi, ret, -1);
   /* A yielding method answers what this call's block makes it answer, which
      its scope's return type (the last splice's) does not say: the arms are its
      proc-form clones, whose boxed value the switch unboxes into the call's type */

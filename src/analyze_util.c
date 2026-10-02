@@ -1977,6 +1977,20 @@ static int method_block_presence(Compiler *c, int mi) {
   return with ? 1 : 0;
 }
 
+TyKind dispatch_ret_over(Compiler *c, int cid, const char *name, int cmeth, int base_mi, TyKind r,
+                         int call_id) {
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int kmi = cmeth ? comp_cmethod_in_chain(c, ds[i], name, NULL)
+                    : comp_method_in_chain(c, ds[i], name, NULL);
+    if (kmi < 0 || kmi == base_mi) continue;
+    r = ty_unify(r, call_id >= 0 && c->scopes[kmi].yields ? method_call_ret(c, kmi, call_id)
+                                                          : (TyKind)c->scopes[kmi].ret);
+  }
+  return r;
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block

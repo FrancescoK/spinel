@@ -915,6 +915,14 @@ int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
    name itself -- an instance's method or reader, a class constant's class
    method -- rather than through a top-level def? srt is recv's type. */
 int    send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name);
+/* What a dispatch of `name` over cid's subtree answers: r (the base method
+   base_mi's answer) unified with the return of every other implementation a
+   class in the subtree runs -- its chain's, so a module a subclass includes
+   counts -- class methods when cmeth. A yielding one answers call_id's
+   block (method_call_ret) when call_id >= 0. Inference's object and
+   implicit-self calls and codegen's dispatch switch share it. */
+TyKind dispatch_ret_over(Compiler *c, int cid, const char *name, int cmeth, int base_mi, TyKind r,
+                         int call_id);
 /* 1 iff `node` is a constant path naming an `ffi_const` declaration, with its
    value in *out. Such a name is a VALUE, not a class, wherever the two are
    told apart. */
