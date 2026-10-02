@@ -314,7 +314,12 @@ static void refuse_report(Compiler *c) {
   fprintf(stderr, "plan-check: refuse: %d ok, %d wrong, %d codegen (%d gap, %d nomethod, %d feature), %d unreached\n",
           ok, wrong, gap + nom + feat, gap, nom, feat, unr);
 }
-static void refuse_report_at_exit(void) { refuse_report(g_rfc); }
+/* a refused run: the plan readers that served it too (ucall_report's) */
+static void refuse_report_at_exit(void) {
+  if (g_rf_done) return;
+  refuse_report(g_rfc);
+  cplan_served_report();
+}
 
 /* unsupported / unsupported_feature: the node a codegen refusal names */
 static void refuse_at(Compiler *c, int id) {
@@ -2580,6 +2585,16 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
   else
     snprintf(msg, cap, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
   return CR_GAP;
+}
+
+/* A reader of the call plan's refusal (CP_REFUSE): the plan refuses node id
+   by the decision `from`, so codegen raises it in the plan's words (site: the
+   --plan-check reader name). Returns when the plan does not. */
+void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
+  const CallPlan *p = cplan_refuse(c, id);
+  if (p->dispatch != CP_REFUSE || p->rfrom != from) return;
+  if (g_plan_check && !g_unsup_probe) cplan_served(site);
+  unsupported_feature(c, id, p->msg);
 }
 
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {

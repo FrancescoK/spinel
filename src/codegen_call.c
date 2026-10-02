@@ -2028,8 +2028,11 @@ static int basicobject_own_method(const char *n) {
    walked. Returns 1 if it reported (never returns -- `unsupported_feature`
    is noreturn). #2652 / #2667 / #2668 */
 int diagnose_unsupported_call(Compiler *c, int id) {
+  refuse_from_plan(c, id, CRF_LIMIT, "refuse-limit");
+  /* extend and define_singleton_method: the plan leaves them to codegen */
   int stop;
   const char *why = cplan_feature_why(c, id, &stop);
+  if (why && g_plan_check && !g_unsup_probe) fprintf(stderr, "plan-check: cplan-fallback: refuse-limit node %d\n", id);
   if (why) unsupported_feature(c, id, why);
   int recv = stop ? -1 : nt_ref(c->nt, id, "receiver");
   if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode)

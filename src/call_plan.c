@@ -40,7 +40,7 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
   p->chain = 0;
-  p->rkind = CR_NONE; p->msg = NULL;
+  p->rkind = CR_NONE; p->msg = NULL; p->rfrom = CRF_NONE;
 }
 
 /* the class a builtin receiver kind is reopened as, or NULL */
@@ -724,42 +724,73 @@ int cplan_bind_call_gap(Compiler *c, int id) {
 
 static CallPlan *g_rf_memo = NULL;
 static unsigned char *g_rf_have = NULL;
+static char **g_rf_name = NULL;   /* the name each entry was resolved under (cplan_user) */
 static int g_rf_cap = 0;
 
-static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p) {
+static void cplan_refuse_set(CallPlan *p, int from, int rkind, const char *msg, char *buf, size_t cap) {
+  p->dispatch = CP_REFUSE; p->rfrom = (unsigned char)from; p->rkind = (unsigned char)rkind;
+  snprintf(buf, cap, "%s", msg);
+  p->msg = buf;
+}
+
+/* in the order codegen meets them: the prepasses, then the emitters */
+static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, size_t cap) {
   cplan_set(p, -1, -1, UC_NONE, CP_NONE);
-  int stop;
-  const char *why = cplan_feature_why(c, id, &stop);
-  /* an object's singleton support (extend_module_is_a, singleton_dsm_local)
-     answers these first; the limit is the refusal only once it declines,
-     which codegen alone knows */
-  const char *nm = why ? nt_str(c->nt, id, "name") : NULL;
-  if (nm && (sp_streq(nm, "extend") || sp_streq(nm, "define_singleton_method"))) why = NULL;
-  if (why) { p->dispatch = CP_REFUSE; p->rkind = CR_FEATURE; p->msg = strdup(why); return; }
-  const char *what = cplan_runtime_send_what(c, id);
-  if (!what) what = cplan_runtime_const_get_what(c, id);
-  if (!what) what = cplan_binding_what(c, id);
-  if (!what) what = cplan_eval_what(c, id);
-  if (!what && (cplan_io_reopen_yields(c, id) || cplan_bind_call_gap(c, id))) what = "call";
-  if (what) {
-    char msg[2400];
-    p->rkind = (unsigned char)unsup_message(c, id, what, -1, msg, sizeof msg);
-    p->dispatch = CP_REFUSE; p->msg = strdup(msg);
+  if (nt_kind(c->nt, id) != NK_CallNode) return;
+  const char *what = NULL;
+  int from = CRF_NONE;
+  if ((what = cplan_runtime_send_what(c, id))) from = CRF_SEND;
+  else if ((what = cplan_runtime_const_get_what(c, id))) from = CRF_CONST_GET;
+  else if ((what = cplan_binding_what(c, id))) from = CRF_BINDING;
+  if (!what) {
+    int stop;
+    const char *why = cplan_feature_why(c, id, &stop);
+    /* an object's singleton support (extend_module_is_a, singleton_dsm_local)
+       answers these first; the limit is the refusal only once it declines,
+       which codegen alone knows */
+    const char *nm = why ? nt_str(c->nt, id, "name") : NULL;
+    if (nm && (sp_streq(nm, "extend") || sp_streq(nm, "define_singleton_method"))) why = NULL;
+    if (why) { cplan_refuse_set(p, CRF_LIMIT, CR_FEATURE, why, buf, cap); return; }
   }
+  if (!what && (what = cplan_eval_what(c, id))) from = CRF_EVAL;
+  if (!what && cplan_io_reopen_yields(c, id)) { what = "call"; from = CRF_IO_REOPEN; }
+  if (!what && cplan_bind_call_gap(c, id)) { what = "call"; from = CRF_BIND_CALL; }
+  if (!what) return;
+  /* the prepasses run before any class is emitted; the emitters' refusals
+     here are no bare name's NameError, the one wording that reads it */
+  char msg[2400];
+  int rk = unsup_message(c, id, what, -1, msg, sizeof msg);
+  cplan_refuse_set(p, from, rk, msg, buf, cap);
 }
 
 const CallPlan *cplan_refuse(Compiler *c, int id) {
-  static CallPlan none;
-  if (id < 0 || id >= c->node_cap) { cplan_set(&none, -1, -1, UC_NONE, CP_NONE); return &none; }
+  static CallPlan fresh;
+  static char fresh_msg[2400];
+  if (id < 0 || id >= c->node_cap) { cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE); return &fresh; }
+  int plain = cplan_plain_ctx();
+  const char *nm = nt_str(c->nt, id, "name");
+  if (plain && id < g_rf_cap && g_rf_have[id]) {
+    const char *mn = g_rf_name[id];
+    if (mn ? nm && sp_streq(mn, nm) : !nm) return &g_rf_memo[id];
+    plain = 0;
+  }
+  cplan_refuse_resolve(c, id, &fresh, fresh_msg, sizeof fresh_msg);
+  if (!plain) return &fresh;
   if (id >= g_rf_cap) {
     int ncap = g_rf_cap ? g_rf_cap : 1024;
     while (ncap <= id) ncap *= 2;
     g_rf_memo = realloc(g_rf_memo, (size_t)ncap * sizeof *g_rf_memo);
     g_rf_have = realloc(g_rf_have, (size_t)ncap);
+    g_rf_name = realloc(g_rf_name, (size_t)ncap * sizeof *g_rf_name);
     memset(g_rf_have + g_rf_cap, 0, (size_t)(ncap - g_rf_cap));
+    memset(g_rf_name + g_rf_cap, 0, (size_t)(ncap - g_rf_cap) * sizeof *g_rf_name);
     g_rf_cap = ncap;
   }
-  if (!g_rf_have[id]) { cplan_refuse_resolve(c, id, &g_rf_memo[id]); g_rf_have[id] = 1; }
+  g_rf_memo[id] = fresh;
+  if (fresh.msg) g_rf_memo[id].msg = strdup(fresh.msg);
+  free(g_rf_name[id]);
+  g_rf_name[id] = nm ? strdup(nm) : NULL;
+  g_rf_have[id] = 1;
   return &g_rf_memo[id];
 }
 

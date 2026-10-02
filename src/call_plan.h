@@ -37,6 +37,19 @@ typedef enum {
   CR_GAP         /* a codegen gap (unsupported) */
 } CplanRefuse;
 
+/* which decision refuses it, in the order codegen meets them: the prepasses
+   before any emission, then the emitters' own */
+typedef enum {
+  CRF_NONE,
+  CRF_SEND,        /* a send with a runtime name (reject_runtime_send) */
+  CRF_CONST_GET,   /* a const_get with a runtime name (reject_runtime_const_get) */
+  CRF_BINDING,     /* a bare binding (reject_binding) */
+  CRF_LIMIT,       /* a documented limit (diagnose_unsupported_call) */
+  CRF_EVAL,        /* Kernel#eval of a runtime string (diagnose_eval_call) */
+  CRF_IO_REOPEN,   /* an IO reopening that yields (emit_io_reopen_call) */
+  CRF_BIND_CALL    /* a bind_call on a Class value with an armless class */
+} CplanRefuseFrom;
+
 typedef struct {
   int mi;                  /* the method scope, or -1 */
   short owner_ci;          /* the class whose chain was searched, or -1 */
@@ -51,6 +64,7 @@ typedef struct {
                               reopen) */
   unsigned char rkind;     /* CP_REFUSE: CplanRefuse */
   const char *msg;         /* CP_REFUSE: the message, as the compiler prints it */
+  unsigned char rfrom;     /* CP_REFUSE: CplanRefuseFrom */
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
@@ -60,10 +74,13 @@ const CallPlan *cplan_user(Compiler *c, int id);
    from the node, scope and class tables and the settled types alone. The
    plan names the node the refusal is reported at: a refusal codegen
    raises for an outer call at its receiver is the receiver's plan. The
-   answer is dispatch CP_REFUSE with rkind and msg, or CP_NONE (no refusal
-   the plan can decide; codegen may still refuse on its own state). It
-   never runs inference and never emits. --plan-check holds it against the
-   refusals codegen reports (refuse_observe, codegen_util.c). */
+   answer is dispatch CP_REFUSE with rkind, rfrom and msg, or CP_NONE (no
+   refusal the plan can decide; codegen may still refuse on its own state).
+   It never runs inference and never emits. Kept per node where the node is
+   read as itself; elsewhere computed afresh, and its msg lasts until the
+   next such call. Codegen raises the plan's refusal where it meets it;
+   --plan-check holds the plan against the refusals codegen reports
+   (refuse_observe, codegen_util.c). */
 const CallPlan *cplan_refuse(Compiler *c, int id);
 /* the documented-limit family: the node's message or NULL; *stop 0 when
    a limit down the receiver chain is the one to report */
