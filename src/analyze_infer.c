@@ -4316,73 +4316,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (op && op->result != TY_UNKNOWN) return op->result;
   }
   if (recv >= 0 && rt == TY_IO) {
-    /* answered true or false, whatever the name (the catch-all below is poly) */
-    if (sp_streq(name, "respond_to?")) return TY_BOOL;
-    if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
-        sp_streq(name, "path") || sp_streq(name, "to_path")) return TY_STRING;
-    if (sp_streq(name, "read") && nt_ref(nt, id, "arguments") >= 0) return TY_STRING;
-    if (sp_streq(name, "readlines")) return TY_STR_ARRAY;
-    if (sp_streq(name, "write") || sp_streq(name, "syswrite") || sp_streq(name, "pos") ||
-        sp_streq(name, "tell") || sp_streq(name, "seek") || sp_streq(name, "rewind"))
-      return TY_INT;
-    if (sp_streq(name, "close")) return TY_POLY;      /* nil (#2801) */
-    if (sp_streq(name, "print") || sp_streq(name, "puts")) return TY_NIL;
-    if (sp_streq(name, "flush") || sp_streq(name, "binmode")) return TY_IO;  /* self (#2799) */
+    {
+      const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) return op->result;
+    }
     /* sync= answers its argument, whatever it is; only its truth sets the mode */
     if (sp_streq(name, "sync=") && argc >= 1) return infer_type(c, argv[0]);
-    if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof") ||
-        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
-        sp_streq(name, "sync") ||
-        sp_streq(name, "autoclose?") ||
-        /* the File::Stat predicates: a stat is carried as the handle itself */
-        sp_streq(name, "file?") || sp_streq(name, "directory?") ||
-        sp_streq(name, "symlink?") || sp_streq(name, "owned?") ||
-        sp_streq(name, "grpowned?") || sp_streq(name, "setuid?") ||
-        sp_streq(name, "setgid?") || sp_streq(name, "sticky?") ||
-        sp_streq(name, "socket?") ||
-        sp_streq(name, "==") || sp_streq(name, "equal?") || sp_streq(name, "eql?"))
-      return TY_BOOL;
-    if (sp_streq(name, "flock")) return TY_POLY;   /* 0, or false for a held LOCK_NB */
-    if (sp_streq(name, "fileno") || sp_streq(name, "to_i") || sp_streq(name, "lineno") ||
-        sp_streq(name, "lineno=") || sp_streq(name, "pos=") ||
-        sp_streq(name, "truncate") ||
-        sp_streq(name, "fsync") || sp_streq(name, "fdatasync") || sp_streq(name, "getbyte") ||
-        (sp_streq(name, "chown") && argc == 2) ||   /* (#3104) */
-        sp_streq(name, "sysseek") || sp_streq(name, "size") || sp_streq(name, "chmod") ||
-        sp_streq(name, "mode"))
-      return TY_INT;
-    /* File::Stat's numeric fields and its mode predicates (#3765). size? is an
-       int-or-nil (the sentinel), so it stays TY_INT like the other counts. */
-    if (argc == 0 &&
-        (sp_streq(name, "uid") || sp_streq(name, "gid") || sp_streq(name, "nlink") ||
-         sp_streq(name, "dev") || sp_streq(name, "ino") || sp_streq(name, "blksize") ||
-         sp_streq(name, "blocks") || sp_streq(name, "rdev") || sp_streq(name, "size?")))
-      return TY_INT;
-    if (argc == 0 &&
-        (sp_streq(name, "pipe?") || sp_streq(name, "zero?") || sp_streq(name, "readable?") ||
-         sp_streq(name, "writable?") || sp_streq(name, "executable?") ||
-         sp_streq(name, "blockdev?") || sp_streq(name, "chardev?")))
-      return TY_BOOL;
-    if (sp_streq(name, "getc") || sp_streq(name, "readchar") || sp_streq(name, "readpartial") ||
-        sp_streq(name, "sysread") || sp_streq(name, "ftype")) return TY_STRING;
-    if (sp_streq(name, "inspect") && argc == 0) return TY_STRING;
-    if (sp_streq(name, "nil?") && argc == 0) return TY_BOOL;
-    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-                      sp_streq(name, "instance_of?"))) return TY_BOOL;
-    /* Object's hash and object_id on the handle: the generic arms already
-       emit them (the pointer hash, the pointer), but the catch-all at the end
-       of this block typed the slot poly, so the C they produced refused to
-       compile. respond_to? stays untyped on purpose: the compile-time fold
-       reads the analyze-time probe, which that same catch-all answers for
-       every name, so a typed slot would turn today's refusal into a wrong
-       `true` for `f.respond_to?(:nope)`. */
-    if (argc == 0 && (sp_streq(name, "hash") || sp_streq(name, "object_id") ||
-                      sp_streq(name, "__id__"))) return TY_INT;
-    /* the readiness family answers the handle itself or nil -- a nullable
-       sp_File*, which TY_IO already models (NULL is nil) */
-    if (sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
-        sp_streq(name, "wait_priority") || sp_streq(name, "wait"))
-      return TY_IO;
     /* socket methods on the IO handle (#2922) */
     if (sp_feature_required("socket")) {
       if (sp_streq(name, "accept") && argc == 0) return TY_IO;
@@ -4412,21 +4351,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if ((sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock")) &&
         an_nonblock_no_exception(c, id))
       return TY_POLY;
-    if (sp_streq(name, "readbyte") || sp_streq(name, "fcntl") ||
-        sp_streq(name, "pwrite") || sp_streq(name, "write_nonblock")) return TY_INT;
-    if (sp_streq(name, "pread") || sp_streq(name, "read_nonblock")) return TY_STRING;
-    if (sp_streq(name, "binmode?") || sp_streq(name, "close_on_exec?") ||
-        sp_streq(name, "close_on_exec=") || sp_streq(name, "autoclose=")) return TY_BOOL;
-    if (sp_streq(name, "to_io") || sp_streq(name, "reopen")) return TY_IO;
-    if (sp_streq(name, "ungetbyte") || sp_streq(name, "advise") ||
-        sp_streq(name, "close_read") || sp_streq(name, "close_write")) return TY_POLY;
-    if (sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ctime") ||
-        sp_streq(name, "birthtime")) return TY_TIME;
-    if (sp_streq(name, "stat") || sp_streq(name, "lstat")) return TY_IO;
-    if (sp_streq(name, "putc") || sp_streq(name, "printf") || sp_streq(name, "ungetc") ||
-        sp_streq(name, "pid")) return TY_POLY;
+    if (sp_streq(name, "write_nonblock")) return TY_INT;
+    if (sp_streq(name, "read_nonblock")) return TY_STRING;
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
-    if (sp_streq(name, "<<")) return TY_IO;   /* writes, returns self (chainable) */
     if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
         sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
         sp_streq(name, "each_codepoint")) {
