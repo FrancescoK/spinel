@@ -1155,6 +1155,117 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "flatten",          0,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
   { BOP_ANY_HASH, "assoc",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
   { BOP_ANY_HASH, "rassoc",           1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+
+  /* Array, any kind (BOP_ANY_ARRAY): the result kinds read off the name,
+     arity and block form, some derived from the receiver's kind. The rules
+     that read the operands, the block body, the receiver node or the
+     receiver's exact kind stay in infer_array_call (analyze_infer_recv.c). */
+  { BOP_ANY_ARRAY, "each",                  0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },  /* blockless: an external Enumerator */
+  { BOP_ANY_ARRAY, "reverse_each",          0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_entry",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_with_index",       0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_index",            0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_slice",            1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },  /* a materialized Enumerator */
+  { BOP_ANY_ARRAY, "each_cons",             1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "cycle",                 1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "slice_before",          1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "slice_after",           1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_with_object",      1, 127, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },  /* #2540 */
+  { BOP_ANY_ARRAY, "chunk",                 0, 127, BF_REQUIRED, TY_ENUMERATOR, BOPE_NONE },  /* [key, run] pairs */
+  { BOP_ANY_ARRAY, "select",                0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "reject",                0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "filter",                0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "find_all",              0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "sort_by",               0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "sort_by!",              0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "find",                  1, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },  /* find(ifnone): the element or the proc's value */
+  { BOP_ANY_ARRAY, "detect",                1, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "find",                  0,   0, BF_REQUIRED, BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "detect",                0,   0, BF_REQUIRED, BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "bsearch",               0, 127, BF_REQUIRED, BOPR_ELEM,     BOPE_NONE },  /* element or nil */
+  { BOP_ANY_ARRAY, "bsearch_index",         0, 127, BF_REQUIRED, TY_INT,        BOPE_NONE },  /* index, or nil */
+  { BOP_ANY_ARRAY, "at",                    1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE },  /* like [i] */
+  { BOP_ANY_ARRAY, "length",                0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
+  { BOP_ANY_ARRAY, "size",                  0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
+  { BOP_ANY_ARRAY, "count",                 0, 127, BF_ANY,      TY_INT,        BOPE_NONE },
+  { BOP_ANY_ARRAY, "first",                 1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* first(n)/last(n): a subarray */
+  { BOP_ANY_ARRAY, "last",                  1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "first",                 0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "last",                  0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "min",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE },  /* min(n)/max(n): a subarray */
+  { BOP_ANY_ARRAY, "max",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "min",                   0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "max",                   0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "pop",                   1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* pop(n)/shift(n): the removed subarray */
+  { BOP_ANY_ARRAY, "shift",                 1,   1, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "pop",                   0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "shift",                 0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "slice",                 2,   2, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "slice!",                2,   2, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* the removed subarray */
+  { BOP_ANY_ARRAY, "cycle",                 0, 127, BF_REQUIRED, TY_NIL,        BOPE_NONE },  /* the block form returns nil */
+  { BOP_ANY_ARRAY, "minmax",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* [min, max], same element kind */
+  { BOP_ANY_ARRAY, "join",                  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "pack",                  1,   1, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "inspect",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "to_s",                  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "empty?",                0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "include?",              0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "frozen?",               0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "all?",                  0,   1, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "any?",                  0,   1, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "none?",                 0,   1, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "one?",                  0,   1, BF_ANY,      TY_BOOL,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "select!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },  /* self, or nil when nothing was removed */
+  { BOP_ANY_ARRAY, "filter!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "reject!",               0, 127, BF_REQUIRED, TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "flatten!",              1,   1, BF_ANY,      TY_POLY,       BOPE_NONE },  /* self or nil */
+  { BOP_ANY_ARRAY, "uniq!",                 0,   0, BF_NONE,     TY_POLY,       BOPE_NONE },  /* self, or nil when a no-op */
+  { BOP_ANY_ARRAY, "compact!",              0,   0, BF_NONE,     TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "flatten!",              0,   0, BF_NONE,     TY_POLY,       BOPE_NONE },
+  { BOP_ANY_ARRAY, "keep_if",               0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* always self */
+  { BOP_ANY_ARRAY, "delete_if",             0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_index",            0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "reverse",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* flatten: typed arrays have no nesting */
+  { BOP_ANY_ARRAY, "sort",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "uniq",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "to_a",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "to_ary",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "deconstruct",           0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "entries",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "dup",                   0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "clone",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "compact",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "flatten",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "clear",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "transpose",             0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "shuffle",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "reverse!",              0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "sort!",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "shuffle!",              0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "rotate!",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "rotate",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "insert",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "concat",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "freeze",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "replace",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "values_at",             0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "union",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_NONE,     BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_REQUIRED, TY_POLY_ARRAY, BOPE_NONE },  /* fallback values mix in (#2368) */
+  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE },
+  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_REQUIRED, TY_NIL,        BOPE_NONE },  /* the block form returns nil */
+  { BOP_ANY_ARRAY, "product",               1, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* the block form returns self */
+  { BOP_ANY_ARRAY, "product",               1, 127, BF_ANY,      TY_POLY_ARRAY, BOPE_NONE },
+  { BOP_ANY_ARRAY, "product",               0,   0, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE },
+  { BOP_ANY_ARRAY, "combination",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* block forms return self */
+  { BOP_ANY_ARRAY, "permutation",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "repeated_combination",  0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "repeated_permutation",  0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "each_slice",            1,   1, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },  /* Ruby >= 3.1: the block form returns self */
+  { BOP_ANY_ARRAY, "each_cons",             1,   1, BF_REQUIRED, BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "delete",                1,   1, BF_REQUIRED, TY_POLY,       BOPE_NONE },  /* the not-found block's value mixes in */
+  { BOP_ANY_ARRAY, "delete",                1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "delete_at",             1,   1, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
@@ -1238,6 +1349,7 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_HASH_VAL:  return ty_hash_val(rt);
   case (int)BOPR_HASH_KEYS: return ty_array_of(ty_hash_key(rt));
   case (int)BOPR_HASH_VALS: return ty_array_of(ty_hash_val(rt));
+  case (int)BOPR_ELEM:      return ty_array_elem(rt);
   default:                  return op->result;
   }
 }

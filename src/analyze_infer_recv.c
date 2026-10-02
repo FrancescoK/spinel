@@ -632,13 +632,11 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   (void)a0;
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");
-    /* arr.each with no block -> an external Enumerator (#next/#peek/#rewind).
-       Block-form chains (each.with_index, each.map) are matched as the outer
-       call above and never reach this. */
-    if (block < 0 && argc == 0 &&
-        (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
-         sp_streq(name, "each_entry") ||
-         sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) { *out = TY_ENUMERATOR; return 1; }
+    /* builtin-op rows (builtin_ops.c) */
+    {
+      const BuiltinOp *op = bop_find(BOP_ANY_ARRAY, name, argc, block >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
+    }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
        before this one. */
@@ -656,18 +654,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          sp_streq(name, "find_index") || sp_streq(name, "chunk_while") ||
          sp_streq(name, "minmax_by")) &&
         !call_is_chain_receiver_with_block(c, id)) { *out = TY_ENUMERATOR; return 1; }
-    /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
-       Enumerator of slices / windows. The direct-block form has block >= 0 and
-       is excluded; a .map/.collect chain consumer is typed by its own arm above
-       (which accepts this TY_ENUMERATOR receiver and keeps the array result).
-       cycle(n) and slice_before/slice_after(pattern) materialize the same way. */
-    if (block < 0 && argc == 1 &&
-        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons") ||
-         sp_streq(name, "cycle") ||
-         sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) { *out = TY_ENUMERATOR; return 1; }
-    /* chunk { } with no chained consumer is an enumerator of [key, run]
-       pairs; the desugar interposes to_a so .map/.count chains compose. */
-    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) { *out = TY_ENUMERATOR; return 1; }
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP)
         { *out = infer_map_block_ty(c, id, block); return 1; }
@@ -694,15 +680,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         }
         { *out = TY_POLY_POLY_HASH; return 1; }
       }
-      if (sp_streq(name, "select") || sp_streq(name, "reject") ||
-          sp_streq(name, "filter") || sp_streq(name, "find_all") ||
-          sp_streq(name, "sort_by") ||
-          sp_streq(name, "sort_by!"))
-        { *out = rt; return 1; }
-      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && argc >= 1)
-        { *out = TY_POLY; return 1; }  /* find(ifnone): the element or the proc's value */
-      if (sp_streq(name, "find") || sp_streq(name, "detect"))
-        { *out = ty_array_elem(rt); return 1; }  /* returns an element */
     }
     /* grep/grep_v without a block filter by `pattern === e`, preserving the
        receiver's array type. */
@@ -725,7 +702,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                         a0 == TY_RANGE)) { *out = rt; return 1; }
       { *out = ty_array_elem(rt); return 1; }
     }
-    if (sp_streq(name, "at") && argc == 1) { *out = ty_array_elem(rt); return 1; }  /* like [i] */
     if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
       TyKind et = ty_array_elem(rt);
       if (argc == 2) {
@@ -749,8 +725,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     /* index returns nil on a miss -> poly (int-or-nil) */
     if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) &&
         (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) { *out = TY_POLY; return 1; }
-    if (sp_streq(name, "length") || sp_streq(name, "size") ||
-        sp_streq(name, "count") || sp_streq(name, "index") || sp_streq(name, "find_index")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "index") || sp_streq(name, "find_index")) { *out = TY_INT; return 1; }
     if (sp_streq(name, "sum")) {
       int blk = nt_ref(nt, id, "block");
       /* Strings summed from anything but a String seed only ever raise, and an
@@ -1006,11 +981,6 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = ty_array_elem(rt); return 1; }
     }
-    /* blockless each_with_object -> Enumerator (#2540); the blocked form is a
-       Ruby method by now (builtins/enumerable.rb) and types as one */
-    if (sp_streq(name, "each_with_object") && argc > 0 && argv && nt_ref(nt, id, "block") < 0)
-      { *out = TY_ENUMERATOR; return 1; }
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) { *out = rt; return 1; }  /* first(n)/last(n) -> subarray */
     /* `arr.take(n)`/`drop(n)` is a subarray, but `arr.lazy.take(n)` stays a lazy
        stage -- let the lazy pipeline (below) type the forced chain, not this
        eager subarray arm. */
@@ -1021,44 +991,18 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1 && !rcv_is_lazy)
         { *out = rt; return 1; }  /* subarray */
     }
-    /* min(n)/max(n) (no comparator block) take the n extreme elements -> a
-       subarray; sample(n) likewise. With a comparator block the n-arg form is
-       not lowered, so don't type it as an array (that would mis-drive codegen
-       into returning a scalar through an array type) -- leave it to reject. */
-    /* sample(random: rng) is the single-element form, not a count -- a sole
+    /* sample(n) takes n elements -> a subarray.
+       sample(random: rng) is the single-element form, not a count -- a sole
        keyword-hash arg selects one element (falls to the element arm) (#2970) */
     int sample_kw = sp_streq(name, "sample") && argc == 1 && argv &&
                     nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode");
-    if (((sp_streq(name, "min") || sp_streq(name, "max")) && block < 0 && argc == 1) ||
-        (sp_streq(name, "sample") && argc == 1 && !sample_kw))
+    if (sp_streq(name, "sample") && argc == 1 && !sample_kw)
       { *out = rt; return 1; }  /* n-arg form -> subarray */
-    if (sp_streq(name, "slice") && argc == 2) { *out = rt; return 1; }
-    if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 1)
-      { *out = rt; return 1; }  /* pop(n)/shift(n): the removed subarray */
     /* a countless blockless cycle is an Enumerator too (#3758) */
     if (sp_streq(name, "cycle") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
         !call_is_chain_receiver_with_block(c, id))
       { *out = TY_ENUMERATOR; return 1; }
-    if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0)
-      { *out = rt; return 1; }  /* blockless cycle(n): the receiver repeated n times */
-    if (sp_streq(name, "cycle") && nt_ref(nt, id, "block") >= 0)
-      { *out = TY_NIL; return 1; }  /* the block form returns nil (a valued break widens) */
-    if (sp_streq(name, "first") || sp_streq(name, "last") ||
-        sp_streq(name, "min") || sp_streq(name, "max") ||
-        sp_streq(name, "sample") ||
-        sp_streq(name, "pop") || sp_streq(name, "shift")) { *out = ty_array_elem(rt); return 1; }
-    if (sp_streq(name, "minmax")) { *out = rt; return 1; }  /* [min, max], same element kind */
-    if (sp_streq(name, "join"))                        { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "pack") && argc == 1)           { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "empty?") || sp_streq(name, "include?")) { *out = TY_BOOL; return 1; }
-    if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-         sp_streq(name, "none?") || sp_streq(name, "one?")) && argc <= 1) { *out = TY_BOOL; return 1; }
-    if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc >= 1)
-      { *out = TY_POLY; return 1; }  /* find(ifnone): the element or the proc's value */
-    if ((sp_streq(name, "bsearch") || sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0)
-      { *out = ty_array_elem(rt); return 1; }  /* element or nil */
-    if (sp_streq(name, "bsearch_index") && block >= 0) { *out = TY_INT; return 1; }  /* index, or nil */
+    if (sp_streq(name, "sample")) { *out = ty_array_elem(rt); return 1; }
     if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && block >= 0) {
       /* Typed arrays (int/str/float): in-place mutation preserves element type.
          The block param may be widened to TY_POLY when shared with other blocks,
@@ -1070,17 +1014,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
       { *out = bt != TY_UNKNOWN ? ty_array_of(bt) : rt; return 1; }
     }
-    if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")) &&
-        block >= 0) { *out = TY_POLY; return 1; }  /* self, or nil when nothing was removed */
-    if (sp_streq(name, "flatten!") && argc == 1) { *out = TY_POLY; return 1; }   /* self or nil */
-    if (sp_streq(name, "flatten") && argc == 1)
-      { *out = rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : rt; return 1; }  /* typed arrays have no nesting */
-    if ((sp_streq(name, "uniq!") || sp_streq(name, "compact!") || sp_streq(name, "flatten!")) &&
-        argc == 0 && block < 0) { *out = TY_POLY; return 1; }  /* self, or nil when a no-op */
-    if ((sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0)
-      { *out = rt; return 1; }  /* always self */
-    if (sp_streq(name, "find_index") || sp_streq(name, "index") || sp_streq(name, "rindex")) { *out = TY_INT; return 1; }  /* int or nil */
-    if (sp_streq(name, "each_index")) { *out = rt; return 1; }
+    if (sp_streq(name, "rindex")) { *out = TY_INT; return 1; }  /* int or nil */
     if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
          sp_streq(name, "unshift") || sp_streq(name, "prepend")) &&
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
@@ -1096,34 +1030,15 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = rt; return 1; }
     }
     if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
-        sp_streq(name, "reverse") || sp_streq(name, "sort") || sp_streq(name, "uniq") ||
-        sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "deconstruct") ||
-        sp_streq(name, "entries") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "compact") || sp_streq(name, "flatten") || sp_streq(name, "clear") ||
-        sp_streq(name, "transpose") ||
-        sp_streq(name, "shuffle") ||
-        (sp_streq(name, "union") && argc == 0) ||
-        sp_streq(name, "reverse!") || sp_streq(name, "sort!") || sp_streq(name, "shuffle!") ||
-
-        sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "prepend") || sp_streq(name, "concat") || sp_streq(name, "freeze") ||
+        sp_streq(name, "unshift") || sp_streq(name, "prepend") ||
         /* a fill value (or block value) the element type cannot hold makes
            the result a poly array (see below) */
         (sp_streq(name, "fill") && ((!fill_block(c, id) && argc >= 1 && argc <= 3) ||
                                     (fill_block(c, id) && argc <= 2)) &&
-         fill_value_fits(c, id, rt)) ||
-        sp_streq(name, "replace") ||
-        sp_streq(name, "values_at") ||
-        (sp_streq(name, "fetch_values") && block < 0)) { *out = rt; return 1; }
-    /* the block form mixes fallback values in -> poly array (#2368) */
-    if (sp_streq(name, "fetch_values") && block >= 0) { *out = TY_POLY_ARRAY; return 1; }
+         fill_value_fits(c, id, rt))) { *out = rt; return 1; }
     if (sp_streq(name, "fill") && ((!fill_block(c, id) && argc >= 1 && argc <= 3) ||
                                    (fill_block(c, id) && argc <= 2)))
       { *out = TY_POLY_ARRAY; return 1; }   /* the incompatible-value fill fell through above */
-    if (sp_streq(name, "zip") && block < 0) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "zip") && block >= 0) { *out = TY_NIL; return 1; }  /* block form returns nil */
-    if (sp_streq(name, "product") && argc >= 1)
-      { *out = nt_ref(nt, id, "block") >= 0 ? rt : TY_POLY_ARRAY; return 1; }  /* block form returns self */
-    if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) { *out = TY_POLY_ARRAY; return 1; }
     /* blockless: an Enumerator over the tuples, as CRuby answers. A poly-array
        receiver keeps the materialized Array -- chains reached through a
        container read it directly (#3614). */
@@ -1132,25 +1047,9 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_permutation") && argc == 1 && block < 0) { *out = cmb; return 1; }
       if (sp_streq(name, "repeated_combination") && argc == 1 && block < 0) { *out = cmb; return 1; } }
-    /* block forms: combination family returns self, each_slice/cons nil */
-    if (block >= 0 &&
-        (sp_streq(name, "combination") || sp_streq(name, "permutation") ||
-         sp_streq(name, "repeated_combination") || sp_streq(name, "repeated_permutation")))
-      { *out = rt; return 1; }
-    if (block >= 0 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) && argc == 1)
-      { *out = rt; return 1; }  /* Ruby >= 3.1: block form returns self */
-    if (sp_streq(name, "frozen?")) { *out = TY_BOOL; return 1; }
-    /* delete(v) { fallback }: the not-found block's value mixes in -> poly */
-    if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)
-      { *out = TY_POLY; return 1; }
-    if ((sp_streq(name, "delete_at") || sp_streq(name, "delete")) && argc == 1)
-      { *out = ty_array_elem(rt); return 1; }
-    if (sp_streq(name, "shift") && argc == 0) { *out = ty_array_elem(rt); return 1; }
-    if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 1) { *out = rt; return 1; }  /* removed subarray */
     if (sp_streq(name, "slice") && argc == 1 && nt_ref(nt, id, "block") < 0)
       /* slice(range) is a subarray; slice(i) one element (mirrors #[]) */
       { *out = infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt); return 1; }
-    if (sp_streq(name, "slice!") && argc == 2) { *out = rt; return 1; }  /* removed subarray */
     if (sp_streq(name, "slice!") && argc == 1)
       /* slice!(range) removes a subarray; slice!(i) removes one element */
       { *out = infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt); return 1; }
