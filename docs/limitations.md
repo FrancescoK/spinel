@@ -702,6 +702,8 @@ Not yet shared:
 
 - through a retained `scrub!` result that is appended to; `scrub!` with a block is also refused because the block would be ignored;
 
+- through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
+
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
