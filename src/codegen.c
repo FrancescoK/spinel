@@ -12842,7 +12842,7 @@ static char *build_types_json(Compiler *c) {
 }
 
 /* Write `text` to `path`; warn (but don't abort) on failure. */
-static int emit_write_file(const char *path, const char *text) {
+int write_text_file(const char *path, const char *text) {
   FILE *f = fopen(path, "wb");
   if (!f) {
     fprintf(stderr, "spinel: cannot write '%s'\n", path);
@@ -13953,7 +13953,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *psym_out = getenv("SPINEL_PROFILE_SYMBOL_MAP");
   if (psym_out && *psym_out) {
     char *json = build_symbol_map_json(c);
-    emit_write_file(psym_out, json);
+    write_text_file(psym_out, json);
     free(json);
   }
   /* --warn-widen, once, before the analysis-only modes return: the slots
@@ -13964,7 +13964,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *sym_out = getenv("SPINEL_EMIT_SYMBOL_MAP");
   if (sym_out && *sym_out) {
     char *json = build_symbol_map_json(c);
-    emit_write_file(sym_out, json);
+    write_text_file(sym_out, json);
     free(json);
     comp_free(c);
     return strdup("");
@@ -13972,7 +13972,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *rbs_out = getenv("SPINEL_EMIT_RBS");
   if (rbs_out && *rbs_out) {
     char *rbs = build_rbs_text(c);
-    emit_write_file(rbs_out, rbs);
+    write_text_file(rbs_out, rbs);
     free(rbs);
     comp_free(c);
     return strdup("");
@@ -15876,7 +15876,7 @@ char *codegen_program(const NodeTable *nt) {
      for a reduction). */
   if (types_out) {
     char *json = build_types_json(c);
-    emit_write_file(types_out, json);
+    write_text_file(types_out, json);
     free(json);
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }

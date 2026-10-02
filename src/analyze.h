@@ -43,6 +43,8 @@ void analyze_program(Compiler *c);
    nested arrays for capturing patterns, which the str_array path can't model. */
 int an_re_has_captures(const char *src);
 int an_send_name_is_computed(Compiler *c, int arg);
+/* Is scope si an iterator synth_struct_each generated, not a def? */
+int scope_is_struct_synth(Compiler *c, int si);
 int an_str_mutator_name(const char *nm);
 /* A String handed to a proc, a lambda or a Method (#6179): what the targets
    a `.call` / `.()` / `[]` / `.yield` / `===` on a Proc or Method value can

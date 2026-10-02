@@ -4293,9 +4293,6 @@ static int to_enum_target(Compiler *c, int id, char *buf, int buflen,
 static int te_lvread(NodeTable *nt, const char *name) {
   int n = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, n, "name", name); return n;
 }
-static int te_int(NodeTable *nt, long long v) {
-  int n = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, n, "value", v); return n;
-}
 static int te_const(NodeTable *nt, const char *name) {
   int n = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, n, "name", name); return n;
 }
@@ -4365,7 +4362,7 @@ static void desugar_enumerator_produce(Compiler *c) {
       for (int k = 0; k < preqn; k++) {
         const char *pk = block_param_name(c, blk, k);
         if (!pk) break;
-        int idxc = te_call(nt, te_lvread(nt, "__pv"), "[]", te_args1(nt, te_int(nt, k)), -1);
+        int idxc = te_call(nt, te_lvread(nt, "__pv"), "[]", te_args1(nt, nt_new_int(nt, k)), -1);
         loopbodyarr[nlb++] = te_lvwrite(nt, pk, idxc);
       }
     }
@@ -4587,7 +4584,7 @@ static void desugar_endless_str_range_iter(Compiler *c) {
     else {
       int adv = te_stmts1(nt, te_lvwrite(nt, "__sv", nxt));
       int tblk = nt_new_node(nt, "BlockNode"); nt_node_set_ref(nt, tblk, "body", adv);
-      int by = skind >= 0 ? esr_step_read(nt, skind, sname) : te_int(nt, step);
+      int by = skind >= 0 ? esr_step_read(nt, skind, sname) : nt_new_int(nt, step);
       int stmts[2] = { te_call(nt, by, "times", -1, tblk), te_lvread(nt, "__sv") };
       pbody = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, pbody, "body", stmts, 2);
     }
@@ -4987,8 +4984,8 @@ static void synth_enum_to_a(Compiler *c) {
       if (packed && raw) eread = te_lvread(nt, "__enum_e");
       else if (packed) {
         int len = te_call(nt, te_lvread(nt, "__enum_e"), "length", -1, -1);
-        int cmp = te_call(nt, len, "<=", te_args1(nt, te_int(nt, 1)), -1);
-        int first = te_call(nt, te_lvread(nt, "__enum_e"), "[]", te_args1(nt, te_int(nt, 0)), -1);
+        int cmp = te_call(nt, len, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
+        int first = te_call(nt, te_lvread(nt, "__enum_e"), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
         int els = nt_new_node(nt, "ElseNode");
         nt_node_set_ref(nt, els, "statements", te_stmts1(nt, te_lvread(nt, "__enum_e")));
         eread = nt_new_node(nt, "IfNode");
@@ -5150,8 +5147,8 @@ static void synth_to_enum_generators(Compiler *c) {
 
     /* __ev.length <= 1 ? __ev[0] : __ev */
     int lencall = te_call(nt, te_lvread(nt, "__ev"), "length", -1, -1);
-    int cmp = te_call(nt, lencall, "<=", te_args1(nt, te_int(nt, 1)), -1);
-    int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, te_int(nt, 0)), -1);
+    int cmp = te_call(nt, lencall, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
+    int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
     int elsenode = nt_new_node(nt, "ElseNode");
     nt_node_set_ref(nt, elsenode, "statements", te_stmts1(nt, te_lvread(nt, "__ev")));
     int ifn = nt_new_node(nt, "IfNode");
@@ -6926,8 +6923,11 @@ int desugar_include_math(Compiler *c) {
   return changed;
 }
 
-/* A method synth_struct_each generated, not one the program wrote. */
-static int struct_iter_synth(Compiler *c, int si) {
+/* An iterator synth_struct_each generated (each, each_pair,
+   each_with_index), not one the program wrote. A Struct inherits those
+   names from Struct and Enumerable rather than defining them itself, and a
+   Data has none. */
+int scope_is_struct_synth(Compiler *c, int si) {
   if (si < 0 || si >= c->nscopes) return 0;
   int dn = c->scopes[si].def_node;
   return dn >= 0 && nt_str(c->nt, dn, "synth") != NULL;
@@ -7707,7 +7707,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int okc = pcid >= 0 && pcid < c->nclasses;
       int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
       int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
-      int own = (smi >= 0 && !struct_iter_synth(c, smi)) || cmi >= 0;
+      int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0;
       if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
         int wrap = nt_new_node(nt, "CallNode");
         if (wrap >= 0) {
@@ -8460,7 +8460,7 @@ static int desugar_for_enumerable(Compiler *c) {
         (stmts < 0 || nt_kind(nt, stmts) == NK_StatementsNode)) {
       int n1 = nt->count;
       const char *xn = nt_str(nt, idxn, "name");
-      int wr = te_lvwrite(nt, xn, te_call(nt, te_lvread(nt, xn), "[]", te_args1(nt, te_int(nt, 0)), -1));
+      int wr = te_lvwrite(nt, xn, te_call(nt, te_lvread(nt, xn), "[]", te_args1(nt, nt_new_int(nt, 0)), -1));
       int bn = 0; const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &bn) : NULL;
       int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
       if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -8543,8 +8543,8 @@ static int desugar_ewi_pack_values(Compiler *c) {
     nt_node_set_arr(nt, pn, "requireds", NULL, 0);
     nt_node_set_ref(nt, pn, "rest", rest);
     int len = te_call(nt, te_lvread(nt, vn), "length", -1, -1);
-    int cmp = te_call(nt, len, "<=", te_args1(nt, te_int(nt, 1)), -1);
-    int first = te_call(nt, te_lvread(nt, vn), "[]", te_args1(nt, te_int(nt, 0)), -1);
+    int cmp = te_call(nt, len, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
+    int first = te_call(nt, te_lvread(nt, vn), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
     int els = nt_new_node(nt, "ElseNode");
     nt_node_set_ref(nt, els, "statements", te_stmts1(nt, te_lvread(nt, vn)));
     int iff = nt_new_node(nt, "IfNode");
@@ -8620,7 +8620,7 @@ static int desugar_multi_yield_map_param(Compiler *c) {
     if (bn + 1 > 64) continue;
     int n1 = nt->count;
     /* `x = x[0]`, `a = a[0]`, or `x = x.empty? ? d : x[0]` */
-    int val = te_call(nt, te_lvread(nt, pnm), "[]", te_args1(nt, te_int(nt, 0)), -1);
+    int val = te_call(nt, te_lvread(nt, pnm), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
     if (nt_kind(nt, p0) == NK_OptionalParameterNode) {
       int dflt = nt_ref(nt, p0, "value");
       if (dflt < 0) continue;

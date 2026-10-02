@@ -13838,14 +13838,6 @@ static int class_implicit_responds(Compiler *c, int cid, const char *qm) {
   return 0;
 }
 
-/* An iterator synth_struct_each generated (each, each_pair,
-   each_with_index). A Struct inherits those names from Struct and
-   Enumerable rather than defining them itself, and a Data has none. */
-static int scope_is_struct_synth(Compiler *c, int si) {
-  if (si < 0 || si >= c->nscopes) return 0;
-  int dn = c->scopes[si].def_node;
-  return dn >= 0 && nt_str(c->nt, dn, "synth") != NULL;
-}
 
 /* A method in `cid`'s chain that reflection must not report: a
    compiler-synthesized helper, or a generated Struct iterator on a Data

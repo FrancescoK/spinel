@@ -5203,11 +5203,6 @@ static int fwd_new_call(NodeTable *nt, int recv, const char *name, int arg) {
   nt_node_set_ref(nt, call, "block", -1);
   return call;
 }
-static int fwd_new_int(NodeTable *nt, int v) {
-  int n = nt_new_node(nt, "IntegerNode");
-  nt_node_set_int(nt, n, "value", v);
-  return n;
-}
 
 /* The call a Hash iterator's forward makes to a callable whose parameters it
    cannot see, `pair` handing it the [k, v] pair: map spreads the pair for more
@@ -5216,9 +5211,9 @@ static int fwd_new_int(NodeTable *nt, int v) {
    `q.is_a?(Proc) && (q.arity >= 2 || q.arity < -1) ? ...`. The Proc test is
    left out where the callable is known to be one. */
 static int fwd_arity_pick(Compiler *c, NodeTable *nt, int ex, int id, int pair, int find, int proc_test) {
-  int ge = fwd_new_call(nt, fwd_new_call(nt, nt_clone_subtree(nt, ex), "arity", -1), ">=", fwd_new_int(nt, 2));
+  int ge = fwd_new_call(nt, fwd_new_call(nt, nt_clone_subtree(nt, ex), "arity", -1), ">=", nt_new_int(nt, 2));
   int lt = fwd_new_call(nt, fwd_new_call(nt, nt_clone_subtree(nt, ex), "arity", -1), "<",
-                        fwd_new_int(nt, find ? -1 : -2));
+                        nt_new_int(nt, find ? -1 : -2));
   int cond = nt_new_node(nt, "OrNode");
   nt_node_set_ref(nt, cond, "left", ge);
   nt_node_set_ref(nt, cond, "right", lt);
@@ -7308,7 +7303,7 @@ int desugar_conditional_defs(Compiler *c) {
       nt_set_str(nt, g[k].def, "name", nm);
       int wk = fwd_new_node_like(nt, g[k].def, "GlobalVariableWriteNode");
       nt_node_set_str(nt, wk, "name", sel);
-      nt_node_set_ref(nt, wk, "value", fwd_new_int(nt, k + 1));
+      nt_node_set_ref(nt, wk, "value", nt_new_int(nt, k + 1));
       cdef_insert_after(nt, g[k].st, g[k].def, wk);
       int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
       for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
@@ -7333,7 +7328,7 @@ int desugar_conditional_defs(Compiler *c) {
       }
       int ifn = nt_new_node(nt, "IfNode");
       nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", sel), "==",
-                                                         fwd_new_int(nt, k + 1)));
+                                                         nt_new_int(nt, k + 1)));
       nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
       nt_node_set_ref(nt, ifn, "subsequent", chain);
       chain = ifn;

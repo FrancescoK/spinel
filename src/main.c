@@ -238,14 +238,6 @@ static int refuse_overwrite(const char *path) {
   return 1;
 }
 
-static int write_text_file(const char *path, const char *text) {
-  FILE *f = fopen(path, "wb");
-  if (!f) { fprintf(stderr, "spinel: cannot write '%s'\n", path); return 0; }
-  fputs(text, f);
-  fclose(f);
-  return 1;
-}
-
 /* Whether the C compiler spells things clang's way. The two spellings of the
    caret suppression are not interchangeable -- gcc takes
    -fno-diagnostics-show-caret and refuses clang's -fno-caret-diagnostics, and
