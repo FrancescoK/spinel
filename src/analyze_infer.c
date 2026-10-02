@@ -3694,6 +3694,142 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
   return 0;
 }
 
+/* An Integer or Float receiver, and a numeric step (infer_call_inner's rules, in their order) */
+static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* numeric.step(...) without a block materializes the sequence as an array */
+  /* a Float's step with a block answers the receiver, as an Integer's does
+     (the rule below is inside the Integer arm); it read as nothing, and the
+     value printed nil (#4763) */
+  if (recv >= 0 && rt == TY_FLOAT && sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) { *out = TY_FLOAT; return 1; }
+  if (recv >= 0 && rt == TY_BIGINT && sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) { *out = TY_BIGINT; return 1; }   /* #4779 */
+  if (recv >= 0 && ty_is_numeric(rt) && sp_streq(name, "step") && nt_ref(nt, id, "block") < 0) {
+    int args = nt_ref(nt, id, "arguments");
+    int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+    int isf = (rt == TY_FLOAT) || (sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT) ||
+              (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
+    /* a Bignum limit or step walks the sequence boxed (#3006) */
+    for (int sk = 0; sk < sc; sk++)
+      if (infer_type(c, sv[sk]) == TY_BIGINT) { *out = TY_POLY_ARRAY; return 1; }
+    { *out = isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY; return 1; }
+  }
+  /* integer receiver methods */
+  if (recv >= 0 && rt == TY_INT) {
+    /* pow(exp, mod) with a Bignum modulus stays in bigint; lcm with a Bignum
+       argument is at least that large (#3006) */
+    if (sp_streq(name, "pow") && argc == 2 && infer_type(c, argv[1]) == TY_BIGINT)
+      { *out = TY_BIGINT; return 1; }
+    if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
+      { *out = TY_BIGINT; return 1; }
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    /* pow with a literal negative exponent yields the exact Rational */
+    if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
+        sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+        nt_int(nt, argv[0], "value", 0) < 0) { *out = TY_RATIONAL; return 1; }
+    if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+    if (sp_streq(name, "pow") && argc >= 1) { *out = TY_INT; return 1; }
+    /* clamp keeps the applied operand's class: a Float bound can be returned, so
+       the mixed int-receiver/float-bound form is poly; pure-int stays Integer. */
+    if (sp_streq(name, "clamp")) {
+      if (argc == 2) {
+        TyKind b0 = infer_type(c, argv[0]), b1 = infer_type(c, argv[1]);
+        if (b0 == TY_FLOAT || b1 == TY_FLOAT || b0 == TY_POLY || b1 == TY_POLY) { *out = TY_POLY; return 1; }
+      }
+      { *out = TY_INT; return 1; }
+    }
+    if (sp_streq(name, "coerce") && argc == 1) {
+      TyKind a0 = infer_type(c, argv[0]);
+      if (a0 == TY_BIGINT) { *out = TY_POLY_ARRAY; return 1; }   /* [big, big] boxed pair (#2419) */
+      if (a0 == TY_FLOAT || a0 == TY_RATIONAL || a0 == TY_COMPLEX) { *out = TY_FLOAT_ARRAY; return 1; }
+      /* Only a NUMBER coerces. Typing anything else as the int pair put the
+         argument straight into an sp_int slot, so a String stopped the C build
+         and a nil answered a coerced 0 where CRuby raises (#4011). The boxed
+         pair carries whatever the runtime decides, including the raise. */
+      if (a0 == TY_POLY) { *out = TY_POLY_ARRAY; return 1; }   /* the tag decides at run time */
+      /* everything else is the Float() pair (and its errors) */
+      if (a0 != TY_INT && a0 != TY_UNKNOWN) { *out = TY_FLOAT_ARRAY; return 1; }
+      { *out = TY_INT_ARRAY; return 1; }
+    }
+  }
+  /* float receiver methods */
+  if (recv >= 0 && rt == TY_FLOAT) {
+    /* promote mode promises that an integer result too wide for a machine
+       word widens instead of failing, and a Float conversion asks the same
+       question: (2.0**70).floor is a Bignum in CRuby, where raise mode
+       answers RangeError (#4688). Only the forms whose result IS an Integer
+       widen; `round(2)` stays a Float, and raise/wrap keep their sp_int so
+       no hot loop boxes for this. */
+    if (g_promote_mode) {
+      /* A trailing `half:` keyword only picks the tie-break mode, and the arm
+         that serves it answers the same Integer, so the same widening
+         applies: `f.round(half: :even)` cannot be the one form that fails
+         where `f.round` promotes. It is peeled off the positional count.
+         floor / ceil / truncate reject a keyword outright and keep the arm
+         that raises, so they stay where they were. */
+      int pv_kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
+                  sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
+      int pv_round_kw = pv_kw && sp_streq(name, "round");
+      if (!pv_kw || pv_round_kw) {
+        int pv_argc = argc - (pv_round_kw ? 1 : 0);
+        if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) { *out = TY_POLY; return 1; }
+        /* No argument, or a literal 0 -- both reach the same emitter and are
+           exact. A NEGATIVE literal does not: it rounds to a power of ten by
+           dividing and multiplying in double, which loses bits past 2**53, so
+           (2.0**70).floor(-1) came out ...424 where CRuby says ...420.
+           Widening that would trade a RangeError for a wrong answer, so it
+           keeps raising until the rounding itself is done in Bignum. */
+        if (is_round_family(name)) {
+          if (pv_argc == 0) { *out = TY_POLY; return 1; }
+          if (pv_argc == 1) {
+            const char *pv_aty = nt_type(nt, argv[0]);
+            if (pv_aty && sp_streq(pv_aty, "IntegerNode") &&
+                nt_int(nt, argv[0], "value", 0) == 0) { *out = TY_POLY; return 1; }
+          }
+        }
+      }
+    }
+    /* Float <=> Rational: compare via the rational's float value (#2596) */
+    if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) { *out = TY_INT; return 1; }
+    /* Float#fdiv(Complex) is self / c, a Complex */
+    if (sp_streq(name, "fdiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) { *out = TY_COMPLEX; return 1; }
+    if (sp_streq(name, "fdiv") && argc == 1) { *out = TY_FLOAT; return 1; }
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
+       a mixed/int bound can return the Integer bound, so leave that poly. */
+    if (sp_streq(name, "clamp") && argc == 2 &&
+        infer_type(c, argv[0]) == TY_FLOAT && infer_type(c, argv[1]) == TY_FLOAT)
+      { *out = TY_FLOAT; return 1; }
+    if (is_round_family(name)) {
+      /* CRuby chooses the return class from the runtime ndigits value: Integer
+         when ndigits <= 0, Float when ndigits > 0. With a literal ndigits we
+         match it exactly. A NON-literal ndigits can't be classified statically,
+         so the result stays Float and the value is still computed exactly (x
+         rounded to n places); only #class differs from CRuby when n turns out
+         <= 0 -- the documented residual divergence (docs/float-rounding.md). */
+      /* a trailing `half:` keyword only picks the tie-break mode; peel it
+         off the positional count for the class choice */
+      int fr_argc = argc;
+      if (fr_argc >= 1 && nt_type(nt, argv[fr_argc - 1]) &&
+          sp_streq(nt_type(nt, argv[fr_argc - 1]), "KeywordHashNode"))
+        fr_argc--;
+      if (fr_argc == 1) {
+        const char *aty = nt_type(nt, argv[0]);
+        /* Non-literal ndigits: the class (Integer when <= 0, Float when > 0) is
+           only known at runtime, so the result is a boxed poly chosen there. */
+        if (!aty || !sp_streq(aty, "IntegerNode")) { *out = TY_POLY; return 1; }
+        { *out = nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT; return 1; }
+      }
+      { *out = TY_INT; return 1; }  /* no arg -> self truncated to Integer */
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6465,137 +6601,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_STRING;
   }
 
-  /* numeric.step(...) without a block materializes the sequence as an array */
-  /* a Float's step with a block answers the receiver, as an Integer's does
-     (the rule below is inside the Integer arm); it read as nothing, and the
-     value printed nil (#4763) */
-  if (recv >= 0 && rt == TY_FLOAT && sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) return TY_FLOAT;
-  if (recv >= 0 && rt == TY_BIGINT && sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0) return TY_BIGINT;   /* #4779 */
-  if (recv >= 0 && ty_is_numeric(rt) && sp_streq(name, "step") && nt_ref(nt, id, "block") < 0) {
-    int args = nt_ref(nt, id, "arguments");
-    int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
-    int isf = (rt == TY_FLOAT) || (sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT) ||
-              (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
-    /* a Bignum limit or step walks the sequence boxed (#3006) */
-    for (int sk = 0; sk < sc; sk++)
-      if (infer_type(c, sv[sk]) == TY_BIGINT) return TY_POLY_ARRAY;
-    return isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
-  }
-  /* integer receiver methods */
-  if (recv >= 0 && rt == TY_INT) {
-    /* pow(exp, mod) with a Bignum modulus stays in bigint; lcm with a Bignum
-       argument is at least that large (#3006) */
-    if (sp_streq(name, "pow") && argc == 2 && infer_type(c, argv[1]) == TY_BIGINT)
-      return TY_BIGINT;
-    if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
-      return TY_BIGINT;
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    /* pow with a literal negative exponent yields the exact Rational */
-    if (sp_streq(name, "pow") && argc == 1 && nt_type(nt, argv[0]) &&
-        sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
-        nt_int(nt, argv[0], "value", 0) < 0) return TY_RATIONAL;
-    if (sp_streq(name, "pow") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
-    if (sp_streq(name, "pow") && argc >= 1) return TY_INT;
-    /* clamp keeps the applied operand's class: a Float bound can be returned, so
-       the mixed int-receiver/float-bound form is poly; pure-int stays Integer. */
-    if (sp_streq(name, "clamp")) {
-      if (argc == 2) {
-        TyKind b0 = infer_type(c, argv[0]), b1 = infer_type(c, argv[1]);
-        if (b0 == TY_FLOAT || b1 == TY_FLOAT || b0 == TY_POLY || b1 == TY_POLY) return TY_POLY;
-      }
-      return TY_INT;
-    }
-    if (sp_streq(name, "coerce") && argc == 1) {
-      TyKind a0 = infer_type(c, argv[0]);
-      if (a0 == TY_BIGINT) return TY_POLY_ARRAY;   /* [big, big] boxed pair (#2419) */
-      if (a0 == TY_FLOAT || a0 == TY_RATIONAL || a0 == TY_COMPLEX) return TY_FLOAT_ARRAY;
-      /* Only a NUMBER coerces. Typing anything else as the int pair put the
-         argument straight into an sp_int slot, so a String stopped the C build
-         and a nil answered a coerced 0 where CRuby raises (#4011). The boxed
-         pair carries whatever the runtime decides, including the raise. */
-      if (a0 == TY_POLY) return TY_POLY_ARRAY;   /* the tag decides at run time */
-      /* everything else is the Float() pair (and its errors) */
-      if (a0 != TY_INT && a0 != TY_UNKNOWN) return TY_FLOAT_ARRAY;
-      return TY_INT_ARRAY;
-    }
-  }
-  /* float receiver methods */
-  if (recv >= 0 && rt == TY_FLOAT) {
-    /* promote mode promises that an integer result too wide for a machine
-       word widens instead of failing, and a Float conversion asks the same
-       question: (2.0**70).floor is a Bignum in CRuby, where raise mode
-       answers RangeError (#4688). Only the forms whose result IS an Integer
-       widen; `round(2)` stays a Float, and raise/wrap keep their sp_int so
-       no hot loop boxes for this. */
-    if (g_promote_mode) {
-      /* A trailing `half:` keyword only picks the tie-break mode, and the arm
-         that serves it answers the same Integer, so the same widening
-         applies: `f.round(half: :even)` cannot be the one form that fails
-         where `f.round` promotes. It is peeled off the positional count.
-         floor / ceil / truncate reject a keyword outright and keep the arm
-         that raises, so they stay where they were. */
-      int pv_kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
-                  sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
-      int pv_round_kw = pv_kw && sp_streq(name, "round");
-      if (!pv_kw || pv_round_kw) {
-        int pv_argc = argc - (pv_round_kw ? 1 : 0);
-        if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) return TY_POLY;
-        /* No argument, or a literal 0 -- both reach the same emitter and are
-           exact. A NEGATIVE literal does not: it rounds to a power of ten by
-           dividing and multiplying in double, which loses bits past 2**53, so
-           (2.0**70).floor(-1) came out ...424 where CRuby says ...420.
-           Widening that would trade a RangeError for a wrong answer, so it
-           keeps raising until the rounding itself is done in Bignum. */
-        if (is_round_family(name)) {
-          if (pv_argc == 0) return TY_POLY;
-          if (pv_argc == 1) {
-            const char *pv_aty = nt_type(nt, argv[0]);
-            if (pv_aty && sp_streq(pv_aty, "IntegerNode") &&
-                nt_int(nt, argv[0], "value", 0) == 0) return TY_POLY;
-          }
-        }
-      }
-    }
-    /* Float <=> Rational: compare via the rational's float value (#2596) */
-    if (sp_streq(name, "<=>") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) return TY_INT;
-    /* Float#fdiv(Complex) is self / c, a Complex */
-    if (sp_streq(name, "fdiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) return TY_COMPLEX;
-    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
-       a mixed/int bound can return the Integer bound, so leave that poly. */
-    if (sp_streq(name, "clamp") && argc == 2 &&
-        infer_type(c, argv[0]) == TY_FLOAT && infer_type(c, argv[1]) == TY_FLOAT)
-      return TY_FLOAT;
-    if (is_round_family(name)) {
-      /* CRuby chooses the return class from the runtime ndigits value: Integer
-         when ndigits <= 0, Float when ndigits > 0. With a literal ndigits we
-         match it exactly. A NON-literal ndigits can't be classified statically,
-         so the result stays Float and the value is still computed exactly (x
-         rounded to n places); only #class differs from CRuby when n turns out
-         <= 0 -- the documented residual divergence (docs/float-rounding.md). */
-      /* a trailing `half:` keyword only picks the tie-break mode; peel it
-         off the positional count for the class choice */
-      int fr_argc = argc;
-      if (fr_argc >= 1 && nt_type(nt, argv[fr_argc - 1]) &&
-          sp_streq(nt_type(nt, argv[fr_argc - 1]), "KeywordHashNode"))
-        fr_argc--;
-      if (fr_argc == 1) {
-        const char *aty = nt_type(nt, argv[0]);
-        /* Non-literal ndigits: the class (Integer when <= 0, Float when > 0) is
-           only known at runtime, so the result is a boxed poly chosen there. */
-        if (!aty || !sp_streq(aty, "IntegerNode")) return TY_POLY;
-        return nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT;
-      }
-      return TY_INT;  /* no arg -> self truncated to Integer */
-    }
-  }
+  { TyKind r; if (infer_int_float_recv_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* A boxed receiver's `===` can be a Proc's, whose answer is the proc's
      return value rather than a boolean (#3818). Everything else boxed answers
