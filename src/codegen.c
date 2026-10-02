@@ -1377,12 +1377,8 @@ const char *ty_box_fn(TyKind t) {
   return tr ? tr->box : NULL;
 }
 const char *ty_box_nil_fn(TyKind t) {
-  switch (t) {
-  case TY_INT:    return "sp_box_int_or_nil";
-  case TY_FLOAT:  return "sp_box_float_or_nil";
-  case TY_BIGINT: return "sp_box_bigint_or_nil";
-  default:        return NULL;
-  }
+  const TyTraits *tr = ty_traits_of(t);   /* the box_nil column (types.c) */
+  return tr ? tr->box_nil : NULL;
 }
 
 /* A shared-mutable String's box, by where its handle comes from
