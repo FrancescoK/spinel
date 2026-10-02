@@ -1247,7 +1247,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", tr);
       return 1;
     }
-    if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) {
+    if (is_len_alias(name) && argc == 0) {
       buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
@@ -6415,7 +6415,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       /* the arms that read only the receiver text and the arguments:
          builtin-op rows (builtin_ops.c) */
       else if (emit_builtin_op_text(c, id, recv, TY_STRING, name, r, b)) ;
-      else if (sp_streq(name, "length") || sp_streq(name, "size")) {
+      else if (is_len_alias(name)) {
         if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
             sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
             sp_streq(nt_str(nt, recv, "name"), g_hoist_len_recv))
@@ -8535,7 +8535,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " (sp_int)(_t%d >> 1); })", th5);
       return 1;
     }
-    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0 && !sc->is_data) {
+    if (is_len_alias(name) && argc == 0 && !sc->is_data) {
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) {
         Buf rb = expr_buf(c, recv);

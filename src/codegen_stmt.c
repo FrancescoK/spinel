@@ -6095,7 +6095,7 @@ static int find_hoistable_strlen(Compiler *c, int root) {
     int recv = nt_ref(nt, root, "receiver");
     int args = nt_ref(nt, root, "arguments");
     int an = 0; if (args >= 0) nt_arr(nt, args, "arguments", &an);
-    if (nm && (sp_streq(nm, "length") || sp_streq(nm, "size")) && an == 0 && recv >= 0 &&
+    if (nm && is_len_alias(nm) && an == 0 && recv >= 0 &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "LocalVariableReadNode") &&
         nt_str(nt, recv, "name") && comp_ntype(c, recv) == TY_STRING)
       return recv;
@@ -6195,7 +6195,7 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
   if (sp_streq(nm, "[]=") && ac == 2 && stmt && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
       comp_ntype(c, av[0]) == TY_INT && comp_ntype(c, av[1]) == ty_array_elem(rt)) return 1;
   if (sp_streq(nm, "getbyte") && ac == 1 && rt == TY_STRING && comp_ntype(c, av[0]) == TY_INT) return 1;
-  if ((sp_streq(nm, "length") || sp_streq(nm, "size")) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
+  if (is_len_alias(nm) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
     return 1;
   int alloc = 0;
   if (ac == 0 && call_is_field_read(c, id, &alloc) && !alloc) return 1;
@@ -6413,7 +6413,7 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   int av = nt_ref(nt, len, "receiver");
   int la = nt_ref(nt, len, "arguments"), lac = 0;
   if (la >= 0) nt_arr(nt, la, "arguments", &lac);
-  if (!ln || (!sp_streq(ln, "length") && !sp_streq(ln, "size")) || lac != 0 || av < 0 ||
+  if (!ln || !is_len_alias(ln) || lac != 0 || av < 0 ||
       nt_kind(nt, av) != NK_LocalVariableReadNode) return;
   const char *an = nt_str(nt, av, "name");
   TyKind at = comp_ntype(c, av);

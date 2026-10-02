@@ -6650,7 +6650,7 @@ static int hash_new_capacity_pure(Compiler *c, int n, int depth) {
   int args = nt_ref(nt, n, "arguments"), ac = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
   TyKind rt = infer_type(c, recv);
-  if (ac == 0 && (sp_streq(nm, "size") || sp_streq(nm, "length")))
+  if (ac == 0 && is_len_alias(nm))
     return (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING) &&
            hash_new_capacity_pure(c, recv, depth + 1);
   if (ac == 1 && rt == TY_INT && infer_type(c, av[0]) == TY_INT &&
@@ -9007,7 +9007,7 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if ((sp_streq(nm, "[]") || sp_streq(nm, "at")) && argc == 1) return 1;
   if (sp_streq(nm, "[]=") && argc == 2) return 1;
   if (is_push_alias(nm) && argc >= 1) return 1;
-  if ((sp_streq(nm, "length") || sp_streq(nm, "size")) && argc == 0) return 1;
+  if (is_len_alias(nm) && argc == 0) return 1;
   if (sp_streq(nm, "empty?") && argc == 0) return 1;
   if ((sp_streq(nm, "first") || sp_streq(nm, "last")) && argc == 0) return 1;
   /* no-block comparisons: usable when the element class has `<=>` (the
@@ -22801,7 +22801,7 @@ static int index_write_gaps(Compiler *c, int call, int ix) {
     const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
     const char *ln = l >= 0 && nt_kind(nt, l) == NK_CallNode ? nt_str(nt, l, "name") : NULL;
     int lr = ln ? nt_ref(nt, l, "receiver") : -1;
-    if (!ln || (!sp_streq(ln, "size") && !sp_streq(ln, "length")) || lr < 0 ||
+    if (!ln || !is_len_alias(ln) || lr < 0 ||
         !av || an != 1 || nt_kind(nt, av[0]) != NK_IntegerNode || nt_int(nt, av[0], "value", 0) < 1)
       return 0;
     /* the same local or ivar on both sides */
@@ -22834,7 +22834,7 @@ static int reads_own_size(Compiler *c, int recv, int n) {
   const NodeTable *nt = c->nt;
   const char *ln = n >= 0 && nt_kind(nt, n) == NK_CallNode ? nt_str(nt, n, "name") : NULL;
   int lr = ln ? nt_ref(nt, n, "receiver") : -1;
-  if (!ln || (!sp_streq(ln, "size") && !sp_streq(ln, "length")) || lr < 0 || nt_ref(nt, n, "arguments") >= 0 ||
+  if (!ln || !is_len_alias(ln) || lr < 0 || nt_ref(nt, n, "arguments") >= 0 ||
       nt_kind(nt, lr) != nt_kind(nt, recv) ||
       (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_InstanceVariableReadNode))
     return 0;
@@ -23702,7 +23702,7 @@ static int nn_rel_of(Compiler *c, int cond, NNRel *out) {
   if (nt_kind(nt, lhs) != NK_LocalVariableReadNode || nt_kind(nt, sz) != NK_CallNode) return 0;
   const char *sn = nt_str(nt, sz, "name");
   int arr = nt_ref(nt, sz, "receiver");
-  if (!sn || arr < 0 || !(sp_streq(sn, "size") || sp_streq(sn, "length")) ||
+  if (!sn || arr < 0 || !is_len_alias(sn) ||
       nt_ref(nt, sz, "arguments") >= 0 || nt_ref(nt, sz, "block") >= 0) return 0;
   if (!nn_int_array(comp_ntype(c, arr))) return 0;
   int slot = nn_slot_of(c, arr);
@@ -24227,7 +24227,7 @@ static int nn_surely(Compiler *c, int v) {
     int ca = nt_ref(nt, v, "arguments"); int an = 0;
     const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
     if (!nm || recv < 0 || nt_ref(nt, v, "block") >= 0) return 0;
-    if ((sp_streq(nm, "size") || sp_streq(nm, "length")) && an == 0) return 1;
+    if (is_len_alias(nm) && an == 0) return 1;
     if (!nn_numeric(comp_ntype(c, recv))) return 0;
     static const char *const ar[] = { "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", NULL };
     if (an == 1 && nn_name_in(nm, ar)) return nn_surely(c, recv) && nn_surely(c, av[0]);

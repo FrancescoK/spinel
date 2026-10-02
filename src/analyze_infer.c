@@ -4459,7 +4459,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       }
       return TY_SYM_POLY_HASH;
     }
-    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+    if (is_len_alias(name) && argc == 0) {
       /* a member of that name wins: its generated reader is the method */
       char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
       if (comp_ivar_index(sc, szn) < 0) return TY_INT;
@@ -5104,7 +5104,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return ty_object(ecls);
     if (sp_streq(name, "[]=") && argc == 2) return ty_object(ecls);
     if (is_push_alias(name)) return rt;
-    if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) return TY_INT;
+    if (is_len_alias(name) && argc == 0) return TY_INT;
     if (sp_streq(name, "empty?") && argc == 0) return TY_BOOL;
     /* no-block comparisons (admitted by the narrowing pass only for element
        classes with `<=>`): sort keeps the array type, min/max yield an

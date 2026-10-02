@@ -2218,7 +2218,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
      #size or #pop): the queue still answers them itself */
   if (argc == 0) {
     const char *qf = NULL;
-    if (sp_streq(name, "size") || sp_streq(name, "length")) qf = "sp_box_int(sp_Queue_size((sp_queue *)_t%d.v.p))";
+    if (is_len_alias(name)) qf = "sp_box_int(sp_Queue_size((sp_queue *)_t%d.v.p))";
     else if (sp_streq(name, "empty?")) qf = "sp_box_bool(sp_Queue_empty((sp_queue *)_t%d.v.p))";
     else if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) qf = "sp_Queue_pop((sp_queue *)_t%d.v.p)";
     else if (sp_streq(name, "num_waiting")) qf = "sp_box_int(sp_Queue_num_waiting((sp_queue *)_t%d.v.p))";

@@ -114,3 +114,7 @@ int is_push_unshift(const char *n) {
   return sp_streq(n, "<<") || sp_streq(n, "push") || sp_streq(n, "append") ||
          sp_streq(n, "unshift");
 }
+
+int is_len_alias(const char *n) {
+  return sp_streq(n, "length") || sp_streq(n, "size");
+}

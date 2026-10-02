@@ -26203,7 +26203,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
           return;
         }
       }
-      if (rrt == TY_POLY && (sp_streq(name, "length") || sp_streq(name, "size")) &&
+      if (rrt == TY_POLY && is_len_alias(name) &&
           comp_ntype(c, id) == TY_POLY) {
         /* poly&.length/size: the poly builtin emits an unboxed sp_int, but
            the safe-nav result is inferred poly -- box it so both ternary arms
