@@ -534,6 +534,43 @@ static int cpoly_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int po
   return 1;
 }
 
+/* The builtin cases emit_poly_cases_n writes after the class arms of a
+   dispatch with arguments. */
+static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const int *argv, TyKind ret,
+                          const TyKind *atmp_ty, const PolySpecialsN *ps, int splat_a, PolyPlan *p, int *cap) {
+  int kwh = ps->kwh, plain = kwh < 0 && splat_a < 0;
+  if (ps->index) cpoly_family(p, cap, PB_INDEX_CASES);
+  if (sp_streq(name, "read_nonblock") && ps->pos_argc == 1 && splat_a < 0) cpoly_family(p, cap, PB_IO_READ_NB);
+  if (sp_streq(name, "write") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_WRITE);
+  if (sp_streq(name, "syswrite") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_SYSWRITE);
+  if ((sp_streq(name, "puts") || sp_streq(name, "print")) && plain) cpoly_family(p, cap, PB_IO_PRINT);
+  if (sp_streq(name, "putc") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_PUTC);
+  if (((sp_streq(name, "seek") && (argc == 1 || argc == 2)) ||
+       (sp_streq(name, "read") && argc == 1 && (ret == TY_POLY || ret == TY_STRING))) && plain) {
+    int int_args = 1;
+    for (int a = 0; a < argc; a++)
+      if (atmp_ty[a] != TY_INT && atmp_ty[a] != TY_POLY) int_args = 0;
+    if (int_args) cpoly_family(p, cap, PB_IO_SEEK_READ);
+  }
+  if (ps->unshift) cpoly_family(p, cap, PB_UNSHIFT);
+  if (ps->push) cpoly_family(p, cap, PB_PUSH);
+  if (ps->ppack && !sp_streq(name, "unpack1")) cpoly_family(p, cap, PB_PACK);
+  if (ps->pjoin) cpoly_family(p, cap, PB_JOIN_N);
+  if (ps->include) cpoly_family(p, cap, PB_INCLUDE_CASES);
+  if (ps->arr_index && argc == 1) cpoly_family(p, cap, PB_ARR_INDEX);
+  if (ps->intersect) cpoly_family(p, cap, PB_INTERSECT);
+  if (ps->strftime) cpoly_family(p, cap, PB_STRFTIME);
+  /* a Hash's `[]` or fetch, by the key's kind */
+  int aref = (sp_streq(name, "[]") && argc == 1 && splat_a < 0) ||
+             (sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
+              nt_ref(c->nt, id, "block") < 0);
+  TyKind kt = aref ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  if (aref && kt == TY_STRING) cpoly_family(p, cap, PB_AREF_STR);
+  if (aref && kt == TY_SYMBOL) cpoly_family(p, cap, PB_AREF_SYM);
+  if (aref && (kt == TY_POLY || kt == TY_UNKNOWN)) cpoly_family(p, cap, PB_AREF_POLY);
+  if (ps->pred) cpoly_family(p, cap, PB_PRED_N);
+}
+
 /* The pre-arms of a dispatch with arguments (emit_poly_prearms_n, then
    emit_poly_prearms_n_blk): the tag pre-arm families, a class value's
    class-side arms, a callable value's call. */
@@ -584,6 +621,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
        : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
        : splat_last))
     cpoly_family(p, cap, PB_CALLABLE);
+  cpoly_cases_n(c, id, name, argc, argv, ret, atmp_ty, &ps, splat_a, p, cap);
 }
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */

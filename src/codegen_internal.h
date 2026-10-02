@@ -1648,6 +1648,10 @@ int  emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySp
                              int *atmp, TyKind *atmp_ty, const PolyKw *kw, const int *htmp, int is_setter_val,
                              int splat_a, int splat_last, int stk, Buf *b);
 void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
+void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKind dty,
+                            int key_node, TyKind ret, TyKind trt, Buf *b);
+void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
+                       int splat_a, int is_aref, int is_fetch, Buf *b);
 int  emit_poly_callable_spread_prearm(Compiler *c, const char *name, int sa, const int *atmp,
                                       const TyKind *atmp_ty, int st, int tv, int tr, TyKind ret, Buf *b);
 void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
