@@ -1033,6 +1033,97 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "ljust",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "rjust",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "*",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+
+  /* Hash, any kind (BOP_ANY_HASH): the result kinds read off the name,
+     arity and block form, some derived from the receiver's kind. key,
+     []=/store, fetch, dig, a blockless sum(init), map/collect with a block,
+     transform_keys/values, merge, replace, merge!/update and invert read
+     the operands, the block or the variant, and stay in infer_hash_call. */
+  { BOP_ANY_HASH, "each",             0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
+  { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "each_value",       0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "each_with_index",  0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "map",              0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "collect",          0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "select",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "filter",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "reject",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "find",             0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "detect",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "find_all",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "flat_map",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "filter_map",       0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "sort_by",          0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "min_by",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "max_by",           0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "group_by",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "partition",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
+  { BOP_ANY_HASH, "any?",             0,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "all?",             0,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "none?",            0,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "one?",             0,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "any?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "all?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "deconstruct_keys", 1,   1, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* self or nil */
+  { BOP_ANY_HASH, "chunk",            0, 127, BF_REQUIRED, TY_ENUMERATOR,  BOPE_NONE },  /* of [key, [[k, v], ...]] pairs */
+  { BOP_ANY_HASH, "to_proc",          0, 127, BF_ANY,      TY_PROC,        BOPE_NONE },
+  { BOP_ANY_HASH, "first",            0,   0, BF_NONE,     TY_POLY,        BOPE_NONE },  /* Enumerable's, over the [key, value] pairs */
+  { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE },  /* identity */
+  { BOP_ANY_HASH, "slice",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* a copy, or a key subset */
+  { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "dup",              0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "clone",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "[]",               0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
+  { BOP_ANY_HASH, "delete",           0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
+  { BOP_ANY_HASH, "default",          0,   1, BF_ANY,      TY_POLY,        BOPE_NONE },  /* default(key) too (#2409) */
+  { BOP_ANY_HASH, "length",           0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { BOP_ANY_HASH, "size",             0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { BOP_ANY_HASH, "count",            0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
+  { BOP_ANY_HASH, "<",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },  /* subset / superset */
+  { BOP_ANY_HASH, "<=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, ">",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, ">=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "keys",             0, 127, BF_ANY,      BOPR_HASH_KEYS, BOPE_NONE },
+  { BOP_ANY_HASH, "values",           0, 127, BF_ANY,      BOPR_HASH_VALS, BOPE_NONE },
+  { BOP_ANY_HASH, "values_at",        0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "fetch_values",     0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "to_a",             0, 127, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "entries",          0, 127, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "sort",             0, 127, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "find",             0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },  /* the winning [k, v] pair, or nil */
+  { BOP_ANY_HASH, "detect",           0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "sort_by",          0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },  /* pairs ordered by the block value */
+  { BOP_ANY_HASH, "sum",              0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* boxed accumulation */
+  { BOP_ANY_HASH, "sum",              0,   0, BF_NONE,     TY_INT,         BOPE_NONE },
+  { BOP_ANY_HASH, "select!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },  /* self, or nil when nothing was removed */
+  { BOP_ANY_HASH, "filter!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },
+  { BOP_ANY_HASH, "reject!",          0, 127, BF_REQUIRED, TY_POLY,        BOPE_NONE },
+  { BOP_ANY_HASH, "keep_if",          0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "delete_if",        0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "select",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "filter",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "reject",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* #2340/#2349/#2351 */
+  { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* a [key, value] pair, or nil (#2349) */
+  { BOP_ANY_HASH, "has_key?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "key?",             0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "include?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "member?",          0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "has_value?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "value?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "empty?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "each_with_object", 1, 127, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* #2540 */
+  { BOP_ANY_HASH, "flatten",          0,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "assoc",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "rassoc",           1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
@@ -1108,6 +1199,16 @@ const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_blo
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
   return op && (op->flags & BOPF_BOXED) ? op : NULL;
+}
+
+TyKind bop_result(const BuiltinOp *op, TyKind rt) {
+  switch ((int)op->result) {
+  case (int)BOPR_SELF:      return rt;
+  case (int)BOPR_HASH_VAL:  return ty_hash_val(rt);
+  case (int)BOPR_HASH_KEYS: return ty_array_of(ty_hash_key(rt));
+  case (int)BOPR_HASH_VALS: return ty_array_of(ty_hash_val(rt));
+  default:                  return op->result;
+  }
 }
 
 int bop_covers(TyKind rt) {

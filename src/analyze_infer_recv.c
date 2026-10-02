@@ -440,41 +440,13 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   (void)argv; (void)recv; (void)nt;
   if (!name) return 0;
   if (recv >= 0 && ty_is_hash(rt)) {
-    /* a blockless each/each_pair/each_key/each_value/each_with_index is an
-       external Enumerator (the block forms iterate and are handled below). */
-    if (nt_ref(nt, id, "block") < 0 && argc == 0 &&
-        (sp_streq(name, "each") || sp_streq(name, "each_pair") ||
-         sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
-         sp_streq(name, "each_with_index") ||
-         /* blockless Enumerable methods are external Enumerators over the pairs */
-         sp_streq(name, "map") || sp_streq(name, "collect") ||
-         sp_streq(name, "select") || sp_streq(name, "filter") ||
-         sp_streq(name, "reject") || sp_streq(name, "find") ||
-         sp_streq(name, "detect") || sp_streq(name, "find_all") ||
-         sp_streq(name, "flat_map") || sp_streq(name, "filter_map") ||
-         sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
-         sp_streq(name, "max_by") || sp_streq(name, "group_by") ||
-         sp_streq(name, "partition")))
-      { *out = TY_ENUMERATOR; return 1; }
-    if (argc <= 1 && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "any?") || sp_streq(name, "none?") ||
-         sp_streq(name, "all?") || sp_streq(name, "one?")))
-      { *out = TY_BOOL; return 1; }
-    if (sp_streq(name, "deconstruct_keys") && argc == 1) { *out = rt; return 1; }
-    if (sp_streq(name, "compact!") && argc == 0) { *out = TY_POLY; return 1; }  /* self or nil */
-    /* chunk { |k, v| key } is an enumerator of [key, [[k, v], ...]] pairs;
-       the .to_a consumer arm types the materialized chain as a poly array. */
-    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) { *out = TY_ENUMERATOR; return 1; }
-    if (sp_streq(name, "to_proc")) { *out = TY_PROC; return 1; }
+    /* builtin-op rows (builtin_ops.c) */
+    {
+      const BuiltinOp *op = bop_find(BOP_ANY_HASH, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
+    }
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) { *out = TY_SYMBOL; return 1; }
-    if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }  /* the key (boxed) or nil */
-    /* Enumerable first/take/drop over the [key, value] pair list */
-    if (sp_streq(name, "first") && argc == 0 && nt_ref(nt, id, "block") < 0) { *out = TY_POLY; return 1; }
-    if ((sp_streq(name, "first") || sp_streq(name, "take") || sp_streq(name, "drop")) &&
-        argc == 1 && nt_ref(nt, id, "block") < 0) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) { *out = rt; return 1; }  /* identity */
-    if (sp_streq(name, "slice") && argc >= 1) { *out = rt; return 1; }  /* key-subset hash */
-    if (sp_streq(name, "[]"))     { *out = ty_hash_val(rt); return 1; }
+    if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }  /* the key (boxed) or nil (#2352) */
     if (sp_streq(name, "[]=") || sp_streq(name, "store"))
       { *out = argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt); return 1; }
     if (sp_streq(name, "fetch")) {
@@ -499,35 +471,13 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = vt; return 1; }
     }
-    if (sp_streq(name, "delete")) { *out = ty_hash_val(rt); return 1; }
     if (sp_streq(name, "dig") && argc >= 1) {
       /* dig(*keys) walks a runtime key list: the depth, and so the value's
          type, is not known here */
       if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) { *out = ty_hash_val(rt); return 1; }
       { *out = TY_POLY; return 1; }
     }
-    if (sp_streq(name, "default") && argc <= 1) { *out = TY_POLY; return 1; }  /* default(key) too (#2409) */
-    if (sp_streq(name, "length") || sp_streq(name, "size") ||
-        sp_streq(name, "count")) { *out = TY_INT; return 1; }
-    if ((sp_streq(name, "<") || sp_streq(name, "<=") ||
-         sp_streq(name, ">") || sp_streq(name, ">=")) && argc == 1)
-      { *out = TY_BOOL; return 1; }  /* subset/superset comparisons */
-    if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)
-      { *out = TY_POLY; return 1; }  /* deleted value, or the block's fallback */
-    if (sp_streq(name, "keys"))   { *out = ty_array_of(ty_hash_key(rt)); return 1; }
-    if (sp_streq(name, "values")) { *out = ty_array_of(ty_hash_val(rt)); return 1; }
-    if (sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) { *out = TY_POLY_ARRAY; return 1; }
     int block = nt_ref(nt, id, "block");
-    if ((sp_streq(name, "to_a") || sp_streq(name, "entries") || sp_streq(name, "sort")) && block < 0)
-      { *out = TY_POLY_ARRAY; return 1; }
-    if (block >= 0 && (sp_streq(name, "find") || sp_streq(name, "detect")))
-      { *out = TY_POLY_ARRAY; return 1; }   /* the winning [k, v] pair, or nil */
-    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sort_by"))
-      { *out = TY_POLY_ARRAY; return 1; }   /* [k, v] pairs ordered by the block value */
-    if (nt_ref(nt, id, "block") >= 0 && (sp_streq(name, "all?") || sp_streq(name, "any?")))
-      { *out = TY_BOOL; return 1; }
-    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sum"))
-      { *out = TY_POLY; return 1; }   /* boxed accumulation via sp_poly_add */
     /* blockless Hash#sum: folds each [k, v] pair into the init, which is only
        well-defined for an empty hash (else `init + [k,v]` raises TypeError).
        The result is the init's type -- int by default. */
@@ -541,49 +491,39 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        an EMPTY hash answers the seed unchanged (`{}.sum(nil)` is nil). */
     if (nt_ref(nt, id, "block") < 0 && sp_streq(name, "sum") && argc == 1)
       { *out = fold_seed_typed(fold_seed_infer_ty(c, argv[0]), TY_INT) ? TY_INT : TY_POLY; return 1; }
-    if (nt_ref(nt, id, "block") < 0 && sp_streq(name, "sum") && argc == 0)
-      { *out = TY_INT; return 1; }
-    {
-      if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP))
-        { *out = infer_map_block_ty(c, id, block); return 1; }
-      if (block >= 0 &&
-          (sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")))
-        { *out = TY_POLY; return 1; }  /* self, or nil when nothing was removed */
-      if (block >= 0 && (sp_streq(name, "keep_if") || sp_streq(name, "delete_if")))
-        { *out = rt; return 1; }  /* always self */
-      if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || sp_streq(name, "reject"))) { *out = rt; return 1; }
-      if (block >= 0 && sp_streq(name, "transform_keys")) {
-        /* a PolyPoly receiver boxes any key: the variant is stable */
-        if (rt == TY_POLY_POLY_HASH) { *out = rt; return 1; }
-        int body = nt_ref(nt, block, "body");
-        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
-        /* Symbol keys have no scalar-valued hash variant, so keys becoming
-           symbols (e.g. transform_keys(&:to_sym)) yield a SymPolyHash regardless
-           of the value type. */
-        if (nkt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
-        TyKind r = ty_hash_of(nkt, ty_hash_val(rt));
-        { *out = r != TY_UNKNOWN ? r : rt; return 1; }
+    if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP))
+      { *out = infer_map_block_ty(c, id, block); return 1; }
+    if (block >= 0 && sp_streq(name, "transform_keys")) {
+      /* a PolyPoly receiver boxes any key: the variant is stable */
+      if (rt == TY_POLY_POLY_HASH) { *out = rt; return 1; }
+      int body = nt_ref(nt, block, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+      /* Symbol keys have no scalar-valued hash variant, so keys becoming
+         symbols (e.g. transform_keys(&:to_sym)) yield a SymPolyHash regardless
+         of the value type. */
+      if (nkt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
+      TyKind r = ty_hash_of(nkt, ty_hash_val(rt));
+      { *out = r != TY_UNKNOWN ? r : rt; return 1; }
+    }
+    if (block >= 0 && sp_streq(name, "transform_values")) {
+      if (rt == TY_POLY_POLY_HASH) { *out = rt; return 1; }
+      int body = nt_ref(nt, block, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+      TyKind kt = ty_hash_key(rt);
+      TyKind r = ty_hash_of(kt, nvt);
+      if (r != TY_UNKNOWN) { *out = r; return 1; }
+      /* No concrete (key, block-result) hash variant exists (e.g. a Float or
+         object value: there is no StrFloat hash). Falling back to the input
+         type truncated the value (#3173); use a poly-valued hash of the same
+         key kind so the block result is stored boxed, not coerced. */
+      if (nvt != TY_UNKNOWN && nvt != ty_hash_val(rt)) {
+        if (kt == TY_STRING) { *out = TY_STR_POLY_HASH; return 1; }
+        if (kt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
+        { *out = TY_POLY_POLY_HASH; return 1; }
       }
-      if (block >= 0 && sp_streq(name, "transform_values")) {
-        if (rt == TY_POLY_POLY_HASH) { *out = rt; return 1; }
-        int body = nt_ref(nt, block, "body");
-        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
-        TyKind kt = ty_hash_key(rt);
-        TyKind r = ty_hash_of(kt, nvt);
-        if (r != TY_UNKNOWN) { *out = r; return 1; }
-        /* No concrete (key, block-result) hash variant exists (e.g. a Float or
-           object value: there is no StrFloat hash). Falling back to the input
-           type truncated the value (#3173); use a poly-valued hash of the same
-           key kind so the block result is stored boxed, not coerced. */
-        if (nvt != TY_UNKNOWN && nvt != ty_hash_val(rt)) {
-          if (kt == TY_STRING) { *out = TY_STR_POLY_HASH; return 1; }
-          if (kt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
-          { *out = TY_POLY_POLY_HASH; return 1; }
-        }
-        { *out = rt; return 1; }
-      }
+      { *out = rt; return 1; }
     }
     /* merge(*hashes) folds through the universal boxed merge (#3561) */
     if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -624,41 +564,16 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       if (ty_is_hash(ot) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
       { *out = rt; return 1; }
     }
-    if (sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "merge")) { *out = rt; return 1; }
-    /* #2340/#2349/#2351: no-arg merge / slice / clear / to_hash / rehash keep
-       the receiver's variant (an emptied or copied hash of the same shape, or
-       for rehash the receiver itself) */
-    if ((sp_streq(name, "merge") || sp_streq(name, "slice")) && argc == 0) { *out = rt; return 1; }
-    if ((sp_streq(name, "clear") || sp_streq(name, "to_hash") || sp_streq(name, "rehash")) && argc == 0)
-      { *out = rt; return 1; }
-    /* Hash#shift -> [key, value] pair, or nil (boxed poly) (#2349) */
-    if (sp_streq(name, "shift") && argc == 0) { *out = TY_POLY; return 1; }
-    /* Hash#key(value) -> a key, or nil: poly (the key type, nullable) (#2352) */
-    if (sp_streq(name, "key") && argc == 1) { *out = TY_POLY; return 1; }
-    /* blockless one? -> bool (exactly one pair) (#2354) */
-    if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "merge")) { *out = rt; return 1; }
     /* in-place merge mutates and returns the receiver (its variant is fixed);
        with no argument, unless the program defines a method of that name */
     if ((sp_streq(name, "merge!") || sp_streq(name, "update")) &&
         !an_zero_arg_builtin_shadowed(c, name, argc)) { *out = rt; return 1; }
-    if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
-        sp_streq(name, "include?") || sp_streq(name, "member?") ||
-        sp_streq(name, "has_value?") || sp_streq(name, "value?") ||
-        sp_streq(name, "empty?")) { *out = TY_BOOL; return 1; }
-    /* blockless each_with_object -> Enumerator (#2540); the blocked form is a
-       Ruby method by now (builtins/enumerable.rb) and types as one */
-    if (sp_streq(name, "each_with_object") && argc > 0 && argv && nt_ref(nt, id, "block") < 0)
-      { *out = TY_ENUMERATOR; return 1; }
-    if (sp_streq(name, "flatten") && argc <= 1) { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "invert") && argc == 0) {
       /* swap key/value types where we have a typed variant */
       if (rt == TY_STR_STR_HASH) { *out = TY_STR_STR_HASH; return 1; }
       { *out = TY_POLY_POLY_HASH; return 1; }
     }
-    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "compact") && argc == 0) { *out = rt; return 1; }
-    if (sp_streq(name, "except")) { *out = rt; return 1; }  /* a copy minus the given keys */
   }
   return 0;
 }
