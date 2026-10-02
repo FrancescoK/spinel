@@ -260,11 +260,6 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if ((rt == TY_INT || rt == TY_FLOAT) && sp_streq(name, "clamp") && argc == 2 &&
       (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL))
     { *out = TY_POLY; return 1; }
-  /* clamp(lo, hi) with a Rational bound: the applied bound decides the result
-     class at runtime, so the result is boxed (#3232). */
-  if ((rt == TY_INT || rt == TY_FLOAT) && sp_streq(name, "clamp") && argc == 2 &&
-      (infer_type(c, argv[0]) == TY_RATIONAL || infer_type(c, argv[1]) == TY_RATIONAL))
-    { *out = TY_POLY; return 1; }
   if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||

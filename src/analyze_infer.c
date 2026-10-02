@@ -2708,9 +2708,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         sp_streq(name, "!~")) return TY_BOOL;
     if (sp_streq(name, "=~")) return TY_NIL;
     if (sp_streq(name, "rationalize")) return TY_RATIONAL;
-    /* nil <=> nil is 0 (int); any other operand answers nil */
-    if (sp_streq(name, "<=>") && argc == 1)
-      return infer_type(c, argv[0]) == TY_NIL ? TY_INT : TY_NIL;
     if (sp_streq(name, "tap")) return TY_POLY;  /* the (boxed) nil receiver */
     if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
         nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
@@ -3440,11 +3437,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class"))
     return TY_STRING;
 
-  /* __ENCODING__.name / .to_s / .inspect -> the encoding name string */
-  if (recv >= 0 && argc == 0 &&
-      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SourceEncodingNode"))
-    return TY_STRING;
   /* <enc>.encoding.name -> the encoding name string */
   if (recv >= 0 && argc == 0 && sp_streq(name, "name") && rt == TY_POLY &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
@@ -3517,12 +3509,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* SomeClass.name / .to_s / .inspect -> class name string */
-  if (recv >= 0 && argc == 0 &&
-      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
-    return TY_STRING;
   /* SomeClass.superclass -> sp_Class value for the parent class */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
@@ -5460,7 +5446,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       /* nil-aware conversions (a nil local widens to poly): boxed results */
       if (nt_ref(nt, id, "block") < 0 &&
           ((argc == 0 && (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
-                          sp_streq(name, "to_r") || sp_streq(name, "to_c"))) ||
+                          sp_streq(name, "to_r"))) ||
            (argc <= 1 && sp_streq(name, "rationalize")))) {   /* an optional epsilon */
         if (!an_user_poly_arm(c, name, argc)) {
           /* concrete result types, matching the TY_NIL receiver arm so a
@@ -5471,8 +5457,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
              `opts.to_h` on a String-keyed hash raise (#3972). nil.to_h is the
              empty hash, which the boxed answer covers too. */
           if (sp_streq(name, "to_h")) return an_poly_concrete(c, name, TY_POLY);
-          if (sp_streq(name, "to_r") || sp_streq(name, "rationalize")) return an_poly_concrete(c, name, TY_RATIONAL);
-          return an_poly_concrete(c, name, TY_COMPLEX);
+          return an_poly_concrete(c, name, TY_RATIONAL);   /* to_r, rationalize */
         }
       }
       /* to_h with a block (a proc argument too): the pairs it answers, boxed */
