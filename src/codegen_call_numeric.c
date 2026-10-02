@@ -25,8 +25,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
      the mode reaches the runtime as the value it was written as. */
   if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
-      (sp_streq(name, "round") || sp_streq(name, "floor") ||
-       sp_streq(name, "ceil") || sp_streq(name, "truncate"))) {
+      is_round_family(name)) {
     RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
     /* the class the call answers, chosen exactly as infer_type's Rational
        rule chooses it once the keyword hash is peeled off */
@@ -72,8 +71,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
   }
   /* round/truncate/floor/ceil with a literal precision: nd > 0 keeps a
      Rational, nd <= 0 realizes the Integer value (.num of the den-1 result). */
-  if ((sp_streq(name, "round") || sp_streq(name, "truncate") ||
-       sp_streq(name, "floor") || sp_streq(name, "ceil")) && argc == 1 &&
+  if (is_round_family(name) && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode")) {
     long long nd = nt_int(nt, argv[0], "value", 0);
     const char *fn = name[0] == 'r' ? "round"
@@ -87,8 +85,7 @@ int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b) {
   /* Non-literal precision: the result class depends on the runtime value
      (Rational for nd > 0, Integer otherwise), so box to poly and choose at
      runtime. Both operands are value types -- nothing to GC-root. */
-  if ((sp_streq(name, "round") || sp_streq(name, "truncate") ||
-       sp_streq(name, "floor") || sp_streq(name, "ceil")) && argc == 1) {
+  if (is_round_family(name) && argc == 1) {
     const char *fn = name[0] == 'r' ? "round" : name[0] == 't' ? "truncate"
                    : name[0] == 'f' ? "floor" : "ceil";
     int tr = ++g_tmp, tn = ++g_tmp;

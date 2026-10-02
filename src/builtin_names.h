@@ -11,5 +11,9 @@
 
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
+int is_round_family(const char *n);   /* round ceil floor truncate */
+int is_push_alias(const char *n);     /* push << append */
+int is_bit_op(const char *n);         /* & | ^ */
+int is_basic_arith(const char *n);    /* + - * / (is_arith_op adds % and **) */
 
 #endif

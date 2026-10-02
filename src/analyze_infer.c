@@ -5106,7 +5106,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) return ty_object(ecls);
     if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return ty_object(ecls);
     if (sp_streq(name, "[]=") && argc == 2) return ty_object(ecls);
-    if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) return rt;
+    if (is_push_alias(name)) return rt;
     if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) return TY_INT;
     if (sp_streq(name, "empty?") && argc == 0) return TY_BOOL;
     /* no-block comparisons (admitted by the narrowing pass only for element
@@ -5389,7 +5389,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       /* & | ^ on a poly receiver dispatch on the runtime tag (nil/bool take
          the boolean ops, ints the bitwise ones) via sp_poly_bitop, whose
          result is a boxed value -- so the static type stays poly (#2401). */
-      if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+      if (argc == 1 && is_bit_op(name))
         return an_poly_concrete(c, name, TY_POLY);
       /* parameters(lambda: true/false/nil), read by proc_parameters_lambda_mode,
          is an Array, as the no-argument call is, unless a class method of the
@@ -5808,13 +5808,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          as void, the emitted call was evaluated for effect and its value
          dropped -- `z.round(2, half: :even)` answered nil. */
       if ((argc == 1 || argc == 2) &&
-          (sp_streq(name, "round") || sp_streq(name, "ceil") ||
-           sp_streq(name, "floor") || sp_streq(name, "truncate")) &&
+          is_round_family(name) &&
           nt_type(nt, argv[argc - 1]) &&
           sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode"))
         return an_poly_concrete(c, name, TY_POLY);
-      if (argc == 1 && (sp_streq(name, "round") || sp_streq(name, "ceil") ||
-                        sp_streq(name, "floor") || sp_streq(name, "truncate")))
+      if (argc == 1 && is_round_family(name))
         return an_poly_concrete(c, name, TY_POLY);
       /* divmod answers a pair, modulo and quo a number whose class follows the
          operands. Without a type here the emitted call was evaluated for
@@ -6524,8 +6522,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            (2.0**70).floor(-1) came out ...424 where CRuby says ...420.
            Widening that would trade a RangeError for a wrong answer, so it
            keeps raising until the rounding itself is done in Bignum. */
-        if (sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-            sp_streq(name, "round") || sp_streq(name, "truncate")) {
+        if (is_round_family(name)) {
           if (pv_argc == 0) return TY_POLY;
           if (pv_argc == 1) {
             const char *pv_aty = nt_type(nt, argv[0]);
@@ -6549,8 +6546,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "clamp") && argc == 2 &&
         infer_type(c, argv[0]) == TY_FLOAT && infer_type(c, argv[1]) == TY_FLOAT)
       return TY_FLOAT;
-    if (sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-        sp_streq(name, "round") || sp_streq(name, "truncate")) {
+    if (is_round_family(name)) {
       /* CRuby chooses the return class from the runtime ndigits value: Integer
          when ndigits <= 0, Float when ndigits > 0. With a literal ndigits we
          match it exactly. A NON-literal ndigits can't be classified statically,
@@ -6641,7 +6637,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* int & | ^ a Bignum operand promotes (#2422). `&` too: a negative receiver
      is sign-extended forever, so `-1 & 0xFFFFFFFFFFFFFFFF` IS that mask. */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "|") || sp_streq(name, "^") || sp_streq(name, "&")) &&
+      is_bit_op(name) &&
       infer_type(c, recv) == TY_INT && infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;
   if ((sp_streq(name, "match?") || sp_streq(name, "!~")) && recv >= 0) return TY_BOOL;
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
@@ -6771,7 +6767,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
        sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
     if ((rt == TY_POLY || a0 == TY_POLY) &&
-        (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/") ||
+        (is_basic_arith(name) ||
          /* every operator codegen lowers the same way. Left out, `>>` took the
             user return from the poly-dispatch union while the emission still
             produced an sp_RbVal, and the two met at the assignment (#3502). */
@@ -6904,7 +6900,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     return TY_POLY;
   /* boolean &/|/^ */
   if (recv >= 0 && argc == 1 && rt == TY_BOOL &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+      is_bit_op(name))
     return TY_BOOL;
 
   /* a program's own Object method answers what it returns, whatever its

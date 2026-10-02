@@ -5843,7 +5843,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
                        : rt == TY_BOOL ? "Object" : NULL;
       /* TrueClass/FalseClass define the logical operators (#2835) */
       int bool_op = rt == TY_BOOL &&
-                    (sp_streq(sym, "&") || sp_streq(sym, "|") || sp_streq(sym, "^"));
+                    is_bit_op(sym);
       if (bcls && !bool_op &&
           !builtin_method_known(bcls, sym) && !builtin_object_method_known(sym))
         continue;
@@ -9009,7 +9009,7 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (!nm || has_block) return 0;
   if ((sp_streq(nm, "[]") || sp_streq(nm, "at")) && argc == 1) return 1;
   if (sp_streq(nm, "[]=") && argc == 2) return 1;
-  if ((sp_streq(nm, "push") || sp_streq(nm, "<<") || sp_streq(nm, "append")) && argc >= 1) return 1;
+  if (is_push_alias(nm) && argc >= 1) return 1;
   if ((sp_streq(nm, "length") || sp_streq(nm, "size")) && argc == 0) return 1;
   if (sp_streq(nm, "empty?") && argc == 0) return 1;
   if ((sp_streq(nm, "first") || sp_streq(nm, "last")) && argc == 0) return 1;
@@ -9577,7 +9577,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
        without this edge its return slot died while its parameter narrowed,
        leaving an sp_PtrArray body under an sp_PolyArray return. The push
        argument is element evidence exactly as in the receiver-op arm. */
-    else if (cn && (sp_streq(cn, "<<") || sp_streq(cn, "push") || sp_streq(cn, "append")) &&
+    else if (cn && is_push_alias(cn) &&
              can >= 1 && nt_ref(nt, v, "block") < 0 && crecv >= 0 && read_slot[crecv] >= 0) {
       int cargv_n = 0; const int *cargv = nt_arr(nt, cargs, "arguments", &cargv_n);
       for (int a = 0; a < cargv_n; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, cargv[a]));
@@ -10106,7 +10106,7 @@ static int narrow_object_arrays(Compiler *c) {
       int S = read_slot[recv];
       if (oa_recv_op_ok(name, argc, has_block)) {
         claimed[recv] = 1;
-        if (name && (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append"))) {
+        if (name && is_push_alias(name)) {
           for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_elem_evidence(c, sl, S, argv[a]));
           /* an append answers the array: like a sort result it must land
              in a modeled consumer, or a chained `a.push(x).push(y)` pushes
@@ -23163,7 +23163,7 @@ int scalar_nil_only_call(Compiler *c, int id, TyKind rt) {
         nt_kind(nt, argv[k]) == NK_BlockArgumentNode) return 0;
   int hit = argc == 0 ? (sp_streq(nm, "to_a") || sp_streq(nm, "to_h"))
           : argc == 1 ? (sp_streq(nm, "=~") || sp_streq(nm, "!~") ||
-                         (rt == TY_FLOAT && (sp_streq(nm, "&") || sp_streq(nm, "|") || sp_streq(nm, "^"))))
+                         (rt == TY_FLOAT && is_bit_op(nm)))
           : 0;
   return hit;
 }
@@ -29091,7 +29091,7 @@ void analyze_program(Compiler *c) {
           const char *nm = nt_str(c->nt, id, "name");
           int args = nt_ref(c->nt, id, "arguments"); int an = 0;
           const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
-          if (nm && (sp_streq(nm, "<<") || sp_streq(nm, "push") || sp_streq(nm, "append"))) {
+          if (nm && is_push_alias(nm)) {
             for (int a = 0; a < an; a++) { saw = 1; if (infer_type(c, argv[a]) != TY_INT) { ok = 0; break; } }
           }
           else if (nm && sp_streq(nm, "[]=") && an == 2) {

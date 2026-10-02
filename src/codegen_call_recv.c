@@ -1232,7 +1232,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_int_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
       return 1;
     }
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
+    if (is_push_alias(name) && argc >= 1) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
       for (int a = 0; a < argc; a++) {
@@ -6953,8 +6953,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
          a digit count as well it is the arity CRuby complains about first. */
       else if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
                sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
-               (sp_streq(name, "round") || sp_streq(name, "floor") ||
-                sp_streq(name, "ceil") || sp_streq(name, "truncate"))) {
+               is_round_family(name)) {
         RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = (%s); ", tr, r);
@@ -6990,8 +6989,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
           buf_printf(b, "_t%d; })", tr);
         }
       }
-      else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-                sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
+      else if (is_round_family(name) && argc == 1) {
         buf_printf(b, "sp_int_%s(%s, ", name, r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "chr") && argc == 1) {
@@ -7408,8 +7406,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       RoundKw kw; memset(&kw, 0, sizeof kw); kw.half = -1;
       int has_kwh = (argc == 1 || argc == 2) && nt_type(c->nt, argv[argc - 1]) &&
                     sp_streq(nt_type(c->nt, argv[argc - 1]), "KeywordHashNode") &&
-                    (sp_streq(name, "round") || sp_streq(name, "floor") ||
-                     sp_streq(name, "ceil") || sp_streq(name, "truncate"));
+                    is_round_family(name);
       if (has_kwh) round_kw_read(c, argv[argc - 1], &kw);
       /* Only #round takes a tie-break mode; the other three reject the hash
          outright, and with a digit count as well it is the arity CRuby
@@ -7502,8 +7499,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else buf_puts(b, ", sp_box_nil()); })");
         return 1;
       }
-      if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-           sp_streq(name, "round") || sp_streq(name, "truncate")) && eff_argc == 1) {
+      if (is_round_family(name) && eff_argc == 1) {
         const char *aty = nt_type(c->nt, argv[0]);
         if (aty && sp_streq(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
         else nonlit = 1;
@@ -7522,8 +7518,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       /* the arms that read only the receiver and the arguments: builtin-op
          rows (builtin_ops.c) */
       if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
-      else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-           sp_streq(name, "round") || sp_streq(name, "truncate"))) {
+      else if (is_round_family(name)) {
         if (nonlit) {
           /* The class depends on the runtime ndigits: Float when n > 0, Integer
              when n <= 0 (CRuby). Choose at runtime and return a boxed poly. */
@@ -11981,8 +11976,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      as the typed arm does, so a value that went through a container answers
      what the same value answers when it did not. */
   if (recv >= 0 && rt == TY_POLY && (argc == 1 || argc == 2) &&
-      (sp_streq(name, "round") || sp_streq(name, "ceil") ||
-       sp_streq(name, "floor") || sp_streq(name, "truncate")) &&
+      is_round_family(name) &&
       nt_ref(nt, id, "block") < 0 &&
       nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
@@ -12045,8 +12039,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (sp_streq(name, "round") || sp_streq(name, "ceil") ||
-       sp_streq(name, "floor") || sp_streq(name, "truncate")) &&
+      is_round_family(name) &&
       nt_ref(nt, id, "block") < 0) {
     if (!poly_name_user_claimed(c, name, argc, 1)) {
       /* ceil / floor / truncate with a precision had no arm at all and

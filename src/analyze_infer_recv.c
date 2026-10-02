@@ -218,18 +218,17 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      (emit_int_operand_fail), so the call answers only where the receiver
      is nil: nil's own boolean (`x & true` of a nil x is false) */
   if (rt == TY_INT && argc == 1 && recv >= 0 &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      is_bit_op(name)) {
     TyKind at = infer_type(c, argv[0]);
     if (at == TY_FLOAT || at == TY_STRING || at == TY_NIL || at == TY_SYMBOL || at == TY_BOOL ||
         ty_is_array(at) || ty_is_hash(at)) { *out = TY_BOOL; return 1; }
   }
   if ((rt == TY_INT || rt == TY_FLOAT) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-    if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) { *out = TY_COMPLEX; return 1; }
+    if (is_basic_arith(name)) { *out = TY_COMPLEX; return 1; }
     if (sp_streq(name, "==") || sp_streq(name, "!=")) { *out = TY_BOOL; return 1; }
   }
   if (rt == TY_RATIONAL && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX &&
-      (sp_streq(name, "+") || sp_streq(name, "-") ||
-       sp_streq(name, "*") || sp_streq(name, "/"))) { *out = TY_COMPLEX; return 1; }
+      is_basic_arith(name)) { *out = TY_COMPLEX; return 1; }
   /* Complex: builtin-op rows (builtin_ops.c) */
   if (rt == TY_COMPLEX) {
     const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
@@ -303,7 +302,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* Integer <op> Rational coerces the Integer to Rational (result Rational for
      arithmetic, Bool/Int for comparisons). */
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
-    if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) { *out = TY_RATIONAL; return 1; }
+    if (is_basic_arith(name)) { *out = TY_RATIONAL; return 1; }
     if (sp_streq(name, "%") || sp_streq(name, "modulo") || sp_streq(name, "remainder")) { *out = TY_RATIONAL; return 1; }
     if (sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=") ||
@@ -326,8 +325,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
        positive precision keeps the Rational, and a non-literal precision boxes
        to poly so the class is chosen from the runtime value. */
-    if (sp_streq(name, "round") || sp_streq(name, "truncate") ||
-        sp_streq(name, "floor") || sp_streq(name, "ceil")) {
+    if (is_round_family(name)) {
       /* a trailing `half:` keyword only picks the tie-break mode; peel it off
          the positional count for the class choice, as the Float rule does.
          Read as a positional argument it made `r.round(1, half: :even)` an

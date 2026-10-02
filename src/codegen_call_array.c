@@ -869,7 +869,7 @@ int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt != TY_POLY_ARRAY) return 0;
-  if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc == 1) {
+  if (is_push_alias(name) && argc == 1) {
     buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }

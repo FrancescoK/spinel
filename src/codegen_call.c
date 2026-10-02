@@ -4016,7 +4016,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     if (crt == TY_COMPLEX && emit_builtin_op(c, id, recv, crt, name, b)) return 1;
     /* Integer/Float <op> Complex: lift the scalar to re+0i. */
     if ((crt == TY_INT || crt == TY_FLOAT) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-      if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
+      if (is_basic_arith(name)) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(((sp_Complex){(sp_float)(", fn); emit_expr(c, recv, b);
         buf_printf(b, "), 0, %d}), ", crt == TY_FLOAT ? 1 : 0); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4377,7 +4377,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
+      if (is_basic_arith(name)) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_rational_%s(sp_rational_new((sp_int)(", fn); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -25128,7 +25128,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     const char *pnm = nt_str(nt, id, "name");
     int precv = nt_ref(nt, id, "receiver");
     if (pnm && precv >= 0 &&
-        (sp_streq(pnm, "push") || sp_streq(pnm, "append") || sp_streq(pnm, "<<") ||
+        (is_push_alias(pnm) ||
          /* on an EMPTY literal, unshift/prepend build the same array (#2364) */
          sp_streq(pnm, "unshift") || sp_streq(pnm, "prepend")) &&
         nt_type(nt, precv) && sp_streq(nt_type(nt, precv), "ArrayNode") &&
@@ -30062,7 +30062,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* poly_val >> int: unbox recv to int, apply op. & | ^ dispatch on the
      runtime tag instead (nil/bool are boolean ops, ints bitwise; #2401). */
   if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      is_bit_op(name)) {
     int bop = sp_streq(name, "&") ? 0 : sp_streq(name, "|") ? 1 : 2;
     /* the hoisted receiver is rooted across its argument and the dispatch:
        a heap receiver (an array, a Bignum, a user object whose own operator
@@ -30092,7 +30092,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   /* `arr << x` / push / append in value position: mutate, then yield the array
      (statement position is handled earlier by emit_array_mutate_stmt). */
   if (recv >= 0 && emit_array_splat_mutator(c, id, b)) return;
-  if (recv >= 0 && (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) &&
+  if (recv >= 0 && is_push_alias(name) &&
       argc >= 1 && ty_is_array(comp_ntype(c, recv))) {
     TyKind art = comp_ntype(c, recv);
     /* A narrowed pointer array (int-array-array): push the element pointer
@@ -38840,7 +38840,7 @@ else {
     /* &, | and ^ with a Bignum operand promote (#2422). `&` too: a negative
        receiver is sign-extended forever, so `-1 & 0xFFFFFFFFFFFFFFFF` is that
        whole mask, not -1. */
-    if ((sp_streq(name, "|") || sp_streq(name, "^") || sp_streq(name, "&")) && at0 == TY_BIGINT) {
+    if (is_bit_op(name) && at0 == TY_BIGINT) {
       /* the promoted receiver is a fresh Bignum: root it while the operand
          (which may run arbitrary code, and allocate) is evaluated */
       int tpl = ++g_tmp, tpr = ++g_tmp;
@@ -39574,7 +39574,7 @@ else {
   if (recv >= 0 && rt == TY_NIL) {
     /* nil & / | / ^ are BOOLEAN ops (nil is false): & is always false, | and ^
        are the argument's truthiness -- not integer bitwise (#2401) */
-    if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+    if (argc == 1 && is_bit_op(name)) {
       if (sp_streq(name, "&")) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
         buf_puts(b, "), (void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
@@ -39624,7 +39624,7 @@ else {
     }
     /* NilClass boolean operators: & is always false, | and ^ test the
        operand's truthiness */
-    if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+    if (argc == 1 && is_bit_op(name)) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ");
       if (sp_streq(name, "&")) { buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)"); }
       else { buf_puts(b, "sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
@@ -39640,7 +39640,7 @@ else {
   /* boolean receiver & | ^ with a non-boolean operand: logical ops on the
      operand's truthiness (an Integer operand included -- 0 is truthy) */
   if (recv >= 0 && rt == TY_BOOL && argc == 1 &&
-      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      is_bit_op(name)) {
     TyKind bat = comp_ntype(c, argv[0]);
     if (bat != TY_BOOL) {
       int tb3 = ++g_tmp;
@@ -40672,7 +40672,7 @@ else {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? sp_str_frozen_true : sp_str_frozen_false)");
       return;
     }
-    if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")) {
+    if (is_bit_op(name)) {
       buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", name); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }

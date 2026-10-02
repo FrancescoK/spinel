@@ -2221,8 +2221,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
      helpers the binary path uses. Only an Integer/Rational rhs keeps the result
      a Rational; a Float rhs would change the local's type (CRuby returns a
      Float) and falls through to the loud reject. */
-  if (t == TY_RATIONAL && (sp_streq(op, "+") || sp_streq(op, "-") ||
-                           sp_streq(op, "*") || sp_streq(op, "/"))) {
+  if (t == TY_RATIONAL && is_basic_arith(op)) {
     TyKind vt = comp_ntype(c, v);
     if (vt == TY_RATIONAL || vt == TY_INT) {
       const char *fn = op[0] == '+' ? "add" : op[0] == '-' ? "sub" : op[0] == '*' ? "mul" : "div";
@@ -14013,7 +14012,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ");\n");
       return 1;
     }
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
+    if (is_push_alias(name) && argc >= 1) {
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -14030,7 +14029,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   }
 
   if (rt == TY_POLY &&
-      (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) && argc >= 1) {
+      is_push_alias(name) && argc >= 1) {
     /* A poly value that holds an array at runtime appends via sp_poly_shl.
        `<<` takes one arg; push/append take any number (each boxed in turn).
        A `<<` whose receiver is an ASSIGNABLE slot REBINDS the result: a
@@ -14134,7 +14133,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;
   }
-  if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
+  if (is_push_alias(name) && argc >= 1) {
     TyKind et = ty_array_elem(rt);
     /* Any splat arg (`arr.push(*other)`) spreads its array's elements at
        runtime; materialize the receiver once so the per-element loop pushes into

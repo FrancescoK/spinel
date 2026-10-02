@@ -2357,7 +2357,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      name (the value could be that object), so the switch needs a builtin-array
      arm or the append is silently dropped. sp_poly_shl handles every array
      kind; the user arms above cover the object case. */
-  int is_push = (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1;
+  int is_push = is_push_alias(name) && argc >= 1;
   /* unshift/prepend are the same arm at the other end: without one they fell
      to the switch's NoMethodError default on a genuine Array (#4320). */
   int is_unshift = (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1;
@@ -3679,8 +3679,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
        the same slot fell to the raise below (#4532). The zero-arg forms
        have their arm in the other dispatch; these answer through the
        boxed helpers the no-user-class path uses. */
-    else if ((sp_streq(name, "round") || sp_streq(name, "ceil") ||
-              sp_streq(name, "floor") || sp_streq(name, "truncate")) && argc == 1 && splat_a < 0) {
+    else if (is_round_family(name) && argc == 1 && splat_a < 0) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_ROUND, -1, TY_UNKNOWN, PC_SAME);
       char nd9[64];
       if (atmp_ty[0] == TY_POLY) snprintf(nd9, sizeof nd9, "sp_poly_to_i(_t%d)", atmp[0]);

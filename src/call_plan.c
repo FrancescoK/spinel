@@ -985,8 +985,7 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
       !ps->pvalues_at && !ps->pfirstn && !ps->pmerge) {
     cpoly_family(p, cap, PB_ND_GENERIC);
     if (sp_streq(name, "replace") && argc == 1 && splat_a < 0 && ret == TY_POLY) cpoly_family(p, cap, PB_ND_REPLACE);
-    else if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor") ||
-              sp_streq(name, "truncate")) && argc == 1 && splat_a < 0)
+    else if (is_round_family(name) && argc == 1 && splat_a < 0)
       cpoly_family(p, cap, PB_ND_ROUND);
     else if (splat_a < 0 && poly_num_arm(name, argc) >= 0) cpoly_family(p, cap, PB_ND_NUM);
     else if (ps->arr_index && !sp_streq(name, "find_index")) cpoly_family(p, cap, PB_ND_STR_INDEX);

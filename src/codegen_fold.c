@@ -2849,8 +2849,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   int int_bitop = (et == TY_INT) && !ifn &&
                   (sp_streq(op, "&") || sp_streq(op, "|") || sp_streq(op, "^") ||
                    sp_streq(op, "<<") || sp_streq(op, ">>"));
-  int float_op = (et == TY_FLOAT) && (sp_streq(op, "+") || sp_streq(op, "-") ||
-                                      sp_streq(op, "*") || sp_streq(op, "/"));
+  int float_op = (et == TY_FLOAT) && is_basic_arith(op);
   int str_op = (et == TY_STRING) && sp_streq(op, "+");
   if (!ifn && !int_bitop && !float_op && !str_op) return 0;
 

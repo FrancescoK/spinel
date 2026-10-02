@@ -4210,7 +4210,7 @@ int infer_global_const_types(Compiler *c) {
          the receiver is a direct ConstantReadNode. */
       const char *cnm = nt_str(nt, id, "name");
       if (!cnm) continue;
-      int is_push = (sp_streq(cnm, "<<") || sp_streq(cnm, "push") || sp_streq(cnm, "append"));
+      int is_push = is_push_alias(cnm);
       /* `CONST[i] = v` is the other way a constant bound to an empty literal
          gets filled -- the table-building shape (`DISPATCH[opcode] = args`).
          Without it the constant stayed UNKNOWN, which reads as "defined
@@ -6910,7 +6910,7 @@ int infer_ivar_types(Compiler *c) {
       if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_UNKNOWN &&
           !class_ivar_pinned(ci, nm)) {
         const char *bo = nt_str(nt, id, "binary_operator");
-        if (bo && (sp_streq(bo, "|") || sp_streq(bo, "&") || sp_streq(bo, "^"))) vt = TY_POLY;
+        if (bo && is_bit_op(bo)) vt = TY_POLY;
       }
       /* For operator-write (@b += rhs), vt is the RHS type, not the result type.
          When the slot holds a user object, the result is the method's return type. */
