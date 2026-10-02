@@ -60,6 +60,15 @@ typedef enum {
   BOPE_HASH_MERGE_BANG_MANY, /* merge!/update(h1, h2, ...) of the same variant */
   BOPE_HASH_SHIFT,        /* Hash#shift, no block */
   BOPE_HASH_DELETE,       /* delete(key) without a block literal */
+  BOPE_HASH_INVERT,       /* Hash#invert */
+  BOPE_HASH_FLATTEN,      /* Hash#flatten, #flatten(depth) */
+  BOPE_HASH_TO_A,         /* to_a / entries */
+  BOPE_HASH_SORT,         /* sort, no block */
+  BOPE_HASH_FIRST,        /* first, no block */
+  BOPE_HASH_TAKE,         /* first(n) / take(n), no block */
+  BOPE_HASH_DROP,         /* drop(n), no block */
+  BOPE_HASH_ASSOC,        /* assoc / rassoc */
+  BOPE_HASH_COMPACT,      /* Hash#compact */
   BOPE__COUNT
 } BopEmit;
 

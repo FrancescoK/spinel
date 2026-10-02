@@ -585,3 +585,256 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
   return 1;
 }
+
+/* Hash#invert: the String- and Integer-keyed variants have runtime
+   helpers; any other builds a PolyPolyHash by swapping each entry's key
+   and value */
+int emit_op_hash_invert(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  if (rt == TY_STR_STR_HASH) {
+    buf_printf(b, "sp_StrStrHash_invert("); emit_expr(c, recv, b); buf_puts(b, ")");
+  }
+  else if (rt == TY_STR_INT_HASH) {
+    buf_printf(b, "sp_StrIntHash_invert_poly("); emit_expr(c, recv, b); buf_puts(b, ")");
+  }
+  else if (rt == TY_INT_STR_HASH) {
+    buf_printf(b, "sp_IntStrHash_invert("); emit_expr(c, recv, b); buf_puts(b, ")");
+  }
+  else {
+    /* generic: build PolyPolyHash by swapping key/value of each entry */
+    int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", tr, tr);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+    /* key and value access depend on the hash variant */
+    TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+    /* emit key as sp_RbVal */
+    if (kt == TY_SYMBOL)
+      buf_printf(b, " sp_RbVal _k%d = sp_box_sym(_t%d->order[_t%d]);", ti, th, ti);
+    else if (kt == TY_STRING)
+      buf_printf(b, " sp_RbVal _k%d = sp_box_str(_t%d->order[_t%d]);", ti, th, ti);
+    else if (kt == TY_INT)
+      buf_printf(b, " sp_RbVal _k%d = sp_box_int(_t%d->order[_t%d]);", ti, th, ti);
+    else
+      buf_printf(b, " sp_RbVal _k%d = _t%d->keys[_t%d->order[_t%d]];", ti, th, th, ti);
+    /* emit value as sp_RbVal (a PolyPoly receiver reads vals[] directly:
+       its _get takes an sp_RbVal key, not the raw order index) (#2407) */
+    if (rt == TY_POLY_POLY_HASH)
+      buf_printf(b, " sp_RbVal _v%d = _t%d->vals[_t%d->order[_t%d]];", ti, th, th, ti);
+    else if (vt == TY_POLY)
+      buf_printf(b, " sp_RbVal _v%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);", ti, hn, th, th, ti);
+    else if (vt == TY_INT) {
+      buf_printf(b, " sp_RbVal _v%d = sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", ti, hn, th, th, ti);
+    }
+    else {
+      buf_printf(b, " sp_RbVal _v%d = sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", ti, hn, th, th, ti);
+    }
+    buf_printf(b, " sp_PolyPolyHash_set(_t%d, _v%d, _k%d); }", tr, ti, ti);
+    buf_printf(b, " _t%d; })", tr);
+  }
+  return 1;
+}
+
+/* Hash#flatten and #flatten(depth) */
+int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (argc == 1) {
+    /* Hash#flatten(d) == to_a.flatten(d): d == 1 is the plain interleave
+       (argc == 0 below), d >= 2 also expands array values, d == 0 keeps
+       the pairs, negative flattens completely -- all served by the
+       depth-limited array flatten over the pair list */
+    buf_puts(b, "sp_PolyArray_flatten_depth(");
+    emit_hash_pairs_expr(c, recv, rt, hn, b);
+    buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  /* interleave keys and values into a flat PolyArray */
+  int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+  TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+  buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+  buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+  emit_push_hash_key(kt, tr, th, ti, b);
+  if (vt == TY_POLY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tr, hn, th, th, ti);
+  else if (vt == TY_INT)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
+  buf_printf(b, " } _t%d; })", tr);
+  return 1;
+}
+
+/* to_a / entries: the [key, value] pairs */
+int emit_op_hash_to_a(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  emit_hash_pairs_expr(c, recv, rt, hn, b);
+  return 1;
+}
+
+/* sort with no block */
+int emit_op_hash_sort(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  /* sort entries by Array#<=> over each [key, value] pair */
+  buf_puts(b, "sp_PolyArray_sort_pairs(");
+  emit_hash_pairs_expr(c, recv, rt, hn, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
+/* Enumerable first/take/drop over the [key, value] pair list. `first`
+   with no argument yields the first pair (nil when empty); the argument
+   forms and take/drop return a poly array slice. */
+int emit_op_hash_first(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int tp = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+  emit_hash_pairs_expr(c, recv, rt, hn, b);
+  buf_printf(b, "; _t%d->len > 0 ? _t%d->data[0] : sp_box_nil(); })", tp, tp);
+  return 1;
+}
+
+/* first(n) / take(n) */
+int emit_op_hash_take(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int tn = ++g_tmp;
+  buf_printf(b, "({ sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+  buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\"); sp_PolyArray_slice(", tn);
+  emit_hash_pairs_expr(c, recv, rt, hn, b);
+  buf_printf(b, ", 0, _t%d); })", tn);
+  return 1;
+}
+
+/* drop(n) */
+int emit_op_hash_drop(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int tp = ++g_tmp, tn = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+  emit_hash_pairs_expr(c, recv, rt, hn, b);
+  /* the fresh pairs array is rooted across the count, as the array
+     take/drop arm roots its receiver */
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = ", tp, tn); emit_int_expr(c, argv[0], b);
+  buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to drop negative size\"); sp_PolyArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", tn, tp, tn, tp, tn);
+  return 1;
+}
+
+/* assoc / rassoc */
+int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
+  const char *name = x->name;
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  /* find first pair where key==arg (assoc) or value==arg (rassoc); returns [k,v] or nil */
+  int is_rassoc = sp_streq(name, "rassoc");
+  TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+  int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, ta = ++g_tmp;
+  /* PolyPolyHash's order[] holds SLOT INDEXES; keys/vals index directly.
+     The other variants store the KEY in order[] and read values through
+     sp_<hn>Hash_get(key). Build the value-read expression accordingly. */
+  char vget[96];
+  if (rt == TY_POLY_POLY_HASH)
+    snprintf(vget, sizeof vget, "_t%d->vals[_t%d->order[_t%d]]", th, th, ti);
+  else
+    snprintf(vget, sizeof vget, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, th, th, ti);
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b); buf_puts(b, ";");
+  /* store argument */
+  if (!is_rassoc) {
+    buf_printf(b, " %s _t%d = ", c_type_name(kt), ta); emit_hash_key(c, argv[0], kt, b); buf_puts(b, ";");
+  }
+  else {
+    /* rassoc: arg has value type */
+    buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b); buf_puts(b, ";");
+  }
+  buf_printf(b, " sp_PolyArray *_t%d = NULL;", tr);
+  buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+  if (!is_rassoc) {
+    /* assoc: compare key */
+    if (rt == TY_POLY_POLY_HASH)
+      buf_printf(b, " if (sp_rbval_eql_key(_t%d->keys[_t%d->order[_t%d]], _t%d)) {", th, th, ti, ta);
+    else if (kt == TY_STRING)
+      /* sp_str_eq, not strcmp: a key of a class the table cannot hold
+         reaches here as the NULL miss sentinel emit_hash_key answers */
+      buf_printf(b, " if (sp_str_eq(_t%d->order[_t%d], _t%d)) {", th, ti, ta);
+    else
+      buf_printf(b, " if (_t%d->order[_t%d] == _t%d) {", th, ti, ta);
+  }
+  else {
+    /* rassoc: compare value (boxed) */
+    buf_printf(b, " sp_RbVal _rv%d = ", ti);
+    if (vt == TY_POLY) buf_printf(b, "%s;", vget);
+    else if (vt == TY_INT) buf_printf(b, "sp_box_int(%s);", vget);
+    else buf_printf(b, "sp_box_str(%s);", vget);
+    buf_printf(b, " if (sp_poly_eq(_rv%d, _t%d)) {", ti, ta);
+  }
+  /* build pair */
+  buf_printf(b, " _t%d = sp_PolyArray_new();", tr);
+  emit_push_hash_key(kt, tr, th, ti, b);
+  if (vt == TY_POLY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tr, vget);
+  else if (vt == TY_INT)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(%s));", tr, vget);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(%s));", tr, vget);
+  buf_printf(b, " break; } } _t%d; })", tr);  /* NULL = nil in poly context */
+  return 1;
+}
+
+/* compact: a copy without the nil-valued pairs, keeping the default and
+   the default proc */
+int emit_op_hash_compact(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  TyKind vt = ty_hash_val(rt);
+  if (vt != TY_POLY) {
+    /* Non-poly values can't be nil; compact is equivalent to dup */
+    buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+  }
+  else if (rt == TY_POLY_POLY_HASH) {
+    int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", tr, tr);
+    /* compact keeps the default and default proc, like dup */
+    buf_printf(b, " _t%d->default_v = _t%d->default_v; _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", tr, th, tr, th, tr, th);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+    buf_printf(b, " sp_RbVal _v%d = _t%d->vals[_t%d->order[_t%d]];", ti, th, th, ti);
+    buf_printf(b, " if (!sp_poly_nil_p(_v%d)) sp_PolyPolyHash_set(_t%d, _t%d->keys[_t%d->order[_t%d]], _v%d); }", ti, tr, th, th, ti, ti);
+    buf_printf(b, " _t%d; })", tr);
+  }
+  else {
+    /* SYM_POLY_HASH or other poly-valued hash */
+    int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", hn, tr, hn, tr);
+    buf_printf(b, " _t%d->default_v = _t%d->default_v; _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", tr, th, tr, th, tr, th);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+    buf_printf(b, " sp_RbVal _v%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);", ti, hn, th, th, ti);
+    buf_printf(b, " if (!sp_poly_nil_p(_v%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _v%d); }", ti, hn, tr, th, ti, ti);
+    buf_printf(b, " _t%d; })", tr);
+  }
+  return 1;
+}

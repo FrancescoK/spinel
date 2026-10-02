@@ -765,6 +765,9 @@ int proc_opt_value(Compiler *c, int create, int idx);
 int proc_numbered_max(const NameSet *used);
 int proc_has_rest(Compiler *c, int create);
 void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf *b);
+/* push the key of entry _t<ti> of hash _t<th> (key kind kt), boxed, onto
+   the PolyArray _t<dest> */
+void emit_push_hash_key(TyKind kt, int dest, int th, int ti, Buf *b);
 TyKind comp_recv_type(Compiler *c, int recv);
 int is_empty_array_lit(const NodeTable *nt, int id);
 int proc_slot_is_ptr(TyKind t);
@@ -1430,6 +1433,15 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_merge_bang_many(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_invert(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_to_a(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_sort(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_first(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_take(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_drop(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_compact(Compiler *c, const BopCtx *x, Buf *b);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,

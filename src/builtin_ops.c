@@ -1676,6 +1676,13 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
   { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },  /* #2431 */
   { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },
+  /* the conversions */
+  { BOP_ANY_HASH, "to_a",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },  /* the [key, value] pairs */
+  { BOP_ANY_HASH, "to_a",             0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
+  { BOP_ANY_HASH, "entries",          0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },
+  { BOP_ANY_HASH, "entries",          0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
+  { BOP_ANY_HASH, "sort",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_SORT },  /* by Array#<=> over the pairs */
+  { BOP_ANY_HASH, "invert",           0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_INVERT },
   { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
   { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
@@ -1706,10 +1713,10 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_HASH_COMPACT_BANG },  /* self or nil */
   { BOP_ANY_HASH, "chunk",            0, 127, BF_REQUIRED, TY_ENUMERATOR,  BOPE_NONE },  /* of [key, [[k, v], ...]] pairs */
   { BOP_ANY_HASH, "to_proc",          0, 127, BF_ANY,      TY_PROC,        BOPE_NONE },
-  { BOP_ANY_HASH, "first",            0,   0, BF_NONE,     TY_POLY,        BOPE_NONE },  /* Enumerable's, over the [key, value] pairs */
-  { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
-  { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
-  { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "first",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_FIRST },  /* Enumerable's, over the [key, value] pairs */
+  { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
+  { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
+  { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_DROP },
   { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE },  /* identity */
   { BOP_ANY_HASH, "slice",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* a copy, or a key subset */
   { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
@@ -1748,7 +1755,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash * _t$t = $r; if (sp_gc_is_frozen(_t$t)) sp_raise_frozen_hash_at(_t$t, $K); sp_$HHash_clear(_t$t); _t$t; })" },  /* #2340/#2349/#2351, #3001 */
   { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "$r" },  /* the receiver itself, not a copy */
   { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_REHASH },
-  { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_COMPACT },
   { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* a [key, value] pair, or nil (#2349) */
   { BOP_ANY_HASH, "has_key?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "key?",             0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
@@ -1758,9 +1765,9 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "value?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "empty?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "each_with_object", 1, 127, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* #2540 */
-  { BOP_ANY_HASH, "flatten",          0,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
-  { BOP_ANY_HASH, "assoc",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
-  { BOP_ANY_HASH, "rassoc",           1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
+  { BOP_ANY_HASH, "flatten",          0,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_FLATTEN },
+  { BOP_ANY_HASH, "assoc",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_ASSOC },
+  { BOP_ANY_HASH, "rassoc",           1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_ASSOC },
 
   /* Array, any kind (BOP_ANY_ARRAY): the result kinds read off the name,
      arity and block form, some derived from the receiver's kind. The rules

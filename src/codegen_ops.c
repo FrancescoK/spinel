@@ -196,6 +196,15 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_HASH_MERGE_BANG_MANY] = emit_op_hash_merge_bang_many,
   [BOPE_HASH_SHIFT] = emit_op_hash_shift,
   [BOPE_HASH_DELETE] = emit_op_hash_delete,
+  [BOPE_HASH_INVERT] = emit_op_hash_invert,
+  [BOPE_HASH_FLATTEN] = emit_op_hash_flatten,
+  [BOPE_HASH_TO_A] = emit_op_hash_to_a,
+  [BOPE_HASH_SORT] = emit_op_hash_sort,
+  [BOPE_HASH_FIRST] = emit_op_hash_first,
+  [BOPE_HASH_TAKE] = emit_op_hash_take,
+  [BOPE_HASH_DROP] = emit_op_hash_drop,
+  [BOPE_HASH_ASSOC] = emit_op_hash_assoc,
+  [BOPE_HASH_COMPACT] = emit_op_hash_compact,
 };
 
 /* an argument's kind, for a row's argument guard */
