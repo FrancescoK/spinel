@@ -2538,13 +2538,10 @@ const char *c_type_name(TyKind t) {
   return tr ? tr->ctype : NULL;
 }
 int is_scalar_ret(TyKind t) {
-  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE || t == TY_TIME || t == TY_TMS || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
-         t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY || t == TY_INT_ARRAY_ARRAY ||
-         t == TY_FLOAT_ARRAY_ARRAY ||
-         t == TY_STRBUF ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_DIR || t == TY_ADDRINFO || t == TY_SOCKOPT || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS || t == TY_OPENSTRUCT ||
-         ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t);
+  /* a builtin kind's ty_traits row says (types.c); a user object and an
+     object array are pointers a method can return */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->scalar_ret : (ty_is_object(t) || ty_is_obj_array(t));
 }
 /* native binding (Path B): map a spinel type spec to the C type at the ABI
    boundary. any -> the boxed value; string -> the runtime string; scalars
