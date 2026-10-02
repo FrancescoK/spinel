@@ -1119,7 +1119,17 @@ reject-test: $(SPINEL)
 	done; \
 	for t in test/reject/string_hash_value_variable.rb test/reject/string_hash_pair_variable.rb test/reject/string_hash_values_variable.rb test/reject/string_hash_literal_captured.rb \
 	         test/reject/string_hash_store_value.rb test/reject/string_hash_store_pair.rb \
-	         test/reject/string_hash_store_value_block.rb test/reject/string_hash_store_pair_block.rb; do \
+	         test/reject/string_hash_store_value_block.rb test/reject/string_hash_store_pair_block.rb \
+	         test/reject/string_hash_fresh.rb \
+	         test/reject/string_hash_fresh_each.rb \
+	         test/reject/string_hash_fresh_pair.rb \
+	         test/reject/string_hash_fresh_values.rb \
+	         test/reject/string_hash_interpolated.rb \
+	         test/reject/string_hash_call.rb \
+	         test/reject/string_hash_fresh_store.rb \
+	         test/reject/string_hash_fresh_store_block.rb \
+	         test/reject/string_hash_fresh_index.rb \
+	         test/reject/string_hash_fresh_literal.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
