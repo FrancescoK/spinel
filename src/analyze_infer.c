@@ -3141,6 +3141,184 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
   return 0;
 }
 
+/* A runtime handle receiver: Random, ARGF, Dir, Socket::Option and Addrinfo, IO, Time (infer_call_inner's rules, in their order) */
+static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* TY_RANDOM instance methods */
+  if (recv >= 0 && rt == TY_RANDOM) {
+    if (sp_streq(name, "rand")) {
+      if (argc < 1) { *out = TY_FLOAT; return 1; }
+      TyKind a0 = infer_type(c, argv[0]);
+      if (a0 == TY_FLOAT || a0 == TY_FLOAT_RANGE) { *out = TY_FLOAT; return 1; }   /* rand(Float range) -> Float (#2521) */
+      if (a0 == TY_BIGINT) { *out = TY_BIGINT; return 1; }   /* rand(Bignum bound) -> Bigint (#3058) */
+      /* rand(Float range) -> Float (#2521) */
+      const char *atype = nt_type(nt, argv[0]);
+      if (atype && sp_streq(atype, "RangeNode")) {
+        int lo = nt_ref(nt, argv[0], "left");
+        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+      }
+      { *out = TY_INT; return 1; }
+    }
+    if (sp_streq(name, "bytes")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "seed")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "class")) { *out = TY_CLASS; return 1; }
+    if (is_equality_name(name) && argc == 1)
+      { *out = TY_BOOL; return 1; }
+  }
+
+  /* ARGF pseudo-IO methods */
+  if (recv >= 0 && rt == TY_ARGF) {
+    if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
+        sp_streq(name, "filename") || sp_streq(name, "path") || sp_streq(name, "to_s")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) { *out = TY_STR_ARRAY; return 1; }
+    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "each_line") || sp_streq(name, "each_string") || sp_streq(name, "each")) {
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0) {
+        const char *bp0 = block_param_name(c, blk, 0);
+        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
+        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+        if (blv) blv->type = TY_STRING;
+      }
+      { *out = TY_ARGF; return 1; }
+    }
+  }
+
+  /* Dir.new / Dir.open and the Dir handle instance surface (#2821) */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
+      (sp_streq(name, "new") || sp_streq(name, "open")) && argc >= 1) {
+    int dblk = nt_ref(nt, id, "block");
+    if (dblk < 0) { *out = TY_DIR; return 1; }
+    const char *dp0 = block_param_name(c, dblk, 0);
+    Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
+    LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
+    if (dlv) dlv->type = TY_DIR;
+    { *out = TY_POLY; return 1; }   /* block form: the block's boxed value (File.open's rule) */
+  }
+  if (recv >= 0 && rt == TY_DIR) {
+    if (sp_streq(name, "class")) { *out = TY_CLASS; return 1; }
+    if (sp_streq(name, "read") || sp_streq(name, "path") || sp_streq(name, "to_path"))
+      { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "children") || sp_streq(name, "entries")) { *out = TY_STR_ARRAY; return 1; }
+    if (sp_streq(name, "tell") || sp_streq(name, "pos")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "fileno")) { *out = TY_INT; return 1; }      /* dirfd (#2967) */
+    if (sp_streq(name, "pos=")) { *out = TY_INT; return 1; }        /* -> assigned value (#2968) */
+    if (sp_streq(name, "close")) { *out = TY_POLY; return 1; }   /* nil */
+    if (sp_streq(name, "rewind") || sp_streq(name, "seek")) { *out = TY_DIR; return 1; }
+    /* Enumerable#each_entry yields what #each yields (dots included) and
+       answers the receiver, so on a Dir it IS #each (#3395). */
+    if (sp_streq(name, "each") || sp_streq(name, "each_child") ||
+        sp_streq(name, "each_entry")) {
+      int dblk3 = nt_ref(nt, id, "block");
+      if (dblk3 >= 0) {
+        const char *dbp3 = block_param_name(c, dblk3, 0);
+        Scope *dbs3 = dbp3 ? comp_scope_of(c, dblk3) : NULL;
+        LocalVar *dlv3 = (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL;
+        if (dlv3) dlv3->type = TY_STRING;
+      }
+      { *out = TY_DIR; return 1; }
+    }
+  }
+
+  /* Socket::Option and Addrinfo readers: builtin-op rows */
+  if (recv >= 0 && (rt == TY_SOCKOPT || rt == TY_ADDRINFO)) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+  if (recv >= 0 && rt == TY_IO) {
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    /* sync= answers its argument, whatever it is; only its truth sets the mode */
+    if (sp_streq(name, "sync=") && argc >= 1) { *out = infer_type(c, argv[0]); return 1; }
+    /* socket methods on the IO handle (#2922) */
+    if (sp_feature_required("socket")) {
+      if (sp_streq(name, "accept") && argc == 0) { *out = TY_IO; return 1; }
+      if ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0)
+        { *out = TY_POLY_ARRAY; return 1; }
+      if ((sp_streq(name, "local_address") || sp_streq(name, "remote_address")) && argc == 0)
+        { *out = TY_ADDRINFO; return 1; }
+      /* the non-blocking family: the handle / the bytes / the byte count, each
+         nullable so `exception: false` can answer nil */
+      if (sp_streq(name, "accept_nonblock") || sp_streq(name, "recv_nonblock") ||
+          sp_streq(name, "connect_nonblock"))
+        { *out = an_nonblock_no_exception(c, id)
+               ? TY_POLY                                  /* :wait_* or the value */
+               : sp_streq(name, "accept_nonblock") ? TY_IO
+               : sp_streq(name, "recv_nonblock") ? TY_STRING : TY_INT; return 1; }
+      if (sp_streq(name, "recv") && argc == 1) { *out = TY_STRING; return 1; }
+      if (sp_streq(name, "recvfrom") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+      if (((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 2) ||
+          (sp_streq(name, "send") && (argc == 2 || argc == 4)) ||
+          (sp_streq(name, "shutdown") && argc <= 1) ||
+          (sp_streq(name, "listen") && argc == 1) ||
+          (sp_streq(name, "setsockopt") && argc == 3))
+        { *out = TY_INT; return 1; }
+      if (sp_streq(name, "getsockopt") && argc == 2) { *out = TY_SOCKOPT; return 1; }
+    }
+    /* fd-backed IO instance methods (#3038) */
+    if ((sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock")) &&
+        an_nonblock_no_exception(c, id))
+      { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "write_nonblock")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "read_nonblock")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) { *out = TY_INT_ARRAY; return 1; }
+    if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
+        sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
+        sp_streq(name, "each_codepoint")) {
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0) {
+        const char *bp0 = block_param_name(c, blk, 0);
+        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
+        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+        if (blv) blv->type = (sp_streq(name, "each_byte") ||
+                              sp_streq(name, "each_codepoint")) ? TY_INT : TY_STRING;
+      }
+      { *out = TY_IO; return 1; }
+    }
+    { TyKind ort; if (object_reopen_answers(c, "File", id, &ort)) { *out = ort; return 1; } }
+    { *out = TY_POLY; return 1; }
+  }
+
+  /* Time instance methods */
+  if (recv >= 0 && rt == TY_TIME) {
+    if (sp_streq(name, "-") && argc > 0) {
+      TyKind at = infer_type(c, argv[0]);
+      /* Time - Time is a Float duration. Time - poly is either: a Time held
+         there gives the duration (#2456), a number an earlier Time, which
+         only the run time tells apart. An int/float offset keeps the Time
+         type via the general `-` arm below. */
+      if (at == TY_TIME) { *out = TY_FLOAT; return 1; }
+      if (at == TY_POLY) { *out = TY_POLY; return 1; }
+      /* an argument not typed yet (a parameter whose callers are still
+         being read) may turn out poly: answering Time now pins a local
+         that later holds the boxed answer */
+      if (at == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
+    }
+    /* builtin-op rows (builtin_ops.c). Every row names a known Time (or
+       Object) method, which the Object reopen check below never answers. */
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
+    if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
+        argc == 0 && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
+    /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
+       the result is poly (#2677). */
+    if (sp_streq(name, "<=>") && argc == 1)
+      { *out = infer_type(c, argv[0]) == TY_TIME ? TY_INT : TY_POLY; return 1; }
+    /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
+       catch-all below swallows them */
+    { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') { *out = TY_BOOL; return 1; } }
+    { TyKind ort; if (object_reopen_answers(c, "Time", id, &ort)) { *out = ort; return 1; } }
+    /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
+    { *out = TY_INT; return 1; }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -4999,179 +5177,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv < 0 && !an_bare_call_class_owned(c, id) && sp_streq(name, "putc") && argc == 1 && nt_ref(nt, id, "block") < 0)
     return infer_type(c, argv[0]);
 
-  /* TY_RANDOM instance methods */
-  if (recv >= 0 && rt == TY_RANDOM) {
-    if (sp_streq(name, "rand")) {
-      if (argc < 1) return TY_FLOAT;
-      TyKind a0 = infer_type(c, argv[0]);
-      if (a0 == TY_FLOAT || a0 == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(Float range) -> Float (#2521) */
-      if (a0 == TY_BIGINT) return TY_BIGINT;   /* rand(Bignum bound) -> Bigint (#3058) */
-      /* rand(Float range) -> Float (#2521) */
-      const char *atype = nt_type(nt, argv[0]);
-      if (atype && sp_streq(atype, "RangeNode")) {
-        int lo = nt_ref(nt, argv[0], "left");
-        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
-      }
-      return TY_INT;
-    }
-    if (sp_streq(name, "bytes")) return TY_STRING;
-    if (sp_streq(name, "seed")) return TY_INT;
-    if (sp_streq(name, "class")) return TY_CLASS;
-    if (is_equality_name(name) && argc == 1)
-      return TY_BOOL;
-  }
-
-  /* ARGF pseudo-IO methods */
-  if (recv >= 0 && rt == TY_ARGF) {
-    if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
-        sp_streq(name, "filename") || sp_streq(name, "path") || sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) return TY_STR_ARRAY;
-    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) return TY_BOOL;
-    if (sp_streq(name, "each_line") || sp_streq(name, "each_string") || sp_streq(name, "each")) {
-      int blk = nt_ref(nt, id, "block");
-      if (blk >= 0) {
-        const char *bp0 = block_param_name(c, blk, 0);
-        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
-        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = TY_STRING;
-      }
-      return TY_ARGF;
-    }
-  }
-
-  /* Dir.new / Dir.open and the Dir handle instance surface (#2821) */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
-      (sp_streq(name, "new") || sp_streq(name, "open")) && argc >= 1) {
-    int dblk = nt_ref(nt, id, "block");
-    if (dblk < 0) return TY_DIR;
-    const char *dp0 = block_param_name(c, dblk, 0);
-    Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
-    LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
-    if (dlv) dlv->type = TY_DIR;
-    return TY_POLY;   /* block form: the block's boxed value (File.open's rule) */
-  }
-  if (recv >= 0 && rt == TY_DIR) {
-    if (sp_streq(name, "class")) return TY_CLASS;
-    if (sp_streq(name, "read") || sp_streq(name, "path") || sp_streq(name, "to_path"))
-      return TY_STRING;
-    if (sp_streq(name, "children") || sp_streq(name, "entries")) return TY_STR_ARRAY;
-    if (sp_streq(name, "tell") || sp_streq(name, "pos")) return TY_INT;
-    if (sp_streq(name, "fileno")) return TY_INT;      /* dirfd (#2967) */
-    if (sp_streq(name, "pos=")) return TY_INT;        /* -> assigned value (#2968) */
-    if (sp_streq(name, "close")) return TY_POLY;   /* nil */
-    if (sp_streq(name, "rewind") || sp_streq(name, "seek")) return TY_DIR;
-    /* Enumerable#each_entry yields what #each yields (dots included) and
-       answers the receiver, so on a Dir it IS #each (#3395). */
-    if (sp_streq(name, "each") || sp_streq(name, "each_child") ||
-        sp_streq(name, "each_entry")) {
-      int dblk3 = nt_ref(nt, id, "block");
-      if (dblk3 >= 0) {
-        const char *dbp3 = block_param_name(c, dblk3, 0);
-        Scope *dbs3 = dbp3 ? comp_scope_of(c, dblk3) : NULL;
-        LocalVar *dlv3 = (dbs3 && dbp3) ? scope_local(dbs3, dbp3) : NULL;
-        if (dlv3) dlv3->type = TY_STRING;
-      }
-      return TY_DIR;
-    }
-  }
-
-  /* Socket::Option and Addrinfo readers: builtin-op rows */
-  if (recv >= 0 && (rt == TY_SOCKOPT || rt == TY_ADDRINFO)) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-  if (recv >= 0 && rt == TY_IO) {
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    /* sync= answers its argument, whatever it is; only its truth sets the mode */
-    if (sp_streq(name, "sync=") && argc >= 1) return infer_type(c, argv[0]);
-    /* socket methods on the IO handle (#2922) */
-    if (sp_feature_required("socket")) {
-      if (sp_streq(name, "accept") && argc == 0) return TY_IO;
-      if ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0)
-        return TY_POLY_ARRAY;
-      if ((sp_streq(name, "local_address") || sp_streq(name, "remote_address")) && argc == 0)
-        return TY_ADDRINFO;
-      /* the non-blocking family: the handle / the bytes / the byte count, each
-         nullable so `exception: false` can answer nil */
-      if (sp_streq(name, "accept_nonblock") || sp_streq(name, "recv_nonblock") ||
-          sp_streq(name, "connect_nonblock"))
-        return an_nonblock_no_exception(c, id)
-               ? TY_POLY                                  /* :wait_* or the value */
-               : sp_streq(name, "accept_nonblock") ? TY_IO
-               : sp_streq(name, "recv_nonblock") ? TY_STRING : TY_INT;
-      if (sp_streq(name, "recv") && argc == 1) return TY_STRING;
-      if (sp_streq(name, "recvfrom") && argc == 1) return TY_POLY_ARRAY;
-      if (((sp_streq(name, "bind") || sp_streq(name, "connect")) && argc == 2) ||
-          (sp_streq(name, "send") && (argc == 2 || argc == 4)) ||
-          (sp_streq(name, "shutdown") && argc <= 1) ||
-          (sp_streq(name, "listen") && argc == 1) ||
-          (sp_streq(name, "setsockopt") && argc == 3))
-        return TY_INT;
-      if (sp_streq(name, "getsockopt") && argc == 2) return TY_SOCKOPT;
-    }
-    /* fd-backed IO instance methods (#3038) */
-    if ((sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock")) &&
-        an_nonblock_no_exception(c, id))
-      return TY_POLY;
-    if (sp_streq(name, "write_nonblock")) return TY_INT;
-    if (sp_streq(name, "read_nonblock")) return TY_STRING;
-    if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) return TY_INT_ARRAY;
-    if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
-        sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
-        sp_streq(name, "each_codepoint")) {
-      int blk = nt_ref(nt, id, "block");
-      if (blk >= 0) {
-        const char *bp0 = block_param_name(c, blk, 0);
-        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
-        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = (sp_streq(name, "each_byte") ||
-                              sp_streq(name, "each_codepoint")) ? TY_INT : TY_STRING;
-      }
-      return TY_IO;
-    }
-    { TyKind ort; if (object_reopen_answers(c, "File", id, &ort)) return ort; }
-    return TY_POLY;
-  }
-
-  /* Time instance methods */
-  if (recv >= 0 && rt == TY_TIME) {
-    if (sp_streq(name, "-") && argc > 0) {
-      TyKind at = infer_type(c, argv[0]);
-      /* Time - Time is a Float duration. Time - poly is either: a Time held
-         there gives the duration (#2456), a number an earlier Time, which
-         only the run time tells apart. An int/float offset keeps the Time
-         type via the general `-` arm below. */
-      if (at == TY_TIME) return TY_FLOAT;
-      if (at == TY_POLY) return TY_POLY;
-      /* an argument not typed yet (a parameter whose callers are still
-         being read) may turn out poly: answering Time now pins a local
-         that later holds the boxed answer */
-      if (at == TY_UNKNOWN) return TY_UNKNOWN;
-    }
-    /* builtin-op rows (builtin_ops.c). Every row names a known Time (or
-       Object) method, which the Object reopen check below never answers. */
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
-    if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
-        argc == 0 && sp_feature_enabled("time")) return TY_STRING;
-    /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
-       the result is poly (#2677). */
-    if (sp_streq(name, "<=>") && argc == 1)
-      return infer_type(c, argv[0]) == TY_TIME ? TY_INT : TY_POLY;
-    /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
-       catch-all below swallows them */
-    { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') return TY_BOOL; }
-    { TyKind ort; if (object_reopen_answers(c, "Time", id, &ort)) return ort; }
-    /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
-    return TY_INT;
-  }
+  { TyKind r; if (infer_handle_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
      method_call_ret, not the raw scope ret: a tail-yield class method carries
