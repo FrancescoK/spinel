@@ -695,6 +695,7 @@ Not yet shared:
 
 - a repeated keyword whose later value is a String variable bound to an appending parameter, unless the value is already passed as a shared handle;
 
+- through `Thread.new` or `Fiber#resume`, a String variable handed to a block parameter that appends to it, unless its read already hands over the shared handle or the local is read only as that argument;
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
