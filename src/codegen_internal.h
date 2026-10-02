@@ -1597,8 +1597,9 @@ int  poly_arm_refuses_none(Compiler *c, int mi, char *exp, size_t n);
 void emit_poly_arity_raise(Buf *b, const char *msg);
 void emit_unbox_poly_ret(Compiler *c, TyKind slot, const char *expr, Buf *b);
 void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b);
+struct PolyPlan_s;
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
-                          int blk_tmp0, Buf *b);
+                          int blk_tmp0, const struct PolyPlan_s *p, Buf *b);
 /* The keywords of a call on a poly receiver, as its arms read them. */
 typedef struct {
   int kwh, kwn, kwall;
@@ -1631,6 +1632,7 @@ typedef struct {
   const int *argv, *atmp, *htmp;
   const TyKind *atmp_ty;
   const PolyKw *kw;
+  const struct PolyPlan_s *plan;   /* the dispatch's plan (cplan_poly_arms) */
 } PolyUserArgs;
 void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUserArgs *U, Buf *b);
 unsigned poly_form_check(int id, const char *name, const char *site, int served, unsigned form, unsigned oform);

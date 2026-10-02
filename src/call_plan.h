@@ -194,7 +194,7 @@ enum {
   PPF_SEEN     = 256  /* (--plan-check) the flags were observed */
 };
 
-typedef struct {
+typedef struct PolyPlan_s {
   TyKind ret;           /* the call's type the arms answer into */
   TyKind ntype;         /* the node's type it was resolved for */
   unsigned flags;       /* PPF_* */
@@ -212,6 +212,10 @@ const PolyPlan *cplan_poly(Compiler *c, int id);
    receiver form). Cheaper: the builtin families and trials, which only the
    --plan-check shadow compares, are left out. */
 const PolyPlan *cplan_poly_arms(Compiler *c, int id);
+/* A plan the caller keeps across emissions that may resolve others (a
+   resolve outside the memo reuses one buffer); cplan_poly_free drops it. */
+PolyPlan *cplan_poly_copy(const PolyPlan *p);
+void cplan_poly_free(PolyPlan *p);
 /* The arms of the statement-level block dispatch (#2448) of the same call:
    each candidate class's method spliced with the block, and its default.
    Computed afresh: the same node may take this dispatch or the method

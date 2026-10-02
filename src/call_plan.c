@@ -1190,3 +1190,17 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id) {
   }
   return &fp;
 }
+
+PolyPlan *cplan_poly_copy(const PolyPlan *p) {
+  PolyPlan *q = malloc(sizeof *q);
+  *q = *p;
+  q->arm = malloc(sizeof *q->arm * (size_t)(p->n > 0 ? p->n : 1));
+  if (p->n) memcpy(q->arm, p->arm, sizeof *q->arm * (size_t)p->n);
+  return q;
+}
+
+void cplan_poly_free(PolyPlan *p) {
+  if (!p) return;
+  free(p->arm);
+  free(p);
+}

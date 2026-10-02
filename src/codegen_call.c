@@ -892,10 +892,15 @@ int exc_arm_definer(Compiler *c, int k, const char *name) {
    to map a boxed exception (tagged SP_BUILTIN_EXCEPTION) to its class. */
 int poly_exc_cand(Compiler *c, const char *name) {
   { int xr[8]; if (exc_reopen_definers(c, name, xr, 8) > 0) return 1; }
-  for (int k = 0; k < c->nclasses; k++)
+  /* a class with the method or a reader is one of the name's candidates */
+  int npc = 0;
+  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  for (int i = 0; i < npc; i++) {
+    int k = pcs[i].cls;
     if (class_is_exc_subclass(c, k) &&
         (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)))
       return 1;
+  }
   return 0;
 }
 
@@ -7584,7 +7589,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* how the receiver is held and the switch keyed is the plan's
          (cplan_poly); the dispatch's own reading, below, is --plan-check's
          assertion and what a plan for another result type falls back on */
-      const PolyPlan *pform = cplan_poly_arms(c, id);
+      /* one resolve for the form and the arms: outside the memo the plan's
+         buffer is the next resolve's */
+      PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
       int fserved = pform->ret == ret;
       unsigned form = pform->flags & ~PPF_SEEN;
       if (g_plan_check || !fserved) {
@@ -7630,7 +7637,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame0);
       if (g_plan_check) pa_flags(form);
-      emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, b);
+      emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, pform, b);
+      cplan_poly_free(pform);
       if (g_plan_check) pa_resume(pa_frame0);
       emit_poly_cases0(c, id, recv, name, &ps, ret, tv, tr, b);
       /* A method reopened on Object applies to ANY receiver -- boxed scalar
@@ -7905,7 +7913,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
       /* the key form is the plan's; the dispatch's own reading asserts it */
-      const PolyPlan *pform = cplan_poly_arms(c, id);
+      PolyPlan *pform = cplan_poly_copy(cplan_poly_arms(c, id));
       int fserved = pform->ret == ret;
       unsigned form = pform->flags & ~PPF_SEEN;
       if (g_plan_check || !fserved) {
@@ -7927,8 +7935,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (g_plan_check) pa_resume(pa_frame);
       if (g_plan_check) pa_flags(form);
       { PolyUserArgs U = { argc, pos_argc, kwh, kwall, kwall_any, kw_pos, has_splat_arg, splat_a, stk,
-                           is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw };
+                           is_setter_val, blk_tmp2, tv, tr, ret, argv, atmp, htmp, atmp_ty, &kw, pform };
         emit_poly_user_arms_n(c, id, name, &U, b); }
+      cplan_poly_free(pform);
       int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
       int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
       /* fetch with a block answers the block for a missing key: the

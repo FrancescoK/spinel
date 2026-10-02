@@ -532,8 +532,7 @@ static void poly_arms_assert(Compiler *c, int id, const char *site, const PolyAr
    back on the class-by-class decision, which --plan-check also holds the
    plan against. */
 void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
-                          int blk_tmp0, Buf *b) {
-  const PolyPlan *p = cplan_poly_arms(c, id);
+                          int blk_tmp0, const PolyPlan *p, Buf *b) {
   int served = p->ret == ret;
   /* the class arms, copied: an arm's emission may resolve another plan */
   PolyArm *arms = malloc(sizeof *arms * (size_t)(p->n > 0 ? p->n : 1));
@@ -1103,7 +1102,7 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
    an arm; a plan for another result type falls back on that decision for
    every class. --plan-check holds the plan against the decision. */
 void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUserArgs *U, Buf *b) {
-  const PolyPlan *p = cplan_poly_arms(c, id);
+  const PolyPlan *p = U->plan;
   int served = p->ret == U->ret;
   PolyArm *arms = malloc(sizeof *arms * (size_t)(p->n > 0 ? p->n : 1));
   int n = 0;
@@ -1243,7 +1242,12 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
                      nt_ref(nt, id, "block") < 0 &&
                      comp_ntype(c, id) == TY_POLY;
   int ncand = 0, ncall_arm = 0;
-  for (int k = 0; k < c->nclasses; k++) {
+  /* a class neither defining nor reading the name, and not native, counts
+     for neither: the name's memoized candidates are the classes to ask */
+  int npc0 = 0;
+  const PolyCand *pc0 = comp_poly_candidates(c, name, &npc0);
+  for (int ki = 0; ki < npc0; ki++) {
+    int k = pc0[ki].cls;
     /* comp_poly_arm_defines: a native class counts only through its
        declared bindings (#4504) -- its Ruby-side defs get no arm in the
        BLOCKLESS switch below. A block-carrying call is different: the
@@ -1406,7 +1410,11 @@ int poly_key_cls0(Compiler *c, const char *name, int argc, int kwh, int pos_argc
 /* Does a primitive reopening (String, Integer, ...) take an arm in that
    dispatch? The key then maps a runtime tag to its class (#4219). */
 int poly_key_prim(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a) {
-  for (int k = 0; k < c->nclasses; k++) {
+  /* a reopening without the method takes no arm: the name's candidates */
+  int npc = 0;
+  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  for (int ki = 0; ki < npc; ki++) {
+    int k = pcs[ki].cls;
     if (!class_is_prim_reopen(c, k)) continue;
     int pmi = comp_method_in_chain(c, k, name, NULL);
     char pexp[600];
