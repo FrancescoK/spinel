@@ -67,6 +67,10 @@ int is_select_bang(const char *n) {
          sp_streq(n, "reject!") || sp_streq(n, "delete_if");
 }
 
+int is_plain_each(const char *n) {
+  return sp_streq(n, "each");
+}
+
 int is_each_walk(const char *n) {
   return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "reverse_each");
 }

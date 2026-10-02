@@ -1435,7 +1435,7 @@ int view_mark(void);
    view_unwind: the node whose dispatch declines its own re-entry (the
    method dispatch's g_pd_skip, the block dispatch's g_prbd_skip), and
    g_poly_builtin_arm, under which no user class owns a name. */
-typedef struct { int pd_skip, prbd_skip, builtin_arm; } ArmCtx;
+typedef struct { int pd_skip, prbd_skip, builtin_arm, poly_each_res; } ArmCtx;
 extern ArmCtx g_arm;
 #define g_pd_skip (g_arm.pd_skip)
 #define g_prbd_skip (g_arm.prbd_skip)
