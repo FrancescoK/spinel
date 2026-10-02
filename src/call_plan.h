@@ -65,6 +65,9 @@ const CallPlan *cplan_user(Compiler *c, int id);
    never runs inference and never emits. --plan-check holds it against the
    refusals codegen reports (refuse_observe, codegen_util.c). */
 const CallPlan *cplan_refuse(Compiler *c, int id);
+/* the documented-limit family: the node's message or NULL; *stop 0 when
+   a limit down the receiver chain is the one to report */
+const char *cplan_feature_why(Compiler *c, int id, int *stop);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an

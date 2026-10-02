@@ -104,6 +104,9 @@ static int g_ucobs_cap = 0;
    a call folded away -- has nothing to compare with */
 static unsigned char *g_ucemit = NULL;
 static int g_ucemit_cap = 0;
+/* ... and outside a probe: a call a probe tried and dropped was not
+   emitted, and its refusal was never reported (the refusal shadow) */
+static unsigned char *g_ucemit_np = NULL;
 
 void ucall_emitted(int id) {
   if (id < 0) return;
@@ -111,10 +114,13 @@ void ucall_emitted(int id) {
     int ncap = g_ucemit_cap ? g_ucemit_cap : 1024;
     while (ncap <= id) ncap *= 2;
     g_ucemit = realloc(g_ucemit, (size_t)ncap);
+    g_ucemit_np = realloc(g_ucemit_np, (size_t)ncap);
     memset(g_ucemit + g_ucemit_cap, 0, (size_t)(ncap - g_ucemit_cap));
+    memset(g_ucemit_np + g_ucemit_cap, 0, (size_t)(ncap - g_ucemit_cap));
     g_ucemit_cap = ncap;
   }
   if (!g_ucemit[id]) g_ucemit[id] = 1;
+  if (!g_unsup_probe) g_ucemit_np[id] = 1;
 }
 void ucall_refused(int id) {
   ucall_emitted(id);
@@ -260,8 +266,9 @@ static void ucall_resolver_report(Compiler *c) {
                 state decided it. Counted by kind: gap (the internal dump),
                 nomethod (CRuby's NoMethodError/NameError words), feature (a
                 documented limit)
-     unreached  the plan refuses a call codegen never emitted (dead code, or
-                the rest of a unit a refusal abandoned)
+     unreached  the plan refuses a call codegen never emitted outside a
+                probe (dead code, the rest of a unit a refusal abandoned, an
+                arm a probe dropped)
    A refusal raised while analysis runs is not codegen's and is not held.
    The report is printed by ucall_report, or at exit for a refused run. */
 typedef struct { int id; char *msg; } RefuseObs;
@@ -297,7 +304,7 @@ static void refuse_report(Compiler *c) {
     if (seen[id] || nt_kind(c->nt, id) != NK_CallNode) continue;
     const CallPlan *p = cplan_refuse(c, id);
     if (p->dispatch != CP_REFUSE) continue;
-    if (id < g_ucemit_cap && g_ucemit[id]) {
+    if (id < g_ucemit_cap && g_ucemit_np[id]) {
       wrong++;
       fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen emitted the call\n", id, p->msg);
     }

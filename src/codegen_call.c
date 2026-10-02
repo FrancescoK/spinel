@@ -2021,165 +2021,20 @@ static int basicobject_own_method(const char *n) {
   return 0;
 }
 
-/* The positional-argument count of a CallNode (0 when it has none). */
-static int argc_of(const NodeTable *nt, int id) {
-  int a = nt_ref(nt, id, "arguments");
-  int n = 0;
-  if (a >= 0) nt_arr(nt, a, "arguments", &n);
-  return n;
-}
-
-/* A call to something spinel deliberately does not support (docs/limitations.md).
-   Without this the call falls through to the generic diagnostic, which dumps
-   node ids and argument types rather than naming the feature -- or, for a name
-   the runtime happens to reach, to a NoMethodError that reads like an
-   implementation gap instead of a documented limit. Names a user class defines
-   are left alone: they are that method, not the builtin. Returns 1 if it
-   reported (never returns -- `unsupported` is noreturn). #2652 / #2667 / #2668 */
+/* A call to something spinel deliberately does not support (docs/limitations.md)
+   is refused naming the feature (cplan_feature_why). A documented limit
+   buried under a chain (`obj.singleton_class.class`) would otherwise be
+   shadowed by the OUTER call's generic diagnostic: the receiver chain is
+   walked. Returns 1 if it reported (never returns -- `unsupported_feature`
+   is noreturn). #2652 / #2667 / #2668 */
 int diagnose_unsupported_call(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  const char *nty = nt_type(nt, id);
-  if (!nty || !sp_streq(nty, "CallNode")) return 0;
-  const char *name = nt_str(nt, id, "name");
-  if (!name) return 0;
-  static const struct { const char *m; const char *why; } tbl[] = {
-    { "define_singleton_method",
-      "Object#define_singleton_method is not supported by AOT compilation: a per-object "
-      "method table would have to be consulted on every call, but each call site is a "
-      "direct C call to a compiled body. Define the method in the class body instead "
-      "(see docs/limitations.md)" },
-    { "extend",
-      "Object#extend is not supported by AOT compilation: mixing a module into a live "
-      "object needs a per-object method table. Use `include`/`prepend` in the class body "
-      "instead (see docs/limitations.md)" },
-    { "ruby2_keywords",
-      "Proc#ruby2_keywords is not supported: it is a shim for the Ruby 2.x-to-3.0 "
-      "keyword-argument transition, and spinel targets modern keyword semantics, so it "
-      "has nothing to toggle (see docs/limitations.md)" },
-    { "ruby2_keywords_hash",
-      "Hash.ruby2_keywords_hash is not supported: it marks a hash for the Ruby "
-      "2.x-to-3.0 keyword-argument transition shim, and spinel targets modern keyword "
-      "semantics, so the flag has nothing to toggle (see docs/limitations.md)" },
-    { "ruby2_keywords_hash?",
-      "Hash.ruby2_keywords_hash? is not supported: it reads the Ruby 2.x-to-3.0 "
-      "keyword-transition flag, which spinel's hashes do not carry (see "
-      "docs/limitations.md)" },
-    { "unicode_normalize",
-      "String#unicode_normalize is not supported: Unicode normalization requires "
-      "shipping the Unicode decomposition/composition tables, which spinel "
-      "deliberately does not carry -- the same limit as String#grapheme_clusters "
-      "(see docs/limitations.md)" },
-    { "unicode_normalize!",
-      "String#unicode_normalize! is not supported: Unicode normalization requires "
-      "shipping the Unicode decomposition/composition tables, which spinel "
-      "deliberately does not carry -- the same limit as String#grapheme_clusters "
-      "(see docs/limitations.md)" },
-    { "unicode_normalized?",
-      "String#unicode_normalized? is not supported: answering it requires the "
-      "Unicode decomposition/composition tables, which spinel deliberately does "
-      "not carry -- the same limit as String#grapheme_clusters "
-      "(see docs/limitations.md)" },
-    { "singleton_class",
-      "Object#singleton_class is not supported by AOT compilation: it is the gateway "
-      "to a per-object method table, which direct C calls have no room for -- the same "
-      "limit as define_singleton_method. Define methods in the class body instead "
-      "(see docs/limitations.md)" },
-    { "remove_method",
-      "Module#remove_method is not supported by AOT compilation: methods are resolved "
-      "statically and compiled to direct C calls, so there is no runtime method table to "
-      "remove an entry from (see docs/limitations.md)" },
-    { "undef_method",
-      "Module#undef_method is not supported by AOT compilation: methods are resolved "
-      "statically and compiled to direct C calls, so there is no runtime method table to "
-      "undefine an entry in (see docs/limitations.md)" },
-    { "remove_class_variable",
-      "Module#remove_class_variable is not supported by AOT compilation: class variables "
-      "are compiled to static storage, so a variable cannot be removed at run time "
-      "(see docs/limitations.md)" },
-    { "set_trace_func",
-      "set_trace_func is not supported by AOT compilation: it requires an interpreter "
-      "loop to hook, and compiled code has no such loop (see docs/limitations.md)" },
-    { "callcc",
-      "Kernel#callcc is not supported by AOT compilation: multi-shot full-stack capture "
-      "has no flat-C analogue. Fiber covers the single-shot cases (see docs/limitations.md)" },
-    { "refine",
-      "Refinements are not supported by AOT compilation: scope-keyed dispatch is "
-      "incompatible with direct C calls. Reopen the class instead (see docs/limitations.md)" },
-    { "using",
-      "Refinements are not supported by AOT compilation: scope-keyed dispatch is "
-      "incompatible with direct C calls. Reopen the class instead (see docs/limitations.md)" },
-    { NULL, NULL }
-  };
-  int hit = -1;
-  for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
-
-  /* The receiver's constant name, for the limits that are keyed on it. */
-  int recv = nt_ref(nt, id, "receiver");
-  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-  const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
-                    ? nt_str(nt, recv, "name") : NULL;
-  const char *why = hit >= 0 ? tbl[hit].why : NULL;
-
-  if (!why && rcn && comp_class_index(c, rcn) < 0) {
-    /* Namespaces that exist only in an interpreter. Keyed on the receiver, so
-       every method on them reports the same way rather than one-by-one. */
-    if (sp_streq(rcn, "ObjectSpace"))
-      why = "ObjectSpace is not supported by AOT compilation: there is no class-keyed "
-            "allocation registry to walk -- the GC tracks bytes, not a live-object index "
-            "(see docs/limitations.md)";
-    else if (sp_streq(rcn, "TracePoint"))
-      why = "TracePoint is not supported by AOT compilation: it requires an interpreter "
-            "loop to hook, and compiled code has no such loop (see docs/limitations.md)";
-    else if (sp_streq(rcn, "Continuation"))
-      why = "Continuation is not supported by AOT compilation: multi-shot full-stack "
-            "capture has no flat-C analogue. Fiber covers the single-shot cases "
-            "(see docs/limitations.md)";
-    /* `Class.new(parent) { ... }`: the class graph is baked at compile time. A
-       bare `Class.new` with no argument and no block is just an Object factory
-       and is left to the normal path. */
-    else if (sp_streq(rcn, "Class") && sp_streq(name, "new") &&
-             (nt_ref(nt, id, "block") >= 0 || argc_of(nt, id) > 0))
-      why = "Class.new(parent) { ... } is not supported by AOT compilation: the class "
-            "graph, ancestor chain, and method/ivar layout are baked at compile time. "
-            "Declare the class with `class ... end` instead (see docs/limitations.md)";
-  }
-
-  /* Structural mutation of a class through an explicit receiver: the same
-     declarations INSIDE a `class` body (where they are receiverless) work.
-     Object counts though a program that never reopens it has no class entry
-     for it: `Object.include M` (or through `O = Object`) otherwise compiled
-     to a NoMethodError at run time. */
-  int restructure = 0;
-  if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object")) &&
-      (sp_streq(name, "include") || sp_streq(name, "prepend") ||
-       sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
-       sp_streq(name, "attr_writer") || sp_streq(name, "define_method"))) {
-    /* only the receiver's own class method of the name answers instead:
-       a method of that name in an unrelated class (`def include` in some
-       Foo) does not */
-    int rci = comp_class_index(c, rcn);
-    if (rci >= 0 && comp_cmethod_in_chain(c, rci, name, NULL) >= 0) return 0;
-    restructure = 1;
-    static char buf[512];
-    snprintf(buf, sizeof buf,
-             "%s.%s(...) is not supported by AOT compilation: the class graph, ancestor "
-             "chain, and method/ivar layout are baked at compile time, so a class cannot be "
-             "restructured through an explicit receiver. Move the `%s` inside `class %s ... "
-             "end` (see docs/limitations.md)", rcn, name, name, rcn);
-    why = buf;
-  }
-
-  if (!why) {
-    /* a documented limit buried under a chain (`obj.singleton_class.class`)
-       would otherwise be shadowed by the OUTER call's generic diagnostic:
-       walk down the receiver chain */
-    if (recv >= 0 && nt_kind(nt, recv) == NK_CallNode)
-      return diagnose_unsupported_call(c, recv);
-    return 0;
-  }
-  if (!restructure && diag_user_defines(c, name)) return 0;
-  unsupported_feature(c, id, why);
-  return 1;
+  int stop;
+  const char *why = cplan_feature_why(c, id, &stop);
+  if (why) unsupported_feature(c, id, why);
+  int recv = stop ? -1 : nt_ref(c->nt, id, "receiver");
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode)
+    return diagnose_unsupported_call(c, recv);
+  return 0;
 }
 
 int diagnose_eval_call(Compiler *c, int id) {
