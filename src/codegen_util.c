@@ -3016,50 +3016,11 @@ const char *default_value_from_compiler(Compiler *c, TyKind t) {
 }
 
 const char *default_value(TyKind t) {
-  switch (t) {
-    case TY_INT:    return "SP_INT_NIL";
-    case TY_FLOAT:  return "sp_float_nil()";
-    case TY_BOOL:   return "0";
-    case TY_STRING: return "NULL";
-    case TY_SYMBOL: return "((sp_sym)-1)";
-    case TY_RANGE:  return "(sp_Range){0}";
-    case TY_FLOAT_RANGE: return "(sp_FloatRange){0}";
-    case TY_STR_RANGE:   return "(sp_StrRange){0}";
-    case TY_TIME:   return "(sp_Time){0}";
-    case TY_COMPLEX: return "(sp_Complex){0}";
-    case TY_RATIONAL: return "(sp_Rational){0}";
-    case TY_MATCHDATA:  return "NULL";
-    case TY_BIGINT:     return "NULL";
-    case TY_REGEX:      return "NULL";
-    case TY_EXCEPTION: return "NULL";
-    case TY_STRBUF:    return "NULL";
-    case TY_INT_ARRAY:
-    case TY_FLOAT_ARRAY:
-    case TY_STR_ARRAY:
-    case TY_POLY_ARRAY:
-    case TY_INT_ARRAY_ARRAY: return "NULL";
-    case TY_FLOAT_ARRAY_ARRAY: return "NULL";
-    case TY_PROC:    return "NULL";
-    case TY_CURRY:   return "NULL";
-    case TY_FIBER:   return "NULL";
-    case TY_THREAD:  return "NULL";
-    case TY_QUEUE:   return "NULL";
-    case TY_MUTEX:   return "NULL";
-    case TY_CONDVAR: return "NULL";
-    case TY_RANDOM:  return "NULL";
-    case TY_DIR:     return "NULL";
-    case TY_ADDRINFO: return "NULL";
-    case TY_SOCKOPT: return "NULL";
-    case TY_TMS:     return "((sp_Tms){0})";
-    case TY_OPENSTRUCT: return "NULL";
-    case TY_METHOD:  return "NULL";
-    case TY_IO:      return "NULL";
-    case TY_ARGF:    return "NULL";
-    case TY_ENUMERATOR: return "NULL";
-    case TY_POLY:    return "sp_box_nil()";
-    case TY_CLASS:   return "(SP_CLASS_NIL)";   /* a struct value: callers test for the leading paren */
-    default:        return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
-  }
+  /* a builtin kind's zero is its ty_traits row's (types.c); a Hash, a user
+     object and an object array are pointers, NULL */
+  const TyTraits *tr = ty_traits_of(t);
+  if (tr) return tr->zero;
+  return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
 }
 /* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
    kinds hold nil as a sentinel (default_value), which C reads as true. */
