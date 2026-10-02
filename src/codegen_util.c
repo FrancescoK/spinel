@@ -2229,10 +2229,9 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b) {
 
 static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
   char sref[1024];
-  int svm = c->strbuf_box[recv];
-  c->strbuf_box[recv] = 1;
+  int svm = view_push_repr(c, recv, VR_STRBUF_BOX, 1);
   int is_sb = strbuf_slot_ref(c, recv, sref, sizeof sref);
-  c->strbuf_box[recv] = (unsigned char)svm;
+  view_pop(c, svm);
   if (!is_sb) return 0;
   buf_printf(b, fmt, sref);
   return 1;
@@ -2310,19 +2309,23 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
   int tH = ++g_tmp;
+  /* the marks lifted and the handle type dropped for the shim's lifetime:
+     views, so a refusal inside it puts them back (view_unwind) */
   sv->box = c->strbuf_box[recv]; sv->demand = c->strbuf_handle_demand[recv];
   sv->ty = c->ntype[recv];
-  c->strbuf_box[recv] = 0; c->strbuf_handle_demand[recv] = 0;
-  if (sv->ty == TY_STRBUF) c->ntype[recv] = TY_STRING;
+  sv->tok = view_push_repr(c, recv, VR_STRBUF_BOX, 0);
+  view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
+  sv->ntok = 2;
+  if (sv->ty == TY_STRBUF) { view_push(c, recv, TY_STRING); sv->ntok = 3; }
   g_argov_node[g_n_argov] = recv;
   snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "lv__sb%d", tH);
   g_n_argov++;
   return tH;
 }
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv) {
+  (void)recv;
   g_n_argov--;
-  c->strbuf_box[recv] = sv->box; c->strbuf_handle_demand[recv] = sv->demand;
-  c->ntype[recv] = sv->ty;
+  for (int k = sv->ntok - 1; k >= 0; k--) view_pop(c, sv->tok + k);
 }
 const char *g_sb_iv_name = NULL;
 int         g_sb_iv_cid  = -1;

@@ -136,7 +136,9 @@ int operand_may_allocate(Compiler *c, int id);
 /* The same shim over a READER call that hands out the handle
    (`obj.name[0] = "X"`): no name to rename and no ivar node, so the call node
    itself reads as the shadow through the argument-override table. */
-typedef struct { unsigned char box, demand; TyKind ty; } SbReaderSave;
+/* what sb_reader_shim_open lifted: the node's marks and type as they were,
+   and the views (ntok of them from tok) that hold the lifted ones */
+typedef struct { unsigned char box, demand; TyKind ty; int tok, ntok; } SbReaderSave;
 int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv);
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
