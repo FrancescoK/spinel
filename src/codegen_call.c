@@ -23074,7 +23074,7 @@ int push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind a
   if (!push_arg_var_read(c->nt, recv)) return 0;
   for (int a = 0; a < argc; a++)
     if (!push_arg_keeps_slot(c, argv[a], art)) return 0;
-  return 1;
+  return decide_node(c->nt, recv, "push-slot", NULL);
 }
 
 /* The receiver of a poly `<<`, `&`, `|`, `^` or `>>`, hoisted into a rooted

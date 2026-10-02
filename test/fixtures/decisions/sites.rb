@@ -1,5 +1,8 @@
-# The decisions a small program with three methods reaches: a root frame and
-# a forced inline for each of them, and a frame for the top-level body.
+# One site of each decision kind a small program reaches: a root frame and a
+# forced inline per method, an operand that cannot allocate beside a hash
+# store, a `case` subject, a multiple assignment, a fetch with an inert key
+# and default, and a global lent to a method that appends to it, which no
+# answer about an operand may turn into a copy.
 def first_word(s)
   parts = s.split(" ")
   parts[0]

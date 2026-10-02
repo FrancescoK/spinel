@@ -1081,8 +1081,9 @@ test-run: decisions-test
 # would be named by no bisect.
 DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
                  test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
-                 test/poly_arm_kwrest_empty.rb
-DECISION_KINDS = gc-save inline-force nn-inb nn-read pd-hoist root-elide root-frame strbuf-raw
+                 test/array_local_append_prepend_widen.rb test/poly_arm_kwrest_empty.rb
+DECISION_KINDS = aon-get case-root fetch-inert gc-save inline-force masgn-root nn-inb nn-read no-alloc \
+                 pd-hoist push-slot root-elide root-frame strbuf-raw
 decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-decisions.XXXXXX); : > "$$tmp/none"; \
 	if $(SPINEL) --decisions="$$tmp/absent" test/fixtures/decisions/sites.rb -c -o "$$tmp/o.c" >"$$tmp/o.out" 2>&1; then \
