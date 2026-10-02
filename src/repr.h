@@ -66,6 +66,13 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv);
 /* Called once the analysis is final (the end of analyze_program): from here
    on the flags repr_of reads no longer change. */
 void repr_seal(Compiler *c);
+/* Whether an Integer or Float node's box has to test for the nil sentinel
+   (emit_boxed's sp_box_int_or_nil / sp_box_float_or_nil). */
+int repr_nil_scalar(const Compiler *c, int node, TyKind t);
+/* the flag readers that decide it (old names: box_nullable_arg, the local
+   arm of call_returns_nullable_int) */
+int repr_box_nullable_arg(Compiler *c, int v);
+int repr_local_nullable_int(Compiler *c, int node);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
 

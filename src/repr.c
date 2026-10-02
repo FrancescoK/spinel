@@ -53,7 +53,7 @@ static int repr_dyn_cls(const Compiler *c, TyKind t) {
    nil-initialized), a parameter bound from such an ivar (box_nullable_arg),
    a node in a Ruby-defined builtin (enum_builtin_node), and every Integer
    under --int-overflow=promote. */
-static int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
+int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   Compiler *mc = (Compiler *)c;
   if (t == TY_INT)
     return g_promote_mode || call_returns_nullable_int(mc, node) ||
@@ -108,6 +108,67 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   }
   /* a String value stored where a handle is demanded: a fresh one */
   return RS_FRESH;
+}
+
+/* The type a node is STORED as, given its cached type t (comp_ntype's
+   String-handle refinement). TY_STRBUF is a codegen-only storage refinement
+   (a mutable sp_String for a `<<`-appended local): all type-directed logic
+   treats it as a String, and only a read marked strbuf_box yields the live
+   HANDLE, so the mutation is observable through the container it is stored
+   in (#3227). A node under a handle demand STORES as the handle -- a temp
+   spilled from it has to be an sp_String *, not a const char * -- while
+   still dispatching as a String, which comp_recv_type answers for. That
+   split is the whole point of the second array (#4363). */
+TyKind repr_stored_type(const Compiler *c, int id, TyKind t) {
+  if (t == TY_STRBUF) return c->strbuf_box[id] ? TY_STRBUF : TY_STRING;
+  if (c->strbuf_handle_demand[id]) return TY_STRBUF;
+  return t;
+}
+
+/* 1 iff t is a user-object type whose class is represented by value (sp_X,
+   not a heap pointer). See detect_value_types. */
+int repr_value_obj(const Compiler *c, TyKind t) {
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  return cid >= 0 && cid < c->nclasses && c->classes[cid].is_value_type;
+}
+
+/* An argument whose boxing must allow nil though its typed reads need no
+   nil check: an int ivar read nothing has to assign first, or a parameter
+   already bound from one (box_nullable_arg). */
+int repr_box_nullable_arg(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  if (nt_kind(nt, v) == NK_InstanceVariableReadNode) {
+    Scope *s = comp_scope_of(c, v);
+    int cid = s ? s->class_id : -1;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0 || cid >= c->nclasses) return 0;
+    ClassInfo *ci = &c->classes[cid];
+    const char *ivn = nt_str(nt, v, "name");
+    int iv = comp_ivar_index(ci, ivn);
+    if (iv < 0 || (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT)) return 0;
+    return !ivar_assigned_in_initialize(c, cid, ivn);
+  }
+  if (nt_kind(nt, v) == NK_LocalVariableReadNode) {
+    Scope *s = comp_scope_of(c, v);
+    const char *ln = nt_str(nt, v, "name");
+    LocalVar *lv = s && ln ? scope_local(s, ln) : NULL;
+    return lv && lv->is_param && lv->box_nullable;
+  }
+  return 0;
+}
+
+/* A local that was assigned a nilable Integer result carries the sentinel
+   just as the call did: `i = s.index("z")` then `i == nil` has to answer
+   true. The analysis marks the local (call_returns_nullable_int's local
+   arm). */
+int repr_local_nullable_int(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *ln = nt_str(nt, node, "name");
+  Scope *sc = ln ? comp_scope_of(c, node) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
+  return lv && lv->nullable_int;
 }
 
 Repr repr_of(const Compiler *c, int node) {

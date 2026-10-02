@@ -1198,6 +1198,10 @@ static inline TyKind comp_sn_retype(Compiler *c, int id, TyKind t) {
   return old;
 }
 
+/* repr.c: the representation decisions the inline readers below defer to */
+TyKind repr_stored_type(const Compiler *c, int id, TyKind t);
+int repr_value_obj(const Compiler *c, TyKind t);
+
 /* Node type cache. */
 static inline TyKind comp_ntype(const Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
@@ -1211,21 +1215,15 @@ static inline TyKind comp_ntype(const Compiler *c, int id) {
      Exception: a read marked strbuf_box yields the live HANDLE, so the
      mutation is observable through the container it is stored in (#3227). */
   TyKind t = c->ntype[id];
-  if (t == TY_STRBUF) return c->strbuf_box[id] ? TY_STRBUF : TY_STRING;
-  /* A node under a handle demand STORES as the handle -- a temp spilled from
-     it has to be an sp_String *, not a const char * -- while still dispatching
-     as a String, which comp_recv_type answers for. That split is the whole
-     point of the second array (#4363). */
-  if (c->strbuf_handle_demand[id]) return TY_STRBUF;
+  /* the String-handle refinement is repr.c's (repr_stored_type) */
+  if (t == TY_STRBUF || c->strbuf_handle_demand[id]) return repr_stored_type(c, id, t);
   return t;
 }
 
 /* 1 iff t is a user-object type whose class is represented by value (sp_X,
    not a heap pointer). See detect_value_types / reference_legacy_value_type_logic. */
 static inline int comp_ty_value_obj(const Compiler *c, TyKind t) {
-  if (!ty_is_object(t)) return 0;
-  int cid = ty_object_class(t);
-  return cid >= 0 && cid < c->nclasses && c->classes[cid].is_value_type;
+  return repr_value_obj(c, t);   /* repr.c */
 }
 
 /* The sp_poly_enum_proc op for a block-carrying Enumerable name, or NULL.

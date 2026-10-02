@@ -1312,12 +1312,7 @@ int call_returns_nullable_int(Compiler *c, int node) {
      as the call did: `i = s.index("z")` then `i == nil` has to answer true.
      analyze marks the local; boxing an ordinary int stays on the plain path,
      which is the hot one (every int boxed into a poly slot). */
-  if (nty && sp_streq(nty, "LocalVariableReadNode")) {
-    const char *ln = nt_str(nt, node, "name");
-    Scope *sc = ln ? comp_scope_of(c, node) : NULL;
-    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
-    return lv && lv->nullable_int;
-  }
+  if (nty && sp_streq(nty, "LocalVariableReadNode")) return repr_local_nullable_int(c, node);
   if (!nty || !sp_streq(nty, "CallNode")) return 0;
   /* a safe-navigation call answers the scalar's nil sentinel when the receiver
      is nil, so boxing it plainly published a NaN (or a sentinel int) where the
@@ -1666,16 +1661,11 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     /* A parameter bound from an ivar read before anything had to assign it
        (box_nullable_arg) boxes as nil too; its typed reads stay unchecked,
        so the flag is asked here alone (#5085). */
-    case TY_INT:    fn = (g_promote_mode || call_returns_nullable_int(c, node) ||
-                          nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
-                          box_nullable_arg(c, node) || enum_builtin_node(c, node))
-                           ? "sp_box_int_or_nil" : "sp_box_int"; break;
+    case TY_INT:    fn = repr_nil_scalar(c, node, TY_INT) ? "sp_box_int_or_nil" : "sp_box_int"; break;
     /* A float slot has its own reserved nil sentinel, and the same rule
        applies: box it as nil where the value can be one, or it goes out as an
        ordinary Float and no literal nil matches it (#3493). */
-    case TY_FLOAT:  fn = (call_returns_nullable_int(c, node) || box_nullable_arg(c, node) ||
-                          enum_builtin_node(c, node))
-                           ? "sp_box_float_or_nil" : "sp_box_float"; break;
+    case TY_FLOAT:  fn = repr_nil_scalar(c, node, TY_FLOAT) ? "sp_box_float_or_nil" : "sp_box_float"; break;
     /* NULL is a bigint slot's nil (nil_value), and boxing it as a Bignum made
        a truthy Integer that printed 0 (#4800). Unconditional: a live Bignum is
        never the NULL pointer, so the test costs one compare on a path that

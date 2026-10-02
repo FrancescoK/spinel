@@ -23210,26 +23210,7 @@ int ivar_assigned_in_initialize(Compiler *c, int k, const char *ivn) {
    nil check: an int ivar read nothing has to assign first, or a parameter
    already bound from one. */
 int box_nullable_arg(Compiler *c, int v) {
-  const NodeTable *nt = c->nt;
-  if (v < 0) return 0;
-  if (nt_kind(nt, v) == NK_InstanceVariableReadNode) {
-    Scope *s = comp_scope_of(c, v);
-    int cid = s ? s->class_id : -1;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0 || cid >= c->nclasses) return 0;
-    ClassInfo *ci = &c->classes[cid];
-    const char *ivn = nt_str(nt, v, "name");
-    int iv = comp_ivar_index(ci, ivn);
-    if (iv < 0 || (ci->ivar_types[iv] != TY_INT && ci->ivar_types[iv] != TY_FLOAT)) return 0;
-    return !ivar_assigned_in_initialize(c, cid, ivn);
-  }
-  if (nt_kind(nt, v) == NK_LocalVariableReadNode) {
-    Scope *s = comp_scope_of(c, v);
-    const char *ln = nt_str(nt, v, "name");
-    LocalVar *lv = s && ln ? scope_local(s, ln) : NULL;
-    return lv && lv->is_param && lv->box_nullable;
-  }
-  return 0;
+  return repr_box_nullable_arg(c, v);   /* repr.c */
 }
 
 /* The class variable a read or write of `@@x` names, resolved as
