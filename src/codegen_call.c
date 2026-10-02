@@ -3350,7 +3350,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults, sv_arm_argov = g_n_argov;
-    int sv_moves = comp_scope_move_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -3363,7 +3363,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        back into it after it had returned */
     jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); }
+    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
     emit_state_release(sv_state, !ok);
     g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
     g_open_defaults = sv_open_defaults; g_n_argov = sv_arm_argov;
@@ -3423,7 +3423,7 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -3436,7 +3436,7 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
        back into it after it had returned */
     jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); }
+    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
     emit_state_release(sv_state, !ok);
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;
@@ -3502,7 +3502,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
     int sv_probe = g_unsup_probe; g_unsup_probe = 1;
     ConvHold *sv_hold = g_conv_hold;
     int sv_open_defaults = g_open_defaults;
-    int sv_moves = comp_scope_move_depth();
+    int sv_moves = comp_scope_move_depth(), sv_views = view_depth();
     /* the emitter state an arm repoints while it is emitted -- self, while
        a callee's defaults are spelled with the receiver as self -- is put
        back when the arm is dropped partway, as the unit's own recovery
@@ -3515,7 +3515,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
        back into it after it had returned */
     jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
     if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
-    else { ok = 0; comp_scope_move_unwind(sv_moves); }
+    else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
     emit_state_release(sv_state, !ok);
     g_conv_hold = sv_hold;
     g_open_defaults = sv_open_defaults;

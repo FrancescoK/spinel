@@ -1378,6 +1378,14 @@ typedef struct {
   const struct BuiltinOp *op;
 } BopCtx;
 int emit_builtin_op(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b);
+
+/* codegen_view.c: a node's cached type overridden for one nested emission.
+   view_push answers a token for the matching view_pop; a recovery point
+   saves view_depth() and view_unwind()s back to it after a refusal. */
+int view_push(Compiler *c, int id, TyKind t);
+void view_pop(Compiler *c, int tok);
+int view_depth(void);
+void view_unwind(int depth);
 /* Decode a CallNode's positional arguments: sets *argc and returns the argv
    array (NULL when the node has no arguments). Shared by the call emitters. */
 const int *call_args(const NodeTable *nt, int id, int *argc);
