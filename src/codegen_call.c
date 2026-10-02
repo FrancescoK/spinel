@@ -963,8 +963,8 @@ static void emit_io_vis_msg(int vis, const char *name, const char *handle, Buf *
    types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
 static int io_builtin_name(const char *m);
-static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty);
-static void unhoist_dispatch_args(Compiler *c, int n, int *sv, TyKind *ty);
+static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
+static void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw);
 /* The builtin's own emission of typed IO call `id` on the handle in _r<tv>,
    with the reopenings out of sight, or NULL when it does not fit the call's
    slot or does not emit. */
@@ -1046,7 +1046,7 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_File *_t%d = %s; SP_GC_ROOT(_t%d);\n", trv, rb.p ? rb.p : "NULL", trv);
   free(rb.p);
-  int *hsv = NULL; TyKind *hty = NULL;
+  int *hsv = NULL, *hty = NULL;
   int hn = hoist_dispatch_args(c, args, &hsv, &hty);
   int tv = ++g_tmp;
   char h[32];
@@ -18408,9 +18408,11 @@ int call_on_builtin_class_missing(Compiler *c, int id) {
    Splats and keyword hashes keep their own paths. Every value finds an
    override slot, however many there are (argov_reserve): past a table of 64
    the rest stayed in the arms and ran after the ones hoisted, a `**` operand
-   among them. Each override's slot and the node's own type go to *sv/*ty,
-   which unhoist_dispatch_args restores and frees; the count is returned. */
-static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty) {
+   among them. A hoisted value reads as the boxed temp it is through a view
+   of its node as poly. Each override's binding slot and its view (or -1)
+   go to *sv/*vw, which unhoist_dispatch_args undoes and frees; the count
+   is returned. */
+static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw) {
   const NodeTable *nt = c->nt;
   int hoisted_n = 0, hargc = 0;
   const int *hav = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &hargc) : NULL;
@@ -18449,7 +18451,7 @@ static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty) {
     }
   }
   int *hoisted_sv = malloc(sizeof(int) * (size_t)(nhn + 1));
-  TyKind *hoisted_ty = malloc(sizeof(TyKind) * (size_t)(nhn + 1));
+  int *hoisted_vw = malloc(sizeof(int) * (size_t)(nhn + 1));
   for (int a = 0; a < nhn; a++) {
     const char *aty = nt_type(nt, hn[a]);
     if (hds[a]) {
@@ -18478,7 +18480,7 @@ static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty) {
         buf_puts(g_pre, "\n");
         free(vb.p);
         hoisted_sv[hoisted_n] = g_n_argov;
-        hoisted_ty[hoisted_n] = vt;
+        hoisted_vw[hoisted_n] = -1;   /* read where it stands: its own type */
         view_bind(v, "_t%d", ht);
         hoisted_n++;
       }
@@ -18507,23 +18509,23 @@ static int hoist_dispatch_args(Compiler *c, int argsN, int **sv, TyKind **ty) {
     argov_reserve();
     int ht = hoist_boxed_rooted(c, hn[a]);
     hoisted_sv[hoisted_n] = g_n_argov;
-    hoisted_ty[hoisted_n] = c->ntype[hn[a]];
     view_bind(hn[a], "_t%d", ht);
-    c->ntype[hn[a]] = TY_POLY;
+    hoisted_vw[hoisted_n] = view_push(c, hn[a], TY_POLY);
     hoisted_n++;
   }
   free(hn); free(hds);
-  *sv = hoisted_sv; *ty = hoisted_ty;
+  *sv = hoisted_sv; *vw = hoisted_vw;
   return hoisted_n;
 }
 
-/* Undo hoist_dispatch_args' overrides in reverse: the slots are a stack. */
-static void unhoist_dispatch_args(Compiler *c, int n, int *sv, TyKind *ty) {
+/* Undo hoist_dispatch_args' overrides in reverse: the views and the
+   bindings are stacks. */
+static void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw) {
   for (int h = n - 1; h >= 0; h--) {
-    c->ntype[g_argov_node[sv[h]]] = ty[h];
+    if (vw[h] >= 0) view_pop(c, vw[h]);
     view_unbind(sv[h]);
   }
-  free(sv); free(ty);
+  free(sv); free(vw);
 }
 
 
@@ -18897,7 +18899,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           snprintf(raise, sizeof raise,
                    "sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, 0, (sp_RbVal[]){sp_box_nil()}))",
                    nm, tv);
-          int *hoisted_sv; TyKind *hoisted_ty;
+          int *hoisted_sv, *hoisted_ty;
           int hoisted_n = hoist_dispatch_args(c, argsN, &hoisted_sv, &hoisted_ty);
           int wants_blk = 0, blk_tmp = -1;
           for (int k = 0; k < nc; k++) {
@@ -23983,7 +23985,7 @@ static void emit_bind_call_boxed(Compiler *c, int id, int target, int kn, const 
                   "sp_class_is_module_fn && sp_class_is_module_fn(_t%d) ? \"module\" : \"class\", "
                   "sp_class_to_s(_t%d))); } ", sym, tk, tk);
   }
-  int *hsv; TyKind *hty;
+  int *hsv, *hty;
   Buf hp; memset(&hp, 0, sizeof hp);
   Buf *sv_pre = g_pre; g_pre = &hp;
   int hn = hoist_dispatch_args(c, nt_ref(c->nt, id, "arguments"), &hsv, &hty);
@@ -33475,7 +33477,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
              past the 16th was dropped unevaluated, a post after a rest read
              an argument the rest had taken, and a splat or a keyword reached
              a positional slot whole. */
-          int *hsv9; TyKind *hty9;
+          int *hsv9, *hty9;
           Buf hp9; memset(&hp9, 0, sizeof hp9);
           Buf *sv_pre9 = g_pre; g_pre = &hp9;
           Buf rb9; memset(&rb9, 0, sizeof rb9);
