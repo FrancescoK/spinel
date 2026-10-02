@@ -48,14 +48,26 @@ void pa_observe(int kind, int key, int mi, TyKind vty, int conv) {
 }
 
 static const char *pa_kind_name(int k) {
-  static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum" };
+  static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum",
+                                    "builtin" };
   return k >= 0 && k < (int)(sizeof nm / sizeof nm[0]) ? nm[k] : "?";
 }
 
 static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
-  snprintf(out, n, "%s %s mi %d vty %d conv %d",
-           a->key >= 0 && a->key < c->nclasses ? c->classes[a->key].name : "default",
-           pa_kind_name(a->kind), a->mi, a->vty, a->conv);
+  static const char *const fam[] = { "len", "empty", "class-named", "class-reflect", "ostruct", "to_a",
+                                     "io-rewind", "io-puts", "io-zero", "reduce", "int-chr", "str-transform",
+                                     "split" };
+  char kb[48];
+  if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
+  else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
+  else if (a->key >= PA_KEY_BUILTIN && a->key - PA_KEY_BUILTIN < (int)(sizeof fam / sizeof fam[0]))
+    snprintf(kb, sizeof kb, "%s", fam[a->key - PA_KEY_BUILTIN]);
+  else snprintf(kb, sizeof kb, "key %d", a->key);
+  snprintf(out, n, "%s %s mi %d vty %d conv %d", kb, pa_kind_name(a->kind), a->mi, a->vty, a->conv);
+}
+
+static int pa_key_cmp(const void *x, const void *y) {
+  return ((const PolyArm *)x)->key - ((const PolyArm *)y)->key;
 }
 
 void pa_end(Compiler *c, int frame, const PolyPlan *p) {
@@ -70,10 +82,15 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
             nm ? nm : "?", p->flags & ~PPF_SEEN, f->flags & ~PPF_SEEN);
     g_pa_conflict++;
   }
-  /* both lists are in class order: walk them together by key */
+  /* both lists by key: the switch writes its tag pre-arms and builtin cases
+     around the class arms */
+  PolyArm *pl = p->n ? malloc((size_t)p->n * sizeof *pl) : NULL;
+  if (p->n) memcpy(pl, p->arm, (size_t)p->n * sizeof *pl);
+  qsort(pl, (size_t)p->n, sizeof *pl, pa_key_cmp);
+  qsort(f->arm, (size_t)f->n, sizeof *f->arm, pa_key_cmp);
   int i = 0, j = 0;
   while (i < p->n || j < f->n) {
-    const PolyArm *pa = i < p->n ? &p->arm[i] : NULL, *ca = j < f->n ? &f->arm[j] : NULL;
+    const PolyArm *pa = i < p->n ? &pl[i] : NULL, *ca = j < f->n ? &f->arm[j] : NULL;
     if (pa && (!ca || pa->key < ca->key)) {
       pa_arm_text(c, pa, pt, sizeof pt);
       fprintf(stderr, "plan-check: poly-missing: node %d %s: plan %s\n", f->id, nm ? nm : "?", pt);
@@ -94,6 +111,7 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
       i++; j++;
     }
   }
+  free(pl);
   g_pa_n = frame;
 }
 
@@ -655,4 +673,305 @@ int poly_key_prim(Compiler *c, const char *name, int argc, int kwh, int pos_argc
     if (fits && (scope_has_callable_symbol(c, pmi) || scope_needs_proc_form(c, pmi))) return 1;
   }
   return 0;
+}
+
+/* The tag pre-arms of a zero-argument poly dispatch: the if-chain ahead of
+   its cls_id switch, for a builtin value (a String, a Symbol, a class, an
+   IO, a container) whose method shares its name with a user class's. Each
+   writes `if (<tag test>) <result>; else `. */
+void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
+                        int tv, int tr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int argc = 0;
+  int is_lengthlike = ps->lengthlike, is_empty = ps->empty, is_class_named = ps->class_named;
+  int is_class_reflect = ps->class_reflect, is_ostruct = ps->ostruct, is_poly_to_a = ps->poly_to_a;
+  int is_io_rewind = ps->io_rewind;
+  /* When the dispatch result feeds a poly context, tr is sp_RbVal, so the
+     length-like answer is boxed */
+  const char *bopen = (ret == TY_POLY) ? "sp_box_int(" : "";
+  const char *bclose = (ret == TY_POLY) ? ")" : "";
+  const char *ebopen = (ret == TY_POLY) ? "sp_box_bool(" : "";
+  const char *ebclose = (ret == TY_POLY) ? ")" : "";
+  /* string/symbol-tagged poly values answer length/size directly */
+  if (is_lengthlike) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_LEN, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %ssp_str_length(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ", tv, tr, bopen, tv, bclose);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %s(sp_int)sp_str_length(_t%d.v.s)%s; else ", tv, tr, bopen, tv, bclose);
+    /* A handle answers File#size through the runtime's own dispatch,
+       which knows whether it is a File (fstat) or an IO (CRuby's
+       NoMethodError). This chain is built when a user class owns the
+       name too, and its default arm raised for the File the same
+       program keeps beside those objects in one Hash (#4734). */
+    if (sp_streq(name, "size"))
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) _t%d = %ssp_poly_size(_t%d)%s; else ",
+                 tv, tv, tr, bopen, tv, bclose);
+  }
+  /* a string/symbol-tagged poly value answers empty? directly (#1438) */
+  if (is_empty) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_EMPTY, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_str_length(_t%d.v.s) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %sstrlen(sp_sym_to_s((sp_sym)_t%d.v.i)) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
+  }
+  /* a class-tagged poly value answers its name: `Base.subclasses` and
+     `#ancestors` hand back boxed classes, so `.map { |c| c.name }` reaches
+     here (#2656). The tag is checked ahead of the cls_id switch, because a
+     boxed class carries the CLASS's id and would otherwise alias that
+     user class's arm. Declined when a user class defines the method --
+     then a user object is the likelier receiver and it must win. */
+  if (is_class_named) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLASS_NAMED, -1, TY_UNKNOWN, PC_SAME);
+    const char *sbopen = (ret == TY_POLY) ? "sp_box_str(" : "";
+    const char *sbclose = (ret == TY_POLY) ? ")" : "";
+    /* a boxed class's #name is the interned frozen String the typed
+       forms answer (sp_str_frozen_name, which emit_call wraps around
+       those), as the Encoding and Symbol arms below intern theirs; its
+       to_s and inspect are not frozen */
+    int fzn = sp_streq(name, "name");
+    buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%ssp_class_val_name(_t%d)%s%s; else ",
+               tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "", tv, fzn ? ")" : "", sbclose);
+    /* `name` on an Encoding (always carried boxed) and on a Symbol: a
+       frozen String, as CRuby answers and as the typed Symbol#name does */
+    if (sp_streq(name, "name"))
+      buf_printf(b, "if (_t%d.tag == SP_TAG_ENCODING) _t%d = %ssp_str_uminus_val(_t%d.v.s)%s; "
+                    "else if (_t%d.tag == SP_TAG_SYM) "
+                    "_t%d = %ssp_str_uminus_val(sp_sym_to_s((sp_sym)_t%d.v.i))%s; else ",
+                 tv, tr, sbopen, tv, sbclose, tv, tr, sbopen, tv, sbclose);
+  }
+  if (is_class_reflect) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_CLASS_REFLECT, -1, TY_UNKNOWN, PC_SAME);
+    /* sp_class_superclass only knows the user chain; a builtin class needs
+       sp_builtin_superclass, exactly as the typed arm does. allocate and
+       keyword_init? answer a boxed value already. */
+    int boxed_ans = sp_streq(name, "allocate") || sp_streq(name, "keyword_init?");
+    const char *cbo = (ret == TY_POLY && !boxed_ans)
+                        ? (sp_streq(name, "superclass") ? "sp_box_class(" : "sp_box_poly_array(")
+                        : "";
+    const char *cbc = (ret == TY_POLY && !boxed_ans) ? ")" : "";
+    buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s", tv, tr, cbo);
+    if (sp_streq(name, "ancestors"))
+      buf_printf(b, "sp_class_ancestors(sp_unbox_class(_t%d))", tv);
+    else if (sp_streq(name, "included_modules"))
+      buf_printf(b, "sp_class_included_modules(sp_unbox_class(_t%d))", tv);
+    else if (sp_streq(name, "subclasses"))
+      buf_printf(b, "sp_cls_subclasses(_t%d)", tv);
+    else if (sp_streq(name, "allocate"))
+      buf_printf(b, "sp_cls_allocate(_t%d)", tv);
+    else if (sp_streq(name, "keyword_init?"))
+      buf_printf(b, "sp_cls_keyword_init_p(_t%d)", tv);
+    else
+      buf_printf(b, "({ sp_Class _cs%d = sp_unbox_class(_t%d); _cs%d.cls_id >= 0 ? sp_class_superclass(_cs%d) : sp_builtin_superclass(_cs%d); })",
+                 tv, tv, tv, tv, tv);
+    buf_printf(b, "%s; else ", cbc);
+  }
+  /* an OpenStruct answers ANY reader with its member value; checked ahead of
+     the cls_id switch since its id is a builtin, not a user class (#3197). */
+  if (is_ostruct) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_OSTRUCT, -1, TY_UNKNOWN, PC_SAME);
+    char osget[192];
+    snprintf(osget, sizeof osget,
+             "sp_OpenStruct_get((sp_OpenStruct *)_t%d.v.p, sp_sym_intern(\"%s\"))", tv, name);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_OPENSTRUCT) _t%d = ",
+               tv, tv, tr);
+    if (ret == TY_POLY) buf_puts(b, osget);
+    else emit_unbox_text(c, ret, osget, b);   /* result slot is user-typed (#3264) */
+    buf_puts(b, "; else ");
+  }
+  /* to_a on a runtime builtin hash/array: pair-array via the boxed
+     converter (#3278) */
+  if (is_poly_to_a) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_TO_A, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_hash_kind(_t%d.cls_id)"
+                  " || sp_poly_is_array_kind(_t%d.cls_id)"
+                  " || _t%d.cls_id == SP_BUILTIN_RANGE"
+                  " || _t%d.cls_id == SP_BUILTIN_STR_RANGE)) { _t%d = ",
+               tv, tv, tv, tv, tv, tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_poly_array(sp_poly_to_a_arr(_t%d))", tv);
+    else buf_printf(b, "sp_poly_to_a_arr(_t%d)", tv);
+    buf_puts(b, "; }\nelse ");
+    /* an Enumerator materializes through its own reader (#3624) */
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) { _t%d = ",
+               tv, tv, tr);
+    if (ret == TY_POLY)
+      buf_printf(b, "sp_box_poly_array(sp_Enumerator_to_a((sp_Enumerator *)_t%d.v.p))", tv);
+    else buf_printf(b, "sp_Enumerator_to_a((sp_Enumerator *)_t%d.v.p)", tv);
+    buf_puts(b, "; }\nelse ");
+  }
+  /* rewind on a runtime IO / StringIO stream (#3257); value is the seed
+     (rewind's return is rarely consumed through a poly union) */
+  if (is_io_rewind) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_REWIND, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO)"
+                  " { sp_File_rewind((sp_File *)_t%d.v.p); }\nelse ", tv, tv, tv);
+    int sio_cid3 = comp_class_index(c, "StringIO");
+    if (sio_cid3 >= 0)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
+                    " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); }\nelse ",
+                 tv, tv, sio_cid3, tv);
+  }
+  /* A zero-arg IO method whose name a user class ALSO owns. The cls_id
+     switch below carries an arm per user class only, so an `@io` that
+     holds a Socket here and a plain object there left the real stream at
+     the NoMethodError default (#4341): `def close; @io.close; end` on a
+     wrapper reported `close` as undefined for the Socket. Guarded on
+     SP_BUILTIN_IO, which no user-class arm can alias, so an object still
+     takes its own arm -- the same shape the rewind pre-arm above uses.
+     `close` leaves the seed alone: nil is what it answers. */
+  if (argc == 0 && nt_ref(nt, id, "block") < 0) {
+    /* the readers answer what the typed receiver's arms answer: gets and
+       getc a nil-able String (NULL boxes to nil), getbyte an Integer or
+       the nil sentinel, readline/readchar/readbyte raise EOFError */
+    static const struct { const char *nm, *fn; TyKind rt; const char *tail; } IOZ[] = {
+      {"close",   "sp_File_close",    TY_VOID},
+      {"closed?", "sp_File_closed_p", TY_BOOL},
+      {"eof?",    "sp_File_eof_p",    TY_BOOL},
+      {"eof",     "sp_File_eof_p",    TY_BOOL},
+      {"tty?",    "sp_File_tty_p",    TY_BOOL},
+      {"isatty",  "sp_File_tty_p",    TY_BOOL},
+      {"flush",   "sp_File_flush",    TY_VOID},
+      {"fileno",  "sp_File_fileno",   TY_INT},
+      {"tell",    "sp_File_tell",     TY_INT},
+      {"pos",     "sp_File_tell",     TY_INT},
+      {"lineno",  "sp_File_lineno",   TY_INT},
+      {"sync",    "sp_File_sync_p",   TY_BOOL},
+      {"gets",    "sp_File_gets",     TY_STRING},
+      {"getc",    "sp_File_getc",     TY_STRING},
+      {"readchar", "sp_File_readchar", TY_STRING},
+      {"readline", "sp_File_readline_sep", TY_STRING, ", \"\\n\", 0, 0"},
+      {"readbyte", "sp_File_readbyte", TY_INT},
+      {"getbyte", "sp_File_getbyte",  TY_INT},
+      {"readlines", "sp_File_readlines", TY_STR_ARRAY},
+      {NULL, NULL, TY_VOID, NULL}
+    };
+    /* a bare puts writes the newline and answers nil (#6158) */
+    if (sp_streq(name, "puts")) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_PUTS, -1, TY_UNKNOWN, PC_SAME);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { "
+                    "sp_File_puts((sp_File *)_t%d.v.p, \"\"); ", tv, tv, tv);
+      if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_nil(); ", tr);
+      buf_puts(b, "}\nelse ");
+    }
+    for (int i = 0; IOZ[i].nm; i++) {
+      if (!sp_streq(name, IOZ[i].nm)) continue;
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IOZ, -1, TY_UNKNOWN, PC_SAME);
+      char ioex[128];
+      snprintf(ioex, sizeof ioex, "%s((sp_File *)_t%d.v.p%s)", IOZ[i].fn, tv,
+               IOZ[i].tail ? IOZ[i].tail : "");
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { ",
+                 tv, tv);
+      /* the value only lands when the result slot can hold it: poly boxes
+         it, an exactly matching concrete slot takes it raw, anything else
+         keeps the call for its effect and leaves the seed */
+      if (ret == TY_POLY && sp_streq(name, "getbyte"))
+        buf_printf(b, "_t%d = sp_box_int_or_nil(%s)", tr, ioex);
+      else if (ret == TY_POLY && IOZ[i].rt != TY_VOID) {
+        buf_printf(b, "_t%d = ", tr);
+        emit_boxed_text(c, IOZ[i].rt, ioex, b);
+      }
+      else if (ret == IOZ[i].rt && IOZ[i].rt != TY_VOID)
+        buf_printf(b, "_t%d = %s", tr, ioex);
+      else buf_puts(b, ioex);
+      buf_puts(b, "; }\nelse ");
+      break;
+    }
+  }
+  /* A zero-arg CONTAINER reduction whose name a user class also owns
+     (`TreeNode#sum` next to a real Array's). The switch below covers
+     SP_TAG_OBJ user classes only, so an Array receiver fell through to the
+     NoMethodError default. Runtime-guarded on the container kinds, so a
+     user object still takes its own arm. */
+  if (argc == 0 && nt_ref(nt, id, "block") < 0) {
+    const char *cfn = sp_streq(name, "sum")   ? "sp_poly_sum"
+                    : sp_streq(name, "min")   ? "sp_poly_min"
+                    : sp_streq(name, "max")   ? "sp_poly_max"
+                    : sp_streq(name, "first") ? "sp_poly_first"
+                    : sp_streq(name, "last")  ? "sp_poly_last" : NULL;
+    if (cfn) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_REDUCE, -1, TY_UNKNOWN, PC_SAME);
+      char cex[96];
+      snprintf(cex, sizeof cex, "%s(_t%d)", cfn, tv);
+      /* Time#min is the MINUTE, and sp_poly_min answers it. A boxed Time
+         is neither an array nor a hash kind, so without this arm it fell
+         past the guard into the user-class switch and raised
+         NoMethodError -- the second symptom of #4192, reached only when
+         some user class happens to define `min`. A boxed Range is in the
+         same position for all five names: the helpers own it (Range#sum
+         always did; min/max/first/last since #4192's follow-up), so it
+         must not fall into the user switch either. */
+      char tg[128];
+      int tn = snprintf(tg, sizeof tg, " || _t%d.cls_id == SP_BUILTIN_RANGE", tv);
+      if (sp_streq(name, "min"))
+        snprintf(tg + tn, sizeof tg - (size_t)tn,
+                 " || _t%d.cls_id == SP_BUILTIN_TIME", tv);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) ||"
+                    " sp_poly_is_hash_kind(_t%d.cls_id)%s)) { _t%d = ", tv, tv, tv, tg, tr);
+      if (ret == TY_POLY) buf_puts(b, cex);
+      else emit_unbox_text(c, ret, cex, b);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
+  /* A zero-arg String transform whose name a user class ALSO owns. The
+     poly String shortcuts decline to this dispatch so a Struct member or
+     attr_reader called `upcase` answers the member rather than the upcased
+     #inspect of the object holding it (#3364, #3380) -- but the cls_id
+     switch below only covers SP_TAG_OBJ, so a genuine String receiver then
+     fell through to the seed (nil, or 0 for #bytes). Same tag pre-arm the
+     `[]` and #include? cases above use: String at run time takes the
+     String method, an object takes its member. */
+  /* ... unless the program REOPENED String with that very name, in which
+     case the String arm below (case 0 / the reopen's own method) is the
+     answer and this shortcut would take it away: `class String; def
+     upcase; "nope"; end` has to reach "nope" for a run-time-typed
+     receiver too, the way it now does for a concrete one. */
+  int str_reopen_owns = 0;
+  { int sci = comp_class_index(c, "String");
+    if (sci >= 0 && comp_method_in_chain(c, sci, name, NULL) >= 0) str_reopen_owns = 1; }
+  if (argc == 0 && !str_reopen_owns) {
+    static const struct { const char *nm, *fn; int arr; } STRT[] = {
+      {"upcase","sp_str_upcase",0}, {"downcase","sp_str_downcase",0},
+      {"capitalize","sp_str_capitalize",0}, {"swapcase","sp_str_swapcase",0},
+      {"strip","sp_str_strip",0}, {"reverse","sp_str_reverse",0},
+      {"chomp","sp_str_chomp",0}, {"chop","sp_str_chop",0},
+      {"succ","sp_str_succ",0}, {"next","sp_str_succ",0},
+      {"chr","sp_str_chr",0},
+      {"bytes","sp_str_bytes",1}, {"chars","sp_str_chars",2}, {NULL,NULL,0}
+    };
+    for (int si = 0; STRT[si].nm; si++) {
+      if (!sp_streq(name, STRT[si].nm)) continue;
+      /* the result has to fit the slot the dispatch assigns into */
+      int ok = STRT[si].arr == 0 ? (ret == TY_POLY || ret == TY_STRING)
+             : STRT[si].arr == 1 ? (ret == TY_POLY || ret == TY_INT_ARRAY)
+             :                     (ret == TY_POLY || ret == TY_STR_ARRAY);
+      if (!ok) break;
+      /* #chr is Integer#chr on an int tag: stringifying first turns
+         65.chr into "65".chr == "6" (#3328). */
+      if (sp_streq(name, "chr")) {
+        if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INT_CHR, -1, TY_UNKNOWN, PC_SAME);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = ", tv, tr);
+        if (ret == TY_STRING) buf_printf(b, "sp_int_chr(_t%d.v.i)", tv);
+        else buf_printf(b, "sp_box_str(sp_int_chr(_t%d.v.i))", tv);
+        buf_puts(b, "; }\nelse ");
+      }
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRT, -1, TY_UNKNOWN, PC_SAME);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+      if (ret != TY_POLY) buf_printf(b, "%s(_t%d.v.s)", STRT[si].fn, tv);
+      else if (STRT[si].arr == 1) buf_printf(b, "sp_box_int_array(%s(_t%d.v.s))", STRT[si].fn, tv);
+      else if (STRT[si].arr == 2) buf_printf(b, "sp_box_str_array(%s(_t%d.v.s))", STRT[si].fn, tv);
+      else buf_printf(b, "sp_box_str(%s(_t%d.v.s))", STRT[si].fn, tv);
+      buf_puts(b, "; }\nelse ");
+      break;
+    }
+    /* #split is the same shape but answers an ARRAY, so it needs the slot
+       conversion the table above cannot express: a user class owning
+       `split` (Pathname does) turned `str.split.join(" ")` into a switch
+       with no String arm, and the NULL that fell out joined to "" (#3394). */
+    if (sp_streq(name, "split") &&
+        (ret == TY_STR_ARRAY || ret == TY_POLY_ARRAY || ret == TY_POLY)) {
+      if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_SPLIT, -1, TY_UNKNOWN, PC_SAME);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+      if (ret == TY_STR_ARRAY) buf_printf(b, "sp_str_split_ws(_t%d.v.s)", tv);
+      else if (ret == TY_POLY_ARRAY) buf_printf(b, "sp_StrArray_to_poly_fmt(sp_str_split_ws(_t%d.v.s))", tv);
+      else buf_printf(b, "sp_box_str_array(sp_str_split_ws(_t%d.v.s))", tv);
+      buf_puts(b, "; }\nelse ");
+    }
+  }
 }

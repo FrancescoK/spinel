@@ -661,12 +661,56 @@ static void cpoly_obj_default0(Compiler *c, int id, const char *name, TyKind ret
     cpoly_add(p, cap, PA_ARITY, PA_KEY_DEFAULT, obj_mi, TY_UNKNOWN, PC_VOID);
 }
 
+static int cpoly_name_in(const char *name, const char *const *list) {
+  for (int i = 0; list[i]; i++) if (sp_streq(name, list[i])) return 1;
+  return 0;
+}
+
+static void cpoly_family(PolyPlan *p, int *cap, int fam) {
+  cpoly_add(p, cap, PA_BUILTIN, PA_KEY_BUILTIN + fam, -1, TY_UNKNOWN, PC_SAME);
+}
+
+/* The tag pre-arms emit_poly_prearms0 writes: a builtin value's answer to
+   a name a user class also owns. */
+static void cpoly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
+                           PolyPlan *p, int *cap) {
+  static const char *const ioz[] = { "close", "closed?", "eof?", "eof", "tty?", "isatty", "flush",
+    "fileno", "tell", "pos", "lineno", "sync", "gets", "getc", "readchar", "readline", "readbyte",
+    "getbyte", "readlines", NULL };
+  static const char *const reduce[] = { "sum", "min", "max", "first", "last", NULL };
+  /* the String transforms, by what they answer: a String, an Integer
+     array, a String array */
+  static const char *const strt_s[] = { "upcase", "downcase", "capitalize", "swapcase", "strip",
+    "reverse", "chomp", "chop", "succ", "next", "chr", NULL };
+  int blockless = nt_ref(c->nt, id, "block") < 0;
+  if (ps->lengthlike) cpoly_family(p, cap, PB_LEN);
+  if (ps->empty) cpoly_family(p, cap, PB_EMPTY);
+  if (ps->class_named) cpoly_family(p, cap, PB_CLASS_NAMED);
+  if (ps->class_reflect) cpoly_family(p, cap, PB_CLASS_REFLECT);
+  if (ps->ostruct) cpoly_family(p, cap, PB_OSTRUCT);
+  if (ps->poly_to_a) cpoly_family(p, cap, PB_TO_A);
+  if (ps->io_rewind) cpoly_family(p, cap, PB_IO_REWIND);
+  if (blockless && sp_streq(name, "puts")) cpoly_family(p, cap, PB_IO_PUTS);
+  if (blockless && cpoly_name_in(name, ioz)) cpoly_family(p, cap, PB_IOZ);
+  if (blockless && cpoly_name_in(name, reduce)) cpoly_family(p, cap, PB_REDUCE);
+  int sci = comp_class_index(c, "String");
+  if (sci >= 0 && comp_method_in_chain(c, sci, name, NULL) >= 0) return;   /* the reopen answers */
+  int fits = cpoly_name_in(name, strt_s) ? ret == TY_POLY || ret == TY_STRING
+           : sp_streq(name, "bytes") ? ret == TY_POLY || ret == TY_INT_ARRAY
+           : sp_streq(name, "chars") ? ret == TY_POLY || ret == TY_STR_ARRAY : 0;
+  if (fits && sp_streq(name, "chr")) cpoly_family(p, cap, PB_INT_CHR);
+  if (fits) cpoly_family(p, cap, PB_STRT);
+  if (sp_streq(name, "split") && (ret == TY_STR_ARRAY || ret == TY_POLY_ARRAY || ret == TY_POLY))
+    cpoly_family(p, cap, PB_SPLIT);
+}
+
 /* How a zero-argument dispatch holds and keys its receiver, and the type
    its arms answer into (an OpenStruct member read makes an untyped call
    poly), as emit_poly_method_dispatch decides them. */
-static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p) {
+static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, PolySpecials0 *out) {
   PolySpecials0 ps;
   poly_specials0(c, id, name, &ps);
+  *out = ps;
   if (ps.ostruct && (p->ret == TY_UNKNOWN || p->ret == TY_VOID || p->ret == TY_NIL)) p->ret = TY_POLY;
   int root = ps.ncall_arm > 0 || ps.lengthlike || ps.empty || ps.pred || ps.class_named ||
              ps.class_reflect || ps.ostruct || ps.io_rewind || ps.poly_to_a || ps.poly_to_h;
@@ -690,9 +734,11 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
   if (args >= 0) (void)nt_arr(c->nt, args, "arguments", &argc);
   if (!name || recv < 0) return;
   if (argc == 0) {
-    cpoly_flags0(c, id, name, p);
+    PolySpecials0 ps;
+    cpoly_flags0(c, id, name, p, &ps);
     cpoly_user_arms0(c, id, name, p->ret, p);
     int cap = p->n;
+    cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
     cpoly_obj_default0(c, id, name, p->ret, p, &cap);
   }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);

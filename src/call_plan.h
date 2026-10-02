@@ -81,8 +81,18 @@ typedef enum {
   PA_READER,      /* an attr reader's ivar load */
   PA_NATIVE,      /* a native class's C binding */
   PA_ARITY,       /* the call's count is refused: ArgumentError */
-  PA_SYNTH_ENUM   /* a Struct's synthesized each/each_pair: an Enumerator */
+  PA_SYNTH_ENUM,  /* a Struct's synthesized each/each_pair: an Enumerator */
+  PA_BUILTIN      /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
 } PolyArmKind;
+
+/* The builtin arm families of a poly dispatch, each one the arm (or run
+   of arms) one condition in emit_poly_method_dispatch writes. */
+typedef enum {
+  /* the tag pre-arms of a zero-argument dispatch (emit_poly_prearms0) */
+  PB_LEN, PB_EMPTY, PB_CLASS_NAMED, PB_CLASS_REFLECT, PB_OSTRUCT, PB_TO_A, PB_IO_REWIND,
+  PB_IO_PUTS, PB_IOZ, PB_REDUCE, PB_INT_CHR, PB_STRT, PB_SPLIT,
+  PB_NFAMILIES
+} PolyFamily;
 
 typedef enum {
   PC_SAME,        /* the value as it is */
@@ -104,6 +114,8 @@ typedef struct {
 
 /* the switch's `default:` arm (any receiver no class arm took) */
 #define PA_KEY_DEFAULT 0x7fff
+/* a builtin family's arm: above every class id */
+#define PA_KEY_BUILTIN 0x4000
 
 /* how the dispatch holds its receiver and keys its switch */
 enum {
