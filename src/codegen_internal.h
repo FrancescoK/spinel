@@ -1609,6 +1609,22 @@ int  poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int
 int  emit_poly_user_arm_n(Compiler *c, int k, const char *call, TyKind mret, Scope *ms, TyKind ret,
                           int tr, int is_setter_val, Buf *b);
 void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, Buf *b);
+int  poly_pred_kind(const char *name, int argc);
+int  poly_exc_cand(Compiler *c, const char *name);
+int  hoist_block_proc(Compiler *c, int cblk);
+void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b);
+/* what a zero-argument poly dispatch answers beside its user arms, and its
+   user candidates (poly_specials0) */
+typedef struct {
+  int lengthlike, empty, class_named, class_reflect, cls_members, pred, ostruct, io_rewind,
+      poly_to_a, poly_to_h;
+  int ncand, ncall_arm;
+} PolySpecials0;
+void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s);
+int  poly_key_cls0(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a);
+int  poly_key_prim(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a);
+int  emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKind ret, int tv, int tr,
+                            int *blk_tmp0, Buf *b);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b);

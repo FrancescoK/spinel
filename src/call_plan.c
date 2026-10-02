@@ -571,6 +571,9 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
   if (kw_ds) atmp_ty[pos_argc] = kwall_any ? TY_POLY_POLY_HASH : TY_SYM_POLY_HASH;
   else if (kwh >= 0 && sp_streq(name, "fetch") && argc == 2) atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
+  p->flags = PPF_ROOT | (poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
+             (poly_key_prim(c, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
+             (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
   PolyKw kw = { kwh, 0, kw_ds ? 0 : -1, NULL, NULL, NULL, kwall_any };
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
   for (int k = 0; k < c->nclasses; k++) {
@@ -630,17 +633,68 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   free(atmp_ty);
 }
 
+/* The `default:` arm emit_poly_obj_default0 writes for a zero-argument
+   dispatch: the Object reopening's method of the name. */
+static void cpoly_obj_default0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p, int *cap) {
+  int obj_cls = comp_class_index(c, "Object");
+  if (obj_cls < 0) return;
+  int obj_def = -1;
+  int obj_mi = comp_method_in_chain(c, obj_cls, name, &obj_def);
+  int blk = nt_ref(c->nt, id, "block");
+  int obj_pf = obj_mi >= 0 && obj_def == obj_cls && c->scopes[obj_mi].yields && blk >= 0
+               ? scope_proc_form_of(c, obj_mi) : -1;
+  if (obj_pf >= 0 && (c->scopes[obj_pf].nparams != 0 || c->scopes[obj_pf].rest_idx >= 0)) obj_pf = -1;
+  if (obj_pf >= 0 && resolve_forwarded_block(c, blk) < 0) obj_pf = -1;
+  char oexp[600];
+  if (obj_pf >= 0) {
+    Scope *ps = &c->scopes[obj_pf];
+    cpoly_add(p, cap, PA_PROC_FORM, PA_KEY_DEFAULT, obj_mi, ps->ret,
+              method_is_void(ps) ? PC_VOID : cpoly_conv(ret, ps->ret));
+  }
+  else if (obj_mi >= 0 && obj_def == obj_cls && c->scopes[obj_mi].nrequired == 0 &&
+           scope_has_callable_symbol(c, obj_mi)) {
+    Scope *ms = &c->scopes[obj_mi];
+    cpoly_add(p, cap, PA_USER, PA_KEY_DEFAULT, obj_mi, ms->ret,
+              method_is_void(ms) ? PC_VOID : cpoly_conv(ret, ms->ret));
+  }
+  else if (obj_def == obj_cls && poly_arm_refuses_none(c, obj_mi, oexp, sizeof oexp))
+    cpoly_add(p, cap, PA_ARITY, PA_KEY_DEFAULT, obj_mi, TY_UNKNOWN, PC_VOID);
+}
+
+/* How a zero-argument dispatch holds and keys its receiver, and the type
+   its arms answer into (an OpenStruct member read makes an untyped call
+   poly), as emit_poly_method_dispatch decides them. */
+static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p) {
+  PolySpecials0 ps;
+  poly_specials0(c, id, name, &ps);
+  if (ps.ostruct && (p->ret == TY_UNKNOWN || p->ret == TY_VOID || p->ret == TY_NIL)) p->ret = TY_POLY;
+  int root = ps.ncall_arm > 0 || ps.lengthlike || ps.empty || ps.pred || ps.class_named ||
+             ps.class_reflect || ps.ostruct || ps.io_rewind || ps.poly_to_a || ps.poly_to_h;
+  unsigned sface = ty_poly_face_owners(name, 0, nt_ref(c->nt, id, "block") >= 0, 1, 1);
+  int deref = (ps.lengthlike || ps.empty || ((sface & PF_STRING) && !(sface & PF_MUT))) &&
+              !sp_str_mutator(name, SP_MUT_LOCAL);
+  p->flags = (root ? PPF_ROOT : 0) | (deref ? PPF_DEREF : 0) |
+             (poly_key_cls0(c, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
+             (poly_key_prim(c, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
+             (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
+}
+
 static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
   free(p->arm);
-  p->arm = NULL; p->n = 0;
-  p->ret = comp_ntype(c, id);
+  p->arm = NULL; p->n = 0; p->flags = 0;
+  p->ntype = p->ret = comp_ntype(c, id);
   const char *name = nt_str(c->nt, id, "name");
   int recv = nt_ref(c->nt, id, "receiver");
   int argc = 0;
   int args = nt_ref(c->nt, id, "arguments");
   if (args >= 0) (void)nt_arr(c->nt, args, "arguments", &argc);
   if (!name || recv < 0) return;
-  if (argc == 0) cpoly_user_arms0(c, id, name, p->ret, p);
+  if (argc == 0) {
+    cpoly_flags0(c, id, name, p);
+    cpoly_user_arms0(c, id, name, p->ret, p);
+    int cap = p->n;
+    cpoly_obj_default0(c, id, name, p->ret, p, &cap);
+  }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);
 }
 
@@ -654,7 +708,7 @@ const PolyPlan *cplan_poly(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   int plain = cplan_plain_ctx();
   if (plain && id < g_pp_cap && g_pp_name[id] && nm && sp_streq(g_pp_name[id], nm) &&
-      g_pp_memo[id].ret == comp_ntype(c, id))
+      g_pp_memo[id].ntype == comp_ntype(c, id))
     return &g_pp_memo[id];
 #ifndef NDEBUG
   int tmp0 = g_tmp;

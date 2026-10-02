@@ -890,7 +890,7 @@ int exc_arm_definer(Compiler *c, int k, const char *name) {
 
 /* Whether a user exception class answers `name`: the dispatch key then has
    to map a boxed exception (tagged SP_BUILTIN_EXCEPTION) to its class. */
-static int poly_exc_cand(Compiler *c, const char *name) {
+int poly_exc_cand(Compiler *c, const char *name) {
   { int xr[8]; if (exc_reopen_definers(c, name, xr, 8) > 0) return 1; }
   for (int k = 0; k < c->nclasses; k++)
     if (class_is_exc_subclass(c, k) &&
@@ -1246,7 +1246,7 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa);
 static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const PolyKw *kw,
                                     int pos_argc, int gathered, Buf *b);
-static int hoist_block_proc(Compiler *c, int cblk) {
+int hoist_block_proc(Compiler *c, int cblk) {
   int t = ++g_tmp;
   Buf pb; memset(&pb, 0, sizeof pb);
   if (!emit_forwarded_proc_arg(c, cblk, &pb)) emit_proc_literal(c, cblk, &pb);
@@ -1262,7 +1262,7 @@ static int hoist_block_proc(Compiler *c, int cblk) {
    call that spelled only its arguments: the call's block (`blk_tmp`, or
    built here), else NULL. activesupport's Object#with, lowered because its
    own public_send reaches it, was called one argument short. */
-static void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b) {
+void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b) {
   if (!m->blk_param || !m->blk_param[0] || m->yields) return;
   if (blk_tmp >= 0) { buf_printf(b, ", _t%d", blk_tmp); return; }
   int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
@@ -4609,7 +4609,7 @@ static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKin
    is a builtin scalar (or an object of a class without the override) otherwise
    fell through to "undefined method '<m>' for poly" at runtime, the dominant
    real gap under the ruby/spec harness (`x.should.eql?(y)` and friends). */
-static int poly_pred_kind(const char *name, int argc) {
+int poly_pred_kind(const char *name, int argc) {
   if (!name) return 0;
   /* zero?/positive?/negative? are numeric rather than universal, but they take
      the same default arm: a user class defining one of them makes this switch
@@ -7577,86 +7577,19 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
-    int is_lengthlike = sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count");
-    int is_empty = sp_streq(name, "empty?");
-    /* A class-tagged poly value answers these with its class name (#2656); only
-       when no user class defines them, or that user method is the real target. */
-    int is_class_named = (sp_streq(name, "name") || sp_streq(name, "to_s") ||
-                          sp_streq(name, "inspect")) && !recv_user_defines(c, name);
-    /* The Module reflection a class-tagged poly value answers. `ancestors` and
-       friends had an arm only for a receiver typed TY_CLASS -- a constant --
-       so iterating an Array of classes and asking the block parameter left the
-       call with no arm at all and it reported the method as undefined (#4018). */
-    int is_class_reflect = (sp_streq(name, "ancestors") || sp_streq(name, "included_modules") ||
-                            sp_streq(name, "superclass") ||
-                            /* the class-side names the generated sp_cls_* answer
-                               (members has its arm in emit_poly_call) */
-                            (g_gen_cls_answers && nt_ref(nt, id, "block") < 0 &&
-                             (sp_streq(name, "subclasses") || sp_streq(name, "allocate") ||
-                              sp_streq(name, "keyword_init?")))) &&
-                           !recv_user_defines(c, name);
-    /* `members` on a Class read out of a container is its member list (the
-       generated sp_cls_members). emit_poly_call's arm answers that, unless
-       a class reads a value of its own as `members` or defines the method:
-       then the call is this dispatch's, and a boxed class, which carries the
-       CLASS's id, would take that class's instance arm. Where no class-side
-       switch takes class values (emit_poly_cls_value_prearm), they are
-       told apart ahead of the instance switch. */
-    int is_cls_members = sp_streq(name, "members") && g_gen_cls_answers &&
-                         nt_ref(nt, id, "block") < 0;
-    int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
-    /* When ostruct is in the program a bare `obj.reader` on a poly value may be
-       an OpenStruct member access (any name) -- read it at runtime (#3197).
-       The check keys on cls_id == SP_BUILTIN_OPENSTRUCT, so it cannot alias a
-       user-class arm and coexists with them: a poly value that unions an
-       OpenStruct with user objects (OpenStruct|nil return) still reads the
-       member when a user class happens to define the same name (#3264). */
-    /* An OpenStruct answers ANY reader with a member; but a name the poly
-       dispatch already serves with a real builtin arm must keep that arm, or
-       the member fetch replaces it and returns nil (#3341). */
-    int is_ostruct = argc == 0 && nt_ref(nt, id, "block") < 0 &&
-                     !is_lengthlike && !is_empty && !is_pred &&
-                     !poly_builtin_zero_arg_name(name) &&
-                     sp_feature_required("ostruct");
-    /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
-       both are builtins/native classes with no user arm, so without this
-       pre-arm the call was silently dropped. */
-    int is_io_rewind = sp_streq(name, "rewind") && !recv_user_defines(c, name);
-    /* to_a on a poly value that is really a builtin hash/array (a yield-result
-       union of an rbs-seeded Hash and a class instance, #3278): the user-class
-       switch has no builtin arm, so the hash fell through to the nil seed. */
-    int is_poly_to_a = sp_streq(name, "to_a") &&
-                       (comp_ntype(c, id) == TY_POLY_ARRAY || comp_ntype(c, id) == TY_POLY);
-    /* to_h on a poly value that is really a builtin hash (or an Array of
-       pairs, or a Struct): the user-class switch carries an arm per class that
-       defines to_h and none for the builtin, so a plain Hash reached the
-       default and raised -- naming Hash, the class whose method it is. Every
-       sibling (to_a, to_s, keys, length) already had its arm (#4170). */
-    int is_poly_to_h = sp_streq(name, "to_h") && argc == 0 &&
-                       nt_ref(nt, id, "block") < 0 &&
-                       comp_ntype(c, id) == TY_POLY;
-    int ncand = 0, ncall_arm = 0;
-    for (int k = 0; k < c->nclasses; k++) {
-      /* comp_poly_arm_defines: a native class counts only through its
-         declared bindings (#4504) -- its Ruby-side defs get no arm in the
-         BLOCKLESS switch below. A block-carrying call is different: the
-         block dispatch reaches Ruby-side defs through their proc form, and
-         poly_block_call_needs_dispatch stands the element-loop emitters
-         down on their account -- so the claim here has to keep counting
-         them, or `arr.each { }` beside a loaded StringIO had no emitter at
-         all and became the terminal raise. */
-      int is_call = comp_poly_arm_defines(c, k, name) ||
-                    (nt_ref(nt, id, "block") >= 0 && c->classes[k].is_native_class &&
-                     comp_method_in_chain(c, k, name, NULL) >= 0);
-      if (is_call || (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) ncand++;
-      /* The root decision counts only the arms the switch below will carry:
-         a class no reachable code constructs gets no arm, so it must not
-         decide the root either. A dead FFI wrapper's Vector2 counted as a
-         calling arm, and every `x` read of a Struct field paid a root push
-         and pop for an arm that could not run (#4460). ncand keeps every
-         candidate, as the choice to emit a dispatch at all always has. */
-      if (is_call && (c->classes[k].instantiated || class_is_prim_reopen(c, k))) ncall_arm++;
-    }
+    PolySpecials0 ps;
+    poly_specials0(c, id, name, &ps);
+    int is_lengthlike = ps.lengthlike;
+    int is_empty = ps.empty;
+    int is_class_named = ps.class_named;
+    int is_class_reflect = ps.class_reflect;
+    int is_cls_members = ps.cls_members;
+    int is_pred = ps.pred;
+    int is_ostruct = ps.ostruct;
+    int is_io_rewind = ps.io_rewind;
+    int is_poly_to_a = ps.poly_to_a;
+    int is_poly_to_h = ps.poly_to_h;
+    int ncand = ps.ncand, ncall_arm = ps.ncall_arm;
     /* The builtin emitters stand down for a name any reachable user class
        owns, and they do it by NAME: user_defines_or_reads takes no arity.
        This gate asked whether a user class is a candidate AT THIS CALL
@@ -8087,15 +8020,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395) */
       emit_poly_callable_prearm(c, name, 0, NULL, NULL, NULL, tv, tr, ret, 0, b);
-      int cls0_d = -1, cls0_rd = -1;
-      int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
-      char cls0_exp[600];
-      int cls0_cand = ((cls0_mi >= 0 && c->scopes[cls0_mi].nrequired == 0) ||
-                       /* an arm refusing no arguments raises, and is a `case 0:` all the same */
-                       poly_arm_refuses_none(c, cls0_mi, cls0_exp, sizeof cls0_exp) ||
-                       (c->nclasses > 0 && comp_reader_in_chain(c, 0, name, &cls0_rd))) &&
-                      c->nclasses > 0 &&
-                      (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
+      int cls0_cand = poly_key_cls0(c, name, 0, -1, 0, -1);
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218) */
       if (!emit_poly_cls_value_prearm(c, id, name, 0, NULL, NULL, NULL, NULL, tv, tr, ret, blk_tmp0, b) &&
@@ -8108,25 +8033,17 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      tv, tv);
       }
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
-      int prim_cand0 = 0;
-      for (int k = 0; k < c->nclasses && !prim_cand0; k++) {
-        if (!class_is_prim_reopen(c, k)) continue;
-        int pmi = comp_method_in_chain(c, k, name, NULL);
-        char pexp[600];
-        if (pmi >= 0 && (c->scopes[pmi].nrequired == 0 || poly_arm_refuses_none(c, pmi, pexp, sizeof pexp)) &&
-            (scope_has_callable_symbol(c, pmi) || scope_needs_proc_form(c, pmi)))
-          prim_cand0 = 1;
-      }
+      int prim_cand0 = poly_key_prim(c, name, 0, -1, 0, -1);
       /* a genuine String in a slot whose name a user class owns (#4816) */
       emit_poly_str_prearm(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, b);
       buf_puts(b, "switch (");
       emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand0, poly_exc_cand(c, name), name, b);
       buf_puts(b, ") {");
-      {
-        int pf = g_plan_check ? pa_begin(id) : -1;
-        emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, b);
-        if (g_plan_check) pa_end(c, pf, cplan_poly(c, id));
-      }
+      int pa_frame0 = g_plan_check ? pa_begin(id) : -1;
+      if (g_plan_check)
+        pa_flags((root_recv ? PPF_ROOT : 0) | (reads_value ? PPF_DEREF : 0) | (cls0_cand ? PPF_KEY_CLS0 : 0) |
+                 (prim_cand0 ? PPF_KEY_PRIM : 0) | (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
+      emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, b);
       /* built-in array receivers reaching a length-like poly dispatch */
       if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count"))
         emit_builtin_len_cases(b, tr, tv, bopen, bclose);
@@ -8224,80 +8141,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          user class is instantiated: an empty switch left the result NULL and
          the next call on it segfaulted (ruby/spec's mspec `should` proxy on
          a case/when result -- 133 of the harness's ERROR examples). */
-      int obj_default_done = 0;
-      { int obj_cls = comp_class_index(c, "Object");
-        if (obj_cls >= 0) {
-          int obj_def = -1;
-          int obj_mi = comp_method_in_chain(c, obj_cls, name, &obj_def);
-          /* A yielding one is reached with the call's block through its proc
-             form: a user class's chain does not name Object, so without this
-             arm an instance of it took the raise (#5101) */
-          int obj_pf = (obj_mi >= 0 && obj_def == obj_cls && argc == 0 &&
-                        c->scopes[obj_mi].yields && nt_ref(nt, id, "block") >= 0)
-                       ? scope_proc_form_of(c, obj_mi) : -1;
-          if (obj_pf >= 0 && (c->scopes[obj_pf].nparams != 0 || c->scopes[obj_pf].rest_idx >= 0))
-            obj_pf = -1;
-          if (obj_pf >= 0 && blk_tmp0 < 0) {
-            int cblk3 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-            if (cblk3 < 0) obj_pf = -1;
-            else blk_tmp0 = hoist_block_proc(c, cblk3);
-          }
-          if (obj_pf >= 0) {
-            Buf oc; memset(&oc, 0, sizeof oc);
-            emit_method_cname(c, &c->scopes[obj_pf], &oc);
-            buf_printf(&oc, "(_t%d, _t%d)", tv, blk_tmp0);
-            TyKind pr = (TyKind)c->scopes[obj_pf].ret;
-            buf_puts(b, " default: ");
-            if (method_is_void(&c->scopes[obj_pf])) buf_puts(b, oc.p);
-            else {
-              buf_printf(b, "_t%d = ", tr);
-              if (ret == TY_POLY && pr != TY_POLY) emit_boxed_text(c, pr, oc.p, b);
-              else if (ret != TY_POLY && pr == TY_POLY)
-                emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, oc.p, b);
-              else buf_puts(b, oc.p);
-            }
-            buf_puts(b, "; break;");
-            free(oc.p);
-            obj_default_done = 1;
-          }
-          else if (obj_mi >= 0 && obj_def == obj_cls && c->scopes[obj_mi].nrequired == 0 &&
-              scope_has_callable_symbol(c, obj_mi)) {
-            /* an optional parameter takes its default, spelled with the
-               boxed receiver as self */
-            Buf ob; memset(&ob, 0, sizeof ob);
-            buf_printf(&ob, "sp_Object_%s(_t%d", mc(c->scopes[obj_mi].name), tv);
-            { const char *saved_self = g_self;
-              char oselfbuf[32]; snprintf(oselfbuf, sizeof oselfbuf, "_t%d", tv);
-              g_self = oselfbuf;
-              for (int a = 0; a < c->scopes[obj_mi].nparams; a++) {
-                buf_puts(&ob, ", "); emit_arg_or_default(c, &c->scopes[obj_mi], a, -1, &ob);
-              }
-              g_self = saved_self; }
-            emit_trailing_blk_arg(c, &c->scopes[obj_mi], id, blk_tmp0, &ob);
-            buf_puts(&ob, ")");
-            const char *ocall = ob.p;
-            buf_puts(b, " default: ");
-            if (method_is_void(&c->scopes[obj_mi])) buf_puts(b, ocall);
-            else {
-              TyKind oslot = is_scalar_ret(ret) ? ret : TY_INT;
-              buf_printf(b, "_t%d = ", tr);
-              if (ret == TY_POLY && c->scopes[obj_mi].ret != TY_POLY)
-                emit_boxed_text(c, c->scopes[obj_mi].ret, ocall, b);
-              else if (ret != TY_POLY && c->scopes[obj_mi].ret == TY_POLY)
-                emit_unbox_text(c, oslot, ocall, b);
-              else buf_puts(b, ocall);
-            }
-            buf_puts(b, "; break;");
-            free(ob.p);
-            obj_default_done = 1;
-          }
-          /* ... and one that needs arguments refuses them for any receiver */
-          else { char oexp[600];
-            if (obj_def == obj_cls && poly_arm_refuses_none(c, obj_mi, oexp, sizeof oexp)) {
-              buf_puts(b, " default: "); emit_poly_arity_raise(b, oexp); buf_puts(b, " break;");
-              obj_default_done = 1;
-            } }
-        } }
+      if (g_plan_check) pa_resume(pa_frame0);
+      int obj_default_done = emit_poly_obj_default0(c, id, name, argc, ret, tv, tr, &blk_tmp0, b);
+      if (g_plan_check) pa_end(c, pa_frame0, cplan_poly(c, id));
       /* `x.enum_for` on a boxed value, rewritten to the generator helper the
          classes with a yielding each carry: any other value is enumerated
          as the builtin it is */
@@ -9296,31 +9142,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             }
           }
         } }
-      int cls0_mi2 = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, NULL) : -1;
-      int cls0_cand2 = cls0_mi2 >= 0 &&
-                       (c->classes[0].instantiated || class_is_prim_reopen(c, 0));
-      if (cls0_cand2) {
-        /* the same widened arity as the candidate count: a keyword hash
-           funds the declared keyword params it names (#4205) */
-        /* an arm refusing the count raises, and is a `case 0:` all the same */
-        char exp0[600];
-        cls0_cand2 = poly_arm_count(c, &c->scopes[cls0_mi2], kwh, pos_argc, splat_a,
-                                    exp0, sizeof exp0) != 0;
-      }
+      int cls0_cand2 = poly_key_cls0(c, name, argc, kwh, pos_argc, splat_a);
       /* a class-valued receiver dispatches class-side, ahead of the instance
          arms (#4218). */
       emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, &kw, tv,
                                  is_setter_val ? -1 : tr, ret, blk_tmp2, b);
       /* a primitive-reopen candidate needs the tag-mapping key (#4219) */
-      int prim_cand2 = 0;
-      for (int k = 0; k < c->nclasses && !prim_cand2; k++) {
-        if (!class_is_prim_reopen(c, k)) continue;
-        int pmi = comp_method_in_chain(c, k, name, NULL);
-        char expp[600];
-        if (pmi >= 0 && poly_arm_count(c, &c->scopes[pmi], kwh, pos_argc, splat_a, expp, sizeof expp) &&
-            (scope_has_callable_symbol(c, pmi) || scope_needs_proc_form(c, pmi)))
-          prim_cand2 = 1;
-      }
+      int prim_cand2 = poly_key_prim(c, name, argc, kwh, pos_argc, splat_a);
       /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395);
          the keyword split binds by name to a user candidate, so skip it. A
          splatted argument is one temp holding an array, not one temp per
@@ -9369,6 +9197,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       emit_poly_dispatch_key_pick(c, tv, cls0_cand2, prim_cand2, poly_exc_cand(c, name), name, b);
       buf_puts(b, ") {");
       int pa_frame = g_plan_check ? pa_begin(id) : -1;
+      if (g_plan_check)
+        pa_flags(PPF_ROOT | (cls0_cand2 ? PPF_KEY_CLS0 : 0) | (prim_cand2 ? PPF_KEY_PRIM : 0) |
+                 (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
       for (int k = 0; k < c->nclasses; k++) {
         /* native (C-backed) class arm: a declared method of this arity takes
            the hoisted temps in its native representation, as the zero-arg

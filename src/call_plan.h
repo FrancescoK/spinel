@@ -98,23 +98,43 @@ typedef struct {
   unsigned char kind;   /* PolyArmKind */
   unsigned char conv;   /* PolyConv */
   unsigned char vty;    /* the arm's value TyKind */
-  short key;            /* the runtime class id */
+  short key;            /* the runtime class id, or PA_KEY_DEFAULT */
   int mi;               /* the user method scope, or -1 */
 } PolyArm;
 
+/* the switch's `default:` arm (any receiver no class arm took) */
+#define PA_KEY_DEFAULT 0x7fff
+
+/* how the dispatch holds its receiver and keys its switch */
+enum {
+  PPF_ROOT     = 1,   /* the receiver temp is rooted: an arm can allocate */
+  PPF_DEREF    = 2,   /* read through sp_poly_strbuf_deref: a String arm reads the value */
+  PPF_KEY_CLS0 = 4,   /* class 0 has an arm: a non-object value is kept off it */
+  PPF_KEY_PRIM = 8,   /* a primitive reopening has an arm: the tag maps to its class */
+  PPF_KEY_EXC  = 16,  /* a user exception class answers: the exception is re-keyed */
+  PPF_SEEN     = 256  /* (--plan-check) the flags were observed */
+};
+
 typedef struct {
   TyKind ret;           /* the call's type the arms answer into */
+  TyKind ntype;         /* the node's type it was resolved for */
+  unsigned flags;       /* PPF_* */
   int n;
   PolyArm *arm;
 } PolyPlan;
 
 /* The user-class arms of a call on a poly receiver, with or without
-   arguments (the plan's first slice of emit_poly_method_dispatch). Pure;
-   kept per node where the node is read as itself. */
+   arguments, the Object reopening's default arm, and how the receiver is
+   held and keyed (the plan's slice of emit_poly_method_dispatch so far).
+   Pure; kept per node where the node is read as itself. */
 const PolyPlan *cplan_poly(Compiler *c, int id);
 
-/* --plan-check: the arms one emitted switch wrote, held against the plan */
+/* --plan-check: the arms one emitted switch wrote, held against the plan.
+   pa_resume(frame) drops frames a probe abandoned above it, before the
+   switch observes again. */
 int  pa_begin(int id);
+void pa_resume(int frame);
+void pa_flags(unsigned flags);
 void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
 void pa_end(Compiler *c, int frame, const PolyPlan *p);
 void pa_report(void);
