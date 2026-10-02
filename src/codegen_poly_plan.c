@@ -14,6 +14,7 @@ typedef struct { int id; unsigned flags; int n, cap; PolyArm *arm; } PaFrame;
 static PaFrame *g_pa;
 static int g_pa_n, g_pa_cap;
 static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
+static long g_pa_trial_kept, g_pa_trial_dropped;
 
 int pa_begin(int id) {
   if (g_pa_n == g_pa_cap) {
@@ -53,7 +54,7 @@ void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv) {
 
 static const char *pa_kind_name(int k) {
   static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum",
-                                    "builtin" };
+                                    "builtin", "trial" };
   return k >= 0 && k < (int)(sizeof nm / sizeof nm[0]) ? nm[k] : "?";
 }
 
@@ -80,6 +81,12 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
+  else if (a->key >= PA_KEY_TRIAL && a->key < PA_KEY_DEFAULT) {
+    static const char *const tn[] = { "string-prearm", "container-read", "array-fallback", "default0",
+                                      "generic-tail", "default-n" };
+    int t = a->key - PA_KEY_TRIAL;
+    snprintf(kb, sizeof kb, "%s", t < (int)(sizeof tn / sizeof tn[0]) ? tn[t] : "?");
+  }
   else if (a->key >= PA_KEY_CLASS_VALUE && a->key < PA_KEY_BUILTIN && a->key - PA_KEY_CLASS_VALUE < c->nclasses)
     snprintf(kb, sizeof kb, "%s (class value)", c->classes[a->key - PA_KEY_CLASS_VALUE].name);
   else if (a->key >= PA_KEY_BUILTIN && a->key - PA_KEY_BUILTIN < (int)(sizeof fam / sizeof fam[0]))
@@ -123,6 +130,11 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
       fprintf(stderr, "plan-check: poly-extra: node %d %s: codegen %s\n", f->id, nm ? nm : "?", ct);
       g_pa_extra++; j++;
     }
+    else if (pa->kind == PA_TRIAL && ca->kind == PA_TRIAL) {
+      /* offered by both: what it answered is the emission's to know */
+      if (ca->conv) g_pa_trial_kept++; else g_pa_trial_dropped++;
+      i++; j++;
+    }
     else {
       if (pa->kind != ca->kind || pa->mi != ca->mi || pa->vty != ca->vty || pa->conv != ca->conv) {
         pa_arm_text(c, pa, pt, sizeof pt); pa_arm_text(c, ca, ct, sizeof ct);
@@ -138,8 +150,10 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
 }
 
 void pa_report(void) {
-  fprintf(stderr, "plan-check: poly-arms: %ld switches, %ld arms, %ld conflicts, %ld missing, %ld extra\n",
-          g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra);
+  fprintf(stderr, "plan-check: poly-arms: %ld switches, %ld arms, %ld conflicts, %ld missing, %ld extra,"
+          " %ld trials kept, %ld dropped\n",
+          g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra, g_pa_trial_kept,
+          g_pa_trial_dropped);
 }
 
 /* The user-class arms of a blockless zero-argument poly dispatch
@@ -1194,7 +1208,9 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
     g_n_argov--;
     /* an emission that fell through to the raise token adds nothing: leave
        those tags on the switch's own default so the message is the same */
-    if (ib9.p && strncmp(ib9.p, "sp_raise_nomethod(", 18) != 0) {
+    int kept9 = ib9.p && strncmp(ib9.p, "sp_raise_nomethod(", 18) != 0;
+    if (g_plan_check) pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_CONTAINER, -1, TY_UNKNOWN, kept9);
+    if (kept9) {
       buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
                   " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
                   " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:"
@@ -1349,7 +1365,9 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     buf_puts(b, "; break; }");
     /* anything else -- a Hash, with its own pair semantics -- answers as
        it would with no class of that name */
-    if (!emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, 0, b))
+    int kept = emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, 0, b);
+    if (g_plan_check) pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_ARRAY_FALLBACK, -1, TY_UNKNOWN, kept);
+    if (!kept)
       buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
     obj_default_done = 1;
   }
@@ -3113,11 +3131,13 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
     int sum_done = dl_open && ret == TY_POLY &&
                    emit_poly_default_blk_arm(c, id, name, argc, argv, atmp, atmp_ty, tv, tr, blk_tmp2, b);
+    int answer = sum_done ? 1 : 0;
     if (!sum_done && (!dl_open ||
-        (!emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) &&
-         !emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
-                                    ret, tv, is_setter_val ? -1 : tr, 0, b))))
+        (!(answer = emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) ? 2 : 0) &&
+         !(answer = emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
+                                              ret, tv, is_setter_val ? -1 : tr, 0, b) ? 3 : 0))))
       buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
+    if (g_plan_check && dl_open) pa_observe(PA_TRIAL, PA_KEY_TRIAL + PT_GENERIC_TAIL, -1, TY_UNKNOWN, answer);
   }
   /* `[]` gets a default of its own. The arms above enumerate the kinds
      someone thought to add -- every ARRAY kind, the string- and
@@ -3266,4 +3286,19 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
            buf_puts(b, "; break;"); }
     free(kb.p); free(db.p);
   }
+}
+
+/* The last `default:` a poly dispatch writes: the builtin surface's answer
+   for a receiver no arm took, asked by re-entering the call (a trial), and
+   for the zero-argument dispatch (done 0) the raise when it declines; done
+   -1 is the dispatch with arguments, which leaves the switch as it is. */
+void emit_poly_last_default(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
+                            const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, int done,
+                            Buf *b) {
+  if (done > 0) return;
+  int kept = emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, 1, b);
+  if (g_plan_check)
+    pa_observe(PA_TRIAL, PA_KEY_TRIAL + (done < 0 ? PT_DEFAULT_N : PT_DEFAULT0), -1, TY_UNKNOWN, kept);
+  if (!kept && done == 0)
+    buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
 }

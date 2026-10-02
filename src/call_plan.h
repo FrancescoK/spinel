@@ -82,8 +82,23 @@ typedef enum {
   PA_NATIVE,      /* a native class's C binding */
   PA_ARITY,       /* the call's count is refused: ArgumentError */
   PA_SYNTH_ENUM,  /* a Struct's synthesized each/each_pair: an Enumerator */
-  PA_BUILTIN      /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
+  PA_BUILTIN,     /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
+  PA_TRIAL        /* an arm only an emission can decide: the call re-entered as the
+                     builtin it is, kept unless it raises (key PA_KEY_TRIAL + its
+                     PolyTrial); the plan offers it, codegen observes the outcome
+                     in conv (1 kept, 0 dropped; the generic default's tail: what
+                     answered) */
 } PolyArmKind;
+
+/* the trial arms */
+typedef enum {
+  PT_STR,             /* a String in a slot a user class's name owns (emit_poly_str_prearm) */
+  PT_CONTAINER,       /* a container read, zero arguments (emit_poly_cases0) */
+  PT_ARRAY_FALLBACK,  /* the Array transforms' default, for another builtin */
+  PT_DEFAULT0,        /* the builtin surface, the zero-argument dispatch's last default */
+  PT_GENERIC_TAIL,    /* the generic default's block arm, element assignment, builtin surface */
+  PT_DEFAULT_N        /* the builtin surface, the last default with arguments */
+} PolyTrial;
 
 /* The builtin arm families of a poly dispatch, each one the arm (or run
    of arms) one condition in emit_poly_method_dispatch writes. */
@@ -137,6 +152,8 @@ typedef struct {
 #define PA_KEY_DEFAULT 0x7fff
 /* a builtin family's arm: above every class id */
 #define PA_KEY_BUILTIN 0x4000
+/* a trial arm */
+#define PA_KEY_TRIAL 0x6000
 /* a class value's class-side arm, by its class (the pre-arm ahead of the
    instance switch) */
 #define PA_KEY_CLASS_VALUE 0x2000

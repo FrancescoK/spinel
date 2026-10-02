@@ -417,6 +417,10 @@ const CallPlan *cplan_user(Compiler *c, int id) {
 /* ---- CP_POLY ---- */
 
 static void cpoly_family(PolyPlan *p, int *cap, int fam);
+static void cpoly_trial(PolyPlan *p, int *cap, int t);
+static int cpoly_has_family(const PolyPlan *p, int fam);
+static int cpoly_str_trial(Compiler *c, int id, const char *name, int argc, const int *argv,
+                           const TyKind *atmp_ty, TyKind ret, const PolyPlan *p);
 static int cpoly_cls_value_arms(Compiler *c, int id, const char *name, int argc, const PolyArgs *A,
                                 TyKind ret, int has_tr, PolyPlan *p, int *cap);
 
@@ -643,7 +647,18 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
        : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
        : splat_last))
     cpoly_family(p, cap, PB_CALLABLE);
+  if (ps.kw_pos && !ps.has_splat_arg && cpoly_str_trial(c, id, name, argc, argv, atmp_ty, ret, p))
+    cpoly_trial(p, cap, PT_STR);
   cpoly_cases_n(c, id, name, argc, argv, ret, atmp_ty, &ps, splat_a, p, cap);
+  if (cpoly_has_family(p, PB_ND_GENERIC) && !cpoly_has_family(p, PB_ND_REPLACE) &&
+      !cpoly_has_family(p, PB_ND_ROUND) && !cpoly_has_family(p, PB_ND_NUM))
+    cpoly_trial(p, cap, PT_GENERIC_TAIL);
+  /* the families that write the switch's `default:` themselves */
+  static const int dflt[] = { PB_ND_GENERIC, PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,
+                              PB_PUSH, PB_INCLUDE_CASES, PB_STRFTIME, PB_PRED_N };
+  int has_default = 0;
+  for (size_t i = 0; i < sizeof dflt / sizeof dflt[0]; i++) has_default |= cpoly_has_family(p, dflt[i]);
+  if (!is_setter_val && !has_default) cpoly_trial(p, cap, PT_DEFAULT_N);
 }
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
@@ -785,6 +800,36 @@ static int cpoly_name_in(const char *name, const char *const *list) {
 
 static void cpoly_family(PolyPlan *p, int *cap, int fam) {
   cpoly_add(p, cap, PA_BUILTIN, PA_KEY_BUILTIN + fam, -1, TY_UNKNOWN, PC_SAME);
+}
+
+/* a trial arm the dispatch offers: what it answers is the emission's */
+static void cpoly_trial(PolyPlan *p, int *cap, int t) {
+  cpoly_add(p, cap, PA_TRIAL, PA_KEY_TRIAL + t, -1, TY_UNKNOWN, PC_SAME);
+}
+
+static int cpoly_has_family(const PolyPlan *p, int fam) {
+  for (int i = 0; i < p->n; i++)
+    if (p->arm[i].key == PA_KEY_BUILTIN + fam) return 1;
+  return 0;
+}
+
+/* Does the dispatch offer a String the builtin answer (emit_poly_str_prearm)?
+   Not when an earlier pre-arm already took the String tag. */
+static int cpoly_str_trial(Compiler *c, int id, const char *name, int argc, const int *argv,
+                           const TyKind *atmp_ty, TyKind ret, const PolyPlan *p) {
+  if (!(poly_string_read_p(name) || (argc == 1 && sp_streq(name, "to_i")))) return 0;
+  if (nt_ref(c->nt, id, "block") >= 0) return 0;
+  for (int a = 0; a < argc; a++)
+    if (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a]) return 0;
+  TyKind bt = c->poly_builtin_ty && id < c->node_cap ? c->poly_builtin_ty[id] : TY_UNKNOWN;
+  if (bt == TY_UNKNOWN || (ret != TY_POLY && bt != ret)) return 0;
+  static const int str_tag[] = { PB_LEN, PB_EMPTY, PB_STRT, PB_SPLIT, PB_UNPACK1, PB_STR_DELETE,
+                                 PB_STR_PARTITION, PB_STR_SETOP, PB_STR_ENCODE, PB_STR_SPLIT_N };
+  for (size_t i = 0; i < sizeof str_tag / sizeof str_tag[0]; i++)
+    if (cpoly_has_family(p, str_tag[i])) return 0;
+  /* an Integer's bit reference reads a String's character too */
+  if (cpoly_has_family(p, PB_INT_BITREF) && (ret == TY_POLY || ret == TY_STRING)) return 0;
+  return 1;
 }
 
 /* The tag pre-arms emit_poly_prearms0 writes: a builtin value's answer to
@@ -941,9 +986,19 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
     cpoly_prearms0_blk(c, id, name, &ps, p->ret, p, &cap);
     cpoly_cases0(name, &ps, p, &cap);
+    if (cpoly_str_trial(c, id, name, 0, NULL, NULL, p->ret, p)) cpoly_trial(p, &cap, PT_STR);
+    if (p->ret == TY_POLY && nt_ref(c->nt, id, "block") < 0 && poly_container_read_p(name))
+      cpoly_trial(p, &cap, PT_CONTAINER);
     int n0 = p->n;
     cpoly_obj_default0(c, id, name, p->ret, p, &cap);
+    int n1 = p->n;
     cpoly_defaults0(c, id, name, &ps, p->ret, p->n > n0, p, &cap);
+    /* a default written by now (the Object reopening's, a builtin one), or
+       the builtin surface's, and the raise when it declines */
+    int done = n1 > n0;
+    for (int f = PB_D_ENUM_EACH; f <= PB_D_TO_H; f++) done |= cpoly_has_family(p, f);
+    if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_trial(p, &cap, PT_ARRAY_FALLBACK);
+    if (!done) cpoly_trial(p, &cap, PT_DEFAULT0);
   }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);
 }

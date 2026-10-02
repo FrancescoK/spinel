@@ -6194,6 +6194,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     snprintf(seen, sizeof seen, "if (_t%d.tag == SP_TAG_STR)", tv);
     if (b->p && strstr(b->p, seen)) return 0; }
   int slot = g_n_argov++;
+  int pa_kept = 0;
   g_argov_node[slot] = recv;
   snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tv);
   /* Only an argument that can RUN something needs the hoisted temp: a literal
@@ -6232,13 +6233,16 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
      String tag on the switch's own default so the message is the same */
   if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
       strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0) {
-    free(ib.p); free(arm_pre); return 0;
+    free(ib.p); free(arm_pre);
+    if (g_plan_check) pa_observe_at(id, PA_TRIAL, PA_KEY_TRIAL + PT_STR, -1, TY_UNKNOWN, pa_kept);
+    return 0;
   }
   /* a shared-mutable string is a builtin OBJ box, not SP_TAG_STR, and is a
      string: sp_poly_recv_s takes both, so the guard has to as well */
   buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { %s _t%d = %s; }\nelse ",
              tv, tv, arm_pre ? arm_pre : "", tr, ib.p);
   free(ib.p); free(arm_pre);
+  if (g_plan_check) pa_observe_at(id, PA_TRIAL, PA_KEY_TRIAL + PT_STR, -1, TY_UNKNOWN, 1);
   return 1;
 }
 
@@ -7643,12 +7647,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int obj_default_done = emit_poly_obj_default0(c, id, name, argc, ret, tv, tr, &blk_tmp0, b);
       if (g_plan_check) pa_resume(pa_frame0);
       obj_default_done = emit_poly_defaults0(c, id, recv, name, &ps, ret, tv, tr, obj_default_done, b);
+      if (g_plan_check) pa_resume(pa_frame0);
+      emit_poly_last_default(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, obj_default_done, b);
       if (g_plan_check) pa_end(c, pa_frame0, cplan_poly(c, id));
-      if (!obj_default_done)
-        obj_default_done = emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL,
-                                                     ret, tv, tr, 1, b);
-      if (!obj_default_done)
-        buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       { int pid0[2] = { tv, blk_tmp0 };
         TyKind pty0[2] = { TY_POLY, TY_PROC };   /* the block's proc, when one was built */
         if (pd_hoist(c, b, pd_from, tr, is_scalar_ret(ret) ? ret : TY_INT, pid0, pty0, blk_tmp0 >= 0 ? 2 : 1))
@@ -8234,7 +8235,6 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (g_plan_check) pa_resume(pa_frame);
       emit_poly_defaults_n(c, id, recv, name, &ps, &ptemps, &kw, splat_a, is_aref, is_aref2, is_fetch,
                            blk_tmp2, is_setter_val, b);
-      if (g_plan_check) pa_end(c, pa_frame, cplan_poly(c, id));
       /* No arm wrote a default: a receiver that is really a builtin fell
          through to the result's initializer or to nothing at all. Ask the
          builtin surface, as the zero-argument dispatch does. The offset is
@@ -8242,9 +8242,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          so the receiver's rewrite to a frame slot does not matter; a
          `default:` belonging to an arm's own inlined switch only makes this
          decline, leaving the switch as it was (#4831). */
+      if (g_plan_check) pa_resume(pa_frame);
       if (!is_setter_val && !strstr(b->p + sw_start, " default:"))
-        emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
-                                  ret, tv, tr, 1, b);
+        emit_poly_last_default(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, -1, b);
+      if (g_plan_check) pa_end(c, pa_frame, cplan_poly(c, id));
       int pd_done = 0;
       if (!is_setter_val) {
         /* the parameters: the receiver, the positional temps (and the

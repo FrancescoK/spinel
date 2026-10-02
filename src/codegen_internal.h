@@ -1656,6 +1656,9 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
                           const PolyTemps *T, const PolyKw *kw, int splat_a, int is_aref, int is_aref2,
                           int is_fetch, int blk_tmp2, int is_setter_val, Buf *b);
 int  poly_num_arm(const char *name, int argc);
+void emit_poly_last_default(Compiler *c, int id, int recv, const char *name, int argc, const int *argv,
+                            const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, int done,
+                            Buf *b);
 int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv, const int *atmp, const TyKind *atmp_ty, int tv, int tr, int blk_tmp2, Buf *b);
 int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, Buf *b);
 void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
