@@ -93,6 +93,14 @@ typedef enum {
   PB_IO_PUTS, PB_IOZ, PB_REDUCE, PB_INT_CHR, PB_STRT, PB_SPLIT,
   /* ... and the rest of its pre-arms (emit_poly_prearms0_blk) */
   PB_ENUM_PROC, PB_SYNC, PB_CALLABLE, PB_CLS_MEMBERS,
+  /* its builtin cases after the class arms (emit_poly_cases0) */
+  PB_LEN_CASES, PB_CLEAR, PB_EMPTY_CASES, PB_CMP_BY_ID,
+  /* its builtin `default:` arms, the first that applies, and the named
+     cases after them (emit_poly_defaults0) */
+  PB_D_ENUM_EACH, PB_D_TO_S, PB_D_CASE_CONV, PB_D_NUM, PB_D_DIGITS, PB_D_ARRAY_TRANSFORM, PB_D_PRED,
+  PB_D_TO_IF, PB_D_ANY_NONE, PB_D_TO_H,
+  PB_N_EACH_INDEX, PB_N_JOIN, PB_N_ALIVE, PB_N_KILL, PB_N_STATUS, PB_N_QUEUE, PB_N_IO_READ,
+  PB_N_IO_FLUSH, PB_N_IO_CLOSE, PB_N_ENUM_TO_A,
   PB_NFAMILIES
 } PolyFamily;
 

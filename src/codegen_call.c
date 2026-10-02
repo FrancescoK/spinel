@@ -4685,7 +4685,7 @@ static int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *c
    their class straight from the call's argument node. Returns 1 on success.
    Consumed as the switch's default arm so builtin scalars and un-overridden
    objects answer these alongside the per-class user arms. */
-static int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
+int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
                                 const char *argref, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -6344,8 +6344,8 @@ static int poly_num_arm(const char *name, int argc) {
    only one of them runs. It declines where the emission is a raise token,
    which adds nothing over the default already there, and where the slot the
    switch assigns is typed for something the builtin answer is not. */
-static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b);   /* defined at emit_call */
-static int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
+void emit_poly_enum_for(Compiler *c, const char *val, Buf *b);   /* defined at emit_call */
+int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
                                      int label, Buf *b) {
@@ -7523,7 +7523,7 @@ static int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret,
   return conv;
 }
 
-static void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char *close) {
+void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char *close) {
   buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
   buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_length((sp_StrArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
   buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_length((sp_FloatArray *)_t%d.v.p)%s; break;", tr, open, tv, close);
@@ -7682,13 +7682,6 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       size_t pd_from = b->len;   /* the region pd_hoist may move out of line */
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
       buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value_from_compiler(c, ret) : "0");
-      /* When the dispatch result feeds a poly context, tr is sp_RbVal, so the
-         length-like int branches must box their integer result. */
-      const char *bopen = (ret == TY_POLY) ? "sp_box_int(" : "";
-      const char *bclose = (ret == TY_POLY) ? ")" : "";
-      /* empty? answers a bool; box it (not an int) when the result feeds poly */
-      const char *ebopen = (ret == TY_POLY) ? "sp_box_bool(" : "";
-      const char *ebclose = (ret == TY_POLY) ? ")" : "";
       int pa_frame0 = g_plan_check ? pa_begin(id) : -1;
       emit_poly_prearms0(c, id, name, &ps, ret, tv, tr, b);
       int blk_tmp0 = emit_poly_prearms0_blk(c, id, name, &ps, ret, tv, tr, b);
@@ -7705,96 +7698,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         pa_flags((root_recv ? PPF_ROOT : 0) | (reads_value ? PPF_DEREF : 0) | (cls0_cand ? PPF_KEY_CLS0 : 0) |
                  (prim_cand0 ? PPF_KEY_PRIM : 0) | (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0));
       emit_poly_user_arms0(c, id, name, argc, ret, tv, tr, blk_tmp0, b);
-      /* built-in array receivers reaching a length-like poly dispatch */
-      if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count"))
-        emit_builtin_len_cases(b, tr, tv, bopen, bclose);
-      /* built-in container receivers reaching a poly clear dispatch (a seeded
-         boxed ivar array): empty in place through the runtime kind dispatch;
-         without these arms the switch missed the cls_id and silently kept
-         the contents (#3326). */
-      if (sp_streq(name, "clear") && argc == 0) {
-        buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
-                      " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
-                      " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: case SP_BUILTIN_STRBUF:"
-                      " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:"
-                      " case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_INT_INT_HASH:"
-                      " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
-                      " case SP_BUILTIN_POLY_POLY_HASH:");
-        if (ret == TY_POLY)
-          buf_printf(b, " _t%d = sp_poly_clear(_t%d); break;", tr, tv);
-        else
-          buf_printf(b, " sp_poly_clear(_t%d); break;", tv);
-      }
-      /* built-in array / hash receivers reaching a poly empty? dispatch (#1438) */
-      if (is_empty)
-        emit_builtin_len_cases(b, tr, tv, ebopen, ret == TY_POLY ? " == 0)" : " == 0");
-      /* Container reads on a builtin receiver that reached this dispatch only
-         because a user class happens to own the name. The user arms are above;
-         without an arm of its own the switch left every builtin tag on the
-         raise default, so `hash.keys` / `array.first` on a genuine Hash or
-         Array raised NoMethodError (#3459).
-
-         Rather than re-implement each read here, re-enter the ordinary call
-         emission on the guarded temp with g_poly_builtin_arm set: inside these
-         case labels the value IS a container, so the user classes owning the
-         name are not candidates and the builtin surface should serve the call
-         exactly as it would with no user class in the program. That is the
-         invariant -- a user class owning a name must not change what a builtin
-         receiver does -- and it holds for every name the surface serves, not a
-         list maintained here. Only for a poly result slot: a scalar slot means
-         the dispatch was pinned to the user return type (analyze widens the
-         ones it can, see poly_container_read_p), and the re-entered emission
-         would not fit it. */
-      if (argc == 0 && ret == TY_POLY && nt_ref(nt, id, "block") < 0 &&
-          poly_container_read_p(name) && g_pd_skip != id &&
-          g_n_argov < MAX_ARG_OVERRIDE) {
-        int slot9 = g_n_argov++;
-        g_argov_node[slot9] = recv;
-        snprintf(g_argov_text[slot9], sizeof g_argov_text[0], "_t%d", tv);
-        int sv_pd = g_pd_skip, sv_fb = g_poly_builtin_arm;
-        g_pd_skip = id; g_poly_builtin_arm = 1;
-        /* The builtin surface reads the node's own type to pick its shape, and
-           this node was widened to poly to hold both answers. Restore the
-           builtin-only type analyze recorded (an array read lowers to a
-           pointer, a scalar read to a boxed value) for the duration, then box
-           the result back into the dispatch's poly slot. */
-        TyKind bt9 = (c->poly_builtin_ty && id < c->node_cap)
-                       ? c->poly_builtin_ty[id] : TY_UNKNOWN;
-        int vw = bt9 != TY_UNKNOWN ? view_push(c, id, bt9) : -1;
-        Buf ib9; memset(&ib9, 0, sizeof ib9);
-        if (bt9 != TY_UNKNOWN && bt9 != TY_POLY) {
-          Buf nb9; memset(&nb9, 0, sizeof nb9);
-          emit_expr(c, id, &nb9);
-          emit_boxed_text(c, bt9, nb9.p ? nb9.p : "0", &ib9);
-          free(nb9.p);
-        }
-        else emit_boxed(c, id, &ib9);
-        if (vw >= 0) view_pop(c, vw);
-        g_pd_skip = sv_pd; g_poly_builtin_arm = sv_fb;
-        g_n_argov--;
-        /* an emission that fell through to the raise token adds nothing: leave
-           those tags on the switch's own default so the message is the same */
-        if (ib9.p && strncmp(ib9.p, "sp_raise_nomethod(", 18) != 0) {
-          buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY:"
-                      " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
-                      " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:"
-                      " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:"
-                      " case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_INT_INT_HASH:"
-                      " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
-                      " case SP_BUILTIN_POLY_POLY_HASH:");
-          buf_printf(b, " _t%d = %s; break;", tr, ib9.p);
-        }
-        free(ib9.p);
-      }
-      /* compare_by_identity? on a poly-carried hash: every spinel hash is
-         value-keyed (the mutating variant is a compile error), so any hash
-         tag answers false; a non-hash receiver falls through to the gate. */
-      if (sp_streq(name, "compare_by_identity?")) {
-        buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
-                      " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_STR_STR_HASH:"
-                      " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:"
-                      " _t%d = %s0%s; break;", tr, ebopen, ebclose);
-      }
+      if (g_plan_check) pa_resume(pa_frame0);
+      emit_poly_cases0(c, id, recv, name, &ps, ret, tv, tr, b);
       /* A method reopened on Object applies to ANY receiver -- boxed scalar
          tags included; its generated self parameter is the boxed sp_RbVal
          itself -- so it forms the switch's DEFAULT arm rather than a
@@ -7804,317 +7709,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          a case/when result -- 133 of the harness's ERROR examples). */
       if (g_plan_check) pa_resume(pa_frame0);
       int obj_default_done = emit_poly_obj_default0(c, id, name, argc, ret, tv, tr, &blk_tmp0, b);
+      if (g_plan_check) pa_resume(pa_frame0);
+      obj_default_done = emit_poly_defaults0(c, id, recv, name, &ps, ret, tv, tr, obj_default_done, b);
       if (g_plan_check) pa_end(c, pa_frame0, cplan_poly(c, id));
-      /* `x.enum_for` on a boxed value, rewritten to the generator helper the
-         classes with a yielding each carry: any other value is enumerated
-         as the builtin it is */
-      if (!obj_default_done && sp_streq(name, "__to_enum_each") &&
-          (ret == TY_POLY || ret == TY_ENUMERATOR)) {
-        char ev[24]; snprintf(ev, sizeof ev, "_t%d", tv);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) buf_puts(b, "sp_box_obj(");
-        emit_poly_enum_for(c, ev, b);
-        if (ret == TY_POLY) buf_puts(b, ", SP_BUILTIN_ENUMERATOR)");
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* to_s / inspect are universal: a poly value that is a builtin scalar
-         (int, float, string, ...) rather than one of the enumerated user
-         classes still answers them. Without a default arm the result stayed
-         the empty-string default, so `@x.to_s` on a poly-widened int printed
-         blank. Route the fallthrough through the runtime poly converter. */
-      if (!obj_default_done && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
-        const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);
-        else buf_printf(b, "%s(_t%d)", pfn, tv);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* The case conversions are String's AND Symbol's. A String receiver is
-         recognised by a tag pre-arm before the switch, but a Symbol had no arm
-         once a user class owned the name, so `:ab.upcase` through a poly slot
-         raised NoMethodError. sp_poly_case_conv is the same runtime the
-         no-user-class path uses: it converts a Symbol through its name, a
-         string as a string, and refuses anything else the way CRuby does. */
-      if (!obj_default_done && argc == 0 &&
-          (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
-           sp_streq(name, "capitalize") || sp_streq(name, "swapcase"))) {
-        char cv[96];
-        snprintf(cv, sizeof cv, "sp_poly_case_conv(_t%d, sp_str_%s, \"%s\")", tv, name, name);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) buf_puts(b, cv);
-        else emit_unbox_text(c, ret, cv, b);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* The numeric methods a builtin receiver answers for itself. A class
-         defining `abs` (or `round`, `succ`) takes over the name's dispatch,
-         and an Integer arriving at it had no arm: `@units.abs` on a poly ivar
-         raised "undefined method 'abs' for an instance of Integer" (#4012).
-         The runtime helpers are the same ones the no-user-class path uses, and
-         they refuse a receiver that is not a number, as CRuby does. */
-      if (!obj_default_done && argc == 0 &&
-          (sp_streq(name, "abs") || sp_streq(name, "round") ||
-           sp_streq(name, "succ") || sp_streq(name, "next") ||
-           sp_streq(name, "pred") || sp_streq(name, "ceil") ||
-           sp_streq(name, "floor") || sp_streq(name, "truncate") ||
-           /* the value-answering numeric queries a user class can shadow the
-              same way: abs2, infinite?, numerator and denominator answer
-              boxed values. bit_length answers a machine int, and its helper is
-              already named to match `sp_poly_%s` below. */
-           sp_streq(name, "abs2") || sp_streq(name, "infinite?") ||
-           sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
-           sp_streq(name, "nonzero?") || sp_streq(name, "bit_length"))) {
-        char nv[96];
-        int int_valued = sp_streq(name, "bit_length");
-        if (sp_streq(name, "succ") || sp_streq(name, "next"))
-          snprintf(nv, sizeof nv, "sp_poly_succ_m(_t%d, %d)", tv, sp_streq(name, "next") ? 1 : 0);
-        else if (sp_streq(name, "pred"))
-          snprintf(nv, sizeof nv, "sp_poly_sub(_t%d, sp_box_int(1))", tv);
-        else if (sp_streq(name, "infinite?"))
-          snprintf(nv, sizeof nv, "sp_poly_infinite(_t%d)", tv);
-        else if (sp_streq(name, "nonzero?"))
-          snprintf(nv, sizeof nv, "sp_poly_nonzero(_t%d)", tv);
-        else
-          snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (int_valued) {
-          if (ret == TY_POLY) emit_boxed_text(c, TY_INT, nv, b);
-          else buf_puts(b, nv);
-        }
-        else if (ret == TY_POLY) buf_puts(b, nv);
-        else emit_unbox_text(c, ret, nv, b);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* Blockless `digits` (base 10 implicit), the same shape as the block
-         above but for a receiver answering an array rather than a scalar:
-         `sp_poly_int_digits` is the runtime helper the no-user-class path
-         already calls (codegen_call_recv.c), and it raises for a
-         non-Integer receiver, as CRuby does. */
-      if (!obj_default_done && argc == 0 && sp_streq(name, "digits")) {
-        char nv[64]; snprintf(nv, sizeof nv, "sp_poly_int_digits(_t%d, 10)", tv);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_INT_ARRAY, nv, b);
-        else buf_puts(b, nv);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* The zero-argument Array transforms. A class defining flatten (or
-         compact, uniq) takes over the name's dispatch, and an Array arriving
-         at it had no arm: activesupport's Uncountables defines #flatten, and
-         its `words.flatten` on a rest array reaching the dispatch as poly
-         raised "undefined method 'flatten' for an instance of Array". The
-         coercion is the one the no-user-class path uses; a receiver that is
-         not an Array keeps the raise (a Hash answers these with its own pair
-         semantics and is left to the switch). Only a poly or poly-array slot
-         can take the PolyArray result. */
-      if (!obj_default_done && argc == 0 &&
-          (sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq")) &&
-          (ret == TY_POLY || ret == TY_POLY_ARRAY)) {
-        char nv[96];   /* the value-taking runtime helpers the no-user-class path calls */
-        snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
-        buf_printf(b, " default: if (sp_rbval_is_array(_t%d)) { _t%d = ", tv, tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, nv, b);
-        else buf_puts(b, nv);
-        buf_puts(b, "; break; }");
-        /* anything else -- a Hash, with its own pair semantics -- answers as
-           it would with no class of that name */
-        if (!emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, 0, b))
-          buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-        obj_default_done = 1;
-      }
-      /* frozen?/nil? on a builtin-scalar (or un-overridden object) poly value:
-         the switch default answers via the runtime predicate. */
-      if (!obj_default_done && is_pred) {
-        char tvref[24]; snprintf(tvref, sizeof tvref, "_t%d", tv);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) { buf_puts(b, "sp_box_bool("); emit_poly_pred_value(c, id, tvref, NULL, b); buf_puts(b, ")"); }
-        else emit_poly_pred_value(c, id, tvref, NULL, b);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* Nothing claimed the fallthrough: the value is not one of the enumerated
-         classes and no pre-arm recognised its tag, so it does not answer this
-         method. Raise, as every other unresolved call does. Leaving the slot at
-         its zero handed callers a NULL container that read back as empty --
-         `str.split.join(" ")` answered "" once a user class owned `split`
-         (#3394), which is the silent form of the same gap. */
-      /* A conversion the poly runtime serves for every builtin (`5.to_i`,
-         `"7".to_f`) only reached this dispatch because a user class owns the
-         name; a builtin receiver still has to get its own answer. */
-      if (!obj_default_done && argc == 0 &&
-          (sp_streq(name, "to_i") || sp_streq(name, "to_f"))) {
-        char cv[64];
-        snprintf(cv, sizeof cv, "%s(_t%d)", sp_streq(name, "to_i") ? "sp_poly_to_i_meth" : "sp_poly_to_f_meth", tv);
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, sp_streq(name, "to_i") ? TY_INT : TY_FLOAT, cv, b);
-        else buf_puts(b, cv);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* Blockless any? / none?: "is there an element", which every builtin
-         container answers. The switch carries an arm per user class owning the
-         name and none for a builtin, so a slot that may hold an Array OR such
-         an object raised NoMethodError on the Array -- naming Array, whose
-         method it is (#4264). In the DEFAULT, like the conversions around it:
-         a class that defines the name has its own case and never arrives. */
-      if (!obj_default_done && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-          (sp_streq(name, "any?") || sp_streq(name, "none?"))) {
-        int neg = sp_streq(name, "none?");
-        char av[96];
-        snprintf(av, sizeof av, "(sp_poly_length(_t%d) %s 0)", tv, neg ? "==" : ">");
-        buf_printf(b, " default: _t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_BOOL, av, b);
-        else buf_puts(b, av);
-        buf_puts(b, "; break;");
-        obj_default_done = 1;
-      }
-      /* to_h, the same shape: the switch carries an arm per class that defines
-         it and none for a builtin, so a plain Hash reached the default and
-         raised -- naming Hash, whose method it is. In the DEFAULT, not as a
-         pre-arm: a class that defines to_h has its own case and never gets
-         here, and a Struct, whose to_h is generated rather than emitted as a
-         method, does (#4170). */
-      if (!obj_default_done && argc == 0 && sp_streq(name, "to_h") &&
-          nt_ref(nt, id, "block") < 0 && ret == TY_POLY) {
-        buf_printf(b, " default: _t%d = sp_poly_to_h_val(_t%d); break;", tr, tv);
-        obj_default_done = 1;
-      }
-      /* The blockless index enumerators, same shape: an Array reaching this
-         dispatch still answers them with an Enumerator. */
-      if (argc == 0 && (sp_streq(name, "each_index") || sp_streq(name, "each_with_index"))) {
-        int ewi = !sp_streq(name, "each_index");
-        char ev[96];
-        snprintf(ev, sizeof ev, "%s(_t%d%s)",
-                 ewi ? "sp_Enumerator_new_ewi" : "sp_Enumerator_new_indices", tv, ewi ? ", 0" : "");
-        buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
-                    " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: ");
-        buf_printf(b, "_t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, ev, b);
-        else buf_puts(b, ev);
-        buf_puts(b, "; break;");
-      }
-      /* Same shape one step on: `join` reaches this dispatch only because a
-         user class owns the name, and a builtin array receiver still has to be
-         joined rather than told it has no such method (#4071). Named arms, not
-         the default: an OBJECT of a class whose `join` takes an argument is an
-         arity error, which the raise below words. */
-      if (argc == 0 && sp_streq(name, "join")) {
-        char jv[80];
-        snprintf(jv, sizeof jv, "sp_poly_join(_t%d, sp_str_empty)", tv);
-        buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
-                    " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: ");
-        buf_printf(b, "_t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_STRING, jv, b);
-        else buf_puts(b, jv);
-        buf_puts(b, "; break;");
-        /* and a Thread, whose join is the wait: the arm answers the thread
-           itself, as Thread#join does, where the arrays answer a string; a
-           user class owning `join` (a model's path joiner) took this arm away
-           from every `threads.each { |x| x.join }` in the program (#4466) */
-        snprintf(jv, sizeof jv, "sp_poly_fiber_join(_t%d)", tv);
-        buf_printf(b, " case SP_BUILTIN_THREAD: _t%d = ", tr);
-        if (ret == TY_POLY) buf_puts(b, jv);
-        else if (ret == TY_STRING) buf_printf(b, "(%s, sp_str_empty)", jv);   /* the slot is the arrays' string; the wait still happens */
-        else emit_unbox_text(c, ret, jv, b);
-        buf_puts(b, "; break;");
-      }
-      /* the same for the names a pool polls on its workers (#4463) */
-      if (argc == 0 && sp_streq(name, "alive?")) {
-        char av[80];
-        snprintf(av, sizeof av, "sp_poly_fiber_alive(_t%d)", tv);
-        buf_printf(b, " case SP_BUILTIN_THREAD: case SP_BUILTIN_FIBER: _t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_BOOL, av, b);
-        else if (ret == TY_BOOL) buf_puts(b, av);
-        else emit_unbox_text(c, ret, av, b);
-        buf_puts(b, "; break;");
-      }
-      if (argc == 0 && sp_streq(name, "kill")) {
-        char kv[80];
-        snprintf(kv, sizeof kv, "sp_poly_thread_kill(_t%d)", tv);
-        buf_printf(b, " case SP_BUILTIN_THREAD: case SP_BUILTIN_FIBER: _t%d = ", tr);
-        if (ret == TY_POLY) buf_puts(b, kv);
-        else emit_unbox_text(c, ret, kv, b);
-        buf_puts(b, "; break;");
-      }
-      if (argc == 0 && sp_streq(name, "status")) {
-        char sv[80];
-        snprintf(sv, sizeof sv, "sp_poly_thread_status(_t%d)", tv);
-        buf_printf(b, " case SP_BUILTIN_THREAD: _t%d = ", tr);
-        if (ret == TY_POLY) buf_puts(b, sv);
-        else emit_unbox_text(c, ret, sv, b);
-        buf_puts(b, "; break;");
-      }
-      /* and a boxed Queue, for the names a user class may own too (a Stack's
-         #size or #pop): the queue still answers them itself */
-      if (argc == 0) {
-        const char *qf = NULL;
-        if (sp_streq(name, "size") || sp_streq(name, "length")) qf = "sp_box_int(sp_Queue_size((sp_queue *)_t%d.v.p))";
-        else if (sp_streq(name, "empty?")) qf = "sp_box_bool(sp_Queue_empty((sp_queue *)_t%d.v.p))";
-        else if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) qf = "sp_Queue_pop((sp_queue *)_t%d.v.p)";
-        else if (sp_streq(name, "num_waiting")) qf = "sp_box_int(sp_Queue_num_waiting((sp_queue *)_t%d.v.p))";
-        else if (sp_streq(name, "closed?")) qf = "sp_box_bool(sp_Queue_closed((sp_queue *)_t%d.v.p))";
-        else if (sp_streq(name, "max")) qf = "sp_box_int(sp_Queue_max((sp_queue *)_t%d.v.p))";
-        /* close answers the queue itself */
-        else if (sp_streq(name, "close")) qf = "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d)";
-        if (qf) {
-          char qv[120];
-          snprintf(qv, sizeof qv, qf, tv, tv);
-          buf_printf(b, " case SP_BUILTIN_QUEUE: _t%d = ", tr);
-          if (ret == TY_POLY) buf_puts(b, qv);
-          else emit_unbox_text(c, ret, qv, b);
-          buf_puts(b, "; break;");
-        }
-      }
-      /* IO#read on a poly value when a user class owns `read` (ffi's
-         Pointer#read(type)): a File in the same slot still reads itself */
-      if (argc == 0 && sp_streq(name, "read") && (ret == TY_POLY || ret == TY_STRING)) {
-        char rv[80];
-        snprintf(rv, sizeof rv, "sp_File_read((sp_File *)_t%d.v.p)", tv);
-        buf_printf(b, " case SP_BUILTIN_IO: _t%d = ", tr);
-        if (ret == TY_POLY) buf_printf(b, "sp_box_nullable_str(%s)", rv);
-        else buf_puts(b, rv);
-        buf_puts(b, "; break;");
-      }
-      /* IO#flush on a poly value: the zero-arg sibling of the write arm in
-         the argument-carrying dispatch. A Socket or File reaches this switch
-         when any user class owns the name and fell to the raise default
-         without an arm of its own (#4227). CRuby answers the receiver. */
-      if (argc == 0 && sp_streq(name, "flush")) {
-        buf_printf(b, " case SP_BUILTIN_IO: ");
-        if (ret == TY_POLY)
-          buf_printf(b, "sp_File_flush((sp_File *)_t%d.v.p); _t%d = _t%d;", tv, tr, tv);
-        else
-          buf_printf(b, "_t%d = sp_File_flush((sp_File *)_t%d.v.p);", tr, tv);
-        buf_puts(b, " break;");
-      }
-      /* and close, for an IO or a Dir in the same slot: they answer nil
-         (a Queue's arm above answers the queue) */
-      if (argc == 0 && sp_streq(name, "close")) {
-        buf_printf(b, " case SP_BUILTIN_IO: sp_File_close((sp_File *)_t%d.v.p); _t%d = ", tv, tr);
-        emit_unbox_text(c, ret, "sp_box_nil()", b);
-        buf_printf(b, "; break; case SP_BUILTIN_DIR: sp_Dir_close((sp_Dir *)_t%d.v.p); _t%d = ", tv, tr);
-        emit_unbox_text(c, ret, "sp_box_nil()", b);
-        buf_puts(b, "; break;");
-      }
-      /* And once more for `__enum_to_a`, which is not a name a user writes:
-         the Enumerable desugar puts it in front of `obj.map { }` when the
-         receiver's class defines #each. That rewrite is on the AST and
-         permanent, so a receiver that was an object type when the desugar ran
-         and widened to poly afterwards arrives here as an Array -- and was
-         told it has no such method. An Array's own `to_a` is itself (#4150). */
-      if (argc == 0 && sp_streq(name, "__enum_to_a")) {
-        char av[80];
-        snprintf(av, sizeof av, "sp_poly_to_a_arr(_t%d)", tv);
-        buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY:"
-                    " case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: ");
-        buf_printf(b, "_t%d = ", tr);
-        if (ret == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, av, b);
-        else buf_puts(b, av);
-        buf_puts(b, "; break;");
-      }
       if (!obj_default_done)
         obj_default_done = emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL,
                                                      ret, tv, tr, 1, b);
@@ -23832,7 +23429,7 @@ static void refuse_string_copies(Compiler *c, int id) {
    helper (a Struct's) is enumerated through its to_a, any other value by
    sp_poly_enum_for_each, which raises NoMethodError for a value with no
    each. */
-static void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
+void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _e%d = %s; (_e%d.tag == SP_TAG_OBJ && (0", t, val, t);
   for (int k = 0; k < c->nclasses; k++)

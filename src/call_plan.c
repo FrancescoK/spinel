@@ -741,6 +741,52 @@ static void cpoly_prearms0_blk(Compiler *c, int id, const char *name, const Poly
     cpoly_family(p, cap, PB_CLS_MEMBERS);
 }
 
+/* The builtin cases emit_poly_cases0 writes after the class arms (the
+   container read re-entered as a builtin is a trial, not listed here). */
+static void cpoly_cases0(const char *name, const PolySpecials0 *ps, PolyPlan *p, int *cap) {
+  if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count"))
+    cpoly_family(p, cap, PB_LEN_CASES);
+  if (sp_streq(name, "clear")) cpoly_family(p, cap, PB_CLEAR);
+  if (ps->empty) cpoly_family(p, cap, PB_EMPTY_CASES);
+  if (sp_streq(name, "compare_by_identity?")) cpoly_family(p, cap, PB_CMP_BY_ID);
+}
+
+/* The builtin `default:` arm emit_poly_defaults0 writes when the Object
+   reopening has none (the first that applies), and its named cases. */
+static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,
+                            int obj_done, PolyPlan *p, int *cap) {
+  static const char *const case_conv[] = { "upcase", "downcase", "capitalize", "swapcase", NULL };
+  static const char *const num[] = { "abs", "round", "succ", "next", "pred", "ceil", "floor", "truncate",
+    "abs2", "infinite?", "numerator", "denominator", "nonzero?", "bit_length", NULL };
+  static const char *const arr_t[] = { "flatten", "compact", "uniq", NULL };
+  static const char *const queue[] = { "size", "length", "empty?", "pop", "shift", "deq", "num_waiting",
+    "closed?", "max", "close", NULL };
+  int blockless = nt_ref(c->nt, id, "block") < 0;
+  int fam = -1;
+  if (obj_done) fam = -1;
+  else if (sp_streq(name, "__to_enum_each") && (ret == TY_POLY || ret == TY_ENUMERATOR)) fam = PB_D_ENUM_EACH;
+  else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) fam = PB_D_TO_S;
+  else if (cpoly_name_in(name, case_conv)) fam = PB_D_CASE_CONV;
+  else if (cpoly_name_in(name, num)) fam = PB_D_NUM;
+  else if (sp_streq(name, "digits")) fam = PB_D_DIGITS;
+  else if (cpoly_name_in(name, arr_t) && (ret == TY_POLY || ret == TY_POLY_ARRAY)) fam = PB_D_ARRAY_TRANSFORM;
+  else if (ps->pred) fam = PB_D_PRED;
+  else if (sp_streq(name, "to_i") || sp_streq(name, "to_f")) fam = PB_D_TO_IF;
+  else if (blockless && (sp_streq(name, "any?") || sp_streq(name, "none?"))) fam = PB_D_ANY_NONE;
+  else if (sp_streq(name, "to_h") && blockless && ret == TY_POLY) fam = PB_D_TO_H;
+  if (fam >= 0) cpoly_family(p, cap, fam);
+  if (sp_streq(name, "each_index") || sp_streq(name, "each_with_index")) cpoly_family(p, cap, PB_N_EACH_INDEX);
+  if (sp_streq(name, "join")) cpoly_family(p, cap, PB_N_JOIN);
+  if (sp_streq(name, "alive?")) cpoly_family(p, cap, PB_N_ALIVE);
+  if (sp_streq(name, "kill")) cpoly_family(p, cap, PB_N_KILL);
+  if (sp_streq(name, "status")) cpoly_family(p, cap, PB_N_STATUS);
+  if (cpoly_name_in(name, queue)) cpoly_family(p, cap, PB_N_QUEUE);
+  if (sp_streq(name, "read") && (ret == TY_POLY || ret == TY_STRING)) cpoly_family(p, cap, PB_N_IO_READ);
+  if (sp_streq(name, "flush")) cpoly_family(p, cap, PB_N_IO_FLUSH);
+  if (sp_streq(name, "close")) cpoly_family(p, cap, PB_N_IO_CLOSE);
+  if (sp_streq(name, "__enum_to_a")) cpoly_family(p, cap, PB_N_ENUM_TO_A);
+}
+
 /* How a zero-argument dispatch holds and keys its receiver, and the type
    its arms answer into (an OpenStruct member read makes an untyped call
    poly), as emit_poly_method_dispatch decides them. */
@@ -777,7 +823,10 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p) {
     int cap = p->n;
     cpoly_prearms0(c, id, name, &ps, p->ret, p, &cap);
     cpoly_prearms0_blk(c, id, name, &ps, p->ret, p, &cap);
+    cpoly_cases0(name, &ps, p, &cap);
+    int n0 = p->n;
     cpoly_obj_default0(c, id, name, p->ret, p, &cap);
+    cpoly_defaults0(c, id, name, &ps, p->ret, p->n > n0, p, &cap);
   }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p);
 }

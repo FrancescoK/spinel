@@ -1631,6 +1631,14 @@ int  emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
 int  emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                 const int *atmp, const TyKind *atmp_ty, const int *htmp,
                                 const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b);
+void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char *close);
+int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name, int argc, const int *argv, const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, int label, Buf *b);
+int emit_poly_pred_value(Compiler *c, int id, const char *tvref, const char *argref, Buf *b);
+void emit_poly_enum_for(Compiler *c, const char *val, Buf *b);
+void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const PolySpecials0 *ps,
+                      TyKind ret, int tv, int tr, Buf *b);
+int  emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const PolySpecials0 *ps,
+                         TyKind ret, int tv, int tr, int obj_default_done, Buf *b);
 int  poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const PolyArgs *A, int diag,
                           int *ccls8, int *cmi8, char (*cexp8)[600], int *wants_blk);
 int  poly_key_cls0(Compiler *c, const char *name, int argc, int kwh, int pos_argc, int splat_a);
