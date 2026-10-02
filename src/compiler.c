@@ -828,7 +828,8 @@ int comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name) {
   int ci = comp_class_index(c, cn);
   if (ci < 0) return -1;
   int dc = -1, mi = comp_method_in_chain(c, ci, name, &dc);
-  return mi >= 0 && dc == ci ? mi : -1;
+  /* under the name itself: an alias resolving to the reopen's name is not it */
+  return mi >= 0 && dc == ci && c->scopes[mi].name && sp_streq(c->scopes[mi].name, name) ? mi : -1;
 }
 
 static void vis_table_set(char ***names, int **kinds, int *n, int *cap, const char *name, int kind) {

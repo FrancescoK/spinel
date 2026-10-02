@@ -1733,7 +1733,8 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
      yield.first back as the element, a wrong value where the program had
      failed to build. */
   { const char *rn = nt_str(nt, node, "name");
-    int rmi = comp_builtin_kind_reopen_mi(c, rk, rn);
+    /* a call an alias captured the builtin for (builtin_only) runs the builtin */
+    int rmi = nt_int(nt, node, "builtin_only", 0) ? -1 : comp_builtin_kind_reopen_mi(c, rk, rn);
     if (rmi >= 0) {
       if (ty_is_array(rk) || ty_is_obj_array(rk) || ty_is_hash(rk)) return 0;
       /* still settling in an early round is not a reason to decline: the
