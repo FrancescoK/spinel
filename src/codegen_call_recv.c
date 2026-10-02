@@ -2483,10 +2483,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                         " sp_int _ix = _t%d < 0 ? _t%d + _len : _t%d;"
                         " if (_ix < 0 || _ix >= _len) { ",
                      an, tr, ti, ti, ti);
-          if (fp0r) buf_printf(b, "lv_%s = _t%d; ", fp0r, ti);
-          for (int j = 0; j + 1 < fbn; j++) emit_stmt(c, fbb[j], b, 0);
+          Buf bind; memset(&bind, 0, sizeof bind);
+          if (fp0r) buf_printf(&bind, "lv_%s = _t%d; ", fp0r, ti);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
-          if (fbn > 0) emit_boxed(c, fbb[fbn - 1], b); else buf_puts(b, "sp_box_nil()");
+          /* Build the fallback value after binding the missing index; its
+             literal setup must stay inside this out-of-range branch. */
+          emit_fallback_block_value(c, fbb, fbn, bind.p, 1, "sp_box_nil()", 1, b);
+          free(bind.p);
           buf_puts(b, "); }\nelse { ");
           { char getx[96]; snprintf(getx, sizeof getx, "sp_%sArray_get(_t%d, _ix)", an, tr);
             buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
