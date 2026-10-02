@@ -46017,11 +46017,17 @@ else {
      CRuby prints for them: #<Thread::Mutex:0x...>. Without an arm they reached
      the nil-degrade below and `mutex.inspect` answered "[]" -- a silent wrong
      answer rather than a gap, and `p mutex` refused to compile at all (#4421).
-     A SizedQueue shares TY_QUEUE with a Queue and so prints as Thread::Queue;
-     that divergence is in docs/limitations.md. Fiber and Thread have their
-     own inspect, with the creation site and status. */
+     A SizedQueue shares TY_QUEUE with a Queue, so the name is read at run
+     time from the queue's bound (sp_Queue_class_name). Fiber and Thread have
+     their own inspect, with the creation site and status. */
   if (recv >= 0 && argc == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
       (rt == TY_MUTEX || rt == TY_QUEUE || rt == TY_CONDVAR)) {
+    if (rt == TY_QUEUE) {
+      int tq = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_t%d = ", tq); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_sprintf(\"#<%%s:0x%%016llx>\", sp_Queue_class_name(_t%d), (unsigned long long)(uintptr_t)_t%d); })", tq, tq, tq);
+      return;
+    }
     const char *hn = rt == TY_MUTEX ? "Thread::Mutex"
                    : rt == TY_QUEUE ? "Thread::Queue" : "Thread::ConditionVariable";
     buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
