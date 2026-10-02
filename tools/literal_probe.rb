@@ -516,12 +516,15 @@ module LiteralProbe
     # first, and one of them is taken without reducing: the smallest program
     # of each family is reduced at the end.
     def reduce(f, pair, dead)
+      own = f.klass == "control"
       shows = lambda do |texts|
         diff = pair.(texts) or next false
+        # a control that fails for a part of the texts says nothing of them
+        next false unless own == (diff[0] == "control")
         f.klass, f.want, f.got = diff
         true
       end
-      known = recognize(f, shows, dead) unless f.klass == "control"
+      known = recognize(f, shows, dead) unless own
       return known.pattern if known
       minimize(f, shows)
       f.key = "(text that spells nothing)"
