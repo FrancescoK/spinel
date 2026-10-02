@@ -259,6 +259,10 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     default: break;
   }
   if (t == TY_TIME) { buf_printf(b, "(*(sp_Time *)(%s).v.p)", expr); return; }  /* boxed by-value copy */
+  /* Process::Tms is boxed by heap copy too (sp_box_tms), so it unboxes by
+     dereferencing: the pointer cast the generic arm below emits cast a
+     pointer to a struct, and a Proc taking a Tms did not build */
+  if (t == TY_TMS) { buf_printf(b, "(*(sp_Tms *)(%s).v.p)", expr); return; }
   /* Rational / Complex are by-value structs boxed behind a pointer, so unbox by
      dereferencing -- not the pointer-cast the generic arm below would emit,
      which casts a pointer straight to a struct (#3186). */
