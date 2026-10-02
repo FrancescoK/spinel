@@ -1612,6 +1612,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "lines",           0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines($r)", 0 },
   { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_gsub($r, $s0, $s1)", 0 },
+  { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0 },
 
   /* Hash, any kind (BOP_ANY_HASH): the result kinds read off the name,
      arity and block form, some derived from the receiver's kind. key,

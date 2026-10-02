@@ -8660,7 +8660,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         if (fz1) buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
         else buf_printf(b, "sp_str_dup(%s)", r);
       }
-      else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s.start_with?(/re/): true when the pattern matches at index 0 */
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
