@@ -556,6 +556,22 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
   if (!sp_streq(op, "abs") && !sp_streq(op, "-@")) return 0;
   TyKind rt;
   if (!sp_yield_site_type(c, recv, &rt)) return 0;
+  /* A reopen of the site's class that defines the name owns it, and the
+     call there runs the reopen (the concrete-receiver dispatch in
+     emit_call_body): answer what the reopen returns. Answering the builtin's
+     kind boxed `class Integer; def abs = "s"; end`'s String as an Integer. */
+  {
+    const char *rcn = rt == TY_INT ? "Integer" : rt == TY_FLOAT ? "Float"
+                    : rt == TY_STRING ? "String" : NULL;
+    int rci = rcn ? comp_class_index((Compiler *)c, rcn) : -1, rdc = -1;
+    int rmi = rci >= 0 ? comp_method_in_chain((Compiler *)c, rci, op, &rdc) : -1;
+    if (rmi >= 0 && rdc == rci) {
+      TyKind rr = c->scopes[rmi].ret;
+      if (rr == TY_UNKNOWN || rr == TY_VOID) return 0;
+      *out = rr;
+      return 1;
+    }
+  }
   if (rt != TY_INT && rt != TY_FLOAT && !(rt == TY_STRING && sp_streq(op, "-@"))) return 0;
   *out = rt;
   return 1;
