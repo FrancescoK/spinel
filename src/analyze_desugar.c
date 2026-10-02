@@ -6701,6 +6701,48 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
   return 1;
 }
 
+
+/* The `next`s that leave the block whose body is `id`: not the ones a loop
+   or an inner block, lambda or def takes. Each becomes a `return`. */
+static int dm_next_to_return(NodeTable *nt, int id, int depth) {
+  if (id < 0 || id >= nt->count || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int changed = 0;
+  if (k == NK_NextNode) { nt_node_set_type(nt, id, "ReturnNode"); changed = 1; }
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++) changed |= dm_next_to_return(nt, nd->r[i].ref, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) changed |= dm_next_to_return(nt, nd->a[i].ids[j], depth + 1);
+  return changed;
+}
+
+/* `define_method(:m) { next v if c; w }` -> `define_method(:m) { return v if c; w }`,
+   and the same for define_singleton_method. The block is the method's body,
+   so its `next` ends the call with that value, which is what a `return`
+   there does, and the body is compiled as a C function with no loop for a
+   `continue` to name. A program with a method of its own by either name is
+   left alone: that one may run the block as a block. */
+static int define_method_next_to_return(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, id, "name");
+    if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
+  }
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || (!sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method"))) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    changed |= dm_next_to_return(nt, nt_ref(nt, blk, "body"), 0);
+  }
+  return changed;
+}
+
 /* `define_method(:m, <proc>)` / `define_method(:m, &<proc>)` in a class,
    module or `class << self` body, where <proc> is a Proc literal or a body
    local assigned one once, earlier in the body -> `define_method(:m) { }`
@@ -6791,6 +6833,8 @@ int desugar_define_method_proc_arg(Compiler *c) {
     }
   }
   if (changed) comp_grow_node_arrays(c);
+  /* the block, written there or taken off a Proc literal, is the method's body */
+  changed |= define_method_next_to_return(c);
   return changed;
 }
 
