@@ -670,7 +670,7 @@ regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 # cc -- the same as the compiler. Each tools/<name>.rb becomes bin/spinel-<name>,
 # beside the compiler, so the `spinel-<name>` command is found next to `spinel`.
 # A tool that no longer fits the subset breaks the build, which keeps them honest.
-TOOL_NAMES = doctor reduce flatten diff
+TOOL_NAMES = doctor reduce flatten diff bisect
 TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
 
 tools: $(TOOL_BINS) bin/spin
@@ -699,6 +699,7 @@ bin/spin: tools/spin.rb tools/spin/toml.rb build/spin_version.rb $(SPINEL) $(SP_
 bin/spinel-%: tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 	@mkdir -p bin
 	$(SPINEL) $< -o $@
+bin/spinel-bisect: tools/bisect_search.rb
 
 # ---- Test ----
 
@@ -1079,6 +1080,7 @@ test-run: decisions-test
 # with a whole-program switch of its own emits what the switch emits. Every
 # kind changes some program's C when it is denied: a key that gates nothing
 # would be named by no bisect.
+# Each kind also has its row in the table in tools/README.md.
 DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
                  test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
                  test/array_local_append_prepend_widen.rb test/poly_arm_kwrest_empty.rb
@@ -1120,6 +1122,7 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	[ "$$(cat "$$tmp/kinds")" = "$$(echo $(DECISION_KINDS)) " ] || \
 	  { echo "decisions-test: FAIL (kinds logged: $$(cat "$$tmp/kinds"); a kind is not covered, or not listed in DECISION_KINDS)"; ok=0; }; \
 	for k in $(DECISION_KINDS); do \
+	  grep -q "^| \`$$k\` |" tools/README.md || { echo "decisions-test: FAIL ($$k has no row in tools/README.md)"; ok=0; }; \
 	  hit=0; \
 	  for f in $(DECISION_TESTS); do \
 	    t=$$tmp/$$(basename $$f .rb); \
@@ -3415,6 +3418,69 @@ scale-test: $(SPINEL_WORK)
 	awk -v a="$$sa" -v b="$$sb" -v lim="$(CALL_SHAPES_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: call-shape work at 4x the units, compiled to C, is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (a binding or block-typing pass grew superlinearly: it rescans per call site or argument, see test/scale/call_shapes.sh)"; exit 1; }
+
+.PHONY: bisect-test
+# `spinel bisect`, end to end. The search has its own corpus test
+# (test/tools_bisect_search.rb); this leg is the plumbing around it: the
+# dispatch from `spinel bisect`, the builds under an allow-list, the oracles,
+# the exit status for each answer, and the scratch cleanup. No program in the
+# tree is miscompiled, so the wrong answers are staged: an oracle command
+# that calls a build wrong when chosen keys of a real log are allowed
+# (test/fixtures/bisect/oracle.sh), and a stand-in compiler whose binaries
+# print which way one decision went (fake_spinel.sh). One of the gate's
+# property tests: gate-props waits for it.
+gate-props: bisect-test
+bisect-test: $(SPINEL) bin/spinel-bisect
+	@ok=1; B=test/fixtures/bisect; f=test/gc_root_elided_array_slot.rb; \
+	TMPDIR=$$(mktemp -d /tmp/spinel-bisect-test.XXXXXX); export TMPDIR; \
+	fail() { echo "bisect-test: FAIL ($$1: rc=$$rc)"; echo "$$out"; ok=0; }; \
+	out=$$(CULPRITS='root-elide@Lut#load:@lut' $(SPINEL) bisect $$f --oracle-cmd $$B/oracle.sh 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && echo "$$out" | grep -q '^spinel bisect: localized$$' && \
+	  [ "$$(echo "$$out" | grep '^key ')" = 'key root-elide@Lut#load:@lut' ] || fail "one decision"; \
+	out=$$(CULPRITS='root-frame@Sprites#place gc-save@Lut#load' $(SPINEL) bisect $$f --oracle-cmd $$B/oracle.sh 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ' | sort | tr '\n' ' ')" = 'key gc-save@Lut#load key root-frame@Sprites#place ' ] || \
+	  fail "two decisions that are only wrong together"; \
+	out=$$($(SPINEL) bisect $$f --oracle-cmd $$B/oracle.sh 2>&1); rc=$$?; \
+	[ $$rc -eq 1 ] && echo "$$out" | grep -q '^spinel bisect: no keyed decision changes the answer$$' || fail "wrong with every decision denied"; \
+	out=$$(CULPRITS='root-elide@Lut#load:@lut' BREAKS='root-elide@Lut#load:@lut' WITH='gc-save@Lut#load' \
+	       $(SPINEL) bisect $$f --oracle-cmd $$B/oracle.sh 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ' | sort | tr '\n' ' ')" = 'key gc-save@Lut#load key root-elide@Lut#load:@lut ' ] && \
+	  echo "$$out" | grep -q 'not judged$$' || fail "a culprit that cannot be judged without another key"; \
+	out=$$(CULPRITS='root-elide@Lut#load:@lut' BREAKS='gc-save@Lut#load' WITH='root-elide@Lut#load:@lut' \
+	       $(SPINEL) bisect $$f --oracle-cmd $$B/oracle.sh 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ')" = 'key root-elide@Lut#load:@lut' ] && \
+	  echo "$$out" | grep -q 'denied the program could not be judged' || fail "the rest does not build without the culprit"; \
+	out=$$($(SPINEL) bisect $$f --oracle-cmd 'sleep 20 | cat' --timeout 1 2>&1); rc=$$?; \
+	[ $$rc -eq 3 ] && echo "$$out" | grep -q 'could not be judged' || fail "an oracle past the time limit tells nothing"; \
+	out=$$($(SPINEL) bisect $$f --expected $$f.expected 2>&1); rc=$$?; \
+	[ $$rc -eq 2 ] && echo "$$out" | grep -q '^spinel bisect: nothing to bisect$$' || fail "a program that is right"; \
+	out=$$($(SPINEL) bisect $$f 2>&1); rc=$$?; \
+	[ $$rc -eq 1 ] && echo "$$out" | grep -q 'does the same with every keyed decision denied' || fail "no oracle, a program no decision changes"; \
+	out=$$($(SPINEL) bisect $$f --oracle-cmd "{} | cmp -s - $$f.expected" 2>&1); rc=$$?; \
+	[ $$rc -eq 2 ] || fail "an oracle command handed the binary"; \
+	out=$$(SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ')" = 'key nn-read@fake.rb:2:5:x' ] && \
+	  echo "$$out" | grep -q 'does what the reference does' || fail "no oracle, one decision changes the output"; \
+	out=$$(SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb --expected $$B/fake.expected 2>&1); rc=$$?; \
+	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ')" = 'key nn-read@fake.rb:2:5:x' ] && \
+	  echo "$$out" | grep -q 'wrong with every keyed decision denied as well' || fail "wrong either way, differently"; \
+	out=$$(FAKE_BREAK=1 SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb 2>&1); rc=$$?; \
+	[ $$rc -eq 3 ] && echo "$$out" | grep -q '^spinel bisect: inconclusive$$' && ! echo "$$out" | grep -q '^key ' || \
+	  fail "the deciding subset does not build"; \
+	out=$$(FAKE_UNSTEADY=1 SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb 2>&1); rc=$$?; \
+	[ $$rc -eq 3 ] && echo "$$out" | grep -q 'does not do the same twice' && ! echo "$$out" | grep -q '^key ' || \
+	  fail "a program that differs from run to run"; \
+	if command -v ruby >/dev/null 2>&1 && [ -x bin/spinel-diff ]; then \
+	  out=$$($(SPINEL) bisect test/fixtures/diff/same.rb --cruby 2>&1); rc=$$?; \
+	  [ $$rc -eq 2 ] || fail "--cruby on a program both runtimes agree on"; \
+	fi; \
+	out=$$($(SPINEL) bisect /nonexistent.rb 2>&1); rc=$$?; [ $$rc -eq 4 ] || fail "a missing file is the tool's own error, exit 4"; \
+	out=$$($(SPINEL) bisect $$f --no-such-option 2>&1); rc=$$?; [ $$rc -eq 4 ] || fail "an unknown option, exit 4"; \
+	out=$$(SPINEL=/nonexistent/spinel SPINEL_DIR= PATH=/nonexistent $(SPINEL) bisect $$f 2>&1); rc=$$?; \
+	[ $$rc -eq 4 ] || fail "no compiler, exit 4"; \
+	out=$$(ls -A "$$TMPDIR"); [ -z "$$out" ] || { rc=0; fail "scratch files left behind"; }; \
+	rm -rf "$$TMPDIR"; \
+	[ $$ok -eq 1 ] && echo "bisect-test: pass" || exit 1
 
 # `spinel diff`, end to end, on the three answers the tool has to give: a
 # program both runtimes agree on (exit 0), a documented divergence (exit 1,

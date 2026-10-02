@@ -388,14 +388,15 @@ int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
 #endif
-  /* `spinel diff FILE.rb ...`: the companion tool beside the compiler runs
-     it (tools/diff.rb, built to bin/spinel-diff); the arguments pass through
+  /* `spinel diff FILE.rb ...`, `spinel bisect FILE.rb ...`: the companion
+     tool beside the compiler runs it (tools/diff.rb, built to
+     bin/spinel-diff; tools/bisect.rb likewise); the arguments pass through
      untouched, its exit status is the answer. */
-  if (argc >= 2 && sp_streq(argv[1], "diff")) {
+  if (argc >= 2 && (sp_streq(argv[1], "diff") || sp_streq(argv[1], "bisect"))) {
     char dir[4096];
     exe_dir(argv[0], dir, sizeof dir);
     char tool[4200];
-    snprintf(tool, sizeof tool, "%s/spinel-diff", dir);
+    snprintf(tool, sizeof tool, "%s/spinel-%s", dir, argv[1]);
     char self[4200];
     snprintf(self, sizeof self, "%s/spinel", dir);
     setenv("SPINEL", self, 0);
