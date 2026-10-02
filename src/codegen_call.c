@@ -8540,6 +8540,49 @@ static void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, con
   buf_printf(b, " case SP_BUILTIN_INT_INT_HASH: _t%d = %s((sp_IntIntHash *)_t%d.v.p)->len%s; break;", tr, open, tv, close);
 }
 
+/* The dispatch default's block arms: sum(init) { } beside a class's own
+   sum (an Array, Hash or Range adds the block's answers to init),
+   fetch(key) { } and merge!/update(other, ...) { }, the block (a proc
+   argument too) through a runtime arm. Answers 1 when it wrote the arm. */
+static int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv,
+                                     const int *atmp, const TyKind *atmp_ty, int tv, int tr,
+                                     int blk_tmp2, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "block") < 0) return 0;
+  for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return 0;
+  if (sp_streq(name, "sum") && argc == 1) {
+    int sblk = poly_call_blk_proc(c, id, blk_tmp2);
+    if (sblk < 0) return 0;
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+    buf_printf(b, " _t%d = sp_poly_sum_init_proc(_t%d, ", tr, tv);
+    if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
+    else emit_boxed_text(c, atmp_ty[0], tn, b);
+    buf_printf(b, ", _t%d); break;", sblk);
+    return 1;
+  }
+  int fm_fetch = sp_streq(name, "fetch") && argc == 1;
+  int fm_merge = (sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1;
+  if (!fm_fetch && !fm_merge) return 0;
+  int fblk = poly_call_blk_proc(c, id, blk_tmp2);
+  if (fblk < 0) return 0;
+  buf_printf(b, " _t%d = ", tr);
+  /* merge!(h1, h2) { }: each Hash in turn, into the receiver */
+  int nm = fm_fetch ? 1 : argc;
+  for (int a = 0; a < nm; a++)
+    buf_puts(b, fm_fetch ? "sp_poly_fetch_blk(" : "sp_poly_hash_merge_blk(");
+  buf_printf(b, "_t%d", tv);
+  for (int a = 0; a < nm; a++) {
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+    buf_puts(b, ", ");
+    if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
+    else emit_boxed_text(c, atmp_ty[a], tn, b);
+    if (fm_fetch) buf_printf(b, ", _t%d)", fblk);
+    else buf_printf(b, ", _t%d, \"%s\")", fblk, name);
+  }
+  buf_puts(b, "; break;");
+  return 1;
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* Re-entered from this very dispatch's builtin-container arm: decline, so
      the call falls through to the builtin emitters the arm is there to
@@ -11714,49 +11757,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            whole body (`gcd`'s ends `break;`) leaves what follows unreachable,
            and a builtin answer there was not even of the slot's type. */
         int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
-        /* sum(init) { } beside a class's own sum: an Array, Hash or Range
-           adds the block's answers to init (the block is a proc here) */
-        int sum_done = 0;
-        if (dl_open && ret == TY_POLY && sp_streq(name, "sum") && argc == 1 &&
-            nt_ref(nt, id, "block") >= 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
-          int sblk = poly_call_blk_proc(c, id, blk_tmp2);
-          if (sblk >= 0) {
-            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
-            buf_printf(b, " _t%d = sp_poly_sum_init_proc(_t%d, ", tr, tv);
-            if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
-            else emit_boxed_text(c, atmp_ty[0], tn, b);
-            buf_printf(b, ", _t%d); break;", sblk);
-            sum_done = 1;
-          }
-        }
-        /* fetch(key) { } and merge!/update(other) { }: the block (a proc
-           argument too) through a runtime arm */
-        int fm_fetch = sp_streq(name, "fetch") && argc == 1;
-        int fm_merge = (sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1;
-        int fm_splat = 0;
-        for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) fm_splat = 1;
-        if (!sum_done && dl_open && ret == TY_POLY && (fm_fetch || fm_merge) &&
-            nt_ref(nt, id, "block") >= 0 && !fm_splat) {
-          int fblk = poly_call_blk_proc(c, id, blk_tmp2);
-          if (fblk >= 0) {
-            buf_printf(b, " _t%d = ", tr);
-            /* merge!(h1, h2) { }: each Hash in turn, into the receiver */
-            int nm = fm_fetch ? 1 : argc;
-            for (int a = 0; a < nm; a++)
-              buf_puts(b, fm_fetch ? "sp_poly_fetch_blk(" : "sp_poly_hash_merge_blk(");
-            buf_printf(b, "_t%d", tv);
-            for (int a = 0; a < nm; a++) {
-              char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
-              buf_puts(b, ", ");
-              if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
-              else emit_boxed_text(c, atmp_ty[a], tn, b);
-              if (fm_fetch) buf_printf(b, ", _t%d)", fblk);
-              else buf_printf(b, ", _t%d, \"%s\")", fblk, name);
-            }
-            buf_puts(b, "; break;");
-            sum_done = 1;
-          }
-        }
+        int sum_done = dl_open && ret == TY_POLY &&
+                       emit_poly_default_blk_arm(c, id, name, argc, argv, atmp, atmp_ty, tv, tr, blk_tmp2, b);
         if (!sum_done && (!dl_open ||
             (!emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) &&
              !emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
