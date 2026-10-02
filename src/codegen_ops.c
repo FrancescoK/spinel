@@ -189,6 +189,13 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_HASH_KEYS] = emit_op_hash_keys,
   [BOPE_HASH_FETCH] = emit_op_hash_fetch,
   [BOPE_HASH_TO_S] = emit_op_hash_to_s,
+  [BOPE_HASH_COMPACT_BANG] = emit_op_hash_compact_bang,
+  [BOPE_HASH_REHASH] = emit_op_hash_rehash,
+  [BOPE_HASH_REPLACE] = emit_op_hash_replace,
+  [BOPE_HASH_SET_DEFAULT] = emit_op_hash_set_default,
+  [BOPE_HASH_MERGE_BANG_MANY] = emit_op_hash_merge_bang_many,
+  [BOPE_HASH_SHIFT] = emit_op_hash_shift,
+  [BOPE_HASH_DELETE] = emit_op_hash_delete,
 };
 
 /* an argument's kind, for a row's argument guard */

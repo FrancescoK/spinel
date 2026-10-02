@@ -1423,6 +1423,13 @@ int emit_op_hash_default(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_keys(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_fetch(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_to_s(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_compact_bang(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_merge_bang_many(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,

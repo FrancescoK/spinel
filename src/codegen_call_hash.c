@@ -358,3 +358,230 @@ int emit_op_hash_to_s(Compiler *c, const BopCtx *x, Buf *b) {
   emit_null_guarded_call(c, x->recv, x->rt, fn, "sp_str_empty", b);
   return 1;
 }
+
+/* compact!: drop nil-valued pairs in place; self when changed, nil when a
+   no-op. Only the poly-valued variants can hold nil; the others are left
+   to the arms after the lookup. */
+int emit_op_hash_compact_bang(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  if (!(rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) return 0;
+  const char *hnc = ty_hash_cname(rt);
+  /* PolyPoly's order[] holds slot indexes, not keys; the other variants
+     store the key itself in order[] (#2430) */
+  int ppk = rt == TY_POLY_POLY_HASH;
+  int th = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tc2 = ++g_tmp;
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, th); emit_expr(c, recv, b);
+  buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+             th, th, th, hash_box_cls(rt));
+  buf_printf(b, " sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
+                " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {",
+             hnc, tf, hnc, tf, ti, ti, th, ti);
+  if (ppk)
+    buf_printf(b, " sp_RbVal _k9 = _t%d->keys[_t%d->order[_t%d]];"
+                  " sp_RbVal _t%d = sp_%sHash_get(_t%d, _k9);"
+                  " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _k9, _t%d); }",
+               th, th, ti, tv, hnc, th, tv, hnc, tf, tv);
+  else
+    buf_printf(b, " sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);"
+                  " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _t%d); }",
+               tv, hnc, th, th, ti, tv, hnc, tf, th, ti, tv);
+  buf_printf(b, " int _t%d = _t%d->len != _t%d->len;"
+                " if (_t%d) sp_%sHash_replace(_t%d, _t%d);"
+                " _t%d ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
+             tc2, tf, th,
+             tc2, hnc, th, tf,
+             tc2, th, hash_box_cls(rt));
+  return 1;
+}
+
+/* rehash. A key changed since it was stored is under the hash it was
+   stored with; the general hash keeps each key's hash, so rehash asks
+   every key again. A typed table holds Integer, Symbol or String keys,
+   which CRuby's rehash leaves where they are, so there is nothing to
+   rebuild: it answers the receiver, and a frozen one raises, as CRuby's
+   does. */
+int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  if (rt == TY_POLY_POLY_HASH) {
+    buf_puts(b, "sp_PolyPolyHash_rehash("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return 1;
+  }
+  int t = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+  buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })", t, t, hash_box_cls(rt), t);
+  return 1;
+}
+
+/* replace(other). An argument of the receiver's own variant is copied in
+   place. Replace with a DIFFERENT hash variant: the receiver slot has
+   widened to the universal PolyPoly hash (see infer), so clear it and
+   re-fill from the boxed other's [k, v] pairs -- never the raw-pointer
+   mispatch that used to hang inspect (#2374). Any other argument is left
+   to the arms after the lookup. */
+int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (comp_ntype(c, argv[0]) == rt) {
+    int trp = ++g_tmp;
+    buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
+    buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
+    buf_printf(b, " sp_%sHash_replace(_t%d, ", hn, trp); emit_expr(c, argv[0], b);
+    buf_printf(b, "); _t%d; })", trp);
+    return 1;
+  }
+  if (rt == TY_POLY_POLY_HASH && ty_is_hash(comp_ntype(c, argv[0]))) {
+    int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
+    buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
+    buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
+    buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, to);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
+                  " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
+                  " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
+               ti, ti, tn, ti, to, ti, th, th);
+    return 1;
+  }
+  return 0;
+}
+
+/* default=(value) */
+int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  /* The value is evaluated once, before a frozen receiver refuses it,
+     as a setter's argument is, and the same value is the result. A
+     nil-typed value (a nil literal, or a call that returns nil as void)
+     is evaluated for its effects and stored as nil. */
+  TyKind at = comp_ntype(c, argv[0]);
+  int is_nil = at == TY_NIL || at == TY_VOID;
+  int held = !is_nil && (ty_is_object(at) || c_type_name(at));
+  int t = ++g_tmp, tv = ++g_tmp;
+  char av[32];
+  snprintf(av, sizeof av, is_nil ? "0" : "_t%d", tv);
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+  if (held) { buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
+  else if (is_nil) { buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");"); }
+  buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+             t, t, t, hash_box_cls(rt));
+  if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
+    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
+    buf_puts(b, ";");
+  }
+  else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
+    /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
+    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    if (is_nil) buf_puts(b, "SP_INT_NIL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    buf_puts(b, ";");
+  }
+  else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
+    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    if (is_nil) buf_puts(b, "NULL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    buf_puts(b, ";");
+  }
+  buf_puts(b, " ");
+  if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
+  buf_puts(b, "; })"); return 1;
+}
+
+/* merge!/update with several hash arguments: fold each one in, in
+   order (#2431). Blockless, same-variant arguments only; a PolyPoly
+   receiver, which folds any variant in, is left to the arms after the
+   lookup. */
+int emit_op_hash_merge_bang_many(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (rt == TY_POLY_POLY_HASH) return 0;
+  TyKind kt = ty_hash_key(rt);
+  for (int ai = 0; ai < argc; ai++)
+    if (comp_ntype(c, argv[ai]) != rt) return 0;
+  int tr = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+  buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
+  for (int ai = 0; ai < argc; ai++) {
+    int to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
+    buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[ai], b); buf_puts(b, ";");
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
+    buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
+    buf_printf(b, " sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
+  }
+  buf_printf(b, " _t%d; })", tr);
+  return 1;
+}
+
+/* Hash#shift: remove and return the first-inserted [key, value] pair, or
+   nil when empty. */
+int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+  int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tk = ++g_tmp;
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
+  buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, th, hash_box_cls(rt));
+  buf_printf(b, " if (_t%d && _t%d->len > 0) {", th, th);
+  /* bind the first key (raw), used for both the pair and the delete */
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(b, " sp_RbVal _t%d = _t%d->keys[_t%d->order[0]];", tk, th, th);
+  else if (kt == TY_SYMBOL)
+    buf_printf(b, " sp_sym _t%d = _t%d->order[0];", tk, th);
+  else if (kt == TY_STRING)
+    buf_printf(b, " const char *_t%d = _t%d->order[0];", tk, th);
+  else
+    buf_printf(b, " sp_int _t%d = _t%d->order[0];", tk, th);
+  buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
+  if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", tp, tk);
+  else if (kt == TY_SYMBOL) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d));", tp, tk);
+  else if (kt == TY_STRING) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d));", tp, tk);
+  else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d));", tp, tk);
+  if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[0]]);", tp, th, th);
+  else if (vt == TY_POLY) buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d));", tp, hn, th, tk);
+  else if (vt == TY_INT) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
+  else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
+  buf_printf(b, " _t%d = sp_box_poly_array(_t%d);", tr, tp);
+  buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); }", hn, th, tk);
+  buf_printf(b, " _t%d; })", tr);
+  return 1;
+}
+
+/* delete(key): the deleted value (or nil on a miss), then the key is
+   removed. A block literal, whose value stands in for a missing key, and a
+   block with a key of a kind the table cannot hold are left to the arm
+   after the lookup. */
+int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = x->recv;
+  TyKind rt = x->rt;
+  const char *hn = ty_hash_cname(rt);
+  int argc;
+  const int *argv = call_args(nt, x->id, &argc);
+  int blk = nt_ref(nt, x->id, "block");
+  if (blk >= 0 && (hash_key_misses(c, argv[0], ty_hash_key(rt)) ||
+                   (nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))))
+    return 0;
+  TyKind vt = ty_hash_val(rt);
+  int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
+  buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
+  buf_printf(b, " %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+  /* a miss answers nil: the nullable int's SP_INT_NIL, not 0, which
+     read as a deleted value of zero (#4531) */
+  buf_printf(b, "; %s _t%d = sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : %s;",
+             c_type_name(vt), tv, hn, th, tk, hn, th, tk,
+             vt == TY_POLY ? "sp_box_nil()" : vt == TY_INT ? "SP_INT_NIL" : vt == TY_STRING ? "NULL" : default_value(vt));
+  buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
+  return 1;
+}

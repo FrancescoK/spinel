@@ -6191,38 +6191,6 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        arms below that stay read the argument nodes, the block or the
        program's own methods, and none of them can take a call a row takes. */
     if (emit_builtin_op(c, id, recv, rt, name, b)) return 1;
-    /* compact!: drop nil-valued pairs in place; self when changed, nil
-       when a no-op (only the poly-valued variants can hold nil) */
-    if (sp_streq(name, "compact!") && argc == 0 &&
-        (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
-      const char *hnc = ty_hash_cname(rt);
-      /* PolyPoly's order[] holds slot indexes, not keys; the other variants
-         store the key itself in order[] (#2430) */
-      int ppk = rt == TY_POLY_POLY_HASH;
-      int th = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tc2 = ++g_tmp;
-      buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, th); emit_expr(c, recv, b);
-      buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
-                 th, th, th, hash_box_cls(rt));
-      buf_printf(b, " sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
-                    " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {",
-                 hnc, tf, hnc, tf, ti, ti, th, ti);
-      if (ppk)
-        buf_printf(b, " sp_RbVal _k9 = _t%d->keys[_t%d->order[_t%d]];"
-                      " sp_RbVal _t%d = sp_%sHash_get(_t%d, _k9);"
-                      " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _k9, _t%d); }",
-                   th, th, ti, tv, hnc, th, tv, hnc, tf, tv);
-      else
-        buf_printf(b, " sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);"
-                      " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _t%d); }",
-                   tv, hnc, th, th, ti, tv, hnc, tf, th, ti, tv);
-      buf_printf(b, " int _t%d = _t%d->len != _t%d->len;"
-                    " if (_t%d) sp_%sHash_replace(_t%d, _t%d);"
-                    " _t%d ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
-                 tc2, tf, th,
-                 tc2, hnc, th, tf,
-                 tc2, th, hash_box_cls(rt));
-      return 1;
-    }
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
       unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
     const char *hn = ty_hash_cname(rt);
@@ -6595,30 +6563,6 @@ else {
         buf_puts(b, ") : (sp_raise_cls(\"TypeError\", \"Array can't be coerced into Integer\"), (sp_int)0); })");
         return 1;
       }
-      if (sp_streq(name, "clear") && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t);
-        emit_expr(c, recv, b);
-        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", t, t, hash_box_cls(rt));   /* (#3001) */
-        buf_printf(b, " sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
-        return 1;
-      }
-      /* a key changed since it was stored is under the hash it was stored
-         with; the general hash keeps each key's hash, so rehash asks every
-         key again */
-      if (sp_streq(name, "rehash") && argc == 0 && rt == TY_POLY_POLY_HASH) {
-        buf_puts(b, "sp_PolyPolyHash_rehash("); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-      /* rehash answers the receiver: a typed table holds Integer, Symbol or
-         String keys, which CRuby's rehash leaves where they are, so there is
-         nothing to rebuild; a frozen one raises, as CRuby's does */
-      if (sp_streq(name, "rehash") && argc == 0) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); _t%d; })", t, t, hash_box_cls(rt), t);
-        return 1;
-      }
       if ((sp_streq(name, "value?") || sp_streq(name, "has_value?")) && argc == 1) {
         int poly = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH ||
                     rt == TY_POLY_POLY_HASH);  /* boxed-value variants (#2373) */
@@ -6649,69 +6593,6 @@ else {
         if (poly) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
-      }
-      if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
-        int trp = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
-        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
-        buf_printf(b, " sp_%sHash_replace(_t%d, ", hn, trp); emit_expr(c, argv[0], b);
-        buf_printf(b, "); _t%d; })", trp);
-        return 1;
-      }
-      /* replace with a DIFFERENT hash variant: the receiver slot has widened to
-         the universal PolyPoly hash (see infer), so clear it and re-fill from
-         the boxed other's [k, v] pairs -- never the raw-pointer mispatch that
-         used to hang inspect (#2374). */
-      if (sp_streq(name, "replace") && argc == 1 && rt == TY_POLY_POLY_HASH &&
-          ty_is_hash(comp_ntype(c, argv[0]))) {
-        int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
-        buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
-        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
-        buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
-        buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, to);
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
-                      " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
-                      " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
-                   ti, ti, tn, ti, to, ti, th, th);
-        return 1;
-      }
-      if (sp_streq(name, "default=") && argc == 1) {
-        /* The value is evaluated once, before a frozen receiver refuses it,
-           as a setter's argument is, and the same value is the result. A
-           nil-typed value (a nil literal, or a call that returns nil as void)
-           is evaluated for its effects and stored as nil. */
-        TyKind at = comp_ntype(c, argv[0]);
-        int is_nil = at == TY_NIL || at == TY_VOID;
-        int held = !is_nil && (ty_is_object(at) || c_type_name(at));
-        int t = ++g_tmp, tv = ++g_tmp;
-        char av[32];
-        snprintf(av, sizeof av, is_nil ? "0" : "_t%d", tv);
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
-        if (held) { buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
-        else if (is_nil) { buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");"); }
-        buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
-                   t, t, t, hash_box_cls(rt));
-        if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-          if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
-          buf_puts(b, ";");
-        }
-        else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
-          /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
-          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-          if (is_nil) buf_puts(b, "SP_INT_NIL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
-          buf_puts(b, ";");
-        }
-        else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
-          buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-          if (is_nil) buf_puts(b, "NULL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
-          buf_puts(b, ";");
-        }
-        buf_puts(b, " ");
-        if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
-        buf_puts(b, "; })"); return 1;
       }
       /* merge!/update with no Hash has nothing to fold in and answers the
          receiver, after the nil and frozen checks; a block has no conflict to
@@ -6779,26 +6660,6 @@ else {
                         " sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 0),"
                         " sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 1)); }",
                      ti, to, ti, tp, to, tr, tp, tp);
-        }
-        buf_printf(b, " _t%d; })", tr);
-        return 1;
-      }
-      /* merge!/update with several hash arguments: fold each one in, in
-         order (#2431). Blockless, same-variant arguments only. */
-      if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 2 &&
-          nt_ref(nt, id, "block") < 0 && rt != TY_POLY_POLY_HASH) {
-        TyKind kt = ty_hash_key(rt);
-        for (int ai = 0; ai < argc; ai++)
-          if (comp_ntype(c, argv[ai]) != rt) return 0;
-        int tr = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
-        buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
-        for (int ai = 0; ai < argc; ai++) {
-          int to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
-          buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[ai], b); buf_puts(b, ";");
-          buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
-          buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
-          buf_printf(b, " sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
         }
         buf_printf(b, " _t%d; })", tr);
         return 1;
@@ -7305,38 +7166,6 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      /* Hash#shift: remove and return the first-inserted [key, value] pair, or
-         nil when empty. */
-      if (sp_streq(name, "shift") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
-        int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tk = ++g_tmp;
-        buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_box_nil();", th, tr);
-        buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, th, hash_box_cls(rt));
-        buf_printf(b, " if (_t%d && _t%d->len > 0) {", th, th);
-        /* bind the first key (raw), used for both the pair and the delete */
-        if (rt == TY_POLY_POLY_HASH)
-          buf_printf(b, " sp_RbVal _t%d = _t%d->keys[_t%d->order[0]];", tk, th, th);
-        else if (kt == TY_SYMBOL)
-          buf_printf(b, " sp_sym _t%d = _t%d->order[0];", tk, th);
-        else if (kt == TY_STRING)
-          buf_printf(b, " const char *_t%d = _t%d->order[0];", tk, th);
-        else
-          buf_printf(b, " sp_int _t%d = _t%d->order[0];", tk, th);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
-        if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", tp, tk);
-        else if (kt == TY_SYMBOL) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d));", tp, tk);
-        else if (kt == TY_STRING) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d));", tp, tk);
-        else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d));", tp, tk);
-        if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[0]]);", tp, th, th);
-        else if (vt == TY_POLY) buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d));", tp, hn, th, tk);
-        else if (vt == TY_INT) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
-        else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
-        buf_printf(b, " _t%d = sp_box_poly_array(_t%d);", tr, tp);
-        buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); }", hn, th, tk);
-        buf_printf(b, " _t%d; })", tr);
-        return 1;
-      }
       /* Enumerable first/take/drop over the [key, value] pair list. `first`
          with no argument yields the first pair (nil when empty); the arg forms
          and take/drop return a poly array slice. */
@@ -7451,7 +7280,7 @@ else {
         }
         return 1;
       }
-      if (sp_streq(name, "delete") && argc == 1 &&
+      if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH || rt == TY_SYM_POLY_HASH ||
            rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH ||
            rt == TY_INT_INT_HASH || rt == TY_INT_STR_HASH)) {
@@ -7466,41 +7295,33 @@ else {
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
         buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
         buf_printf(b, " %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+        /* delete(key) { |k| fallback }: the block's value stands in for a
+           missing key (boxed: the fallback can be any type). Without a
+           block literal it is a row. */
         int hd_blk = nt_ref(nt, id, "block");
-        if (hd_blk >= 0 && nt_type(nt, hd_blk) && sp_streq(nt_type(nt, hd_blk), "BlockNode")) {
-          /* delete(key) { |k| fallback }: the block's value stands in for a
-             missing key (boxed: the fallback can be any type) */
-          const char *dp0 = block_param_name(c, hd_blk, 0);
-          int hdb = nt_ref(nt, hd_blk, "body");
-          int hdn = 0; const int *hdv = hdb >= 0 ? nt_arr(nt, hdb, "body", &hdn) : NULL;
-          int tvv = ++g_tmp;
-          buf_printf(b, "; sp_RbVal _t%d; if (sp_%sHash_has_key(_t%d, _t%d)) { _t%d = ",
-                     tvv, hn, th, tk, tvv);
-          { char getx[96]; snprintf(getx, sizeof getx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
-            if (vt == TY_POLY) buf_puts(b, getx);
-            else emit_boxed_text(c, vt, getx, b); }
-          buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); }\nelse {", hn, th, tk);
-          Buf dbind; memset(&dbind, 0, sizeof dbind);
-          if (dp0) {
-            char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
-            buf_printf(&dbind, "lv_%s = ", rename_local(dp0));
-            if (ty_hash_key(rt) == TY_POLY) buf_puts(&dbind, keytmp);
-            else emit_boxed_text(c, ty_hash_key(rt), keytmp, &dbind);
-            buf_puts(&dbind, "; ");
-          }
-          buf_printf(b, " _t%d = ", tvv);
-          emit_fallback_block_value(c, hdv, hdn, dbind.p, 1, "sp_box_nil()", 0, b);
-          free(dbind.p);
-          buf_puts(b, "; }");
-          buf_printf(b, " _t%d; })", tvv);
-          return 1;
+        const char *dp0 = block_param_name(c, hd_blk, 0);
+        int hdb = nt_ref(nt, hd_blk, "body");
+        int hdn = 0; const int *hdv = hdb >= 0 ? nt_arr(nt, hdb, "body", &hdn) : NULL;
+        int tvv = ++g_tmp;
+        buf_printf(b, "; sp_RbVal _t%d; if (sp_%sHash_has_key(_t%d, _t%d)) { _t%d = ",
+                   tvv, hn, th, tk, tvv);
+        { char getx[96]; snprintf(getx, sizeof getx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+          if (vt == TY_POLY) buf_puts(b, getx);
+          else emit_boxed_text(c, vt, getx, b); }
+        buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); }\nelse {", hn, th, tk);
+        Buf dbind; memset(&dbind, 0, sizeof dbind);
+        if (dp0) {
+          char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+          buf_printf(&dbind, "lv_%s = ", rename_local(dp0));
+          if (ty_hash_key(rt) == TY_POLY) buf_puts(&dbind, keytmp);
+          else emit_boxed_text(c, ty_hash_key(rt), keytmp, &dbind);
+          buf_puts(&dbind, "; ");
         }
-        /* a miss answers nil: the nullable int's SP_INT_NIL, not 0, which
-           read as a deleted value of zero (#4531) */
-        buf_printf(b, "; %s _t%d = sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : %s;",
-                   c_type_name(vt), tv, hn, th, tk, hn, th, tk,
-                   vt == TY_POLY ? "sp_box_nil()" : vt == TY_INT ? "SP_INT_NIL" : vt == TY_STRING ? "NULL" : default_value(vt));
-        buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
+        buf_printf(b, " _t%d = ", tvv);
+        emit_fallback_block_value(c, hdv, hdn, dbind.p, 1, "sp_box_nil()", 0, b);
+        free(dbind.p);
+        buf_puts(b, "; }");
+        buf_printf(b, " _t%d; })", tvv);
         return 1;
       }
     }

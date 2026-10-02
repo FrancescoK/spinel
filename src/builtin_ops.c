@@ -1669,6 +1669,13 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })" },  /* the frozen flag too (#3751) */
   { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_$HHash_dup($r)" },  /* a copy (#2340) */
   { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
+  /* the mutators */
+  { BOP_ANY_HASH, "delete",           1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
+  { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
+  { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE },
+  { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
+  { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },  /* #2431 */
+  { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },
   { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
   { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
@@ -1696,7 +1703,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "any?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "all?",             0, 127, BF_REQUIRED, TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "deconstruct_keys", 1,   1, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "((void)($b0), $r)" },  /* the hash itself */
-  { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* self or nil */
+  { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_HASH_COMPACT_BANG },  /* self or nil */
   { BOP_ANY_HASH, "chunk",            0, 127, BF_REQUIRED, TY_ENUMERATOR,  BOPE_NONE },  /* of [key, [[k, v], ...]] pairs */
   { BOP_ANY_HASH, "to_proc",          0, 127, BF_ANY,      TY_PROC,        BOPE_NONE },
   { BOP_ANY_HASH, "first",            0,   0, BF_NONE,     TY_POLY,        BOPE_NONE },  /* Enumerable's, over the [key, value] pairs */
@@ -1738,9 +1745,9 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "select",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "filter",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "reject",           0, 127, BF_REQUIRED, BOPR_SELF,      BOPE_NONE },
-  { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* #2340/#2349/#2351 */
+  { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash * _t$t = $r; if (sp_gc_is_frozen(_t$t)) sp_raise_frozen_hash_at(_t$t, $K); sp_$HHash_clear(_t$t); _t$t; })" },  /* #2340/#2349/#2351, #3001 */
   { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "$r" },  /* the receiver itself, not a copy */
-  { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_REHASH },
   { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* a [key, value] pair, or nil (#2349) */
   { BOP_ANY_HASH, "has_key?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
