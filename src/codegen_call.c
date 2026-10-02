@@ -1295,6 +1295,14 @@ static void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_t
 /* The call's literal block as one rooted proc temp, ahead of a dispatch whose
    arms share it (only one arm runs), or -1 when there is none to build. A
    forwarded `&blk` is left to emit_cmethod_block_arg, which passes it through. */
+/* The call's block as a proc temp for a runtime arm: the one a dispatch
+   already built (have >= 0), or a new one; -1 when there is none. A literal
+   block, a `&pr` and a `&:sym` all come out as a proc. */
+static int poly_call_blk_proc(Compiler *c, int id, int have) {
+  if (have >= 0) return have;
+  int cb = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  return cb >= 0 ? hoist_block_proc(c, cb) : -1;
+}
 static int hoist_call_block_proc(Compiler *c, int id) {
   int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   const char *cbt = cblk >= 0 ? nt_type(c->nt, cblk) : NULL;
@@ -9575,11 +9583,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           (ret == TY_POLY || ret == TY_POLY_ARRAY)) {
         char nv[96];   /* the value-taking runtime helpers the no-user-class path calls */
         snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
-        buf_printf(b, " default: if (!sp_rbval_is_array(_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _t%d = ",
-                   tv, name, tv, tr);
+        buf_printf(b, " default: if (sp_rbval_is_array(_t%d)) { _t%d = ", tv, tr);
         if (ret == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, nv, b);
         else buf_puts(b, nv);
-        buf_puts(b, "; break;");
+        buf_puts(b, "; break; }");
+        /* anything else -- a Hash, with its own pair semantics -- answers as
+           it would with no class of that name */
+        if (!emit_poly_builtin_default(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, 0, b))
+          buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
         obj_default_done = 1;
       }
       /* frozen?/nil? on a builtin-scalar (or un-overridden object) poly value:
@@ -11346,7 +11357,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          result. */
       int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
       int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
-      int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0;
+      /* fetch with a block answers the block for a missing key: the
+         builtin default arm serves that, not this one */
+      int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
+                     nt_ref(nt, id, "block") < 0;
       if ((is_aref || is_fetch) && infer_type(c, argv[0]) == TY_STRING) {
         TyKind trt = is_scalar_ret(ret) ? ret : TY_INT;  /* the result temp's type */
         static const struct { const char *cls, *hn; TyKind vt; } HV[] = {
@@ -11496,7 +11510,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           { char tn9[32]; snprintf(tn9, sizeof tn9, "_t%d", atmp[0]);
             if (atmp_ty[0] == TY_POLY) buf_puts(&rb9, tn9);
             else emit_boxed_text(c, atmp_ty[0], tn9, &rb9); }
-          buf_printf(b, " _t%d = sp_poly_replace(_t%d, %s); break;",
+          buf_printf(b, " _t%d = sp_poly_replace_any(_t%d, %s); break;",
                      tr, tv, rb9.p ? rb9.p : "sp_box_nil()");
           free(rb9.p);
         }
@@ -11664,10 +11678,42 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            whole body (`gcd`'s ends `break;`) leaves what follows unreachable,
            and a builtin answer there was not even of the slot's type. */
         int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
-        if (!dl_open ||
+        /* sum(init) { } beside a class's own sum: an Array, Hash or Range
+           adds the block's answers to init (the block is a proc here) */
+        int sum_done = 0;
+        if (dl_open && ret == TY_POLY && sp_streq(name, "sum") && argc == 1 &&
+            nt_ref(nt, id, "block") >= 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+          int sblk = poly_call_blk_proc(c, id, blk_tmp2);
+          if (sblk >= 0) {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+            buf_printf(b, " _t%d = sp_poly_sum_init_proc(_t%d, ", tr, tv);
+            if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
+            else emit_boxed_text(c, atmp_ty[0], tn, b);
+            buf_printf(b, ", _t%d); break;", sblk);
+            sum_done = 1;
+          }
+        }
+        /* fetch(key) { } and merge!/update(other) { }: the block (a proc
+           argument too) through a runtime arm */
+        int fm_fetch = sp_streq(name, "fetch") && argc == 1;
+        int fm_merge = (sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1;
+        if (!sum_done && dl_open && ret == TY_POLY && (fm_fetch || fm_merge) &&
+            nt_ref(nt, id, "block") >= 0 && nt_kind(nt, argv[0]) != NK_SplatNode) {
+          int fblk = poly_call_blk_proc(c, id, blk_tmp2);
+          if (fblk >= 0) {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+            buf_printf(b, " _t%d = %s(_t%d, ", tr, fm_fetch ? "sp_poly_fetch_blk" : "sp_poly_hash_merge_blk", tv);
+            if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
+            else emit_boxed_text(c, atmp_ty[0], tn, b);
+            if (fm_fetch) buf_printf(b, ", _t%d); break;", fblk);
+            else buf_printf(b, ", _t%d, \"%s\"); break;", fblk, name);
+            sum_done = 1;
+          }
+        }
+        if (!sum_done && (!dl_open ||
             (!emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) &&
              !emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
-                                        ret, tv, is_setter_val ? -1 : tr, 0, b)))
+                                        ret, tv, is_setter_val ? -1 : tr, 0, b))))
           buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       }
       /* `[]` gets a default of its own. The arms above enumerate the kinds
@@ -11725,7 +11771,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else emit_boxed_text(c, atmp_ty[a], tn, &ab);
         }
         char gen[512];
-        if (is_pdelete)
+        /* delete(key) { |k| }: the block answers a key that was not there */
+        int dblk = is_pdelete && nt_ref(nt, id, "block") >= 0 ? poly_call_blk_proc(c, id, blk_tmp2) : -1;
+        if (is_pdelete && dblk >= 0)
+          snprintf(gen, sizeof gen, "sp_poly_delete_key_blk(_t%d, %s, _t%d)", tv, ab.p ? ab.p : "sp_box_nil()", dblk);
+        else if (is_pdelete)
           snprintf(gen, sizeof gen, "sp_poly_delete_key(_t%d, %s)", tv, ab.p ? ab.p : "sp_box_nil()");
         else if (tkl >= 0)
           snprintf(gen, sizeof gen, "sp_poly_%s(_t%d, _t%d->len, _t%d->data)",
@@ -22498,6 +22548,34 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
        gate: every spinel hash is value-keyed (the mutating variant is a
        compile error), so a hash answers false and anything else raises
        CRuby's NoMethodError -- accurate in both gate modes. */
+    /* merge!/update(other) { } on a boxed value: the block (a proc argument
+       too) resolves the keys both have, at run time */
+    if ((grt == TY_POLY || grt == TY_UNKNOWN) && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+        nt_str(nt, id, "name") && (sp_streq(nt_str(nt, id, "name"), "merge!") ||
+                                   sp_streq(nt_str(nt, id, "name"), "update")) &&
+        nt_kind(nt, argv[0]) != NK_SplatNode) {
+      int mblk = poly_call_blk_proc(c, id, -1);
+      if (mblk >= 0) {
+        buf_puts(b, "sp_poly_hash_merge_blk("); emit_boxed(c, recv, b);
+        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+        buf_printf(b, ", _t%d, \"%s\")", mblk, nt_str(nt, id, "name"));
+        return 1;
+      }
+    }
+    /* to_hash on a boxed value: a Hash answers itself, anything else has
+       no such method */
+    if ((grt == TY_POLY || grt == TY_UNKNOWN) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "to_hash")) {
+      int th = ++g_tmp;
+      TyKind tret = comp_ntype(c, id);
+      buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, recv, b);
+      buf_printf(b, "; if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
+                    " sp_raise_nomethod(sp_nomethod_msg(\"to_hash\", _t%d)); ", th, th, th);
+      if (tret == TY_POLY || tret == TY_UNKNOWN) buf_printf(b, "_t%d; })", th);
+      else if (ty_is_hash(tret)) buf_printf(b, "(%s)_t%d.v.p; })", c_type_name(tret), th);
+      else buf_printf(b, "_t%d; })", th);
+      return 1;
+    }
     if ((grt == TY_POLY || grt == TY_UNKNOWN) &&
         nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "compare_by_identity?")) {
       buf_puts(b, "sp_poly_cbi_p(");
