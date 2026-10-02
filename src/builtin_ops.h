@@ -76,6 +76,14 @@ typedef enum {
   BOPE_ARRAY_JOIN,        /* Array#join, with or without a separator */
   BOPE_ARRAY_SORT_BANG,   /* Array#sort! */
   BOPE_ARRAY_SLICE_BANG_RANGE, /* Array#slice!(range) */
+  BOPE_ARRAY_PLUS,        /* Array#+ */
+  BOPE_ARRAY_SETOP,       /* Array#& | - and intersection / union / difference with operands */
+  BOPE_ARRAY_INTERSECT_P, /* Array#intersect? */
+  BOPE_ARRAY_REPLACE,     /* Array#replace */
+  BOPE_ARRAY_MINMAX,      /* Array#minmax without a block */
+  BOPE_ARRAY_SORT,        /* Array#sort */
+  BOPE_ARRAY_UNIQ,        /* Array#uniq */
+  BOPE_ARRAY_NMIN,        /* Array#min(n) / #max(n) without a block */
   BOPE__COUNT
 } BopEmit;
 

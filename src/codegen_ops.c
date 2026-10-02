@@ -229,6 +229,14 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_JOIN] = emit_op_array_join,
   [BOPE_ARRAY_SORT_BANG] = emit_op_array_sort_bang,
   [BOPE_ARRAY_SLICE_BANG_RANGE] = emit_op_array_slice_bang_range,
+  [BOPE_ARRAY_PLUS] = emit_op_array_plus,
+  [BOPE_ARRAY_SETOP] = emit_op_array_setop,
+  [BOPE_ARRAY_INTERSECT_P] = emit_op_array_intersect_p,
+  [BOPE_ARRAY_REPLACE] = emit_op_array_replace,
+  [BOPE_ARRAY_MINMAX] = emit_op_array_minmax,
+  [BOPE_ARRAY_SORT] = emit_op_array_sort,
+  [BOPE_ARRAY_UNIQ] = emit_op_array_uniq,
+  [BOPE_ARRAY_NMIN] = emit_op_array_nmin,
 };
 
 /* an argument's kind, for a row's argument guard */

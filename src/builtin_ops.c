@@ -1805,8 +1805,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "last",                  1,   1, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_int _t$t = $i0; if (_t$t < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_$AArray_slice($r, -_t$t, _t$t); })" },
   { BOP_ANY_ARRAY, "first",                 0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
   { BOP_ANY_ARRAY, "last",                  0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "min",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE },  /* min(n)/max(n): a subarray */
-  { BOP_ANY_ARRAY, "max",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "min",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_NMIN },  /* min(n)/max(n): a subarray */
+  { BOP_ANY_ARRAY, "max",                   1,   1, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_NMIN },
   { BOP_ANY_ARRAY, "min",                   0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
   { BOP_ANY_ARRAY, "max",                   0, 127, BF_ANY,      BOPR_ELEM,     BOPE_NONE },
   { BOP_ANY_ARRAY, "pop",                   1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SHIFT_N },  /* pop(n)/shift(n): the removed subarray */
@@ -1862,7 +1862,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "freeze",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "replace",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "values_at",             0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "union",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "union",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_union($r, NULL)" },
   { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_NONE,     BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_REQUIRED, TY_POLY_ARRAY, BOPE_NONE },  /* fallback values mix in (#2368) */
   { BOP_ANY_ARRAY, "zip",                   0, 127, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE },
@@ -1921,6 +1921,18 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "rotate!",               1,   1, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $gsp_$AArray_rotate_bang(_t$t, $i0); _t$t; })" },
   { BOP_ANY_ARRAY, "rotate",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = sp_$AArray_dup($r); SP_GC_ROOT(_t$t); sp_$AArray_rotate_bang(_t$t, 1); _t$t; })" },
   { BOP_ANY_ARRAY, "rotate",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = sp_$AArray_dup($r); SP_GC_ROOT(_t$t); sp_$AArray_rotate_bang(_t$t, $i0); _t$t; })" },
+  { BOP_ANY_ARRAY, "minmax",                0,   0, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_MINMAX },
+  { BOP_ANY_ARRAY, "sort",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SORT },
+  { BOP_ANY_ARRAY, "uniq",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_UNIQ },
+  { BOP_ANY_ARRAY, "replace",               1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_REPLACE },
+  { BOP_ANY_ARRAY, "+",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PLUS },
+  { BOP_ANY_ARRAY, "&",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "|",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "-",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "intersection",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
+  { BOP_ANY_ARRAY, "intersect?",            1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_INTERSECT_P },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 

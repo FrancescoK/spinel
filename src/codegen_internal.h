@@ -1449,10 +1449,22 @@ int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_join(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_sort_bang(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_slice_bang_range(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_plus(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_replace(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_minmax(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_sort(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_uniq(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_nmin(Compiler *c, const BopCtx *x, Buf *b);
 /* A typed array receiver of a compare (`ck` "cmp") or a blockless sum (`ck`
    "sum"), wrapped in the runtime's nil check where the array can hold the
    sentinel (codegen_call_recv.c) */
 void emit_nil_ck_recv(Compiler *c, int recv, TyKind rt, const char *ck, int float_seed, Buf *b);
+/* whether an Integer or Float array receiver can hold the nil sentinel, and
+   whether analyze marked it so (codegen_call_recv.c) */
+int elem_nil_sentinel(Compiler *c, int recv, TyKind rt);
+int elem_nil_marked(Compiler *c, int recv, TyKind rt);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
