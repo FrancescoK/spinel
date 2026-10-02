@@ -3471,7 +3471,9 @@ bisect-test: $(SPINEL) bin/spinel-bisect
 	  echo "$$out" | grep -q 'does what the reference does' || fail "no oracle, one decision changes the output"; \
 	out=$$(SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb --expected $$B/fake.expected 2>&1); rc=$$?; \
 	[ $$rc -eq 0 ] && [ "$$(echo "$$out" | grep '^key ')" = 'key nn-read@fake.rb:2:5:x' ] && \
-	  echo "$$out" | grep -q 'wrong with every keyed decision denied as well' || fail "wrong either way, differently"; \
+	  echo "$$out" | grep -q 'wrong with every keyed decision denied as well' && \
+	  echo "$$out" | grep -q 'answers as it does with every keyed decision denied' && ! echo "$$out" | grep -q 'is right' || \
+	  fail "wrong either way, differently"; \
 	out=$$(FAKE_BREAK=1 SPINEL=$$B/fake_spinel.sh $(SPINEL) bisect $$B/fake.rb 2>&1); rc=$$?; \
 	[ $$rc -eq 3 ] && echo "$$out" | grep -q '^spinel bisect: inconclusive$$' && ! echo "$$out" | grep -q '^key ' || \
 	  fail "the deciding subset does not build"; \

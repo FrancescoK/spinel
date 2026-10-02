@@ -123,7 +123,7 @@ end
 # The program under one subset of its decisions: builds it, and says whether
 # that build is right.
 class BisectProbe
-  attr_reader :builds, :last
+  attr_reader :builds, :last, :relative
 
   # mode: "self" (against the deny-all build), "expected", "cruby", "cmd"
   def initialize(spinel, src, flags, mode, want, ocmd, tmp)
@@ -395,7 +395,11 @@ def main
     puts "  oracle:  the program with every keyed decision denied"
   end
   if verdict == "localized"
-    wrong = mode == "self" ? "differs" : "is wrong"
+    # judged against the build with every decision denied, whatever the
+    # oracle: under --expected that build is wrong too, and a build that
+    # answers as it does is not right
+    rel = probe.relative
+    wrong = rel ? "differs" : "is wrong"
     puts "  The program " + wrong + " with " + (found.length == 1 ? "this decision" : "these " + found.length.to_s + " decisions together") +
          " and no other (of " + all.length.to_s + " taken):"
     width = 0
@@ -404,11 +408,12 @@ def main
     puts "  " + note if note.length > 0
     it = found.length == 1 ? "it" : "them"
     if rest == BS_GOOD
-      puts "  With only " + it + " denied the program " + (mode == "self" ? "does what the reference does." : "is right.")
+      same = mode == "self" ? "does what the reference does." : "answers as it does with every keyed decision denied."
+      puts "  With only " + it + " denied the program " + (rel ? same : "is right.")
     elsif rest == BS_SKIP
       puts "  With only " + it + " denied the program could not be judged."
     else
-      puts "  With only " + it + " denied the program " + (mode == "self" ? "still differs" : "is still wrong") + ": other decisions do the same."
+      puts "  With only " + it + " denied the program " + (rel ? "still differs" : "is still wrong") + ": other decisions do the same."
     end
   elsif note.length > 0
     puts "  " + note
