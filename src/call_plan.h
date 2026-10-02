@@ -139,6 +139,8 @@ typedef enum {
      over the receiver's elements (emit_array_call, #2935), answering the
      receiver itself for the block forms of each_slice and its kin */
   PB_REDISPATCH, PB_REDISPATCH_RECV,
+  /* a String value-form mutator through the face table (emit_face_str_bang) */
+  PB_FACE_STR_BANG,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -166,6 +168,15 @@ typedef struct {
 #define PA_KEY_BUILTIN 0x4000
 /* a trial arm */
 #define PA_KEY_TRIAL 0x6000
+/* a face owner's arm (the face table, types.h): key PA_KEY_FACE + the
+   owner bit's index (face_kind_index); a probe, so a trial, or an
+   argument's misfit TypeError (PA_BUILTIN) */
+#define PA_KEY_FACE 0x5000
+static inline int face_kind_index(unsigned kind) {
+  int i = 0;
+  while (kind > 1) { kind >>= 1; i++; }
+  return i;
+}
 /* a class value's class-side arm, by its class (the pre-arm ahead of the
    instance switch) */
 #define PA_KEY_CLASS_VALUE 0x2000
@@ -208,6 +219,10 @@ const PolyPlan *cplan_poly_sub(Compiler *c, int id);
 /* The re-entry of a call on a poly receiver as an Array call (#2935).
    Computed afresh. */
 const PolyPlan *cplan_poly_redispatch(Compiler *c, int id);
+/* The face arms of a call on a poly receiver (emit_poly_call): one owner's
+   re-entry, a switch over several, or a String's value-form mutator.
+   Computed afresh. */
+const PolyPlan *cplan_poly_face(Compiler *c, int id);
 
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the

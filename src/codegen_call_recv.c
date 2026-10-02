@@ -11157,7 +11157,14 @@ static int emit_face_reentry(Compiler *c, int id, unsigned kind, unsigned flags,
      NoMethodError the call raised before. Declined here, setbyte raised
      that NoMethodError for the handle as well. */
   if ((flags & PF_MUT) && (kind == PF_ARRAY || kind == PF_STRING || kind == PF_HASH)) box = ++g_tmp;
-  if (!face_probe_arm(c, id, kind, flags, box, &pre, &val, &nat)) {
+  int pa_frame = g_plan_check ? pa_begin(id) : -1;
+  int kept = face_probe_arm(c, id, kind, flags, box, &pre, &val, &nat);
+  if (g_plan_check) {
+    pa_resume(pa_frame);
+    pa_observe(PA_TRIAL, PA_KEY_FACE + face_kind_index(kind), -1, TY_UNKNOWN, kept);
+    pa_end(c, pa_frame, cplan_poly_face(c, id));
+  }
+  if (!kept) {
     free(pre.p); free(val.p);
     return 0;
   }
@@ -11191,7 +11198,7 @@ static void emit_face_kind_test(unsigned kind, int t, Buf *b) {
    any other kind cannot be, whether or not it has a class name of its own (a
    Boolean is true or false only at run time), so the noun CRuby's TypeError
    names is spelled from the value when the arm runs. */
-static int face_arg_misfit(Compiler *c, unsigned kind, int arg) {
+int face_arg_misfit(Compiler *c, unsigned kind, int arg) {
   TyKind at = comp_ntype(c, arg);
   if (at == TY_POLY || at == TY_UNKNOWN) return 0;
   if (kind == PF_STRING && (at == TY_STRING || at == TY_STRBUF || at == TY_INT)) return 0;  /* a codepoint concatenates too */
@@ -11220,6 +11227,7 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   Buf arms; memset(&arms, 0, sizeof arms);
   int narm = 0;
   int box = ++g_tmp, tr = ++g_tmp;
+  int pa_frame = g_plan_check ? pa_begin(id) : -1;
   for (unsigned kind = 1; kind & PF_OWNERS; kind <<= 1) {
     if (!(own & kind)) continue;
     unsigned fl = ty_poly_face_owner_flags(name, argc, has_blk, plain, kind);
@@ -11249,6 +11257,11 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
       g_pre = sv_pre;
     }
     else ok = face_probe_arm(c, id, kind, fl, box, &pre, &val, &nat);
+    if (g_plan_check) {
+      pa_resume(pa_frame);
+      pa_observe(misfit >= 0 ? PA_BUILTIN : PA_TRIAL, PA_KEY_FACE + face_kind_index(kind), -1, TY_UNKNOWN,
+                 misfit >= 0 ? PC_SAME : ok);
+    }
     if (!ok) { free(pre.p); free(val.p); continue; }
     if (narm) buf_puts(&arms, "}\nelse ");
     buf_puts(&arms, "if ");
@@ -11265,6 +11278,7 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
     narm++;
     free(pre.p); free(val.p);
   }
+  if (g_plan_check) pa_end(c, pa_frame, cplan_poly_face(c, id));
   if (!narm) { free(arms.p); return 0; }
   /* The box's declaration goes to the prelude only now: the arms name it,
      but whether any survived to need it is known only after they are built. */
@@ -11336,6 +11350,11 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   }
   if (nil_nc) buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
   else buf_printf(b, "_t%d; })", tnb);
+  if (g_plan_check) {   /* the face's one arm, held against the plan */
+    int pa_frame = pa_begin(id);
+    pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_FACE_STR_BANG, -1, TY_UNKNOWN, PC_SAME);
+    pa_end(c, pa_frame, cplan_poly_face(c, id));
+  }
 }
 
 /* The `[]` call this function is re-entering for a value that is not a

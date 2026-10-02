@@ -83,10 +83,15 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default first/last(n)", "default delete/dig/values_at",
                                      "default merge", "default aref2", "default aref/fetch",
                                      "block map!", "subclass re-entry", "array re-entry",
-                                     "array re-entry (receiver)" };
+                                     "array re-entry (receiver)", "face str-bang" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
+  else if (a->key >= PA_KEY_FACE && a->key < PA_KEY_TRIAL) {
+    static const char *const fk[] = { "String", "Array", "Enumerable", "Hash", "Integer", "Float" };
+    int f = a->key - PA_KEY_FACE;
+    snprintf(kb, sizeof kb, "face %s", f < (int)(sizeof fk / sizeof fk[0]) ? fk[f] : "?");
+  }
   else if (a->key >= PA_KEY_TRIAL && a->key < PA_KEY_DEFAULT) {
     static const char *const tn[] = { "string-prearm", "container-read", "array-fallback", "default0",
                                       "generic-tail", "default-n", "block-default" };
