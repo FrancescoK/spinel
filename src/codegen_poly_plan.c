@@ -4,6 +4,7 @@
    call_plan.c; #7100 Phase C). */
 
 #include "codegen_internal.h"
+#include "codegen_poly.h"
 #include "call_plan.h"
 
 /* ---- --plan-check: the arms one emitted switch wrote ----

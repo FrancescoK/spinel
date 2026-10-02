@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include "codegen_internal.h"
+#include "codegen_poly.h"
 #include "analyze_internal.h"
 #include "call_plan.h"
 

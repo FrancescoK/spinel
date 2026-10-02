@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "codegen_poly.h"
 #include "call_plan.h"
 /* the `&.` proc call currently being emitted inside its own nil guard */
 static int g_sn_proc_node = -1;
