@@ -8872,7 +8872,9 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       emit_indent(b, indent);
       buf_puts(b, "if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv, recv_tmp, b);
       buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv, recv_tmp, b);
-      buf_printf(b, ", %s);\n", hash_box_cls(rt));
+      /* every hash kind ty_hash_cname names has a box id */
+      const char *hbc = hash_box_cls(rt);
+      buf_printf(b, ", %s);\n", hbc ? hbc : "0");
       emit_indent(b, indent);
       buf_printf(b, "sp_%sHash_set(", ty_hash_cname(rt));
       emit_node_or_tmp(c, recv, recv_tmp, b); buf_puts(b, ", ");
