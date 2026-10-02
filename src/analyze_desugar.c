@@ -2117,7 +2117,10 @@ int desugar_int_enum_with_index(Compiler *c) {
    everything. The call becomes the walk itself with a counter beside it:
      (c = off; h.select { |k, v| i = c; c = c + 1; ... })
    A `|pair, i|` block takes `pair = [k, v]` first; transform_values,
-   transform_keys and filter_map on an Array walk one value. */
+   transform_keys and filter_map on an Array walk one value. each_with_index
+   is with_index(0), and `h.transform_values.each { }` is the walk itself.
+   A block that breaks keeps its shape (the walk's break is not ready). */
+static int block_body_breaks(const NodeTable *nt, int node);
 static int hwi_new_int(NodeTable *nt, long long v) {
   int n = nt_new_node(nt, "IntegerNode");
   if (n >= 0) nt_node_set_int(nt, n, "value", v);
@@ -2140,14 +2143,22 @@ int desugar_hash_iter_with_index(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "with_index")) continue;
+    if (!nm || !(sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index") || sp_streq(nm, "each"))) continue;
     int wa = nt_ref(nt, id, "arguments");
     int wn = 0; const int *wv = wa >= 0 ? nt_arr(nt, wa, "arguments", &wn) : NULL;
-    if (wn > 1) continue;
+    if (wn > (sp_streq(nm, "with_index") ? 1 : 0)) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int body = nt_ref(nt, blk, "body");
+    if (body >= 0 && nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (block_body_breaks(nt, body)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+    /* the to_a an Enumerator's block call goes through (enum_hop) */
+    if (nt_str(nt, recv, "enum_hop") && sp_streq(nt_str(nt, recv, "name"), "to_a")) {
+      recv = nt_ref(nt, recv, "receiver");
+      if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+    }
     if (nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0) continue;
     const char *m = nt_str(nt, recv, "name");
     int src = nt_ref(nt, recv, "receiver");
@@ -2156,9 +2167,19 @@ int desugar_hash_iter_with_index(Compiler *c) {
     int pair = ty_is_hash(st) &&
                (sp_streq(m, "select") || sp_streq(m, "filter") || sp_streq(m, "reject") ||
                 sp_streq(m, "filter_map") || sp_streq(m, "each") || sp_streq(m, "each_pair"));
-    int single = (ty_is_hash(st) && (sp_streq(m, "transform_values") || sp_streq(m, "transform_keys"))) ||
-                 (ty_is_array(st) && sp_streq(m, "filter_map"));
+    int transform = ty_is_hash(st) && (sp_streq(m, "transform_values") || sp_streq(m, "transform_keys"));
+    int single = transform || (ty_is_array(st) && sp_streq(m, "filter_map"));
     if (!pair && !single) continue;
+    if (sp_streq(nm, "each")) {
+      /* h.transform_values.each { } -> h.transform_values { } */
+      if (!transform) continue;
+      nt_node_set_ref(nt, recv, "block", blk);
+      nt_node_set_str(nt, id, "name", "itself");
+      nt_node_set_ref(nt, id, "receiver", recv);
+      nt_node_set_ref(nt, id, "block", -1);
+      changed = 1;
+      continue;
+    }
     /* |p, i| exactly, p a name or (for a pair) a (k, v) pattern */
     int bpn = nt_ref(nt, blk, "parameters");
     int pn = bpn >= 0 ? nt_ref(nt, bpn, "parameters") : -1;
@@ -2178,7 +2199,6 @@ int desugar_hash_iter_with_index(Compiler *c) {
     }
     else if (nt_kind(nt, p0) != NK_RequiredParameterNode) continue;
     const char *p0name = p0_multi ? NULL : nt_str(nt, p0, "name");
-    int body = nt_ref(nt, blk, "body");
     int bscope = body >= 0 ? c->nscope[body] : -1;
     int encl = c->nscope[id];
     if (!iname || bscope < 0 || encl < 0) continue;
