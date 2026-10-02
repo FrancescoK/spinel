@@ -8129,6 +8129,37 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b);
    arm that does (the NoMethodError gate among them) emits the receiver
    again, so that prelude is dropped here: left in place it ran the
    receiver's inner call a second time. */
+/* String#squeeze / #delete / #count over several character sets: every
+   set is a String, handed over as one C array (a String chain row) */
+int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (!x->rtext) return 0;
+  buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", x->name, x->rtext);
+  for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
+  buf_printf(b, "}, %d)", argc);
+  return 1;
+}
+
+/* String#start_with? / #end_with? over several candidates: true when any
+   matches, the receiver bound once (a String chain row) */
+int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (!x->rtext) return 0;
+  int tv = ++g_tmp;
+  const char *fn = sp_streq(x->name, "start_with?") ? "sp_str_start_with" : "sp_str_end_with";
+  buf_printf(b, "({ const char *_t%d = %s; (", tv, x->rtext);
+  for (int j = 0; j < argc; j++) {
+    if (j) buf_puts(b, " || ");
+    buf_printf(b, "%s(_t%d, ", fn, tv);
+    emit_str_expr(c, argv[j], b);
+    buf_puts(b, ")");
+  }
+  buf_puts(b, "); })");
+  return 1;
+}
+
 int emit_scalar_call(Compiler *c, int id, Buf *b) {
   Buf *pre = g_pre;
   size_t pre0 = pre ? pre->len : 0;
@@ -8630,19 +8661,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "sp_str_dup(%s)", r);
       }
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
-      else if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc >= 2) {
-        /* several candidates: true when any matches (receiver bound once) */
-        int tv = ++g_tmp;
-        const char *fn = sp_streq(name, "start_with?") ? "sp_str_start_with" : "sp_str_end_with";
-        buf_printf(b, "({ const char *_t%d = %s; (", tv, r);
-        for (int j = 0; j < argc; j++) {
-          if (j) buf_puts(b, " || ");
-          buf_printf(b, "%s(_t%d, ", fn, tv);
-          emit_str_expr(c, argv[j], b);
-          buf_puts(b, ")");
-        }
-        buf_puts(b, "); })");
-      }
       else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s.start_with?(/re/): true when the pattern matches at index 0 */
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
@@ -8959,11 +8977,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                      tk, hl, hd, tk, r, tk);
         }
         else { buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      }
-      else if ((sp_streq(name, "squeeze") || sp_streq(name, "delete") || sp_streq(name, "count")) && argc >= 2) {
-        buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", name, r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
       }
       else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
       else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }

@@ -1408,6 +1408,9 @@ int emit_op_fiber_transfer(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_fiber_raise(Compiler *c, const BopCtx *x, Buf *b);
 /* Complex and Rational row emitters (codegen_call_numeric.c) */
 int emit_op_rational_round(Compiler *c, const BopCtx *x, Buf *b);
+/* String row emitters (codegen_call_recv.c) */
+int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_str_affix_any(Compiler *c, const BopCtx *x, Buf *b);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,

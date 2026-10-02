@@ -38,6 +38,9 @@ typedef enum {
   BOPE_FIBER_RAISE,       /* Fiber#raise */
   /* Complex and Rational (codegen_call_numeric.c) */
   BOPE_RATIONAL_ROUND,    /* Rational#round/floor/ceil/truncate with digits or half: */
+  /* String (codegen_call_recv.c) */
+  BOPE_STR_SET_N,         /* String#squeeze / #delete / #count over several sets */
+  BOPE_STR_AFFIX_ANY,     /* String#start_with? / #end_with? over several candidates */
   BOPE__COUNT
 } BopEmit;
 
