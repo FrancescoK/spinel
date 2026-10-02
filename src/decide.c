@@ -135,15 +135,20 @@ static int decide_key(const char *key) {
   return 1;
 }
 
+/* A key is as long as its parts. One cut to fit a buffer could spell another
+   key, and the two decisions would be allowed, denied and named as one. */
 int decide_fn_keyed(const char *kind, const char *site, const char *name) {
-  char buf[4608];
-  if (name && *name) snprintf(buf, sizeof buf, "%s@%s:%s", kind, site, name);
-  else snprintf(buf, sizeof buf, "%s@%s", kind, site);
-  return decide_key(buf);
+  static char *key = NULL; static size_t cap = 0;
+  int named = name && *name;
+  size_t need = strlen(kind) + strlen(site) + (named ? strlen(name) : 0) + 3;
+  if (need > cap) { cap = need * 2; key = realloc(key, cap); }
+  if (named) snprintf(key, cap, "%s@%s:%s", kind, site, name);
+  else snprintf(key, cap, "%s@%s", kind, site);
+  return decide_key(key);
 }
 
 const char *decide_node_site(const NodeTable *nt, int id) {
-  static char site[4200];
+  static char *site = NULL; static size_t cap = 0;
   if (!g_decide_on) return "";
   int line = (int)nt_int(nt, id, "node_line", 0);
   /* a node some rewrite made without copying a position: all of them of one
@@ -153,7 +158,9 @@ const char *decide_node_site(const NodeTable *nt, int id) {
   if (!file || !*file) file = nt->source_file;
   if (!file || !*file) file = "source.rb";
   /* the parser's column counts from 0; a position a person reads counts from 1 */
-  snprintf(site, sizeof site, "%s:%d:%d", file, line, (int)nt_int(nt, id, "node_col", 0) + 1);
+  size_t need = strlen(file) + 32;
+  if (need > cap) { cap = need * 2; site = realloc(site, cap); }
+  snprintf(site, cap, "%s:%d:%d", file, line, (int)nt_int(nt, id, "node_col", 0) + 1);
   return site;
 }
 

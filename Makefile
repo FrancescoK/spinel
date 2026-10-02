@@ -1080,7 +1080,7 @@ test-run: decisions-test
 # keys themselves: a method's, an ivar's, one read's; and that denying a kind
 # with a whole-program switch of its own emits what the switch emits. Every
 # kind changes some program's C when it is denied: a key that gates nothing
-# would be named by no bisect.
+# would be named by no bisect. A key holds the whole of a long name.
 # Each kind also has its row in the table in tools/README.md.
 DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
                  test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
@@ -1107,6 +1107,11 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	  { echo "decisions-test: FAIL (a log named as the source was written over it)"; ok=0; }; \
 	$(SPINEL) --force --decisions-log="$$tmp/src.rb" "$$tmp/src.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1 && [ ! -s "$$tmp/src.rb" ] || \
 	  { echo "decisions-test: FAIL (--force did not let a log replace a file that is not one)"; ok=0; }; \
+	n=$$(printf 'm%0700d' 0); \
+	printf 'class Sprites\n  def initialize; @s = [[1, 2], [3]]; end\n  def %sa(i) = @s[i].size\n  def %sb(i) = @s[i].first\nend\ns = Sprites.new\np s.%sa(0), s.%sb(1)\n' $$n $$n $$n $$n > "$$tmp/long.rb"; \
+	$(SPINEL) --decisions-log="$$tmp/long.keys" "$$tmp/long.rb" -c -o "$$tmp/o.c" >/dev/null 2>&1; \
+	grep -q "#$${n}a$$" "$$tmp/long.keys" && grep -q "#$${n}b$$" "$$tmp/long.keys" || \
+	  { echo "decisions-test: FAIL (two methods whose names differ after 700 characters do not each have a key)"; ok=0; }; \
 	for f in $(DECISION_TESTS); do \
 	  t=$$tmp/$$(basename $$f .rb); \
 	  $(SPINEL) $$f -c -o "$$t.c" >/dev/null 2>&1 && cp "$$t.c" "$$t.plain" && \

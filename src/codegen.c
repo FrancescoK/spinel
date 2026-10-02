@@ -3332,12 +3332,13 @@ static void fi_build(Compiler *c) {
    the compiler knows the class by: its last constant, or the whole path
    joined by `__` (A__Foo) when two classes share that. */
 static const char *decide_method_site(Compiler *c, Scope *s) {
-  static char site[640];
+  static char *site = NULL; static size_t cap = 0;
   if (!g_decide_on) return "";
   if (!s->name) return "main";
-  if (s->class_id >= 0)
-    snprintf(site, sizeof site, "%s%s%s", c->classes[s->class_id].name, s->is_cmethod ? "." : "#", s->name);
-  else snprintf(site, sizeof site, "#%s", s->name);
+  const char *cls = s->class_id >= 0 ? c->classes[s->class_id].name : "";
+  size_t need = strlen(cls) + strlen(s->name) + 2;
+  if (need > cap) { cap = need * 2; site = realloc(site, cap); }
+  snprintf(site, cap, "%s%s%s", cls, s->class_id >= 0 && s->is_cmethod ? "." : "#", s->name);
   return site;
 }
 
