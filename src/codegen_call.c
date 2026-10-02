@@ -22572,9 +22572,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         int tm = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tm); emit_boxed(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tm);
-        int ta0 = g_tmp + 1;
+        /* each argument's own temp: an argument's emission may take temps
+           of its own (a nested call) */
+        int *tas = malloc(sizeof(int) * (size_t)argc);
         for (int a = 0; a < argc; a++) {
           int ta = ++g_tmp;
+          tas[a] = ta;
           buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[a], b);
           buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta);
         }
@@ -22582,7 +22585,8 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         for (int a = 0; a < argc; a++) buf_puts(b, "sp_poly_hash_merge_blk(");
         buf_printf(b, "_t%d", tm);
         for (int a = 0; a < argc; a++)
-          buf_printf(b, ", _t%d, _t%d, \"%s\")", ta0 + a, mblk, nt_str(nt, id, "name"));
+          buf_printf(b, ", _t%d, _t%d, \"%s\")", tas[a], mblk, nt_str(nt, id, "name"));
+        free(tas);
         buf_puts(b, "; })");
         return 1;
       }

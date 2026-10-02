@@ -15791,6 +15791,7 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk);
 static sp_RbVal sp_poly_fetch(sp_RbVal recv, sp_RbVal key, int has_dflt, sp_RbVal dflt);
 static sp_RbVal sp_poly_fetch_blk(sp_RbVal recv, sp_RbVal key, sp_Proc *blk) {
   SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(key); SP_GC_ROOT(blk);
+  if (!blk) return sp_poly_fetch(recv, key, 0, sp_box_nil());   /* `&b` with b nil */
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
     if (sp_poly_has_key(recv, key)) return sp_poly_index_poly(recv, key);
     return sp_penum_call1(blk, key);
@@ -15821,7 +15822,7 @@ static sp_RbVal sp_poly_hash_merge_blk(sp_RbVal recv, sp_RbVal other, sp_Proc *b
     sp_RbVal k, v;
     sp_poly_hash_pair(other, i, &k, &v);
     SP_GC_ROOT_RBVAL(k); SP_GC_ROOT_RBVAL(v);
-    if (sp_poly_has_key(recv, k)) {
+    if (blk && sp_poly_has_key(recv, k)) {   /* no block (`&b` with b nil): the new value */
       sp_RbVal old = sp_poly_index_poly(recv, k);
       SP_GC_ROOT_RBVAL(old);
       sp_int a[16] = {0};

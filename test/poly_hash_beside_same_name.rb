@@ -116,3 +116,10 @@ g = [{"a" => 1}, U3.new][0]
 p g.update({"a" => 2}, {"a" => 3}) { |k, o, n| o * n }
 ar = [[10, 20], U3.new][0]
 p ar.fetch(9.9) { |i| i }
+
+# a nested call among merge!'s Hashes; a block argument that is nil
+h1 = [{ "q" => 1 }, 1][0]
+y = [{ "a" => 1 }, 1][0]
+p y.update(h1.update({ "q" => 5 }) { |k, o, n| n }, { "z" => 2 }) { |k, o, n| n }
+blk = nil
+p y.fetch("a", &blk), y.update({ "a" => 9 }, &blk)
