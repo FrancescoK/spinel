@@ -267,6 +267,8 @@ static char *cstr(pm_constant_id_t id) {
   return buf;
 }
 
+static void sp_find_builtin_ranges(const char *src);
+static int sp_in_builtin(const uint8_t *at);
 #include "sp_macro.c"
 
 /* ---- String escaping ---- */
