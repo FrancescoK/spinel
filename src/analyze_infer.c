@@ -4043,16 +4043,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* TY_FIBER instance methods */
+  /* Fiber: builtin-op rows (builtin_ops.c) */
   if (recv >= 0 && rt == TY_FIBER) {
-    if (sp_streq(name, "resume") || sp_streq(name, "transfer") || sp_streq(name, "raise")) return TY_POLY;
-    if (sp_streq(name, "__storage_get") || sp_streq(name, "__storage_set")) return TY_POLY;
-    if (sp_streq(name, "alive?")) return TY_BOOL;
-    if (sp_streq(name, "value")) return TY_POLY;
-    if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
-    if (sp_streq(name, "storage") && argc == 0) return TY_POLY;   /* a Hash copy, or nil */
-    if (sp_streq(name, "storage=") && argc == 1) return TY_POLY;
-    if (sp_streq(name, "blocking?") && argc == 0) return TY_BOOL;
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
   /* Object's identity protocol on the native kinds: typed from the same
@@ -4068,27 +4062,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     return TY_BOOL;
   }
 
-  /* universal query methods on the concurrency handles (#3124) */
+  /* Thread, Queue, Mutex and ConditionVariable: builtin-op rows
+     (builtin_ops.c), the universal queries (#3124) among them. Queue's,
+     Mutex's and ConditionVariable's rules sat below the TY_POLY rules
+     that follow, which no handle reaches. */
   if (recv >= 0 && (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX ||
-                    rt == TY_CONDVAR) && argc == 0) {
-    if (sp_streq(name, "class")) return TY_CLASS;
-    if (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) return TY_BOOL;
-    if (sp_streq(name, "itself")) return rt;
-  }
-  /* TY_THREAD instance methods */
-  if (recv >= 0 && rt == TY_THREAD) {
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
-    if (sp_streq(name, "value")) return TY_POLY;
-    if (sp_streq(name, "join") || sp_streq(name, "kill") || sp_streq(name, "exit") ||
-        sp_streq(name, "terminate") || sp_streq(name, "raise")) return TY_THREAD;   /* return self */
-    if (sp_streq(name, "alive?") || sp_streq(name, "stop?")) return TY_BOOL;
-    if (sp_streq(name, "wakeup") || sp_streq(name, "run")) return TY_THREAD;   /* return self */
-    if (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception=")) return TY_BOOL;
-    if (sp_streq(name, "status") || sp_streq(name, "[]") || sp_streq(name, "[]=") ||
-        sp_streq(name, "thread_variable_get") || sp_streq(name, "thread_variable_set") ||
-        sp_streq(name, "name") || sp_streq(name, "name=")) return TY_POLY;
-    if (sp_streq(name, "key?") || sp_streq(name, "thread_variable?") || sp_streq(name, "equal?")) return TY_BOOL;
-    if (sp_streq(name, "keys") && argc == 0) return TY_POLY_ARRAY;
+                    rt == TY_CONDVAR)) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
   }
 
   /* Array#push / #append / #unshift / #prepend answer the RECEIVER, and on a
@@ -4145,31 +4126,6 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         return TY_POLY;
     }
     return TY_INT;
-  }
-
-  /* TY_QUEUE instance methods */
-  if (recv >= 0 && rt == TY_QUEUE) {
-    if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) return TY_POLY;
-    if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq") ||
-        sp_streq(name, "close") || sp_streq(name, "clear")) return TY_QUEUE;   /* return self */
-    if (sp_streq(name, "size") || sp_streq(name, "length") || sp_streq(name, "max") ||
-        sp_streq(name, "num_waiting")) return TY_INT;
-    if (sp_streq(name, "empty?") || sp_streq(name, "closed?")) return TY_BOOL;
-  }
-
-  /* TY_MUTEX instance methods */
-  if (recv >= 0 && rt == TY_MUTEX) {
-    if (sp_streq(name, "lock") || sp_streq(name, "unlock")) return TY_MUTEX;   /* return self */
-    if (sp_streq(name, "try_lock") || sp_streq(name, "locked?") || sp_streq(name, "owned?")) return TY_BOOL;
-    if (sp_streq(name, "synchronize")) return TY_POLY;   /* the block's result */
-    if (sp_streq(name, "sleep")) return TY_POLY;   /* nil on a timeout, else the seconds */
-  }
-
-  /* TY_CONDVAR instance methods */
-  if (recv >= 0 && rt == TY_CONDVAR) {
-    /* #wait answers nil (timed out) or the Integer seconds slept, as CRuby */
-    if (sp_streq(name, "wait")) return TY_POLY;
-    if (sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
   /* Process::Tms: builtin-op rows (builtin_ops.c), looked up where its

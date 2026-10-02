@@ -3568,8 +3568,8 @@ static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b
 /* fn(recv, value, count) for resume/transfer, or fn(value) for Fiber.yield
    (recv NULL). With a splat the values are only known at run time, so they
    are packed there: none is nil, one is itself, more are an array. */
-static void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
-                                 int argc, const int *argv, Buf *b) {
+void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,
+                          int argc, const int *argv, Buf *b) {
   int splat = 0;
   for (int k = 0; k < argc; k++) {
     const char *ty = nt_type(c->nt, argv[k]);
@@ -3686,8 +3686,8 @@ static void emit_exc_msg_arg(Compiler *c, int arg, Buf *b) {
    because sp_exc_class_name/_message are TU-static (unreachable from the
    runtime), so the runtime takes (cls, msg, obj). `ctype` is the receiver's
    C type, `pfx` the temp-name letter, `fn` the runtime raise function. */
-static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int *argv,
-                                   const char *ctype, char pfx, const char *fn, Buf *b) {
+void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int *argv,
+                            const char *ctype, char pfx, const char *fn, Buf *b) {
   const NodeTable *nt = c->nt;
   TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
@@ -3732,394 +3732,6 @@ static void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, con
   }
   else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
   buf_puts(b, ")");
-}
-
-static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
-  const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver");
-  int argc;
-  const int *argv = call_args(nt, id, &argc);
-  /* Thread instance methods (a green thread on the scheduler) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_THREAD) {
-    if (sp_streq(name, "value") && argc == 0) {
-      buf_puts(b, "sp_Thread_value("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "join") && argc == 0) {
-      buf_puts(b, "sp_Thread_join("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "join") && argc == 1) {
-      /* CRuby: Thread#join(limit) -- wait at most `limit` seconds, return
-         self on completion, nil on timeout. The runtime parks the caller
-         via sp_sleep for the deadline. The arg is emitted via
-         emit_float_expr so a poly value is unboxed through sp_poly_to_f
-         (matching CRuby's "can't convert X into Float" for non-numerics)
-         while a native float passes through unchanged. */
-      buf_puts(b, "sp_Thread_join_timeout("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_float_expr(c, argv[0], b);
-      buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "alive?") && argc == 0) {
-      buf_puts(b, "sp_Thread_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "report_on_exception") && argc == 0) {
-      buf_puts(b, "sp_Thread_get_report("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "report_on_exception=") && argc == 1) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t);
-      emit_coerce(c, argv[0], TY_BOOL, CO_CONVERT, "Thread#report_on_exception=", b);
-      buf_puts(b, "); })");
-      return 1;
-    }
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-      buf_puts(b, "sp_Thread_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "status") && argc == 0) {
-      buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "name") && argc == 0) {
-      buf_puts(b, "sp_Thread_get_name("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "name=") && argc == 1) {
-      buf_puts(b, "sp_Thread_set_name("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1;
-    }
-    if ((sp_streq(name, "kill") || sp_streq(name, "exit") || sp_streq(name, "terminate")) && argc == 0) {
-      buf_puts(b, "sp_Thread_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if ((sp_streq(name, "wakeup") || sp_streq(name, "run")) && argc == 0) {
-      buf_printf(b, "sp_Thread_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "stop?") && argc == 0) {
-      buf_puts(b, "sp_Thread_stop_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "equal?") && argc == 1 && comp_ntype(c, argv[0]) == TY_THREAD) {
-      buf_puts(b, "((void *)("); emit_expr(c, recv, b);
-      buf_puts(b, ") == (void *)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1;
-    }
-    if (sp_streq(name, "raise")) {
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_thread", 't', "sp_Thread_raise", b);
-      free(rb.p);
-      return 1;
-    }
-    /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
-    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "key?") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
-    }
-    /* thread_variable_get / _set / ? are the thread-local spellings of the
-       same store here (`[]` is fiber-local in CRuby; this runtime keeps one
-       table per thread for both) -- activesupport's IsolatedExecutionState
-       accessor on Thread reads it */
-    int tv_get = sp_streq(name, "thread_variable_get"), tv_set = sp_streq(name, "thread_variable_set"),
-        tv_key = sp_streq(name, "thread_variable?");
-    if (((sp_streq(name, "[]") || sp_streq(name, "key?") || tv_get || tv_key) && argc == 1) ||
-        ((sp_streq(name, "[]=") || tv_set) && argc == 2)) {
-      int tt = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
-      buf_printf(b, "({ sp_thread *_t%d = ", tt); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tt, tk); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tk);
-      if (argc == 2) {
-        buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
-      }
-      buf_printf(b, " sp_Thread_tls_%s(_t%d, sp_thread_local_key(_t%d)",
-                 argc == 2 ? "set" : (sp_streq(name, "[]") || tv_get) ? "get" : "key", tt, tk);
-      if (argc == 2) buf_printf(b, ", _t%d", tv);
-      buf_puts(b, "); })"); return 1;
-    }
-    if (sp_streq(name, "keys") && argc == 0) {
-      buf_puts(b, "sp_Thread_tls_keys("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-  }
-
-  /* Mutex instance methods. synchronize is handled by the generic block handler
-     below (it wraps the block in lock/unlock for a TY_MUTEX receiver). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_MUTEX) {
-    if ((sp_streq(name, "lock") || sp_streq(name, "unlock")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_mutex *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Mutex_%s(_t%d); _t%d; })", sp_streq(name, "lock") ? "lock" : "unlock", t, t);
-      return 1;
-    }
-    if (sp_streq(name, "try_lock") && argc == 0) {
-      buf_puts(b, "sp_Mutex_try_lock("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "locked?") && argc == 0) {
-      buf_puts(b, "sp_Mutex_locked("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "owned?") && argc == 0) {
-      buf_puts(b, "sp_Mutex_owned("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    /* #sleep / #sleep(timeout): nil (or no argument) sleeps until #wakeup */
-    if (sp_streq(name, "sleep") && argc <= 1) {
-      TyKind st = argc == 1 ? comp_ntype(c, argv[0]) : TY_NIL;
-      int tm = ++g_tmp;
-      buf_printf(b, "({ sp_mutex *_t%d = ", tm); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tm);   /* it may be the only reference while we park */
-      if (argc == 0) buf_printf(b, "sp_Mutex_sleep(_t%d, 0, 0.0); })", tm);
-      else if (st == TY_INT || st == TY_FLOAT) {
-        buf_printf(b, "sp_Mutex_sleep(_t%d, 1, (double)(", tm); emit_expr(c, argv[0], b); buf_puts(b, ")); })");
-      }
-      else if (st == TY_NIL) {
-        buf_puts(b, "(void)("); emit_expr(c, argv[0], b);
-        buf_printf(b, "); sp_Mutex_sleep(_t%d, 0, 0.0); })", tm);
-      }
-      else {   /* a boxed timeout: nil means none */
-        int ta = ++g_tmp;
-        buf_printf(b, "sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_Mutex_sleep(_t%d, 0, 0.0)"
-                      " : sp_Mutex_sleep(_t%d, 1, sp_poly_time_interval(_t%d)); })", ta, tm, tm, ta);
-      }
-      return 1;
-    }
-  }
-
-  /* ConditionVariable instance methods */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_CONDVAR) {
-    if (sp_streq(name, "wait") && argc >= 1 && argc <= 2) {
-      /* wait(mutex): release the mutex, park, re-acquire. The 2-arg
-         `wait(mutex, timeout)` form uses the scheduler's deadline queue.
-         A nil timeout means no deadline, and non-positive timeouts take the
-         existing release-and-reacquire path without parking. The value is
-         the runtime's answer: nil on a timeout, else the seconds slept. */
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
-      if (argc == 1) {
-        buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
-        buf_puts(b, "); })");
-      }
-      else {
-        /* argv[0] is the mutex, argv[1] is the timeout */
-        int to_arg = argv[1];
-        const char *aty = nt_type(c->nt, to_arg);
-        if (aty && sp_streq(aty, "IntegerNode") &&
-            (int)nt_int(c->nt, to_arg, "value", 0) == 0) {
-          buf_printf(b, "; sp_CondVar_wait_nb(_t%d, ", t); emit_expr(c, argv[0], b);
-          buf_puts(b, "); })");
-        }
-        else if (nt_kind(c->nt, to_arg) == NK_NilNode) {
-          buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
-          buf_puts(b, "); })");
-        }
-        else if (comp_ntype(c, to_arg) == TY_NIL) {
-          /* A non-literal nil expression (for example, a method returning
-             nil) still has to run for its side effects, then means no timeout. */
-          int m = ++g_tmp;
-          buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
-          buf_puts(b, "; (void)("); emit_expr(c, to_arg, b);
-          buf_printf(b, "); sp_CondVar_wait(_t%d, _m%d); })", t, m);
-        }
-        else {
-          int m = ++g_tmp;
-          buf_printf(b, "; sp_mutex *_m%d = ", m); emit_expr(c, argv[0], b);
-          if (comp_ntype(c, to_arg) == TY_POLY || comp_ntype(c, to_arg) == TY_UNKNOWN) {
-            int timeout = ++g_tmp;
-            buf_printf(b, "; sp_RbVal _timeout%d = ", timeout); emit_boxed(c, to_arg, b);
-            buf_printf(b, "; _timeout%d.tag == SP_TAG_NIL ? sp_CondVar_wait(_t%d, _m%d) "
-                          ": sp_CondVar_wait_timeout(_t%d, _m%d, sp_poly_to_f_with_rational(_timeout%d)); })",
-                       timeout, t, m, t, m, timeout);
-          }
-          else {
-            int timeout = ++g_tmp;
-            buf_printf(b, "; double _timeout%d = ", timeout); emit_float_expr(c, to_arg, b);
-            buf_printf(b, "; sp_CondVar_wait_timeout(_t%d, _m%d, _timeout%d); })",
-                       t, m, timeout);
-          }
-        }
-      }
-      return 1;
-    }
-    if ((sp_streq(name, "signal") || sp_streq(name, "broadcast")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_CondVar_%s(_t%d); _t%d; })", sp_streq(name, "signal") ? "signal" : "broadcast", t, t);
-      return 1;
-    }
-  }
-
-  /* Queue instance methods (a thread-safe FIFO on the scheduler) */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
-    int kwh = argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
-    int pos_argc = kwh >= 0 ? argc - 1 : argc;
-    int timeout_arg = kwh >= 0 ? struct_kwarg_value(c, kwh, "timeout") : -1;
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) &&
-        pos_argc >= 1 && pos_argc <= 2) {
-      int timed = timeout_arg >= 0;
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
-      int v = ++g_tmp;
-      buf_printf(b, "; sp_RbVal _v%d = ", v); emit_boxed(c, argv[0], b);
-      if (!timed && pos_argc == 1) {
-        buf_printf(b, "; sp_Queue_push(_t%d, _v%d); _t%d; })", t, v, t);
-        return 1;
-      }
-      /* The non_block and timeout expressions below may allocate; the pushed
-         value sits only in this C local until the runtime roots it. */
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d)", v);
-      int nb = -1;
-      if (pos_argc == 2) {
-        nb = ++g_tmp;
-        buf_printf(b, "; sp_RbVal _nb%d = ", nb); emit_boxed(c, argv[1], b);
-      }
-      if (!timed) {
-        if (nb < 0) buf_printf(b, "; sp_Queue_push(_t%d, _v%d); _t%d; })", t, v, t);
-        else buf_printf(b, "; sp_Queue_push_options_check(_t%d, 1, 0); sp_poly_truthy(_nb%d) ? (sp_Queue_push_nb(_t%d, _v%d), _t%d) : (sp_Queue_push(_t%d, _v%d), _t%d); })",
-                        t, nb, t, v, t, t, v, t);
-        return 1;
-      }
-      int to = ++g_tmp;
-      buf_printf(b, "; sp_RbVal _timeout%d = ", to); emit_boxed(c, timeout_arg, b);
-      buf_puts(b, "; ");
-      buf_printf(b, "sp_Queue_push_options_check(_t%d, %d, 1); ", t, nb >= 0);
-      if (nb >= 0) buf_printf(b, "if (sp_poly_truthy(_nb%d) && sp_poly_truthy(_timeout%d)) sp_raise_cls(\"ArgumentError\", \"can't set a timeout if non_block is enabled\"); ", nb, to);
-      buf_printf(b, "_timeout%d.tag == SP_TAG_NIL ? ", to);
-      if (nb >= 0) buf_printf(b, "(sp_poly_truthy(_nb%d) ? (sp_Queue_push_nb(_t%d, _v%d), _t%d) : (sp_Queue_push(_t%d, _v%d), _t%d)) : ", nb, t, v, t, t, v, t);
-      else buf_printf(b, "(sp_Queue_push(_t%d, _v%d), _t%d) : ", t, v, t);
-      buf_printf(b, "(sp_Queue_push_timeout(_t%d, _v%d, sp_poly_to_f_with_rational(_timeout%d)) ? _t%d : NULL); })",
-                 t, v, to, t);
-      return 1;
-    }
-    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) &&
-        pos_argc <= 1) {
-      int timed = timeout_arg >= 0;
-      if (!timed && pos_argc == 0) {
-        buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-      }
-      /* Keep the literal non_block cases on their direct runtime arms. A
-         false/nil literal means blocking; true means no_wait. */
-      if (!timed && pos_argc == 1) {
-        const char *aty = nt_type(nt, argv[0]);
-        if (aty && (sp_streq(aty, "FalseNode") || sp_streq(aty, "NilNode"))) {
-          int q = ++g_tmp;
-          buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
-          buf_printf(b, "; sp_Queue_pop(_q%d); })", q); return 1;
-        }
-        if (aty && sp_streq(aty, "TrueNode")) {
-          int q = ++g_tmp;
-          buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
-          buf_printf(b, "; sp_Queue_pop_nb(_q%d); })", q); return 1;
-        }
-      }
-      int q = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_q%d = ", q); emit_expr(c, recv, b);
-      int nb = -1;
-      if (pos_argc == 1) {
-        nb = ++g_tmp;
-        buf_printf(b, "; sp_RbVal _nb%d = ", nb); emit_boxed(c, argv[0], b);
-      }
-      if (!timed) {
-        if (nb < 0) buf_printf(b, "; sp_Queue_pop(_q%d); })", q);
-        else buf_printf(b, "; sp_poly_truthy(_nb%d) ? sp_Queue_pop_nb(_q%d) : sp_Queue_pop(_q%d); })", nb, q, q);
-        return 1;
-      }
-      int to = ++g_tmp;
-      buf_printf(b, "; sp_RbVal _timeout%d = ", to); emit_boxed(c, timeout_arg, b);
-      buf_puts(b, "; ");
-      if (nb >= 0) buf_printf(b, "if (sp_poly_truthy(_nb%d) && sp_poly_truthy(_timeout%d)) sp_raise_cls(\"ArgumentError\", \"can't set a timeout if non_block is enabled\"); ", nb, to);
-      buf_printf(b, "_timeout%d.tag == SP_TAG_NIL ? ", to);
-      if (nb >= 0) buf_printf(b, "(sp_poly_truthy(_nb%d) ? sp_Queue_pop_nb(_q%d) : sp_Queue_pop(_q%d)) : ", nb, q, q);
-      else buf_printf(b, "sp_Queue_pop(_q%d) : ", q);
-      buf_printf(b, "sp_Queue_pop_timeout(_q%d, sp_poly_to_f_with_rational(_timeout%d)); })", q, to);
-      return 1;
-    }
-    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
-      buf_puts(b, "sp_Queue_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "max") && argc == 0) {
-      buf_puts(b, "sp_Queue_max("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "num_waiting") && argc == 0) {
-      buf_puts(b, "sp_Queue_num_waiting("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "empty?") && argc == 0) {
-      buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "closed?") && argc == 0) {
-      buf_puts(b, "sp_Queue_closed("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if ((sp_streq(name, "close") || sp_streq(name, "clear")) && argc == 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Queue_%s(_t%d); _t%d; })", sp_streq(name, "close") ? "close" : "clear", t, t);
-      return 1;
-    }
-  }
-
-  /* Fiber instance methods */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
-    if (sp_streq(name, "resume")) {
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_fiber_pass_call(c, "sp_Fiber_resume_n", rb.p ? rb.p : "NULL", argc, argv, b);
-      free(rb.p);
-      return 1;
-    }
-    if (sp_streq(name, "alive?")) {
-      buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "blocking?") && argc == 0) {
-      buf_puts(b, "sp_Fiber_blocking_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    /* the fiber's own storage by a literal key: what a `Fiber.attr_accessor`
-       reader and writer (desugar_handle_attr_accessor) read and write on self */
-    if (sp_streq(name, "__storage_get") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      buf_puts(b, "sp_Fiber_attr_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "__storage_set") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_attr_set(", tv); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv); return 1;
-    }
-    if (sp_streq(name, "kill") && argc == 0) {
-      buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "transfer")) {
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_fiber_pass_call(c, "sp_Fiber_transfer_n", rb.p ? rb.p : "NULL", argc, argv, b);
-      free(rb.p);
-      return 1;
-    }
-    if (sp_streq(name, "value")) {
-      /* Fiber#value: resume until fiber finishes and return last yielded value. */
-      buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b); buf_puts(b, ", sp_box_nil())");
-      return 1;
-    }
-    if (sp_streq(name, "raise")) {
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_concurrency_raise(c, rb.p ? rb.p : "NULL", argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", b);
-      free(rb.p);
-      return 1;
-    }
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
-      buf_puts(b, "sp_Fiber_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    /* the running fiber's storage as a Hash copy, or replaced by one */
-    if (sp_streq(name, "storage") && argc == 0) {
-      buf_puts(b, "sp_Fiber_storage_hash("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    if (sp_streq(name, "storage=") && argc == 1) {
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Fiber_storage_assign(", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d); _t%d; })", tv, tv);
-      return 1;
-    }
-  }
-  return 0;
 }
 
 /* A Rational read as the Float an epsilon slot takes. */
@@ -32708,26 +32320,6 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(sp_proc_root("); emit_expr(c, recv, b); buf_puts(b, ") == sp_proc_root(");
     emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
   }
-  /* the concurrency handles: NULL encodes nil, as it does for an exception or
-     an enumerator. This used to answer a flat false on the reasoning that a
-     handle is a live C pointer, but the slot holding one need not be: `@t =
-     nil` then `if @t.nil?` folded to false, so the guarded `Thread.new` never
-     ran and every later call went through the NULL the ivar still held. They
-     DO freeze -- see the freeze/frozen? arm in emit_call_recv, which carries
-     the GC-header bit the way every other heap instance does; that one used to
-     answer a flat false here too and swallow the state (#3483). */
-  {
-    TyKind hrt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
-    if ((hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX || hrt == TY_CONDVAR) &&
-        argc == 0 && sp_streq(name, "nil?")) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
-      return;
-    }
-    if ((hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX || hrt == TY_CONDVAR) &&
-        argc == 0 && sp_streq(name, "itself")) {
-      emit_expr(c, recv, b); return;
-    }
-  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "frozen?")) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return;
   }
@@ -32749,7 +32341,13 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); return;
   }
 
-  if (emit_or_take_back(c, id, b, emit_concurrency_call)) return;
+  /* the concurrency handles: builtin-op rows (builtin_ops.c). nil? and
+     itself sat above the Proc arms, which no handle reaches. */
+  if (recv >= 0) {
+    TyKind hrt = comp_ntype(c, recv);
+    if ((hrt == TY_FIBER || hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX ||
+         hrt == TY_CONDVAR) && emit_builtin_op(c, id, recv, hrt, name, b)) return;
+  }
 
   /* A blockless iterator answers an Enumerator instead (defined above). */
   if (emit_or_take_back(c, id, b, emit_blockless_enumerator)) return;

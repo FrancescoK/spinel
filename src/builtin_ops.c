@@ -439,6 +439,176 @@ static const BuiltinOp bop_rows[] = {
   { TY_TIME, ">=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_TIME, "==",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
   { TY_TIME, "!=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  /* The concurrency handles: Fiber, Thread, Queue (SizedQueue too: one
+     kind, told apart at run time by its bound), Mutex and
+     ConditionVariable. Inference typed most names for any arity where
+     codegen emits only some, so a name often has a codegen row for its
+     arity and a wider BOPE_NONE row after it that only types the call. */
+
+  /* Fiber. #inspect / #to_s are emitted here but were never typed by the
+     Fiber rules, so they leave inference to the rules after them. */
+  { TY_FIBER, "resume",        0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_FIBER_RESUME },
+  { TY_FIBER, "transfer",      0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_FIBER_TRANSFER },
+  { TY_FIBER, "raise",         0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_FIBER_RAISE },
+  /* the fiber's own storage by a literal key: what a `Fiber.attr_accessor`
+     reader and writer (desugar_handle_attr_accessor) read and write on self */
+  { TY_FIBER, "__storage_get", 1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE, "sp_Fiber_attr_get($r, $e0)", TY_SYMBOL },
+  { TY_FIBER, "__storage_get", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_NONE },
+  { TY_FIBER, "__storage_set", 2, 2, BF_ANY, TY_POLY, BOPE_TEMPLATE,
+    "({ sp_RbVal _t$t = $b1; SP_GC_ROOT_RBVAL(_t$t); sp_Fiber_attr_set($r, $e0, _t$t); _t$t; })", TY_SYMBOL },
+  { TY_FIBER, "__storage_set", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_NONE },
+  { TY_FIBER, "alive?",        0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,    BOPE_TEMPLATE, "sp_Fiber_alive($r)" },
+  /* Fiber#value: resume until the fiber finishes, answering the last value */
+  { TY_FIBER, "value",         0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_TEMPLATE, "sp_Fiber_resume($r, sp_box_nil())" },
+  { TY_FIBER, "kill",          0, 0,            BF_ANY, TY_FIBER,   BOPE_TEMPLATE, "sp_Fiber_kill($r)" },
+  { TY_FIBER, "kill",          0, BOP_ARGC_ANY, BF_ANY, TY_FIBER,   BOPE_NONE },   /* the receiver */
+  /* the running fiber's storage as a Hash copy (or nil), or replaced by one */
+  { TY_FIBER, "storage",       0, 0,            BF_ANY, TY_POLY,    BOPE_TEMPLATE, "sp_Fiber_storage_hash($r)" },
+  { TY_FIBER, "storage=",      1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE,
+    "({ sp_RbVal _t$t = $b0; SP_GC_ROOT_RBVAL(_t$t); sp_Fiber_storage_assign($r, _t$t); _t$t; })" },
+  { TY_FIBER, "blocking?",     0, 0,            BF_ANY, TY_BOOL,    BOPE_TEMPLATE, "sp_Fiber_blocking_p($r)" },
+  { TY_FIBER, "inspect",       0, 0,            BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
+  { TY_FIBER, "to_s",          0, 0,            BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "sp_Fiber_inspect($r)" },
+
+  /* Thread (a green thread on the scheduler). The universal queries come
+     first for each handle kind (#3124). NULL encodes nil, as it does for an
+     exception: a slot holding a handle may hold nil, so nil? is not a flat
+     false (#3483); frozen? is emitted by emit_call_recv's arm, which reads
+     the GC header's bit. */
+  { TY_THREAD, "class",   0, 0, BF_ANY, TY_CLASS,  BOPE_NONE },
+  { TY_THREAD, "frozen?", 0, 0, BF_ANY, TY_BOOL,   BOPE_NONE },
+  { TY_THREAD, "nil?",    0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r) == NULL)" },
+  { TY_THREAD, "itself",  0, 0, BF_ANY, TY_THREAD, BOPE_TEMPLATE, "$r" },
+  { TY_THREAD, "inspect", 0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_Thread_inspect($r)" },
+  { TY_THREAD, "to_s",    0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_Thread_inspect($r)" },
+  { TY_THREAD, "value",   0, 0,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "sp_Thread_value($r)" },
+  { TY_THREAD, "value",   0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
+  /* join, kill, exit, terminate, raise, wakeup and run answer the receiver.
+     join(limit) waits at most limit seconds, nil on a timeout; the limit
+     goes through emit_float_expr, so a poly value is unboxed by
+     sp_poly_to_f (CRuby's "can't convert X into Float") */
+  { TY_THREAD, "join",      0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_join($r)" },
+  { TY_THREAD, "join",      1, 1,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_join_timeout($r, $f0)" },
+  { TY_THREAD, "join",      0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "kill",      0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_kill($r)" },
+  { TY_THREAD, "kill",      0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "exit",      0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_kill($r)" },
+  { TY_THREAD, "exit",      0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "terminate", 0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_kill($r)" },
+  { TY_THREAD, "terminate", 0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "raise",     0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_THREAD_RAISE },
+  { TY_THREAD, "wakeup",    0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_wakeup($r)" },
+  { TY_THREAD, "wakeup",    0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "run",       0, 0,            BF_ANY, TY_THREAD, BOPE_TEMPLATE, "sp_Thread_run($r)" },
+  { TY_THREAD, "run",       0, BOP_ARGC_ANY, BF_ANY, TY_THREAD, BOPE_NONE },
+  { TY_THREAD, "alive?",    0, 0,            BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_Thread_alive($r)" },
+  { TY_THREAD, "alive?",    0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,   BOPE_NONE },
+  { TY_THREAD, "stop?",     0, 0,            BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_Thread_stop_p($r)" },
+  { TY_THREAD, "stop?",     0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,   BOPE_NONE },
+  { TY_THREAD, "report_on_exception",  0, 0,            BF_ANY, TY_BOOL, BOPE_TEMPLATE, "sp_Thread_get_report($r)" },
+  { TY_THREAD, "report_on_exception",  0, BOP_ARGC_ANY, BF_ANY, TY_BOOL, BOPE_NONE },
+  { TY_THREAD, "report_on_exception=", 1, 1,            BF_ANY, TY_BOOL, BOPE_THREAD_SET_REPORT },
+  { TY_THREAD, "report_on_exception=", 0, BOP_ARGC_ANY, BF_ANY, TY_BOOL, BOPE_NONE },
+  { TY_THREAD, "status",    0, 0,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "sp_Thread_status($r)" },
+  { TY_THREAD, "status",    0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
+  { TY_THREAD, "name",      0, 0,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "sp_Thread_get_name($r)" },
+  { TY_THREAD, "name",      0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
+  { TY_THREAD, "name=",     1, 1,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "sp_Thread_set_name($r, $b0)" },
+  { TY_THREAD, "name=",     0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
+  { TY_THREAD, "equal?",    1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", TY_THREAD },
+  { TY_THREAD, "equal?",    0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,   BOPE_NONE },
+  /* thread-local storage: t[:key] / t[:key] = v / t.key?(:key) by a symbol
+     key directly, any other key through sp_thread_local_key.
+     thread_variable_get / _set / ? are the thread-local spellings of the
+     same store (`[]` is fiber-local in CRuby; this runtime keeps one table
+     per thread for both) -- activesupport's IsolatedExecutionState reads it */
+  { TY_THREAD, "[]",   1, 1, BF_ANY, TY_POLY, BOPE_TEMPLATE, "sp_Thread_tls_get($r, $e0)", TY_SYMBOL },
+  { TY_THREAD, "[]",   1, 1, BF_ANY, TY_POLY, BOPE_THREAD_TLS },
+  { TY_THREAD, "[]",   0, BOP_ARGC_ANY, BF_ANY, TY_POLY, BOPE_NONE },
+  { TY_THREAD, "[]=",  2, 2, BF_ANY, TY_POLY, BOPE_TEMPLATE, "sp_Thread_tls_set($r, $e0, $b1)", TY_SYMBOL },
+  { TY_THREAD, "[]=",  2, 2, BF_ANY, TY_POLY, BOPE_THREAD_TLS },
+  { TY_THREAD, "[]=",  0, BOP_ARGC_ANY, BF_ANY, TY_POLY, BOPE_NONE },
+  { TY_THREAD, "key?", 1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "sp_Thread_tls_key($r, $e0)", TY_SYMBOL },
+  { TY_THREAD, "key?", 1, 1, BF_ANY, TY_BOOL, BOPE_THREAD_TLS },
+  { TY_THREAD, "key?", 0, BOP_ARGC_ANY, BF_ANY, TY_BOOL, BOPE_NONE },
+  { TY_THREAD, "thread_variable_get", 1, 1,            BF_ANY, TY_POLY, BOPE_THREAD_TLS },
+  { TY_THREAD, "thread_variable_get", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY, BOPE_NONE },
+  { TY_THREAD, "thread_variable_set", 2, 2,            BF_ANY, TY_POLY, BOPE_THREAD_TLS },
+  { TY_THREAD, "thread_variable_set", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY, BOPE_NONE },
+  { TY_THREAD, "thread_variable?",    1, 1,            BF_ANY, TY_BOOL, BOPE_THREAD_TLS },
+  { TY_THREAD, "thread_variable?",    0, BOP_ARGC_ANY, BF_ANY, TY_BOOL, BOPE_NONE },
+  { TY_THREAD, "keys", 0, 0, BF_ANY, TY_POLY_ARRAY, BOPE_TEMPLATE, "sp_Thread_tls_keys($r)" },
+
+  /* Queue (a thread-safe FIFO on the scheduler). push and pop take a
+     non_block flag and a timeout: keyword, so their arity counts the
+     keyword hash; the emitter declines a form it does not take. push,
+     close and clear answer the receiver. */
+  { TY_QUEUE, "class",   0, 0, BF_ANY, TY_CLASS, BOPE_NONE },
+  { TY_QUEUE, "frozen?", 0, 0, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_QUEUE, "nil?",    0, 0, BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "(($r) == NULL)" },
+  { TY_QUEUE, "itself",  0, 0, BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "$r" },
+  { TY_QUEUE, "pop",     0, 2,            BF_ANY, TY_POLY,  BOPE_QUEUE_POP },
+  { TY_QUEUE, "pop",     0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
+  { TY_QUEUE, "shift",   0, 2,            BF_ANY, TY_POLY,  BOPE_QUEUE_POP },
+  { TY_QUEUE, "shift",   0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
+  { TY_QUEUE, "deq",     0, 2,            BF_ANY, TY_POLY,  BOPE_QUEUE_POP },
+  { TY_QUEUE, "deq",     0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
+  { TY_QUEUE, "push",    1, 3,            BF_ANY, TY_QUEUE, BOPE_QUEUE_PUSH },
+  { TY_QUEUE, "push",    0, BOP_ARGC_ANY, BF_ANY, TY_QUEUE, BOPE_NONE },
+  { TY_QUEUE, "<<",      1, 3,            BF_ANY, TY_QUEUE, BOPE_QUEUE_PUSH },
+  { TY_QUEUE, "<<",      0, BOP_ARGC_ANY, BF_ANY, TY_QUEUE, BOPE_NONE },
+  { TY_QUEUE, "enq",     1, 3,            BF_ANY, TY_QUEUE, BOPE_QUEUE_PUSH },
+  { TY_QUEUE, "enq",     0, BOP_ARGC_ANY, BF_ANY, TY_QUEUE, BOPE_NONE },
+  { TY_QUEUE, "close",   0, 0,            BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "({ sp_queue *_t$t = $r; sp_Queue_close(_t$t); _t$t; })" },
+  { TY_QUEUE, "close",   0, BOP_ARGC_ANY, BF_ANY, TY_QUEUE, BOPE_NONE },
+  { TY_QUEUE, "clear",   0, 0,            BF_ANY, TY_QUEUE, BOPE_TEMPLATE, "({ sp_queue *_t$t = $r; sp_Queue_clear(_t$t); _t$t; })" },
+  { TY_QUEUE, "clear",   0, BOP_ARGC_ANY, BF_ANY, TY_QUEUE, BOPE_NONE },
+  { TY_QUEUE, "size",    0, 0,            BF_ANY, TY_INT,   BOPE_TEMPLATE, "sp_Queue_size($r)" },
+  { TY_QUEUE, "size",    0, BOP_ARGC_ANY, BF_ANY, TY_INT,   BOPE_NONE },
+  { TY_QUEUE, "length",  0, 0,            BF_ANY, TY_INT,   BOPE_TEMPLATE, "sp_Queue_size($r)" },
+  { TY_QUEUE, "length",  0, BOP_ARGC_ANY, BF_ANY, TY_INT,   BOPE_NONE },
+  { TY_QUEUE, "max",     0, 0,            BF_ANY, TY_INT,   BOPE_TEMPLATE, "sp_Queue_max($r)" },
+  { TY_QUEUE, "max",     0, BOP_ARGC_ANY, BF_ANY, TY_INT,   BOPE_NONE },
+  { TY_QUEUE, "num_waiting", 0, 0,            BF_ANY, TY_INT, BOPE_TEMPLATE, "sp_Queue_num_waiting($r)" },
+  { TY_QUEUE, "num_waiting", 0, BOP_ARGC_ANY, BF_ANY, TY_INT, BOPE_NONE },
+  { TY_QUEUE, "empty?",  0, 0,            BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "sp_Queue_empty($r)" },
+  { TY_QUEUE, "empty?",  0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_QUEUE, "closed?", 0, 0,            BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "sp_Queue_closed($r)" },
+  { TY_QUEUE, "closed?", 0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,  BOPE_NONE },
+
+  /* Mutex. lock and unlock answer the receiver; synchronize, the block's
+     value, is emitted by the generic block handler; sleep answers nil on a
+     timeout, else the seconds slept. */
+  { TY_MUTEX, "class",       0, 0, BF_ANY, TY_CLASS, BOPE_NONE },
+  { TY_MUTEX, "frozen?",     0, 0, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_MUTEX, "nil?",        0, 0, BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "(($r) == NULL)" },
+  { TY_MUTEX, "itself",      0, 0, BF_ANY, TY_MUTEX, BOPE_TEMPLATE, "$r" },
+  { TY_MUTEX, "lock",        0, 0,            BF_ANY, TY_MUTEX, BOPE_TEMPLATE, "({ sp_mutex *_t$t = $r; sp_Mutex_lock(_t$t); _t$t; })" },
+  { TY_MUTEX, "lock",        0, BOP_ARGC_ANY, BF_ANY, TY_MUTEX, BOPE_NONE },
+  { TY_MUTEX, "unlock",      0, 0,            BF_ANY, TY_MUTEX, BOPE_TEMPLATE, "({ sp_mutex *_t$t = $r; sp_Mutex_unlock(_t$t); _t$t; })" },
+  { TY_MUTEX, "unlock",      0, BOP_ARGC_ANY, BF_ANY, TY_MUTEX, BOPE_NONE },
+  { TY_MUTEX, "try_lock",    0, 0,            BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "sp_Mutex_try_lock($r)" },
+  { TY_MUTEX, "try_lock",    0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_MUTEX, "locked?",     0, 0,            BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "sp_Mutex_locked($r)" },
+  { TY_MUTEX, "locked?",     0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_MUTEX, "owned?",      0, 0,            BF_ANY, TY_BOOL,  BOPE_TEMPLATE, "sp_Mutex_owned($r)" },
+  { TY_MUTEX, "owned?",      0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,  BOPE_NONE },
+  { TY_MUTEX, "synchronize", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
+  { TY_MUTEX, "sleep",       0, 1,            BF_ANY, TY_POLY,  BOPE_MUTEX_SLEEP },
+  { TY_MUTEX, "sleep",       0, BOP_ARGC_ANY, BF_ANY, TY_POLY,  BOPE_NONE },
+
+  /* ConditionVariable. #wait answers nil (timed out) or the Integer
+     seconds slept, as CRuby; signal and broadcast answer the receiver. */
+  { TY_CONDVAR, "class",     0, 0, BF_ANY, TY_CLASS,   BOPE_NONE },
+  { TY_CONDVAR, "frozen?",   0, 0, BF_ANY, TY_BOOL,    BOPE_NONE },
+  { TY_CONDVAR, "nil?",      0, 0, BF_ANY, TY_BOOL,    BOPE_TEMPLATE, "(($r) == NULL)" },
+  { TY_CONDVAR, "itself",    0, 0, BF_ANY, TY_CONDVAR, BOPE_TEMPLATE, "$r" },
+  { TY_CONDVAR, "wait",      1, 2,            BF_ANY, TY_POLY,    BOPE_CONDVAR_WAIT },
+  { TY_CONDVAR, "wait",      0, BOP_ARGC_ANY, BF_ANY, TY_POLY,    BOPE_NONE },
+  { TY_CONDVAR, "signal",    0, 0,            BF_ANY, TY_CONDVAR, BOPE_TEMPLATE, "({ sp_condvar *_t$t = $r; sp_CondVar_signal(_t$t); _t$t; })" },
+  { TY_CONDVAR, "signal",    0, BOP_ARGC_ANY, BF_ANY, TY_CONDVAR, BOPE_NONE },
+  { TY_CONDVAR, "broadcast", 0, 0,            BF_ANY, TY_CONDVAR, BOPE_TEMPLATE, "({ sp_condvar *_t$t = $r; sp_CondVar_broadcast(_t$t); _t$t; })" },
+  { TY_CONDVAR, "broadcast", 0, BOP_ARGC_ANY, BF_ANY, TY_CONDVAR, BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
@@ -451,10 +621,16 @@ static int bop_cmp_key(TyKind rt, const char *name, const BuiltinOp *r) {
   return strcmp(name, r->name);
 }
 
+/* within a name: narrowest arity first, then by argc_min, then as written */
 static int bop_sort_cmp(const void *a, const void *b) {
-  const BuiltinOp *x = &bop_rows[*(const int *)a], *y = &bop_rows[*(const int *)b];
+  int i = *(const int *)a, j = *(const int *)b;
+  const BuiltinOp *x = &bop_rows[i], *y = &bop_rows[j];
   int r = bop_cmp_key(x->recv, x->name, y);
-  return r ? r : x->argc_min - y->argc_min;
+  if (r) return r;
+  int wx = x->argc_max - x->argc_min, wy = y->argc_max - y->argc_min;
+  if (wx != wy) return wx - wy;
+  if (x->argc_min != y->argc_min) return x->argc_min - y->argc_min;
+  return i - j;
 }
 
 static void bop_build_index(void) {
@@ -471,6 +647,11 @@ static int bop_row_fits(const BuiltinOp *r, int argc, int has_block) {
 }
 
 const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) {
+  return bop_find_arg(rt, name, argc, has_block, NULL, NULL);
+}
+
+const BuiltinOp *bop_find_arg(TyKind rt, const char *name, int argc, int has_block,
+                              BopArgKind arg0_of, const void *ud) {
   if (!name) return NULL;
   if (!bop_indexed) bop_build_index();
   int lo = 0, hi = BOP_NROWS;
@@ -479,11 +660,20 @@ const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) 
     if (bop_cmp_key(rt, name, &bop_rows[bop_index[mid]]) > 0) lo = mid + 1;
     else hi = mid;
   }
-  /* rows of one name differ by arity or block form: take the first that fits */
+  /* rows of one name differ by arity, block form or arg0 guard: take the
+     first that fits */
+  TyKind a0 = TY_UNKNOWN;
+  int a0_known = 0;
   for (int i = lo; i < BOP_NROWS; i++) {
     const BuiltinOp *r = &bop_rows[bop_index[i]];
     if (bop_cmp_key(rt, name, r) != 0) break;
-    if (bop_row_fits(r, argc, has_block)) return r;
+    if (!bop_row_fits(r, argc, has_block)) continue;
+    if (r->arg0 != TY_UNKNOWN) {
+      if (!arg0_of || argc < 1) continue;
+      if (!a0_known) { a0 = arg0_of(ud); a0_known = 1; }
+      if (a0 != r->arg0) continue;
+    }
+    return r;
   }
   return NULL;
 }
