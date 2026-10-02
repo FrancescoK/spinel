@@ -3051,6 +3051,43 @@ void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, ts); emit_boxed(c, seed, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_sum_seed(_t%d, _t%d); })", ts, tr, ts);
 }
+/* A call that never hands back a value: a receiverless raise or fail, or a
+   method the program defines whose every path raises, which the analyzer
+   types void (`def version = raise NotImplementedError` in a base class no
+   subclass overrides). Its value sits in a position that wants one --
+   `"v#{m.version}"`, `m.version == v` -- only on paper: control leaves
+   through the raise. TY_VOID
+   alone does not say so, since a bare puts, print, p or warn is typed void
+   too and does return (nil), so the call must reach a method whose return
+   the analyzer settled as void. */
+int call_never_returns(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || comp_ntype(c, id) != TY_VOID) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 && (sp_streq(nm, "raise") || sp_streq(nm, "fail"))) return 1;
+  int mi = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, id, nm);
+  else {
+    TyKind rt = comp_ntype(c, recv);
+    if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+    else if (rt == TY_POLY) {
+      /* a boxed receiver dispatches to whichever class defines the name;
+         every one of them must raise (a builtin answering it would have
+         given the call that builtin's type, not void) */
+      int any = 0;
+      for (int ci = 0; ci < c->nclasses; ci++) {
+        int dc = -1, m = comp_method_in_chain(c, ci, nm, &dc);
+        if (m < 0 || dc != ci) continue;
+        if (c->scopes[m].ret != TY_VOID) return 0;
+        any = 1;
+      }
+      return any;
+    }
+  }
+  return mi >= 0 && c->scopes[mi].ret == TY_VOID;
+}
 /* The runtime conversion of a typed array to the poly array; NULL for a kind
    that has none. */
 const char *array_to_poly_fn(TyKind t) {

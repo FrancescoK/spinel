@@ -1002,6 +1002,7 @@ const char *array_kind(TyKind t);
    a nested numeric table (sp_PtrArray of row pointers). */
 const char *array_iter_kind(TyKind t);
 const char *array_to_poly_fn(TyKind t);
+int call_never_returns(Compiler *c, int id);
 /* comp_ntype for a fold seed, with an empty `[]` / `{}` literal resolved to
    its container kind rather than left TY_UNKNOWN (see types.c). */
 TyKind fold_seed_ntype(Compiler *c, int node);
