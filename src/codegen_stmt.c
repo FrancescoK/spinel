@@ -12906,7 +12906,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
        to receivers that are a plain read. */
     int _rr = tail_iter_receiver(c, id);
     int _named = _rr >= 0;
-    if (_named && g_in_proc_body && g_result_var && g_result_poly) {
+    if (_named && g_result_var && proc_ret_slot() && !strcmp(g_result_var, proc_ret_slot())) {
       /* a proc answers through the boxed slot, not through its carrier */
       emit_indent(b, indent);
       buf_printf(b, "{ %s = ", g_result_var);
