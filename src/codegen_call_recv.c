@@ -9870,7 +9870,10 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       if (half_fn) cfn = half_fn;
       if (half_fn && sp_streq(half_fn, "sp_round_half_even")) precop = "SP_PREC_HALF_EVEN";
       else if (half_fn && sp_streq(half_fn, "sp_round_half_down")) precop = "SP_PREC_HALF_DOWN";
-      if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+      /* the arms that read only the receiver and the arguments: builtin-op
+         rows (builtin_ops.c) */
+      if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
+      else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
            sp_streq(name, "round") || sp_streq(name, "truncate"))) {
         if (nonlit) {
           /* The class depends on the runtime ndigits: Float when n > 0, Integer
@@ -9981,7 +9984,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         }
       }
       else if (sp_streq(name, "to_i"))  buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);
-      else if (sp_streq(name, "to_f"))  buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "divmod") && argc == 1) {
         /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
         int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
@@ -10011,10 +10013,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
                    o, tq,
                    o, tx, tq, tn, o);
       }
-      else if (sp_streq(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
-      else if (sp_streq(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
-      else if (sp_streq(name, "to_r") && argc == 0) buf_printf(b, "sp_float_to_rational(%s)", r);
-      else if (sp_streq(name, "rationalize") && argc == 0) buf_printf(b, "sp_float_rationalize0(%s)", r);
       else if (sp_streq(name, "rationalize") && argc == 1) {
         /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
            casts a Rational arg with (sp_float)(<struct>), which the C compiler
@@ -10024,67 +10022,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else emit_float_expr(c, argv[0], b);
         buf_puts(b, ")");
       }
-      else if (sp_streq(name, "abs"))   buf_printf(b, "fabs(%s)", r);
-      /* Float arg/angle/phase: Integer 0 for >= 0, Float PI for < 0 -> poly (#2316) */
-      else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
-        buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
       else if (sp_streq(name, "to_int")) buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);  /* alias of to_i (#2317); raises on Inf/NaN */
-      else if (sp_streq(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
-      else if (sp_streq(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
-      else if (sp_streq(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
-      else if (sp_streq(name, "infinite?")) buf_printf(b, "(isinf(%s) ? ((%s) > 0 ? 1LL : -1LL) : SP_INT_NIL)", r, r);
-      else if (sp_streq(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
-      else if (sp_streq(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
-      else if (sp_streq(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
-      else if (sp_streq(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
-      /* numerator/denominator of the exact rational value of the double
-         (0.5.numerator == 1), via the frexp conversion behind Float#to_r. */
-      else if (sp_streq(name, "numerator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).num", r);
-      else if (sp_streq(name, "denominator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).den", r);
-      else if (sp_streq(name, "magnitude")) buf_printf(b, "fabs(%s)", r);
-      else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      /* Numeric query methods: a Float is never an Integer, is always real */
-      else if (sp_streq(name, "integer?")) buf_printf(b, "((void)(%s), FALSE)", r);
-      else if (sp_streq(name, "real?"))     buf_printf(b, "((void)(%s), TRUE)", r);
-      else if (sp_streq(name, "nonzero?"))  buf_printf(b, "((%s) != 0.0 ? sp_box_float(%s) : sp_box_nil())", r, r);
-      /* Float#div: integer floor-division; a zero divisor raises ZeroDivisionError,
-         an infinite/NaN receiver raises FloatDomainError (Inf/NaN has no floor). */
-      else if (sp_streq(name, "div") && argc == 1) {
-        int tx = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, tn);
-        emit_float_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                      " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
-                      " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
-                      " sp_float_fit_i(floor(_t%d / _t%d)); })",
-                   tn, tx, tx, tx, tx, tn);
-      }
-      /* Float#remainder: truncated remainder, sign following the dividend -- exactly
-         C fmod (distinct from Ruby's floored % / modulo). */
-      else if (sp_streq(name, "remainder") && argc == 1) {
-        buf_printf(b, "sp_fremainder(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      /* Complex-view methods: a Float is a real Complex (imaginary part 0). */
-      else if (sp_streq(name, "abs2"))               buf_printf(b, "((%s) * (%s))", r, r);
-      else if (sp_streq(name, "real") || sp_streq(name, "conj") ||
-               sp_streq(name, "conjugate"))          buf_printf(b, "(%s)", r);
-      else if (sp_streq(name, "imag") || sp_streq(name, "imaginary"))
-        buf_printf(b, "((void)(%s), (sp_int)0)", r);
-      else if (sp_streq(name, "rect") || sp_streq(name, "rectangular")) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_float(%s));"
-                      " sp_PolyArray_push(_t%d, sp_box_int(0)); _t%d; })", t, t, t, r, t, t);
-      }
-      else if (sp_streq(name, "polar")) {
-        /* [magnitude, angle]: angle is Float PI when negative, else Integer 0 */
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_float(fabs(%s)));"
-                      " sp_PolyArray_push(_t%d, (%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0));"
-                      " _t%d; })", t, t, t, r, t, r, t);
-      }
-      else if (sp_streq(name, "i"))  buf_printf(b, "((sp_Complex){0.0, (%s), 2})", r);
       /* a nil bound is an open side: clamp one-sided (or return the receiver),
          boxed so the chosen operand keeps its class (#2588) */
       else if (sp_streq(name, "clamp") && argc == 2 &&
