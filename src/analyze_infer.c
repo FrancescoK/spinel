@@ -2265,6 +2265,14 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name))
       return method_call_ret(c, ami, id);
   }
+  /* a blockless transform_values / transform_keys: an Enumerator over the
+     values (keys) */
+  if (recv >= 0 && name && ty_is_hash(rt) && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "transform_values") || sp_streq(name, "transform_keys"))) {
+    int ta = nt_ref(nt, id, "arguments"), tn = 0;
+    if (ta >= 0) nt_arr(nt, ta, "arguments", &tn);
+    if (tn == 0) return TY_ENUMERATOR;
+  }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
      (#4846). */
