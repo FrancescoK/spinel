@@ -193,6 +193,8 @@ const char *numbered_param_name(Compiler *c, int params_node, int idx);
 const char *block_rest_name(Compiler *c, int block);
 const char *block_opt_name(Compiler *c, int block, int idx);
 const char *block_param_at(Compiler *c, int block, int idx, int n);
+/* A block parameter a proc inside captures and appends to (a capture wrapper's). */
+int an_block_cap_wrap_appends(Compiler *c, int blk, int k, int n);
 int call_plain_argc(Compiler *c, int call);
 const char *block_post_name(Compiler *c, int block, int idx);
 int block_lone_rest(Compiler *c, int block);
