@@ -1028,11 +1028,16 @@ static void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name,
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
   int all_public = 1;
+  /* a block-taking one has no standalone function to call (the plan's
+     CRF_IO_REOPEN) */
+  refuse_from_plan(c, id, CRF_IO_REOPEN, "refuse-io-reopen");
   for (int i = 0; i < n; i++) {
     if (plain && io_reopen_call_vis(c, ks[i], name, 1, caller) != SP_VIS_PUBLIC) all_public = 0;
-    /* a block-taking one has no standalone function to call */
     Scope *km = &c->scopes[comp_method_in_chain(c, ks[i], name, NULL)];
-    if (km->yields || (km->blk_param && km->blk_param[0])) unsupported(c, id, "call");
+    if (km->yields || (km->blk_param && km->blk_param[0])) {
+      if (g_plan_check && !g_unsup_probe) fprintf(stderr, "plan-check: cplan-fallback: refuse-io-reopen node %d\n", id);
+      unsupported(c, id, "call");
+    }
   }
   if (n == 1 && all_public && sp_streq(c->classes[ks[0]].name, "IO")) {
     int mi = comp_method_in_chain(c, ks[0], name, NULL);
@@ -26911,7 +26916,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc >= 1 && sp_streq(name, "bind_call") && nt_kind(nt, argv[0]) != NK_SplatNode) {
     const char *cvsym = class_value_instance_method_sym(c, recv);
     /* a class with no arm to build is a gap, not the NameError */
-    if (cvsym && class_value_bind_call_gap(c, recv)) unsupported(c, id, "call");
+    if (cvsym) refuse_from_plan(c, id, CRF_BIND_CALL, "refuse-bind-call");
     if (cvsym) {
       emit_bind_call_boxed(c, id, -1, nt_ref(nt, recv, "receiver"), cvsym, argv, argc, b);
       return;

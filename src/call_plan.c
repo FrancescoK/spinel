@@ -694,7 +694,7 @@ static const char *cplan_eval_what(Compiler *c, int id) {
    block-taking one has no standalone function to call: emit_io_reopen_call),
    and a bind_call on a Class value known only at run time where some class
    has no arm to build (class_value_bind_call_gap). */
-int cplan_io_reopen_yields(Compiler *c, int id) {
+static int cplan_io_reopen_yields(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *name = nt_str(nt, id, "name");
@@ -710,7 +710,7 @@ int cplan_io_reopen_yields(Compiler *c, int id) {
   return 0;
 }
 
-int cplan_bind_call_gap(Compiler *c, int id) {
+static int cplan_bind_call_gap(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *name = nt_str(nt, id, "name");

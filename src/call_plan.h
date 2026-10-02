@@ -85,10 +85,6 @@ const CallPlan *cplan_refuse(Compiler *c, int id);
 /* the documented-limit family: the node's message or NULL; *stop 0 when
    a limit down the receiver chain is the one to report */
 const char *cplan_feature_why(Compiler *c, int id, int *stop);
-/* the gaps refused as "call": an IO reopening that yields, a bind_call on a
-   Class value with a class no arm can be built for */
-int cplan_io_reopen_yields(Compiler *c, int id);
-int cplan_bind_call_gap(Compiler *c, int id);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an
