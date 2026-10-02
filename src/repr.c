@@ -58,8 +58,66 @@ Repr repr_of(const Compiler *c, int node) {
   TyKind kt = r.narrowed != TY_UNKNOWN ? r.narrowed : r.as_ty;
   r.kind = (unsigned char)repr_kind_of_type(c, kt);
   r.dyn_cls = repr_dyn_cls(c, kt);
+  /* a local's read is held as its slot is: the nil sentinel of a nilable
+     Integer or Float, the handle of a shared-mutable String */
+  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && r.narrowed == TY_UNKNOWN) {
+    const char *ln = nt_str(c->nt, node, "name");
+    Scope *s = ln ? comp_scope_of((Compiler *)c, node) : NULL;
+    LocalVar *lv = s ? scope_local(s, ln) : NULL;
+    if (lv) {
+      Repr sr = repr_of_slot(c, lv);
+      if (sr.kind == RK_SENTINEL && (kt == TY_INT || kt == TY_FLOAT)) {
+        r.kind = RK_SENTINEL;
+        r.may_nil = 1;
+      }
+      if (sr.kind == RK_STRBUF && (kt == TY_STRING || kt == TY_STRBUF)) {
+        r.kind = RK_STRBUF;
+        r.handle = 1;
+      }
+    }
+  }
   return r;
 }
+
+ReprForm repr_box_form(const Compiler *c, Repr r) {
+  TyKind t = r.narrowed != TY_UNKNOWN ? r.narrowed : r.as_ty;
+  switch ((ReprKind)r.kind) {
+  case RK_NONE:     return RF_NIL_EFFECT;
+  case RK_BOXED:    return RF_PASS;
+  case RK_SENTINEL: return t == TY_FLOAT ? RF_FLT_NIL : RF_INT_NIL;
+  case RK_STRUCT:   return RF_STRUCT;
+  case RK_VOBJ:     return RF_VOBJ;
+  case RK_STRBUF:   return r.handle ? RF_STRBUF_HANDLE : RF_STRBUF_FRESH;
+  case RK_SCALAR:
+    switch (t) {
+    case TY_INT:    return RF_INT;
+    case TY_FLOAT:  return RF_FLT;
+    case TY_BOOL:   return RF_BOOL;
+    case TY_SYMBOL: return RF_SYM;
+    default:        return RF_NIL_EFFECT;   /* nil */
+    }
+  case RK_PTR:
+  default:
+    break;
+  }
+  (void)c;
+  if (t == TY_STRING) return RF_STR;
+  if (t == TY_BIGINT) return RF_BIGINT;
+  if (ty_is_ptr_array(t)) return RF_PTR_ARRAY;
+  if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
+  return RF_NULLABLE;
+}
+
+const char *repr_form_name(int form) {
+  static const char *const names[RF__COUNT] = {
+    "PASS", "NIL_EFFECT", "INT", "INT_NIL", "FLT", "FLT_NIL", "BIGINT", "STR",
+    "BOOL", "SYM", "STRUCT", "NULLABLE", "NULLABLE_DYN", "VOBJ",
+    "STRBUF_HANDLE", "STRBUF_FRESH", "STRBUF_ELEM", "PTR_ARRAY", "YIELD", "SPECIAL",
+  };
+  return form >= 0 && form < RF__COUNT ? names[form] : "?";
+}
+
+int g_repr_check = 0;
 
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   Repr r;

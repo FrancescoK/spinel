@@ -1,5 +1,6 @@
 #include <limits.h>
 #include "codegen_internal.h"
+#include "repr.h"
 
 /* classes whose pool a proc or fiber body has declared, per program */
 static unsigned char *g_pool_fwd = NULL;
@@ -97,20 +98,74 @@ const char *g_ext_feature = NULL;      /* Init_<feature> / require name (from -o
 char *g_ext_header_text = NULL;
 char *g_ext_shim_text = NULL;
 
+/* --repr-check (#7100 Phase E, R1): each return of emit_boxed and
+   emit_boxed_text records the form it boxed the value in; emit_boxed's are
+   compared with the form repr_of predicts for the node, and a mismatch is
+   printed to stderr with what explains it. Only statics are touched, so the
+   C is the same with and without the flag. */
+enum {
+  RW_NONE,           /* nothing at the site explains a difference */
+  RW_YIELD,          /* a yield boxed by the block of this call site */
+  RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
+  RW_SYNTACTIC_NIL,  /* a nilable Integer/Float told by a name or a builtin's scope */
+  RW_PROMOTE,        /* --int-overflow=promote boxes every Integer nil-aware */
+  RW_RAN_FIRST,      /* an argument that already ran: its temp */
+  RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
+};
+static int rc_depth;        /* emit_boxed nesting */
+static int rc_text_form = -1;
+static TyKind rc_text_ty = TY_UNKNOWN;
+/* emit_boxed_text's form, kept for the emit_boxed that called it */
+static void rc_text_note(TyKind t, int form) {
+  if (!g_repr_check || rc_depth <= 0) return;
+  rc_text_form = form;
+  rc_text_ty = t;
+}
+static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
+  if (!g_repr_check || node < 0 || form < 0) return;
+  Repr r = repr_of(c, node);
+  int want = repr_box_form(c, r);
+  if (want == form) return;
+  const char *cls = "conflict";
+  const char *nty = nt_type(c->nt, node);
+  if (view_depth() > 0) cls = "view";
+  else if (why == RW_YIELD) cls = "yield-site";
+  else if (why == RW_TRANSPLANT) cls = "transplant";
+  else if (why == RW_SYNTACTIC_NIL) cls = "syntactic-nil";
+  else if (why == RW_PROMOTE) cls = "promote";
+  else if (why == RW_RAN_FIRST) cls = "ran-first";
+  else if (why == RW_LITERAL) cls = "literal";
+  else if ((form == RF_INT_NIL || form == RF_FLT_NIL) &&
+           nt_kind(c->nt, node) == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(c->nt, node, "name");
+    Scope *s = ln ? comp_scope_of(c, node) : NULL;
+    LocalVar *lv = s ? scope_local(s, ln) : NULL;
+    if (lv && lv->is_block_param && lv->nullable_int) cls = "late-slot";
+  }
+  if (sp_streq(cls, "conflict") && from_text && rc_text_ty != r.as_ty) cls = "text-vs-node";
+  fprintf(stderr, "repr-check: %s: node %d %s %s: emitted %s, predicted %s\n",
+          cls, node, nty ? nty : "?", ty_name(r.as_ty),
+          repr_form_name(form), repr_form_name(want));
+}
+#define RC(form, why) rc_note(c, node, (form), (why), 0)
+#define RC_TEXT(why) rc_note(c, node, rc_text_form, (why), 1)
+#define RCT(form) rc_text_note(t, (form))
+
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
-  if (t == TY_POLY) { buf_puts(b, expr); return; }
+  if (g_repr_check) { rc_text_form = -1; rc_text_ty = t; }
+  if (t == TY_POLY) { RCT(RF_PASS); buf_puts(b, expr); return; }
   /* An untyped or void value is already emitted as a boxed sp_RbVal (a nil
      sentinel or poly call result) -- or carries side effects to preserve. Box
      it by evaluating for effect and yielding nil, mirroring emit_boxed. Without
      this, the int-boxing fallback below produced sp_box_int(<sp_RbVal>) -- an
      sp_int slot fed a boxed value (the recurring poly-box bug family). */
-  if (t == TY_UNKNOWN || t == TY_VOID) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
+  if (t == TY_UNKNOWN || t == TY_VOID) { RCT(RF_NIL_EFFECT); buf_printf(b, "(%s, sp_box_nil())", expr); return; }
   /* Reference-backed builtins are nilable C pointers -- box NULL as nil (see
      ty_nullable_builtin_id). This also covers TY_PROC/TY_METHOD, which used to
      fall to the sp_box_proc/sp_box_method switch cases below (both wrapped NULL
      as a truthy proc/method). */
   { const char *nbid = ty_nullable_builtin_id(t);
-    if (nbid) { buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, nbid); return; } }
+    if (nbid) { RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, nbid); return; } }
   if (ty_is_object(t)) {
     /* A reference-type object is a genuinely nilable C pointer (a hash/cache
        lookup or a method that can `return nil` -- e.g. doom's
@@ -126,6 +181,8 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
       buf_printf(b, "sp_box_nullable_obj%s((void *)(%s), %d)",
                  class_has_subclass(c, ty_object_class(t)) ? "_dyn" : "",
                  expr, ty_object_class(t));
+    RCT(comp_ty_value_obj(c, t) ? RF_VOBJ
+        : class_has_subclass(c, ty_object_class(t)) ? RF_NULLABLE_DYN : RF_NULLABLE);
     return;
   }
   /* A hash slot is a nilable C pointer for the same reason the object arm
@@ -135,12 +192,13 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
      NULL. Reduced from a Net::HTTP::Post whose second parameter one call site
      omitted and another passed a Hash to (#4134). */
   if (ty_is_hash(t) && hash_box_cls(t)) {
+    RCT(RF_NULLABLE);
     buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, hash_box_cls(t));
     return;
   }
   /* a shared-mutable string HANDLE (#3227 phase 3); a NULL handle is a
      nil (a nil argument, an omitted optional), as in the hash arm above */
-  if (t == TY_STRBUF) { buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
+  if (t == TY_STRBUF) { RCT(RF_STRBUF_HANDLE); buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
   /* An sp_int slot can hold the nil sentinel a nullable read left behind
      (`"a".rindex("/")`), so boxing it has to yield nil rather than a boxed
      INTPTR_MIN that then answers every Integer method. The temp keeps
@@ -149,12 +207,13 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     int tb = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })",
                tb, expr, tb, tb);
+    RCT(RF_INT_NIL);
     return;
   }
   /* A bigint slot's nil is NULL (nil_value), and sp_box_bigint would wrap it
      as a truthy Integer that prints 0: box it as nil, the way the nullable
      pointer types above do (#4800). */
-  if (t == TY_BIGINT) { buf_printf(b, "sp_box_bigint_or_nil(%s)", expr); return; }
+  if (t == TY_BIGINT) { RCT(RF_BIGINT); buf_printf(b, "sp_box_bigint_or_nil(%s)", expr); return; }
   const char *fn = NULL;
   switch (t) {
     /* the float slot's own nil sentinel boxes as nil, as SP_INT_NIL does above */
@@ -172,27 +231,31 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     /* Array slots are nilable C pointers (`[x] if cond` in value position is
        NULL on the else path): box NULL as a proper nil, not a truthy OBJ
        wrapping NULL that passes truthy checks (#2992). */
-    case TY_INT_ARRAY:   buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_INT_ARRAY)", expr); return;
-    case TY_FLOAT_ARRAY: buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_FLT_ARRAY)", expr); return;
-    case TY_STR_ARRAY:   buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_STR_ARRAY)", expr); return;
-    case TY_POLY_ARRAY:  buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_POLY_ARRAY)", expr); return;
-    case TY_OPENSTRUCT:  buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_OPENSTRUCT)", expr); return;
+    case TY_INT_ARRAY:   RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_INT_ARRAY)", expr); return;
+    case TY_FLOAT_ARRAY: RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_FLT_ARRAY)", expr); return;
+    case TY_STR_ARRAY:   RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_STR_ARRAY)", expr); return;
+    case TY_POLY_ARRAY:  RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_POLY_ARRAY)", expr); return;
+    case TY_OPENSTRUCT:  RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_OPENSTRUCT)", expr); return;
     /* a nested table or an object array boxes by reference, stamped with what
        its elements are (#4486) */
     case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY:
-      buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return;
+      RCT(RF_PTR_ARRAY); buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return;
     case TY_NIL:
       /* a nil-typed expression can still have side effects (puts/print as a
          block tail): evaluate it for effect, then yield nil */
-      buf_printf(b, "(%s, sp_box_nil())", expr && *expr ? expr : "(void)0"); return;
+      RCT(RF_NIL_EFFECT); buf_printf(b, "(%s, sp_box_nil())", expr && *expr ? expr : "(void)0"); return;
     default: break;
   }
-  if (fn) buf_printf(b, "%s(%s)", fn, expr);
+  if (fn) {
+    RCT(t == TY_FLOAT ? RF_FLT_NIL : t == TY_BIGINT ? RF_BIGINT : t == TY_STRING ? RF_STR
+        : t == TY_BOOL ? RF_BOOL : t == TY_SYMBOL ? RF_SYM : RF_STRUCT);
+    buf_printf(b, "%s(%s)", fn, expr);
+  }
   else {
     /* Never silently int-box an unexpected type (the root of the poly-box bug
        family): fail loudly so a missing case is caught at compile time rather
        than emitting wrong C. The known poly-context types are handled above. */
-    if (ty_is_obj_array(t)) { buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return; }
+    if (ty_is_obj_array(t)) { RCT(RF_PTR_ARRAY); buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return; }
     fprintf(stderr, "spinel: emit_boxed_text: cannot box type %d into a poly value\n", (int)t);
     exit(1);
   }
@@ -1324,7 +1387,7 @@ int call_returns_nullable_int(Compiler *c, int node) {
   return 0;
 }
 
-void emit_boxed(Compiler *c, int node, Buf *b) {
+static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
      below rather than being boxed by the shared node type (#2454). Not a
@@ -1352,6 +1415,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       buf_puts(b, "sp_splat_to_array(");
       if (inner0 >= 0) emit_boxed(c, inner0, b); else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ")");
+      RC(RF_SPECIAL, RW_LITERAL);
       return;
     }
   }
@@ -1371,6 +1435,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     { Buf rb; memset(&rb, 0, sizeof rb); emit_yblk_ref(&rb);
       emit_proc_yield(c, rb.p ? rb.p : "NULL", yargc, yargv, b); free(rb.p); }
     buf_puts(b, ", _sp_proc_poly_ret)");
+    RC(RF_YIELD, RW_YIELD);
     return;
   }
   /* An inlined yield's value type is per-CALL-SITE: the method AST has ONE
@@ -1384,6 +1449,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   if (g_yield_proc_ref && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
     /* This helper's callers want a BOXED value, so ask for the poly form. */
     emit_yield_proc_call(c, nt_ref(c->nt, node, "arguments"), TY_POLY, b, 0, 1);
+    RC(RF_YIELD, RW_YIELD);
     return;
   }
   if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_block_id < 0) {
@@ -1393,6 +1459,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        well-typed for the value position. */
     buf_puts(b, "(sp_exc_stage_key(sp_box_str((&(\"\\xff\" \"noreason\")[1]))), "
                 "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), sp_box_nil())");
+    RC(RF_SPECIAL, RW_YIELD);
     return;
   }
   if (g_block_id >= 0 && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {
@@ -1428,7 +1495,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       break;
     }
     if (bt != t && bt != TY_UNKNOWN) {
-      if (bt == TY_POLY) { emit_expr(c, node, b); return; }
+      if (bt == TY_POLY) { emit_expr(c, node, b); RC(RF_PASS, RW_YIELD); return; }
       Buf yb; memset(&yb, 0, sizeof yb);
       emit_expr(c, node, &yb);
       const char *yt = yb.p ? yb.p : "0";
@@ -1436,12 +1503,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
          shape the splice above already yielded an sp_RbVal -- re-boxing would
          cast a struct through (void *) (#3329). */
       int pre_boxed = (t == TY_POLY && ty_is_object(bt));
-      if (bt == TY_NIL || bt == TY_VOID)
+      if (bt == TY_NIL || bt == TY_VOID) {
         buf_printf(b, "({ %s; sp_box_nil(); })", yt);
-      else if (pre_boxed)
+        RC(RF_NIL_EFFECT, RW_YIELD);
+      }
+      else if (pre_boxed) {
         buf_puts(b, yt);
-      else
+        RC(RF_PASS, RW_YIELD);
+      }
+      else {
         emit_boxed_text(c, bt, yt, b);
+        RC_TEXT(RW_YIELD);
+      }
       free(yb.p);
       return;
     }
@@ -1466,6 +1539,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         emit_expr(c, node, &ib);
         c->strbuf_box[node] = sv_m0;
         emit_boxed_text(c, ft0, ib.p ? ib.p : "0", b);
+        RC_TEXT(RW_TRANSPLANT);
         free(ib.p);
         return;
       }
@@ -1473,6 +1547,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   if (t == TY_POLY) {
     emit_expr(c, node, b);
+    RC(RF_PASS, RW_NONE);
     return;
   }
   /* Reference-backed builtins (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
@@ -1482,6 +1557,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (nbid) {
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
       buf_printf(b, "), %s)", nbid);
+      RC(RF_NULLABLE, RW_NONE);
       return;
     } }
   if (ty_is_object(t)) {
@@ -1508,6 +1584,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     else buf_puts(b, "sp_box_nullable_obj((void *)(");
     emit_expr(c, node, b);
     buf_printf(b, is_val ? ")" : "), %d)", ocid);
+    RC(is_val ? RF_VOBJ : subclassed ? RF_NULLABLE_DYN : RF_NULLABLE, RW_NONE);
     return;
   }
   if (ty_is_hash(t)) {
@@ -1520,22 +1597,23 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       buf_puts(b, "sp_box_nullable_obj((void *)(");
       emit_expr(c, node, b);
       buf_printf(b, "), %s)", hid);
+      RC(RF_NULLABLE, RW_NONE);
       return;
     }
-    unsupported(c, node, "boxing value into poly"); return;
+    unsupported(c, node, "boxing value into poly"); RC(RF_SPECIAL, RW_NONE); return;
   }
   /* regex values can appear in poly context (multi-typed local); evaluate for
      side effects (e.g. Regexp.new(str)) and yield nil */
-  if (t == TY_REGEX) { buf_puts(b, "sp_box_regexp("); emit_expr(c, node, b); buf_puts(b, ")"); return; }
+  if (t == TY_REGEX) { buf_puts(b, "sp_box_regexp("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_NULLABLE, RW_NONE); return; }
   /* class/module value: box into poly */
   if (t == TY_CLASS) {
-    buf_puts(b, "sp_box_class("); emit_expr(c, node, b); buf_puts(b, ")"); return;
+    buf_puts(b, "sp_box_class("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_STRUCT, RW_NONE); return;
   }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
-    if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); return; }
+    if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
   /* a bare `Array.new` is TY_UNKNOWN like an empty `[]` (so push-promotion can
      narrow it), and its handler emits a sp_PolyArray *. When it is never pushed
@@ -1549,13 +1627,13 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (aN >= 0) nt_arr(c->nt, node, "arguments", &an);
     if (nm && sp_streq(nm, "new") && rcn && sp_streq(rcn, "Array") &&
         an == 0 && nt_ref(c->nt, node, "block") < 0) {
-      buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); return;
+      buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); RC(RF_SPECIAL, RW_LITERAL); return;
     }
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
-    if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); return; }
+    if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
   /* Hash.new / Hash.new(default) whose variant no key usage ever narrowed:
      box an empty PolyPolyHash carrying the default (it used to fall to the
@@ -1571,14 +1649,15 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (hty && (sp_streq(hty, "ConstantReadNode") || sp_streq(hty, "ConstantPathNode")) &&
         hcn && sp_streq(hcn, "Hash") && han <= 1) {
       /* an unknown keyword is CRuby's ArgumentError, not the default */
-      if (emit_hash_new_capacity_wrap(c, node, b, 1)) return;
-      if (emit_hash_new_arg_guard(c, node, b)) return;
+      if (emit_hash_new_capacity_wrap(c, node, b, 1)) { RC(RF_SPECIAL, RW_LITERAL); return; }
+      if (emit_hash_new_arg_guard(c, node, b)) { RC(RF_SPECIAL, RW_LITERAL); return; }
       if (han == 1 && hav) {
         buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new_with_default(");
         emit_boxed(c, hav[0], b);
         buf_puts(b, "), SP_BUILTIN_POLY_POLY_HASH)");
       }
       else buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
+      RC(RF_SPECIAL, RW_LITERAL);
       return;
     }
   }
@@ -1627,11 +1706,13 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         int th = sblv && sblv->type == TY_STRBUF && sblv->str_shared ? ran_first_handle(node) : -1;
         if (th >= 0) {
           buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
           return;
         }
         if (sblv && sblv->type == TY_STRBUF && sblv->str_shared &&
             strbuf_slot_ref(c, node, srefS, sizeof srefS)) {
           buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
+          RC(RF_STRBUF_HANDLE, RW_NONE);
           return;
         }
       }
@@ -1657,10 +1738,14 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         Scope *bs0 = comp_scope_of(c, node);
         LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
         int th0 = blv0 && blv0->type == TY_STRBUF && blv0->str_shared ? ran_first_handle(node) : -1;
-        if (blv0 && blv0->type == TY_POLY)
+        if (blv0 && blv0->type == TY_POLY) {
           buf_printf(b, "lv_%s", rename_local(bn0));
-        else if (th0 >= 0)   /* ran first: the handle it read then, as above */
+          RC(RF_PASS, RW_NONE);
+        }
+        else if (th0 >= 0) {   /* ran first: the handle it read then, as above */
           buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
+          RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
+        }
         else {
           /* through emit_local_ref: a local a proc captures is its cell's
              handle (`f.call(k: s)` beside `-> { s }` named an lv_s nothing
@@ -1670,6 +1755,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
           buf_puts(b, "sp_box_nullable_obj(");
           emit_local_ref(c, node, bn0, b);
           buf_puts(b, ", SP_BUILTIN_STRBUF)");
+          RC(RF_STRBUF_HANDLE, RW_NONE);
         }
         return;
       }
@@ -1677,6 +1763,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         if (nt_kind(c->nt, node) == NK_InstanceVariableReadNode &&
             strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
           buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
+          RC(RF_STRBUF_HANDLE, RW_NONE);
           return;
         } }
       /* An ivar WRITE in value position lowers to `({ iv_x = ...; iv_x; })`,
@@ -1689,6 +1776,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         emit_expr(c, node, b);
         c->strbuf_box[node] = sv_mw;
         buf_puts(b, ", SP_BUILTIN_STRBUF)");
+        RC(RF_STRBUF_HANDLE, RW_NONE);
         return;
       }
       /* an element read is ALREADY a boxed handle when the container holds
@@ -1701,6 +1789,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         emit_expr(c, node, b);
         c->strbuf_box[node] = sv_m2;
         buf_puts(b, "), SP_BUILTIN_STRBUF)");
+        RC(RF_STRBUF_ELEM, RW_NONE);
         return;
       }
       /* A reader call whose ivar is now the shared handle already emits the
@@ -1719,6 +1808,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         c->strbuf_box[node] = sv_mh;
         if (got_h) {
           buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref_h);
+          RC(RF_STRBUF_HANDLE, RW_NONE);
           return;
         }
       }
@@ -1734,11 +1824,11 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
         c->strbuf_box[node] = sv_mark;
         buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
         free(eb0.p); }
-      buf_puts(b, "), SP_BUILTIN_STRBUF)"); return;
+      buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE); return;
     }
     case TY_OPENSTRUCT:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_OPENSTRUCT)"); return;
+      buf_puts(b, "), SP_BUILTIN_OPENSTRUCT)"); RC(RF_NULLABLE, RW_NONE); return;
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
@@ -1751,22 +1841,23 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        emit_boxed_text's array cases. */
     case TY_INT_ARRAY:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_INT_ARRAY)"); return;
+      buf_puts(b, "), SP_BUILTIN_INT_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
     case TY_FLOAT_ARRAY:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_FLT_ARRAY)"); return;
+      buf_puts(b, "), SP_BUILTIN_FLT_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
     case TY_STR_ARRAY:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_STR_ARRAY)"); return;
+      buf_puts(b, "), SP_BUILTIN_STR_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
     case TY_POLY_ARRAY:
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
-      buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)"); return;
+      buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)"); RC(RF_NULLABLE, RW_NONE); return;
     case TY_NIL: {
       const char *nty = nt_type(c->nt, node);
-      if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); return; }
+      if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); RC(RF_NIL_EFFECT, RW_NONE); return; }
       /* a nil-typed expression can still have side effects (e.g. a void-valued
          block call): evaluate it for effect, then yield nil */
       buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())");
+      RC(RF_NIL_EFFECT, RW_NONE);
       return;
     }
     default: break;
@@ -1783,14 +1874,43 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (ty_is_ptr_array(t)) {
       buf_puts(b, "sp_box_ptr_array_k((void *)("); emit_expr(c, node, b);
       buf_printf(b, "), %s)", ptr_array_stamp(c, t));
+      RC(RF_PTR_ARRAY, RW_NONE);
       return;
     }
     /* TY_UNKNOWN (e.g. unrecognized stdlib class .new): evaluate for side-effects, yield nil */
-    buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); return;
+    buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); RC(RF_NIL_EFFECT, RW_NONE); return;
   }
   buf_printf(b, "%s(", fn);
   emit_expr(c, node, b);
   buf_puts(b, ")");
+  if (g_repr_check) {
+    int form = t == TY_INT ? (sp_streq(fn, "sp_box_int") ? RF_INT : RF_INT_NIL)
+             : t == TY_FLOAT ? (sp_streq(fn, "sp_box_float") ? RF_FLT : RF_FLT_NIL)
+             : t == TY_BIGINT ? RF_BIGINT : t == TY_STRING ? RF_STR
+             : t == TY_BOOL ? RF_BOOL : t == TY_SYMBOL ? RF_SYM : RF_STRUCT;
+    int why = RW_NONE;
+    /* which of the nil-aware arms chose the form: the analysis's flags
+       (nullable_int_value, a local's slot, box_nullable_arg) are what
+       repr_of reads; the promote mode, a builtin's name and a builtin's own
+       scope are not */
+    if (form == RF_INT_NIL || form == RF_FLT_NIL) {
+      int by_flag = nullable_int_value(c, node) || box_nullable_arg(c, node) ||
+                    (nt_kind(c->nt, node) == NK_LocalVariableReadNode &&
+                     call_returns_nullable_int(c, node));
+      if (form == RF_INT_NIL && g_promote_mode) why = RW_PROMOTE;
+      else if (!by_flag && (enum_builtin_node(c, node) ||
+                            (call_returns_nullable_int(c, node) &&
+                             nt_kind(c->nt, node) == NK_CallNode))) why = RW_SYNTACTIC_NIL;
+    }
+    RC(form, why);
+  }
+}
+/* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under
+   --repr-check it keeps the nesting the recorder reads */
+void emit_boxed(Compiler *c, int node, Buf *b) {
+  rc_depth++;
+  emit_boxed_impl(c, node, b);
+  rc_depth--;
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp

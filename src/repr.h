@@ -53,4 +53,39 @@ void repr_seal(Compiler *c);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
 
+/* R1 (--repr-check): the form a boxer gave a value, recorded at each of
+   emit_boxed's and emit_boxed_text's returns, and the form repr_of predicts
+   for it. */
+typedef enum {
+  RF_PASS,          /* already an sp_RbVal */
+  RF_NIL_EFFECT,    /* evaluated for its effect, then nil */
+  RF_INT,           /* sp_box_int */
+  RF_INT_NIL,       /* an Integer whose sentinel boxes as nil */
+  RF_FLT,           /* sp_box_float */
+  RF_FLT_NIL,       /* a Float whose sentinel boxes as nil */
+  RF_BIGINT,        /* a Bignum, NULL as nil */
+  RF_STR,           /* sp_box_str */
+  RF_BOOL,
+  RF_SYM,
+  RF_STRUCT,        /* a by-value struct: a Range, Time, Complex, Rational,
+                       Process::Tms, Class */
+  RF_NULLABLE,      /* a pointer, NULL as nil, with its static class id */
+  RF_NULLABLE_DYN,  /* a pointer whose class id is read from the object */
+  RF_VOBJ,          /* a value-type object, boxed by copy */
+  RF_STRBUF_HANDLE, /* the shared String's existing handle */
+  RF_STRBUF_FRESH,  /* a fresh handle around a String value */
+  RF_STRBUF_ELEM,   /* an element read that is already a boxed handle */
+  RF_PTR_ARRAY,     /* a nested table or object array, stamped */
+  RF_YIELD,         /* a yield lowered to a proc call answering boxed */
+  RF_SPECIAL,       /* a shape-specific box: a splat, an empty literal,
+                       Hash.new, a Regexp, a refusal */
+  RF__COUNT
+} ReprForm;
+
+/* the form a value of representation r is boxed in */
+ReprForm repr_box_form(const Compiler *c, Repr r);
+const char *repr_form_name(int form);
+/* --repr-check is on */
+extern int g_repr_check;
+
 #endif
