@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|nn|cdiff|extra|scale|rubyspec)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|nn|cdiff|extra|scale|rubyspec|gate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -141,6 +141,25 @@ for n in names:
         print(f"- new tests (plain, promote, GC stress): {'none' if not lines else ''}")
         for l in lines:
             print(f"  - {l}")
+    if ("gate", n, 0) in jobs:
+        d = jobs[("gate", n, 0)]
+        meta = dict(line.split("=", 1) for line in read(os.path.join(d, "gate-meta.txt")).splitlines() if "=" in line)
+        status = meta.get("status", "FAIL")
+        if status not in ("PASS", "FAIL", "CONFLICT"):
+            status = "FAIL (incomplete)"
+        print(f"\n### gate: {status}\n")
+        print(f"Master: `{meta.get('master', 'unknown')}`; merged: `{meta.get('merged', 'unknown')}`; "
+              f"exit status: {meta.get('exit_status', 'unknown')}.\n")
+        if meta.get("target", "gate") != "gate":
+            print(f"Smoke target: `{meta['target']}` (not a full gate run).\n")
+        lines = read(os.path.join(d, "gate-summary.txt"))
+        print("```text\n" + lines + ("" if lines.endswith("\n") else "\n") + "```")
+        if status.startswith("FAIL"):
+            log = read(os.path.join(d, "gate.log")).splitlines()
+            errors = [line for line in log if re.search(r"error|fail|\*\*\*|gate:", line, re.I)]
+            targets = re.findall(r"\*\*\* \[([^]\n]+)\]", "\n".join(log))
+            print(f"\nFailing leg/target: {', '.join(dict.fromkeys(targets)) or 'unknown (see log below)'}.\n")
+            print("```text\n" + "\n".join((errors or log)[-20:]) + "\n```")
     missing = [f"{l} {k}" if k else l for (l, nm, k) in
                [(l, nm, k) for (l, nm, k) in jobs if nm == n] if not os.listdir(jobs[(l, nm, k)])]
     if missing:

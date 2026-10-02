@@ -21,6 +21,10 @@ jobs:
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
       builds: ${{ steps.m.outputs.builds }}
+      gates: ${{ steps.m.outputs.gates }}
+      has_gate: ${{ steps.m.outputs.has_gate }}
+      has_run: ${{ steps.m.outputs.has_run }}
+      has_build: ${{ steps.m.outputs.has_build }}
       label: ${{ steps.m.outputs.label }}
       shards: ${{ steps.m.outputs.shards }}
     steps:
@@ -53,7 +57,12 @@ jobs:
           builds = []
           if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec")):
               builds.append({"name": "base", "sha": base, "dir": "base"})
-          builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
+          if any(leg != "gate" for leg in legs):
+              builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
+          print("gates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if "gate" in legs else []}))
+          print("has_gate=" + str("gate" in legs).lower())
+          print("has_run=" + str(bool(jobs)).lower())
+          print("has_build=" + str(bool(builds)).lower())
           print("matrix=" + json.dumps({"include": jobs}))
           print("builds=" + json.dumps({"include": builds}))
           print("label=" + os.environ.get("LABEL", "verify"))
@@ -67,6 +76,7 @@ jobs:
   # $RUNNER_TEMP/head for a head, $RUNNER_TEMP/base for the base.
   build:
     needs: plan
+    if: needs.plan.outputs.has_build == 'true'
     name: build ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -144,7 +154,7 @@ jobs:
   run:
     needs: [plan, build]
     # a head whose build failed fails its own jobs, not the others'
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has_run == 'true' }}
     name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -380,8 +390,74 @@ jobs:
           path: out/
           retention-days: 14
 
+  gate:
+    needs: plan
+    if: needs.plan.outputs.has_gate == 'true'
+    name: gate ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.plan.outputs.gates) }}
+    env:
+      NAME: ${{ matrix.name }}
+      SHA: ${{ matrix.sha }}
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_CACHE_SIZE: 1G
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Restore the sccache store
+        uses: actions/cache@v6
+        with:
+          path: .sccache
+          key: sccache-verify-gate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+          restore-keys: sccache-verify-gate-
+      - run: sccache --start-server
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Clone and merge current master
+        id: merge
+        run: |
+          d="$RUNNER_TEMP/gate"
+          git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
+          cd "$d"
+          git remote add fork https://github.com/FrancescoK/spinel.git
+          git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch -q origin "$SHA" 2>/dev/null ||
+            git fetch -q fork "$SHA" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
+          git checkout -q "$SHA"
+          "$GITHUB_WORKSPACE/gate-leg.sh" "$d" "$GITHUB_WORKSPACE/out" prepare
+          if grep -q '^status=CONFLICT$' "$GITHUB_WORKSPACE/out/gate-meta.txt"; then
+            echo conflict=true >> "$GITHUB_OUTPUT"
+          else
+            v=$({ grep -E '^(PRISM|RBS)_VERSION' Makefile; sed -n '/^deps:/,/^DIST_RELEASE/p' Makefile; } | sha256sum | cut -c1-16)
+            echo "vendor=$v" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore the vendored parsers
+        if: steps.merge.outputs.conflict != 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/gate/vendor
+          key: vendor-${{ steps.merge.outputs.vendor }}
+      - name: Gate
+        if: steps.merge.outputs.conflict != 'true'
+        run: ./gate-leg.sh "$RUNNER_TEMP/gate" "$GITHUB_WORKSPACE/out" run
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: r-gate-${{ matrix.name }}-0
+          path: out/
+          retention-days: 14
+
   report:
-    needs: [plan, run]
+    needs: [plan, run, gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
