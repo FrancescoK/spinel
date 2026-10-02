@@ -16,35 +16,14 @@ static int g_pool_fwd_n = 0;
    Value-type builtins (Range/Time/Complex/Rational, boxed as a by-value copy)
    and non-pointer scalars are deliberately excluded -- they are never NULL. */
 const char *ty_nullable_builtin_id(TyKind t) {
-  switch (t) {
-    case TY_IO:         return "SP_BUILTIN_IO";
-    case TY_FIBER:      return "SP_BUILTIN_FIBER";
-    case TY_THREAD:     return "SP_BUILTIN_THREAD";
-    case TY_QUEUE:      return "SP_BUILTIN_QUEUE";
-    case TY_MUTEX:      return "SP_BUILTIN_MUTEX";
-    case TY_CONDVAR:    return "SP_BUILTIN_CONDVAR";
-    case TY_ENUMERATOR: return "SP_BUILTIN_ENUMERATOR";
-    case TY_EXCEPTION:  return "SP_BUILTIN_EXCEPTION";
-    case TY_PROC:       return "SP_BUILTIN_PROC";
-    case TY_METHOD:     return "SP_BUILTIN_METHOD";
-    case TY_DIR:        return "SP_BUILTIN_DIR";
-    case TY_ADDRINFO:   return "SP_BUILTIN_ADDRINFO";
-    case TY_SOCKOPT:    return "SP_BUILTIN_SOCKOPT";
-    case TY_OPENSTRUCT: return "SP_BUILTIN_OPENSTRUCT";
-    case TY_MATCHDATA:  return "SP_BUILTIN_MATCHDATA";
-    /* A compiled pattern is a heap pointer like the rest: without a boxed
-       identity a Regexp reaching a boxed slot -- an array element, a proc
-       argument -- was evaluated for effect and answered nil (#3950). */
-    case TY_REGEX:      return "SP_BUILTIN_REGEX";
-    case TY_CURRY:      return "SP_BUILTIN_CURRY";
-    /* a generator and ARGF in a boxed slot keep their identity: without a
-       box id each was evaluated for effect and answered nil */
-    case TY_RANDOM:     return "SP_BUILTIN_RANDOM";
-    case TY_ARGF:       return "SP_BUILTIN_ARGF";
-    /* TY_TMS is an unboxed VALUE type: it boxes by heap copy (sp_box_tms),
-       never as a nullable pointer (#3132) */
-    default:            return NULL;
-  }
+  /* a reference-backed builtin's box id is its ty_traits row's box_id
+     (types.c): IO, Fiber, Thread, Queue, Mutex, ConditionVariable,
+     Enumerator, Exception, Proc, Method, Dir, Addrinfo, Socket::Option,
+     OpenStruct, MatchData, Regexp (#3950), Proc#curry, Random and ARGF.
+     Process::Tms is a VALUE type boxed by heap copy (sp_box_tms), never as
+     a nullable pointer (#3132). */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->box_id : NULL;
 }
 
 /* The types whose C value is a pointer with NULL for nil: an ivar no
