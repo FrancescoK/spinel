@@ -23955,6 +23955,32 @@ static void emit_utime_arg_bad(Compiler *c, int node, TyKind t, Buf *b) {
   buf_printf(b, "); sp_raise_cls(\"TypeError\", \"can't convert %s into time\");", cn ? cn : "Object");
 }
 
+/* String#% whose operand has no type yet: `[]` and a bare `Array.new`. Only
+   these literal shapes are taken: emit_boxed answers nil for any other untyped
+   node, which would format silently wrong, and `{}` would answer "" for `%c`.
+   The receiver gets the nil check when fck names its temporary. Returns 1 when
+   it emitted the call. */
+static int emit_str_format_untyped_array(Compiler *c, int recv, int a0n, int fck, Buf *b) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak0 = nt_kind(nt, a0n);
+  int lit = ak0 == NK_ArrayNode;
+  if (!lit && ak0 == NK_CallNode && sp_streq(nt_str(nt, a0n, "name"), "new") &&
+      nt_ref(nt, a0n, "block") < 0) {
+    int nr = nt_ref(nt, a0n, "receiver"), nac = 0;
+    call_args(nt, a0n, &nac);
+    lit = nr >= 0 && nt_kind(nt, nr) == NK_ConstantReadNode &&
+          sp_streq(nt_str(nt, nr, "name"), "Array") && nac == 0;
+  }
+  if (!lit) return 0;
+  if (fck >= 0) {
+    buf_printf(b, "sp_str_format_polyarr(({ const char *_t%d = ", fck);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\"); _t%d; })", fck, fck);
+  }
+  else { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
+  buf_puts(b, ", sp_format_args("); emit_boxed(c, a0n, b); buf_puts(b, "))");
+  return 1;
+}
 static void emit_call_body(Compiler *c, int id, Buf *b);
 
 /* Each emitter tried in turn below answers 1 when it took the call. One that
@@ -42506,32 +42532,7 @@ else {
       buf_puts(b, ", sp_format_args("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
       return;
     }
-    /* `[]` and a bare `Array.new` have no type yet. Only these literal shapes
-       are taken: emit_boxed answers nil for any other untyped node, which
-       would format silently wrong, and `{}` would answer "" for `%c`. The
-       receiver gets the nil check. */
-    if (at == TY_UNKNOWN) {
-      int a0n = argv[0];
-      NodeKind ak0 = nt_kind(nt, a0n);
-      int lit = ak0 == NK_ArrayNode;
-      if (!lit && ak0 == NK_CallNode && sp_streq(nt_str(nt, a0n, "name"), "new") &&
-          nt_ref(nt, a0n, "block") < 0) {
-        int nr = nt_ref(nt, a0n, "receiver"), nac = 0;
-        call_args(nt, a0n, &nac);
-        lit = nr >= 0 && nt_kind(nt, nr) == NK_ConstantReadNode &&
-              sp_streq(nt_str(nt, nr, "name"), "Array") && nac == 0;
-      }
-      if (lit) {
-        if (fck >= 0) {
-          buf_printf(b, "sp_str_format_polyarr(({ const char *_t%d = ", fck);
-          emit_expr(c, recv, b);
-          buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\"); _t%d; })", fck, fck);
-        }
-        else { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
-        buf_puts(b, ", sp_format_args("); emit_boxed(c, a0n, b); buf_puts(b, "))");
-        return;
-      }
-    }
+    if (at == TY_UNKNOWN && emit_str_format_untyped_array(c, recv, argv[0], fck, b)) return;
     /* a single non-array scalar argument formats as a one-element array
        (nil renders empty for %s; Rational/Complex coerce inside the
        formatter's numeric directives) */
