@@ -97,7 +97,9 @@ typedef enum {
   PT_ARRAY_FALLBACK,  /* the Array transforms' default, for another builtin */
   PT_DEFAULT0,        /* the builtin surface, the zero-argument dispatch's last default */
   PT_GENERIC_TAIL,    /* the generic default's block arm, element assignment, builtin surface */
-  PT_DEFAULT_N        /* the builtin surface, the last default with arguments */
+  PT_DEFAULT_N,       /* the builtin surface, the last default with arguments */
+  PT_BD_DEFAULT       /* the block dispatch's default: a String or IO iterator (1), the
+                         builtin surface (2), or the raise (0) */
 } PolyTrial;
 
 /* The builtin arm families of a poly dispatch, each one the arm (or run
@@ -127,6 +129,9 @@ typedef enum {
      answers first, or a name's own */
   PB_ND_GENERIC, PB_ND_REPLACE, PB_ND_ROUND, PB_ND_NUM, PB_ND_STR_INDEX, PB_ND_FIND_INDEX,
   PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,
+  /* the statement-level block dispatch's builtin default
+     (emit_poly_recv_block_dispatch): map!/collect! over a builtin array */
+  PB_BD_MAP_BANG,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -181,12 +186,18 @@ typedef struct {
    held and keyed (the plan's slice of emit_poly_method_dispatch so far).
    Pure; kept per node where the node is read as itself. */
 const PolyPlan *cplan_poly(Compiler *c, int id);
+/* The arms of the statement-level block dispatch (#2448) of the same call:
+   each candidate class's method spliced with the block, and its default.
+   Computed afresh: the same node may take this dispatch or the method
+   dispatch. */
+const PolyPlan *cplan_poly_block(Compiler *c, int id);
 
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the
    switch observes again. */
 int  pa_begin(int id);
 void pa_resume(int frame);
+void pa_drop(int frame);     /* a dispatch that declined after opening its frame */
 void pa_flags(unsigned flags);
 void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
 /* the same, only into node id's own frame: for a helper more than one

@@ -32,6 +32,10 @@ void pa_resume(int frame) {
   if (frame >= 0 && frame < g_pa_n) g_pa_n = frame + 1;
 }
 
+void pa_drop(int frame) {
+  if (frame >= 0 && frame < g_pa_n) g_pa_n = frame;
+}
+
 void pa_flags(unsigned flags) {
   if (g_pa_n > 0) g_pa[g_pa_n - 1].flags = flags | PPF_SEEN;
 }
@@ -77,13 +81,14 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default generic", "default replace", "default round(n)",
                                      "default numeric(n)", "default str-index", "default find_index",
                                      "default first/last(n)", "default delete/dig/values_at",
-                                     "default merge", "default aref2", "default aref/fetch" };
+                                     "default merge", "default aref2", "default aref/fetch",
+                                     "block map!" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
   else if (a->key >= PA_KEY_TRIAL && a->key < PA_KEY_DEFAULT) {
     static const char *const tn[] = { "string-prearm", "container-read", "array-fallback", "default0",
-                                      "generic-tail", "default-n" };
+                                      "generic-tail", "default-n", "block-default" };
     int t = a->key - PA_KEY_TRIAL;
     snprintf(kb, sizeof kb, "%s", t < (int)(sizeof tn / sizeof tn[0]) ? tn[t] : "?");
   }

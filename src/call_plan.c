@@ -1039,3 +1039,29 @@ const PolyPlan *cplan_poly(Compiler *c, int id) {
 #endif
   return p;
 }
+
+const PolyPlan *cplan_poly_block(Compiler *c, int id) {
+  static PolyPlan bp;
+  free(bp.arm);
+  bp.arm = NULL; bp.n = 0; bp.flags = 0;
+  bp.ntype = bp.ret = comp_ntype(c, id);
+  int cap = 0;
+  int cand[64];
+  int nc = poly_block_dispatch_cands(c, id, cand, 64);
+  const char *name = nt_str(c->nt, id, "name");
+  for (int i = 0; i < nc; i++)
+    cpoly_add(&bp, &cap, PA_USER, cand[i], comp_method_in_chain(c, cand[i], name, NULL), TY_UNKNOWN, PC_VOID);
+  if (nc == 0) return &bp;
+  /* map!/collect! rewrites a builtin array in place, given a block body */
+  int block = nt_ref(c->nt, id, "block");
+  int map_bang = 0;
+  if (sp_streq(name, "map!") || sp_streq(name, "collect!")) {
+    int body = nt_ref(c->nt, block, "body");
+    int bn = 0;
+    if (body >= 0) (void)nt_arr(c->nt, body, "body", &bn);
+    map_bang = bn >= 1 && block_param_name(c, block, 0);
+  }
+  if (map_bang) cpoly_family(&bp, &cap, PB_BD_MAP_BANG);
+  else cpoly_trial(&bp, &cap, PT_BD_DEFAULT);
+  return &bp;
+}
