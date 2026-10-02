@@ -353,6 +353,7 @@ typedef struct {
   unsigned char struct_valued;/* ty_is_struct_valued */
   unsigned char scalar_ret;   /* is_scalar_ret */
   unsigned char store_class;  /* repr_store_class (SC_*) */
+  unsigned char box_form;     /* the form --repr-check records for box_text (RF_*) */
 } TyTraits;
 #define TY_TRAITS_N ((int)TY_FLOAT_ARRAY_ARRAY + 1)
 extern const TyTraits ty_traits[TY_TRAITS_N];

@@ -60,6 +60,7 @@ static TyTraits trait_from_functions(Compiler *c, TyKind t) {
     g_tmp = 0;
     emit_boxed_text(c, t, "$e", &b);
     r.box_text = trait_render(&b);
+    r.box_form = (unsigned char)emit_boxed_text_form(c, t);
   }
   { Buf b; memset(&b, 0, sizeof b); g_tmp = 0; emit_unbox_text(c, t, "$e", &b); r.unbox = trait_render(&b); }
   { Buf b; memset(&b, 0, sizeof b); g_tmp = 0; emit_unbox_nilable_text(c, t, "$e", &b); r.unbox_nil = trait_render(&b); }
@@ -102,7 +103,8 @@ void ty_traits_dump(Compiler *c) {
                                  r.box_id, r.hash_id, r.unbox, r.unbox_nil, r.unbox_rhs, r.unbox_sink,
                                  r.unbox_token, r.nil_test_local };
     for (unsigned k = 0; k < sizeof cols / sizeof cols[0]; k++) { trait_str(stdout, cols[k]); fputs(", ", stdout); }
-    printf("%d, %d, %d, %d, %d },\n", r.null_is_nil, r.needs_root, r.struct_valued, r.scalar_ret, r.store_class);
+    printf("%d, %d, %d, %d, %d, %d },\n", r.null_is_nil, r.needs_root, r.struct_valued, r.scalar_ret,
+           r.store_class, r.box_form);
   }
 }
 
@@ -126,7 +128,7 @@ int ty_traits_check(Compiler *c) {
     TRAIT_S(box_text) TRAIT_S(box_id) TRAIT_S(hash_id) TRAIT_S(unbox) TRAIT_S(unbox_nil)
     TRAIT_S(unbox_rhs) TRAIT_S(unbox_sink) TRAIT_S(unbox_token) TRAIT_S(nil_test_local)
     TRAIT_B(null_is_nil) TRAIT_B(needs_root) TRAIT_B(struct_valued) TRAIT_B(scalar_ret)
-    TRAIT_B(store_class)
+    TRAIT_B(store_class) TRAIT_B(box_form)
 #undef TRAIT_S
 #undef TRAIT_B
   }
