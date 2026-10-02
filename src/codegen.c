@@ -1,5 +1,6 @@
 #include <limits.h>
 #include "codegen_internal.h"
+#include "call_plan.h"
 #include "repr.h"
 
 /* classes whose pool a proc or fiber body has declared, per program */
@@ -10411,11 +10412,37 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* the next shadow in this class -- an earlier include's, prepend's or
      extend's copy -- is the parent here, as in emit_super's call form */
   const char *shadow = comp_super_shadow(c, s);
-  int mi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
-                                   : comp_method_in_class(c, s->class_id, shadow))
-         : p < 0 ? -1
-         : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &defcls)
-                         : comp_method_in_chain(c, p, s->name, &defcls);
+  /* the target is the super's plan (call_plan.c) when it was looked up where
+     this splice looks: the shadow's class, or the parent's chain under this
+     method's own name. The plan asks the chain for the user name
+     (comp_super_name), which a proc-form clone's, a prepend's or an
+     include's copy does not carry: the splice looks those up by the copy's
+     name and leaves them to emit_super. Those, and under --plan-check as the
+     assertion, take the lookup. */
+  const CallPlan *spl = cplan_user(c, id);
+  int mi = -1;
+  if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
+      (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, s->name)))) {
+    mi = spl->mi;
+    if (!shadow) defcls = c->scopes[mi].class_id;
+  }
+  if (g_plan_check && mi >= 0) cplan_served("super-inline");
+  if (g_plan_check || mi < 0) {
+    int odef = -1;
+    int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
+                                      : comp_method_in_class(c, s->class_id, shadow))
+            : p < 0 ? -1
+            : s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, &odef)
+                            : comp_method_in_chain(c, p, s->name, &odef);
+    if (mi < 0) {
+      if (g_plan_check && omi >= 0)
+        fprintf(stderr, "plan-check: cplan-fallback: super-inline node %d %s\n", id, s->name);
+      mi = omi; defcls = odef;
+    }
+    else if (omi != mi || (!shadow && odef != defcls))
+      fprintf(stderr, "plan-check: cplan-conflict: super-inline node %d %s: plan %d/%d, lookup %d/%d\n",
+              id, s->name, mi, defcls, omi, odef);
+  }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
   if (!m->yields || scope_has_return(c, mi)) return 0;
