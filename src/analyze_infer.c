@@ -4503,30 +4503,15 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          that later holds the boxed answer */
       if (at == TY_UNKNOWN) return TY_UNKNOWN;
     }
-    /* the plain readers: builtin-op rows (builtin_ops.c). Every one is a
-       known Time method, so no reopen of Object answers for it below. */
+    /* builtin-op rows (builtin_ops.c). Every row names a known Time (or
+       Object) method, which the Object reopen check below never answers. */
     {
       const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) return op->result;
     }
-    if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
-        sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
-        sp_streq(name, "-")) return TY_TIME;
-    if (sp_streq(name, "clamp") && argc == 2) return TY_TIME;  /* self or a bound */
-    if (sp_streq(name, "to_a") && argc == 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
-    if ((sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round")) && (argc == 0 || argc == 1)) return TY_TIME;
-    if (sp_streq(name, "xmlschema")) return TY_STRING;   /* with or without a fraction-digits arg (#3094) */
-    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_POLY;  /* boxed Sym=>Int hash */
     if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
     if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
         argc == 0 && sp_feature_enabled("time")) return TY_STRING;
-    if (sp_streq(name, "strftime")) return TY_STRING;
-    if (sp_streq(name, "to_f")) return TY_FLOAT;
-    /* Integer 0 for a whole second, else a Rational -- boxed at the arm */
-    if (sp_streq(name, "subsec")) return TY_POLY;
-    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-        sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
        the result is poly (#2677). */
     if (sp_streq(name, "<=>") && argc == 1)

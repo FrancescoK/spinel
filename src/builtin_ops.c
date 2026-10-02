@@ -410,6 +410,35 @@ static const BuiltinOp bop_rows[] = {
   { TY_ENUMERATOR, "entries",         0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
   { TY_ENUMERATOR, "inspect",         0,   0, BF_ANY,      TY_STRING,      BOPE_NONE },
   { TY_ENUMERATOR, "to_s",            0,   0, BF_ANY,      TY_STRING,      BOPE_NONE },
+
+  /* Time: the result kinds of the calls whose arms render more than the
+     receiver (emitted in emit_value_recv_call). Time - Time and Time - poly
+     are typed by the operand before the lookup; iso8601, httpdate and
+     rfc2822 depend on the time feature, <=> on the operand. */
+  { TY_TIME, "utc",        0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "gmtime",     0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "getutc",     0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "localtime",  0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "getlocal",   0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "+",          0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "-",          0, 127, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "clamp",      2,   2, BF_ANY, TY_TIME,       BOPE_NONE },  /* self or a bound */
+  { TY_TIME, "to_a",       0,   0, BF_ANY, TY_POLY_ARRAY, BOPE_NONE },
+  { TY_TIME, "to_r",       0,   0, BF_ANY, TY_RATIONAL,   BOPE_NONE },
+  { TY_TIME, "floor",      0,   1, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "ceil",       0,   1, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "round",      0,   1, BF_ANY, TY_TIME,       BOPE_NONE },
+  { TY_TIME, "xmlschema",  0, 127, BF_ANY, TY_STRING,     BOPE_NONE },  /* with or without fraction digits (#3094) */
+  { TY_TIME, "deconstruct_keys", 1,   1, BF_ANY, TY_POLY,       BOPE_NONE },  /* a boxed Symbol => Integer hash */
+  { TY_TIME, "strftime",   0, 127, BF_ANY, TY_STRING,     BOPE_NONE },
+  { TY_TIME, "to_f",       0, 127, BF_ANY, TY_FLOAT,      BOPE_NONE },
+  { TY_TIME, "subsec",     0, 127, BF_ANY, TY_POLY,       BOPE_NONE },  /* Integer 0 for a whole second, else a Rational */
+  { TY_TIME, "<",          0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_TIME, ">",          0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_TIME, "<=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_TIME, ">=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_TIME, "==",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
+  { TY_TIME, "!=",         0, 127, BF_ANY, TY_BOOL,       BOPE_NONE },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
 
