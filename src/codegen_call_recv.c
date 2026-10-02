@@ -666,6 +666,7 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
 }
 
 static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
+static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
 
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
    literal. */
@@ -1019,21 +1020,12 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_puts(b, " "); emit_boxed(c, argv[1], b); buf_puts(b, "; })");
     }
     else if (blk >= 0) {
-      int bbody = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      int bval = bn > 0 ? bb[bn - 1] : -1;
       buf_puts(b, " ({ ");
       emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
-      if (emit_blk_value_via_next(c, blk, TY_POLY, b)) {
-        buf_puts(b, "; }); })");
-        { *out = 1; return 1; }
-      }
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
-      if (bval >= 0) {
-        if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-        else emit_expr(c, bval, b);
-      }
-      else buf_puts(b, "sp_box_nil()");
+      /* The value with its setup, after the parameter is bound: left in
+         g_pre the setup ran ahead of the whole call, on the nil the
+         parameter starts as. */
+      emit_blk_value_as(c, blk, TY_POLY, b);
       buf_puts(b, "; }); })");
     }
     else {
@@ -1797,22 +1789,10 @@ else {
     else if (blk >= 0) {
       /* fetch(i) { |i| default }: an out-of-bounds index yields the
          (original) index to the block; its value is the result */
-      int bbody = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      int bval = bn > 0 ? bb[bn - 1] : -1;
       buf_puts(b, " ({ ");
       emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
-      /* a `next <v>` answers the block's value, as in the Hash arm */
-      if (emit_blk_value_via_next(c, blk, boxed ? TY_POLY : et, b)) {
-        buf_puts(b, "; }); })");
-        { *out = 1; return 1; }
-      }
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
-      if (bval >= 0) {
-        if (boxed && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-        else emit_expr(c, bval, b);
-      }
-      else buf_puts(b, boxed ? "sp_box_nil()" : default_value_from_compiler(c, et));
+      /* the value with its setup after the parameter is bound, as above */
+      emit_blk_value_as(c, blk, boxed ? TY_POLY : et, b);
       buf_puts(b, "; }); })");
     }
     else {
