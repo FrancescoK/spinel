@@ -12442,6 +12442,9 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
        (1 is not eql? to 1.0): box both sides through the strict poly
        comparator. Scalar eql? is handled by the per-type emitters. */
     int eq = !sp_streq(name, "!=");
+    /* a Process::Status against an Integer compares its status word (its
+       builtin-op rows) */
+    if (rt == TY_PROCESS_STATUS && a0 == TY_INT && emit_builtin_op(c, id, recv, rt, name, b)) return 1;
     if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0) ||
                                    ty_is_hash(rt) || ty_is_hash(a0))) {
       emit_poly_cmp_ordered(c, "sp_poly_eql", recv, argv[0], b);
@@ -16841,6 +16844,9 @@ sp_builtin_cmeth_arity_spec_tbl[] = {
   {"Process","times",0,0,NULL,"0",0,0,NULL,"0"},
   {"Process","spawn",1,-1,"1+",NULL,1,-1,"1+",NULL},
   {"Process","waitpid2",0,2,NULL,"0..2",0,2,NULL,"0..2"},
+  {"Process","wait2",0,2,NULL,"0..2",0,2,NULL,"0..2"},
+  {"Process","wait",0,2,NULL,"0..2",0,2,NULL,"0..2"},
+  {"Process","waitpid",0,2,NULL,"0..2",0,2,NULL,"0..2"},
   {"Regexp","new",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Regexp","escape",1,1,"1","1",1,1,"1","1"},
   {"Regexp","quote",1,1,"1","1",1,1,"1","1"},
@@ -35860,9 +35866,22 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        infer_call, like every other arm here -- g_ret_type is the enclosing
        FUNCTION's return type, and writing it at a call site leaked into
        every later `return` in that function. */
-    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "waitpid2") && argc == 1) {
+    /* Process.wait2 is the same call; with no pid, either waits for any
+       child (-1) */
+    if (tcn && sp_streq(tcn, "Process") &&
+        (sp_streq(name, "waitpid2") || sp_streq(name, "wait2")) && argc <= 1) {
       buf_puts(b, "sp_process_waitpid2(");
-      emit_int_expr(c, argv[0], b);
+      if (argc == 1) emit_int_expr(c, argv[0], b);
+      else buf_puts(b, "-1");
+      buf_puts(b, ")");
+      return;
+    }
+    /* Process.wait / waitpid: the pid reaped, its status left in $? */
+    if (tcn && sp_streq(tcn, "Process") &&
+        (sp_streq(name, "wait") || sp_streq(name, "waitpid")) && argc <= 1) {
+      buf_puts(b, "sp_process_waitpid(");
+      if (argc == 1) emit_int_expr(c, argv[0], b);
+      else buf_puts(b, "-1");
       buf_puts(b, ")");
       return;
     }

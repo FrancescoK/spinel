@@ -595,6 +595,13 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
                   " printf(\"#<Dir:%%s>\\n\", _dp ? _dp : \"\"); }"
                   " else fputs(\"nil\\n\", stdout); }\n", dv, dv);
   }
+  else if (t == TY_PROCESS_STATUS) {
+    /* `$?` is nil (NULL) until a child has been waited for */
+    int sv = ++g_tmp;
+    buf_printf(b, "{ sp_ProcessStatus *_t%d = (", sv); emit_expr(c, arg, b);
+    buf_printf(b, "); sp_puts_line(_t%d ? sp_process_status_to_s(_t%d->pid, _t%d->status, 1) : \"nil\"); }\n",
+               sv, sv, sv);
+  }
   else if (t == TY_OPENSTRUCT) {
     buf_puts(b, "{ sp_OpenStruct *_po = ("); emit_expr(c, arg, b);
     buf_puts(b, "); sp_puts_line(_po ? sp_OpenStruct_inspect(_po) : \"nil\"); }\n");

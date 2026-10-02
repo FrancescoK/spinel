@@ -27,6 +27,11 @@ typedef struct sp_ProcessStatus_s {
    status. */
 sp_ProcessStatus *sp_process_status_new(sp_int pid, sp_int status);
 
+/* `$?`: the status of the last child waited for (Kernel#system, a
+   backtick, Process.wait*), or NULL -- nil -- before any. A new object on
+   each read, carrying the raw status word as it was stored. */
+sp_ProcessStatus *sp_last_process_status(void);
+
 /* Predicates. All return 0 or 1 except success_p, which is tri-state: -1
    means CRuby's nil (the process did not exit normally). */
 int sp_process_status_exited_p(sp_int s);
@@ -45,7 +50,7 @@ sp_int sp_process_status_termsig(sp_int s);
 /* Render the status to a string for to_s / inspect. The result lives
    in a static buffer; the runtime copies it to a GC-heap string for
    return. */
-const char *sp_process_status_to_s(sp_int s, int is_inspect);
+const char *sp_process_status_to_s(sp_int pid, sp_int s, int is_inspect);
 
 /* Equality: two Process::Status values are equal iff their status
    words are equal. pid is not compared. */

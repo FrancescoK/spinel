@@ -2676,7 +2676,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       return;
     }
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
-    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
+    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }

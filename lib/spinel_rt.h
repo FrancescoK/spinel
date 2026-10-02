@@ -477,6 +477,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args, sp_RbVal opts);
 int sp_process_open_redirect(const char *path, int slot, int *owned);
 SP_NORETURN void sp_process_spawn_fail(int *owned, const char *cls, const char *msg);
 sp_PolyArray *sp_process_waitpid2(sp_int pid);
+sp_int sp_process_waitpid(sp_int pid);   /* Process.wait / waitpid: the pid reaped */
 
 
 /* `recycle`: optional sweep hook. If non-NULL, sp_gc_collect calls
@@ -4291,6 +4292,16 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
      other operators now do; the field-wise hook below stays the default for
      a class that does not define one (#3501) */
   { sp_RbVal _u; if (sp_poly_user_cmp("==", a, b, &_u)) return sp_poly_truthy(_u); }
+  /* Ruby 3.2's Process::Status#== compares the status word (to_i) with the
+     other side, and Integer#== hands a non-number back to it, so `$? == 0`
+     and `0 == $?` both read the word; two statuses compare their words */
+  { int _pa = a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROCESS_STATUS && a.v.p;
+    int _pb = b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_PROCESS_STATUS && b.v.p;
+    if (_pa || _pb) {
+      sp_RbVal _x = _pa ? sp_box_int(((sp_ProcessStatus *)a.v.p)->status) : a;
+      sp_RbVal _y = _pb ? sp_box_int(((sp_ProcessStatus *)b.v.p)->status) : b;
+      return sp_poly_eq(_x, _y);
+    } }
   { sp_RbVal _u; if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) && sp_poly_is_user_obj(b) && sp_obj_to_ary_fn &&
                      sp_obj_to_ary_fn((sp_RbVal){ .tag = SP_TAG_OBJ, .cls_id = b.cls_id }).tag == SP_TAG_BOOL &&
                      sp_poly_user_cmp("==", b, a, &_u)) return sp_poly_truthy(_u); }

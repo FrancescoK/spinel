@@ -4985,8 +4985,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_INT;
     if (rname && sp_streq(rname, "Process") && sp_streq(name, "spawn") && argc >= 1)
       return TY_INT;
-    if (rname && sp_streq(rname, "Process") && sp_streq(name, "waitpid2") && argc == 1)
+    if (rname && sp_streq(rname, "Process") &&
+        (sp_streq(name, "waitpid2") || sp_streq(name, "wait2")) && argc <= 1)
       return TY_POLY_ARRAY;
+    /* Process.wait / waitpid answer the pid they reaped and set $? */
+    if (rname && sp_streq(rname, "Process") &&
+        (sp_streq(name, "wait") || sp_streq(name, "waitpid")) && argc <= 1)
+      return TY_INT;
   }
 
   /* Fiber storage: Fiber[:k] and Fiber.current[:k] -> poly */
@@ -7730,7 +7735,9 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "$stderr"))) return TY_IO;   /* the C stream handles (#2818) */
     /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
-    if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
+    /* the Process::Status of the last child waited for, NULL (nil) before
+       any; it was an Integer, and `$?.exitstatus` raised NoMethodError */
+    if (nm && sp_streq(nm, "$?")) return TY_PROCESS_STATUS;
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
     if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
