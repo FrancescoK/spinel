@@ -34391,7 +34391,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
        the block is its parameter, present exactly when it is not NULL */
     else if (comp_scope_of(c, id) && comp_scope_of(c, id)->blk_param &&
              comp_scope_of(c, id)->blk_param[0] && !comp_scope_of(c, id)->yields) {
-      buf_printf(b, "(lv_%s != NULL)", rename_local(comp_scope_of(c, id)->blk_param));
+      /* through emit_local_ref: in a block the parameter may be a captured
+         cell, not the method's own lv_ */
+      Buf lb; memset(&lb, 0, sizeof lb);
+      emit_local_ref(c, id, comp_scope_of(c, id)->blk_param, &lb);
+      buf_printf(b, "(%s != NULL)", lb.p ? lb.p : "NULL");
+      free(lb.p);
     }
     else {
       buf_puts(b, "0");
