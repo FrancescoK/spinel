@@ -4162,13 +4162,11 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     int handled = emit_minmax_cmp_expr(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return handled;
   }
   /* a range receiver materializes to its int array once and re-enters with
@@ -4180,13 +4178,11 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
                ta, tr, rb.p ? rb.p : "", tr, ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_INT_ARRAY);
     int handled = emit_minmax_cmp_expr(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return handled;
   }
   if (!ty_is_array(rt)) return 0;
@@ -4382,13 +4378,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
                  ta, tr, rb.p ? rb.p : "", tr, ta);
       free(rb.p);
-      g_argov_node[g_n_argov] = es_recv;
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-      g_n_argov++;
+      view_bind(es_recv, "_t%d", ta);
       int v = view_push(c, es_recv, TY_INT_ARRAY);
       int done = emit_collect_expr(c, id, b);
       view_pop(c, v);
-      g_n_argov--;
+      view_unbind(g_n_argov - 1);
       return done;
     }
   }
@@ -7658,9 +7652,7 @@ static void emit_arg_temp(Compiler *c, int v) {
     }
     g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th };
   }
-  g_argov_node[g_n_argov] = v;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-  g_n_argov++;
+  view_bind(v, "_t%d", t);
 }
 
 /* See codegen_internal.h. */
@@ -7764,9 +7756,7 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   int raises = vb.p && strncmp(past_open_parens(vb.p), "sp_raise_", 9) == 0;
   free(vb.p);
   argov_reserve();
-  g_argov_node[g_n_argov] = x;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "%s", raises ? "sp_raise_nomethod(\"\")" : "0");
-  g_n_argov++;
+  view_bind(x, "%s", raises ? "sp_raise_nomethod(\"\")" : "0");
 }
 
 /* The values of a call's arguments in the order CRuby runs them: each
@@ -8015,10 +8005,8 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
    override with its own. */
 static void ds_operand_reads_temp(int node, int tmp) {
   argov_reserve();
-  g_argov_node[g_n_argov] = node;
-  if (tmp < 0) snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "((void)0)");
-  else snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tmp);
-  g_n_argov++;
+  if (tmp < 0) view_bind(node, "((void)0)");
+  else view_bind(node, "_t%d", tmp);
 }
 
 /* `s` as a C string literal: a key a message names (`"q\"z"`) may carry
@@ -9971,7 +9959,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       buf_puts(out, i == 0 ? lead : ", ");
       buf_puts(out, tmpnames[i]);
     }
-    g_n_argov = argov_saved;
+    view_unbind(argov_saved);
     arg_layout_free(&L);
     return;
   }
@@ -10034,9 +10022,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
         free(hb.p);
-        g_argov_node[g_n_argov] = argv[k];
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
-        g_n_argov++;
+        view_bind(argv[k], "_t%d", ht);
         continue;
       }
       emit_expr(c, argv[k], &hb);
@@ -10053,9 +10039,7 @@ else {
         buf_puts(g_pre, "\n");
       }
       free(hb.p);
-      g_argov_node[g_n_argov] = argv[k];
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ht);
-      g_n_argov++;
+      view_bind(argv[k], "_t%d", ht);
     }
   }
   for (int i = 0; i < m->nparams; i++) {
@@ -10141,7 +10125,7 @@ else {
       }
     }
   }
-  g_n_argov = argov_saved;  /* drop this call's hoisted-arg overrides */
+  view_unbind(argov_saved);  /* drop this call's hoisted-arg overrides */
   arg_layout_free(&L);
 }
 
@@ -10893,7 +10877,7 @@ else {
     free(ab.p);
   }
   g_nren = pd_ren_base;   /* the renames served the defaults only */
-  g_n_argov = argov_saved_d;
+  view_unbind(argov_saved_d);
 
   /* a trailing splat's count, refused once every argument has run */
   if (given_d >= 0) {

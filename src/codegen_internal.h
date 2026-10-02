@@ -1438,6 +1438,11 @@ extern ArmCtx g_arm;
 #define g_prbd_skip (g_arm.prbd_skip)
 #define g_poly_builtin_arm (g_arm.builtin_arm)
 int view_push_arm(int pd_skip, int prbd_skip, int builtin_arm);
+/* A node bound to the text emit_expr writes for it instead (g_argov_*):
+   view_bind answers the binding's slot; view_unbind(n) drops every binding
+   from slot n up. */
+int view_bind(int node, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void view_unbind(int n);
 /* One representation flag of node id seen as v for one nested emission,
    restored by view_pop (or view_unwind on a refusal) like a type view. */
 enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW };
@@ -1445,7 +1450,7 @@ int view_push_repr(Compiler *c, int id, int flag, int v);
 /* bumped by every view push, pop and unwind: a per-node memo of a decision
    that reads the flags or the type keys on it */
 unsigned view_epoch(void);
-void view_unwind(int depth);
+void view_unwind(int mark);   /* back to a view_mark(): views, arm contexts and bindings */
 /* The concurrency handles' row emitters (codegen_call_concurrency.c) */
 int emit_op_thread_set_report(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_thread_raise(Compiler *c, const BopCtx *x, Buf *b);

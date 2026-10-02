@@ -1889,9 +1889,7 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
   if (argc == 0 && ret == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       poly_container_read_p(name) && g_pd_skip != id &&
       g_n_argov < MAX_ARG_OVERRIDE) {
-    int slot9 = g_n_argov++;
-    g_argov_node[slot9] = recv;
-    snprintf(g_argov_text[slot9], sizeof g_argov_text[0], "_t%d", tv);
+    int slot9 = view_bind(recv, "_t%d", tv);
     int va = view_push_arm(id, g_prbd_skip, 1);
     /* The builtin surface reads the node's own type to pick its shape, and
        this node was widened to poly to hold both answers. Restore the
@@ -1911,7 +1909,7 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
     else emit_boxed(c, id, &ib9);
     if (vw >= 0) view_pop(c, vw);
     view_pop(c, va);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     /* an emission that fell through to the raise token adds nothing: leave
        those tags on the switch's own default so the message is the same */
     int kept9 = ib9.p && strncmp(ib9.p, "sp_raise_nomethod(", 18) != 0;

@@ -18,6 +18,11 @@
    forced push it as a view, so a refusal's view_unwind puts it back with
    the rest. repr_of reads the flags live and memoizes nothing.
 
+   view_bind binds a node to the text emit_expr writes for it instead (a
+   hoisted argument's or receiver's temp, g_argov_*): the bindings are a
+   stack beside the views, popped by view_unbind, and a refusal's
+   view_unwind drops the ones bound since its mark with the rest.
+
    view_push_arm does the same for the arm context a poly dispatch's
    builtin arm re-enters the call under (g_arm: the node whose dispatch
    declines its own re-entry, g_pd_skip and g_prbd_skip, and
@@ -25,6 +30,7 @@
    view of a node: it counts toward neither view_depth nor view_epoch. */
 
 #include "codegen_internal.h"
+#include <stdarg.h>
 
 #define VIEW_MAX 256
 
@@ -37,6 +43,41 @@ static int view_nodes;   /* the entries that view a node (all but VK_ARM) */
 static unsigned view_epoch_n;
 
 ArmCtx g_arm = { -1, -1, 0 };
+
+/* Argument-hoist overrides: emit_args_filled pre-evaluates GC-hazardous
+   call arguments into rooted temps; emit_expr then substitutes the temp
+   name when it reaches the overridden node. Twice MAX_ARG_OVERRIDE to start
+   with, so only a call of more arguments than that grows it. */
+static int  argov_node0[2 * MAX_ARG_OVERRIDE];
+static char argov_text0[2 * MAX_ARG_OVERRIDE][32];
+int  *g_argov_node = argov_node0;
+char (*g_argov_text)[32] = argov_text0;
+static int g_argov_cap = 2 * MAX_ARG_OVERRIDE;
+int  g_n_argov = 0;
+/* See codegen_internal.h. */
+void argov_reserve(void) {
+  if (g_n_argov + 1 + MAX_ARG_OVERRIDE <= g_argov_cap) return;
+  int cap = 2 * (g_n_argov + 1 + MAX_ARG_OVERRIDE);
+  int *nodes = malloc(sizeof *nodes * (size_t)cap);
+  char (*texts)[32] = malloc(sizeof *texts * (size_t)cap);
+  if (!nodes || !texts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(nodes, g_argov_node, sizeof *nodes * (size_t)g_n_argov);
+  memcpy(texts, g_argov_text, sizeof *texts * (size_t)g_n_argov);
+  if (g_argov_node != argov_node0) { free(g_argov_node); free(g_argov_text); }
+  g_argov_node = nodes; g_argov_text = texts; g_argov_cap = cap;
+}
+
+int view_bind(int node, const char *fmt, ...) {
+  if (g_n_argov + 1 > g_argov_cap) argov_reserve();
+  int slot = g_n_argov++;
+  g_argov_node[slot] = node;
+  va_list ap; va_start(ap, fmt);
+  vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
+  va_end(ap);
+  return slot;
+}
+
+void view_unbind(int n) { g_n_argov = n; }
 
 unsigned view_epoch(void) { return view_epoch_n; }
 
@@ -116,16 +157,18 @@ void view_pop(Compiler *c, int tok) {
 
 int view_depth(void) { return view_nodes; }
 
-/* the stack's position, for view_unwind: every entry opened since, the arm
-   context's too */
-int view_mark(void) { return view_sp; }
+/* the stack's position and the bindings' fill, for view_unwind: every
+   entry opened since, the arm context's too, and every binding */
+int view_mark(void) { return view_sp << 16 | (g_n_argov & 0xffff); }
 
 /* A refusal longjmps out of an emission past its view_pop. The recovery
    point saved the depth before it and puts back every view opened since,
    the latest first, so a dropped arm leaves no node seen as another kind. */
-void view_unwind(int depth) {
+void view_unwind(int mark) {
+  int depth = mark >> 16;
   while (view_sp > depth) {
     view_sp--;
     view_close(view_sp);
   }
+  if (g_n_argov > (mark & 0xffff)) g_n_argov = mark & 0xffff;
 }

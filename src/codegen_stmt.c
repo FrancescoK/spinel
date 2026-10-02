@@ -1040,8 +1040,7 @@ else {
         emit_gc_root_tmp(c, ft, t, b);
         buf_puts(b, "\n");
         free(fb.p);
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-        g_argov_node[g_n_argov++] = first;
+        view_bind(first, "_t%d", t);
         up_held = 1;
       }
     }
@@ -1104,7 +1103,7 @@ else {
       emit_str_literal(b, bad_cat);
       buf_puts(b, "));\n");
     }
-    if (up_held) g_n_argov--;
+    if (up_held) view_unbind(g_n_argov - 1);
     return 1;
   }
   return 0;

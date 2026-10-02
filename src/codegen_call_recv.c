@@ -1099,12 +1099,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_ctype(c, rt0, g_pre);
         buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", ta0, ra0.p ? ra0.p : "NULL", ta0);
         free(ra0.p);
-        g_argov_node[g_n_argov] = recv0;
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta0);
-        g_n_argov++;
+        view_bind(recv0, "_t%d", ta0);
         buf_puts(b, "({ ");
         emit_stmt(c, id, b, 0);
-        g_n_argov--;
+        view_unbind(g_n_argov - 1);
         if (sp_streq(nm0, "zip"))
           buf_puts(b, " sp_box_nil(); })");   /* zip { } returns nil */
         else
@@ -1338,13 +1336,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
             nC = 2;
             if (was_sb) { view_push(c, recv, TY_STRING); nC = 3; }
-            g_argov_node[g_n_argov] = recv;
-            snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
-            g_n_argov++;
+            view_bind(recv, "_t%d", tob);
           }
           emit_expr(c, id, &nbB);
           if (rd_call) {
-            g_n_argov--;
+            view_unbind(g_n_argov - 1);
             for (int k = nC - 1; k >= 0; k--) view_pop(c, vC + k);
           }
           nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
@@ -1871,13 +1867,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "", ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   /* `poly.reduce/inject { }` (with or without a seed) where poly is an
@@ -1902,13 +1896,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   /* `poly.reject/select/filter { |x| ... }` where poly is an array read out of
@@ -2090,13 +2082,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"zip\"); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     emit_expr(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   /* `poly.each_index { |i| ... }` on a poly array read out of a container:
@@ -2178,9 +2168,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_enum_recv_arr(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     /* and pin it for the inference too, the way the hash face does: the cached
        type alone does not survive a safe-navigation guard, whose re-emission
@@ -2201,7 +2189,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     g_poly_redispatch_id = sv_rd;
     an_set_face_node(sv_face, sv_fk);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   if (recv >= 0 && ty_is_array(rt)) {
@@ -7912,9 +7900,7 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
   free(ab.p);
   if (boxed || vt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv); }
   else if (needs_root(vt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tv); }
-  g_argov_node[g_n_argov] = argv[0];
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
-  g_n_argov++;
+  view_bind(argv[0], "_t%d", tv);
   buf_puts(b, "({ (void)(");
   *vt_out = boxed ? TY_POLY : vt;
   return tv;
@@ -7925,7 +7911,7 @@ static int setter_value_open(Compiler *c, int id, Buf *b, TyKind *vt_out) {
    the temp on the way out then. */
 static void setter_value_close(Compiler *c, int id, TyKind vt, Buf *b, int tv) {
   if (tv < 0) return;
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   buf_puts(b, "); ");
   if (comp_ntype(c, id) == TY_POLY && vt != TY_POLY) {
     char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv);
@@ -8107,14 +8093,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "NULL");
       free(rb.p);
-      g_argov_node[g_n_argov] = recv;
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tr);
-      g_n_argov++;
+      view_bind(recv, "_t%d", tr);
       Buf ib; memset(&ib, 0, sizeof ib);
       isa_nil_open = 1;
       int ok = emit_object_call(c, id, &ib);
       isa_nil_open = 0;
-      g_n_argov--;
+      view_unbind(g_n_argov - 1);
       if (ok) {
         buf_printf(b, "(_t%d ? (%s) : ", tr, ib.p ? ib.p : "0");
         if (dyn) {
@@ -10816,9 +10800,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_POLY_ARRAY);
     /* find_all on the pair array is Enumerable select (a hash receiver only
        lands here through the redispatch, so the hash-returning Hash#select
@@ -10835,16 +10817,16 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ (void)(%s); ", db.p ? db.p : "0");
       free(db.p);
       view_pop(c, v);
-      g_n_argov--;              /* re-emit the REAL receiver, not the override */
+      view_unbind(g_n_argov - 1);   /* re-emit the REAL receiver, not the override */
       emit_expr(c, recv, b);
-      g_n_argov++;
+      view_bind(recv, "_t%d", ta);
       v = view_push(c, recv, TY_POLY_ARRAY);
       buf_puts(b, "; })");
     }
     else emit_call(c, id, b);
     if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "find_all");
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   if (recv >= 0 && rt == TY_RANGE && range_enum_redispatch(c, id) &&
@@ -10855,13 +10837,11 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
                ta, tr, rb.p ? rb.p : "", tr, ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_INT_ARRAY);
     emit_call(c, id, b);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return 1;
   }
   return 0;
@@ -10984,9 +10964,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       break;
   }
   free(rb.p);
-  g_argov_node[g_n_argov] = recv;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "%s%d", tp, t);
-  g_n_argov++;
+  view_bind(recv, "%s%d", tp, t);
   TyKind as = ty_poly_face_kind(kind);
   int v = view_push(c, recv, as);
   int sv_face = an_face_node(); TyKind sv_fk = an_face_kind();
@@ -11005,7 +10983,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   emit_call(c, id, &cb);
   an_set_face_node(sv_face, sv_fk);
   view_pop(c, v);
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   const char *call = cb.p ? cb.p : "0";
   /* A typed emitter that declines the call's argument shape answers the
      unresolved gate's raise token, a poly value that never returns: hand it
@@ -11134,7 +11112,7 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
   an_set_face_node(sv_face, sv_fk);
   c->ntype[recv] = sv_ty;
-  g_n_argov = sv_argov;
+  view_unbind(sv_argov);
   g_open_defaults = sv_open_defaults;
   g_conv_hold = sv_hold;
   g_unsup_probe = sv_probe;
@@ -11317,15 +11295,13 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
                     " const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
              tvb, rbb.p ? rbb.p : "sp_box_nil()", tvb, tob, tvb, bang, tob);
   free(rbb.p);
-  g_argov_node[g_n_argov] = recv;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tob);
-  g_n_argov++;
+  view_bind(recv, "_t%d", tob);
   int v = view_push(c, recv, TY_STRING);
   nt_node_set_str((NodeTable *)nt, id, "name", plain);
   Buf nbb; memset(&nbb, 0, sizeof nbb); emit_call(c, id, &nbb);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
   view_pop(c, v);
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   buf_printf(b, "({ const char *_t%d = %s; ", tnb, nbb.p ? nbb.p : "\"\"");
   free(nbb.p);
   /* Decide "did it change?" BEFORE the mutation. The receiver's old text
@@ -11444,14 +11420,10 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
       emit_ctype(c, at, b);
       buf_printf(b, " _t%d = ", ta); emit_expr(c, argv[i], b); buf_puts(b, "; ");
       if (ty_gc_rootable(c, at)) { emit_gc_root_tmp(c, at, ta, b); buf_puts(b, " "); }
-      g_argov_node[g_n_argov] = argv[i];
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-      g_n_argov++;
+      view_bind(argv[i], "_t%d", ta);
     }
     buf_printf(b, "(_t%d.tag == SP_TAG_CLASS && (%s)) ? ", tsv, ids.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsv);
-    g_n_argov++;
+    view_bind(recv, "_t%d", tsv);
     nt_node_set_str((NodeTable *)nt, id, "name", "new");
     Buf nb; memset(&nb, 0, sizeof nb); emit_call(c, id, &nb);
     nt_node_set_str((NodeTable *)nt, id, "name", "[]");
@@ -11459,7 +11431,7 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     g_aref_cls_skip = id;
     Buf ab; memset(&ab, 0, sizeof ab); emit_call(c, id, &ab);
     g_aref_cls_skip = sv_skip;
-    g_n_argov = nov0;
+    view_unbind(nov0);
     buf_printf(b, "(%s) : (%s); })", nb.p ? nb.p : "sp_box_nil()", ab.p ? ab.p : "sp_box_nil()");
     free(nb.p); free(ab.p); free(ids.p);
     return 1;
@@ -11562,13 +11534,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
     }
     else if (argc == 1 || argc == 2) {
-      g_argov_node[g_n_argov] = recv;
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tsv);
-      g_n_argov++;
+      view_bind(recv, "_t%d", tsv);
       nt_node_set_str((NodeTable *)nt, id, "name", "[]");
       Buf ib; memset(&ib, 0, sizeof ib); emit_call(c, id, &ib);
       nt_node_set_str((NodeTable *)nt, id, "name", "slice");
-      g_n_argov--;
+      view_unbind(g_n_argov - 1);
       buf_puts(b, ib.p ? ib.p : "sp_box_nil()");
       free(ib.p);
     }
@@ -11745,13 +11715,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "mrb_regexp_pattern *_t%d = sp_poly_as_pattern(%s);\n",
                  trx, rbx.p ? rbx.p : "sp_box_nil()");
       free(rbx.p);
-      g_argov_node[g_n_argov] = recv;
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", trx);
-      g_n_argov++;
+      view_bind(recv, "_t%d", trx);
       int v = view_push(c, recv, TY_REGEX);
       emit_call(c, id, b);
       view_pop(c, v);
-      g_n_argov--;
+      view_unbind(g_n_argov - 1);
       return 1;
     }
   }
@@ -13328,11 +13296,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, rb.p ? rb.p : "sp_box_nil()", tv);
       free(rb.p);
-      g_argov_node[g_n_argov] = recv;
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", tv);
-      g_n_argov++;
+      view_bind(recv, "_t%d", tv);
       buf_printf(b, "sp_poly_hash_splice(_t%d, ", tv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      g_n_argov--;
+      view_unbind(g_n_argov - 1);
       return 1;
     }
     /* a plain string box cannot hold the new contents, so an lvalue

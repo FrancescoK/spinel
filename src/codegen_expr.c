@@ -2138,9 +2138,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_gc_root_tmp(c, st, ts, &lb);
       buf_puts(&lb, "\n");
       free(eb.p);
-      g_argov_node[g_n_argov] = subs[i];
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ts);
-      g_n_argov++;
+      view_bind(subs[i], "_t%d", ts);
     }
     int tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -2154,7 +2152,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     g_loop_break_var = bvbuf; g_ie_res_poly = 1; g_brk_ser_var = NULL;
     emit_for(c, id, &lb, ind);
     g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp; g_brk_ser_var = saved_bs;
-    g_n_argov = sv_argov;
+    view_unbind(sv_argov);
     if (g_pre) {
       if (lb.p) buf_puts(g_pre, lb.p);
       buf_printf(b, "_t%d", tr);
@@ -4243,8 +4241,7 @@ else {
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
         free(vb.p);
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-        g_argov_node[g_n_argov++] = v;
+        view_bind(v, "_t%d", t);
         held++;
       }
     }
@@ -4264,7 +4261,7 @@ else {
       emit_indent(g_pre, g_indent);
       if (vt == TY_NIL || vt == TY_VOID) {
         buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "sp_box_nil()");
+        view_bind(v, "sp_box_nil()");
       }
       else {
         int t = ++g_tmp;
@@ -4272,15 +4269,14 @@ else {
         buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+        view_bind(v, "_t%d", t);
       }
       free(vb.p);
-      g_argov_node[g_n_argov++] = v;
       held++;
     }
     emit_stmt(c, id, g_pre, g_indent);
     emit_expr(c, value, b);
-    g_n_argov -= held;
+    view_unbind(g_n_argov - (held));
     return;
   }
 

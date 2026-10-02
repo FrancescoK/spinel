@@ -693,7 +693,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
     ren_unpark(&park);
     buf_puts(b, ";\n");
   }
-  g_n_argov = argov_saved;
+  view_unbind(argov_saved);
 }
 
 /* The method a call with a block is spliced from, and the self it binds: the
@@ -3187,7 +3187,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, "})");
   }
-  g_n_argov = argov_saved;
+  view_unbind(argov_saved);
   free(bi.pf); free(bi.pt);
   #undef BI_BLOCK_SIDE
   #undef BI_METHOD_SIDE
@@ -3410,10 +3410,8 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     int ts = ++g_tmp, tf = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
     Buf fb; memset(&fb, 0, sizeof fb);
-    int slot = g_n_argov++;
-    g_argov_node[slot] = recv;
+    int slot = view_bind(recv, "_t%d", ts);
     if (str_iter) {
-      snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", ts);
       int v = view_push(c, recv, TY_STRING);
       /* analysis renames a String's each_grapheme_cluster to each_char (the
          two agree over the text spinel carries); this receiver was not a
@@ -3428,12 +3426,13 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
       view_pop(c, v);
     }
     if (io_iter) {
-      snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tf);
+      view_unbind(slot);
+      view_bind(recv, "_t%d", tf);
       int v = view_push(c, recv, TY_IO);
       emit_stmt(c, id, &fb, indent + 2);
       view_pop(c, v);
     }
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     int str_arm = ab.p && !strstr(ab.p, "sp_raise_nomethod(");
     int io_arm = fb.p && !strstr(fb.p, "sp_raise_nomethod(");
     if (str_arm || io_arm) {
@@ -3483,9 +3482,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   if (!emitted_default && g_prbd_skip != id && g_n_argov + 1 <= MAX_ARG_OVERRIDE) {
     /* on the heap: the probe may longjmp back after the emitter wrote to it */
     Buf *ab = calloc(1, sizeof *ab);
-    int slot = g_n_argov++;
-    g_argov_node[slot] = recv;
-    snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", trecv);
+    int slot = view_bind(recv, "_t%d", trecv);
     int va = view_push_arm(g_pd_skip, id, 1);
     /* under the silent probe: a builtin emitter that refuses the call drops
        this arm, not the build */
@@ -3505,7 +3502,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
     g_nren = sv_nren; g_block_id = sv_block;
     g_unsup_probe = sv_probe; g_pre = sv_gpre;
     view_pop(c, va);
-    g_n_argov = slot;
+    view_unbind(slot);
     char rtok[300];
     snprintf(rtok, sizeof rtok, "sp_nomethod_msg(\"%s\"", name);
     if (ok && ab->p && !strstr(ab->p, rtok)) {
@@ -3558,11 +3555,9 @@ int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_boxed(c, recv, &rb);
   Buf sb; memset(&sb, 0, sizeof sb);
-  int slot = g_n_argov++;
-  g_argov_node[slot] = recv;
-  snprintf(g_argov_text[slot], sizeof g_argov_text[0], "_t%d", tr);
+  int slot = view_bind(recv, "_t%d", tr);
   int ok = emit_poly_recv_block_dispatch(c, id, &sb, 1);
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   if (ok && sb.p)
     buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n%s _t%d; })",
                tr, rb.p ? rb.p : "sp_box_nil()", tr, sb.p, tr);
@@ -4170,9 +4165,7 @@ int iter_recv_bind_once(Compiler *c, int node) {
   free(ob.p);
   if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
   buf_puts(g_pre, "\n");
-  g_argov_node[g_n_argov] = node;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-  g_n_argov++;
+  view_bind(node, "_t%d", t);
   return 1;
 }
 
@@ -4239,12 +4232,10 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      splice only when it handles the shape, else leave the node to the
      later handlers untouched */
   int ta = ++g_tmp;
-  g_argov_node[g_n_argov] = recv;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-  g_n_argov++;
+  view_bind(recv, "_t%d", ta);
   Buf body; memset(&body, 0, sizeof body);
   int ok = emit_iteration_stmt(c, id, &body, 0);
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   if (!ok) { free(body.p); return 0; }
   /* The original receiver is read twice, once under the hop and once as the
      answer */
@@ -4267,7 +4258,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      re-emitting it here references that same value rather than re-evaluating. */
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
   else buf_printf(b, " _t%d; })", ta);
-  if (to) g_n_argov--;
+  if (to) view_unbind(g_n_argov - 1);
   return 1;
 }
 
@@ -4861,13 +4852,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
                ta, tr, rb.p ? rb.p : "", tr, ta);
     free(rb.p);
-    g_argov_node[g_n_argov] = recv;
-    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
-    g_n_argov++;
+    view_bind(recv, "_t%d", ta);
     int v = view_push(c, recv, TY_INT_ARRAY);
     int done = emit_iteration_stmt(c, id, b, indent);
     view_pop(c, v);
-    g_n_argov--;
+    view_unbind(g_n_argov - 1);
     return done;
   }
 
