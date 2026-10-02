@@ -3,4 +3,7 @@
 [" text/html ;q=1", "text/html"]
 ["text", "text"]
 ["text / html", "text/html"]
+["text/html/extra", "text/html"]
+["text/", "text"]
+["/html", "/html"]
 [nil, nil]

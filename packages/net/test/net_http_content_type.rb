@@ -5,7 +5,8 @@ require "net/http"
 
 server = TCPServer.new("127.0.0.1", 0)
 port = server.addr[1]
-types = ["text/html; charset=utf-8", "TEXT/HTML", " text/html ;q=1", "text", "text / html", nil]
+types = ["text/html; charset=utf-8", "TEXT/HTML", " text/html ;q=1", "text", "text / html",
+         "text/html/extra", "text/", "/html", nil]
 t = Thread.new do
   types.each do |ct|
     c = server.accept
