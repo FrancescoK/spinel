@@ -315,6 +315,21 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   return 0;
 }
 
+static const char *g_cp_site[16];
+static int g_cp_site_n[16];
+static int g_cp_nsites;
+
+void cplan_served(const char *site) {
+  for (int i = 0; i < g_cp_nsites; i++)
+    if (g_cp_site[i] == site || sp_streq(g_cp_site[i], site)) { g_cp_site_n[i]++; return; }
+  if (g_cp_nsites < 16) { g_cp_site[g_cp_nsites] = site; g_cp_site_n[g_cp_nsites++] = 1; }
+}
+
+void cplan_served_report(void) {
+  for (int i = 0; i < g_cp_nsites; i++)
+    fprintf(stderr, "plan-check: cplan-served: %s %d\n", g_cp_site[i], g_cp_site_n[i]);
+}
+
 /* the node is read as itself: nothing re-types or re-scopes it */
 static int cplan_plain_ctx(void) {
   return view_depth() == 0 && comp_scope_move_depth() == 0 && g_ie_class_id < 0 &&

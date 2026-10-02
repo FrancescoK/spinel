@@ -106,6 +106,7 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   int mi;
   if (pl->mi >= 0 && (pl->via == UC_TOP || pl->via == UC_SEND_BLIND)) {
     mi = pl->mi;
+    if (g_plan_check) cplan_served("emit_method_call");
     if (g_plan_check && mi != comp_method_index(c, name))
       fprintf(stderr, "plan-check: cplan-conflict: emit_method_call node %d %s: plan %d, by name %d\n",
               id, name ? name : "?", mi, comp_method_index(c, name));
@@ -10463,6 +10464,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
     if (dpl->chain && dpl->via == UC_INST && dpl->owner_ci == cid && cnm && sp_streq(cnm, name)) {
       mi = dpl->mi;
       defcls = c->scopes[mi].class_id;
+      if (g_plan_check) cplan_served("dispatch");
     }
     else dpl = NULL;
   }

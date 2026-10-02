@@ -38,6 +38,11 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+/* --plan-check: a codegen site that took its target from a plan counts it
+   (site: a short constant name); cplan_served_report prints the counts */
+void cplan_served(const char *site);
+void cplan_served_report(void);
+
 /* whether mi is the plan's method or, for a switch, one of its arms */
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi);
 

@@ -25013,7 +25013,29 @@ static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     free(rb.p);
     return 1;
   }
-  if (comp_method_in_chain(c, dispatch_cid, name, NULL) >= 0) {
+  /* the method is the call's plan (call_plan.c) when self is the call's own
+     scope's class and the plan is that class's own lookup. An instance_exec
+     self or a body emitted for an inheriting class dispatches through
+     another class, which the plan does not take as an input: that path, and
+     a plan of another kind, look the name up here, as --plan-check does for
+     the assertion. */
+  const CallPlan *spl = cplan_user(c, id);
+  int mi = dispatch_cid == self->class_id && spl->chain && spl->via == UC_INST &&
+           spl->owner_ci == dispatch_cid ? spl->mi : -1;
+  if (g_plan_check && mi >= 0) cplan_served("implicit-self");
+  if (g_plan_check || mi < 0) {
+    int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
+    if (mi < 0) {
+      if (g_plan_check && omi >= 0)
+        fprintf(stderr, "plan-check: cplan-fallback: implicit-self node %d %s%s\n", id, name,
+                dispatch_cid != self->class_id ? " (dispatch class)" : "");
+      mi = omi;
+    }
+    else if (omi != mi)
+      fprintf(stderr, "plan-check: cplan-conflict: implicit-self node %d %s: plan %d, lookup %d\n",
+              id, name, mi, omi);
+  }
+  if (mi >= 0) {
     if (emit_reopen_own_call(c, id, dispatch_cid, b)) return 1;
     emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"),
                   nt_ref(nt, id, "block"), b);
@@ -37306,7 +37328,28 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                      : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
     if (dispatch_cid >= 0) {
       if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return;
-      int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
+      /* the method is the call's plan (call_plan.c) when self is the call's
+         own scope's class and the plan is that class's own lookup. An
+         instance_exec self or a body emitted for an inheriting class
+         dispatches through another class, which the plan does not take as
+         an input: that path, and a plan of another kind, look the name up
+         here, as --plan-check does for the assertion. */
+      const CallPlan *spl = cplan_user(c, id);
+      int mi = dispatch_cid == self->class_id && spl->chain && spl->via == UC_INST &&
+               spl->owner_ci == dispatch_cid ? spl->mi : -1;
+      if (g_plan_check && mi >= 0) cplan_served("implicit-self-late");
+      if (g_plan_check || mi < 0) {
+        int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
+        if (mi < 0) {
+          if (g_plan_check && omi >= 0)
+            fprintf(stderr, "plan-check: cplan-fallback: implicit-self-late node %d %s%s\n", id, name,
+                    dispatch_cid != self->class_id ? " (dispatch class)" : "");
+          mi = omi;
+        }
+        else if (omi != mi)
+          fprintf(stderr, "plan-check: cplan-conflict: implicit-self-late node %d %s: plan %d, lookup %d\n",
+                  id, name, mi, omi);
+      }
       /* Template-method pattern: a base-class method calls an abstract method
          that is implemented only in subclasses. Not found up the chain, but if a
          descendant defines it, emit_dispatch can still resolve it virtually on
@@ -40372,6 +40415,7 @@ else {
       if (pl->mi >= 0 && pl->via == UC_CMETH) {
         mi = pl->mi;
         defcls = c->scopes[mi].class_id;
+        if (g_plan_check) cplan_served("cmethod-on-constant");
         if (pl->owner_ci != ci) ci = builtin_class_id(nt_str(nt, recv, "name"));
       }
       /* --plan-check keeps the arm's own lookup as the assertion; without a

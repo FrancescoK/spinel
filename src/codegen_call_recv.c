@@ -9519,6 +9519,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        --plan-check as the assertion, the arm looks it up itself */
     const CallPlan *opl = cplan_user(c, id);
     int mi = opl->chain && opl->via == UC_INST && opl->owner_ci == cid ? opl->mi : -1;
+    if (g_plan_check && mi >= 0) cplan_served("object-call");
     if (g_plan_check || mi < 0) {
       int omi = comp_method_in_chain(c, cid, name, NULL);
       if (mi < 0) {

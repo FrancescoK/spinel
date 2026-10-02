@@ -51,9 +51,15 @@ rsum=$(grep ': plan-check: ucall-resolver: ' "$OUT" | sed 's/.*ucall-resolver: /
 grep ': plan-check: conflict:' "$OUT" | head -20
 grep ': plan-check: ucall-conflict:' "$OUT" | head -20
 grep ': plan-check: cplan-conflict:' "$OUT" | head -20
-rm -f "$OUT"
 echo "plan-check: $nc conflicts, $nu unrecorded, $nr respecialized"
 echo "plan-check: resolver: $rsum"
 echo "plan-check: plan readers: $pc conflicts, $pf fallbacks"
+# per site: the calls each took from the plan, and the ones it fell back on
+for site in $(grep ': plan-check: cplan-served: ' "$OUT" | awk '{print $4}' | sort -u); do
+  sv=$(grep ": plan-check: cplan-served: $site " "$OUT" | awk '{ s += $5 } END { print s + 0 }')
+  fb=$(grep -c ": plan-check: cplan-fallback: $site " "$OUT")
+  echo "plan-check:   $site: $sv served, $fb fallbacks"
+done
 echo "plan-check: user methods: $uc ucall-conflicts, $ur ucall-respecialized, $uv ucall-virtual, $uu ucall-unrecorded, $uo ucall-unobserved, $ue ucall-unemitted, $uf ucall-refused, $ud ucall-dynamic"
+rm -f "$OUT"
 [ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ]
