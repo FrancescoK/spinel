@@ -1241,7 +1241,7 @@ static void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout
                                const PolyArgs *A, const char *selfd, const char *lead,
                                Buf *pre, Buf *cb);
 void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out);
-static void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
+void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
 static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
                               const char *selfp, Buf *pa);
 static void emit_poly_kw_arm_checks(Compiler *c, Scope *m, Scope *ms, const PolyKw *kw,
@@ -1275,7 +1275,7 @@ void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf
 /* The call's block as a proc temp for a runtime arm: the one a dispatch
    already built (have >= 0), or a new one; -1 when there is none. A literal
    block, a `&pr` and a `&:sym` all come out as a proc. */
-static int poly_call_blk_proc(Compiler *c, int id, int have) {
+int poly_call_blk_proc(Compiler *c, int id, int have) {
   if (have >= 0) return have;
   int cb = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   return cb >= 0 ? hoist_block_proc(c, cb) : -1;
@@ -5485,7 +5485,7 @@ void emit_kwh_sym_hash(Compiler *c, const PolyKw *kw, Scope *skip_kw, Buf *out) 
    the dispatch's own kwall, built fresh for this call: a copy into a
    Symbol-keyed hash raised a TypeError for a key such as "a", which a
    method without keywords takes in its Hash as CRuby does. */
-static void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
+void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out) {
   if (kw->kwall_any) {
     buf_printf(out, boxed ? "sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH)" : "_t%d", kw->kwall);
     return;
@@ -6242,74 +6242,6 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   return 1;
 }
 
-/* The numeric surface a poly receiver answers for ITSELF, when the poly
-   method dispatch exists only because a user class happens to own the name.
-   Each row is a name whose ordinary emitter declines a contested name (its
-   own `!user_defines_or_reads` guard) and falls through to the dispatch,
-   where the switch's default arm has to answer for a receiver that really is
-   a number.
-
-   Three separate fixes each copied the arm beside the last one -- the
-   `ob13` / `ob14` / `ob15` numbering is what that looks like in the end --
-   so a fourth name is one row here instead.
-
-   The table ALSO gated whether the switch opened at all, because a
-   colliding class may define the name at an arity the call site does not
-   use, which leaves the candidate count 0 and every other flag false. That
-   was the wrong place to answer it, and the gate below answers it properly
-   now by asking whether any user class owns the NAME, which is the question
-   the emitters themselves ask when they stand down. So this is a table of
-   arms only. Reading it as a gate had swallowed `str.start_with?`,
-   `arr.flatten`, `h.default` and a dozen more that no numeric row was ever
-   going to cover.
-
-   What the rows differ in is exactly three things: which runtime helper
-   answers, how the argument reaches it, and how its answer is fitted to the
-   slot the dispatch assigns into. */
-typedef enum {
-  NPA_BOXED,       /* the helper answers sp_RbVal: straight into a poly slot, unboxed into a scalar one */
-  NPA_PAIR,        /* ... and answers a PAIR, which no scalar slot can hold: divmod, gcdlcm */
-  NPA_FLOAT,       /* sp_float */
-  NPA_INT_ARRAY,   /* sp_IntArray * */
-  NPA_BOOL         /* sp_bool */
-} NumArmKind;
-
-static const struct {
-  const char *nm;
-  int min_argc, max_argc;
-  const char *fn;     /* the helper at min_argc */
-  const char *fn2;    /* ... and the one a second argument selects (pow's modulus) */
-  NumArmKind kind;
-  int arg_int;        /* the argument goes over as a machine int, not boxed (digits' base) */
-  int extra;          /* a trailing constant the helper takes, -1 for none */
-  TyKind box_as;      /* for NPA_PAIR / NPA_INT_ARRAY: what the poly slot boxes it as */
-} SP_NUM_ARM[] = {
-  {"gcd",       1, 1, "sp_poly_int_gcd",     NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"lcm",       1, 1, "sp_poly_int_lcm",     NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"ceildiv",   1, 1, "sp_poly_int_ceildiv", NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"gcdlcm",    1, 1, "sp_poly_int_gcdlcm",  NULL,                  NPA_PAIR,      0, -1, TY_POLY_ARRAY},
-  {"pow",       1, 2, "sp_poly_pow",         "sp_poly_int_powmod",  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"digits",    1, 1, "sp_poly_int_digits",  NULL,                  NPA_INT_ARRAY, 1, -1, TY_INT_ARRAY},
-  {"allbits?",  1, 1, "sp_poly_int_bits_test", NULL,                NPA_BOOL,      0,  0, TY_UNKNOWN},
-  {"anybits?",  1, 1, "sp_poly_int_bits_test", NULL,                NPA_BOOL,      0,  1, TY_UNKNOWN},
-  {"nobits?",   1, 1, "sp_poly_int_bits_test", NULL,                NPA_BOOL,      0,  2, TY_UNKNOWN},
-  {"divmod",    1, 1, "sp_poly_divmod",      NULL,                  NPA_PAIR,      0, -1, TY_UNKNOWN},
-  {"remainder", 1, 1, "sp_poly_remainder",   NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"fdiv",      1, 1, "sp_poly_fdiv",        NULL,                  NPA_FLOAT,     0, -1, TY_UNKNOWN},
-  {"quo",       1, 1, "sp_poly_quo",         NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"modulo",    1, 1, "sp_poly_modulo",      NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {"div",       1, 1, "sp_poly_div_m",       NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
-  {NULL, 0, 0, NULL, NULL, NPA_BOXED, 0, -1, TY_UNKNOWN}
-};
-
-static int poly_num_arm(const char *name, int argc) {
-  if (!name) return -1;
-  for (int i = 0; SP_NUM_ARM[i].nm; i++)
-    if (sp_streq(name, SP_NUM_ARM[i].nm) &&
-        argc >= SP_NUM_ARM[i].min_argc && argc <= SP_NUM_ARM[i].max_argc) return i;
-  return -1;
-}
-
 /* Last resort before the switch's raising default: ask the ordinary call
    emission what a builtin receiver would answer, and make that the default
    arm. The dispatch is only reached because a user class owns the name, so
@@ -6455,7 +6387,7 @@ int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
 /* `x[k] = v` where a user class owns `[]=`: a receiver that is really an
    Array or a Hash stores through the runtime, which dispatches on the
    container's own kind (#4879). Written after the default label. */
-static int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *atmp,
+int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *atmp,
                                   const TyKind *atmp_ty, TyKind ret, int tv, int tr, Buf *b) {
   if (argc != 2 || !name || !sp_streq(name, "[]=") || !atmp || !atmp_ty) return 0;
   char k0[24], v0[24];
@@ -7546,7 +7478,7 @@ void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char
    sum (an Array, Hash or Range adds the block's answers to init),
    fetch(key) { } and merge!/update(other, ...) { }, the block (a proc
    argument too) through a runtime arm. Answers 1 when it wrote the arm. */
-static int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv,
+int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv,
                                      const int *atmp, const TyKind *atmp_ty, int tv, int tr,
                                      int blk_tmp2, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -8299,341 +8231,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                      nt_ref(nt, id, "block") < 0;
       if (g_plan_check) pa_resume(pa_frame);
       emit_poly_cases_n(c, id, name, &ps, &ptemps, splat_a, is_aref, is_fetch, b);
+      if (g_plan_check) pa_resume(pa_frame);
+      emit_poly_defaults_n(c, id, recv, name, &ps, &ptemps, &kw, splat_a, is_aref, is_aref2, is_fetch,
+                           blk_tmp2, is_setter_val, b);
       if (g_plan_check) pa_end(c, pa_frame, cplan_poly(c, id));
-      /* Same fallthrough rule as the zero-arg dispatch, but only when the
-         switch is made of user-class arms alone. Where a builtin pre-arm is in
-         play the fallthrough can mean "right receiver, wrong argument" --
-         `"abc".include?(:x)` is a TypeError in CRuby, not a NoMethodError --
-         so those names keep their existing answer rather than gain a
-         mislabelled raise (#3394). */
-      if (!is_pred && !is_strftime && !is_aref && !is_aref2 && !is_fetch && !is_include &&
-          !is_push && !is_cover && !is_gcdlcm && !is_strdel && !is_strsplit &&
-          !is_pdelete && !is_pdig && !is_pvalues_at && !is_pfirstn && !is_pmerge) {
-        buf_puts(b, " default:");
-        size_t dl_pos = b->len;   /* the builtin fallback below reads it */
-        /* `replace` reaches this dispatch only because a user class owns the
-           name; a String, Array or Hash receiver still has to be replaced
-           rather than told it has no such method. Same shape as the to_i /
-           to_h / join arms of the zero-argument dispatch (#4240). */
-        if (sp_streq(name, "replace") && argc == 1 && splat_a < 0 && ret == TY_POLY) {
-          Buf rb9; memset(&rb9, 0, sizeof rb9);
-          { char tn9[32]; snprintf(tn9, sizeof tn9, "_t%d", atmp[0]);
-            if (atmp_ty[0] == TY_POLY) buf_puts(&rb9, tn9);
-            else emit_boxed_text(c, atmp_ty[0], tn9, &rb9); }
-          buf_printf(b, " _t%d = sp_poly_replace_any(_t%d, %s); break;",
-                     tr, tv, rb9.p ? rb9.p : "sp_box_nil()");
-          free(rb9.p);
-        }
-        /* round(n) / ceil(n) / floor(n) / truncate(n): a class defining
-           `round(digits)` took over the name, and the Integer or Float in
-           the same slot fell to the raise below (#4532). The zero-arg forms
-           have their arm in the other dispatch; these answer through the
-           boxed helpers the no-user-class path uses. */
-        else if ((sp_streq(name, "round") || sp_streq(name, "ceil") ||
-                  sp_streq(name, "floor") || sp_streq(name, "truncate")) && argc == 1 && splat_a < 0) {
-          char nd9[64];
-          if (atmp_ty[0] == TY_POLY) snprintf(nd9, sizeof nd9, "sp_poly_to_i(_t%d)", atmp[0]);
-          else snprintf(nd9, sizeof nd9, "(sp_int)_t%d", atmp[0]);
-          Buf nv9; memset(&nv9, 0, sizeof nv9);
-          if (sp_streq(name, "round")) buf_printf(&nv9, "sp_poly_round_n(_t%d, %s)", tv, nd9);
-          else buf_printf(&nv9, "sp_poly_prec_n(_t%d, %s, %s)", tv, nd9,
-                          name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC");
-          buf_printf(b, " _t%d = ", tr);
-          if (ret == TY_POLY) buf_puts(b, nv9.p ? nv9.p : "");
-          else emit_unbox_text(c, ret, nv9.p ? nv9.p : "", b);
-          buf_puts(b, "; break;");
-          free(nv9.p);
-        }
-        /* Integer-only arithmetic a user class can shadow the same way
-           : a class defining `gcd`/`lcm`/`ceildiv`/`pow`/`digits`/
-           `allbits?` etc. took over the name, and the Integer or Bignum in
-           the same slot fell to the raise below with no arm of its own --
-           the same gap `bit_length`, `round(n)` and friends had. The
-           runtime helpers are the ones the no-user-class path already calls
-           (codegen_call_recv.c's `sp_poly_int_*` table), and they raise for
-           a receiver that is not a number, as CRuby does. */
-        /* The numeric surface, from the table beside emit_poly_method_dispatch:
-           box the argument the dispatch already hoisted, call the helper the
-           no-user-class path calls, and fit the answer to the slot. */
-        else if (splat_a < 0 && poly_num_arm(name, argc) >= 0) {
-          int ai = poly_num_arm(name, argc);
-          Buf ab9; memset(&ab9, 0, sizeof ab9);
-          { char an9[32]; snprintf(an9, sizeof an9, "_t%d", atmp[0]);
-            if (SP_NUM_ARM[ai].arg_int) {
-              if (atmp_ty[0] == TY_POLY) buf_printf(&ab9, "sp_poly_to_i(_t%d)", atmp[0]);
-              else buf_printf(&ab9, "(sp_int)_t%d", atmp[0]);
-            }
-            else if (atmp_ty[0] == TY_POLY) buf_puts(&ab9, an9);
-            else emit_boxed_text(c, atmp_ty[0], an9, &ab9); }
-          const char *a9 = ab9.p ? ab9.p : "sp_box_nil()";
-          Buf bb9; memset(&bb9, 0, sizeof bb9);
-          const char *fn9 = SP_NUM_ARM[ai].fn;
-          if (argc > SP_NUM_ARM[ai].min_argc && SP_NUM_ARM[ai].fn2) {
-            fn9 = SP_NUM_ARM[ai].fn2;
-            char bn9[32]; snprintf(bn9, sizeof bn9, "_t%d", atmp[1]);
-            if (atmp_ty[1] == TY_POLY) buf_puts(&bb9, bn9);
-            else emit_boxed_text(c, atmp_ty[1], bn9, &bb9);
-          }
-          char gv9[320];
-          if (bb9.p)
-            snprintf(gv9, sizeof gv9, "%s(_t%d, %s, %s)", fn9, tv, a9, bb9.p);
-          else if (SP_NUM_ARM[ai].extra >= 0)
-            snprintf(gv9, sizeof gv9, "%s(_t%d, %s, %d)", fn9, tv, a9, SP_NUM_ARM[ai].extra);
-          else
-            snprintf(gv9, sizeof gv9, "%s(_t%d, %s)", fn9, tv, a9);
-          /* A pair fits a poly slot and an array one, and nothing else: a
-             scalar slot cannot hold it, so the arm raises there rather than
-             build a value it would have to throw away. Asking the slot rather
-             than asking only whether it is poly is the fourth instance of
-             this family -- `n.gcdlcm(8)` raised "undefined method 'gcdlcm'"
-             whenever the dispatch had typed the call from the builtin answer
-             alone, which is every program where the colliding class's own
-             arity keeps it out of the candidate set. */
-          if (SP_NUM_ARM[ai].kind == NPA_PAIR &&
-              ret != TY_POLY && ret != TY_POLY_ARRAY && ret != TY_INT_ARRAY)
-            buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-          else {
-            buf_printf(b, " _t%d = ", tr);
-            switch (SP_NUM_ARM[ai].kind) {
-              case NPA_BOXED:
-                if (ret == TY_POLY) buf_puts(b, gv9);
-                else emit_unbox_text(c, ret, gv9, b);
-                break;
-              case NPA_PAIR: {
-                /* box_as names the pointer kind the helper answers directly;
-                   without one it answers an sp_RbVal already. */
-                int raw9 = SP_NUM_ARM[ai].box_as != TY_UNKNOWN;
-                if (ret == TY_POLY) {
-                  if (raw9) emit_boxed_text(c, SP_NUM_ARM[ai].box_as, gv9, b);
-                  else buf_puts(b, gv9);
-                }
-                else if (raw9 && ret == SP_NUM_ARM[ai].box_as) buf_puts(b, gv9);
-                else emit_unbox_text(c, ret, gv9, b);
-                break; }
-              case NPA_FLOAT:
-                if (ret == TY_POLY) emit_boxed_text(c, TY_FLOAT, gv9, b);
-                else buf_puts(b, gv9);
-                break;
-              case NPA_INT_ARRAY:
-                if (ret == TY_POLY) emit_boxed_text(c, TY_INT_ARRAY, gv9, b);
-                else buf_puts(b, gv9);
-                break;
-              case NPA_BOOL:
-                if (ret == TY_POLY) buf_printf(b, "sp_box_bool(%s)", gv9);
-                else buf_puts(b, gv9);
-                break;
-            }
-            buf_puts(b, "; break;");
-          }
-          free(ab9.p); free(bb9.p);
-        }
-        /* index/rindex also belong to String, whose box carries no cls_id, so
-           no case above can claim it. Answer it here, ahead of the raise, or a
-           substring search on a boxed String reports a missing method (#3445).
-           find_index is Enumerable-only and keeps falling through. */
-        else if (is_arr_index && !sp_streq(name, "find_index")) {
-          int tsi = ++g_tmp;
-          Buf ab5; memset(&ab5, 0, sizeof ab5);
-          { char tn5[32]; snprintf(tn5, sizeof tn5, "_t%d", atmp[0]);
-            if (atmp_ty[0] == TY_POLY) buf_puts(&ab5, tn5);
-            else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab5, "sp_box_regexp(%s)", tn5);
-            else emit_boxed_text(c, atmp_ty[0], tn5, &ab5); }
-          if (argc == 2) {
-            char sx[64];
-            if (atmp_ty[1] == TY_POLY) snprintf(sx, sizeof sx, "sp_poly_to_i(_t%d)", atmp[1]);
-            else snprintf(sx, sizeof sx, "(sp_int)_t%d", atmp[1]);
-            buf_printf(b, " if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {"
-                          " sp_int _t%d = sp_poly_str_index_from_val(_t%d, %s, %s, %d); _t%d = ",
-                       tv, tv, tsi, tv, ab5.p ? ab5.p : "sp_box_nil()", sx,
-                       sp_streq(name, "rindex") ? 1 : 0, tr);
-            /* the result slot carries whatever the call was inferred as: the
-               nullable int rides raw (SP_INT_NIL is its nil), a poly slot boxes */
-            if (ret == TY_POLY)
-              buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tsi, tsi);
-            else buf_printf(b, "_t%d", tsi);
-            buf_puts(b, "; break; }");
-          }
-          else {
-            buf_printf(b, " if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {"
-                          " sp_int _t%d = sp_poly_str_index_val(_t%d, %s, %d); _t%d = ",
-                       tv, tv, tsi, tv, ab5.p ? ab5.p : "sp_box_nil()",
-                       sp_streq(name, "rindex") ? 1 : 0, tr);
-            if (ret == TY_INT) buf_printf(b, "_t%d", tsi);
-            else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tsi, tsi);
-            buf_puts(b, "; break; }");
-          }
-          free(ab5.p);
-        }
-        /* find_index(value) over the other Enumerables: a Hash's pairs, a
-           Range's members, an Enumerator's values, a user Enumerable's
-           elements. Anything else still reports the missing method. */
-        else if (is_arr_index && argc == 1) {
-          int tsi = ++g_tmp;
-          Buf ab7; memset(&ab7, 0, sizeof ab7);
-          { char tn7[32]; snprintf(tn7, sizeof tn7, "_t%d", atmp[0]);
-            if (atmp_ty[0] == TY_POLY) buf_puts(&ab7, tn7);
-            else emit_boxed_text(c, atmp_ty[0], tn7, &ab7); }
-          buf_printf(b, " { sp_int _t%d; if (sp_poly_enum_find_index_val(_t%d, %s, &_t%d)) { _t%d = ",
-                     tsi, tv, ab7.p ? ab7.p : "sp_box_nil()", tsi, tr);
-          if (ret == TY_INT) buf_printf(b, "_t%d", tsi);
-          else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tsi, tsi);
-          buf_puts(b, "; break; } }");
-          free(ab7.p);
-        }
-        /* a receiver no arm above claimed may still be a builtin that answers
-           the name (Array#shift(n) under a user shift(n), #4831): ask the
-           builtin surface before raising. Only where the default is still
-           open -- nothing after the label yet, or only guarded arms, which
-           end in `}`. A name arm above that already wrote the default's
-           whole body (`gcd`'s ends `break;`) leaves what follows unreachable,
-           and a builtin answer there was not even of the slot's type. */
-        int dl_open = b->len == dl_pos || (b->len > 0 && b->p[b->len - 1] == '}');
-        int sum_done = dl_open && ret == TY_POLY &&
-                       emit_poly_default_blk_arm(c, id, name, argc, argv, atmp, atmp_ty, tv, tr, blk_tmp2, b);
-        if (!sum_done && (!dl_open ||
-            (!emit_poly_aset_default(c, name, argc, atmp, atmp_ty, ret, tv, tr, b) &&
-             !emit_poly_builtin_default(c, id, recv, name, argc, argv, atmp, atmp_ty,
-                                        ret, tv, is_setter_val ? -1 : tr, 0, b))))
-          buf_printf(b, " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-      }
-      /* `[]` gets a default of its own. The arms above enumerate the kinds
-         someone thought to add -- every ARRAY kind, the string- and
-         symbol-keyed hashes -- and a receiver of any other kind matched
-         nothing, leaving the result at its nil initializer: a read that
-         answered nil with nothing raised (#3507). The runtime index dispatches
-         on the receiver's own kind, and raises where there is no `[]` at all.
-         The key goes boxed, since a Hash key is not an offset. */
-      else if (is_pfirstn) {
-        char nx[64]; snprintf(nx, sizeof nx, "_t%d", atmp[0]);
-        char gen[256];
-        snprintf(gen, sizeof gen, "sp_poly_%s_n(_t%d, %s)",
-                 sp_streq(name, "first") ? "first" : "last", tv,
-                 atmp_ty[0] == TY_POLY ? ({ static char cx[80]; snprintf(cx, sizeof cx, "sp_poly_to_i(%s)", nx); cx; }) : nx);
-        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
-      }
-      else if (is_pdelete || is_pdig || is_pvalues_at) {
-        /* A splatted key list has a length only the run time knows, so the
-           fixed `(sp_RbVal[]){...}` cannot hold it -- every argument temp
-           carried the whole array as ONE key and the call answered from the
-           first (#4164). Flatten into a PolyArray and hand the callee its
-           buffer instead. */
-        int splat_n = 0;
-        for (int a = 0; a < argc; a++)
-          if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) splat_n = 1;
-        int tkl = -1;
-        if (splat_n && !is_pdelete) {
-          tkl = ++g_tmp;
-          buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tkl, tkl);
-          for (int a = 0; a < argc; a++) {
-            char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
-            if (nt_type(nt, argv[a]) && sp_streq(nt_type(nt, argv[a]), "SplatNode")) {
-              int tsp = ++g_tmp, tsj = ++g_tmp;
-              buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tsp);
-              if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
-              else emit_boxed_text(c, atmp_ty[a], tn, b);
-              buf_printf(b, "); SP_GC_ROOT(_t%d);", tsp);
-              buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
-                            " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));",
-                         tsj, tsj, tsp, tsj, tkl, tsp, tsj);
-              continue;
-            }
-            buf_printf(b, " sp_PolyArray_push(_t%d, ", tkl);
-            if (atmp_ty[a] == TY_POLY) buf_puts(b, tn);
-            else emit_boxed_text(c, atmp_ty[a], tn, b);
-            buf_puts(b, ");");
-          }
-        }
-        Buf ab; memset(&ab, 0, sizeof ab);
-        for (int a = 0; a < argc; a++) {
-          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
-          if (a) buf_puts(&ab, ", ");
-          if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
-          else emit_boxed_text(c, atmp_ty[a], tn, &ab);
-        }
-        char gen[512];
-        /* delete(key) { |k| }: the block answers a key that was not there */
-        int dblk = is_pdelete && nt_ref(nt, id, "block") >= 0 ? poly_call_blk_proc(c, id, blk_tmp2) : -1;
-        if (is_pdelete && dblk >= 0)
-          snprintf(gen, sizeof gen, "sp_poly_delete_key_blk(_t%d, %s, _t%d)", tv, ab.p ? ab.p : "sp_box_nil()", dblk);
-        else if (is_pdelete)
-          snprintf(gen, sizeof gen, "sp_poly_delete_key(_t%d, %s)", tv, ab.p ? ab.p : "sp_box_nil()");
-        else if (tkl >= 0)
-          snprintf(gen, sizeof gen, "sp_poly_%s(_t%d, _t%d->len, _t%d->data)",
-                   is_pdig ? "dig_n" : "values_at_n", tv, tkl, tkl);
-        else
-          snprintf(gen, sizeof gen, "sp_poly_%s(_t%d, %d, (sp_RbVal[]){%s})",
-                   is_pdig ? "dig_n" : "values_at_n", tv, argc, ab.p ? ab.p : "sp_box_nil()");
-        /* Only when the result temp is the boxed one. The generic answer is
-           whatever the receiver's own kind returns, and a switch whose result
-           was typed from the user arm alone has no room for it: unboxing an
-           Array into a `const char *` slot is worse than the raise. */
-        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
-        free(ab.p);
-      }
-      else if (is_pmerge) {
-        /* the operand is either a positional hash or the collapsed keywords */
-        Buf mb; memset(&mb, 0, sizeof mb);
-        if (pos_argc >= 1) {
-          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
-          if (atmp_ty[0] == TY_POLY) buf_puts(&mb, tn);
-          else emit_boxed_text(c, atmp_ty[0], tn, &mb);
-        }
-        else {
-          emit_kwh_pos_hash(c, &kw, 1, &mb);
-        }
-        char gen[600];
-        snprintf(gen, sizeof gen, "sp_box_obj(sp_poly_hash_merge(_t%d, %s), SP_BUILTIN_POLY_POLY_HASH)",
-                 tv, mb.p ? mb.p : "sp_box_nil()");
-        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
-        /* Never leave the switch without a default: with every user arm
-           dropped as incompatible, an armless switch fell through and the
-           call answered the result temp's zero initializer, silently. */
-        else buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-        free(mb.p);
-      }
-      /* `x[a, b]` beside a user class's own two-argument `[]`: a String or
-         Array receiver slices, a Proc or bound Method is called, as the
-         dispatch-free form does (#5522). */
-      else if (is_aref2) {
-        Buf ab2; memset(&ab2, 0, sizeof ab2);
-        for (int a = 0; a < 2; a++) {
-          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
-          if (a) buf_puts(&ab2, ", ");
-          if (atmp_ty[a] == TY_POLY) buf_puts(&ab2, tn);
-          else emit_boxed_text(c, atmp_ty[a], tn, &ab2);
-        }
-        char gen[400];
-        snprintf(gen, sizeof gen, "sp_poly_slice_or_call(_t%d, %s)", tv, ab2.p ? ab2.p : "sp_box_nil(), sp_box_nil()");
-        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
-        else { buf_printf(b, " default: _t%d = ", tr);
-               emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gen, b);
-               buf_puts(b, "; break;"); }
-        free(ab2.p);
-      }
-      else if (is_aref || is_fetch) {
-        Buf kb; memset(&kb, 0, sizeof kb);
-        { char keyt[64]; snprintf(keyt, sizeof keyt, "_t%d", atmp[0]);
-          if (atmp_ty[0] == TY_POLY) buf_puts(&kb, keyt);
-          else emit_boxed_text(c, atmp_ty[0], keyt, &kb); }
-        Buf db; memset(&db, 0, sizeof db);
-        if (is_fetch && argc == 2) {
-          char dn[64]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-          if (atmp_ty[1] == TY_POLY) buf_puts(&db, dn);
-          else emit_boxed_text(c, atmp_ty[1], dn, &db);
-        }
-        char gen[400];
-        if (is_fetch)
-          snprintf(gen, sizeof gen, "sp_poly_fetch(_t%d, %s, %d, %s)", tv,
-                   kb.p ? kb.p : "sp_box_nil()", argc == 2,
-                   db.p ? db.p : "sp_box_nil()");
-        else
-          snprintf(gen, sizeof gen, "sp_poly_index_poly(_t%d, %s)", tv, kb.p ? kb.p : "sp_box_nil()");
-        if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
-        else { buf_printf(b, " default: _t%d = ", tr);
-               emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gen, b);
-               buf_puts(b, "; break;"); }
-        free(kb.p); free(db.p);
-      }
       /* No arm wrote a default: a receiver that is really a builtin fell
          through to the result's initializer or to nothing at all. Ask the
          builtin surface, as the zero-argument dispatch does. The offset is

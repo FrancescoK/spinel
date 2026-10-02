@@ -1652,6 +1652,14 @@ void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, TyKind dty,
                             int key_node, TyKind ret, TyKind trt, Buf *b);
 void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
                        int splat_a, int is_aref, int is_fetch, Buf *b);
+void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const PolySpecialsN *ps,
+                          const PolyTemps *T, const PolyKw *kw, int splat_a, int is_aref, int is_aref2,
+                          int is_fetch, int blk_tmp2, int is_setter_val, Buf *b);
+int  poly_num_arm(const char *name, int argc);
+int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv, const int *atmp, const TyKind *atmp_ty, int tv, int tr, int blk_tmp2, Buf *b);
+int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *atmp, const TyKind *atmp_ty, TyKind ret, int tv, int tr, Buf *b);
+void emit_kwh_pos_hash(Compiler *c, const PolyKw *kw, int boxed, Buf *out);
+int poly_call_blk_proc(Compiler *c, int id, int have);
 int  emit_poly_callable_spread_prearm(Compiler *c, const char *name, int sa, const int *atmp,
                                       const TyKind *atmp_ty, int st, int tv, int tr, TyKind ret, Buf *b);
 void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecials0 *ps, TyKind ret,

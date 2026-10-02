@@ -569,6 +569,28 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   if (aref && kt == TY_SYMBOL) cpoly_family(p, cap, PB_AREF_SYM);
   if (aref && (kt == TY_POLY || kt == TY_UNKNOWN)) cpoly_family(p, cap, PB_AREF_POLY);
   if (ps->pred) cpoly_family(p, cap, PB_PRED_N);
+  /* the `default:` arm (emit_poly_defaults_n) */
+  int is_aref = sp_streq(name, "[]") && argc == 1 && splat_a < 0;
+  int is_aref2 = sp_streq(name, "[]") && argc == 2 && splat_a < 0;
+  int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) && splat_a < 0 &&
+                 nt_ref(c->nt, id, "block") < 0;
+  if (!ps->pred && !ps->strftime && !is_aref && !is_aref2 && !is_fetch && !ps->include && !ps->push &&
+      !ps->cover && !ps->gcdlcm && !ps->strdel && !ps->strsplit && !ps->pdelete && !ps->pdig &&
+      !ps->pvalues_at && !ps->pfirstn && !ps->pmerge) {
+    cpoly_family(p, cap, PB_ND_GENERIC);
+    if (sp_streq(name, "replace") && argc == 1 && splat_a < 0 && ret == TY_POLY) cpoly_family(p, cap, PB_ND_REPLACE);
+    else if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor") ||
+              sp_streq(name, "truncate")) && argc == 1 && splat_a < 0)
+      cpoly_family(p, cap, PB_ND_ROUND);
+    else if (splat_a < 0 && poly_num_arm(name, argc) >= 0) cpoly_family(p, cap, PB_ND_NUM);
+    else if (ps->arr_index && !sp_streq(name, "find_index")) cpoly_family(p, cap, PB_ND_STR_INDEX);
+    else if (ps->arr_index && argc == 1) cpoly_family(p, cap, PB_ND_FIND_INDEX);
+  }
+  else if (ps->pfirstn) { if (ret == TY_POLY) cpoly_family(p, cap, PB_ND_FIRSTN); }
+  else if (ps->pdelete || ps->pdig || ps->pvalues_at) { if (ret == TY_POLY) cpoly_family(p, cap, PB_ND_KEYS); }
+  else if (ps->pmerge) cpoly_family(p, cap, PB_ND_MERGE);
+  else if (is_aref2) cpoly_family(p, cap, PB_ND_AREF2);
+  else if (is_aref || is_fetch) cpoly_family(p, cap, PB_ND_AREF);
 }
 
 /* The pre-arms of a dispatch with arguments (emit_poly_prearms_n, then
