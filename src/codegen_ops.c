@@ -23,6 +23,11 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
      $r   the receiver, emitted at its first occurrence (or the text the
           caller rendered, x->rtext); a later $r repeats the same text
      $R   the receiver emitted again, for an arm that emitted it twice
+     $h   the receiver held across the arguments (hold_recv_open, rooted
+          in a temp of its C type): the hold opens before anything else is
+          emitted or any temp is taken, and closes after the row's text
+     $g   the receiver followed by its root in _t$t, "; SP_GC_ROOT(_t$t); "
+          (emit_recv_rooted), for an arm that spilled it into $t
      $T   the temp the family took before its arms (emit_builtin_op_tmp)
      $t $u $v $w $x $y $z  temp numbers. The ones a row names are all taken
           (++g_tmp, in that order) before anything is emitted, as the arms
@@ -41,6 +46,9 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
 static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
   static const char tnames[] = "tuvwxyz";
   int tn[7] = { 0, 0, 0, 0, 0, 0, 0 };
+  Buf hb; memset(&hb, 0, sizeof hb);
+  int held = strstr(x->op->arg, "$h") &&
+             hold_recv_open(c, x->recv, 0, c_type_name(x->rt), "SP_GC_ROOT", b, &hb);
   for (int k = 0; k < 7; k++) {
     char pat[3] = { '$', tnames[k], 0 };
     if (strstr(x->op->arg, pat)) tn[k] = ++g_tmp;
@@ -58,6 +66,14 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
         r = strndup(b->p ? b->p + mark : "", b->len - mark);
       }
       else buf_puts(b, r);
+      p++;
+    }
+    else if (p[0] == '$' && p[1] == 'h') {
+      buf_puts(b, hb.p ? hb.p : "");
+      p++;
+    }
+    else if (p[0] == '$' && p[1] == 'g') {
+      emit_recv_rooted(c, x->recv, tn[0], "SP_GC_ROOT", b);
       p++;
     }
     else if (p[0] == '$' && p[1] == 'H') {
@@ -102,6 +118,8 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     else { char ch[2] = { *p, 0 }; buf_puts(b, ch); }
   }
   free(r);
+  if (held) buf_puts(b, "; })");
+  free(hb.p);
   return 1;
 }
 
@@ -205,6 +223,12 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_HASH_DROP] = emit_op_hash_drop,
   [BOPE_HASH_ASSOC] = emit_op_hash_assoc,
   [BOPE_HASH_COMPACT] = emit_op_hash_compact,
+  [BOPE_ARRAY_SHIFT_N] = emit_op_array_shift_n,
+  [BOPE_ARRAY_CYCLE_N] = emit_op_array_cycle_n,
+  [BOPE_ARRAY_LAST] = emit_op_array_last,
+  [BOPE_ARRAY_JOIN] = emit_op_array_join,
+  [BOPE_ARRAY_SORT_BANG] = emit_op_array_sort_bang,
+  [BOPE_ARRAY_SLICE_BANG_RANGE] = emit_op_array_slice_bang_range,
 };
 
 /* an argument's kind, for a row's argument guard */

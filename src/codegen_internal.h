@@ -1442,6 +1442,17 @@ int emit_op_hash_take(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_drop(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_compact(Compiler *c, const BopCtx *x, Buf *b);
+/* Array row emitters (codegen_call_array.c) */
+int emit_op_array_shift_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_cycle_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_join(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_sort_bang(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_slice_bang_range(Compiler *c, const BopCtx *x, Buf *b);
+/* A typed array receiver of a compare (`ck` "cmp") or a blockless sum (`ck`
+   "sum"), wrapped in the runtime's nil check where the array can hold the
+   sentinel (codegen_call_recv.c) */
+void emit_nil_ck_recv(Compiler *c, int recv, TyKind rt, const char *ck, int float_seed, Buf *b);
 /* fn(recv, value, count) for Fiber#resume / #transfer, fn(value) for
    Fiber.yield (recv NULL) (codegen_call.c) */
 void emit_fiber_pass_call(Compiler *c, const char *fn, const char *recv,

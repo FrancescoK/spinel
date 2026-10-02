@@ -69,6 +69,13 @@ typedef enum {
   BOPE_HASH_DROP,         /* drop(n), no block */
   BOPE_HASH_ASSOC,        /* assoc / rassoc */
   BOPE_HASH_COMPACT,      /* Hash#compact */
+  /* Array (codegen_call_array.c) */
+  BOPE_ARRAY_SHIFT_N,     /* Array#shift(n) / #pop(n) */
+  BOPE_ARRAY_CYCLE_N,     /* Array#cycle(n) without a block, materialized */
+  BOPE_ARRAY_LAST,        /* Array#last */
+  BOPE_ARRAY_JOIN,        /* Array#join, with or without a separator */
+  BOPE_ARRAY_SORT_BANG,   /* Array#sort! */
+  BOPE_ARRAY_SLICE_BANG_RANGE, /* Array#slice!(range) */
   BOPE__COUNT
 } BopEmit;
 
