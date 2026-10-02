@@ -129,7 +129,8 @@ static int emit_op_pstatus_eq(Compiler *c, const BopCtx *x, Buf *b) {
    inference answered it with (the same receiver kind, name and result; a
    row guarded on its first argument stands for its unguarded sibling).
    Inside a view the node is being read as another kind on purpose, so only
-   calls emitted at view depth 0 are compared.
+   calls emitted at view depth 0 are compared, and a node codegen renamed
+   is not compared with the row of its original name.
      conflict    inference answered from a different row: the two halves
                  decided the call differently
      unrecorded  inference answered without a row (a rule ahead of the
@@ -141,6 +142,10 @@ static int emit_op_pstatus_eq(Compiler *c, const BopCtx *x, Buf *b) {
 static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *op) {
   if (view_depth() > 0 || id < 0 || id >= c->node_cap) return;
   const BuiltinOp *inf = c->bop_inf[id];
+  /* A different name is a different call: codegen renamed the node to emit
+     it (a String bang's value form runs the plain method), so the row
+     inference chose for the original name says nothing about this one. */
+  if (inf && !sp_streq(inf->name, op->name)) return;
   if (inf && inf->recv == op->recv && sp_streq(inf->name, op->name) &&
       bop_result(inf, rt) == bop_result(op, rt)) return;
   if (inf && inf->recv != op->recv)

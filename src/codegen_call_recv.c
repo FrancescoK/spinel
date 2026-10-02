@@ -8583,12 +8583,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       }
       /* the receiver is a spinel string, so its own byte length is what the
          symbol's name is -- a NUL in it is a byte of the name (#nul) */
-      else if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) {
-        int tsy = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; sp_sym_intern_n(_t%d, sp_str_byte_len(_t%d)); })", tsy, r, tsy, tsy);
-      }
-      else if (sp_streq(name, "to_c") && argc == 0) buf_printf(b, "sp_str_to_c(%s)", r);
-      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_str_chr(%s)", r);
+      /* the arms that read only the receiver text and the arguments:
+         builtin-op rows (builtin_ops.c) */
+      else if (emit_builtin_op_text(c, id, recv, TY_STRING, name, r, b)) ;
       else if (sp_streq(name, "length") || sp_streq(name, "size")) {
         if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
             sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
@@ -8596,18 +8593,10 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
           buf_puts(b, g_hoist_len_var);
         else buf_printf(b, "sp_str_length_m(%s)", r);
       }
-      else if (sp_streq(name, "bytesize")) buf_printf(b, "sp_str_bytesize_m(%s)", r);
       else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);
       else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase%s(%s)", case_map_suffix(c, argc, argv), r);
       else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize%s(%s)", case_map_suffix(c, argc, argv), r);
       else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase%s(%s)", case_map_suffix(c, argc, argv), r);
-      else if (sp_streq(name, "dedup") && argc == 0) buf_printf(b, "sp_str_uminus_val(%s)", r);
-      else if (sp_streq(name, "delete_prefix") && argc == 1) { buf_printf(b, "sp_str_delete_prefix(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "delete_suffix") && argc == 1) { buf_printf(b, "sp_str_delete_suffix(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
-      else if (sp_streq(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
-      else if (sp_streq(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
-      else if (sp_streq(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
       else if (sp_streq(name, "chomp") && argc == 1) {
         const char *a0ty = nt_type(nt, argv[0]);
         if (a0ty && sp_streq(a0ty, "NilNode")) {
@@ -8617,21 +8606,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else {
           buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
         }
-      }
-      else if (sp_streq(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
-      else if (sp_streq(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
-      else if (sp_streq(name, "to_s")) {
-        /* NOT the identity: a nullable string carries nil as NULL, and
-           CRuby's nil.to_s is "" -- the coalesce keeps `ENV[missing].to_s`
-           comparable against "" (#1664). A provably non-nil receiver costs
-           one always-taken branch. */
-        int tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; _t%d ? _t%d : sp_str_frozen_empty; })", tv, r, tv, tv);
-      }
-      else if (sp_streq(name, "to_str")) {
-        /* Unlike to_s, CRuby's nil has no to_str: raise. */
-        int tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; if (!_t%d) sp_nil_recv(\"to_str\"); _t%d; })", tv, r, tv, tv);
       }
       else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) &&
                (argc == 0 ||
@@ -8656,14 +8630,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "sp_str_dup(%s)", r);
       }
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
-      else if (sp_streq(name, "empty?"))     buf_printf(b, "sp_str_empty_p(%s)", r);
-      else if (sp_streq(name, "include?") && argc == 1) {
-        buf_printf(b, "sp_str_include(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 0) {
-        /* both take any number of candidates, so none is false */
-        buf_printf(b, "((void)(%s), (sp_bool)0)", r);
-      }
       else if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc >= 2) {
         /* several candidates: true when any matches (receiver bound once) */
         int tv = ++g_tmp;
@@ -8684,11 +8650,6 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "start_with?") && argc == 1) {
         buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "end_with?") && argc == 1) {
-        buf_printf(b, "sp_str_end_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (sp_streq(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
-      else if (sp_streq(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
       else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* nullable-int carrier (SP_INT_NIL on miss), matching the inferred
            type -- the poly-boxed form broke a variable-regexp argument */
