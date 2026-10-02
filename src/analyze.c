@@ -22713,10 +22713,6 @@ static int nullable_elem_ivar(Compiler *c, int at, ClassInfo **out) {
   return nullable_elem_ivar_in(c, cid, nt_str(c->nt, at, "name"), out);
 }
 
-static int name_in(const char *nm, const char *const *set) {
-  if (!nm) return 0;
-  return str_in(nm, set);
-}
 
 /* An array method whose result elements are the receiver's own, so element
    nilability passes straight through it. `compact` is deliberately absent: it
@@ -22728,14 +22724,14 @@ static int elem_preserving_call(const char *nm) {
                                    "dup", "clone", "freeze", "values_at", "slice",
                                    "flatten", "first", "last", "sample", "slice!", "*", "-",
                                    "&", "difference", "intersection", NULL };
-  return name_in(nm, N);
+  return str_in(nm, N);
 }
 
 /* A method that hands back one ELEMENT of its receiver. */
 static int elem_returning_call(const char *nm) {
   static const char *const N[] = { "[]", "at", "first", "last", "min", "max",
                                    "sample", "pop", "shift", "fetch", "dig", NULL };
-  return name_in(nm, N);
+  return str_in(nm, N);
 }
 
 /* `a[i, n]` / `a[r]`: an index read answering a sub-array. */
@@ -22793,7 +22789,7 @@ static int object_call_ivar(Compiler *c, int call, ClassInfo **out, int *mi) {
 static int self_mutator_call(const char *nm) {
   static const char *const N[] = { "<<", "push", "append", "unshift", "prepend", "insert",
                                    "fill", "concat", NULL };
-  return name_in(nm, N);
+  return str_in(nm, N);
 }
 
 /* An index write that can land past the end, where CRuby fills the gap with

@@ -6115,7 +6115,7 @@ static int find_hoistable_strlen(Compiler *c, int root) {
 
 /* Whether `root`'s subtree mutates the local `name` (reassignment or an
    in-place mutating method on it). Mirrors legacy body_mutates_var?. */
-static int subtree_mutates_local(Compiler *c, int root, const char *name) {
+static int subtree_changes_local(Compiler *c, int root, const char *name) {
   if (root < 0) return 0;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, root);
@@ -6139,11 +6139,11 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
       return 1;
   }
   int nr = nt_num_refs(nt, root);
-  for (int i = 0; i < nr; i++) if (subtree_mutates_local(c, nt_ref_at(nt, root, i), name)) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_changes_local(c, nt_ref_at(nt, root, i), name)) return 1;
   int na = nt_num_arrs(nt, root);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
-    for (int j = 0; j < n; j++) if (subtree_mutates_local(c, el[j], name)) return 1;
+    for (int j = 0; j < n; j++) if (subtree_changes_local(c, el[j], name)) return 1;
   }
   return 0;
 }
@@ -6437,8 +6437,8 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
       !sp_streq(nt_str(nt, inc, "binary_operator"), "+")) return;
   int one = nt_ref(nt, inc, "value");
   if (one < 0 || nt_kind(nt, one) != NK_IntegerNode || nt_int(nt, one, "value", 0) != 1) return;
-  for (int k = 0; k < bn - 1; k++) if (subtree_mutates_local(c, bs[k], in)) return;
-  if (subtree_mutates_local(c, pred, in)) return;
+  for (int k = 0; k < bn - 1; k++) if (subtree_changes_local(c, bs[k], in)) return;
+  if (subtree_changes_local(c, pred, in)) return;
   snprintf(r->bi, sizeof r->bi, "%s", in);
   snprintf(r->ba, sizeof r->ba, "%s", an);
 }
@@ -6561,7 +6561,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   int hr = find_hoistable_strlen(c, pred);
   if (hr >= 0) {
     const char *hn = nt_str(nt, hr, "name");
-    if (hn && !subtree_mutates_local(c, body, hn) && !subtree_mutates_local(c, pred, hn)) {
+    if (hn && !subtree_changes_local(c, body, hn) && !subtree_changes_local(c, pred, hn)) {
       int ht = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = sp_str_length_m(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");

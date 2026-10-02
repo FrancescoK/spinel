@@ -123,7 +123,7 @@ static int inline_param_mutated(Compiler *c, int mi, const char *name) {
 /* Does the subtree under `id` mutate local `name` in place (a receiver-
    reassigning string mutator on a plain read of it)? The block body of a
    call site, asked about the block's own parameter. */
-static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) {
+static int subtree_str_mutates_local(const NodeTable *nt, int id, const char *name) {
   if (id < 0) return 0;
   if (nt_kind(nt, id) == NK_CallNode) {
     int r = nt_ref(nt, id, "receiver");
@@ -134,12 +134,12 @@ static int subtree_mutates_local(const NodeTable *nt, int id, const char *name) 
   }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
-    if (subtree_mutates_local(nt, nt_ref_at(nt, id, i), name)) return 1;
+    if (subtree_str_mutates_local(nt, nt_ref_at(nt, id, i), name)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *a = nt_arr_at(nt, id, i, &n);
     for (int k = 0; k < n; k++)
-      if (subtree_mutates_local(nt, a[k], name)) return 1;
+      if (subtree_str_mutates_local(nt, a[k], name)) return 1;
   }
   return 0;
 }
@@ -335,7 +335,7 @@ static int block_local_wants_alias_at(Compiler *c, int blk, const char *bp, int 
      yield u }` inside a method whose own block appends hands that block
      the parameter, which is a copy unless it aliases the yielded variable
      in turn (each level's copy kept the append from the one before). */
-  if (!subtree_mutates_local(nt, nt_ref(nt, blk, "body"), bp) &&
+  if (!subtree_str_mutates_local(nt, nt_ref(nt, blk, "body"), bp) &&
       !block_param_handed_to_appender(c, blk, bp)) {
     const char *owner = NULL;
     int tgt = yield_target_of(blk, &owner);

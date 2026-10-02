@@ -2005,11 +2005,6 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
   free(inb);
 }
 
-static int name_in(char **names, int n, const char *nm) {
-  if (!nm) return 0;
-  for (int i = 0; i < n; i++) if (sp_streq(names[i], nm)) return 1;
-  return 0;
-}
 
 /* Declare a scope's locals. Params are already C function parameters, so
    they only need a GC root; body locals get a full declaration. */
@@ -2200,7 +2195,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
     if (lv->is_cell) { emit_cell_decl(c, s, lv, b); continue; }
-    if (lv->is_param && has_begin && (all_vol || name_in(volnames, nvol, lv->name))) {
+    if (lv->is_param && has_begin && (all_vol || name_list_has(volnames, nvol, lv->name))) {
       /* a parameter the body reassigns inside a begin and reads after the
          rescue or a retry's longjmp: a volatile local copy of the incoming
          value (the signature names it lv_<name>__in) (#6552) */
@@ -2238,7 +2233,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
          type to infer, so `[].each_with_index { |x, i| }` referenced an
          undeclared lv_x (#3853). A boxed slot is what the binding writes. */
       if (lv->type == TY_UNKNOWN && lv->is_block_param) lv->type = TY_POLY;
-      int vol = has_begin && (all_vol || name_in(volnames, nvol, lv->name));
+      int vol = has_begin && (all_vol || name_list_has(volnames, nvol, lv->name));
       declare_local(c, b, lv, vol);
     }
   }
@@ -3434,7 +3429,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   for (int i = 0; i < s->nparams; i++) {
     if (wrote++) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
-    int pv = pbegin && (pall || name_in(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
+    int pv = pbegin && (pall || name_list_has(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {

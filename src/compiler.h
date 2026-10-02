@@ -864,6 +864,8 @@ typedef struct {
 
 Compiler *comp_new(const NodeTable *nt);
 void comp_free(Compiler *c);
+/* Is `name` one of the n strings in `list`? (0 for a NULL name) */
+int name_list_has(char **list, int n, const char *name);
 
 /* Resize per-node arrays (ntype/nscope) after the node table grew. */
 void comp_grow_node_arrays(Compiler *c);

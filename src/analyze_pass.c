@@ -4349,10 +4349,6 @@ static void mark_body_self(const NodeTable *nt, int id, int owner, int *body_sel
   }
 }
 
-static int name_in(const char *n, const char *const *set) {
-  for (int i = 0; n && set[i]; i++) if (sp_streq(n, set[i])) return 1;
-  return 0;
-}
 
 /* Is the value of node `u` handed on -- stored, passed, returned -- rather
    than only consumed where it stands? Consumed: the receiver of a call that
@@ -4412,13 +4408,13 @@ static int value_handed_on(const NodeTable *nt, const int *parent, int u) {
        (taken as one, every class with a class method escaped, #5272) */
     if (pk == NK_DefNode && nt_ref(nt, p, "receiver") == u) return 0;
     if (pk == NK_CallNode) {
-      if (nt_ref(nt, p, "receiver") == u) return chosen || name_in(nt_str(nt, p, "name"), passes_recv);
+      if (nt_ref(nt, p, "receiver") == u) return chosen || str_in(nt_str(nt, p, "name"), passes_recv);
       return 1;
     }
     if (pt && sp_streq(pt, "ArgumentsNode")) {
       int call = parent[p];
       if (call >= 0 && nt_kind(nt, call) == NK_CallNode &&
-          name_in(nt_str(nt, call, "name"), consumes_args)) return 0;
+          str_in(nt_str(nt, call, "name"), consumes_args)) return 0;
       return 1;
     }
     return 1;
@@ -4524,7 +4520,7 @@ int class_value_escapes(Compiler *c, int cid) {
   int all = 0;
   for (int u = 0; u < nt->count && !all; u++) {
     NodeKind k = nt_kind(nt, u);
-    if (k == NK_CallNode && name_in(nt_str(nt, u, "name"), reflective)) {
+    if (k == NK_CallNode && str_in(nt_str(nt, u, "name"), reflective)) {
       /* `const_get(:Get)` / `const_get("A::Get")` names the one class it
          hands out: only that class escapes. Taken as any class, one
          literal lookup anywhere bound every `k.new(x)` into every class's
