@@ -3074,18 +3074,8 @@ const char *array_times_type_error(TyKind at) {
 }
 
 const char *raise_tail_value_c(Compiler *c, TyKind t) {
-  if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
-    /* rotate: one static buffer would make two of these in a single
-       buf_printf read the same text, and nothing in the signature says so */
-    static char vbuf[4][128];
-    static int vslot = 0;
-    int cid = ty_object_class(t);
-    if (cid >= 0 && cid < c->nclasses) {
-      char *out = vbuf[vslot++ & 3];
-      snprintf(out, sizeof vbuf[0], "((sp_%s){0})", c->classes[cid].c_name);
-      return out;
-    }
-  }
+  /* a value-type object's zero is its struct's (default_value_from_compiler) */
+  if (ty_is_object(t) && comp_ty_value_obj(c, t)) return default_value_from_compiler(c, t);
   return raise_tail_value(t);
 }
 
@@ -3099,11 +3089,14 @@ const char *raise_tail_value_c(Compiler *c, TyKind t) {
    a struct, so its nil slot is the zeroed struct, where a pointer object's is
    NULL. default_value itself cannot tell the two apart from the TyKind alone. */
 const char *default_value_from_compiler(Compiler *c, TyKind t) {
-  if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
-    static char buf[4][96];
+  int cid = ty_is_object(t) ? ty_object_class(t) : -1;
+  if (cid >= 0 && cid < c->nclasses && comp_ty_value_obj(c, t)) {
+    /* rotate: one static buffer would make two of these in a single
+       buf_printf read the same text, and nothing in the signature says so */
+    static char buf[4][128];
     static int slot;
     char *out = buf[slot++ & 3];
-    snprintf(out, sizeof buf[0], "(sp_%s){0}", c->classes[ty_object_class(t)].c_name);
+    snprintf(out, sizeof buf[0], "(sp_%s){0}", c->classes[cid].c_name);
     return out;
   }
   return default_value(t);
