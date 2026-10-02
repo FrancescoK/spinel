@@ -1109,6 +1109,26 @@ cli-opts-test: $(SPINEL)
 
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
+	t=test/reject/string_ivar_array_append.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_ivar_array_append compiled)"; ok=0; \
+	else grep -q "is not yet shared by reference" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (string_ivar_array_append rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/string_fresh_array_append.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_fresh_array_append compiled)"; ok=0; \
+	else grep -q "is not yet shared by reference" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (string_fresh_array_append rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/string_tap_fresh_append.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_tap_fresh_append compiled)"; ok=0; \
+	else grep -q "is not yet shared by reference" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (string_tap_fresh_append rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
+	t=test/reject/string_narrowed_element_append.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
+	  echo "reject-test: FAIL (string_narrowed_element_append compiled)"; ok=0; \
+	else grep -q "is not yet shared by reference" "$$tmp/r.out" || \
+	  { echo "reject-test: FAIL (string_narrowed_element_append rejected without saying why)"; head -5 "$$tmp/r.out"; ok=0; }; fi; \
 	t=test/reject/singleton_on_untraceable_recv.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/r.out" 2>&1; then \
 	  echo "reject-test: FAIL (a singleton def on an untraceable receiver compiled)"; ok=0; \
