@@ -27,6 +27,13 @@ static int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
   return 0;
 }
 
+int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
+  if (cid < 0 || !name) return has_base ? CP_DIRECT : CP_NONE;
+  int n = dispatch_impl_count(c, cid, name);
+  if (!(n > 1 || (!has_base && n >= 1))) return has_base ? CP_DIRECT : CP_NONE;
+  return dispatch_arms_disagree(c, cid, name) ? CP_PER_ARM : CP_SWITCH;
+}
+
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
@@ -67,7 +74,7 @@ static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
   int xn = exc_reopen_definers(c, name, xr, 8);
   if (xn <= 0) return;
   int mi = comp_method_in_chain(c, xr[0], name, NULL);
-  if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_VIRTUAL : CP_DIRECT);
+  if (mi >= 0) cplan_set(p, mi, xr[0], UC_REOPEN, xn > 1 ? CP_SWITCH : CP_DIRECT);
 }
 
 static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
@@ -122,7 +129,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
     for (int i = 0; i < npk; i++) {
       int imi = comp_method_in_chain(c, pk[i], name, NULL);
-      if (imi >= 0) { cplan_set(p, imi, pk[i], UC_IE, CP_VIRTUAL); return; }
+      if (imi >= 0) { cplan_set(p, imi, pk[i], UC_IE, CP_SWITCH); return; }
     }
     int cb = comp_cbody_call_mi(c, id, name);
     if (cb >= 0) { cplan_set(p, cb, c->node_cbody[id], UC_CMETH, CP_DIRECT); return; }
@@ -132,8 +139,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       if (m->class_id < 0) { cplan_set(p, mi, -1, UC_TOP, CP_DIRECT); return; }
       Scope *self = comp_scope_of(c, id);
       int scls = self ? self->class_id : m->class_id;
-      int virt = scls >= 0 && cplan_overridden(c, scls, name, m->is_cmethod);
-      cplan_set(p, mi, scls, m->is_cmethod ? UC_CMETH : UC_INST, virt ? CP_VIRTUAL : CP_DIRECT);
+      int form = m->is_cmethod ? (scls >= 0 && cplan_overridden(c, scls, name, 1) ? CP_SWITCH : CP_DIRECT)
+               : scls >= 0 ? cplan_dispatch_form(c, scls, name, 1) : CP_DIRECT;
+      cplan_set(p, mi, scls, m->is_cmethod ? UC_CMETH : UC_INST, form);
       /* an instance method comp_self_call_mi took from the self class's chain */
       p->chain = !m->is_cmethod && self && self->class_id >= 0;
       return;
@@ -171,7 +179,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
     for (int i = 0; i < ncc; i++)
       if (ccs[i].mi >= 0) {
-        cplan_set(p, ccs[i].mi, ccs[i].cls, UC_CMETH, CP_VIRTUAL);
+        cplan_set(p, ccs[i].mi, ccs[i].cls, UC_CMETH, CP_SWITCH);
         p->by_name = 1;
         return;
       }
@@ -180,7 +188,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int cid = ty_object_class(rt);
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
-      cplan_set(p, mi, cid, UC_INST, cplan_overridden(c, cid, name, 0) ? CP_VIRTUAL : CP_DIRECT);
+      cplan_set(p, mi, cid, UC_INST, cplan_dispatch_form(c, cid, name, 1));
       p->chain = 1;
       return;
     }
@@ -192,7 +200,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
                           sp_streq(name, "clamp")) ? "<=>" : NULL;
     int dmi = via_op ? comp_method_in_chain(c, cid, via_op, NULL) : -1;
     if (dmi >= 0) {
-      cplan_set(p, dmi, cid, UC_INST, cplan_overridden(c, cid, via_op, 0) ? CP_VIRTUAL : CP_DIRECT);
+      cplan_set(p, dmi, cid, UC_INST, cplan_dispatch_form(c, cid, via_op, 1));
       return;
     }
     /* a reader a subclass overrides with a method: the switch reaches the
@@ -202,7 +210,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       const int *ds = comp_descendants(c, cid, &nd);
       for (int i = 0; i < nd; i++) {
         int kmi = ds[i] != cid ? comp_method_in_class(c, ds[i], name) : -1;
-        if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_VIRTUAL); return; }
+        if (kmi >= 0) { cplan_set(p, kmi, cid, UC_INST, CP_SWITCH); return; }
       }
     }
     if (class_is_exc_subclass(c, cid)) cplan_exc_reopen(c, name, p);
@@ -215,13 +223,13 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     for (int i = 0; i < npc; i++) {
       if (c->classes[pcs[i].cls].is_native_class) continue;
       int pmi = pcs[i].mi >= 0 ? pcs[i].mi : comp_method_in_chain(c, pcs[i].cls, name, NULL);
-      if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_VIRTUAL); return; }
+      if (pmi >= 0) { cplan_set(p, pmi, pcs[i].cls, UC_POLY, CP_SWITCH); return; }
     }
     /* a boxed class value: the dispatch's class-method arms */
     int ncc = 0;
     const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
     for (int i = 0; i < ncc; i++)
-      if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_VIRTUAL); return; }
+      if (ccs[i].mi >= 0) { cplan_set(p, ccs[i].mi, ccs[i].cls, UC_POLY, CP_SWITCH); return; }
     return;
   }
   if (rt == TY_EXCEPTION) { cplan_exc_reopen(c, name, p); return; }
@@ -274,7 +282,7 @@ static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->mi < 0 || mi < 0) return 0;
   if (p->mi == mi) return 1;
-  if (p->dispatch != CP_VIRTUAL) return 0;
+  if (p->dispatch < CP_SWITCH) return 0;
   const char *name = nt_str(c->nt, id, "name");
   if (!name) return 0;
   if (p->by_name) {
@@ -348,7 +356,14 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   const char *name = nt_str(c->nt, id, "name");
   int mi = name ? comp_method_in_chain(c, self_ci, name, NULL) : -1;
   if (mi >= 0) {
-    cplan_set(&ctx, mi, self_ci, UC_INST, cplan_overridden(c, self_ci, name, 0) ? CP_VIRTUAL : CP_DIRECT);
+    cplan_set(&ctx, mi, self_ci, UC_INST, cplan_dispatch_form(c, self_ci, name, 1));
+    ctx.chain = 1;
+    return &ctx;
+  }
+  /* a miss is no method, but a dispatch on the class still has a form: a
+     method only descendants define takes the switch */
+  if (!(flags & CPX_IE) && name) {
+    cplan_set(&ctx, -1, self_ci, UC_INST, cplan_dispatch_form(c, self_ci, name, 0));
     ctx.chain = 1;
     return &ctx;
   }

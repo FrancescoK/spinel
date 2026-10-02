@@ -20,7 +20,11 @@
 typedef enum {
   CP_NONE,      /* no user method */
   CP_DIRECT,    /* one method, whatever the receiver's runtime class */
-  CP_VIRTUAL    /* a switch: a descendant overrides, or a boxed receiver */
+  CP_SWITCH,    /* a switch on the runtime class: a descendant has its own
+                   implementation, or a boxed receiver */
+  CP_PER_ARM    /* a switch whose arms take the call's arguments differently,
+                   so each arm lays them out for itself (an instance dispatch:
+                   dispatch_arms_disagree) */
 } CplanDispatch;
 
 typedef struct {
@@ -54,6 +58,13 @@ const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
    (site: a short constant name); cplan_served_report prints the counts */
 void cplan_served(const char *site);
 void cplan_served_report(void);
+
+/* The form a dispatch of instance method `name` on class cid takes:
+   CP_DIRECT for one implementation, CP_SWITCH when cid's subtree has more
+   than one (or any, without a base method: has_base 0), CP_PER_ARM for a
+   switch whose arms disagree on the argument layout; CP_NONE for neither
+   a base method nor a descendant's. */
+int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base);
 
 /* whether mi is the plan's method or, for a switch, one of its arms */
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi);

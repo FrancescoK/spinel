@@ -148,7 +148,7 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
      proc-form clone of its method agrees */
   { const CallPlan *pl = cplan_user(c, id);
     int member = pl->mi >= 0 &&
-                 (cplan_virtual_member(c, id, pl, mi) || (add && pl->dispatch == CP_VIRTUAL) ||
+                 (cplan_virtual_member(c, id, pl, mi) || (add && pl->dispatch >= CP_SWITCH) ||
                   (c->scopes[mi].is_proc_form && scope_proc_form_of(c, pl->mi) == mi));
     if (pl->mi < 0) o->rflags |= UR_NONE;
     /* a switch's arms: agreement is the plan's method among them, decided

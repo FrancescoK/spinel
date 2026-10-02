@@ -10215,7 +10215,7 @@ static int arm_string_abi(const LocalVar *p) {
    list: an override with another count, a rest, a keyword or a block slot got
    a C call with the wrong number of arguments, and one with a default got the
    base method's default instead of its own (#4866). */
-static int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
+int dispatch_arms_disagree(Compiler *c, int cid, const char *name) {
   Scope *first = NULL;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
@@ -10471,7 +10471,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       served = 1;
       if (dpc.chain && dpc.via == UC_INST && dpc.owner_ci == cid) {
         mi = dpc.mi;
-        defcls = c->scopes[mi].class_id;
+        if (mi >= 0) defcls = c->scopes[mi].class_id;
         dpl = &dpc;
       }
       if (g_plan_check) cplan_served("dispatch");
@@ -10538,7 +10538,20 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   /* Force a runtime switch when there is no base implementation (m == NULL):
      a template method defined only in subclasses cannot be called directly as
      sp_<base>_<name>, so even a single descendant impl must dispatch virtually. */
-  int impl_n = dispatch_impl_count(c, cid, name);
+  /* the form -- one method, a switch, a switch whose arms lay the arguments
+     out each for itself -- is the plan's (cplan_dispatch_form); without
+     one (a dispatch under another name the plan has no word for), and
+     under --plan-check as the assertion, it is counted here */
+  int form = dpl ? dpl->dispatch : -1;
+  if (!dpl || g_plan_check) {
+    int impl_n = dispatch_impl_count(c, cid, name);
+    int sw = impl_n > 1 || (!m && impl_n >= 1);
+    int oform = !sw ? (m ? CP_DIRECT : CP_NONE) : dispatch_arms_disagree(c, cid, name) ? CP_PER_ARM : CP_SWITCH;
+    if (!dpl) form = oform;
+    else if (form != oform)
+      fprintf(stderr, "plan-check: cplan-conflict: dispatch-form node %d %s: plan %d, counted %d (%d implementations)\n",
+              g_nd_call_id, name, form, oform, impl_n);
+  }
   /* A void/nil-returning method that subclasses override must still dispatch on
      the runtime class -- an implicit-self call to it from a base method (e.g.
      `def run; validate; end` where each subclass overrides `validate`) would
@@ -10547,16 +10560,11 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      void dispatch uses a dummy int temp (its value is discarded). */
   int ret_is_void = (ret == TY_VOID || ret == TY_NIL);
   TyKind disp_ret = ret_is_void ? TY_INT : ret;
-  int virtual = (is_scalar_ret(ret) || ret_is_void) && (impl_n > 1 || (!m && impl_n >= 1));
-  /* the plan's form says whether another implementation exists; the switch
-     is that, for a return the switch can carry (the per-arm form below stays
-     codegen's) */
-  if (g_plan_check && dpl && (dpl->dispatch == CP_VIRTUAL) != (impl_n > 1 || (!m && impl_n >= 1)))
-    fprintf(stderr, "plan-check: cplan-conflict: dispatch-form node %d %s: plan %s, implementations %d\n",
-            g_nd_call_id, name, dpl->dispatch == CP_VIRTUAL ? "virtual" : "direct", impl_n);
+  /* the switch, for a return it can carry */
+  int virtual = (is_scalar_ret(ret) || ret_is_void) && form >= CP_SWITCH;
   nd_stamp(g_nd_call_id, virtual ? ND_SWITCH : ND_DIRECT);
   if (!virtual && m) nd_callee(c, g_nd_call_id, mi, defcls, 0);
-  if (virtual && dispatch_arms_disagree(c, cid, name)) {
+  if (virtual && form == CP_PER_ARM) {
     emit_dispatch_per_arm(c, cid, name, selfptr, argsNode, blk_node, mi, defcls, ret, disp_ret, b);
     return;
   }

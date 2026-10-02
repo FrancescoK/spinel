@@ -1375,6 +1375,9 @@ int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
 int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
+/* do a dispatch switch's arms bind the call's arguments differently (each
+   arm then lays them out itself)? the plan's CP_PER_ARM */
+int dispatch_arms_disagree(Compiler *c, int cid, const char *name);
 /* Can running the node `id` assign self's instance variable `iv`, self an
    instance of class `cls` (-1: none known) or of one below it? `depth`
    counts the self calls followed into their methods (0 at the call site);
