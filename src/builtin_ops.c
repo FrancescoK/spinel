@@ -1620,25 +1620,30 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0 },
 
   /* Hash, any kind (BOP_ANY_HASH): the result kinds read off the name,
-     arity and block form, some derived from the receiver's kind. key,
-     []=/store, fetch, dig, a blockless sum(init), map/collect with a block,
-     transform_keys/values, merge, replace, merge!/update and invert read
-     the operands, the block or the variant, and stay in infer_hash_call.
+     arity and block form, some derived from the receiver's kind. []=/store,
+     fetch with a default or a block, dig, a blockless sum(init),
+     map/collect with a block, transform_keys/values, merge(other),
+     replace and merge!/update(other) read the operands or the block, and
+     stay in infer_hash_call.
 
      The codegen rows are emit_hash_call's arms that read only the
      receiver's variant ($H, $K), the receiver and the arguments, looked up
      at the head of its arms; the ones that branch on the variant or on an
      operand's kind are custom emitters (codegen_call_hash.c). A codegen
      row narrower than the inference row of its name answers what that row
-     does. */
+     does; one with no inference row of its own answers what the rules
+     after the lookup answered for it (all of these names are in Hash's
+     builtin table, so no Object reopen answers them). replace, default=
+     (typed from the operand ahead of the lookup) and to_a/entries with a
+     block carry none. */
 #define HASH_OR_ARRAY (BOP_K(TY_STR_INT_HASH) | BOP_K(TY_STR_STR_HASH) | BOP_K(TY_INT_INT_HASH) | \
                        BOP_K(TY_INT_STR_HASH) | BOP_K(TY_SYM_POLY_HASH) | BOP_K(TY_STR_POLY_HASH) | \
                        BOP_K(TY_POLY_POLY_HASH) | BOP_K(TY_INT_ARRAY) | BOP_K(TY_FLOAT_ARRAY) | \
                        BOP_K(TY_STR_ARRAY) | BOP_K(TY_POLY_ARRAY) | BOP_K(TY_INT_ARRAY_ARRAY) | \
                        BOP_K(TY_FLOAT_ARRAY_ARRAY))
-  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), 0)" },  /* always false; the receiver still runs */
-  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", HASH_OR_ARRAY },  /* pointer identity */
-  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "0" },
+  { BOP_ANY_HASH, "compare_by_identity?", 0, 0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), 0)" },  /* always false; the receiver still runs */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", HASH_OR_ARRAY },  /* pointer identity */
+  { BOP_ANY_HASH, "equal?",           1,   1, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "0" },
   { BOP_ANY_HASH, "length",           0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
   { BOP_ANY_HASH, "size",             0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
   { BOP_ANY_HASH, "count",            0,   0, BF_NONE,     TY_INT,         BOPE_TEMPLATE, "sp_$HHash_length($r)" },
@@ -1656,37 +1661,37 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "all?",             1,   1, BF_NONE,     TY_BOOL,        BOPE_HASH_PATTERN_ALL },
   /* the readers and copies */
   { BOP_ANY_HASH, "[]",               1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_AREF },
-  { BOP_ANY_HASH, "fetch",            1,   1, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_FETCH },  /* KeyError on a miss */
+  { BOP_ANY_HASH, "fetch",            1,   1, BF_NONE,     BOPR_HASH_VAL,  BOPE_HASH_FETCH },  /* KeyError on a miss */
   { BOP_ANY_HASH, "has_key?",         1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
   { BOP_ANY_HASH, "key?",             1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
   { BOP_ANY_HASH, "include?",         1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
   { BOP_ANY_HASH, "member?",          1,   1, BF_ANY,      TY_BOOL,        BOPE_HASH_HAS_KEY },
-  { BOP_ANY_HASH, "key",              1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_KEY },
+  { BOP_ANY_HASH, "key",              1,   1, BF_ANY,      BOPR_HASH_KEY_OF, BOPE_HASH_KEY },
   { BOP_ANY_HASH, "keys",             0,   0, BF_ANY,      BOPR_HASH_KEYS, BOPE_HASH_KEYS },
   { BOP_ANY_HASH, "values",           0,   0, BF_ANY,      BOPR_HASH_VALS, BOPE_TEMPLATE, "sp_$HHash_values($r)" },
   { BOP_ANY_HASH, "values_at",        0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "((void)($r), sp_PolyArray_new())" },  /* #2408 */
-  { BOP_ANY_HASH, "inspect",          0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_$HHash_inspect($r)" },
-  { BOP_ANY_HASH, "to_s",             0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_TO_S },
+  { BOP_ANY_HASH, "inspect",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_$HHash_inspect($r)" },
+  { BOP_ANY_HASH, "to_s",             0,   0, BF_ANY,      TY_STRING,      BOPE_HASH_TO_S },
   { BOP_ANY_HASH, "to_proc",          0,   0, BF_ANY,      TY_PROC,        BOPE_HASH_TO_PROC },  /* a lambda over the hash */
-  { BOP_ANY_HASH, "default_proc",     0,   0, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_DEFAULT_PROC },
+  { BOP_ANY_HASH, "default_proc",     0,   0, BF_NONE,     TY_PROC,        BOPE_HASH_DEFAULT_PROC },
   { BOP_ANY_HASH, "dup",              0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)" },
   { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })" },  /* the frozen flag too (#3751) */
-  { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_$HHash_dup($r)" },  /* a copy (#2340) */
+  { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)" },  /* a copy (#2340) */
   { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
   /* the mutators */
   { BOP_ANY_HASH, "delete",           1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
   { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
   { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE },
   { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
-  { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },  /* #2431 */
-  { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     TY_UNKNOWN,     BOPE_HASH_MERGE_BANG_MANY },
+  { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY },  /* #2431 */
+  { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY },
   /* the conversions */
   { BOP_ANY_HASH, "to_a",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },  /* the [key, value] pairs */
   { BOP_ANY_HASH, "to_a",             0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
   { BOP_ANY_HASH, "entries",          0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },
   { BOP_ANY_HASH, "entries",          0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
   { BOP_ANY_HASH, "sort",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_SORT },  /* by Array#<=> over the pairs */
-  { BOP_ANY_HASH, "invert",           0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_INVERT },
+  { BOP_ANY_HASH, "invert",           0,   0, BF_ANY,      BOPR_HASH_INVERT, BOPE_HASH_INVERT },
   { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
   { BOP_ANY_HASH, "each_pair",        0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
   { BOP_ANY_HASH, "each_key",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },
@@ -2085,6 +2090,8 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_HASH_KEYS: return ty_array_of(ty_hash_key(rt));
   case (int)BOPR_HASH_VALS: return ty_array_of(ty_hash_val(rt));
   case (int)BOPR_ELEM:      return ty_array_elem(rt);
+  case (int)BOPR_HASH_KEY_OF: return rt == TY_SYM_POLY_HASH ? TY_SYMBOL : TY_POLY;
+  case (int)BOPR_HASH_INVERT: return rt == TY_STR_STR_HASH ? TY_STR_STR_HASH : TY_POLY_POLY_HASH;
   default:                  return op->result;
   }
 }

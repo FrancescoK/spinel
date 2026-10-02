@@ -143,6 +143,10 @@ typedef struct BuiltinOp {
 #define BOPR_HASH_KEYS  ((TyKind)-12)   /* an Array of a Hash's keys */
 #define BOPR_HASH_VALS  ((TyKind)-13)   /* an Array of a Hash's values */
 #define BOPR_ELEM       ((TyKind)-14)   /* an Array's element kind */
+#define BOPR_HASH_KEY_OF ((TyKind)-15)  /* Hash#key: a Symbol for a Symbol-keyed
+                                           hash, else the boxed key or nil */
+#define BOPR_HASH_INVERT ((TyKind)-16)  /* Hash#invert: a String=>String hash
+                                           stays one, any other is the general hash */
 
 /* argc_max of a row that takes any number of arguments */
 #define BOP_ARGC_ANY 127
