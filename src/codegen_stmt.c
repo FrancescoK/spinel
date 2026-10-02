@@ -2473,8 +2473,7 @@ int static_isa_cond(Compiler *c, int pred) {
        slot's nil (see the is_a? fold in codegen_call.c). Object and its
        ancestors hold for nil as well, so those stay folded. */
     if ((rt == TY_STRING || ((rt == TY_INT || rt == TY_FLOAT) && nullable_int_value(c, recv))) &&
-        !sp_streq(target_name, "Object") && !sp_streq(target_name, "BasicObject") &&
-        !sp_streq(target_name, "Kernel")) {
+        !is_object_root(target_name)) {
       int ans = ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
       if (ans == 1 || sp_streq(target_name, "NilClass")) return -1;
       return ans;
@@ -3504,8 +3503,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     /* a scalar subject holding its nil sentinel is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
        nil too, as in the is_a? fold */
-    if (t == g_pm_sentinel_t && !sp_streq(cn2, "Object") && !sp_streq(cn2, "BasicObject") &&
-        !sp_streq(cn2, "Kernel") && (yes > 0 || sp_streq(cn2, "NilClass"))) {
+    if (t == g_pm_sentinel_t && !is_object_root(cn2) && (yes > 0 || sp_streq(cn2, "NilClass"))) {
       char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
       if (!sp_streq(cn2, "NilClass")) emit_slot_truthy(pt, ref, b);
       else { buf_puts(b, "!"); emit_slot_truthy(pt, ref, b); }
@@ -5354,7 +5352,7 @@ static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
   if (pt != TY_INT && pt != TY_FLOAT) return 0;
   int yes = ty_matches_class(pt, cn, 0);
   int nilcls = sp_streq(cn, "NilClass");
-  int univ = sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel");
+  int univ = is_object_root(cn);
   if (yes < 0 || (!nilcls && (!yes || univ))) return 0;
   if (pt == TY_INT) buf_printf(b, "(_t%d %s SP_INT_NIL)", t, nilcls ? "==" : "!=");
   else buf_printf(b, "(%ssp_float_is_nil(_t%d))", nilcls ? "" : "!", t);

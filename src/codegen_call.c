@@ -4510,7 +4510,7 @@ static int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *c
   int yes = ty_matches_class(t, cn, exact);
   if (yes < 0) return 0;
   int nilcls = sp_streq(cn, "NilClass");
-  int univ = !exact && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel"));
+  int univ = !exact && is_object_root(cn);
   if (!nilcls && (!yes || univ)) return 0;   /* the same answer for nil */
   int tn = ++g_tmp;
   buf_puts(b, "({ "); emit_ctype(c, t, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, node, b);
@@ -20681,7 +20681,7 @@ static void splat_appended_param(Compiler *c, int id, const char *name, int recv
   else {
     const char *tn = name;
     /* `send(:m, *s)` names its method with the literal */
-    if ((sp_streq(name, "send") || sp_streq(name, "__send__") || sp_streq(name, "public_send")) && ac > 0 &&
+    if (is_send_family(name) && ac > 0 &&
         nt_kind(nt, av[0]) == NK_SymbolNode) { tn = nt_str(nt, av[0], "value"); p--; }
     int mi = -1;
     if (tn) {
@@ -32116,7 +32116,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* X.class.name / .to_s -> identity when .class yields a string;
      for user-object receivers .class now yields TY_CLASS, so wrap with sp_class_to_s. */
-  if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+  if (recv >= 0 && argc == 0 && is_name_reader(name) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     if (comp_ntype(c, recv) == TY_CLASS) {
@@ -32302,7 +32302,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      user-defined singleton (def self.name) shadows the builtin: skip the
      fold and let the normal class-method dispatch emit the call. */
   if (recv >= 0 && argc == 0 &&
-      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      is_name_reader(name) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0 &&
       comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, recv, "name")), name, NULL) < 0) {
@@ -32323,7 +32323,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
      time rather than folding the defining class's. */
   /* bare `name` inside a class method body -> the class name */
   if (argc == 0 && (recv < 0 ? sp_streq(name, "name") :
-      ((sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      (is_name_reader(name) &&
        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")))) {
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&
@@ -32809,7 +32809,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       if (sci >= 0 && comp_cmethod_in_chain(c, sci, name, NULL) >= 0) cls_shadowed = 1;
     }
     if (!cls_shadowed &&
-        (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect"))) {
+        is_name_reader(name)) {
       /* An anonymous Struct/Data class has no name: CRuby answers nil for
          #name (and an `#<Class:0x...>`-shaped #to_s). The synthetic
          StructAnon_<n> the compiler keys it by is not a Ruby-visible name. */
@@ -33159,8 +33159,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
                    sp_streq(rcn2, "TrueClass") || sp_streq(rcn2, "FalseClass") ||
                    /* the roots: every object is one, and `Object === x` used to
                       fall past this arm into the missing-method gate */
-                   sp_streq(rcn2, "Object") || sp_streq(rcn2, "BasicObject") ||
-                   sp_streq(rcn2, "Kernel") ||
+                   is_object_root(rcn2) ||
                    /* a class or module value is an instance of these */
                    sp_streq(rcn2, "Class") || sp_streq(rcn2, "Module"))) {
         /* Module#=== is `arg.is_a?(self)`. TrueClass/FalseClass receivers read
@@ -38039,7 +38038,7 @@ else {
             if (!has && (class_is_exc_subclass(c, k) || class_is_exc_reopen(c, k))) xn = exc_reopen_definers(c, qm, xr, 8);
             if (!has && xn <= 0) continue;
             const char *kn = c->classes[k].name;
-            int root = kn && (sp_streq(kn, "Object") || sp_streq(kn, "Kernel") || sp_streq(kn, "BasicObject"));
+            int root = kn && is_object_root(kn);
             if (root) buf_printf(b, "%s1", first ? "" : " || ");
             else if (!has) {
               buf_printf(b, "%s(_k%d == %d && (", first ? "" : " || ", tv, k);
@@ -39526,7 +39525,7 @@ else {
     if (yes >= 0 && eff_rt == TY_STRING) {
       const char *kn = nt_str(nt, argv[0], "name");
       int nilcls = kn && sp_streq(kn, "NilClass");
-      int univ = kn && (sp_streq(kn, "Object") || sp_streq(kn, "BasicObject") || sp_streq(kn, "Kernel"));
+      int univ = kn && is_object_root(kn);
       if (nilcls || (yes && !univ)) {
         int tn = ++g_tmp;
         buf_puts(b, "({ "); emit_ctype(c, eff_rt, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, recv, b);
@@ -39700,8 +39699,7 @@ else {
       (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"))) {
     const char *acn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                         ? nt_str(nt, argv[0], "name") : NULL;
-    if (acn && (sp_streq(acn, "Object") || sp_streq(acn, "BasicObject") ||
-                sp_streq(acn, "Kernel"))) {
+    if (acn && is_object_root(acn)) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return;
     }

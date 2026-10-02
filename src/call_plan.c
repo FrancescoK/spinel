@@ -602,7 +602,7 @@ static int cplan_reachable(Compiler *c, int id) {
 static const char *cplan_runtime_send_what(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")))
+  if (!nm || !is_send_family(nm))
     return NULL;
   if (nt_int(nt, id, "rt_probe", 0)) return NULL;  /* analysis-only respond_to? probe */
   int args = nt_ref(nt, id, "arguments");

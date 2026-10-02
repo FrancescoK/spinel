@@ -8104,8 +8104,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         else {
           int yes = !comp_const(c, ncn) && comp_class_index(c, ncn) < 0 &&
                     (sp_streq(ncn, "NilClass") ||
-                     (!exact && (sp_streq(ncn, "Object") || sp_streq(ncn, "Kernel") ||
-                                 sp_streq(ncn, "BasicObject"))));
+                     (!exact && is_object_root(ncn)));
           buf_printf(b, "%d", yes);
         }
         buf_puts(b, ")");
@@ -8205,8 +8204,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
            hierarchy predicates (every object is_a? Object/BasicObject/Kernel);
            instance_of? stays exact and answers false */
         int uni = !sp_streq(name, "instance_of?") &&
-                  (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") ||
-                   sp_streq(cn, "Kernel"));
+                  is_object_root(cn);
         /* a builtin CLASS ancestor in the superclass chain (Data -146, Struct
            -145, Numeric ...): check the object's class against its cls_id so a
            Data/Struct instance is_a? Data/Struct (#2662). */

@@ -15,5 +15,8 @@ int is_round_family(const char *n);   /* round ceil floor truncate */
 int is_push_alias(const char *n);     /* push << append */
 int is_bit_op(const char *n);         /* & | ^ */
 int is_basic_arith(const char *n);    /* + - * / (is_arith_op adds % and **) */
+int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
+int is_send_family(const char *n);    /* send __send__ public_send */
+int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
 
 #endif

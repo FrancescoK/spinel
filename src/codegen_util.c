@@ -4303,7 +4303,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   if (!self_cls) return -1;
   if (sp_streq(cn, self_cls)) return 1;
   if (exact) return 0;
-  if (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) return 1;
+  if (is_object_root(cn)) return 1;
   if (sp_streq(cn, "Comparable") && (t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
                                      t == TY_FLOAT || t == TY_SYMBOL || t == TY_TIME ||
                                      t == TY_COMPLEX || t == TY_RATIONAL)) return 1;

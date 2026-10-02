@@ -7765,7 +7765,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
     if (target && target[0] == '?') target_known = 0;
     const char *m2 = nm;
     int a0 = 0;
-    if (nm && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")) && ac >= 1) {
+    if (nm && is_send_family(nm) && ac >= 1) {
       m2 = bc_sym_arg(nt, av[0]);
       a0 = 1;
     }

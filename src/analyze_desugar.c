@@ -2487,8 +2487,7 @@ int desugar_implicit_send(Compiler *c) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;        /* implicit self only */
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || (!sp_streq(nm, "send") && !sp_streq(nm, "__send__") &&
-                !sp_streq(nm, "public_send"))) continue;
+    if (!nm || !is_send_family(nm)) continue;
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
@@ -2498,8 +2497,7 @@ int desugar_implicit_send(Compiler *c) {
     if (a0ty && sp_streq(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
     else if (a0ty && sp_streq(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
     if (!mname || !*mname) continue;                      /* non-literal name: leave it */
-    if (sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
-        sp_streq(mname, "public_send")) continue;          /* don't re-trigger next pass */
+    if (is_send_family(mname)) continue;          /* don't re-trigger next pass */
     int nrest = argc - 1;
     if (nrest > 64) continue;                             /* absurd arity: leave it */
     int rest[64];
@@ -2566,8 +2564,7 @@ int desugar_public_send_recv(Compiler *c) {
     if (a0ty && sp_streq(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
     else if (a0ty && sp_streq(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
     if (!mname || !*mname) continue;                       /* runtime name: dyn_send_arms */
-    int m_is_send = sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
-                    sp_streq(mname, "public_send");
+    int m_is_send = is_send_family(mname);
     (void)m_is_send;
     /* send/__send__ that spinel_parse.c already lowered never reach here;
        the ones it leaves are the send-of-send residue (`d.send(:greet)` after
@@ -2932,7 +2929,7 @@ static int engine_inner_body(NodeTable *nt, int id) {
 /* Is `name` Object, Kernel or BasicObject, whose constants Object's lookup
    reaches, or a name the program also assigns as a value (`K = Kernel`)? */
 static int engine_maybe_object_chain(NodeTable *nt, const char *name) {
-  if (!name || sp_streq(name, "Object") || sp_streq(name, "Kernel") || sp_streq(name, "BasicObject")) return 1;
+  if (!name || is_object_root(name)) return 1;
   for (int w = 0; w < nt->count; w++) {
     NodeKind wk = nt_kind(nt, w);
     if (wk == NK_ClassNode || wk == NK_ModuleNode) continue;
@@ -2979,7 +2976,7 @@ static int engine_object_mixes_in_scan(NodeTable *nt) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int mix = sp_streq(nm, "include") || sp_streq(nm, "prepend");
-    if (!mix && (sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send"))) {
+    if (!mix && is_send_family(nm)) {
       int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
       const char *s = ac < 1 ? NULL : nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
                       nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
@@ -3264,7 +3261,7 @@ static int dsend_method_name_shaped(const char *v) {
 
 static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, const char *v) {
   if (!v || !*v || anh_has(seen, v)) return;
-  if (sp_streq(v, "send") || sp_streq(v, "__send__") || sp_streq(v, "public_send")) return;
+  if (is_send_family(v)) return;
   if (*n == *cap) { *cap = *cap ? *cap * 2 : 32; *names = (char **)realloc(*names, sizeof(char *) * (size_t)*cap); }
   (*names)[(*n)++] = strdup(v);
   anh_add(seen, (*names)[*n - 1]);
@@ -3337,7 +3334,6 @@ static ANameHash g_dsend_lits;
 char **dsend_candidates(Compiler *c, int *out_n) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
-  static const char *const sends[] = { "send", "__send__", "public_send", NULL };
   /* collect distinct symbol/string-literal names = candidate method names (send
      accepts either; a string name interns to the same symbol at the call).
      Only names shaped like a method name: a log message or a label with a
@@ -3355,8 +3351,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
     if (ty && sp_streq(ty, "SymbolNode")) v = nt_str(nt, id, "value");
     else if (ty && sp_streq(ty, "StringNode")) v = nt_str(nt, id, "content");
     if (!v || !*v || !dsend_method_name_shaped(v)) continue;
-    int skip = 0;
-    for (int k = 0; sends[k]; k++) if (sp_streq(v, sends[k])) { skip = 1; break; }  /* avoid send-of-send recursion */
+    int skip = is_send_family(v);  /* avoid send-of-send recursion */
     if (!skip && anh_has(&cand_set, v)) skip = 1;
     if (skip) continue;
     if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
@@ -3376,8 +3371,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
       const char *sn = c->scopes[s].name;
       if (!sn || !*sn || strncmp(sn, "__", 2) == 0 || strchr(sn, '#') || !dsend_method_name_shaped(sn)) continue;
       if (sp_streq(sn, "initialize")) continue;
-      int skip = 0;
-      for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) { skip = 1; break; }
+      int skip = is_send_family(sn);
       if (skip || anh_has(&cand_set, sn)) continue;
       if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
       cand[ncand++] = strdup(sn);
@@ -3458,18 +3452,16 @@ int desugar_dynamic_send(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  static const char *const sends[] = { "send", "__send__", "public_send", NULL };
   /* a user-defined method named send/etc. resolves normally; don't intercept */
   for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
-    if (sn) for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) return 0; }
+    if (sn && is_send_family(sn)) return 0; }
   /* quick out: nothing to do unless some not-yet-lowered explicit-receiver send
      with a runtime name exists (the common case has none, so skip the scans). */
   { int any = 0;
     for (int id = 0; id < n0 && !any; id++) {
       if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
       const char *nm = nt_str(nt, id, "name"); if (!nm) continue;
-      int is = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is = 1; break; }
-      if (!is) continue;
+      if (!is_send_family(nm)) continue;
       int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue;
       int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
       int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
@@ -3488,8 +3480,7 @@ int desugar_dynamic_send(Compiler *c) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
-    int is_send = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is_send = 1; break; }
-    if (!is_send) continue;
+    if (!is_send_family(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) {
       /* A receiverless `send(name, ...)` in a method is `self.send(name, ...)`:

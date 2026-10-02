@@ -2910,7 +2910,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* `self.name` / `self.to_s` inside a class method -> the class name string */
   if (recv >= 0 && argc == 0 &&
-      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      is_name_reader(name) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
@@ -3233,7 +3233,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
 
   if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
-    if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
+    if (argc == 0 && is_name_reader(name))
       return TY_STRING;
     /* Thread.current / Fiber.current through a class value: a boxed handle
        (activesupport's IsolatedExecutionState keeps its scope as the class

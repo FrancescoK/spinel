@@ -1188,8 +1188,7 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   int is_empty = sp_streq(name, "empty?");
   /* A class-tagged poly value answers these with its class name (#2656); only
      when no user class defines them, or that user method is the real target. */
-  int is_class_named = (sp_streq(name, "name") || sp_streq(name, "to_s") ||
-                        sp_streq(name, "inspect")) && !recv_user_defines(c, name);
+  int is_class_named = is_name_reader(name) && !recv_user_defines(c, name);
   /* The Module reflection a class-tagged poly value answers. `ancestors` and
      friends had an arm only for a receiver typed TY_CLASS -- a constant --
      so iterating an Array of classes and asking the block parameter left the

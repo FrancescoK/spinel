@@ -27,3 +27,15 @@ int is_bit_op(const char *n) {
 int is_basic_arith(const char *n) {
   return sp_streq(n, "+") || sp_streq(n, "-") || sp_streq(n, "*") || sp_streq(n, "/");
 }
+
+int is_object_root(const char *n) {
+  return sp_streq(n, "Object") || sp_streq(n, "BasicObject") || sp_streq(n, "Kernel");
+}
+
+int is_send_family(const char *n) {
+  return sp_streq(n, "send") || sp_streq(n, "__send__") || sp_streq(n, "public_send");
+}
+
+int is_name_reader(const char *n) {
+  return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
+}
