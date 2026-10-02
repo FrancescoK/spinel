@@ -8,6 +8,12 @@ p $?.nil?
 p $?.class
 s = $?
 p s.nil?
+# nil has none of the readers; it answers to_s, inspect, to_i and == as nil
+# (the class, name and receiver: Ruby 3.2 and 3.4 word the message apart)
+begin; $?.exitstatus; rescue NoMethodError => e; p [e.class, e.name, e.receiver]; end
+begin; $?.success?; rescue NoMethodError => e; p [e.class, e.name, e.receiver]; end
+begin; s.pid; rescue NoMethodError => e; p [e.class, e.name, e.receiver]; end
+p [$?.to_s, $?.inspect, $?.to_i, $? == 0, $? != 0]
 system("sh", "-c", "exit 2")
 p $?.nil?
 p $?.inspect.sub(/pid \d+/, "pid N")

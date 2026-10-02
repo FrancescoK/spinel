@@ -32,6 +32,13 @@ sp_ProcessStatus *sp_process_status_new(sp_int pid, sp_int status);
    each read, carrying the raw status word as it was stored. */
 sp_ProcessStatus *sp_last_process_status(void);
 
+/* A reader's receiver: NULL is nil, which has none of the readers, so it
+   raises NoMethodError ("undefined method 'exitstatus' for nil"). */
+sp_ProcessStatus *sp_process_status_recv(sp_ProcessStatus *p, const char *meth);
+
+/* to_s / inspect of a status, or of nil ("" / "nil") for NULL */
+const char *sp_process_status_str(sp_ProcessStatus *p, int is_inspect);
+
 /* Predicates. All return 0 or 1 except success_p, which is tri-state: -1
    means CRuby's nil (the process did not exit normally). */
 int sp_process_status_exited_p(sp_int s);

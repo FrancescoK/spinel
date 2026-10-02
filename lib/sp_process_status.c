@@ -35,6 +35,12 @@
 
 /* ---- allocator ---- */
 
+sp_ProcessStatus *sp_process_status_recv(sp_ProcessStatus *p, const char *meth) {
+  extern void sp_nil_recv(const char *meth);   /* sp_str.c */
+  if (!p) sp_nil_recv(meth);
+  return p;
+}
+
 sp_ProcessStatus *sp_last_process_status(void) {
   extern int sp_last_status, sp_last_pid;   /* sp_system.c */
   if (!sp_last_pid) return NULL;
@@ -195,4 +201,11 @@ const char *sp_process_status_to_s(sp_int pid, sp_int s, int is_inspect) {
              "%spid %lld status 0x%llx%s", prefix, (long long)pid, (unsigned long long)s, suffix);
   }
   return sp_status_buf;
+}
+
+/* A fresh String each call: the rendering's static buffer is shared, and
+   `[$?.to_s, $?.inspect]` read the second rendering twice. */
+const char *sp_process_status_str(sp_ProcessStatus *p, int is_inspect) {
+  if (!p) return sp_str_dup_external(is_inspect ? "nil" : "");
+  return sp_str_dup_external(sp_process_status_to_s(p->pid, p->status, is_inspect));
 }
