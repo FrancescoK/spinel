@@ -10476,6 +10476,20 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       }
       if (g_plan_check) cplan_served("dispatch");
     }
+    else if (cnm) {
+      /* an operator the plan answers through another of the class's methods
+         (`!=` through `==`, the comparisons through `<=>`): the dispatch of
+         that method is the plan's */
+      dpc = *cplan_user(c, g_nd_call_id);
+      if (!dpc.chain && dpc.via == UC_INST && dpc.owner_ci == cid && dpc.mi >= 0 &&
+          c->scopes[dpc.mi].name && sp_streq(c->scopes[dpc.mi].name, name)) {
+        served = 1;
+        mi = dpc.mi;
+        defcls = c->scopes[mi].class_id;
+        dpl = &dpc;
+        if (g_plan_check) cplan_served("dispatch");
+      }
+    }
   }
   if (g_plan_check || !served) {
     int odef = cid;
