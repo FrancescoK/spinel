@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "builtin_ops.h"
 #include <stdint.h>
 #include <limits.h>
 
@@ -4184,10 +4185,12 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
-  /* Process::Tms accessors: four cumulative CPU times, all Float (#3044) */
-  if (recv >= 0 && rt == TY_TMS && argc == 0 &&
-      (sp_streq(name, "utime") || sp_streq(name, "stime") ||
-       sp_streq(name, "cutime") || sp_streq(name, "cstime"))) return TY_FLOAT;
+  /* The receiver families kept as builtin-op rows (builtin_ops.c): this
+     sits where their rules sat, so the rules above still claim first */
+  if (recv >= 0 && bop_covers(rt)) {
+    const BuiltinOp *op = bop_find(rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op) return op->result;
+  }
   /* Process::Status accessors. The runtime returns sp_int (with -1 for
      the nil-or-false slot on exitstatus/termsig); the analyze pass keeps
      Integer here and the codegen wraps -1 in sp_box_nil for those two.

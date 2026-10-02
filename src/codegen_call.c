@@ -28615,26 +28615,6 @@ static void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b) {
   else emit_unbox_text(c, want, tn, b);
 }
 
-/* Keep receiver-specific emitters behind one table so another type can move
-   without adding a dispatch chain. Use the caller's receiver type to preserve
-   the original arm's type snapshot and its place among the fallbacks. */
-static const struct {
-  TyKind recv_ty;
-  int (*emit)(Compiler *c, int id, int recv, const char *name, Buf *b);
-} recv_call_emitters[] = {
-  { TY_TMS, emit_tms_call },
-};
-
-int emit_call_by_recv_type(Compiler *c, int id, int recv, TyKind rt,
-                          const char *name, Buf *b) {
-  if (recv < 0) return 0;
-  for (size_t i = 0; i < sizeof recv_call_emitters / sizeof recv_call_emitters[0]; i++) {
-    if (recv_call_emitters[i].recv_ty == rt)
-      return recv_call_emitters[i].emit(c, id, recv, name, b);
-  }
-  return 0;
-}
-
 /* A reopened builtin's yielding method reached with the call's block: it
    has no symbol of its own, being spliced where it can, so the call goes to
    its proc form with the block as a proc (#5779). `recv_text` is the
@@ -44448,7 +44428,7 @@ else {
       return;
     }
   }
-  if (emit_call_by_recv_type(c, id, recv, rt, name, b)) return;
+  if (emit_builtin_op(c, id, recv, rt, name, b)) return;
   /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
     int te = ++g_tmp;
