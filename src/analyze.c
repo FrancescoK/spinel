@@ -13894,6 +13894,23 @@ static int an_ivar_owner(Compiler *c, int node) {
   if (cs->class_id >= 0) return cs->class_id;
   return comp_class_index(c, "Toplevel");
 }
+/* Is the ivar read at `rd` ever written straight from a local (`@v = x`)?
+   It then names that local's String, which may be the caller's, rather than
+   a String of its own. */
+static int ivar_written_from_local(Compiler *c, int rd) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, rd, "name");
+  int cid = an_ivar_owner(c, rd);
+  if (!nm || cid < 0) return 0;
+  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, nm) || an_ivar_owner(c, w) != cid) continue;
+    int v = nt_ref(nt, w, "value");
+    if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode) return 1;
+  }
+  return 0;
+}
 /* The ivar node a local write's value hands over as the slot's own object:
    a read, or a plain / or / and write of it (the value of the write is the
    slot), through single-statement parentheses. A read is also reached
@@ -31511,6 +31528,47 @@ void analyze_program(Compiler *c) {
     if (sa >= 0) nt_arr(c->nt, sa, "arguments", &sac);
     if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)))
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
+  }
+
+  /* Refuse lent ivar copies through calls and super only after sharing
+     analysis settles (#6998). */
+  for (int pass = 0; pass < 2; pass++)
+  for (int cu = comp_kind_first(c, pass ? NK_SuperNode : NK_CallNode); cu >= 0; cu = comp_kind_next(c, cu)) {
+    int cmi = -1;
+    if (pass) {
+      if (nt_kind(c->nt, cu) != NK_SuperNode) continue;
+      Scope *sus = comp_scope_of(c, cu);
+      if (!sus || sus->class_id < 0 || !sus->name) continue;
+      cmi = a_super_target(c, sus);
+      if (cmi < 0) continue;
+    }
+    else {
+      if (nt_kind(c->nt, cu) != NK_CallNode) continue;
+      /* only a call we can pin to one body: the callee is what says whether the
+         argument is mutated, and a receiver we cannot resolve has no single one */
+      int curecv = nt_ref(c->nt, cu, "receiver");
+      if (curecv >= 0) {
+        NodeKind rk = nt_kind(c->nt, curecv);
+        if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+      }
+      const char *cun = nt_str(c->nt, cu, "name");
+      if (!cun) continue;
+      cmi = an_any_scope_by_name(c, cun);
+      if (cmi < 0) continue;
+    }
+    for (int j = 0; j < c->scopes[cmi].nparams; j++) {
+      if (!an_param_mutated_in_place(c, cmi, j)) continue;
+      int spread5 = -1;
+      int an5 = arg_layout_param_node(c, &c->scopes[cmi], cu, j, &spread5);
+      if (an5 < 0) continue;
+      if (nt_kind(c->nt, an5) == NK_InstanceVariableReadNode &&
+          (comp_ntype(c, an5) == TY_STRING || comp_ntype(c, an5) == TY_STRBUF) &&
+          ivar_written_from_local(c, an5) && !an_arg_is_shared_handle(c, an5))
+        unsupported_feature(c, an5, "a String instance variable written from a local is passed to an "
+                            "appending parameter (a String is not yet shared by reference through a "
+                            "lent instance variable written from a local). Return the String from the "
+                            "method and assign it, or append to it in the caller.");
+    }
   }
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
