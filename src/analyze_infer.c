@@ -2094,11 +2094,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (nt_str(nt, id, "send_blind") && recv >= 0 && nt_ref(nt, id, "block") < 0) {
     int smi = comp_method_index(c, name);
     if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
-      TyKind srt = infer_type(c, recv);
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), name, NULL));
-      if (!owns) return an_user_call(c, id, smi, UC_SEND_BLIND, -1);
+      if (!send_blind_recv_owns(c, recv, infer_type(c, recv), name))
+        return an_user_call(c, id, smi, UC_SEND_BLIND, -1);
     }
   }
 

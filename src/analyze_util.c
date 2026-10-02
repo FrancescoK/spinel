@@ -2329,6 +2329,18 @@ int comp_self_call_mi(Compiler *c, int id, const char *name) {
   return mi;
 }
 
+int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
+  if (ty_is_object(srt))
+    return comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
+           comp_reader_in_chain(c, ty_object_class(srt), name, NULL);
+  /* a class named by a constant (or `self.class`): its own class methods
+     come before Object's private top-level def */
+  NodeKind rk = nt_kind(c->nt, recv);
+  int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
+           ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
+  return ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0;
+}
+
 /* A receiverless call directly in a class body is sent to the class. */
 int comp_cbody_call_mi(Compiler *c, int id, const char *name) {
   Scope *s = comp_scope_of(c, id);

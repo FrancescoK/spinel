@@ -105,11 +105,10 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   if (recv >= 0 && nt_str(nt, id, "send_blind") && nt_ref(nt, id, "block") < 0) {
     int smi = comp_method_index(c, name);
     if (smi >= 0 && !c->scopes[smi].yields) {
-      TyKind srt = comp_ntype(c, recv);
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), name, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), name, NULL));
-      if (!owns) { cplan_set(p, smi, -1, UC_SEND_BLIND, CP_DIRECT); return; }
+      if (!send_blind_recv_owns(c, recv, comp_ntype(c, recv), name)) {
+        cplan_set(p, smi, -1, UC_SEND_BLIND, CP_DIRECT);
+        return;
+      }
     }
   }
   if (recv < 0) {

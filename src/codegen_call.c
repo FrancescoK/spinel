@@ -27809,11 +27809,8 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     const char *sn = nt_str(c->nt, id, "name");
     int smi = sn ? comp_method_index(c, sn) : -1;
     if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
-      TyKind srt = comp_ntype(c, nt_ref(c->nt, id, "receiver"));
-      int owns = ty_is_object(srt) &&
-                 (comp_method_in_chain(c, ty_object_class(srt), sn, NULL) >= 0 ||
-                  comp_reader_in_chain(c, ty_object_class(srt), sn, NULL));
-      if (!owns) { emit_method_call(c, id, b); return; }
+      int srecv = nt_ref(c->nt, id, "receiver");
+      if (!send_blind_recv_owns(c, srecv, comp_ntype(c, srecv), sn)) { emit_method_call(c, id, b); return; }
     }
   }
 

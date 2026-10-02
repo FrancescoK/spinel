@@ -911,6 +911,10 @@ int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
    as the fallback. See analyze_util.c. */
 int    comp_self_call_mi(Compiler *c, int call_node, const char *name);
 int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
+/* Does the receiver of a retargeted `recv.send(:name)` (send_blind) answer
+   name itself -- an instance's method or reader, a class constant's class
+   method -- rather than through a top-level def? srt is recv's type. */
+int    send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name);
 /* 1 iff `node` is a constant path naming an `ffi_const` declaration, with its
    value in *out. Such a name is a VALUE, not a class, wherever the two are
    told apart. */
