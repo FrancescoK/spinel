@@ -497,8 +497,9 @@ module LiteralProbe
         unless fillers == was
           File.binwrite(src, LiteralProbe.plant(source, sites, fillers, forms))
           ca, why = compile(src)
+          # set either way: the regions of an earlier control are not this one's
+          at = ["control", nil, "the control #{why}, the marker alone compiles"]
           at = LiteralProbe.regions(ca, fillers) if ca
-          at ||= ["control", nil, "the control #{why}, the marker alone compiles"]
           was = fillers
         end
         next at if at.first == "control"
@@ -695,6 +696,9 @@ module LiteralProbe
               run(f, dir || scratch)
             rescue ProbeCommon::Stopped
               break
+            rescue StandardError => e
+              # one program the tool cannot run is one run that is not alike
+              f.run = "tool error: #{e.class}: #{e.message.lines.first.to_s.strip}"
             ensure
               FileUtils.rm_rf(scratch)
             end
