@@ -31357,33 +31357,8 @@ static void an_phase_value_types(Compiler *c) {
   }
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
-  an_phase_method_backstops(c);
-
-  an_phase_late_widen(c);
-
-  an_phase_proc_returns(c);
-
-
-  an_phase_storage(c);
-
-
-  an_phase_value_types(c);
-
+/* The final reconciliation and checks: hash literals and locals against their variables, operators on poly receivers, the rounds over the ivars' final types, lifted proc captures, array-or-nil slots, late poly arrays, then the seed contradictions and the late refusals (analyze_program's steps, in their order) */
+static void an_phase_reconcile_check(Compiler *c) {
   /* Reconcile a hash literal's node type with the variable it initializes.
      A literal like `{ begin: ... }` infers a narrow variant (SYM_POLY_HASH)
      from its own keys, but the variable may later be promoted to a wider hash
@@ -31790,6 +31765,36 @@ void analyze_program(Compiler *c) {
     fprintf(stderr, "spinel: warning: type inference did not converge in %d rounds; "
             "the output may be built from unsettled types (please report this program)\n",
             g_fixpoint_rounds);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
+
+  an_phase_late_widen(c);
+
+  an_phase_proc_returns(c);
+
+
+  an_phase_storage(c);
+
+
+  an_phase_value_types(c);
+
+  an_phase_reconcile_check(c);
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
             g_fixpoint_rounds >= 128 ? " (CAP -- did not converge)" : "");
