@@ -6718,6 +6718,74 @@ static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
   return found;
 }
 
+/* Whether class `anc` is class `cls` or stands on its superclass line, read
+   off the `class` statements. 1 too where the line cannot be read: a class no
+   `class` statement names, or a superclass that is no constant. */
+static int dm_on_super_line(const NodeTable *nt, const char *cls, const char *anc) {
+  const char *cur = cls;
+  for (int step = 0; step < 64; step++) {
+    if (sp_streq(cur, anc)) return 1;
+    const char *sup = NULL;
+    int named = 0;
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!cn || !sp_streq(cn, cur)) continue;
+      named = 1;
+      int sc = nt_ref(nt, id, "superclass");
+      if (sc < 0) continue;
+      NodeKind sk = nt_kind(nt, sc);
+      const char *sn = (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) ? nt_str(nt, sc, "name") : NULL;
+      if (!sn) return 1;
+      sup = sn;
+    }
+    if (!named) return !is_builtin_class_name(cur);
+    if (!sup) return 0;
+    cur = sup;
+  }
+  return 1;
+}
+
+/* Whether the program has a def named `callee` (define_method or
+   define_singleton_method) that a call made for class `cls` may reach. A def
+   in a `class` statement reaches that class, the classes above it and the
+   ones below; `home` is that class while the walk is inside one. A def
+   anywhere else (top level, a module, a block, a builtin class, a receiver
+   that is not self) reaches every class, and so does any def when `cls` is
+   not known. */
+static int dm_user_def_reaches(const NodeTable *nt, int id, const char *home, int depth,
+                               const char *callee, const char *cls) {
+  if (id < 0 || id >= nt->count) return 0;
+  if (depth > 200) return 1;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode) {
+    const char *dn = nt_str(nt, id, "name");
+    if (dn && sp_streq(dn, callee)) {
+      int recv = nt_ref(nt, id, "receiver");
+      if (!home || !cls || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 1;
+      if (dm_on_super_line(nt, cls, home) || dm_on_super_line(nt, home, cls)) return 1;
+    }
+  }
+  else if (k == NK_ClassNode) {
+    int cp = nt_ref(nt, id, "constant_path");
+    home = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (home && is_builtin_class_name(home)) home = NULL;
+  }
+  else if (k == NK_SingletonClassNode) {
+    int ex = nt_ref(nt, id, "expression");
+    if (ex < 0 || nt_kind(nt, ex) != NK_SelfNode) home = NULL;
+  }
+  else if (k == NK_ModuleNode || k == NK_BlockNode || k == NK_LambdaNode) home = NULL;
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++)
+    if (dm_user_def_reaches(nt, nd->r[i].ref, home, depth + 1, callee, cls)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (dm_user_def_reaches(nt, nd->a[i].ids[j], home, depth + 1, callee, cls)) return 1;
+  return 0;
+}
+
 /* A define_method or define_singleton_method block that is registered as a
    method is that method's body, compiled as a C function with no loop for a
    `continue` to name, and a `next` it owns ends the call with its value,
@@ -6725,19 +6793,23 @@ static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
 
      define_method(:m) { next v if c; w }  ->  define_method(:m) { return v if c; w }
 
-   `id` is such a body. Called only where the block becomes a method
-   (walk_scope, collect_dm_each_unroll, desugar_define_method_keywords): a
-   call whose name is not known at compile time registers nothing, and a
-   `return` left in its block would be read as the enclosing method's. A
-   program with a method of its own by either name is left alone: that one
-   may run the block as a block. The program is searched for one only when
-   the body owns a `next`. */
-int method_body_next_to_return(NodeTable *nt, int id) {
-  if (!owned_next_walk(nt, id, 0, 0)) return 0;
+   `id` is such a body, `callee` the name it was registered through and `cls`
+   the class the method is made for, NULL when that is not known. Called only
+   where the block becomes a method (walk_scope, collect_dm_each_unroll,
+   desugar_define_method_keywords): a call whose name is not known at compile
+   time registers nothing, and a `return` left in its block would be read as
+   the enclosing method's. Where the program has a def of its own named
+   `callee` that the call may reach, the body is left alone: that method may
+   run the block as a block. The program is searched for one only when the
+   body owns a `next`. */
+int method_body_next_to_return(NodeTable *nt, int id, const char *callee, const char *cls) {
+  if (!callee || !owned_next_walk(nt, id, 0, 0)) return 0;
   for (int d = 0; d < nt->count; d++) {
     if (nt_kind(nt, d) != NK_DefNode) continue;
     const char *dn = nt_str(nt, d, "name");
-    if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
+    if (!dn || !sp_streq(dn, callee)) continue;
+    if (dm_user_def_reaches(nt, nt->root_id, NULL, 0, callee, cls)) return 0;
+    break;
   }
   return owned_next_walk(nt, id, 0, 1);
 }
@@ -6921,7 +6993,8 @@ int desugar_define_method_keywords(Compiler *c) {
       nt_node_set_ref(nt, def, "parameters", pn);
       nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
       nt_node_set_ref(nt, def, "receiver", dself);
-      method_body_next_to_return(nt, nt_ref(nt, def, "body"));
+      { int kcp = ck == NK_ClassNode ? nt_ref(nt, cls, "constant_path") : -1;
+        method_body_next_to_return(nt, nt_ref(nt, def, "body"), cn, kcp >= 0 ? nt_str(nt, kcp, "name") : NULL); }
       if (id != bv[i]) {
         /* `private define_method(...)` -> `private def ...` */
         nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);
