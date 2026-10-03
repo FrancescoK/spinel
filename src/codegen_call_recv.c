@@ -1240,6 +1240,368 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* A kind-named typed Array's block iterators and folds: an index query with a block, find and detect, map!, the in-place filters, the quantifiers, count, sum (emit_kind_array_call's arms, in their order) */
+static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, const char *k, int block, int *out) {
+  if (is_index_query(name) && block >= 0 &&
+      emit_array_block_index(c, id, recv, rt, k, name, block, b))
+    { *out = 1; return 1; }
+  /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
+     the ifnone proc's value on no-match; the result rides poly since the
+     proc can return anything. A non-proc ifnone stays a loud reject. */
+  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 &&
+      argc == 1 && comp_ntype(c, argv[0]) == TY_PROC) {
+    const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+    int body = nt_ref(nt, block, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn >= 1) {
+      TyKind et = ty_array_elem(rt);
+      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tfn = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+      /* root the receiver: the block body and the ifnone proc run arbitrary
+         Ruby that can trigger GC while this array is live (as the poly-array
+         find(ifnone) path already does) */
+      buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "", trecv); free(rb.p);
+      { Buf nb = expr_buf(c, argv[0]);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); int _tf%d = 0;\n",
+                   tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p); }
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
+      emit_find_loop_head(c, id, k, ti, trecv);
+      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+      int sv = g_indent; g_indent++;
+      Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (%s) { _t%d = ", cb.p ? cb.p : "0", tres);
+      { char eltxt[128];
+        if (bp) snprintf(eltxt, sizeof eltxt, "lv_%s", bp);
+        else snprintf(eltxt, sizeof eltxt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+        emit_boxed_text(c, et, eltxt, g_pre); }
+      buf_printf(g_pre, "; _tf%d = 1; break; }\n", tfn);
+      free(cb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (!_tf%d) _t%d = ((void)sp_proc_call(_t%d, 0, (sp_int[16]){0}), _sp_proc_poly_ret);\n",
+                 tfn, tres, tfn);
+      buf_printf(b, "_t%d", tres);
+      { *out = 1; return 1; }
+    }
+  }
+  /* find / detect { |x| cond } - returns element or nil */
+  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc == 0) {
+    const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+    int body = nt_ref(nt, block, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn >= 1) {
+      TyKind et = ty_array_elem(rt);
+      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+      buf_printf(g_pre, " _t%d = %s; ", trecv, rb.p ? rb.p : ""); free(rb.p);
+      /* rooted, as the find(ifnone) arm above and the poly-array find
+         already are: same loop, same per-turn reads, same allocating block */
+      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
+      emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
+      if (et == TY_STRING) buf_printf(g_pre, " _t%d = NULL;\n", tres);
+      else if (et == TY_INT) buf_printf(g_pre, " _t%d = SP_INT_NIL;\n", tres);
+      else buf_printf(g_pre, " _t%d = 0;\n", tres);
+      emit_find_loop_head(c, id, k, ti, trecv);
+      /* Declare the block param in the loop body (not a bare assignment) so
+         the find is self-contained: when this call is a parameter default
+         hoisted to the call site, the enclosing function has no top-level
+         declaration for the block local. Shadows the method-scope slot in
+         the ordinary in-body case, which is harmless. */
+      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+      Buf cb; memset(&cb, 0, sizeof cb);
+      { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
+        int sv = g_indent; g_indent++;
+        emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
+      emit_indent(g_pre, g_indent + 1);
+      if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
+      else buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n",
+                      cb.p ? cb.p : "0", tres, k, trecv, ti);
+      free(cb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", tres); { *out = 1; return 1; }
+    }
+  }
+  /* map! / collect! { |x| body } - in-place transform, returns receiver */
+  if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && block >= 0) {
+    const char *bp0 = block_param_name(c, block, 0);
+    const char *bp = bp0 ? rename_local(bp0) : NULL;
+    int body = nt_ref(nt, block, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn >= 1) {
+      TyKind et = ty_array_elem(rt);
+      Scope *ms = comp_scope_of(c, block);
+      LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
+      TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
+      if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
+      int trecv = ++g_tmp, ti = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+      buf_printf(g_pre, " _t%d = %s; ", trecv, rb.p ? rb.p : ""); free(rb.p);
+      /* rooted, as the TY_POLY map!/collect! near the top of this file
+         already roots its own hoist: this loop WRITES the block value back
+         into the receiver on every turn, so an unrooted hoist is a store
+         into freed memory and not only a short walk */
+      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+                 ti, ti, k, trecv, ti);
+      if (bp) {
+        emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
+        buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
+      }
+      IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
+      int sv = g_indent; g_indent++;
+      Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, bb[bn - 1]), trecv, ti);
+      emit_typed_sink_text(c, bb[bn - 1], et, vb.p ? vb.p : "0", g_pre);
+      buf_puts(g_pre, ");\n");
+      free(vb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      if (mlv) mlv->type = msaved;
+      buf_printf(b, "_t%d", trecv); { *out = 1; return 1; }
+    }
+  }
+  /* select! / filter! / keep_if / reject! / delete_if { |x| cond }: the
+     in-place filter, on a typed or a poly array (emit_array_filter_loop) */
+  if (is_select_bang(name) && block >= 0) {
+    const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+    int trecv, torig, twp;
+    if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
+      char box[64]; snprintf(box, sizeof box, "%s(_t%d)", array_box_fn(kk), trecv);
+      emit_filter_bang_result(name, trecv, torig, twp, box, b);
+      { *out = 1; return 1; }
+    }
+  }
+  /* array.none?(a..b) / any?/all?/one? with a Range pattern -- membership
+     test (===) over an integer array. */
+  if (is_quantifier(name) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      rt == TY_INT_ARRAY && comp_ntype(c, argv[0]) == TY_RANGE) {
+    int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf ra = expr_buf(c, recv);
+    buf_printf(b, "({ sp_IntArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
+    buf_printf(b, " sp_Range _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";");
+    buf_printf(b, " sp_int _t%d = 0;", tc);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
+    buf_printf(b, " if (sp_range_include(&_t%d, sp_IntArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
+    if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_IntArray_length(_t%d); })", tc, ta);
+    else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
+    else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
+    else                              buf_printf(b, " _t%d == 1; })", tc);
+    { *out = 1; return 1; }
+  }
+  /* array.none?(/re/) / any?/all?/one? with a Regexp pattern over strings. */
+  if (is_quantifier(name) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      rt == TY_STR_ARRAY && re_lit_index(c, argv[0]) >= 0) {
+    int rei = re_lit_index(c, argv[0]);
+    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf ra = expr_buf(c, recv);
+    buf_printf(b, "({ sp_StrArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
+    buf_printf(b, " sp_int _t%d = 0;", tc);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
+    buf_printf(b, " if (sp_re_match(sp_re_pat_%d, sp_StrArray_get(_t%d, _t%d)) >= 0) _t%d++;", rei, ta, ti, tc);
+    if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_StrArray_length(_t%d); })", tc, ta);
+    else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
+    else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
+    else                              buf_printf(b, " _t%d == 1; })", tc);
+    { *out = 1; return 1; }
+  }
+  if (is_quantifier_or_count(name) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      comp_ntype(c, argv[0]) == TY_CLASS) {
+    /* A class argument on a TYPED array: the predicates ask `Class === e`,
+       which for an int/float/string array is decided by the element type
+       alone, and #count asks `e == Class`, which no element of one can
+       satisfy. Emitting the class into the element slot did not even
+       compile (#3817). */
+    int cls_all = 0;
+    { const char *cn2 = isa_const_name(nt, argv[0]);
+      const char *want = rt == TY_INT_ARRAY ? "Integer" : rt == TY_FLOAT_ARRAY ? "Float"
+                       : rt == TY_STR_ARRAY ? "String" : NULL;
+      cls_all = (cn2 && want && (sp_streq(cn2, want) || sp_streq(cn2, "Object") ||
+                                 sp_streq(cn2, "Comparable") ||
+                                 (sp_streq(cn2, "Numeric") &&
+                                  (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)))); }
+    int tlen = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = sp_%sArray_length(", tlen, k);
+    emit_expr(c, recv, b); buf_puts(b, ");");
+    if (sp_streq(name, "count")) buf_printf(b, " (void)_t%d; (sp_int)0; })", tlen);
+    else if (sp_streq(name, "all?"))
+      buf_printf(b, cls_all ? " (void)_t%d; TRUE; })" : " _t%d == 0; })", tlen);
+    else if (sp_streq(name, "any?"))
+      buf_printf(b, cls_all ? " _t%d > 0; })" : " (void)_t%d; FALSE; })", tlen);
+    else if (sp_streq(name, "none?"))
+      buf_printf(b, cls_all ? " _t%d == 0; })" : " (void)_t%d; TRUE; })", tlen);
+    else
+      buf_printf(b, cls_all ? " _t%d == 1; })" : " (void)_t%d; FALSE; })", tlen);
+    { *out = 1; return 1; }
+  }
+  if (is_quantifier_or_count(name) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0) {
+    /* array.all?(v)/any?(v)/none?(v)/one?(v)/count(v) -- compare by == */
+    int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    /* the hoisted receiver is rooted across the value, which may allocate */
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta);
+    emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
+    emit_indent(g_pre, 0);
+    if (value_obj_compares(c, argv[0])) {
+      unsupported_feature(c, id, "a user object defining == compared against a typed Array's elements");
+      { *out = 0; return 1; }
+    }
+    if (needle_misses(c, recv, rt, argv[0])) {
+      /* a value no element can equal: only an empty array is all? of it */
+      buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");");
+      if (sp_streq(name, "all?"))       buf_printf(b, " sp_%sArray_length(_t%d) == 0; })", k, ta);
+      else if (sp_streq(name, "none?")) buf_puts(b, " 1; })");
+      else                              buf_puts(b, " 0; })");
+      { *out = 1; return 1; }
+    }
+    /* A boxed value is compared as Ruby's ==, element boxed: unboxing it
+       to the element type raised for a value of another kind, and put an
+       sp_RbVal into an sp_int for an Integer array (#4835). */
+    TyKind cat = comp_ntype(c, argv[0]);
+    int cboxed = (cat == TY_POLY || cat == TY_NIL);
+    if (cboxed) { buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
+    else { emit_ctype(c, ty_array_elem(rt), b);
+           buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
+    buf_printf(b, " sp_int _t%d = 0;", tc);
+    if (cboxed) {
+      char el[96], arr[24];
+      snprintf(el, sizeof el, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      snprintf(arr, sizeof arr, "_t%d", ta);
+      /* a literal nil is only there where may_nil says one can be */
+      if (cat == TY_NIL && elem_nil_sentinel(c, recv, rt) && !elem_nil_marked(c, recv, rt))
+        buf_printf(b, " if (sp_%sArray_may_nil(_t%d))", k, ta);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", ti, ti, k, ta, ti);
+      buf_puts(b, " if (sp_poly_eq(");
+      emit_elem_boxed_text(c, recv, rt, arr, el, b);
+      buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
+    }
+    else if (rt == TY_FLOAT_ARRAY && elem_nil_sentinel(c, recv, rt))
+      /* a nil Float needle is the sentinel, a NaN that == never meets */
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
+                    " { sp_float _e = sp_FloatArray_get(_t%d, _t%d); if (_e == _t%d ||"
+                    " (sp_float_is_nil(_t%d) && sp_float_is_nil(_e))) _t%d++; }",
+                 ti, ti, k, ta, ti, ta, ti, tv, tv, tc);
+    else if (rt == TY_STR_ARRAY)
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
+                    " if (sp_str_cmp_bytes(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;",
+                 ti, ti, k, ta, ti, k, ta, ti, tv, tc);
+    else
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
+                    " if (sp_%sArray_get(_t%d, _t%d) == _t%d) _t%d++;", ti, ti, k, ta, ti, k, ta, ti, tv, tc);
+    if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_%sArray_length(_t%d); })", tc, k, ta);
+    else if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
+    else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
+    else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
+    else                              buf_printf(b, " _t%d; })", tc);
+    { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+    /* count { |x| cond } -- loop and count truthy block results */
+    int blk = nt_ref(nt, id, "block");
+    const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
+    int body2 = nt_ref(nt, blk, "body");
+    int bn2 = 0; const int *bb2 = body2 >= 0 ? nt_arr(nt, body2, "body", &bn2) : NULL;
+    if (bn2 > 0) {
+      int trecv = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+      Buf rb2 = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+      buf_printf(g_pre, " _t%d = %s; ", trecv, rb2.p ? rb2.p : ""); free(rb2.p);
+      /* rooted, as the find(ifnone) arm above already is: the same walk
+         over the same hoist, differing only in what it does with the
+         predicate */
+      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = 0;\n", tcnt);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+                 ti, ti, k, trecv, ti);
+      if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+      /* The block value is a condition: route through emit_cond so a poly /
+         nil / scalar predicate becomes a valid C truthiness test (e.g.
+         `count(&:alive)` where the element method is poly-dispatched would
+         otherwise emit `if (sp_RbVal)` -- a struct in scalar position). */
+      Buf vb2 = block_cond_buf(c, blk, bb2, bn2);
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (%s) _t%d++;\n", vb2.p ? vb2.p : "0", tcnt);
+      free(vb2.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", tcnt);
+      { *out = 1; return 1; }
+    }
+  }
+  if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+    TyKind init_t = fold_seed_ntype(c, argv[0]);
+    /* a String initial value concatenates (["a","b"].sum("") == "ab") */
+    if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
+      Buf rss;
+      int css = hold_recv_open(c, recv, 0, "sp_StrArray *", "SP_GC_ROOT", b, &rss);
+      buf_printf(b, "sp_StrArray_sum_str(%s, ", rss.p);
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      free(rss.p);
+      if (css) buf_puts(b, "; })");
+      { *out = 1; return 1; }
+    }
+    /* a float initial value promotes an integer-array sum to Float: add the
+       float init to the integer total in floating point (sp_IntArray_sum
+       returns sp_int, so accumulating the init through it would truncate). */
+    if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
+      buf_puts(b, "((sp_float)("); emit_expr(c, argv[0], b);
+      buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_nil_ck_recv(c, recv, rt, "sum", 1, b); buf_puts(b, ", 0))");
+      { *out = 1; return 1; }
+    }
+    /* Any other seed keeps its OWN class for the whole fold: CRuby's
+       accumulator is the seed object and every step is Ruby's `+` on it. A
+       Rational seed therefore answers a Rational total, a Bignum one stops
+       wrapping into an sp_int, and nil / a String / an Array reach the raise
+       that operator itself produces -- worded for the ELEMENT's class, which
+       the hard-coded String-seed raise that used to stand here could only
+       get right over Integers. sp_poly_sum_seed runs CRuby's own phases. */
+    if (rt == TY_STR_ARRAY || !fold_seed_typed(init_t, ty_array_elem(rt))) {
+      emit_poly_sum_seed(c, recv, argv[0], b);
+      { *out = 1; return 1; }
+    }
+    /* A FLOAT seed over Floats does not compensate: CRuby reaches the
+       compensated loop only out of the exact phase, and a seed that is
+       already a Float never has one. An INTEGER seed does have one, so it
+       keeps the compensated call -- `[0.1, 0.2, 0.3].sum(0)` is 0.6 and
+       `.sum(0.0)` is 0.6000000000000001. The boxed fold draws the same
+       line; the two paths must not disagree. */
+    if (rt == TY_FLOAT_ARRAY && init_t == TY_FLOAT) {
+      Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rb);
+      Buf ckb; memset(&ckb, 0, sizeof ckb);
+      buf_printf(b, "sp_FloatArray_sum_plain(%s, ", nil_sum_ck_text(c, recv, rt, 1, rb.p, &ckb)); free(rb.p); free(ckb.p);
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (ch) buf_puts(b, "; })");
+      { *out = 1; return 1; }
+    }
+    /* the seed may allocate (a method call); the receiver is held across it */
+    Buf rsm; char tym[32];
+    snprintf(tym, sizeof tym, "sp_%sArray *", k);
+    int csm = hold_recv_open(c, recv, 0, tym, "SP_GC_ROOT", b, &rsm);
+    Buf ckm; memset(&ckm, 0, sizeof ckm);
+    buf_printf(b, "sp_%sArray_sum(%s, ", k, nil_sum_ck_text(c, recv, rt, 0, rsm.p, &ckm)); free(ckm.p);
+    if (rt == TY_FLOAT_ARRAY && init_t == TY_INT) {
+      buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else {
+      emit_expr(c, argv[0], b);
+    }
+    buf_puts(b, ")");
+    free(rsm.p);
+    if (csm) buf_puts(b, "; })");
+    { *out = 1; return 1; }
+  }
+  return 0;
+}
+
 /* A typed Array receiver with a kind of its own (Int, Float, String, a pointer array): array_kind names it (emit_typed_array_call's arms, in their order) */
 static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, const char *k, int *out) {
   if (!(k)) return 0;
@@ -1797,363 +2159,7 @@ else {
     { *out = 1; return 1; }
   }
   int block = nt_ref(nt, id, "block");
-  if (is_index_query(name) && block >= 0 &&
-      emit_array_block_index(c, id, recv, rt, k, name, block, b))
-    { *out = 1; return 1; }
-  /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
-     the ifnone proc's value on no-match; the result rides poly since the
-     proc can return anything. A non-proc ifnone stays a loud reject. */
-  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 &&
-      argc == 1 && comp_ntype(c, argv[0]) == TY_PROC) {
-    const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
-    int body = nt_ref(nt, block, "body");
-    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn >= 1) {
-      TyKind et = ty_array_elem(rt);
-      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tfn = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-      /* root the receiver: the block body and the ifnone proc run arbitrary
-         Ruby that can trigger GC while this array is live (as the poly-array
-         find(ifnone) path already does) */
-      buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "", trecv); free(rb.p);
-      { Buf nb = expr_buf(c, argv[0]);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); int _tf%d = 0;\n",
-                   tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p); }
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
-      emit_find_loop_head(c, id, k, ti, trecv);
-      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-      int sv = g_indent; g_indent++;
-      Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "if (%s) { _t%d = ", cb.p ? cb.p : "0", tres);
-      { char eltxt[128];
-        if (bp) snprintf(eltxt, sizeof eltxt, "lv_%s", bp);
-        else snprintf(eltxt, sizeof eltxt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
-        emit_boxed_text(c, et, eltxt, g_pre); }
-      buf_printf(g_pre, "; _tf%d = 1; break; }\n", tfn);
-      free(cb.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "if (!_tf%d) _t%d = ((void)sp_proc_call(_t%d, 0, (sp_int[16]){0}), _sp_proc_poly_ret);\n",
-                 tfn, tres, tfn);
-      buf_printf(b, "_t%d", tres);
-      { *out = 1; return 1; }
-    }
-  }
-  /* find / detect { |x| cond } - returns element or nil */
-  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc == 0) {
-    const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
-    int body = nt_ref(nt, block, "body");
-    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn >= 1) {
-      TyKind et = ty_array_elem(rt);
-      int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-      buf_printf(g_pre, " _t%d = %s; ", trecv, rb.p ? rb.p : ""); free(rb.p);
-      /* rooted, as the find(ifnone) arm above and the poly-array find
-         already are: same loop, same per-turn reads, same allocating block */
-      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
-      emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
-      if (et == TY_STRING) buf_printf(g_pre, " _t%d = NULL;\n", tres);
-      else if (et == TY_INT) buf_printf(g_pre, " _t%d = SP_INT_NIL;\n", tres);
-      else buf_printf(g_pre, " _t%d = 0;\n", tres);
-      emit_find_loop_head(c, id, k, ti, trecv);
-      /* Declare the block param in the loop body (not a bare assignment) so
-         the find is self-contained: when this call is a parameter default
-         hoisted to the call site, the enclosing function has no top-level
-         declaration for the block local. Shadows the method-scope slot in
-         the ordinary in-body case, which is harmless. */
-      if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
-      Buf cb; memset(&cb, 0, sizeof cb);
-      { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
-        int sv = g_indent; g_indent++;
-        emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
-      emit_indent(g_pre, g_indent + 1);
-      if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
-      else buf_printf(g_pre, "if (%s) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n",
-                      cb.p ? cb.p : "0", tres, k, trecv, ti);
-      free(cb.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      buf_printf(b, "_t%d", tres); { *out = 1; return 1; }
-    }
-  }
-  /* map! / collect! { |x| body } - in-place transform, returns receiver */
-  if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && block >= 0) {
-    const char *bp0 = block_param_name(c, block, 0);
-    const char *bp = bp0 ? rename_local(bp0) : NULL;
-    int body = nt_ref(nt, block, "body");
-    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn >= 1) {
-      TyKind et = ty_array_elem(rt);
-      Scope *ms = comp_scope_of(c, block);
-      LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
-      TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
-      if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
-      int trecv = ++g_tmp, ti = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-      buf_printf(g_pre, " _t%d = %s; ", trecv, rb.p ? rb.p : ""); free(rb.p);
-      /* rooted, as the TY_POLY map!/collect! near the top of this file
-         already roots its own hoist: this loop WRITES the block value back
-         into the receiver on every turn, so an unrooted hoist is a store
-         into freed memory and not only a short walk */
-      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
-                 ti, ti, k, trecv, ti);
-      if (bp) {
-        emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
-        buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
-      }
-      IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
-      int sv = g_indent; g_indent++;
-      Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
-      emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, bb[bn - 1]), trecv, ti);
-      emit_typed_sink_text(c, bb[bn - 1], et, vb.p ? vb.p : "0", g_pre);
-      buf_puts(g_pre, ");\n");
-      free(vb.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      if (mlv) mlv->type = msaved;
-      buf_printf(b, "_t%d", trecv); { *out = 1; return 1; }
-    }
-  }
-  /* select! / filter! / keep_if / reject! / delete_if { |x| cond }: the
-     in-place filter, on a typed or a poly array (emit_array_filter_loop) */
-  if (is_select_bang(name) && block >= 0) {
-    const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
-    int trecv, torig, twp;
-    if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
-      char box[64]; snprintf(box, sizeof box, "%s(_t%d)", array_box_fn(kk), trecv);
-      emit_filter_bang_result(name, trecv, torig, twp, box, b);
-      { *out = 1; return 1; }
-    }
-  }
-  /* array.none?(a..b) / any?/all?/one? with a Range pattern -- membership
-     test (===) over an integer array. */
-  if (is_quantifier(name) &&
-      argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      rt == TY_INT_ARRAY && comp_ntype(c, argv[0]) == TY_RANGE) {
-    int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    Buf ra = expr_buf(c, recv);
-    buf_printf(b, "({ sp_IntArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
-    buf_printf(b, " sp_Range _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";");
-    buf_printf(b, " sp_int _t%d = 0;", tc);
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
-    buf_printf(b, " if (sp_range_include(&_t%d, sp_IntArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
-    if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_IntArray_length(_t%d); })", tc, ta);
-    else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
-    else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
-    else                              buf_printf(b, " _t%d == 1; })", tc);
-    { *out = 1; return 1; }
-  }
-  /* array.none?(/re/) / any?/all?/one? with a Regexp pattern over strings. */
-  if (is_quantifier(name) &&
-      argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      rt == TY_STR_ARRAY && re_lit_index(c, argv[0]) >= 0) {
-    int rei = re_lit_index(c, argv[0]);
-    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    Buf ra = expr_buf(c, recv);
-    buf_printf(b, "({ sp_StrArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
-    buf_printf(b, " sp_int _t%d = 0;", tc);
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
-    buf_printf(b, " if (sp_re_match(sp_re_pat_%d, sp_StrArray_get(_t%d, _t%d)) >= 0) _t%d++;", rei, ta, ti, tc);
-    if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_StrArray_length(_t%d); })", tc, ta);
-    else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
-    else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
-    else                              buf_printf(b, " _t%d == 1; })", tc);
-    { *out = 1; return 1; }
-  }
-  if (is_quantifier_or_count(name) &&
-      argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      comp_ntype(c, argv[0]) == TY_CLASS) {
-    /* A class argument on a TYPED array: the predicates ask `Class === e`,
-       which for an int/float/string array is decided by the element type
-       alone, and #count asks `e == Class`, which no element of one can
-       satisfy. Emitting the class into the element slot did not even
-       compile (#3817). */
-    int cls_all = 0;
-    { const char *cn2 = isa_const_name(nt, argv[0]);
-      const char *want = rt == TY_INT_ARRAY ? "Integer" : rt == TY_FLOAT_ARRAY ? "Float"
-                       : rt == TY_STR_ARRAY ? "String" : NULL;
-      cls_all = (cn2 && want && (sp_streq(cn2, want) || sp_streq(cn2, "Object") ||
-                                 sp_streq(cn2, "Comparable") ||
-                                 (sp_streq(cn2, "Numeric") &&
-                                  (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)))); }
-    int tlen = ++g_tmp;
-    buf_printf(b, "({ sp_int _t%d = sp_%sArray_length(", tlen, k);
-    emit_expr(c, recv, b); buf_puts(b, ");");
-    if (sp_streq(name, "count")) buf_printf(b, " (void)_t%d; (sp_int)0; })", tlen);
-    else if (sp_streq(name, "all?"))
-      buf_printf(b, cls_all ? " (void)_t%d; TRUE; })" : " _t%d == 0; })", tlen);
-    else if (sp_streq(name, "any?"))
-      buf_printf(b, cls_all ? " _t%d > 0; })" : " (void)_t%d; FALSE; })", tlen);
-    else if (sp_streq(name, "none?"))
-      buf_printf(b, cls_all ? " _t%d == 0; })" : " (void)_t%d; TRUE; })", tlen);
-    else
-      buf_printf(b, cls_all ? " _t%d == 1; })" : " (void)_t%d; FALSE; })", tlen);
-    { *out = 1; return 1; }
-  }
-  if (is_quantifier_or_count(name) &&
-      argc == 1 && nt_ref(nt, id, "block") < 0) {
-    /* array.all?(v)/any?(v)/none?(v)/one?(v)/count(v) -- compare by == */
-    int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    /* the hoisted receiver is rooted across the value, which may allocate */
-    buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta);
-    emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-    emit_indent(g_pre, 0);
-    if (value_obj_compares(c, argv[0])) {
-      unsupported_feature(c, id, "a user object defining == compared against a typed Array's elements");
-      { *out = 0; return 1; }
-    }
-    if (needle_misses(c, recv, rt, argv[0])) {
-      /* a value no element can equal: only an empty array is all? of it */
-      buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");");
-      if (sp_streq(name, "all?"))       buf_printf(b, " sp_%sArray_length(_t%d) == 0; })", k, ta);
-      else if (sp_streq(name, "none?")) buf_puts(b, " 1; })");
-      else                              buf_puts(b, " 0; })");
-      { *out = 1; return 1; }
-    }
-    /* A boxed value is compared as Ruby's ==, element boxed: unboxing it
-       to the element type raised for a value of another kind, and put an
-       sp_RbVal into an sp_int for an Integer array (#4835). */
-    TyKind cat = comp_ntype(c, argv[0]);
-    int cboxed = (cat == TY_POLY || cat == TY_NIL);
-    if (cboxed) { buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
-    else { emit_ctype(c, ty_array_elem(rt), b);
-           buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
-    buf_printf(b, " sp_int _t%d = 0;", tc);
-    if (cboxed) {
-      char el[96], arr[24];
-      snprintf(el, sizeof el, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
-      snprintf(arr, sizeof arr, "_t%d", ta);
-      /* a literal nil is only there where may_nil says one can be */
-      if (cat == TY_NIL && elem_nil_sentinel(c, recv, rt) && !elem_nil_marked(c, recv, rt))
-        buf_printf(b, " if (sp_%sArray_may_nil(_t%d))", k, ta);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", ti, ti, k, ta, ti);
-      buf_puts(b, " if (sp_poly_eq(");
-      emit_elem_boxed_text(c, recv, rt, arr, el, b);
-      buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
-    }
-    else if (rt == TY_FLOAT_ARRAY && elem_nil_sentinel(c, recv, rt))
-      /* a nil Float needle is the sentinel, a NaN that == never meets */
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
-                    " { sp_float _e = sp_FloatArray_get(_t%d, _t%d); if (_e == _t%d ||"
-                    " (sp_float_is_nil(_t%d) && sp_float_is_nil(_e))) _t%d++; }",
-                 ti, ti, k, ta, ti, ta, ti, tv, tv, tc);
-    else if (rt == TY_STR_ARRAY)
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
-                    " if (sp_str_cmp_bytes(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;",
-                 ti, ti, k, ta, ti, k, ta, ti, tv, tc);
-    else
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
-                    " if (sp_%sArray_get(_t%d, _t%d) == _t%d) _t%d++;", ti, ti, k, ta, ti, k, ta, ti, tv, tc);
-    if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_%sArray_length(_t%d); })", tc, k, ta);
-    else if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
-    else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
-    else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
-    else                              buf_printf(b, " _t%d; })", tc);
-    { *out = 1; return 1; }
-  }
-  if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
-    /* count { |x| cond } -- loop and count truthy block results */
-    int blk = nt_ref(nt, id, "block");
-    const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
-    int body2 = nt_ref(nt, blk, "body");
-    int bn2 = 0; const int *bb2 = body2 >= 0 ? nt_arr(nt, body2, "body", &bn2) : NULL;
-    if (bn2 > 0) {
-      int trecv = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
-      Buf rb2 = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-      buf_printf(g_pre, " _t%d = %s; ", trecv, rb2.p ? rb2.p : ""); free(rb2.p);
-      /* rooted, as the find(ifnone) arm above already is: the same walk
-         over the same hoist, differing only in what it does with the
-         predicate */
-      emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n");
-      emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = 0;\n", tcnt);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
-                 ti, ti, k, trecv, ti);
-      if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
-      /* The block value is a condition: route through emit_cond so a poly /
-         nil / scalar predicate becomes a valid C truthiness test (e.g.
-         `count(&:alive)` where the element method is poly-dispatched would
-         otherwise emit `if (sp_RbVal)` -- a struct in scalar position). */
-      Buf vb2 = block_cond_buf(c, blk, bb2, bn2);
-      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (%s) _t%d++;\n", vb2.p ? vb2.p : "0", tcnt);
-      free(vb2.p);
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      buf_printf(b, "_t%d", tcnt);
-      { *out = 1; return 1; }
-    }
-  }
-  if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-    TyKind init_t = fold_seed_ntype(c, argv[0]);
-    /* a String initial value concatenates (["a","b"].sum("") == "ab") */
-    if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
-      Buf rss;
-      int css = hold_recv_open(c, recv, 0, "sp_StrArray *", "SP_GC_ROOT", b, &rss);
-      buf_printf(b, "sp_StrArray_sum_str(%s, ", rss.p);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-      free(rss.p);
-      if (css) buf_puts(b, "; })");
-      { *out = 1; return 1; }
-    }
-    /* a float initial value promotes an integer-array sum to Float: add the
-       float init to the integer total in floating point (sp_IntArray_sum
-       returns sp_int, so accumulating the init through it would truncate). */
-    if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
-      buf_puts(b, "((sp_float)("); emit_expr(c, argv[0], b);
-      buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_nil_ck_recv(c, recv, rt, "sum", 1, b); buf_puts(b, ", 0))");
-      { *out = 1; return 1; }
-    }
-    /* Any other seed keeps its OWN class for the whole fold: CRuby's
-       accumulator is the seed object and every step is Ruby's `+` on it. A
-       Rational seed therefore answers a Rational total, a Bignum one stops
-       wrapping into an sp_int, and nil / a String / an Array reach the raise
-       that operator itself produces -- worded for the ELEMENT's class, which
-       the hard-coded String-seed raise that used to stand here could only
-       get right over Integers. sp_poly_sum_seed runs CRuby's own phases. */
-    if (rt == TY_STR_ARRAY || !fold_seed_typed(init_t, ty_array_elem(rt))) {
-      emit_poly_sum_seed(c, recv, argv[0], b);
-      { *out = 1; return 1; }
-    }
-    /* A FLOAT seed over Floats does not compensate: CRuby reaches the
-       compensated loop only out of the exact phase, and a seed that is
-       already a Float never has one. An INTEGER seed does have one, so it
-       keeps the compensated call -- `[0.1, 0.2, 0.3].sum(0)` is 0.6 and
-       `.sum(0.0)` is 0.6000000000000001. The boxed fold draws the same
-       line; the two paths must not disagree. */
-    if (rt == TY_FLOAT_ARRAY && init_t == TY_FLOAT) {
-      Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rb);
-      Buf ckb; memset(&ckb, 0, sizeof ckb);
-      buf_printf(b, "sp_FloatArray_sum_plain(%s, ", nil_sum_ck_text(c, recv, rt, 1, rb.p, &ckb)); free(rb.p); free(ckb.p);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-      if (ch) buf_puts(b, "; })");
-      { *out = 1; return 1; }
-    }
-    /* the seed may allocate (a method call); the receiver is held across it */
-    Buf rsm; char tym[32];
-    snprintf(tym, sizeof tym, "sp_%sArray *", k);
-    int csm = hold_recv_open(c, recv, 0, tym, "SP_GC_ROOT", b, &rsm);
-    Buf ckm; memset(&ckm, 0, sizeof ckm);
-    buf_printf(b, "sp_%sArray_sum(%s, ", k, nil_sum_ck_text(c, recv, rt, 0, rsm.p, &ckm)); free(ckm.p);
-    if (rt == TY_FLOAT_ARRAY && init_t == TY_INT) {
-      buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else {
-      emit_expr(c, argv[0], b);
-    }
-    buf_puts(b, ")");
-    free(rsm.p);
-    if (csm) buf_puts(b, "; })");
-    { *out = 1; return 1; }
-  }
+  { int r; if (emit_kind_array_iter_call(c, id, b, nt, name, recv, argc, argv, rt, k, block, &r)) { *out = r; return 1; } }
   if (sp_streq(name, "to_s") && argc == 0) {
     char fn[64]; snprintf(fn, sizeof fn, "sp_%sArray_inspect", k);
     /* the array's nil (NULL) answers nil.to_s, the empty string */
