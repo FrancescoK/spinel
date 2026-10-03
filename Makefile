@@ -281,8 +281,11 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
 build/csrc:
 	@mkdir -p build/csrc
 
+# -Werror=return-type: a compiler function that falls off its end returns
+# garbage under -O2, and the CFLAGS this is built with may turn the warning
+# off (-Wno-all); a moved rule once lost its last return this way.
 build/csrc/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
-	$(CC) $(CFLAGS) -Isrc -Ibuild/csrc -c $< -o $@
+	$(CC) $(CFLAGS) -Werror=return-type -Isrc -Ibuild/csrc -c $< -o $@
 
 # Build revision, embedded in `spinel --version` (and spin's probe records).
 # cmp-guarded so only a HEAD move recompiles main.o, not every build.
