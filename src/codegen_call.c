@@ -3983,10 +3983,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          which cannot be C-cast to an integer -- unbox it with sp_poly_to_i
          (#3184). */
       Buf nb; memset(&nb, 0, sizeof nb);
-      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(&nb, "sp_poly_to_i("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ")"); free(t0.p); }
+      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(&nb, "sp_poly_arg_i_msg("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ", \"can't convert nil into Rational\")"); free(t0.p); }
       else { buf_puts(&nb, "(sp_int)("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "0"); buf_puts(&nb, ")"); free(t0.p); }
       Buf db; memset(&db, 0, sizeof db);
-      if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(&db, "sp_poly_to_i("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ")"); free(t1.p); }
+      if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(&db, "sp_poly_arg_i_msg("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ", \"can't convert nil into Rational\")"); free(t1.p); }
       else { buf_puts(&db, "(sp_int)("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "0"); buf_puts(&db, ")"); free(t1.p); }
       buf_printf(b, "({ sp_int _t%d = %s; sp_int _t%d = %s;"
                     " if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
@@ -7695,7 +7695,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* only an index call has an argument temp to name: atmp[0] is unset for
          a call without one (valgrind: an uninitialised read here) */
       char idxref[64] = "";
-      if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_to_i(_t%d)", atmp[0]);
+      if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_arg_i(_t%d)", atmp[0]);
       else if (is_index) snprintf(idxref, sizeof idxref, "_t%d", atmp[0]);
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
                            idxref };
@@ -7920,7 +7920,7 @@ static void emit_time_civil_zoned(Compiler *c, int *argv, int npos, int zone, Bu
       TyKind fit = comp_ntype(c, argv[i]);
       if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
       else if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-      else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+      else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
       else emit_int_expr(c, argv[i], b);
     }
     else buf_puts(b, i == 1 || i == 2 ? "1" : "0");
@@ -7996,7 +7996,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
         if (i) buf_puts(b, ", ");
         TyKind fit = comp_ntype(c, argv[i]);
         if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-        else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+        else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
         else if (fit == TY_NIL) buf_puts(b, (i == 1 || i == 2) ? "1" : "0");  /* a nil field is its default */
         else emit_int_expr(c, argv[i], b);
       }
@@ -8023,7 +8023,7 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
         if (i < npos) {
           TyKind fit = comp_ntype(c, argv[i]);
           if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-          else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+          else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
           else emit_int_expr(c, argv[i], b);
         }
         else buf_puts(b, i == 1 || i == 2 ? "1" : "0");   /* mo/d default 1; h/mi/s 0 */
@@ -8058,7 +8058,7 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
       /* the month field also takes an English month name (#3703) */
       if (fit == TY_STRING && i == 1) { buf_puts(b, "sp_time_month_arg("); emit_expr(c, argv[i], b); buf_puts(b, ")"); }
       else if (fit == TY_STRING) { buf_puts(b, "(int64_t)strtoll("); emit_expr(c, argv[i], b); buf_puts(b, ", NULL, 10)"); }
-      else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_i("); emit_boxed(c, argv[i], b); buf_puts(b, ")"); }
+      else if (fit == TY_POLY || fit == TY_UNKNOWN) { buf_puts(b, "sp_poly_time_field("); emit_boxed(c, argv[i], b); buf_printf(b, ", %d)", i); }
       else if (fit == TY_NIL) buf_puts(b, (i == 1 || i == 2) ? "1" : "0");  /* a nil field is its default */
       else emit_int_expr(c, argv[i], b);
     }
@@ -18450,7 +18450,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     if (utf8 || bytes) {
       int tvC = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
-      buf_printf(b, "; sp_box_str(%s(sp_poly_to_i(_t%d))); })", utf8 ? "sp_int_chr_utf8" : "sp_int_chr", tvC);
+      buf_printf(b, "; sp_box_str(%s(sp_poly_recv_i(\"chr\", _t%d))); })", utf8 ? "sp_int_chr_utf8" : "sp_int_chr", tvC);
       return 1;
     }
   }
@@ -27231,12 +27231,12 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
             if (oi == 0) {
               buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_get(void *a, sp_RbVal i);\n", bk);
               buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_get(void *a, sp_RbVal i) {\n"
-                                   "  return %s(sp_%sArray_get((sp_%sArray *)a, sp_poly_to_i(i)));\n}\n", bk, boxret, bk, bk);
+                                   "  return %s(sp_%sArray_get((sp_%sArray *)a, sp_poly_arg_i(i)));\n}\n", bk, boxret, bk, bk);
             }
             else if (oi == 1) {
               buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v);\n", bk);
               buf_printf(&g_procs, "static sp_RbVal _bam_%sArray_set(void *a, sp_RbVal i, sp_RbVal v) {\n"
-                                   "  sp_%sArray_set((sp_%sArray *)a, sp_poly_to_i(i), %s(v));\n  return v;\n}\n", bk, bk, bk, unbox);
+                                   "  sp_%sArray_set((sp_%sArray *)a, sp_poly_arg_i(i), %s(v));\n  return v;\n}\n", bk, bk, bk, unbox);
             }
             else {
               buf_printf(&g_proc_protos, "static sp_RbVal _bam_%sArray_push(void *a, sp_RbVal v);\n", bk);
@@ -30943,7 +30943,7 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
     /* a poly status (e.g. a widened attr read or poly-hash get) must be
        unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
     TyKind xt = comp_ntype(c, argv[0]);
-    if (xt == TY_POLY) { buf_printf(b, "({ %s((int)sp_poly_to_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
+    if (xt == TY_POLY) { buf_printf(b, "({ %s((int)sp_poly_arg_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
     else if (xt == TY_BOOL) { buf_printf(b, "({ %s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1); (sp_int)0; })"); }
     else { buf_printf(b, "({ %s((int)(", xfn); emit_int_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
     return;
@@ -38589,7 +38589,7 @@ else {
   }
   /* unary bitwise complement: ~int -> (~x); ~poly -> coerce to int first */
   if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY)) {
-    if (rt == TY_POLY) { buf_puts(b, "(~sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, "))"); }
+    if (rt == TY_POLY) { buf_puts(b, "(~sp_poly_recv_i(\"~\", "); emit_expr(c, recv, b); buf_puts(b, "))"); }
     else { buf_puts(b, "(~"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
@@ -38603,7 +38603,7 @@ else {
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "even?") || sp_streq(name, "odd?"))) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_int _t%d = sp_poly_to_i(", t); emit_expr(c, recv, b); buf_puts(b, "); ");
+    buf_printf(b, "({ sp_int _t%d = sp_poly_recv_i(\"%s\", ", t, name); emit_expr(c, recv, b); buf_puts(b, "); ");
     if (sp_streq(name, "even?")) buf_printf(b, "(_t%d %% 2 == 0); })", t);
     else buf_printf(b, "(_t%d %% 2 != 0); })", t);
     return;
@@ -38853,6 +38853,9 @@ else {
        counts are always small and non-negative -- routing it through a branchy
        helper cost ~4% fps). */
     int is_shift = sp_streq(name, "<<") || sp_streq(name, ">>");
+    /* a boxed receiver is read as the Integer it must be; nil has no such
+       operator (NoMethodError) */
+    char rcv_conv[48]; snprintf(rcv_conv, sizeof rcv_conv, "sp_poly_recv_i(\"%s\", ", name);
     /* a non-integer operand raises TypeError, as CRuby (#2421) -- except that
        the SHIFT operators accept a Float count and truncate it via to_int
        (`10 << 2.9` is 40); the bitwise &/|/^ still reject a Float. */
@@ -38865,7 +38868,7 @@ else {
          (which may run arbitrary code, and allocate) is evaluated */
       int tpl = ++g_tmp, tpr = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = sp_bigint_new_int(", tpl);
-      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
+      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tpl, tpr);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bigint_%s(_t%d, _t%d); })", tpr,
@@ -38900,7 +38903,7 @@ else {
     if (is_shift && lit_shift &&
         (litc < 0 || litc >= 64 || sp_streq(name, "<<"))) {
       buf_printf(b, "sp_int_%s(", sp_streq(name, "<<") ? "shl" : "shr");
-      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
+      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
       buf_printf(b, ", %lldLL)", litc);
       return;
     }
@@ -38908,7 +38911,7 @@ else {
       /* a runtime shift count: range-checked (negative shifts the other way,
          past-the-word raises) via a single-compare fast path (#2423) */
       buf_printf(b, "sp_int_%s_ck(", sp_streq(name, "<<") ? "shl" : "shr");
-      emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
+      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
       buf_puts(b, ", ");
       if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "(sp_int)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -38934,7 +38937,7 @@ else {
     int shl_neg_safe = sp_streq(name, "<<");
     buf_puts(b, "(");
     if (shl_neg_safe) buf_puts(b, "(sp_int)((uint64_t)(");
-    emit_poly_unboxed(c, recv, rt, "sp_poly_to_i(", b);
+    emit_poly_unboxed(c, recv, rt, rcv_conv, b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {

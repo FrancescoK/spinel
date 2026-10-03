@@ -3377,6 +3377,20 @@ static sp_float sp_poly_to_f_or_nil(sp_RbVal v) { return v.tag == SP_TAG_NIL ? s
    slot's nil NaN all are that nil; anything else passes as before. */
 static SP_NOINLINE SP_COLD void sp_ffi_nil_int_raise(void) { sp_raise_cls("TypeError", "no implicit conversion from nil to integer"); }
 static SP_NOINLINE SP_COLD void sp_ffi_nil_dbl_raise(void) { sp_raise_cls("TypeError", "no implicit conversion to float from nil"); }
+/* A boxed value read as an Integer ARGUMENT (an index, a count, a length, a
+   status) or an Integer RECEIVER (`~x`, `x.even?`): nil is neither, and CRuby
+   raises -- the conversion TypeError for the argument, NoMethodError for the
+   receiver. Anything else converts as sp_poly_to_i does. */
+static SP_UNUSED sp_int sp_poly_arg_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(0); return sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_poly_arg_i_msg(sp_RbVal v, const char *msg) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", msg); return sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_poly_recv_i(const char *m, sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_poly_to_i(v); }
+/* Time.new / Time.utc / Time.local field `i` read out of a box: a nil month
+   or day is 1 and a nil hour, minute or second 0, as CRuby defaults them; a
+   nil year is the conversion TypeError. */
+static SP_UNUSED sp_int sp_poly_time_field(sp_RbVal v, int i) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) { if (i == 0) sp_raise_nil_to_int(1); return (i == 1 || i == 2) ? 1 : 0; }
+  return sp_poly_to_i(v);
+}
 static SP_UNUSED sp_int sp_ffi_int_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_ffi_nil_int_raise(); return v.v.i; }
 static SP_UNUSED sp_int sp_ffi_int_of_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_ffi_nil_int_raise(); return v; }
 static SP_UNUSED sp_float sp_ffi_dbl_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_ffi_nil_dbl_raise(); return v.v.f; }

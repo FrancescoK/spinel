@@ -762,7 +762,7 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "; if (_t%d && *_t%d) putchar((unsigned char)_t%d[0]); }\n", ts, ts, ts);
     }
 else if (at == TY_POLY) {
-      buf_puts(b, "putchar((int)(sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ") & 0xff));\n");
+      buf_puts(b, "putchar((int)(sp_poly_arg_i("); emit_expr(c, argv[0], b); buf_puts(b, ") & 0xff));\n");
     }
 else {
       buf_puts(b, "putchar((int)(("); emit_int_expr(c, argv[0], b); buf_puts(b, ") & 0xff));\n");
@@ -864,7 +864,7 @@ else {
       /* a poly status (e.g. a widened attr read or poly-hash get) must be
          unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
       TyKind xt = comp_ntype(c, argv[0]);
-      if (xt == TY_POLY) { buf_printf(b, "%s((int)sp_poly_to_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+      if (xt == TY_POLY) { buf_printf(b, "%s((int)sp_poly_arg_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
       else if (xt == TY_BOOL) { buf_printf(b, "%s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1);\n"); }
       else { buf_printf(b, "%s((int)(", xfn); emit_int_expr(c, argv[0], b); buf_puts(b, "));\n"); }
     }

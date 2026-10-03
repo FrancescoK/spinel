@@ -2363,7 +2363,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, "{ sp_PolyArray *_t%d = ", ts); emit_expr(c, argv[a], b);
             buf_printf(b, "; for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
                           " sp_%sArray_push%s(_t%d, sp_%sArray_get(_t%d,"
-                          " sp_poly_to_i(sp_PolyArray_get(_t%d, _t%d)))); } ",
+                          " sp_poly_arg_i(sp_PolyArray_get(_t%d, _t%d)))); } ",
                        tk, tk, ts, tk, an, vs, to, an, tr, ts, tk);
           }
           else if (at == TY_RANGE) {
@@ -4244,7 +4244,7 @@ else {
       }
       if (sp_streq(name, "[]") && argc == 1) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (a0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        if (a0 == TY_POLY) { buf_puts(b, "sp_poly_arg_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else if (a0 == TY_BIGINT) emit_int_expr(c, argv[0], b);   /* a widened counter used as an index */
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
@@ -10923,7 +10923,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
          CRuby, and coercing would silently run the loop zero times. The
          blockless names keep the plain coercion they have always used. */
       if (has_blk) buf_printf(g_pre, "sp_int _t%d = sp_poly_int_recv(%s, \"%s\");\n", t, rs, name);
-      else buf_printf(g_pre, "sp_int _t%d = sp_poly_to_i(%s);\n", t, rs);
+      else buf_printf(g_pre, "sp_int _t%d = sp_poly_recv_i(\"%s\", %s);\n", t, name, rs);
       break;
     case PF_FLOAT:
       buf_printf(g_pre, "sp_float _t%d = sp_poly_float_recv(%s, \"%s\");\n", t, rs, name);
@@ -11496,7 +11496,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
          ArgumentError CRuby raises. */
       buf_printf(b, "(_t%d->len == 1 ? sp_poly_index_poly(_t%d, _t%d->data[0])"
                     " : _t%d->len == 2"
-                    " ? sp_poly_slice(_t%d, sp_poly_to_i(_t%d->data[0]), sp_poly_to_i(_t%d->data[1]))"
+                    " ? sp_poly_slice(_t%d, sp_poly_arg_i(_t%d->data[0]), sp_poly_arg_i(_t%d->data[1]))"
                     " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments\"), sp_box_nil()))",
                  tkeys, tsv, tkeys, tkeys, tsv, tkeys, tkeys);
     }
@@ -11508,8 +11508,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_poly_index_poly(_t%d, ", tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       }
       else {
-        buf_printf(b, "sp_poly_slice(_t%d, sp_poly_to_i(", tsv); emit_boxed(c, argv[0], b);
-        buf_puts(b, "), sp_poly_to_i("); emit_boxed(c, argv[1], b); buf_puts(b, "))");
+        buf_printf(b, "sp_poly_slice(_t%d, sp_poly_arg_i(", tsv); emit_boxed(c, argv[0], b);
+        buf_puts(b, "), sp_poly_arg_i("); emit_boxed(c, argv[1], b); buf_puts(b, "))");
       }
     }
     else if (argc == 1 || argc == 2) {

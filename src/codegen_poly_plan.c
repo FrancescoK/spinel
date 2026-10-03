@@ -2642,7 +2642,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_gcdlcm) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_GCDLCM, -1, TY_UNKNOWN, PC_SAME);
     char ax[64];
-    if (atmp_ty[0] == TY_POLY) snprintf(ax, sizeof ax, "sp_poly_to_i(_t%d)", atmp[0]);
+    if (atmp_ty[0] == TY_POLY) snprintf(ax, sizeof ax, "sp_poly_arg_i_msg(_t%d, \"not an integer\")", atmp[0]);
     else snprintf(ax, sizeof ax, "_t%d", atmp[0]);
     int tg2 = ++g_tmp;
     buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
@@ -2945,7 +2945,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     int trd7 = ++g_tmp, te7 = ++g_tmp;
     buf_printf(b, " case SP_BUILTIN_IO: { sp_bool _e%d; const char *_t%d = sp_sock_read_nb("
                   "(sp_File *)_t%d.v.p, ", te7, trd7, tv);
-    if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", atmp[0]);
+    if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_i(_t%d)", atmp[0]);
     else buf_printf(b, "(sp_int)_t%d", atmp[0]);
     buf_printf(b, ", %d, 0, &_e%d); ", no_exc7 ? 0 : 1, te7);
     buf_printf(b, "_t%d = ", tr);
@@ -3116,7 +3116,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_SEEK_READ, -1, TY_UNKNOWN, PC_SAME);
       char iv[2][48];
       for (int a = 0; a < argc; a++) {
-        if (atmp_ty[a] == TY_POLY) snprintf(iv[a], sizeof iv[a], "sp_poly_to_i(_t%d)", atmp[a]);
+        if (atmp_ty[a] == TY_POLY) snprintf(iv[a], sizeof iv[a], "sp_poly_arg_i(_t%d)", atmp[a]);
         else snprintf(iv[a], sizeof iv[a], "_t%d", atmp[a]);
       }
       buf_puts(b, " case SP_BUILTIN_IO: ");
@@ -3680,7 +3680,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     else if (is_round_family(name) && argc == 1 && splat_a < 0) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_ROUND, -1, TY_UNKNOWN, PC_SAME);
       char nd9[64];
-      if (atmp_ty[0] == TY_POLY) snprintf(nd9, sizeof nd9, "sp_poly_to_i(_t%d)", atmp[0]);
+      if (atmp_ty[0] == TY_POLY) snprintf(nd9, sizeof nd9, "sp_poly_arg_i(_t%d)", atmp[0]);
       else snprintf(nd9, sizeof nd9, "(sp_int)_t%d", atmp[0]);
       Buf nv9; memset(&nv9, 0, sizeof nv9);
       if (sp_streq(name, "round")) buf_printf(&nv9, "sp_poly_round_n(_t%d, %s)", tv, nd9);
@@ -3709,7 +3709,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
       Buf ab9; memset(&ab9, 0, sizeof ab9);
       { char an9[32]; snprintf(an9, sizeof an9, "_t%d", atmp[0]);
         if (SP_NUM_ARM[ai].arg_int) {
-          if (atmp_ty[0] == TY_POLY) buf_printf(&ab9, "sp_poly_to_i(_t%d)", atmp[0]);
+          if (atmp_ty[0] == TY_POLY) buf_printf(&ab9, "sp_poly_arg_i(_t%d)", atmp[0]);
           else buf_printf(&ab9, "(sp_int)_t%d", atmp[0]);
         }
         else if (atmp_ty[0] == TY_POLY) buf_puts(&ab9, an9);
@@ -3790,7 +3790,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
         else emit_boxed_text(c, atmp_ty[0], tn5, &ab5); }
       if (argc == 2) {
         char sx[64];
-        if (atmp_ty[1] == TY_POLY) snprintf(sx, sizeof sx, "sp_poly_to_i(_t%d)", atmp[1]);
+        if (atmp_ty[1] == TY_POLY) snprintf(sx, sizeof sx, "sp_poly_arg_i(_t%d)", atmp[1]);
         else snprintf(sx, sizeof sx, "(sp_int)_t%d", atmp[1]);
         buf_printf(b, " if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {"
                       " sp_int _t%d = sp_poly_str_index_from_val(_t%d, %s, %s, %d); _t%d = ",
@@ -3861,7 +3861,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     char gen[256];
     snprintf(gen, sizeof gen, "sp_poly_%s_n(_t%d, %s)",
              sp_streq(name, "first") ? "first" : "last", tv,
-             atmp_ty[0] == TY_POLY ? ({ static char cx[80]; snprintf(cx, sizeof cx, "sp_poly_to_i(%s)", nx); cx; }) : nx);
+             atmp_ty[0] == TY_POLY ? ({ static char cx[80]; snprintf(cx, sizeof cx, "sp_poly_arg_i(%s)", nx); cx; }) : nx);
     if (ret == TY_POLY) {
       buf_printf(b, " default: _t%d = %s; break;", tr, gen);
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_FIRSTN, -1, TY_UNKNOWN, PC_SAME);
