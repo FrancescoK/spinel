@@ -1620,6 +1620,7 @@ sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence);
 sp_RbVal sp_File_flock(sp_File *f, sp_int op);
 sp_int sp_File_fsync(sp_File *f);
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v);
+SP_NORETURN void sp_raise_nil_to_int(int of_wording);
 const char *sp_file_ftype(const char *path);
 sp_bool sp_file_readable(const char *path);
 sp_bool sp_file_writable(const char *path);
@@ -1869,7 +1870,13 @@ sp_int sp_File_fsync(sp_File *f) {
 sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v) {
   SP_IO_OPEN(f);
   if (v.tag == SP_TAG_INT) fputc((int)(v.v.i & 0xff), f->fp);
-  else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp);
+  else if (v.tag == SP_TAG_STR) { if (v.v.s && v.v.s[0]) fputc(v.v.s[0], f->fp); }
+  /* anything else is no character: CRuby converts it as an Integer and
+     raises for nil (the boxed nil wrote nothing and answered nil) */
+  else if (v.tag == SP_TAG_NIL) sp_raise_nil_to_int(0);
+  else if (v.tag == SP_TAG_FLT && v.v.f > -9.0e18 && v.v.f < 9.0e18) fputc((int)((sp_int)v.v.f & 0xff), f->fp);
+  else if (v.tag == SP_TAG_BOOL)
+    sp_raise_cls("TypeError", v.v.b ? "no implicit conversion of true into Integer" : "no implicit conversion of false into Integer");
   return v;
 }
 const char *sp_file_ftype(const char *path) {SP_GC_ROOT_STR(path);
