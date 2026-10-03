@@ -6497,6 +6497,27 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
     else if (name[0] == 'i') buf_puts(b, ", 0");
     buf_puts(b, "); })");
   }
+  /* a pattern that is a Regexp or a String only at run time (an element of
+     a mixed array): the tag picks the regexp search or the substring one,
+     whose conversion raises CRuby's TypeError for anything else */
+  else if ((sp_streq(name, "index") || sp_streq(name, "rindex")) && (argc == 1 || argc == 2) &&
+           comp_ntype(c, argv[0]) == TY_POLY) {
+    int ri = sp_streq(name, "rindex");
+    int ts = ++g_tmp, tp = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", ts, r, ts, tp);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tp);
+    if (argc == 2) { buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b); buf_puts(b, "; "); }
+    buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? ", tp, tp);
+    if (argc == 2)
+      buf_printf(b, "sp_re_%sindex_from_opt((mrb_regexp_pattern *)_t%d.v.p, _t%d, _t%d) : ", ri ? "r" : "", tp, ts, tn);
+    else if (ri) buf_printf(b, "sp_re_rindex_opt((mrb_regexp_pattern *)_t%d.v.p, _t%d) : ", tp, ts);
+    else buf_printf(b, "sp_re_index_from_opt((mrb_regexp_pattern *)_t%d.v.p, _t%d, 0) : ", tp, ts);
+    if (argc == 2)
+      buf_printf(b, "sp_str_%s(_t%d, sp_poly_arg_str_chk(_t%d), _t%d); })",
+                 ri ? "rindex_from" : "index_from_opt", ts, tp, tn);
+    else buf_printf(b, "sp_str_%sindex_opt(_t%d, sp_poly_arg_str_chk(_t%d)); })", ri ? "r" : "", ts, tp);
+  }
   else if (sp_streq(name, "index") && argc == 1) {
     /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
     buf_printf(b, "sp_str_index_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
