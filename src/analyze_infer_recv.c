@@ -311,7 +311,7 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (sp_streq(name, "%") || sp_streq(name, "modulo") || sp_streq(name, "remainder")) { *out = TY_RATIONAL; return 1; }
     if (sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=") ||
-        sp_streq(name, "==") || sp_streq(name, "!=")) { *out = TY_BOOL; return 1; }
+        sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "===")) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
   }
   if (rt == TY_RATIONAL) {

@@ -4434,7 +4434,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "==") || sp_streq(name, "!=")) {
+      /* Integer#=== is #== */
+      if (sp_streq(name, "==") || sp_streq(name, "===") || sp_streq(name, "!=")) {
         buf_printf(b, "(%ssp_rational_eq(sp_rational_new((sp_int)(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
