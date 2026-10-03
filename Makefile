@@ -394,9 +394,12 @@ $(SPINEL_WORK): $(SPINEL_WORK_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_c
 # exit code (124 on timeout), regardless of which `timeout` is on PATH.
 # The bench target keys on 124 to mark a run as SKIP; busybox uses 143
 # and BSDs use 399, which would be misclassified. Built once from C.
+# Parallel sub-makes can both rebuild it while another leg runs it. Link to
+# a PID-specific name, then rename: a reader always gets a complete binary.
 $(SPINEL_TIMEOUT): scripts/spinel-timeout.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $< -o $@
+	t=$@.tmp.$$$$; trap 'rm -f $$t' 0; \
+	$(CC) $(CFLAGS) $< -o $$t && mv $$t $@
 
 # ---- RBS extractor ----
 # Reads sig/**/*.rbs, emits the seed-file format spinel_analyze consumes
@@ -3211,7 +3214,7 @@ spin-check: bin/spin
 
 # Full pre-push gate: test || bench || optcarrot in parallel.
 gate:
-	+@$(MAKE) --no-print-directory all
+	+@$(MAKE) --no-print-directory all $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory gate-legs
 	@echo "gate: ALL GREEN"
 
