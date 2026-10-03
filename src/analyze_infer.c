@@ -4877,6 +4877,139 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
   return 0;
 }
 
+/* A Method or Proc object (method(:x), bind_call, composition, call), with a boxed Time's strftime, which sits between them (infer_call_inner's rules, in their order) */
+static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
+  if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) { *out = TY_METHOD; return 1; }
+  /* `k.instance_method(:m).bind_call(obj, args)` on a Class value known only
+     at run time: whichever class k holds binds its own `m`, each arm boxing
+     its answer. */
+  if (recv >= 0 && argc >= 1 && sp_streq(name, "bind_call") &&
+      class_value_instance_method_sym(c, recv))
+    { *out = TY_POLY; return 1; }
+
+  /* <method>.call(args) / [] / bind_call(obj, args) -> the target's return
+     type (bind_call = bind(obj).call(args), #3246). */
+  if (recv >= 0 && rt == TY_METHOD &&
+      (is_call_alias(name) ||
+       (sp_streq(name, "===") && argc >= 1) ||
+       (sp_streq(name, "bind_call") && argc >= 1))) {
+    int mn = method_recv_node(c, recv);
+    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    if (mi >= 0) { *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1; }
+    /* Unresolved target -- a Method that arrived through a parameter or a
+       slot, or a typed-array adapter (`<array>.method(:op)`) with no target
+       scope. The value is whatever the target answers, boxed by the return
+       kind its bind site stamped, so the call yields poly (#4445); the
+       adapter's kind is stamped from method_obj_adapter_ret at the bind site.
+       Reading the raw sp_int as an Integer answered a String's pointer.
+       Under promote it was always poly: every method is poly-signatured
+       there. */
+    { *out = TY_POLY; return 1; }
+  }
+  if (recv >= 0 && rt == TY_METHOD) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+  /* A Method read out of a container answers these from its sp_BoundMethod;
+     the value is boxed, so the call is poly (#3692). */
+  if (recv >= 0 && argc == 0 && infer_type(c, recv) == TY_POLY &&
+      sp_streq(name, "owner") && !an_user_defines_or_reads(c, name))
+    { *out = TY_POLY; return 1; }
+  /* proc << / >> a Proc read out of a container: a composed Proc (#3655) */
+  if (recv >= 0 && argc == 1 && (sp_streq(name, "<<") || sp_streq(name, ">>"))) {
+    TyKind crt = infer_type(c, recv), cat = infer_type(c, argv[0]);
+    /* a curried Proc composes like the proc it stands for (#3864) */
+    int cr_p = (crt == TY_PROC || crt == TY_CURRY), ca_p = (cat == TY_PROC || cat == TY_CURRY);
+    if ((cr_p && (ca_p || cat == TY_POLY)) ||
+        (ca_p && crt == TY_POLY && sp_streq(name, ">>")))
+      { *out = TY_PROC; return 1; }
+    /* a statically non-callable operand still types as the composition:
+       the codegen arm raises CRuby's TypeError (callable object is
+       expected) in its place. A program that reopens a builtin with its
+       own #call disarms the rule -- 5.call works there, so composing a 5
+       must too. */
+    if ((cr_p || crt == TY_METHOD) && ty_never_callable(cat) &&
+        !an_user_defines_or_reads(c, "call"))
+      { *out = TY_PROC; return 1; }
+  }
+  if (recv >= 0 && rt == TY_PROC) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+  /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
+  if (recv >= 0 && sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL &&
+      method_obj_target_mi(c, id) >= 0) { *out = TY_METHOD; return 1; }
+  /* Method#receiver is the bound receiver (#2701) */
+  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "receiver")) {
+    int mn = method_recv_node(c, recv);
+    int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
+    if (mrecv >= 0) { *out = infer_type(c, mrecv); return 1; }
+  }
+  /* <poly>.call(args): a boxed Proc publishes its result through the boxed
+     return slot, so the value is genuinely dynamic -- type it poly and let
+     the call site read the slot intact (unboxing to int truncated an array
+     or string result to garbage). A boxed slot may hold a Proc regardless
+     of whether some user class defines `call` (the poly dispatch's callable
+     pre-arm routes it through the callable machinery), so the result stays
+     dynamic even then; the user methods' return type must not constrain it.
+     Proc#yield is the same call. */
+  if (recv >= 0 && rt == TY_POLY &&
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield")))
+    { *out = TY_POLY; return 1; }
+
+  /* strftime on a poly value that is really a Time formats to a String. A
+     nilable Time (`created_at : Time?`) is held as a poly sp_RbVal, so the
+     call would otherwise infer poly/unknown and the formatted string get
+     discarded; the codegen poly dispatch gives it a SP_BUILTIN_TIME arm that
+     formats a real Time and raises NoMethodError otherwise, so its non-raising
+     result is always a String. Only when no user class supplies strftime, to
+     match the codegen guard. Issue #2457 (family2 nilable value-method). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "strftime") && argc == 1 &&
+      infer_type(c, argv[0]) == TY_STRING) {
+    int ncand = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (c->classes[k].is_native_class) {   /* bindings only (#4504) */
+        if (comp_poly_arm_defines_n(c, k, name, argc)) ncand++;
+        continue;
+      }
+      int mi = comp_method_in_chain(c, k, name, NULL);
+      if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
+    }
+    if (ncand == 0) { *out = TY_STRING; return 1; }
+  }
+
+  /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
+  if (is_proc_literal(c, id)) { *out = TY_PROC; return 1; }
+
+  /* <proc>.call(args) / .() / [] -> the proc's recorded body return type;
+     Proc#=== (case/when dispatch) IS a call in CRuby */
+  /* Proc#=== answers the proc's return VALUE (#3818). Typing it from the
+     proc's body pins it to one shape, and a proc that arrives through a slot
+     has no body to read, so the answer is boxed. */
+  if (recv >= 0 && rt == TY_PROC &&
+      is_call_alias(name)) {
+    /* In a proc form, a call on the block parameter is the yield: the block is
+       a real proc supplied per call site, so its result is poly uniformly --
+       the same reason the YieldNode arm answers poly there. Typing it from any
+       one site's block fixes the clone to that site (#3408). */
+    { *out = proc_call_ret(c, recv); return 1; }
+  }
+
+  /* Proc composition: proc << proc / proc >> proc -> a new Proc. */
+  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
+      (sp_streq(name, "<<") || sp_streq(name, ">>")) &&
+      infer_type(c, argv[0]) == TY_PROC)
+    { *out = TY_PROC; return 1; }
+
+  /* Proc identity: equal?/eql?/== against another Proc -> bool */
+  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
+      is_equality_name(name) &&
+      infer_type(c, argv[0]) == TY_PROC)
+    { *out = TY_BOOL; return 1; }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6019,134 +6152,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
         nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_SYMBOL) return TY_POLY;
   }
-  /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
-  if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
-  /* `k.instance_method(:m).bind_call(obj, args)` on a Class value known only
-     at run time: whichever class k holds binds its own `m`, each arm boxing
-     its answer. */
-  if (recv >= 0 && argc >= 1 && sp_streq(name, "bind_call") &&
-      class_value_instance_method_sym(c, recv))
-    return TY_POLY;
-
-  /* <method>.call(args) / [] / bind_call(obj, args) -> the target's return
-     type (bind_call = bind(obj).call(args), #3246). */
-  if (recv >= 0 && rt == TY_METHOD &&
-      (is_call_alias(name) ||
-       (sp_streq(name, "===") && argc >= 1) ||
-       (sp_streq(name, "bind_call") && argc >= 1))) {
-    int mn = method_recv_node(c, recv);
-    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
-    if (mi >= 0) return c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret;
-    /* Unresolved target -- a Method that arrived through a parameter or a
-       slot, or a typed-array adapter (`<array>.method(:op)`) with no target
-       scope. The value is whatever the target answers, boxed by the return
-       kind its bind site stamped, so the call yields poly (#4445); the
-       adapter's kind is stamped from method_obj_adapter_ret at the bind site.
-       Reading the raw sp_int as an Integer answered a String's pointer.
-       Under promote it was always poly: every method is poly-signatured
-       there. */
-    return TY_POLY;
-  }
-  if (recv >= 0 && rt == TY_METHOD) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-  /* A Method read out of a container answers these from its sp_BoundMethod;
-     the value is boxed, so the call is poly (#3692). */
-  if (recv >= 0 && argc == 0 && infer_type(c, recv) == TY_POLY &&
-      sp_streq(name, "owner") && !an_user_defines_or_reads(c, name))
-    return TY_POLY;
-  /* proc << / >> a Proc read out of a container: a composed Proc (#3655) */
-  if (recv >= 0 && argc == 1 && (sp_streq(name, "<<") || sp_streq(name, ">>"))) {
-    TyKind crt = infer_type(c, recv), cat = infer_type(c, argv[0]);
-    /* a curried Proc composes like the proc it stands for (#3864) */
-    int cr_p = (crt == TY_PROC || crt == TY_CURRY), ca_p = (cat == TY_PROC || cat == TY_CURRY);
-    if ((cr_p && (ca_p || cat == TY_POLY)) ||
-        (ca_p && crt == TY_POLY && sp_streq(name, ">>")))
-      return TY_PROC;
-    /* a statically non-callable operand still types as the composition:
-       the codegen arm raises CRuby's TypeError (callable object is
-       expected) in its place. A program that reopens a builtin with its
-       own #call disarms the rule -- 5.call works there, so composing a 5
-       must too. */
-    if ((cr_p || crt == TY_METHOD) && ty_never_callable(cat) &&
-        !an_user_defines_or_reads(c, "call"))
-      return TY_PROC;
-  }
-  if (recv >= 0 && rt == TY_PROC) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-  /* Klass.instance_method(:m) -> an (unbound) method object; #bind re-binds (#2676) */
-  if (recv >= 0 && sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL &&
-      method_obj_target_mi(c, id) >= 0) return TY_METHOD;
-  /* Method#receiver is the bound receiver (#2701) */
-  if (recv >= 0 && rt == TY_METHOD && argc == 0 && sp_streq(name, "receiver")) {
-    int mn = method_recv_node(c, recv);
-    int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
-    if (mrecv >= 0) return infer_type(c, mrecv);
-  }
-  /* <poly>.call(args): a boxed Proc publishes its result through the boxed
-     return slot, so the value is genuinely dynamic -- type it poly and let
-     the call site read the slot intact (unboxing to int truncated an array
-     or string result to garbage). A boxed slot may hold a Proc regardless
-     of whether some user class defines `call` (the poly dispatch's callable
-     pre-arm routes it through the callable machinery), so the result stays
-     dynamic even then; the user methods' return type must not constrain it.
-     Proc#yield is the same call. */
-  if (recv >= 0 && rt == TY_POLY &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield")))
-    return TY_POLY;
-
-  /* strftime on a poly value that is really a Time formats to a String. A
-     nilable Time (`created_at : Time?`) is held as a poly sp_RbVal, so the
-     call would otherwise infer poly/unknown and the formatted string get
-     discarded; the codegen poly dispatch gives it a SP_BUILTIN_TIME arm that
-     formats a real Time and raises NoMethodError otherwise, so its non-raising
-     result is always a String. Only when no user class supplies strftime, to
-     match the codegen guard. Issue #2457 (family2 nilable value-method). */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "strftime") && argc == 1 &&
-      infer_type(c, argv[0]) == TY_STRING) {
-    int ncand = 0;
-    for (int k = 0; k < c->nclasses; k++) {
-      if (c->classes[k].is_native_class) {   /* bindings only (#4504) */
-        if (comp_poly_arm_defines_n(c, k, name, argc)) ncand++;
-        continue;
-      }
-      int mi = comp_method_in_chain(c, k, name, NULL);
-      if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
-    }
-    if (ncand == 0) return TY_STRING;
-  }
-
-  /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
-  if (is_proc_literal(c, id)) return TY_PROC;
-
-  /* <proc>.call(args) / .() / [] -> the proc's recorded body return type;
-     Proc#=== (case/when dispatch) IS a call in CRuby */
-  /* Proc#=== answers the proc's return VALUE (#3818). Typing it from the
-     proc's body pins it to one shape, and a proc that arrives through a slot
-     has no body to read, so the answer is boxed. */
-  if (recv >= 0 && rt == TY_PROC &&
-      is_call_alias(name)) {
-    /* In a proc form, a call on the block parameter is the yield: the block is
-       a real proc supplied per call site, so its result is poly uniformly --
-       the same reason the YieldNode arm answers poly there. Typing it from any
-       one site's block fixes the clone to that site (#3408). */
-    return proc_call_ret(c, recv);
-  }
-
-  /* Proc composition: proc << proc / proc >> proc -> a new Proc. */
-  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
-      (sp_streq(name, "<<") || sp_streq(name, ">>")) &&
-      infer_type(c, argv[0]) == TY_PROC)
-    return TY_PROC;
-
-  /* Proc identity: equal?/eql?/== against another Proc -> bool */
-  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
-      is_equality_name(name) &&
-      infer_type(c, argv[0]) == TY_PROC)
-    return TY_BOOL;
+  { TyKind r; if (infer_method_proc_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
      (NULL-encoded nil when the hash has none) */
   if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
