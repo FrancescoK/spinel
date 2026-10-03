@@ -5913,6 +5913,10 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        its own emitter) still wants the faithfully-raising to_a hop on an
        endless Range. */
     if (sp_streq(nm, "find_index") && nt_ref(nt, id, "block") >= 0) continue;
+    /* A Range's blockless minmax is [min, max] off its endpoints, its own
+       arm (sp_range_minmax_poly): the hop built the whole member array to
+       read two numbers, and an end written as a Float was truncated */
+    if (rt == TY_RANGE && sp_streq(nm, "minmax") && nt_ref(nt, id, "block") < 0) continue;
     /* A one-sided Range cannot become an array at all, and find / detect
        have their own walk from the bounded end: routing them through to_a
        turned a working search into a RangeError (#3863). The other names

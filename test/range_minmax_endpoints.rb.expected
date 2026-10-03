@@ -1,0 +1,10 @@
+literal: [1, 10]
+huge literal: [1, 1000000000000000]
+huge local: [3, 999999999999999]
+empty: [nil, nil]
+excl point: [nil, nil]
+endless: RangeError: cannot get the maximum of endless range
+beginless: RangeError: cannot get the minimum of beginless range
+step: [1, 10]
+block: [4, 1]
+param: [2, 7]
