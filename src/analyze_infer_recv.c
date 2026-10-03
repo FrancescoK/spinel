@@ -139,6 +139,11 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       int slA = local_sole_range_node(c, rnA);
       if (slA >= 0) rnA = slA;
     }
+    /* a beginless one's #count is Infinity too (#size raises, served below) */
+    if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
+        (nt_ref(nt, rnA, "left") < 0 || nt_kind(nt, nt_ref(nt, rnA, "left")) == NK_NilNode) &&
+        sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") < 0)
+      { *out = TY_FLOAT; return 1; }
     if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
         (nt_ref(nt, rnA, "right") < 0 ||
          infer_end_is_float_inf(c, nt_ref(nt, rnA, "right"))) &&

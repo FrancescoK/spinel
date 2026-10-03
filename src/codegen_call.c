@@ -13407,7 +13407,9 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
      the normal value path (its return value is the result, NOT the receiver
      -- name-matching alone would be wrong for a user `each`). */
   int self_ret = wrecv >= 0 && call_user_yield_mi(c, id) < 0 &&
-                 brk_iter_returns_self(wname);
+                 (brk_iter_returns_self(wname) ||
+                  /* a Float range's step answers the range too */
+                  (wname && sp_streq(wname, "step") && comp_ntype(c, wrecv) == TY_FLOAT_RANGE));
   /* `e.each { }` over an Enumerator walks the Enumerator itself (see
      emit_iteration_stmt): the marked `to_a` hop in front of it is never
      evaluated, so the Enumerator is what is held and answered */
@@ -25171,7 +25173,8 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
 
   /* range.step(n) { } in expression position: run the loop, evaluate to the
      receiver range (Ruby returns self) (#2415) */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_RANGE &&
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE) &&
       sp_streq(name, "step")) {
     buf_puts(b, "({ ");
     emit_iteration_stmt(c, id, b, 0);

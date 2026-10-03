@@ -3444,6 +3444,14 @@ static SP_UNUSED sp_float sp_frange_max_v(sp_FloatRange r) {
   if (r.excl && !(r.omitted & SP_FRANGE_INT_END)) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
   return sp_frange_max(r);
 }
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a);
+/* #count with no block: an open Float range counts Infinity in CRuby; a
+   bounded one cannot enumerate */
+static SP_UNUSED sp_RbVal sp_frange_count_v(sp_FloatRange r) {
+  if (r.omitted & (SP_FRANGE_NO_BEGIN | SP_FRANGE_NO_END)) return sp_box_float(HUGE_VAL);
+  sp_frange_iter_raise(r, 0);
+  return sp_box_nil();
+}
 static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a) {
   if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("TypeError", "can't iterate from NilClass");
   if (to_a && (r.omitted & SP_FRANGE_NO_END)) sp_raise_cls("RangeError", "cannot convert endless range to an array");
@@ -3469,6 +3477,39 @@ static SP_UNUSED sp_int sp_range_lo_float_end(sp_RbVal v) {
   if (SP_UNLIKELY(v.tag == SP_TAG_NIL))
     sp_raise_cls("NotImplementedError", "a beginless Range with a Float end decided at run time is not supported by spinel");
   return sp_poly_to_i(v);
+}
+/* The doubles in the order of their values, as int64 keys (CRuby's
+   double_as_int64 / int64_as_double_to_num for Range#bsearch): a key one
+   up is the next double up, and -Infinity / +Infinity are keys too. */
+static SP_UNUSED int64_t sp_f2key(double d) {
+  union { double d; int64_t i; } u; u.d = fabs(d);
+  return d < 0 ? -u.i : u.i;
+}
+static SP_UNUSED double sp_key2f(int64_t k) {
+  union { double d; int64_t i; } u;
+  if (k < 0) { u.i = -k; return -u.d; }
+  u.i = k; return u.d;
+}
+/* How many steps (r).step(unit) { } takes, as CRuby's ruby_float_step
+   counts them: infinite for an endless range, which the loop walks until a
+   break. A zero step and a NaN bound raise as CRuby does, and a beginless
+   range has no first step. */
+static SP_UNUSED sp_float sp_frange_step_count(sp_FloatRange r, sp_float unit) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("ArgumentError", "#step iteration for beginless ranges is meaningless");
+  if (unit == 0.0) sp_raise_cls("ArgumentError", "step can't be 0");
+  if (isnan(r.first) || isnan(r.last)) sp_raise_cls("ArgumentError", "bad value for range");
+  return sp_float_step_size(r.first, r.last, unit, r.excl);
+}
+/* Range#size / #count of an Integer range whose shape only the run time
+   knows: a beginless one has no size (CRuby's TypeError), and either open
+   one counts Infinity, which the Integer this call answers cannot hold --
+   say so rather than count from the sentinel. */
+static SP_UNUSED sp_int sp_range_count_open(sp_Range r, int is_size) {
+  if (r.first == INTPTR_MIN && is_size) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (r.first == INTPTR_MIN || r.last == INTPTR_MAX)
+    sp_raise_cls("NotImplementedError", is_size ? "Range#size of an endless Range is Infinity, which spinel answers only for a range literal"
+                                                 : "Range#count of a beginless or endless Range is Infinity, which spinel answers only for a range literal");
+  return sp_range_count(r);
 }
 static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_f(v); }
 static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit) { return v.tag == SP_TAG_NIL ? nil_bit : v.tag == SP_TAG_INT ? (int_bit | (int_bit << 2)) : 0; }

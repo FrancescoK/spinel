@@ -10435,6 +10435,13 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
       }
+      /* a beginless one's #count is Infinity as well, as CRuby 4.0 counts it */
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
+          (nt_ref(nt, rn9, "left") < 0 || nt_kind(nt, nt_ref(nt, rn9, "left")) == NK_NilNode) &&
+          sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        buf_puts(b, "(HUGE_VAL)");
+        return 1;
+      }
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
           (nt_ref(nt, rn9, "right") < 0 ||
            lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right"))) &&
@@ -10720,7 +10727,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "(_t%d.last)", t);
       }
       else if (sp_streq(name, "size") || sp_streq(name, "count"))
-        buf_printf(b, "sp_range_count(_t%d)", t);
+        buf_printf(b, "sp_range_count_open(_t%d, %d)", t, sp_streq(name, "size"));
       else if (sp_streq(name, "sum") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "(("); emit_expr(c, argv[0], b);
         buf_printf(b, ") + (double)sp_IntArray_sum(sp_range_to_ia(_t%d), 0))", t);

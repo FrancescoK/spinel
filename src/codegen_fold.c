@@ -903,9 +903,97 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
       rn9 = local_sole_range_node(c, rn9);
     int rleft = rn9 >= 0 ? nt_ref(nt, rn9, "left") : -1;
     int rright = rn9 >= 0 ? nt_ref(nt, rn9, "right") : -1;
-    if (comp_ntype(c, recv) == TY_FLOAT_RANGE && (rleft < 0 || rright < 0)) return 0;  /* variable float range: not yet */
+    /* a Float range held where no literal can be seen (a captured or
+       re-assigned variable, a call's answer) bisects its run-time bounds */
+    int fvar = rn9 < 0 && comp_ntype(c, recv) == TY_FLOAT_RANGE;
+    if (rn9 < 0 && !fvar) return 0;
     TyKind blt9 = rleft >= 0 ? infer_type(c, rleft) : TY_NIL;
     TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
+    /* A half-open Float range (..2.5), (1.5..): CRuby bisects the doubles
+       themselves, in the order of their bit patterns (sp_f2key), so an
+       infinite bound is a bound like any other. Its answer is the least
+       double the block accepts (find-minimum), or one the block answers 0
+       for (find-any), else nil. */
+    if (fvar || (comp_ntype(c, recv) == TY_FLOAT_RANGE &&
+        (blt9 == TY_NIL || blt9 == TY_INT || blt9 == TY_FLOAT) &&
+        (brt9 == TY_NIL || brt9 == TY_INT || brt9 == TY_FLOAT) &&
+        (blt9 == TY_NIL || brt9 == TY_NIL))) {
+      int excl = fvar ? 0 : (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+      int klo = ++g_tmp, khi = ++g_tmp, fres = ++g_tmp, kmid = ++g_tmp, fx = ++g_tmp;
+      if (fvar) {
+        int tfr = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_FloatRange _t%d = ", tfr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.first);\n", klo, tfr);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "int64_t _t%d = sp_f2key(_t%d.last) - ((_t%d.excl && !(_t%d.omitted & SP_FRANGE_NO_END)) ? 1 : 0);\n",
+                   khi, tfr, tfr, tfr);
+      }
+      else {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "int64_t _t%d = sp_f2key(", klo);
+      if (blt9 == TY_NIL) { if (rleft >= 0) { buf_puts(g_pre, "((void)("); emit_expr(c, rleft, g_pre); buf_puts(g_pre, "), -HUGE_VAL)"); } else buf_puts(g_pre, "-HUGE_VAL"); }
+      else emit_float_expr(c, rleft, g_pre);
+      buf_puts(g_pre, ");\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "int64_t _t%d = sp_f2key(", khi);
+      if (brt9 == TY_NIL) { if (rright >= 0) { buf_puts(g_pre, "((void)("); emit_expr(c, rright, g_pre); buf_puts(g_pre, "), HUGE_VAL)"); } else buf_puts(g_pre, "HUGE_VAL"); }
+      else emit_float_expr(c, rright, g_pre);
+      buf_printf(g_pre, ")%s;\n", (excl && brt9 != TY_NIL) ? " - 1" : "");
+      }
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_float _t%d = sp_float_nil();\n", fres);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "while (_t%d <= _t%d) {\n", klo, khi);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "int64_t _t%d = (_t%d >> 1) + (_t%d >> 1) + (_t%d & _t%d & 1);\n", kmid, klo, khi, klo, khi);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "double _t%d = sp_key2f(_t%d);\n", fx, kmid);
+      if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, fx); }
+      IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
+      int save = g_indent; g_indent++;
+      Buf cb; memset(&cb, 0, sizeof cb);
+      TyKind bt = emit_iter_step_tail(c, &st, &cb); g_indent = save;
+      char up[96], down[96];
+      snprintf(up, sizeof up, "{ if (_t%d == INT64_MAX) break; _t%d = _t%d + 1; }", kmid, klo, kmid);
+      snprintf(down, sizeof down, "{ if (_t%d == INT64_MIN) break; _t%d = _t%d - 1; }", kmid, khi, kmid);
+      if (bt == TY_INT || bt == TY_FLOAT || bt == TY_POLY) {
+        /* a number is find-any (0 found, positive: the target is above the
+           probe, negative: below); in a mixed block any other truthy value
+           is find-minimum, nil/false searches up */
+        int fv = ++g_tmp;
+        emit_indent(g_pre, g_indent + 1);
+        if (bt == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", fv, cb.p ? cb.p : "sp_box_nil()");
+        else buf_printf(g_pre, "sp_RbVal _t%d = %s(%s);\n", fv, bt == TY_INT ? "sp_box_int" : "sp_box_float", cb.p ? cb.p : "0");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_FLT) {\n", fv, fv);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "double _c = sp_poly_to_f(_t%d);\n", fv);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "if (_c == 0.0) { _t%d = _t%d; break; }\n", fres, fx);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "else if (_c > 0.0) %s\n", up);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "else %s\n", down);
+        emit_indent(g_pre, g_indent + 1);
+        buf_puts(g_pre, "}\n");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; %s }\n", fv, fres, fx, down);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else %s\n", up);
+      }
+      else {
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (%s) { _t%d = _t%d; %s }\n", cb.p ? cb.p : "0", fres, fx, down);
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "else %s\n", up);
+      }
+      free(cb.p);
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", fres);
+      return 1;
+    }
     if ((blt9 == TY_INT || blt9 == TY_FLOAT) && (brt9 == TY_INT || brt9 == TY_FLOAT)) {
       int flo = ++g_tmp, fhi = ++g_tmp, fres = ++g_tmp, fi = ++g_tmp, fmid = ++g_tmp;
       emit_indent(g_pre, g_indent);

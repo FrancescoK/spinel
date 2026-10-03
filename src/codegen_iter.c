@@ -4898,6 +4898,28 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
+    /* A Float range walks its steps as CRuby's ruby_float_step yields them
+       (sp_float_step_at, the count from sp_float_step_size), one at a time:
+       an endless one (1.5..) never finishes, so materializing it first never
+       reached the block (or its break). A beginless one has no first step. */
+    if (rt == TY_FLOAT_RANGE && sargc == 1) {
+      int tr = ++g_tmp, ts2 = ++g_tmp, tn2 = ++g_tmp, ti2 = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "sp_float _t%d = ", ts2); emit_float_expr(c, sargv[0], b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "sp_float _t%d = sp_frange_step_count(_t%d, _t%d);\n", tn2, tr, ts2);
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = 0; (sp_float)_t%d < _t%d; _t%d++) {\n", ti2, ti2, tn2, ti2);
+      char elem[96]; snprintf(elem, sizeof elem, "sp_float_step_at(_t%d.first, _t%d.last, _t%d, _t%d)", tr, tr, ts2, ti2);
+      if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, elem, b, indent + 1);
+      { int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+        emit_iter_bind_rest(c, block, rs_np, TY_FLOAT, elem, b, indent + 1); }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     int t = ++g_tmp, ti = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
     TyKind at, et; const char *aty;

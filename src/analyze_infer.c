@@ -7624,6 +7624,16 @@ TyKind infer_uncached(Compiler *c, int id) {
        CRuby does iterate from, and keeps the integer representation. */
     if (lo >= 0 && hi >= 0 && lt == TY_FLOAT && ht == TY_POLY)
       return TY_FLOAT_RANGE;
+    /* A Float bound beside an absent or nil one -- (1.5..), (..2.5),
+       (1.5..nil), (nil..2.5) -- is a half-open Float range. The integer
+       representation truncated the Float bound: (1.5..) inspected as
+       "1..9223372036854775807" and (..2.5).include?(2.2) answered false. */
+    {
+      int lo_open = lo < 0 || lt == TY_NIL;
+      int hi_open = hi < 0 || ht == TY_NIL;
+      if ((lt == TY_FLOAT && hi_open) || (ht == TY_FLOAT && lo_open))
+        return TY_FLOAT_RANGE;
+    }
     /* Only when the BEGIN is the infinite one: `(2..Float::INFINITY)` is the
        canonical lazy source and its integer enumeration is what the fused
        pipeline walks, so that shape keeps the int representation and reports
