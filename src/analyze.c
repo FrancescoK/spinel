@@ -26210,7 +26210,7 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
     { "[]", 1, 2, 0 }, { "[]=", 2, 3, 0 },
     { "key?", 1, 1, 0 }, { "has_key?", 1, 1, 0 }, { "include?", 1, 1, 0 },
     { "member?", 1, 1, 0 }, { "value?", 1, 1, 0 }, { "has_value?", 1, 1, 0 },
-    { "index", 1, 2, 0 }, { "rindex", 1, 2, 0 }, { "count", 0, 8, 1 },
+    { "index", 0, 2, 0 }, { "rindex", 0, 2, 0 }, { "count", 0, 8, 1 },
     { "split", 0, 2, 0 }, { "join", 0, 1, 0 },
     { "start_with?", 0, 8, 1 }, { "end_with?", 0, 8, 1 },
     { "tr", 2, 2, 0 }, { "tr_s", 2, 2, 0 },
@@ -26246,6 +26246,45 @@ static int splat_leaf_node(NodeTable *nt, int id) {
       return 0;
   }
 }
+/* Node builders for the length dispatch's per-class arms below. */
+static int sd_call(NodeTable *nt, const char *name, int recv, const int *args, int n) {
+  int an = -1;
+  if (n > 0) {
+    an = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, an, "arguments", args, n);
+  }
+  int cl = nt_new_node(nt, "CallNode");
+  nt_node_set_str(nt, cl, "name", name);
+  nt_node_set_ref(nt, cl, "receiver", recv);
+  nt_node_set_ref(nt, cl, "arguments", an);
+  nt_node_set_ref(nt, cl, "block", -1);
+  return cl;
+}
+static int sd_str(NodeTable *nt, const char *s) {
+  int n = nt_new_node(nt, "StringNode");
+  nt_node_set_str(nt, n, "content", s);
+  return n;
+}
+static int sd_if(NodeTable *nt, int pred, int then_, int else_) {
+  int ts = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, ts, "body", &then_, 1);
+  int es = nt_new_node(nt, "StatementsNode");
+  nt_node_set_arr(nt, es, "body", &else_, 1);
+  int en = nt_new_node(nt, "ElseNode");
+  nt_node_set_ref(nt, en, "statements", es);
+  int ifn = nt_new_node(nt, "IfNode");
+  nt_node_set_ref(nt, ifn, "predicate", pred);
+  nt_node_set_ref(nt, ifn, "statements", ts);
+  nt_node_set_ref(nt, ifn, "subsequent", en);
+  return ifn;
+}
+/* `recv.is_a?(String)`, over a copy of the receiver (a leaf or its temp) */
+static int sd_is_string(NodeTable *nt, int recv) {
+  int k = nt_new_node(nt, "ConstantReadNode");
+  nt_node_set_str(nt, k, "name", "String");
+  return sd_call(nt, "is_a?", nt_clone_subtree(nt, recv), &k, 1);
+}
+
 /* `recv.m(pre, *a, post)` where a's length is only known at run time and m
    is a builtin taking lo..hi arguments. Expanding to the required count
    dropped every optional argument (`h.fetch(*[:k, 0])` ran fetch(:k) and
@@ -26308,6 +26347,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     if (hi > 8) return 0;
   }
+  int idx = (sp_streq(cnm, "index") || sp_streq(cnm, "rindex")) && comp_method_index(c, cnm) < 0;
+  for (int si = 0; idx && si < c->nscopes; si++)
+    if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm)) idx = 0;
   int fixed = argc - 1;
   int base = nt->count;
   int encl = c->nscope[id];
@@ -26368,6 +26410,11 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   nt_node_set_str(nt, ecn, "name", variadic ? "NotImplementedError" : "ArgumentError");
   int emn = nt_new_node(nt, "StringNode");
   nt_node_set_str(nt, emn, "content", msg);
+  /* index and rindex take 1..2 on a String and 0..1 on an Array (0 is the
+     block's form, or an Enumerator): the arms cover both, each call's own
+     guard refusing the count its receiver does not take, and a count past
+     both names the receiver's range */
+  if (idx) emn = sd_if(nt, sd_is_string(nt, recv), sd_str(nt, ", expected 1..2)"), sd_str(nt, ", expected 0..1)"));
   if (!variadic) {
     /* CRuby's message counts what was given:
        "wrong number of arguments (given " + (a.length + fixed).to_s + msg */
@@ -26486,6 +26533,16 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
+    /* No argument: String's guard refuses it; an Array answers an
+       Enumerator, which spinel does not build here (its each would be
+       find_index's or rindex's), and says so */
+    if (idx && m == 0) {
+      char nmsg[128];
+      snprintf(nmsg, sizeof nmsg, "spinel: Array#%s with no argument and no block (an Enumerator) is not supported", cnm);
+      int na[2] = { nt_new_node(nt, "ConstantReadNode"), sd_str(nt, nmsg) };
+      nt_node_set_str(nt, na[0], "name", "NotImplementedError");
+      cl = sd_if(nt, sd_is_string(nt, recv), cl, sd_call(nt, "raise", -1, na, 2));
+    }
     /* gsub!(pattern) with no block answers an Enumerator whose each edits
        the receiver, which spinel does not build: say so at the one count
        that needs it rather than raising CRuby's ArgumentError for a call
