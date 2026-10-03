@@ -4,7 +4,7 @@
 0
 "x\u0000y"
 1
-#<Encoding:ASCII-8BIT>
+#<Encoding:BINARY (ASCII-8BIT)>
 #<Encoding:UTF-8>
 "ab"
 "abc!"

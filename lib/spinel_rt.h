@@ -7936,7 +7936,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
-    case SP_TAG_ENCODING: return sp_sprintf("#<Encoding:%s>", v.v.s ? v.v.s : "");
+    case SP_TAG_ENCODING: return sp_encoding_inspect_name(v.v.s ? v.v.s : "");
     case SP_TAG_CLASS: return sp_class_val_name(v);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_OBJ:

@@ -1,7 +1,7 @@
 [231]
-#<Encoding:ASCII-8BIT>
+#<Encoding:BINARY (ASCII-8BIT)>
 [231, 0, 255]
 "256 out of char range"
 [200, 65]
-#<Encoding:ASCII-8BIT>
+#<Encoding:BINARY (ASCII-8BIT)>
 [195, 167]
