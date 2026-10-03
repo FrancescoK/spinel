@@ -10160,14 +10160,17 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     if (argc == 0 && (sp_streq(name, "end") || sp_streq(name, "last"))) {
       int as_int2 = comp_ntype(c, id) == TY_INT;
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; %s_t%d.last; })", as_int2 ? "(sp_int)" : "", tr); return 1;
+      /* an omitted end: #end is nil and #last the RangeError, as CRuby */
+      if (as_int2) buf_printf(b, "; (sp_int)_t%d.last; })", tr);
+      else buf_printf(b, "; sp_frange_%s_v(_t%d); })", sp_streq(name, "end") ? "end" : "last", tr);
+      return 1;
     }
     if (argc == 0 && sp_streq(name, "max")) {
       /* the endpoint the caller wrote: an Integer end answers an Integer,
          whatever the other endpoint made of the range's kind (#3837) */
       int as_int = comp_ntype(c, id) == TY_INT;
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; %ssp_frange_max(_t%d); })", as_int ? "(sp_int)" : "", tr); return 1;
+      buf_printf(b, "; %ssp_frange_max_v(_t%d); })", as_int ? "(sp_int)" : "", tr); return 1;
     }
     /* Range#size counts the integers a range enumerates, so it answers only
        for an Integer begin -- and Infinity when the end is unbounded, which is

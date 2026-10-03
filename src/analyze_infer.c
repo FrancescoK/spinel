@@ -7615,6 +7615,15 @@ TyKind infer_uncached(Compiler *c, int id) {
        CRuby does iterate it -- and its end readers answer the literal. */
     if (lo >= 0 && hi >= 0 && lt == TY_FLOAT && ht == TY_INT)
       return TY_FLOAT_RANGE;
+    /* A Float begin before an end only known at run time (a boxed value,
+       which may be nil): (f..x). The integer representation truncated the
+       begin and read a nil end as 0. Such a range is never iterated in
+       CRuby, whatever the end turns out to be, so the Float representation
+       loses nothing; its end decides at run time whether the range is
+       endless. A boxed begin before a Float end may hold an Integer that
+       CRuby does iterate from, and keeps the integer representation. */
+    if (lo >= 0 && hi >= 0 && lt == TY_FLOAT && ht == TY_POLY)
+      return TY_FLOAT_RANGE;
     /* Only when the BEGIN is the infinite one: `(2..Float::INFINITY)` is the
        canonical lazy source and its integer enumeration is what the fused
        pipeline walks, so that shape keeps the int representation and reports

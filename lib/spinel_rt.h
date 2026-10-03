@@ -3413,6 +3413,65 @@ static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_
 static SP_UNUSED sp_int sp_poly_range_bound(sp_RbVal v, sp_int none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_i(v); }
 /* Enumerating a beginless Range (first == INTPTR_MIN): CRuby's TypeError. */
 static SP_NOINLINE SP_COLD SP_UNUSED void sp_range_nil_begin_raise(void) { sp_raise_cls("TypeError", "can't iterate from NilClass"); }
+/* A Float Range bound read out of a box: nil leaves that side open (the
+   -/+HUGE_VAL sentinel), anything else converts as a Float bound does; the
+   bits record an open side (nil_bit) or an Integer one (int_bit) for
+   #inspect, as the literal's compile-time bits do. */
+/* A Float Range whose bound was OMITTED (written absent or nil, or nil at
+   run time -- not an explicit infinity) answers as CRuby's open range does:
+   #begin / #end are nil (the Float nil), #first / #min of a beginless one and
+   #last / #max of an endless one raise RangeError, and enumerating raises
+   from NilClass for a missing begin (from Float otherwise; an endless one's
+   to_a says it cannot convert). */
+/* A bound that turned out an Integer only at run time (a boxed end) has no
+   Float reading CRuby would give: #end answers the Integer there, which the
+   Float-typed reader cannot. Say so rather than answer 3.0 for 3. Only the
+   run-time bits mark it; a literal Integer bound is typed by inference. */
+#define SP_FRANGE_RT_INT_BEGIN 16
+#define SP_FRANGE_RT_INT_END   32
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_int_bound_raise(const char *m) {
+  sp_raise_cls("NotImplementedError", sp_sprintf("Range#%s: this Float range's bound is an Integer known only at run time, which spinel reads as a Float", m));
+}
+static SP_UNUSED sp_float sp_frange_begin_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("begin"); return r.first; }
+static SP_UNUSED sp_float sp_frange_end_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("end"); return r.last; }
+static SP_UNUSED sp_float sp_frange_first_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the first element of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("first"); return r.first; }
+static SP_UNUSED sp_float sp_frange_min_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("min"); return r.first; }
+static SP_UNUSED sp_float sp_frange_last_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the last element of endless range"); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("last"); return r.last; }
+static SP_UNUSED sp_float sp_frange_max_v(sp_FloatRange r) {
+  if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
+  if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("max");
+  /* an exclusive end CRuby checks first: a Float one has no greatest member */
+  if (r.excl && !(r.omitted & SP_FRANGE_INT_END)) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+  return sp_frange_max(r);
+}
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (to_a && (r.omitted & SP_FRANGE_NO_END)) sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  sp_raise_cls("TypeError", "can't iterate from Float");
+}
+/* #max(n) / #min(n): the n greatest or least members, which an open side
+   has none of (RangeError) and a Float range cannot enumerate (TypeError) */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_maxn_raise(sp_FloatRange r, sp_int n) {
+  if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
+  if (n < 0) sp_raise_cls("ArgumentError", "negative array size (or size too big)");
+  sp_frange_iter_raise(r, 0);
+}
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_minn_raise(sp_FloatRange r, sp_int n) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range");
+  if (n < 0) sp_raise_cls("ArgumentError", "negative array size (or size too big)");
+  sp_frange_iter_raise(r, 0);
+}
+/* The boxed begin of an Integer-represented Range whose end is a Float
+   (`x..2.5`): nil would make it beginless with the Float end, which the
+   integer representation holds truncated. Refuse that one loudly; any other
+   begin converts as a Range endpoint does. */
+static SP_UNUSED sp_int sp_range_lo_float_end(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL))
+    sp_raise_cls("NotImplementedError", "a beginless Range with a Float end decided at run time is not supported by spinel");
+  return sp_poly_to_i(v);
+}
+static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_f(v); }
+static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit) { return v.tag == SP_TAG_NIL ? nil_bit : v.tag == SP_TAG_INT ? (int_bit | (int_bit << 2)) : 0; }
 static SP_UNUSED sp_int sp_for_hi_i(sp_int v) { return v == SP_INT_NIL ? (sp_int)INTPTR_MAX : v; }
 static SP_UNUSED sp_int sp_for_lo_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return v; }
 static SP_UNUSED sp_int sp_for_hi(sp_RbVal v) { return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(v); }

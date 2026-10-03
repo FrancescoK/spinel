@@ -24972,6 +24972,11 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         ((comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) ||
          comp_ntype(c, rcv) == TY_FLOAT_RANGE)) {
       const char *dv = default_value_from_compiler(c, comp_ntype(c, id));
+      /* a Float range with an omitted begin raises from NilClass, as CRuby */
+      if (comp_ntype(c, rcv) == TY_FLOAT_RANGE) {
+        buf_puts(b, "({ sp_frange_iter_raise("); emit_expr(c, rcv, b); buf_printf(b, ", 0); %s; })", dv ? dv : "0");
+        return;
+      }
       buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })",
                  dv ? dv : "0");
       return;

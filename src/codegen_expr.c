@@ -1550,18 +1550,42 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (comp_ntype(c, id) == TY_FLOAT_RANGE) {
       /* A bound written as absent and one written as Float::INFINITY are the
          same value; record which it was so #inspect can tell them apart. */
-      int om = (left < 0 ? 1 : 0) | (right < 0 ? 2 : 0);
+      /* A bound written as nil is the absent one, and a boxed bound is
+         decided at run time: nil leaves that side open, an Integer renders
+         as one (sp_poly_frange_bound and the run-time bits below). */
+      int lnil = left < 0 || comp_ntype(c, left) == TY_NIL;
+      int rnil = right < 0 || comp_ntype(c, right) == TY_NIL;
+      int lpoly = !lnil && comp_ntype(c, left) == TY_POLY;
+      int rpoly = !rnil && comp_ntype(c, right) == TY_POLY;
+      int om = (lnil ? 1 : 0) | (rnil ? 2 : 0);
       /* Each endpoint renders as the user wrote it, so record which one was an
          Integer: a mixed literal (1.5..5) inspects as "1.5..5" (#3896). */
-      if (left >= 0 && comp_ntype(c, left) == TY_INT) om |= 4;
-      if (right >= 0 && comp_ntype(c, right) == TY_INT) om |= 8;
-      buf_printf(b, "sp_frange_new%s(", om ? "_o" : "");
-      if (left >= 0) emit_float_expr(c, left, b); else buf_puts(b, "(-HUGE_VAL)");
+      if (!lnil && comp_ntype(c, left) == TY_INT) om |= 4;
+      if (!rnil && comp_ntype(c, right) == TY_INT) om |= 8;
+      int tl = lpoly ? ++g_tmp : 0, tr = rpoly ? ++g_tmp : 0;
+      if (lpoly || rpoly) {
+        buf_puts(b, "({ ");
+        if (lpoly) { buf_printf(b, "sp_RbVal _t%d = ", tl); emit_expr(c, left, b); buf_puts(b, "; "); }
+        if (rpoly) { buf_printf(b, "sp_RbVal _t%d = ", tr); emit_expr(c, right, b); buf_puts(b, "; "); }
+      }
+      buf_printf(b, "sp_frange_new%s(", (om || lpoly || rpoly) ? "_o" : "");
+      if (lpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, -HUGE_VAL)", tl);
+      else if (left >= 0 && lnil) { buf_puts(b, "((void)("); emit_expr(c, left, b); buf_puts(b, "), -HUGE_VAL)"); }
+      else if (left >= 0) emit_float_expr(c, left, b);
+      else buf_puts(b, "(-HUGE_VAL)");
       buf_puts(b, ", ");
-      if (right >= 0) emit_float_expr(c, right, b); else buf_puts(b, "HUGE_VAL");
+      if (rpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, HUGE_VAL)", tr);
+      else if (right >= 0 && rnil) { buf_puts(b, "((void)("); emit_expr(c, right, b); buf_puts(b, "), HUGE_VAL)"); }
+      else if (right >= 0) emit_float_expr(c, right, b);
+      else buf_puts(b, "HUGE_VAL");
       buf_printf(b, ", %d", excl);
-      if (om) buf_printf(b, ", %d", om);
+      if (om || lpoly || rpoly) {
+        buf_printf(b, ", %d", om);
+        if (lpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 1, 4)", tl);
+        if (rpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 2, 8)", tr);
+      }
       buf_puts(b, ")");
+      if (lpoly || rpoly) buf_puts(b, "; })");
       return;
     }
     /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
@@ -1628,7 +1652,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* a nil that arrives at run time -- boxed, or an Integer slot's
        sentinel -- is the absent bound too; read as a number, `lo..x` with x
        nil was the empty `lo..0` */
-    if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
+    /* A boxed begin before a Float end keeps the integer representation,
+       which holds the end truncated: a beginless (x nil) such range would
+       answer for `..2` where CRuby has `..2.5`. Say so at run time. */
+    if (!left_unbounded && !right_unbounded && comp_ntype(c, left) == TY_POLY &&
+        comp_ntype(c, right) == TY_FLOAT) {
+      buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
+    }
+    else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
     if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
     buf_printf(b, ", %d)", excl);
