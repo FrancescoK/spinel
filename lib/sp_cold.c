@@ -3068,13 +3068,15 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
   return e->size;
 }
 sp_RbVal sp_Enumerator_size_p(void *e) { return sp_Enumerator_size((sp_Enumerator *)e); }
-/* A boxed index search's Enumerator (`a.index` reached through a branch):
-   its each block picks an index, which the generic element walk does not
-   compute, so say so rather than answer the receiver. One read straight off
-   its call is rewritten to the block form before it gets here. */
+/* A boxed index search's or substitution's Enumerator (`a.index`,
+   `s.gsub!(re)` reached through a branch): its each block picks an index
+   or is the replacement, which the generic element walk does not compute,
+   so say so rather than answer the receiver. One read straight off its
+   call is rewritten to the block form before it gets here. */
 void sp_enum_index_search_each_raise(void *p) {
   const char *em = ((sp_Enumerator *)p)->meth;
-  if (em && (strcmp(em, "index") == 0 || strcmp(em, "rindex") == 0 || strcmp(em, "find_index") == 0))
+  if (em && (strcmp(em, "index") == 0 || strcmp(em, "rindex") == 0 || strcmp(em, "find_index") == 0 ||
+             strncmp(em, "gsub(", 5) == 0 || strncmp(em, "gsub!(", 6) == 0))
     sp_raise_cls("NotImplementedError",
                  sp_sprintf("spinel: each on a boxed %s Enumerator is not supported", em));
 }

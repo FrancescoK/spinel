@@ -18,3 +18,5 @@
 "abCb"
 "abCb"
 ["c"]
+#<Enumerator: "abcb":gsub!(/b/)>
+["b", "b"]

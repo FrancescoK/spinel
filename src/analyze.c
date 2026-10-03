@@ -26533,24 +26533,6 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
-    /* gsub!(pattern) with no block answers an Enumerator whose each edits
-       the receiver, which spinel does not build: say so at the one count
-       that needs it rather than raising CRuby's ArgumentError for a call
-       CRuby takes */
-    if (blk < 0 && m == 1 && sp_streq(cnm, "gsub!")) {
-      int ncn = nt_new_node(nt, "ConstantReadNode");
-      nt_node_set_str(nt, ncn, "name", "NotImplementedError");
-      int nmn = nt_new_node(nt, "StringNode");
-      nt_node_set_str(nt, nmn, "content", "spinel: gsub! with a pattern alone and no block (an Enumerator) is not supported");
-      int na[2] = { ncn, nmn };
-      int nargs = nt_new_node(nt, "ArgumentsNode");
-      nt_node_set_arr(nt, nargs, "arguments", na, 2);
-      cl = nt_new_node(nt, "CallNode");
-      nt_node_set_str(nt, cl, "name", "raise");
-      nt_node_set_ref(nt, cl, "receiver", -1);
-      nt_node_set_ref(nt, cl, "arguments", nargs);
-      nt_node_set_ref(nt, cl, "block", -1);
-    }
     int ard = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ard, "name", anm);
     nt_node_set_int(nt, ard, "depth", adepth);

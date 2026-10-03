@@ -9274,7 +9274,7 @@ static void sp_poly_iter_check(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p &&
       ((sp_Range *)v.v.p)->first == INTPTR_MIN && sp_range_step(*(sp_Range *)v.v.p) > 0)
     sp_range_nil_begin_raise();
-  /* a boxed index search's Enumerator: this walk does not pick its index */
+  /* a boxed index search's or gsub's Enumerator: this walk does not compute its result */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p && strcmp(m, "each") == 0)
     sp_enum_index_search_each_raise(v.v.p);
   if (v.tag == SP_TAG_OBJ &&

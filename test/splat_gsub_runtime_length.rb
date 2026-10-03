@@ -46,3 +46,9 @@ end
   p s.sub(pat) { |m| m.upcase }
   p s.gsub(pat).to_a
 end
+
+# gsub! with one element and no block: the Enumerator, as gsub!(re) gives it
+w = "abcb".dup
+e = w.gsub!(*args(1))
+p e
+p e.to_a
