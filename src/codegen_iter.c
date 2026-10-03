@@ -3846,15 +3846,15 @@ static void mark_value_nexts(const NodeTable *nt, int id, char *mark) {
    of an assignment, `c && (next)` ahead of more statements -- has to leave
    the block from where it is. The marks are built once per node table. */
 int next_is_block_value(Compiler *c, int next) {
-  static char *mark; static int mark_n = -1; static unsigned mark_ver;
+  static char *mark; static const NodeTable *mark_nt; static int mark_n = -1; static unsigned mark_ver;
   const NodeTable *nt = c->nt;
-  if (!mark || mark_n != nt->count || mark_ver != nt->version) {
+  if (!mark || mark_nt != nt || mark_n != nt->count || mark_ver != nt->version) {
     free(mark);
     mark = calloc((size_t)nt->count + 1, 1);
     if (!mark) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     NT_FOREACH_KIND(nt, NK_BlockNode, blk) mark_value_nexts(nt, nt_ref(nt, blk, "body"), mark);
     NT_FOREACH_KIND(nt, NK_LambdaNode, lam) mark_value_nexts(nt, nt_ref(nt, lam, "body"), mark);
-    mark_n = nt->count; mark_ver = nt->version;
+    mark_nt = nt; mark_n = nt->count; mark_ver = nt->version;
   }
   return next >= 0 && next < nt->count && mark[next];
 }
