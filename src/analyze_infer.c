@@ -5847,6 +5847,106 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* The last resorts: a safe-navigation call, a reopened Array, Numeric or Object's own methods, a boxed receiver's face (infer_call_inner's rules, in their order) */
+static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
+  /* safe navigation &. with unresolved type: return poly (receiver may be nil at runtime) */
+  {
+    const char *call_op = nt_str(nt, id, "call_operator");
+    if (recv >= 0 && call_op && sp_streq(call_op, "&.")) { *out = TY_POLY; return 1; }
+  }
+
+  /* Builtin class reopening: look up user-defined methods on Array/Numeric/Object
+     receivers where no builtin method matched. */
+  if (recv >= 0) {
+    /* Array reopening: any array-typed receiver */
+    if (ty_is_array(rt)) {
+      int oc_mi = an_reopen_method(c, "Array", name);
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* Hash reopening: any hash-typed receiver */
+    if (ty_is_hash(rt)) {
+      int oc_mi = an_reopen_method(c, "Hash", name);
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* Numeric reopening: integers and floats */
+    if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
+      int oc_mi = an_reopen_method(c, "Numeric", name);
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
+    if (rt == TY_BOOL) {
+      int oc_mi = an_reopen_method(c, "FalseClass", name);
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* NilClass methods on a receiver known to be nil */
+    if (rt == TY_NIL) {
+      int oc_mi = an_reopen_method(c, "NilClass", name);
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* Object reopening: universal fallback for any receiver type */
+    {
+      int oc_mi = an_reopen_method(c, "Object", name);
+      /* a yielding one given a block answers what its proc form does,
+         a boxed value (#5779) */
+      if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) { *out = TY_POLY; return 1; }
+      if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
+    }
+    /* A poly receiver may hold a Class at runtime, where `name` is a class
+       method (`def self.name`) -- codegen dispatches it on the class tag (#3215).
+       Type the call poly (not unknown) so the result flows as a value instead of
+       being discarded as a void unresolved call. */
+    if (rt == TY_POLY && name) {
+      int ncc = 0;
+      comp_cmethod_candidates(c, name, &ncc);
+      if (ncc > 0) { *out = TY_POLY; return 1; }
+      /* Thread.current / Fiber.current through a class held in a poly slot:
+         a boxed handle (the codegen's gate answers it) */
+      if (argc == 0 && sp_streq(name, "current") && !an_user_defines_method(c, name)) { *out = TY_POLY; return 1; }
+    }
+  }
+
+  /* A boxed HANDLE answering one of its own exclusive names: type the call as
+     if the receiver were that handle. Codegen unboxes it back to exactly that
+     before re-dispatching, and checks the runtime cls_id first, so a value of
+     any other kind still raises NoMethodError (#4158 follow-up). */
+  if (recv >= 0 && rt == TY_POLY && !face_active() && argc == 0 &&
+      ty_poly_handle_face(name) != TY_UNKNOWN &&
+      !an_user_defines_or_reads(c, name)) {
+    an_face_push(recv, ty_poly_handle_face(name));
+    TyKind kt = infer_call(c, id);
+    an_face_pop();
+    if (kt != TY_UNKNOWN) { *out = kt; return 1; }
+  }
+  /* Last resort for a boxed receiver: the face table. Answer as the typed
+     call would with the receiver pinned to each owner kind in turn -- codegen
+     unboxes to exactly that kind before re-entering the typed emitter, so
+     both sides agree on the result slot -- and unify the owners' answers: one
+     owner gives the typed call's own type, owners that disagree give poly and
+     the emission boxes each arm. A receiver of no owner's kind raises
+     NoMethodError there, as it did before (#3449). */
+  if (recv >= 0 && rt == TY_POLY && !face_active() && !an_user_defines_or_reads(c, name)) {
+    int blk = nt_ref(nt, id, "block") >= 0;
+    unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
+                   : ty_poly_face_owners(name, argc, blk, nt_call_args_plain(nt, id), 1) & PF_OWNERS;
+    if (own) {
+      TyKind r = TY_UNKNOWN;
+      for (unsigned bit = 1; bit & PF_OWNERS; bit <<= 1) {
+        if (!(own & bit)) continue;
+        an_face_push(recv, ty_poly_face_kind(bit));
+        TyKind ht = infer_call(c, id);
+        an_face_pop();
+        if (ht == TY_UNKNOWN) continue;
+        /* a mutator that answers its receiver answers the box, not the copy
+           its emitter worked on (see emit_face_arm) */
+        if (ty_poly_face_owner_flags(name, argc, blk, nt_call_args_plain(nt, id), bit) & PF_VAL_SELF) ht = TY_POLY;
+        r = r == TY_UNKNOWN ? ht : ty_unify(r, ht);
+      }
+      if (r != TY_UNKNOWN) { *out = r; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -7101,101 +7201,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_universal_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
 
-  /* safe navigation &. with unresolved type: return poly (receiver may be nil at runtime) */
-  {
-    const char *call_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && call_op && sp_streq(call_op, "&.")) return TY_POLY;
-  }
-
-  /* Builtin class reopening: look up user-defined methods on Array/Numeric/Object
-     receivers where no builtin method matched. */
-  if (recv >= 0) {
-    /* Array reopening: any array-typed receiver */
-    if (ty_is_array(rt)) {
-      int oc_mi = an_reopen_method(c, "Array", name);
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* Hash reopening: any hash-typed receiver */
-    if (ty_is_hash(rt)) {
-      int oc_mi = an_reopen_method(c, "Hash", name);
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* Numeric reopening: integers and floats */
-    if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int oc_mi = an_reopen_method(c, "Numeric", name);
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
-    if (rt == TY_BOOL) {
-      int oc_mi = an_reopen_method(c, "FalseClass", name);
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* NilClass methods on a receiver known to be nil */
-    if (rt == TY_NIL) {
-      int oc_mi = an_reopen_method(c, "NilClass", name);
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* Object reopening: universal fallback for any receiver type */
-    {
-      int oc_mi = an_reopen_method(c, "Object", name);
-      /* a yielding one given a block answers what its proc form does,
-         a boxed value (#5779) */
-      if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) return TY_POLY;
-      if (oc_mi >= 0) return c->scopes[oc_mi].ret;
-    }
-    /* A poly receiver may hold a Class at runtime, where `name` is a class
-       method (`def self.name`) -- codegen dispatches it on the class tag (#3215).
-       Type the call poly (not unknown) so the result flows as a value instead of
-       being discarded as a void unresolved call. */
-    if (rt == TY_POLY && name) {
-      int ncc = 0;
-      comp_cmethod_candidates(c, name, &ncc);
-      if (ncc > 0) return TY_POLY;
-      /* Thread.current / Fiber.current through a class held in a poly slot:
-         a boxed handle (the codegen's gate answers it) */
-      if (argc == 0 && sp_streq(name, "current") && !an_user_defines_method(c, name)) return TY_POLY;
-    }
-  }
-
-  /* A boxed HANDLE answering one of its own exclusive names: type the call as
-     if the receiver were that handle. Codegen unboxes it back to exactly that
-     before re-dispatching, and checks the runtime cls_id first, so a value of
-     any other kind still raises NoMethodError (#4158 follow-up). */
-  if (recv >= 0 && rt == TY_POLY && !face_active() && argc == 0 &&
-      ty_poly_handle_face(name) != TY_UNKNOWN &&
-      !an_user_defines_or_reads(c, name)) {
-    an_face_push(recv, ty_poly_handle_face(name));
-    TyKind kt = infer_call(c, id);
-    an_face_pop();
-    if (kt != TY_UNKNOWN) return kt;
-  }
-  /* Last resort for a boxed receiver: the face table. Answer as the typed
-     call would with the receiver pinned to each owner kind in turn -- codegen
-     unboxes to exactly that kind before re-entering the typed emitter, so
-     both sides agree on the result slot -- and unify the owners' answers: one
-     owner gives the typed call's own type, owners that disagree give poly and
-     the emission boxes each arm. A receiver of no owner's kind raises
-     NoMethodError there, as it did before (#3449). */
-  if (recv >= 0 && rt == TY_POLY && !face_active() && !an_user_defines_or_reads(c, name)) {
-    int blk = nt_ref(nt, id, "block") >= 0;
-    unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
-                   : ty_poly_face_owners(name, argc, blk, nt_call_args_plain(nt, id), 1) & PF_OWNERS;
-    if (own) {
-      TyKind r = TY_UNKNOWN;
-      for (unsigned bit = 1; bit & PF_OWNERS; bit <<= 1) {
-        if (!(own & bit)) continue;
-        an_face_push(recv, ty_poly_face_kind(bit));
-        TyKind ht = infer_call(c, id);
-        an_face_pop();
-        if (ht == TY_UNKNOWN) continue;
-        /* a mutator that answers its receiver answers the box, not the copy
-           its emitter worked on (see emit_face_arm) */
-        if (ty_poly_face_owner_flags(name, argc, blk, nt_call_args_plain(nt, id), bit) & PF_VAL_SELF) ht = TY_POLY;
-        r = r == TY_UNKNOWN ? ht : ty_unify(r, ht);
-      }
-      if (r != TY_UNKNOWN) return r;
-    }
-  }
+  { TyKind r; if (infer_last_resort_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
 
   return TY_UNKNOWN;
 }
