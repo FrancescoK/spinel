@@ -105,6 +105,10 @@ int is_call_or_yield(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]") || sp_streq(n, "yield");
 }
 
+int is_proc_invoke(const char *n) {
+  return is_call_or_yield(n) || sp_streq(n, "===");
+}
+
 int is_quantifier_or_count(const char *n) {
   return sp_streq(n, "all?") || sp_streq(n, "any?") || sp_streq(n, "none?") ||
          sp_streq(n, "one?") || sp_streq(n, "count");

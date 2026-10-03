@@ -4134,7 +4134,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* A zero-argument application is legal: it applies nothing, and on a
        zero-arity base it is the call that realizes the curry (#3654). */
-    if (crt == TY_CURRY && is_call_alias(name) && argc == 0) {
+    if (crt == TY_CURRY && is_proc_invoke(name) && argc == 0) {
       int complete0 = 0; TyKind cret0 = TY_UNKNOWN;
       int traced0 = curry_apply_info(c, id, &complete0, &cret0);
       if (!traced0) {   /* run-time saturation, as above */
@@ -4147,7 +4147,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (complete0) buf_puts(b, ")");
       return 1;
     }
-    if (crt == TY_CURRY && is_call_alias(name) && argc >= 1) {
+    if (crt == TY_CURRY && is_proc_invoke(name) && argc >= 1) {
       /* The application that reaches the proc's arity realizes the curry to its
          (int) result; earlier applications return another curry. curry[a, b]
          chains one apply per argument. */

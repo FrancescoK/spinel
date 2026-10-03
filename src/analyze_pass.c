@@ -11063,7 +11063,7 @@ static int curry_chain(Compiler *c, int node, int *applied, int *arity, TyKind *
       *applied = 0;
       return 1;
     }
-    if (is_call_alias(nm)) {
+    if (is_proc_invoke(nm)) {
       if (!curry_chain(c, recv, applied, arity, ret, depth + 1)) return 0;
       /* one application per argument: curry[a, b] applies two */
       int a2 = nt_ref(nt, node, "arguments");
