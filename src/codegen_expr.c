@@ -3682,7 +3682,13 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   int right_unbounded = right < 0 ||
       (nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) ||
       lazy_endpoint_is_infinite(c, right);
-  buf_puts(b, "sp_range_new(");
+  /* A Float end over an Integer begin, (1..2.5), or a boxed end that may be
+     one: the Range walks from the Integer as CRuby does and keeps the end
+     as written for the readers that answer it (sp_range_new_fend / _pend);
+     the end was truncated, so (1...2.5) walked only 1 and #end read 2. */
+  TyKind rt_end = (!right_unbounded && right >= 0) ? comp_ntype(c, right) : TY_UNKNOWN;
+  int fend = rt_end == TY_FLOAT, pend = rt_end == TY_POLY;
+  buf_puts(b, fend ? "sp_range_new_fend(" : pend ? "sp_range_new_pend(" : "sp_range_new(");
   /* a nil that arrives at run time -- boxed, or an Integer slot's
      sentinel -- is the absent bound too; read as a number, `lo..x` with x
      nil was the empty `lo..0` */
@@ -3693,9 +3699,16 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       comp_ntype(c, right) == TY_FLOAT) {
     buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
   }
+  /* a boxed begin holding a Float cannot be an Integer range's: it says so
+     (sp_range_lo_bound), where the conversion truncated it */
+  else if (!left_unbounded && comp_ntype(c, left) == TY_POLY) {
+    buf_puts(b, "sp_range_lo_bound("); emit_expr(c, left, b); buf_puts(b, ")");
+  }
   else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
   buf_puts(b, ", ");
-  if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
+  if (fend) emit_float_expr(c, right, b);
+  else if (pend) emit_expr(c, right, b);
+  else if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
   buf_printf(b, ", %d)", excl);
   return 1;
   return 0;

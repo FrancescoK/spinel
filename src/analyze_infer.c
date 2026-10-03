@@ -1241,6 +1241,11 @@ int range_lit_float_end(Compiler *c, int recv) {
     int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
     rnode = (pn == 1 && ps) ? ps[0] : -1;
   }
+  /* a local holding only such a literal reads the same (sole assignment) */
+  if (rnode >= 0 && nt_kind(nt, rnode) != NK_RangeNode) {
+    int sl = local_sole_range_node(c, rnode);
+    if (sl >= 0) rnode = sl;
+  }
   if (rnode < 0 || nt_kind(nt, rnode) != NK_RangeNode) return -1;
   int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
   if (lo < 0 || hi < 0) return -1;

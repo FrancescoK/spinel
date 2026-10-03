@@ -901,7 +901,10 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
      sp_int sp_Range, so bisect the float interval directly (CRuby find-minimum
      over the reals, a fixed ~100-iteration halving to double precision). The
      block is truthy at/after the answer, falsy before. */
-  if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE && range_float_begin(c, recv)) ||
+  /* an Integer begin with a Float end, (1..2.5), is bisected over the
+     doubles as well: CRuby treats a Range with either bound a Float so */
+  if (recv >= 0 && ((comp_ntype(c, recv) == TY_RANGE &&
+                     (range_float_begin(c, recv) || range_lit_float_end(c, recv) >= 0)) ||
                     comp_ntype(c, recv) == TY_FLOAT_RANGE)) {
     int rn9 = unwrap_parens(c, recv);
     if (rn9 >= 0 && nt_type(nt, rn9) && !sp_streq(nt_type(nt, rn9), "RangeNode"))
@@ -1075,6 +1078,8 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   int find_any = comp_ntype(c, bb[bn - 1]) == TY_INT;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = ", tr); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  /* a Float end makes CRuby bisect the Floats (2.0, not 2) */
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_range_int_only(_t%d, \"Range#bsearch\");\n", tr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = _t%d.first;\n", tlo, tr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = _t%d.last - _t%d.excl;\n", thi, tr, tr);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = SP_INT_NIL;\n", tres);

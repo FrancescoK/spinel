@@ -8,6 +8,7 @@
 #include <math.h>    /* isnan/isinf for the EDOM domain checks */   /* sp_str_alloc / sp_str_set_len / sp_float_to_s / sp_raise_cls / sp_gc_alloc */
 #include "sp_format.h"  /* sp_Range_inspect */
 #include "sp_str.h"     /* sp_sprintf (defined in the generated TU) */
+#include "sp_range.h"   /* sp_range_int_only */
 
 /* PCG-XSH-RR constants (64-bit state, 32-bit output). */
 #define SP_PCG_MULT 6364136223846793005ULL
@@ -146,6 +147,7 @@ sp_Random *sp_Random_new_auto(void) {
 }
 /* Random#rand(Range): an integer in the (int-endpoint) range, empty raises. */
 sp_int sp_Random_rand_range(sp_Random *r, sp_Range rg) {SP_GC_ROOT(r);
+  sp_range_int_only(rg, "Random#rand");   /* (1..2.5): CRuby answers a Float */
   sp_int lo = rg.first, hi = rg.excl ? rg.last - 1 : rg.last;
   if (hi < lo) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_Range_inspect(&rg)));
   if (!r) return lo;

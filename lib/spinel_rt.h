@@ -906,6 +906,11 @@ static inline sp_float sp_float_clamp_ck(sp_float v,sp_float lo,sp_float hi){
    exclusive ENDLESS range (`1...`, last is the INTPTR_MAX sentinel) can. The
    beginless/endless sentinels satisfy sp_int_clamp_ck's bounds naturally. */
 static inline sp_int sp_int_clamp_range_ck(sp_int v, sp_Range r) {
+  /* a Float end: exclusive cannot clamp, and clamping to it answers the Float */
+  if (SP_UNLIKELY(r.fe)) {
+    if (r.fe == 2) sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
+    if ((sp_float)v > r.fend) sp_range_fend_unsupported("Integer#clamp");
+  }
   if (r.excl && r.last != INTPTR_MAX)
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
   /* Reaching here with excl means r.last is the INTPTR_MAX endless sentinel
@@ -3486,7 +3491,96 @@ static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_minn_raise(sp_FloatRange r, 
 static SP_UNUSED sp_int sp_range_lo_float_end(sp_RbVal v) {
   if (SP_UNLIKELY(v.tag == SP_TAG_NIL))
     sp_raise_cls("NotImplementedError", "a beginless Range with a Float end decided at run time is not supported by spinel");
+  if (SP_UNLIKELY(v.tag == SP_TAG_FLT))
+    sp_raise_cls("NotImplementedError", "a Range with a Float begin decided at run time is not supported by spinel");
   return sp_poly_to_i(v);
+}
+/* An Integer Range's end when it was written as a Float (1..2.5), read where
+   the slot is an Integer (a Range the inference could not see built): say
+   so, rather than answer the truncated walk bound. A slot that can hold the
+   Float reads fend (sp_range_max_box, the boxed readers, the literal arms). */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_range_fend_int_raise(const char *m) {
+  sp_raise_cls("NotImplementedError", sp_sprintf("Range#%s: this Range's end is a Float, which spinel reads here as an Integer", m));
+}
+static SP_UNUSED sp_int sp_range_end_i(sp_Range r) {
+  if (SP_UNLIKELY(r.fe)) sp_range_fend_int_raise("end");
+  return r.last;
+}
+static SP_UNUSED sp_int sp_range_last_i(sp_Range r) {
+  if (SP_UNLIKELY(r.fe)) sp_range_fend_int_raise("last");
+  if (r.last == INTPTR_MAX) sp_raise_cls("RangeError", "cannot get the last element of endless range");
+  return r.last;
+}
+/* Range#max where the slot is a Float (a literal the inference saw written
+   with a Float end): nil when empty, CRuby's TypeError when excluded */
+static SP_UNUSED sp_float sp_range_max_f(sp_Range r) {
+  if (r.first != INTPTR_MIN && (sp_float)r.first > r.fend) return sp_float_nil();
+  if (r.fe == 2) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+  return r.fend;
+}
+/* Range#cover?(range), as CRuby's r_cover_range_p: b's begin is not below
+   a's, and b's end is within a's -- an excluded end of a admits b's end
+   only when b excludes it too, or when b's greatest member is below it. */
+static SP_UNUSED sp_bool sp_range_cover_rng(sp_Range a, sp_Range b) {
+  if (!a.fe && !b.fe)
+    return b.first >= a.first && (b.last - b.excl) <= (a.last - a.excl);
+  if (a.first != INTPTR_MIN && (b.first == INTPTR_MIN || b.first < a.first)) return 0;
+  sp_float ae = sp_range_end_num(a), be = sp_range_end_num(b);
+  int aex = sp_range_excl_end(a), bex = sp_range_excl_end(b);
+  if (aex == bex) return be <= ae;
+  if (aex) {
+    if (be < ae) return 1;
+    /* b's end at a's excluded one: only an Integer b reaches below it */
+    return 0;
+  }
+  if (be <= ae) return 1;
+  /* b excludes an end past a's: its greatest member decides; a Float
+     excluded end has none (CRuby's rescued TypeError) */
+  if (b.fe) return 0;
+  return (sp_float)(b.last - 1) <= ae;
+}
+/* Range#cover?(float_range) on an Integer range: the operand's ends against
+   the largest value the receiver includes (an excluded Integer end is one
+   less; an excluded Float end admits only an end that is excluded too) */
+static SP_UNUSED sp_bool sp_range_cover_frange(sp_Range r, sp_FloatRange a) {
+  if (a.first < (sp_float)r.first) return 0;
+  if (!r.fe) return a.last <= (sp_float)(r.excl ? r.last - 1 : r.last);
+  if (r.fe == 2) return a.last < r.fend || (a.last == r.fend && a.excl);
+  return a.last <= r.fend;
+}
+/* Range#max boxed: a Float end answers itself (nil when the range is empty,
+   CRuby's TypeError when it is excluded) */
+static SP_UNUSED sp_RbVal sp_range_max_box(sp_Range r) {
+  if (r.fe) {
+    if (r.first != INTPTR_MIN && (sp_float)r.first > r.fend) return sp_box_nil();
+    if (r.fe == 2) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+    return sp_box_float(r.fend);
+  }
+  return sp_box_int_or_nil(sp_range_max_v(r));
+}
+/* Range#minmax: [min, max] off the endpoints, max first as CRuby's
+   range_minmax evaluates them */
+static SP_UNUSED sp_PolyArray *sp_range_minmax_poly(sp_Range r) {
+  sp_RbVal hi = sp_range_max_box(r); SP_GC_ROOT_RBVAL(hi);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, sp_box_int_or_nil(sp_range_min_v(r)));
+  sp_PolyArray_push(a, hi);
+  return a;
+}
+/* A Range built from a boxed end (`lo..x`): nil is the absent end, a Float
+   is kept as written (sp_range_new_fend), anything else converts as an
+   Integer bound does. */
+static SP_UNUSED sp_Range sp_range_new_pend(sp_int f, sp_RbVal e, sp_int x) {
+  if (e.tag == SP_TAG_FLT) return sp_range_new_fend(f, e.v.f, x);
+  return sp_range_new(f, e.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(e), x);
+}
+/* A boxed begin of an Integer-represented Range: a Float there would make it
+   a Float range, which this representation cannot hold. Say so; nil is the
+   absent begin. */
+static SP_UNUSED sp_int sp_range_lo_bound(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_FLT))
+    sp_raise_cls("NotImplementedError", "a Range with a Float begin decided at run time is not supported by spinel");
+  return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MIN : sp_poly_to_i(v);
 }
 /* The doubles in the order of their values, as int64 keys (CRuby's
    double_as_int64 / int64_as_double_to_num for Range#bsearch): a key one
@@ -3555,8 +3649,21 @@ static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { retu
 static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit) { return v.tag == SP_TAG_NIL ? nil_bit : v.tag == SP_TAG_INT ? (int_bit | (int_bit << 2)) : 0; }
 static SP_UNUSED sp_int sp_for_hi_i(sp_int v) { return v == SP_INT_NIL ? (sp_int)INTPTR_MAX : v; }
 static SP_UNUSED sp_int sp_for_lo_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return v; }
-static SP_UNUSED sp_int sp_for_hi(sp_RbVal v) { return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(v); }
-static SP_UNUSED sp_int sp_for_lo(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return sp_poly_to_i(v); }
+/* A boxed Float end bounds the walk as written: `i <= 2.5` is `i <= 2`
+   (floor), `i < 2.5` is `i < 3` (ceil) -- converted, 2.5 was 2 either way */
+static SP_UNUSED sp_int sp_for_hi_f(sp_float f, int excl) {
+  sp_float g = excl ? ceil(f) : floor(f);
+  if (g != g || g >= 9.2e18) return (sp_int)INTPTR_MAX;
+  if (g <= -9.2e18) return (sp_int)INTPTR_MIN + 1;
+  return (sp_int)g;
+}
+static SP_UNUSED sp_int sp_for_hi(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return sp_for_hi_f(v.v.f, 0); return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_for_hi_x(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return sp_for_hi_f(v.v.f, 1); return sp_for_hi(v); }
+static SP_UNUSED sp_int sp_for_lo(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (SP_UNLIKELY(v.tag == SP_TAG_FLT)) sp_raise_cls("TypeError", "can't iterate from Float");
+  return sp_poly_to_i(v);
+}
 static SP_UNUSED sp_int sp_poly_recv_i(const char *m, sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_poly_to_i(v); }
 /* Time.new / Time.utc / Time.local field `i` read out of a box: a nil month
    or day is 1 and a nil hour, minute or second 0, as CRuby defaults them; a
@@ -4190,20 +4297,22 @@ static sp_RbVal sp_poly_conjugate(sp_RbVal v) {
 /* Range#begin / #end on a boxed value (an int-backed sp_Range read out of a
    poly container): the endpoint as an Integer. */
 static sp_int sp_poly_range_begin(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->first; sp_raise_poly_nomethod("begin", v); }
-static sp_int sp_poly_range_end(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->last; sp_raise_poly_nomethod("end", v); }
+static sp_int sp_poly_range_end(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return sp_range_end_i(*(sp_Range *)v.v.p); sp_raise_poly_nomethod("end", v); }
 static SP_UNUSED sp_RbVal sp_poly_range_begin_v(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_FloatRange r = (*(sp_FloatRange *)v.v.p); if (r.omitted & SP_FRANGE_NO_BEGIN) return sp_box_nil(); return sp_frange_box_bound(r, r.first, SP_FRANGE_INT_BEGIN | SP_FRANGE_RT_INT_BEGIN); }
   sp_int b = sp_poly_range_begin(v); return b == SP_INT_NIL ? sp_box_nil() : sp_box_int(b);
 }
 static SP_UNUSED sp_RbVal sp_poly_range_end_v(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_FloatRange r = (*(sp_FloatRange *)v.v.p); if (r.omitted & SP_FRANGE_NO_END) return sp_box_nil(); return sp_frange_box_bound(r, r.last, SP_FRANGE_INT_END | SP_FRANGE_RT_INT_END); }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p && ((sp_Range *)v.v.p)->fe)
+    return sp_box_float(((sp_Range *)v.v.p)->fend);   /* (1..2.5): the end as written */
   sp_int e = sp_poly_range_end(v); return (e == SP_INT_NIL || e == INTPTR_MAX) ? sp_box_nil() : sp_box_int(e);
 }
 /* every Range kind carries its own exclude-end flag; a Range read out of a
    boxed slot answered NoMethodError for it (#5095) */
 static sp_bool sp_poly_range_exclude_end_p(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.v.p) {
-    if (v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->excl != 0;
+    if (v.cls_id == SP_BUILTIN_RANGE) return sp_range_excl_end(*(sp_Range *)v.v.p);
     if (v.cls_id == SP_BUILTIN_FLOAT_RANGE) return ((sp_FloatRange *)v.v.p)->excl != 0;
     if (v.cls_id == SP_BUILTIN_STR_RANGE) return ((sp_StrRange *)v.v.p)->excl != 0;
   }
@@ -8450,6 +8559,11 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
         /* value-based: two Ranges with the same bounds are one Hash key, and a
            fresh box per lookup hashed by pointer and never found it (#3669) */
         sp_Range *rg = (sp_Range *)v.v.p;
+        /* an end written as a Float hashes by that end (eql? tells them apart) */
+        if (rg && rg->fe) {
+          union { sp_float f; uint64_t u; } fu; fu.f = rg->fend;
+          return (sp_int)((((uintptr_t)rg->first * 31u) + (uintptr_t)fu.u) * 4u + (uintptr_t)rg->fe);
+        }
         return rg ? (sp_int)((((uintptr_t)rg->first * 31u) + (uintptr_t)rg->last) * 2u
                               + (uintptr_t)(rg->excl ? 1 : 0)) : 0;
       }
@@ -11537,7 +11651,7 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
     case SP_BUILTIN_STR_ARRAY:  { const char *m = sp_StrArray_max((sp_StrArray *)v.v.p); return m ? sp_box_str(m) : sp_box_nil(); }
     case SP_BUILTIN_SYM_ARRAY: case SP_BUILTIN_PTR_ARRAY: return sp_PolyArray_max(sp_poly_to_poly_array(v));
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_max((sp_PolyArray *)v.v.p);
-    case SP_BUILTIN_RANGE: return sp_box_int_or_nil(sp_range_max_v(*(sp_Range *)v.v.p));
+    case SP_BUILTIN_RANGE: return sp_range_max_box(*(sp_Range *)v.v.p);
     case SP_BUILTIN_STR_RANGE: { const char *m = v.v.p ? sp_srange_max_v(*(sp_StrRange *)v.v.p) : NULL; return m ? sp_box_str(m) : sp_box_nil(); }
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
                return ue ? sp_PolyArray_max(ue) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
@@ -11626,6 +11740,7 @@ static sp_RbVal sp_poly_last(sp_RbVal v) {
      exclusivity-adjusted element instead. */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) {
     sp_Range *rg = (sp_Range *)v.v.p;
+    if (rg->fe) return sp_box_float(rg->fend);   /* (1..2.5).last is 2.5 */
     if (rg->step == 0 || rg->step == 1) return sp_box_int(rg->last);
     sp_IntArray *ia = sp_range_to_ia(*rg);
     SP_GC_ROOT(ia);

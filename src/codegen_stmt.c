@@ -6775,9 +6775,11 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
        Read as a number, the nil end was 0 or INT64_MIN and the loop ran
        zero times. */
     const char *lconv = lpoly ? "sp_for_lo(" : (lty == TY_INT && nullable_int_value(c, lref)) ? "sp_for_lo_i(" : NULL;
-    const char *rconv = rpoly ? "sp_for_hi(" : (rty == TY_INT && nullable_int_value(c, rref)) ? "sp_for_hi_i(" : NULL;
+    const char *rconv = rpoly ? (excl ? "sp_for_hi_x(" : "sp_for_hi(") : (rty == TY_INT && nullable_int_value(c, rref)) ? "sp_for_hi_i(" : NULL;
     int thi = ++g_tmp;
-    emit_indent(b, indent); buf_puts(b, "{ sp_int ");
+    /* a Float end keeps its value: `for i in 1...2.5` runs to 2 (the bound
+       truncated to 2 and stopped at 1) */
+    emit_indent(b, indent); buf_puts(b, rty == TY_FLOAT ? "{ sp_float " : "{ sp_int ");
     buf_printf(b, "_t%d = ", thi);
     if (rty == TY_NIL) buf_puts(b, "(sp_int)INTPTR_MAX");   /* `lo..nil`: endless */
     else {

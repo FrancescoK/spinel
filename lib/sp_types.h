@@ -150,7 +150,12 @@ typedef sp_int sp_sym;
    plain ascending range cannot express: n.downto(m) is {first:n,last:m,step:-1}.
    A zero step (every range built by the literal `a..b` / sp_range_new path) is
    treated as +1, so existing constructions need no change. */
-typedef struct{sp_int first;sp_int last;sp_int excl;sp_int step;}sp_Range;
+/* An Integer begin with a Float end, (1..2.5): CRuby iterates it from the
+   Integer, so first / last / excl are the bounds of that walk (1..2), and the
+   end as written is kept beside them -- fe 1 for an inclusive Float end, 2
+   for an excluded one, fend its value; fe 0 (every other range, and the
+   zero-initialized one) has none. Read through sp_range_end_* (sp_range.h). */
+typedef struct{sp_int first;sp_int last;sp_int excl;sp_int step;sp_float fend;sp_int fe;}sp_Range;
 /* A Float range (1.0..3.0): endpoints kept as sp_float so cover?/include?/begin/
    end are exact (an int-backed sp_Range truncated them). Iteration is a TypeError
    in Ruby (only #step traverses a Float range), so no step/iteration state here.

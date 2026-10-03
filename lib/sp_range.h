@@ -17,8 +17,21 @@
 #include "sp_types.h"   /* sp_Range */
 #include "sp_array.h"   /* sp_IntArray_from_range / _from_range_step */
 
-static inline sp_Range sp_range_new(sp_int f,sp_int l,sp_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;return r;}
-static inline sp_Range sp_range_new_step(sp_int f,sp_int l,sp_int e,sp_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;return r;}
+static inline sp_Range sp_range_new(sp_int f,sp_int l,sp_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;r.fend=0.0;r.fe=0;return r;}
+static inline sp_Range sp_range_new_step(sp_int f,sp_int l,sp_int e,sp_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;r.fend=0.0;r.fe=0;return r;}
+/* (1..2.5) / (1...2.5): an Integer begin with a finite Float end. The walk
+   stops at the last Integer the end admits -- floor(end), or end - 1 for an
+   excluded integral end -- and the end itself is kept for the readers that
+   answer it (sp_types.h). An end past sp_int's reach walks without end, as
+   an endless range does. */
+sp_Range sp_range_new_fend(sp_int f, sp_float e, sp_int x);
+/* A use that answers in Integers what CRuby answers with the Float end
+   (bsearch, step, rand, a clamp to the end): say so for such a Range. */
+void sp_range_fend_unsupported(const char *m);
+static inline void sp_range_int_only(sp_Range r, const char *m){if(r.fe)sp_range_fend_unsupported(m);}
+/* The end as a number for comparisons, and whether it was excluded as written. */
+static inline sp_float sp_range_end_num(sp_Range r){return r.fe?r.fend:(sp_float)r.last;}
+static inline sp_bool sp_range_excl_end(sp_Range r){return r.fe?r.fe==2:r.excl!=0;}
 /* The effective stride: a literal `a..b` range stores 0, which iterates by +1. */
 static inline sp_int sp_range_step(sp_Range r){return r.step==0?1:r.step;}
 /* Number of elements the range enumerates (0 for an empty one), honoring step. */
@@ -55,12 +68,20 @@ static inline sp_int sp_range_min_v(sp_Range r){
   if(r.first==INTPTR_MIN)sp_raise_cls("RangeError","cannot get the minimum of beginless range");
   if(r.last==INTPTR_MAX)return r.first;
   if(sp_range_count(r)<=0)return SP_INT_NIL; sp_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
+void sp_range_fend_max_raise(sp_Range r);
 static inline sp_int sp_range_max_v(sp_Range r){
   /* a beginless range's maximum is its end; an endless one has none (#3668) */
+  /* a Float end (an infinite one too) is the maximum, which this Integer
+     reader cannot answer */
+  if(r.fe){if(r.first!=INTPTR_MIN&&(sp_float)r.first>r.fend)return SP_INT_NIL;sp_range_fend_max_raise(r);}
   if(r.last==INTPTR_MAX)sp_raise_cls("RangeError","cannot get the maximum of endless range");
   if(r.first==INTPTR_MIN)return r.excl?r.last-1:r.last;
   if(sp_range_count(r)<=0)return SP_INT_NIL; sp_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
-static inline sp_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
+/* == compares the ends as numbers ((1..2.0) == (1..2)), eql? by class too */
+static inline sp_bool sp_range_eq(sp_Range a,sp_Range b){
+  if(!a.fe&&!b.fe)return a.first==b.first&&a.last==b.last&&a.excl==b.excl;
+  return a.first==b.first&&sp_range_end_num(a)==sp_range_end_num(b)&&sp_range_excl_end(a)==sp_range_excl_end(b);}
+static inline sp_bool sp_range_eql(sp_Range a,sp_Range b){return (a.fe!=0)==(b.fe!=0)&&sp_range_eq(a,b);}
 
 sp_bool sp_range_include(sp_Range *r, sp_int x);
 sp_bool sp_range_cover_f(sp_Range *r, sp_float x);

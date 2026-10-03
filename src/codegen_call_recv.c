@@ -10184,14 +10184,18 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   }
   int t = ++g_tmp;
   Buf rb = expr_buf(c, recv);
+  /* a Float stride walks to the end as written (sp_range_end_num); an
+     Integer one over a Float end yields Floats in CRuby, which this
+     Integer array cannot hold (sp_range_int_only) */
   if (is_float)
-    buf_printf(b, "({ sp_Range _t%d = %s; sp_FloatArray_from_step((sp_float)_t%d.first, (sp_float)_t%d.last, ",
+    buf_printf(b, "({ sp_Range _t%d = %s; sp_FloatArray_from_step((sp_float)_t%d.first, sp_range_end_num(_t%d), ",
                t, rb.p ? rb.p : "", t, t);
   else
-    buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range_step(_t%d.first, _t%d.last, ",
-               t, rb.p ? rb.p : "", t, t);
+    buf_printf(b, "({ sp_Range _t%d = %s; sp_range_int_only(_t%d, \"Range#step\"); sp_IntArray_from_range_step(_t%d.first, _t%d.last, ",
+               t, rb.p ? rb.p : "", t, t, t);
   if (is_float) emit_float_expr(c, argv[0], b); else emit_int_expr(c, argv[0], b);
-  buf_printf(b, ", _t%d.excl); })", t);
+  if (is_float) buf_printf(b, ", sp_range_excl_end(_t%d)); })", t);
+  else buf_printf(b, ", _t%d.excl); })", t);
   free(rb.p);
   return is_float ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
 }
@@ -10320,18 +10324,15 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        fields cannot hold; #to_s renders it too (#3896). */
     if (argc == 0 && block < 0) {
       int fe = range_lit_float_end(c, recv);
-      if (fe >= 0 && (sp_streq(name, "end") || sp_streq(name, "last") ||
-                      sp_streq(name, "max"))) {
+      if (fe >= 0 && (sp_streq(name, "end") || sp_streq(name, "last"))) {
         emit_float_expr(c, fe, b);
         return 1;
       }
-      if (fe >= 0 && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
-        int tr7 = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", tr7); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_sprintf(\"%%lld%s%%s\", (long long)_t%d.first, sp_float_to_s(",
-                   (int)(nt_int(nt, unwrap_parens(c, recv), "flags", 0) & 4) ? "..." : "..", tr7);
-        emit_float_expr(c, fe, b);
-        buf_puts(b, ")); })");
+      /* max is nil for an empty one and CRuby's TypeError for an excluded end */
+      if (fe >= 0 && sp_streq(name, "max")) {
+        int trm = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", trm); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_range_max_f(_t%d); })", trm);
         return 1;
       }
     }
@@ -10738,8 +10739,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         else if (sp_streq(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
           int t2 = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
-          buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
-                     t2, t, t2, t2, t, t);
+          buf_printf(b, "; sp_range_cover_rng(_t%d, _t%d); })", t, t2);
         }
         else {
           /* sp_range_include takes sp_int; a float arg (`(1..).include?(2.4)`)
@@ -10797,13 +10797,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         /* #end is nil for ANY endless range, however it was spelled: `1..nil`
            and a range held in a variable read the sentinel, where the
            literal-shape arm above sees no syntax to key on (#3670) */
-        buf_printf(b, "(_t%d.last == INTPTR_MAX ? SP_INT_NIL : _t%d.last)", t, t);
+        buf_printf(b, "(_t%d.last == INTPTR_MAX && !_t%d.fe ? SP_INT_NIL : sp_range_end_i(_t%d))", t, t, t);
       }
       else if (sp_streq(name, "last") || sp_streq(name, "end")) {
         /* #last enumerates, so an endless range has none (#3668) */
         if (argc == 0 && sp_streq(name, "last"))
-          buf_printf(b, "({ if (_t%d.last == INTPTR_MAX) sp_raise_cls(\"RangeError\","
-                        " \"cannot get the last element of endless range\"); _t%d.last; })", t, t);
+          buf_printf(b, "sp_range_last_i(_t%d)", t);
         else if (argc == 1 && sp_streq(name, "last")) {
           /* last(n): collect up to n elements ending at last */
           int tf = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
@@ -10847,7 +10846,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "sum"))
         buf_printf(b, "sp_IntArray_sum(sp_range_to_ia(_t%d), 0)", t);
       else if (sp_streq(name, "exclude_end?"))
-        buf_printf(b, "(_t%d.excl != 0)", t);
+        buf_printf(b, "sp_range_excl_end(_t%d)", t);
       else if (sp_streq(name, "eql?") || sp_streq(name, "equal?")) {
         /* the unboxed sp_Range has no object identity: equal? compares
            components, like the Complex/Rational value arms */
@@ -10856,7 +10855,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           /* a value of another class is never eql? to a Range */
           buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b); buf_puts(b, "); 0; })");
         }
-        else { buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_printf(b, "sp_range_eql(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
       else if (sp_streq(name, "overlap?")) {
         int t2 = ++g_tmp;
@@ -10865,14 +10864,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
                    t, t2, t2, t2, t, t);
       }
       else if (sp_streq(name, "minmax")) {
-        /* a poly pair: an empty (backwards) range yields [nil, nil] (#2412) */
-        int ma = ++g_tmp, mv = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_int _t%d = sp_range_min_v(_t%d);"
-                      " sp_PolyArray_push(_t%d, _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d));"
-                      " _t%d = sp_range_max_v(_t%d);"
-                      " sp_PolyArray_push(_t%d, _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d));"
-                      " _t%d; })", ma, ma, mv, t, ma, mv, mv, mv, t, ma, mv, mv, ma);
+        /* a poly pair off the endpoints, max first: an empty (backwards)
+           range yields [nil, nil] (#2412), and a Float end answers itself */
+        buf_printf(b, "sp_range_minmax_poly(_t%d)", t);
       }
       return 1;
     }

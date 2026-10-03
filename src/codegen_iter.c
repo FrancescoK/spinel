@@ -6362,6 +6362,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       int tr = ++g_tmp, ts2 = ++g_tmp, tl2 = ++g_tmp, tv2 = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+      /* over a Float end CRuby yields Floats: the walk's values are those
+         Floats exactly, so a Float parameter (a literal the inference saw)
+         takes them as they are; any other says it cannot */
+      { Scope *bsc = comp_scope_of(c, block);
+        LocalVar *plv = (bsc && p0_orig) ? scope_local(bsc, p0_orig) : NULL;
+        if (!plv || plv->type != TY_FLOAT) {
+          emit_indent(b, indent);
+          buf_printf(b, "sp_range_int_only(_t%d, \"Range#step\");\n", tr);
+        } }
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = ", ts2); emit_int_expr(c, sargv[0], b); buf_puts(b, ";\n");
       emit_indent(b, indent);

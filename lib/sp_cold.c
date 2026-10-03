@@ -3240,12 +3240,37 @@ sp_bool sp_range_include(sp_Range *r, sp_int x){SP_GC_ROOT(r);
     if (r->last != INTPTR_MAX && (r->excl ? x >= r->last : x > r->last)) return 0;
     return 1;
   }
+  /* a Float end: an Integer is in it when the walk reaches it */
+  if (r->fe) return x >= r->first && (r->excl ? x < r->last : x <= r->last);
   sp_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
   return sp_range_count(*r)>0 && lo<=x && x<=hi;
 }
 /* A Float is compared against the bounds as a Float, never truncated: 2.5 is
    not in 1..2. The sentinels leave their side open, as in sp_range_include. */
-sp_bool sp_range_cover_f(sp_Range *r, sp_float x){return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->last==INTPTR_MAX||(r->excl?x<(sp_float)r->last:x<=(sp_float)r->last));}
+sp_bool sp_range_cover_f(sp_Range *r, sp_float x){
+  if (r->fe) return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->fe==2?x<r->fend:x<=r->fend);
+  return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->last==INTPTR_MAX||(r->excl?x<(sp_float)r->last:x<=(sp_float)r->last));}
+sp_Range sp_range_new_fend(sp_int f, sp_float e, sp_int x) {
+  sp_Range r = sp_range_new(f, 0, 0);
+  r.fend = e; r.fe = x ? 2 : 1;
+  sp_float fl = floor(e);
+  if (e != e) { r.last = f - 1; return r; }             /* NaN: nothing compares */
+  if (fl >= 9.2e18) { r.last = INTPTR_MAX; return r; }  /* past sp_int: no end to walk to */
+  if (fl <= -9.2e18) { r.last = f - 1; return r; }
+  r.last = (sp_int)fl;
+  if (x && fl == e) r.excl = 1;                         /* 1...3.0 stops before 3 */
+  return r;
+}
+/* Range#max of an Integer range whose end is a Float (and not empty): an
+   excluded Float end has no greatest member, as CRuby says; an included
+   one is the maximum, a Float an Integer slot cannot hold. */
+void sp_range_fend_unsupported(const char *m) {
+  sp_raise_cls("NotImplementedError", sp_sprintf("%s: this Range's end is a Float, which spinel answers here only in Integers", m));
+}
+void sp_range_fend_max_raise(sp_Range r) {
+  if (r.fe == 2) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+  sp_raise_cls("NotImplementedError", "Range#max: this Range's end is a Float, which spinel reads here as an Integer");
+}
 /* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
 /* Range#inspect: as #to_s, except that a range with NO bound at either end
    names them -- CRuby prints "nil..nil", not ".." (#3670). */
@@ -3255,6 +3280,7 @@ const char *sp_range_inspect(sp_Range r) {
   return sp_range_str(r);
 }
 const char *sp_range_str(sp_Range r) {
+  if (r.fe) return sp_sprintf("%lld%s%s", (long long)r.first, r.fe == 2 ? "..." : "..", sp_float_to_s(r.fend));
   const char *dots = r.excl ? "..." : "..";
   if (r.first == INTPTR_MIN && r.last == INTPTR_MAX) return dots;
   if (r.first == INTPTR_MIN) return sp_sprintf("%s%lld", dots, (long long)r.last);

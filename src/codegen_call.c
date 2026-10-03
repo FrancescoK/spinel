@@ -17625,15 +17625,12 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
           /* Compare the largest value each range actually includes: an
              exclusive INTEGER end is one less, while an exclusive float end
              only approaches its bound and so compares the same. */
+          /* a receiver or operand whose end was written as a Float compares
+             that end (sp_range_cover_frange / _rng) */
           if (art3 == TY_FLOAT_RANGE)
-            buf_printf(b, "; (sp_bool)(_t%d.first >= (sp_float)_t%d.first && "
-                          "_t%d.last <= (sp_float)(_t%d.excl ? _t%d.last - 1 : _t%d.last)); })",
-                       tA, tR, tA, tR, tR, tR);
+            buf_printf(b, "; sp_range_cover_frange(_t%d, _t%d); })", tR, tA);
           else
-            buf_printf(b, "; (sp_bool)(_t%d.first >= _t%d.first && "
-                          "(_t%d.excl ? _t%d.last - 1 : _t%d.last) <= "
-                          "(_t%d.excl ? _t%d.last - 1 : _t%d.last)); })",
-                       tA, tR, tA, tA, tA, tR, tR, tR);
+            buf_printf(b, "; sp_range_cover_rng(_t%d, _t%d); })", tR, tA);
           return 1;
         } }
       if (float_range_arg) {
