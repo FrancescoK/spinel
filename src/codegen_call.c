@@ -2264,6 +2264,16 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
 /* Emit a node as an sp_Rational value: a Rational stays as-is, an Integer is
    lifted to n/1. Used to coerce the other operand of a Rational arithmetic /
    comparison op. */
+/* The Integer receiver of n.times / lo.upto / hi.downto: a boxed one that is
+   not an Integer -- nil above all -- has no such method (NoMethodError), where
+   the argument conversion raised TypeError for it. */
+static void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
+  if (comp_ntype(c, recv) == TY_POLY) {
+    buf_puts(b, "sp_poly_int_recv("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name);
+    return;
+  }
+  emit_int_expr(c, recv, b);
+}
 /* Kernel#Rational's argument: as emit_rat_coerce, but a boxed nil is the
    TypeError Rational(nil) raises rather than the integer 0. */
 static void emit_rat_kernel_arg(Compiler *c, int node, Buf *b) {
@@ -25191,13 +25201,13 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
       (comp_ntype(c, recv) == TY_INT || comp_ntype(c, recv) == TY_POLY) &&
       comp_ntype(c, id) == TY_RANGE) {
     if (sp_streq(name, "times")) {
-      buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_int_expr(c, recv, b); buf_puts(b, ", .excl = 1 }");
+      buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_int_recv_named(c, recv, name, b); buf_puts(b, ", .excl = 1 }");
       return;
     }
     if (sp_streq(name, "upto") && argc == 1) {
       /* a Float limit is not truncated: n.upto(2.5) stops at 2, i.e. floor. */
       int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
-      buf_puts(b, "(sp_Range){ .first = "); emit_int_expr(c, recv, b);
+      buf_puts(b, "(sp_Range){ .first = "); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", .last = ");
       if (lf) { buf_puts(b, "(sp_int)floor("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
@@ -25209,7 +25219,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
          cannot carry the direction, which its .to_a would lose. A Float limit
          is not truncated: n.downto(1.5) stops at 2, i.e. ceil. */
       int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
-      buf_puts(b, "sp_range_new_step("); emit_int_expr(c, recv, b);
+      buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", ");
       if (lf) { buf_puts(b, "(sp_int)ceil("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);

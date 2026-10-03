@@ -1,0 +1,6 @@
+nil.times: NoMethodError
+nil.upto: NoMethodError
+nil.downto: NoMethodError
+n.times: [0, 1, 2]
+n.upto: [3, 4, 5]
+n.downto: [3, 2, 1]
