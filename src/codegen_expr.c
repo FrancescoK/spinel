@@ -1831,6 +1831,290 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
   return 0;
 }
 
+/* Instance-variable reads, class- and global-variable reads and writes, and the $1 / $& references (emit_expr_node's arms, in their order) */
+static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "InstanceVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@x" */
+    Scope *cs = comp_scope_of(c, id);
+    /* A POLY ivar handed to a parameter the callee appends to in place: a
+       plain String it holds becomes the shared handle and is stored back
+       first, as a POLY local's marked read is (poly_strbuf_lift); an
+       instance's field store takes its write barrier from gc_wb_insert. */
+    if (c->poly_strbuf_lift[id] && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
+      int vl = view_push_repr(c, id, VR_POLY_LIFT, 0);
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_expr_node(c, id, &rl);
+      view_pop(c, vl);
+      emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      free(rl.p);
+      return 1;
+    }
+    if (g_ie_nil_ivars) {
+      TyKind it = comp_ntype(c, id);
+      const char *nv = nil_value(it);
+      buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
+      return 1;
+    }
+    /* inside a shared-mutable shim over THIS slot: both the reads and the
+       arm's own write-back go to the shadow (see codegen_internal.h) */
+    if (g_sb_iv_name && nm && sp_streq(nm, g_sb_iv_name) &&
+        strbuf_ivar_owner(c, id) == g_sb_iv_cid) {
+      buf_printf(b, "%s", g_sb_iv_repl);
+      return 1;
+    }
+    /* a shared-mutable string slot: a marked read yields the live HANDLE, an
+       ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
+    { char srefI[1024];
+      int svm = c->strbuf_box[id];
+      int vsm = view_push_repr(c, id, VR_STRBUF_BOX, 1);   /* let slot_ref resolve regardless of mark */
+      int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
+      view_pop(c, vsm);
+      if (is_sb) {
+        if (svm) buf_printf(b, "%s", srefI);
+        else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                        srefI, srefI, srefI);
+        return 1;
+      } }
+    if (cs && cs->is_cmethod && cs->class_id >= 0)
+      buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));  /* module/class-level ivar */
+    else if (cs && cs->class_id < 0 && g_ie_class_id >= 0) {
+      /* inside instance_eval block: access ivar via receiver pointer; one
+         the receiver's class never writes is nil, as on that object (the
+         struct has no field for it) */
+      int has = 0;
+      for (int k = g_ie_class_id; k >= 0 && !has; k = c->classes[k].parent)
+        has = comp_ivar_index(&c->classes[k], nm) >= 0;
+      if (!has) {
+        TyKind it = comp_ntype(c, id);
+        const char *nv = nil_value(it);
+        buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
+      }
+      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    }
+    else if (cs && cs->class_id < 0) {
+      /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
+      int tl = comp_class_index(c, "Toplevel");
+      if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", iv_c(nm + 1));
+      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    }
+    else
+      buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
+    Scope *s = comp_scope_of(c, id);
+    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid >= 0) {
+      cid = comp_cvar_owner(c, cid, nm);
+      buf_printf(b, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+      return 1;
+    }
+    unsupported(c, id, "class variable read (no class scope)");
+  }
+  if (sp_streq(ty, "ClassVariableWriteNode")) {  /* in value position: yields the assigned value */
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *s = comp_scope_of(c, id);
+    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) { unsupported(c, id, "class variable write (no class scope)"); return 1; }
+    cid = comp_cvar_owner(c, cid, nm);
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[cid], nm);
+    if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
+    buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
+    if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
+    else if (ct == TY_POLY) emit_boxed(c, v, b);
+    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
+    /* the slot's nil, as the statement form writes it: an endless `def
+       self.b = (@@x = nil)` stored the numeric 0 a bare NilNode renders as */
+    else if (nt_kind(nt, v) == NK_NilNode && nil_value(ct)) buf_puts(b, nil_value(ct));
+    /* a boxed value into a slot typed by its other writes (a writer's
+       parameter reached through a `self.class.x =` dispatch, which boxes
+       what it passes) is unboxed into the slot, as an ivar's is */
+    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
+      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
+    }
+    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
+    /* `$g += v` as a value: parenthesized assignment yielding the updated
+       slot, the same shapes as the statement form (string + concatenates). */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable op-write (unregistered global)"); return 1; }
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
+    if (lv->type == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "(gv_%s = sp_str_concat(gv_%s, ", rn, rn);
+      emit_str_expr(c, v, b); buf_puts(b, "))");
+    }
+    else if (emit_array_op_assign_value(c, gref, lv->type, op, v, b)) { }
+    else if (emit_poly_op_assign_value(c, gref, lv->type, op, v, b)) { }
+    else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, lv->nullable_int, b)) { }
+    else {
+      buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
+      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableWriteNode")) {
+    /* `$g = v` as a value: ({ <the write>; gv_g; }) -- the statement form
+       builds the slot's value, and the slot is the expression's value */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable write (unregistered global)"); return 1; }
+    buf_puts(b, "({ ");
+    emit_stmt_inner(c, id, b, 0);
+    buf_printf(b, "gv_%s; })", rn);
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable or/and-write (unregistered global)"); return 1; }
+    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
+    emit_slot_orw_value(c, lv->type, gref, nt_ref(nt, id, "value"),
+                        sp_streq(ty, "GlobalVariableOrWriteNode"), b);
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    Scope *s = comp_scope_of(c, id);
+    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return 1; }
+    cid = comp_cvar_owner(c, cid, nm);
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[cid], nm);
+    if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
+    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+    if (ct == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "(%s = sp_str_plus(%s, ", ref, ref);
+      emit_str_expr(c, v, b); buf_puts(b, "))");
+    }
+    else if (emit_array_op_assign_value(c, ref, ct, op, v, b)) { }
+    else if (emit_poly_op_assign_value(c, ref, ct, op, v, b)) { }
+    else if (emit_scalar_op_assign_value(c, ref, ct, op, v,
+                                         idx >= 0 && c->classes[cid].cvar_nullable_int[idx], b)) { }
+    else {
+      buf_printf(b, "(%s %s= ", ref, op ? op : "+");
+      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableOrWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *s = comp_scope_of(c, id);
+    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return 1; }
+    cid = comp_cvar_owner(c, cid, nm);
+    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+    int oidx = comp_cvar_index(&c->classes[cid], nm);
+    TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
+    buf_puts(b, "(");
+    emit_slot_truthy(ot, ref, b);
+    buf_printf(b, " ? %s : (%s = ", ref, ref);
+    if (ot == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
+    emit_cvar_set_flag_after(c, cid, nm, b);
+    buf_puts(b, "))");
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *s = comp_scope_of(c, id);
+    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return 1; }
+    cid = comp_cvar_owner(c, cid, nm);
+    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+    int aidx = comp_cvar_index(&c->classes[cid], nm);
+    TyKind at = aidx >= 0 ? c->classes[cid].cvar_types[aidx] : TY_UNKNOWN;
+    buf_puts(b, "(");
+    emit_slot_truthy(at, ref, b);
+    buf_printf(b, " ? (%s = ", ref);
+    if (at == TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
+    buf_printf(b, ") : %s)", ref);
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    /* predefined punctuation globals: $/ is the record separator "\n"; $! / $; /
+       $, read nil (spinel doesn't honor the split/print-sep defaults) */
+    if (nm && sp_streq(nm, "$stdin")) { buf_puts(b, "sp_io_stdin()"); return 1; }
+    /* A program that REASSIGNS $stdout / $stderr gets a real global for it
+       (gv_stdout / gv_stderr, NULL until the assignment runs). Reading the
+       stream has to consult that global, or `$stderr = $stdout` writes to the
+       real stderr anyway and `$stderr == $stdout` answers false (#3406).
+       A program that never assigns has no such global and emits as before. */
+    if (nm && (sp_streq(nm, "$stdout") || sp_streq(nm, "$stderr"))) {
+      const char *base = sp_streq(nm, "$stdout") ? "sp_io_stdout()" : "sp_io_stderr()";
+      const char *gv = sp_streq(nm, "$stdout") ? "gv_stdout" : "gv_stderr";
+      LocalVar *sv = comp_gvar(c, nm + 1);
+      if (sv && sv->type == TY_IO) buf_printf(b, "(%s ? %s : %s)", gv, gv, base);
+      else buf_puts(b, base);
+      return 1;
+    }
+    if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return 1; }
+    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return 1; }
+    if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return 1; }
+    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return 1; }
+    if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return 1; }
+    /* regex match globals that Prism may emit as GlobalVariableReadNode */
+    if (nm && sp_streq(nm, "$~")) { buf_puts(b, "sp_re_last_matchdata()"); return 1; }
+    if (nm && sp_streq(nm, "$&"))  { buf_puts(b, "sp_re_match_str");  return 1; }
+    if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_pre_match()");  return 1; }
+    if (nm && sp_streq(nm, "$'"))                          { buf_puts(b, "sp_re_post_match()"); return 1; }
+    if (nm && sp_streq(nm, "$+")) {
+      buf_puts(b, "({ int _bri = 9; while (_bri > 0 && !sp_re_captures[_bri-1]) _bri--; _bri > 0 ? sp_re_captures[_bri-1] : NULL; })");
+      return 1;
+    }
+    if (nm && nm[0] == '$') {
+      const char *rn = comp_resolve_gvar(c, nm + 1);
+      if (comp_gvar(c, rn)) { buf_printf(b, "gv_%s", rn); return 1; }
+    }
+    unsupported(c, id, "global variable read");
+  }
+  if (sp_streq(ty, "NumberedReferenceReadNode")) {
+    /* $1..$9 -> the n-th capture of the last match (NULL when absent) */
+    long long n = nt_int(nt, id, "number", 0);
+    if (n >= 1 && n <= 9) buf_printf(b, "sp_re_captures[%lld]", n);
+    else buf_puts(b, "NULL");
+    return 1;
+  }
+  if (sp_streq(ty, "BackReferenceReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) { buf_puts(b, "NULL"); return 1; }
+    if (sp_streq(nm, "$~")) buf_puts(b, "sp_re_last_matchdata()");
+    else if (sp_streq(nm, "$&")) buf_puts(b, "sp_re_match_str");
+    else if (sp_streq(nm, "$`"))                 buf_puts(b, "sp_re_pre_match()");
+    else if (sp_streq(nm, "$'"))                 buf_puts(b, "sp_re_post_match()");
+    else if (sp_streq(nm, "$+")) {
+      /* last group that participated: scan captures[] backwards */
+      buf_puts(b, "({ int _bri = 9; while (_bri > 0 && !sp_re_captures[_bri-1]) _bri--; _bri > 0 ? sp_re_captures[_bri-1] : NULL; })");
+    }
+    else buf_puts(b, "NULL");
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -2476,285 +2760,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_obj_upcast_prefix(c, comp_ntype(c, id), ty_object(g_emitting_class_id), b);
     buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
   }
-  if (sp_streq(ty, "InstanceVariableReadNode")) {
-    const char *nm = nt_str(nt, id, "name");  /* "@x" */
-    Scope *cs = comp_scope_of(c, id);
-    /* A POLY ivar handed to a parameter the callee appends to in place: a
-       plain String it holds becomes the shared handle and is stored back
-       first, as a POLY local's marked read is (poly_strbuf_lift); an
-       instance's field store takes its write barrier from gc_wb_insert. */
-    if (c->poly_strbuf_lift[id] && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
-      int vl = view_push_repr(c, id, VR_POLY_LIFT, 0);
-      Buf rl; memset(&rl, 0, sizeof rl);
-      emit_expr_node(c, id, &rl);
-      view_pop(c, vl);
-      emit_poly_lift_ref(rl.p ? rl.p : "", b);
-      free(rl.p);
-      return;
-    }
-    if (g_ie_nil_ivars) {
-      TyKind it = comp_ntype(c, id);
-      const char *nv = nil_value(it);
-      buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
-      return;
-    }
-    /* inside a shared-mutable shim over THIS slot: both the reads and the
-       arm's own write-back go to the shadow (see codegen_internal.h) */
-    if (g_sb_iv_name && nm && sp_streq(nm, g_sb_iv_name) &&
-        strbuf_ivar_owner(c, id) == g_sb_iv_cid) {
-      buf_printf(b, "%s", g_sb_iv_repl);
-      return;
-    }
-    /* a shared-mutable string slot: a marked read yields the live HANDLE, an
-       ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
-    { char srefI[1024];
-      int svm = c->strbuf_box[id];
-      int vsm = view_push_repr(c, id, VR_STRBUF_BOX, 1);   /* let slot_ref resolve regardless of mark */
-      int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
-      view_pop(c, vsm);
-      if (is_sb) {
-        if (svm) buf_printf(b, "%s", srefI);
-        else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                        srefI, srefI, srefI);
-        return;
-      } }
-    if (cs && cs->is_cmethod && cs->class_id >= 0)
-      buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));  /* module/class-level ivar */
-    else if (cs && cs->class_id < 0 && g_ie_class_id >= 0) {
-      /* inside instance_eval block: access ivar via receiver pointer; one
-         the receiver's class never writes is nil, as on that object (the
-         struct has no field for it) */
-      int has = 0;
-      for (int k = g_ie_class_id; k >= 0 && !has; k = c->classes[k].parent)
-        has = comp_ivar_index(&c->classes[k], nm) >= 0;
-      if (!has) {
-        TyKind it = comp_ntype(c, id);
-        const char *nv = nil_value(it);
-        buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
-      }
-      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    }
-    else if (cs && cs->class_id < 0) {
-      /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
-      int tl = comp_class_index(c, "Toplevel");
-      if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", iv_c(nm + 1));
-      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    }
-    else
-      buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableReadNode")) {
-    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid >= 0) {
-      cid = comp_cvar_owner(c, cid, nm);
-      buf_printf(b, "cvar_%s_%s", c->classes[cid].name, nm + 2);
-      return;
-    }
-    unsupported(c, id, "class variable read (no class scope)");
-  }
-  if (sp_streq(ty, "ClassVariableWriteNode")) {  /* in value position: yields the assigned value */
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) { unsupported(c, id, "class variable write (no class scope)"); return; }
-    cid = comp_cvar_owner(c, cid, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[cid], nm);
-    if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
-    buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
-    if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
-    else if (ct == TY_POLY) emit_boxed(c, v, b);
-    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
-    /* the slot's nil, as the statement form writes it: an endless `def
-       self.b = (@@x = nil)` stored the numeric 0 a bare NilNode renders as */
-    else if (nt_kind(nt, v) == NK_NilNode && nil_value(ct)) buf_puts(b, nil_value(ct));
-    /* a boxed value into a slot typed by its other writes (a writer's
-       parameter reached through a `self.class.x =` dispatch, which boxes
-       what it passes) is unboxed into the slot, as an ivar's is */
-    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
-      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
-    }
-    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
-    emit_cvar_set_flag_after(c, cid, nm, b);
-    buf_puts(b, ")");
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
-    /* `$g += v` as a value: parenthesized assignment yielding the updated
-       slot, the same shapes as the statement form (string + concatenates). */
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    if (!lv) { unsupported(c, id, "global variable op-write (unregistered global)"); return; }
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
-    if (lv->type == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "(gv_%s = sp_str_concat(gv_%s, ", rn, rn);
-      emit_str_expr(c, v, b); buf_puts(b, "))");
-    }
-    else if (emit_array_op_assign_value(c, gref, lv->type, op, v, b)) { }
-    else if (emit_poly_op_assign_value(c, gref, lv->type, op, v, b)) { }
-    else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, lv->nullable_int, b)) { }
-    else {
-      buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
-      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
-    }
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableWriteNode")) {
-    /* `$g = v` as a value: ({ <the write>; gv_g; }) -- the statement form
-       builds the slot's value, and the slot is the expression's value */
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    if (!lv) { unsupported(c, id, "global variable write (unregistered global)"); return; }
-    buf_puts(b, "({ ");
-    emit_stmt_inner(c, id, b, 0);
-    buf_printf(b, "gv_%s; })", rn);
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    if (!lv) { unsupported(c, id, "global variable or/and-write (unregistered global)"); return; }
-    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
-    emit_slot_orw_value(c, lv->type, gref, nt_ref(nt, id, "value"),
-                        sp_streq(ty, "GlobalVariableOrWriteNode"), b);
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return; }
-    cid = comp_cvar_owner(c, cid, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[cid], nm);
-    if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
-    if (ct == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "(%s = sp_str_plus(%s, ", ref, ref);
-      emit_str_expr(c, v, b); buf_puts(b, "))");
-    }
-    else if (emit_array_op_assign_value(c, ref, ct, op, v, b)) { }
-    else if (emit_poly_op_assign_value(c, ref, ct, op, v, b)) { }
-    else if (emit_scalar_op_assign_value(c, ref, ct, op, v,
-                                         idx >= 0 && c->classes[cid].cvar_nullable_int[idx], b)) { }
-    else {
-      buf_printf(b, "(%s %s= ", ref, op ? op : "+");
-      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ")");
-    }
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableOrWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) { unsupported(c, id, "class variable or-write (no class scope)"); return; }
-    cid = comp_cvar_owner(c, cid, nm);
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
-    int oidx = comp_cvar_index(&c->classes[cid], nm);
-    TyKind ot = oidx >= 0 ? c->classes[cid].cvar_types[oidx] : TY_UNKNOWN;
-    buf_puts(b, "(");
-    emit_slot_truthy(ot, ref, b);
-    buf_printf(b, " ? %s : (%s = ", ref, ref);
-    if (ot == TY_POLY) emit_boxed(c, v, b);
-    else emit_expr(c, v, b);
-    emit_cvar_set_flag_after(c, cid, nm, b);
-    buf_puts(b, "))");
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableAndWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id >= 0 ? s->class_id : g_class_body_id;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) { unsupported(c, id, "class variable and-write (no class scope)"); return; }
-    cid = comp_cvar_owner(c, cid, nm);
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
-    int aidx = comp_cvar_index(&c->classes[cid], nm);
-    TyKind at = aidx >= 0 ? c->classes[cid].cvar_types[aidx] : TY_UNKNOWN;
-    buf_puts(b, "(");
-    emit_slot_truthy(at, ref, b);
-    buf_printf(b, " ? (%s = ", ref);
-    if (at == TY_POLY) emit_boxed(c, v, b);
-    else emit_expr(c, v, b);
-    buf_printf(b, ") : %s)", ref);
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableReadNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    /* predefined punctuation globals: $/ is the record separator "\n"; $! / $; /
-       $, read nil (spinel doesn't honor the split/print-sep defaults) */
-    if (nm && sp_streq(nm, "$stdin")) { buf_puts(b, "sp_io_stdin()"); return; }
-    /* A program that REASSIGNS $stdout / $stderr gets a real global for it
-       (gv_stdout / gv_stderr, NULL until the assignment runs). Reading the
-       stream has to consult that global, or `$stderr = $stdout` writes to the
-       real stderr anyway and `$stderr == $stdout` answers false (#3406).
-       A program that never assigns has no such global and emits as before. */
-    if (nm && (sp_streq(nm, "$stdout") || sp_streq(nm, "$stderr"))) {
-      const char *base = sp_streq(nm, "$stdout") ? "sp_io_stdout()" : "sp_io_stderr()";
-      const char *gv = sp_streq(nm, "$stdout") ? "gv_stdout" : "gv_stderr";
-      LocalVar *sv = comp_gvar(c, nm + 1);
-      if (sv && sv->type == TY_IO) buf_printf(b, "(%s ? %s : %s)", gv, gv, base);
-      else buf_puts(b, base);
-      return;
-    }
-    if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
-    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return; }
-    if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
-    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return; }
-    if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
-    /* regex match globals that Prism may emit as GlobalVariableReadNode */
-    if (nm && sp_streq(nm, "$~")) { buf_puts(b, "sp_re_last_matchdata()"); return; }
-    if (nm && sp_streq(nm, "$&"))  { buf_puts(b, "sp_re_match_str");  return; }
-    if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_pre_match()");  return; }
-    if (nm && sp_streq(nm, "$'"))                          { buf_puts(b, "sp_re_post_match()"); return; }
-    if (nm && sp_streq(nm, "$+")) {
-      buf_puts(b, "({ int _bri = 9; while (_bri > 0 && !sp_re_captures[_bri-1]) _bri--; _bri > 0 ? sp_re_captures[_bri-1] : NULL; })");
-      return;
-    }
-    if (nm && nm[0] == '$') {
-      const char *rn = comp_resolve_gvar(c, nm + 1);
-      if (comp_gvar(c, rn)) { buf_printf(b, "gv_%s", rn); return; }
-    }
-    unsupported(c, id, "global variable read");
-  }
-  if (sp_streq(ty, "NumberedReferenceReadNode")) {
-    /* $1..$9 -> the n-th capture of the last match (NULL when absent) */
-    long long n = nt_int(nt, id, "number", 0);
-    if (n >= 1 && n <= 9) buf_printf(b, "sp_re_captures[%lld]", n);
-    else buf_puts(b, "NULL");
-    return;
-  }
-  if (sp_streq(ty, "BackReferenceReadNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm) { buf_puts(b, "NULL"); return; }
-    if (sp_streq(nm, "$~")) buf_puts(b, "sp_re_last_matchdata()");
-    else if (sp_streq(nm, "$&")) buf_puts(b, "sp_re_match_str");
-    else if (sp_streq(nm, "$`"))                 buf_puts(b, "sp_re_pre_match()");
-    else if (sp_streq(nm, "$'"))                 buf_puts(b, "sp_re_post_match()");
-    else if (sp_streq(nm, "$+")) {
-      /* last group that participated: scan captures[] backwards */
-      buf_puts(b, "({ int _bri = 9; while (_bri > 0 && !sp_re_captures[_bri-1]) _bri--; _bri > 0 ? sp_re_captures[_bri-1] : NULL; })");
-    }
-    else buf_puts(b, "NULL");
-    return;
-  }
+  if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
