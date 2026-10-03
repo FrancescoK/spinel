@@ -45,6 +45,9 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -201,5 +204,36 @@ void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, int ran, Buf *b);
 int file_block_param_poly(Compiler *c, int id, const char *pname);
 void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp);
 int io_line_args_spread(const NodeTable *nt, const int *argv, int argc);
+char adapter_arg_kind(TyKind arr, int is_push, int is_set, int pos);
+int bam_binop_wrapper(const Scope *tm);
+int bm_call_needs_layout(const NodeTable *nt, int id, const int *argv, int argc);
+const char *bm_self_ctype(Scope *tm, int shift);
+int call_arg_sig(Compiler *c, const int *argv, int argc, char *out, size_t cap);
+void emit_adapter_arg_boxed(const char *v, char kind, Buf *out);
+void emit_adapter_arg_static(Compiler *c, int node, char kind, Buf *out);
+int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b);
+void emit_bm_spread_call(Compiler *c, int id, int recv, const int *argv, int argc, Buf *b);
+void emit_bound_method_call(Compiler *c, int id, int recv, int target, Buf *b);
+void emit_method_call_block(Compiler *c, int id, Scope *tm, int lead_comma, Buf *b);
+void emit_named_root(Compiler *c, TyKind t, const char *name, int idx, Buf *b);
+void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int given, Buf *b);
+const char *forwarded_real_proc(int blk0, int blk);
+extern int g_sn_proc_node;
+int is_proc_create(Compiler *c, int id);
+void abi_sig_token(TyKind t, char *out);
+const char *bam_builtin_sym(Compiler *c, int mi, const char *dflt);
+int bind_owner_mismatch(Compiler *c, int target, TyKind ot);
+int builtin_method_arity(const char *cls, const char *m, int *out);
+void emit_bind_call(Compiler *c, int id, int target, const int *argv, int argc, Buf *b);
+void emit_bind_call_boxed(Compiler *c, int id, int target, int kn, const char *sym, const int *argv, int argc, Buf *b);
+void emit_bm_abi_args(Buf *b, const char *rb, int abi, const char *sig, int fixed, int rest, int ret, int poly, int pfixed, const char *thunk, int tmin, int tmax);
+int emit_method_obj_on_constant(Compiler *c, int id, int recv, const char *sym, Buf *b);
+const char *emit_method_thunk(Compiler *c, int mi, int recv_bound, int *out_min, int *out_max);
+int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname, int boxed_src, int self_cls, int *out_min, int *out_max);
+int method_legacy_int_abi(Compiler *c, int mi, int recv_bound, char *out_sig, size_t sigcap, int *out_fixed, int *out_rest, int *out_ret);
+int method_node_recv_class(Compiler *c, int recv, int dflt);
+int method_poly_abi(Compiler *c, int mi, int recv_bound, int *out_fixed, int *out_ret);
+int method_scope_arity(Compiler *c, int target, int *out);
+void emit_bm_legacy_ok(Buf *b, int tmp, int argc, const char *arg_sig);
 
 #endif
