@@ -2026,3 +2026,50 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   return 0;
 }
+
+/* a proc { } / lambda { } / Proc.new { } literal: a first-class Proc value */
+int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt) {
+  /* proc {} / lambda {} / Proc.new {} literal -> a first-class Proc value.
+     Guard with is_proc_literal so that any method call that returns TY_PROC
+     and happens to have a block (e.g. wrap { }) is not mistaken for a literal. */
+  if (comp_ntype(c, id) == TY_PROC && nt_ref(nt, id, "block") >= 0) {
+    int _pr_recv = nt_ref(nt, id, "receiver");
+    const char *_pr_nm = nt_str(nt, id, "name");
+    int is_literal = 0;
+    if (_pr_recv < 0 && _pr_nm && (sp_streq(_pr_nm, "proc") || sp_streq(_pr_nm, "lambda")))
+      is_literal = 1;
+    if (!is_literal && _pr_recv >= 0 && _pr_nm && sp_streq(_pr_nm, "new")) {
+      const char *_rty = nt_type(nt, _pr_recv);
+      const char *_rnm = (_rty && (sp_streq(_rty, "ConstantReadNode") || sp_streq(_rty, "ConstantPathNode")))
+                         ? nt_str(nt, _pr_recv, "name") : NULL;
+      if (_rnm && sp_streq(_rnm, "Proc")) is_literal = 1;
+    }
+    if (is_literal) {
+      /* proc(&x) / Proc.new(&x): the block is a forwarded proc, not a literal.
+         Ruby returns that proc as-is (preserving its lambda? flag), so emit the
+         forwarded expression directly rather than wrapping it in a fresh
+         non-lambda proc. */
+      int _blk = nt_ref(nt, id, "block");
+      const char *_bty = nt_type(nt, _blk);
+      if (_bty && sp_streq(_bty, "BlockArgumentNode")) {
+        int _fwd = nt_ref(nt, _blk, "expression");
+        /* forwarding the enclosing (inlined) method's block param
+           (`Proc.new(&b)` inside `def make(&b)`): the real block is the
+           literal active at the inline splice, so materialize THAT --
+           the param's own name does not exist in the spliced context. */
+        const char *_fnm = (_fwd >= 0 && nt_type(nt, _fwd) &&
+                            sp_streq(nt_type(nt, _fwd), "LocalVariableReadNode"))
+                           ? nt_str(nt, _fwd, "name") : NULL;
+        if (_fnm && g_block_id >= 0 && g_block_param_name &&
+            sp_streq(_fnm, g_block_param_name)) {
+          emit_proc_literal(c, g_block_id, b);
+          return 1;
+        }
+        if (_fwd >= 0 && comp_ntype(c, _fwd) == TY_PROC) { emit_expr(c, _fwd, b); return 1; }
+        if (g_block_id >= 0) { emit_proc_literal(c, g_block_id, b); return 1; }
+      }
+      emit_proc_literal(c, id, b); return 1;
+    }
+  }
+  return 0;
+}

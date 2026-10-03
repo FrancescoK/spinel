@@ -58,6 +58,7 @@ int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, 
 int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt);
 int emit_call_handle_op_arms(Compiler *c, int id, Buf *b, const char *name, int recv);
 int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
+int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
