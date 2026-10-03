@@ -1,0 +1,14 @@
+Enumerator
+#<Enumerator: "abcb":gsub!(/b/)>
+nil
+"aBcB"
+"aBcB"
+#<Enumerator: "xyz":gsub!("q")>
+nil
+"xyz"
+#<Enumerator: "abcb":gsub(/b/)>
+nil
+["c"]
+"bbb"
+"abcb"
+Enumerator

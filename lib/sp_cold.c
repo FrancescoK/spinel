@@ -3055,9 +3055,10 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
   /* an argless cycle is endless unless there is nothing to repeat */
   if (e->endless) return (e->items && e->items->len > 0) ? sp_box_float(1.0 / 0.0) : sp_box_int(0);
   /* the index searches stop at their first hit, so CRuby gives their
-     Enumerator no size */
+     Enumerator no size; nor gsub's or gsub!'s */
   if (e->meth && (strcmp(e->meth, "index") == 0 || strcmp(e->meth, "rindex") == 0 ||
-                  strcmp(e->meth, "find_index") == 0))
+                  strcmp(e->meth, "find_index") == 0 ||
+                  strncmp(e->meth, "gsub(", 5) == 0 || strncmp(e->meth, "gsub!(", 6) == 0))
     return sp_box_nil();
   if (e->items) return sp_box_int(e->items->len);
   if (e->size.tag == SP_TAG_OBJ && e->size.cls_id == SP_BUILTIN_PROC) {

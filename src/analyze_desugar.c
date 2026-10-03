@@ -7566,7 +7566,7 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   static const char *const meths[] = {
     "map", "collect", "select", "filter", "find_all", "reject", "sort_by", "group_by",
     "min_by", "max_by", "find", "detect", "flat_map", "collect_concat", "filter_map",
-    "partition", "take_while", "drop_while", "find_index", "index", "rindex", "minmax_by", "reverse_each", "each_entry", NULL };
+    "partition", "take_while", "drop_while", "find_index", "index", "rindex", "minmax_by", "reverse_each", "each_entry", "gsub", "gsub!", NULL };
   NodeTable *nt = (NodeTable *)c->nt;
   int x = nt_ref(nt, id, "receiver");
   const char *nm = nt_str(nt, id, "name"), *vn = nt_str(nt, x, "name");
@@ -7579,7 +7579,7 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
   const char *m = nt_str(nt, v, "name");
   int an = 0, k = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
-  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || !m || an > sp_streq(m, "find") ||
+  if (nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || !m || an > (sp_streq(m, "find") || sp_streq(m, "gsub") || sp_streq(m, "gsub!")) ||
       (an && (nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode)) ||
       nt_ref(nt, v, "receiver") < 0 ||
       (nt_str(nt, v, "call_operator") && sp_streq(nt_str(nt, v, "call_operator"), "&."))) return -1;

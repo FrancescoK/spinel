@@ -1531,7 +1531,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "partition",       0, 127, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },
   { TY_STRING, "rpartition",      0, 127, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },
   /* the value-form mutators: the post-mutation string; the no-change bang
-     contract carries nil as NULL through the nullable string */
+     contract carries nil as NULL through the nullable string. gsub! with a
+     pattern alone and no block is an Enumerator of the matches, as gsub's. */
+  { TY_STRING, "gsub!",           1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
   { TY_STRING, "gsub!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "sub!",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "upcase!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },

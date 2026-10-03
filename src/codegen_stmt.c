@@ -13837,6 +13837,9 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     int assignable2 = str_mut_recv_assignable(c, recv);
     if (sb_shadowed_reader(recv)) assignable2 = 1;   /* the reader shim's shadow */
     const char *abase = NULL, *abang = NULL;
+    /* gsub!(pattern) with no block edits nothing: it is an Enumerator, an
+       expression like any other */
+    if (sp_streq(name, "gsub!") && argc == 1 && nt_ref(nt, id, "block") < 0) return 0;
     if      (sp_streq(name, "gsub!"))   { abase = "gsub";   abang = "gsub!"; }
     else if (sp_streq(name, "sub!"))    { abase = "sub";    abang = "sub!"; }
     else if (sp_streq(name, "tr!"))     { abase = "tr";     abang = "tr!"; }
