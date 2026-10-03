@@ -6196,6 +6196,232 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   return 1;
 }
 
+/* A String receiver's slicing and its byte and encoding methods: [] / slice
+   by regexp, range, index or substring, split, clamp, force_encoding /
+   encode!, =~ / !~ against nil, encode, casecmp / casecmp?, setbyte and
+   getbyte (emit_scalar_recv_arms's String chain; answers 1 when a branch
+   was taken) */
+static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv, const char *r) {
+  if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* s[/re/] -> the matched substring, or nil (NULL) on no match */
+    buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0 &&
+           nt_type(c->nt, argv[1]) &&
+           (sp_streq(nt_type(c->nt, argv[1]), "SymbolNode") ||
+            sp_streq(nt_type(c->nt, argv[1]), "StringNode") ||
+            comp_ntype(c, argv[1]) == TY_STRING)) {
+    /* s[/(?<g>...)/, :g] or s[/(?<g>...)/, "g"] -> the named group, or nil (#3082) */
+    int pi = re_lit_index(c, argv[0]);
+    const char *nty = nt_type(c->nt, argv[1]);
+    if (sp_streq(nty, "SymbolNode")) {
+      const char *gname = nt_str(c->nt, argv[1], "value");
+      buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, \"%s\") : NULL)",
+                 pi, r, pi, gname ? gname : "");
+    }
+    else {
+      /* a String name (literal or dynamic): evaluate it and look it up */
+      int tnm = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", tnm); emit_str_expr(c, argv[1], b);
+      buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, _t%d) : NULL; })",
+                 pi, r, pi, tnm);
+    }
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    /* s[/re/, n] -> capture group n (0 = whole match), or nil */
+    int pi = re_lit_index(c, argv[0]);
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
+    buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? "
+                  "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
+               pi, r, tn, tn, tn, tn);
+  }
+  /* The same three forms with the Regexp arriving as a VALUE -- a
+     parameter, a constant, a local -- whose class the type already
+     says. They went to the integer slice arms, where the Regexp operand
+     was a hard TypeError (#4457: the useragent port's `c[pattern, 0]`,
+     on every request through campfire's browser gate). */
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_REGEX) {
+    int tp = ++g_tmp;
+    buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? sp_re_match_str : NULL; })", tp, tp, r);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 &&
+           comp_ntype(c, argv[0]) == TY_REGEX && nt_type(c->nt, argv[1]) &&
+           (sp_streq(nt_type(c->nt, argv[1]), "SymbolNode") ||
+            sp_streq(nt_type(c->nt, argv[1]), "StringNode") ||
+            comp_ntype(c, argv[1]) == TY_STRING)) {
+    int tp = ++g_tmp, tnm = ++g_tmp;
+    const char *nty = nt_type(c->nt, argv[1]);
+    buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
+    buf_printf(b, "; const char *_t%d = ", tnm);
+    if (sp_streq(nty, "SymbolNode")) buf_printf(b, "\"%s\"", nt_str(c->nt, argv[1], "value") ? nt_str(c->nt, argv[1], "value") : "");
+    else emit_str_expr(c, argv[1], b);
+    buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? sp_re_named_capture(_t%d, _t%d) : NULL; })",
+               tp, tp, r, tp, tnm);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 &&
+           comp_ntype(c, argv[0]) == TY_REGEX) {
+    int tp = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
+    buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? "
+                  "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
+               tp, tp, r, tn, tn, tn, tn);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_RANGE &&
+           !(nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode"))) {
+    /* a Range VALUE (variable / expression): slice through the runtime
+       bounds (the literal form keeps its specialized arm below) */
+    int trg2 = ++g_tmp;
+    buf_printf(b, "({ sp_Range _t%d = ", trg2); emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_str_sub_range_r(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })",
+               r, trg2, trg2, trg2);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
+           sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+    /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
+    int rn = argv[0];
+    int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+    int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
+    /* the end may read the receiver's length (an endless Range, or a nil
+       end), so the receiver is bound once: evaluated twice, a receiver
+       with a side effect ran twice */
+    int trs = ++g_tmp;
+    char none_hi[64];
+    snprintf(none_hi, sizeof none_hi, "(sp_int)sp_str_length(_t%d)", trs);
+    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_str_sub_range_r(_t%d, ",
+               trs, r, trs, trs);
+    if (lo >= 0) emit_int_expr_bound(c, lo, "0", b); else buf_puts(b, "0");
+    buf_puts(b, ", ");
+    if (hi >= 0) { emit_int_expr_bound(c, hi, none_hi, b); buf_printf(b, ", %d); })", excl); }
+    else buf_printf(b, "%s, 0); })", none_hi);  /* endless: to the end */
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2) {
+    /* s[start, len] */
+    buf_printf(b, "sp_str_sub_range(%s, ", r);
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+    /* s["sub"] -> the substring if present, else nil */
+    int tsub = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tsub); emit_str_expr(c, argv[0], b);
+    buf_printf(b, "; (strstr(%s, _t%d) ? _t%d : NULL); })", r, tsub, tsub);
+  }
+  else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1) {
+    buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
+  else if (sp_streq(name, "split") && argc == 1) {
+    /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
+    const char *aty = nt_type(c->nt, argv[0]);
+    int nil_arg = aty && sp_streq(aty, "NilNode");
+    int ws = nil_arg || (aty && sp_streq(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
+             sp_streq(nt_str(c->nt, argv[0], "content"), " ") && nt_str_len(c->nt, argv[0], "content") == 1);
+    if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
+    else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ")"); }
+  }
+  else if (sp_streq(name, "split") && argc == 2) {
+    buf_printf(b, "sp_str_split_limit(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "clamp") && (argc == 2 ||
+           (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
+    int lo_n, hi_n;
+    if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
+    else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
+    /* an exclusive Range has no greatest member to clamp to, and a
+       two-argument min above max is out of order: both raise (#3593) */
+    int excl_r = (argc == 1 && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
+    int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo);
+    if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
+    buf_printf(b, "; const char *_t%d = ", thi);
+    if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
+    buf_puts(b, ";");
+    if (excl_r)
+      buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
+    buf_printf(b, " if (_t%d && _t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0)"
+                  " sp_raise_cls(\"ArgumentError\", \"min argument must be smaller than max argument\");",
+               tlo, thi, tlo, thi);
+    /* a one-sided Range clamps on the side it has (#3593) */
+    buf_printf(b, " (_t%d && sp_str_cmp_bytes(_t%d, _t%d) < 0) ? _t%d :"
+                  " ((_t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0) ? _t%d : _t%d); })",
+               tlo, tc, tlo, tlo, thi, tc, thi, thi, tc);
+  }
+  /* force_encoding / encode! set state ON the receiver: CRuby raises on a
+     frozen string whether or not the call would change anything (#3334).
+     `b` and non-bang `encode` return a NEW string, so they never raise. */
+  else if ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc <= 2) {
+    char feref[1024];
+    if (strbuf_slot_ref(c, recv, feref, sizeof feref)) emit_strbuf_force_encoding(c, name, feref, argv, argc, b);
+    else emit_str_force_encoding(c, name, r, argv, argc, b);
+  }
+  else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_NIL) {
+    /* `str =~ nil` is nil in CRuby (and `!~` its negation), not a missing
+       method; the operand still evaluates (it can be a nil-typed call) */
+    buf_printf(b, "((void)(%s), (void)(", r);
+    emit_expr(c, argv[0], b);
+    if (sp_streq(name, "!~")) buf_puts(b, "), (sp_bool)1)");
+    else if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "), sp_box_nil())");
+    else buf_printf(b, "), %s)", raise_tail_value(comp_ntype(c, id)));
+  }
+  /* encode with no argument is the receiver; with a destination it is a
+     transcode between the two encodings the runtime models (#4439) */
+  else if (sp_streq(name, "encode") && argc <= 3) emit_str_encode_call(c, r, argv, argc, b);
+  /* an operand whose class answers #to_str: CRuby converts it and
+     compares, where the arm below discarded it and answered nil. The
+     answer is boxed because the conversion can still come back empty --
+     a #to_str that answers nil is CRuby's nil casecmp, not a comparison
+     with "" -- so the call is typed TY_POLY, as it is for a poly operand
+     above (analyze_infer.c, analyze_infer_recv.c). */
+  else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+           str_cmp_conv_shape(c, argv[0])) {
+    int tr, to, ts;
+    emit_str_cmp_prologue(c, r, argv[0], &tr, &to, &ts, b);
+    if (sp_streq(name, "casecmp"))
+      buf_printf(b, "sp_box_int(sp_str_casecmp(_t%d, _t%d))", tr, ts);
+    else
+      buf_printf(b, "sp_box_bool(sp_str_casecmp(_t%d, _t%d) == 0)", tr, ts);
+    buf_puts(b, " : sp_box_nil(); })");
+  }
+  else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+           comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_UNKNOWN) {
+    /* statically non-string argument: nil (the call typed TY_NIL); the
+       argument still evaluates for effect */
+    buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+  }
+  else if (sp_streq(name, "setbyte") && argc == 2) {
+    /* copy-on-write: rebind an lvalue receiver to the mutated copy
+       (a literal's bytes live in static storage, #2029) */
+    int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
+    int tv2 = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tv2); emit_int_expr(c, argv[1], b);
+    buf_puts(b, "; ");
+    if (lvw) { emit_expr(c, recv, b); buf_puts(b, " = "); }
+    buf_printf(b, "sp_str_setbyte_cow(%s, ", r); emit_int_expr(c, argv[0], b);
+    buf_printf(b, ", _t%d); _t%d; })", tv2, tv2);
+  }
+  else if (sp_streq(name, "getbyte") && argc == 1) {
+    /* Bounds/negative-correct: a negative index counts from the end and an
+       out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int.
+       A String whose bytes the loop being emitted holds (hc_string) reads
+       an index in range there and takes this call for anything else. */
+    char hd[48], hl[48];
+    if (hc_string(c, recv, hd, hl, sizeof hd)) {
+      int tk = ++g_tmp;
+      buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? (sp_int)(unsigned char)%s[_t%d] : sp_str_getbyte_opt(%s, _t%d); })",
+                 tk, hl, hd, tk, r, tk);
+    }
+    else { buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -6676,222 +6902,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     else if (sp_streq(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (sp_streq(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      /* s[/re/] -> the matched substring, or nil (NULL) on no match */
-      buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0 &&
-             nt_type(c->nt, argv[1]) &&
-             (sp_streq(nt_type(c->nt, argv[1]), "SymbolNode") ||
-              sp_streq(nt_type(c->nt, argv[1]), "StringNode") ||
-              comp_ntype(c, argv[1]) == TY_STRING)) {
-      /* s[/(?<g>...)/, :g] or s[/(?<g>...)/, "g"] -> the named group, or nil (#3082) */
-      int pi = re_lit_index(c, argv[0]);
-      const char *nty = nt_type(c->nt, argv[1]);
-      if (sp_streq(nty, "SymbolNode")) {
-        const char *gname = nt_str(c->nt, argv[1], "value");
-        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, \"%s\") : NULL)",
-                   pi, r, pi, gname ? gname : "");
-      }
-      else {
-        /* a String name (literal or dynamic): evaluate it and look it up */
-        int tnm = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", tnm); emit_str_expr(c, argv[1], b);
-        buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_named_capture(sp_re_pat_%d, _t%d) : NULL; })",
-                   pi, r, pi, tnm);
-      }
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-      /* s[/re/, n] -> capture group n (0 = whole match), or nil */
-      int pi = re_lit_index(c, argv[0]);
-      int tn = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
-      buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? "
-                    "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
-                 pi, r, tn, tn, tn, tn);
-    }
-    /* The same three forms with the Regexp arriving as a VALUE -- a
-       parameter, a constant, a local -- whose class the type already
-       says. They went to the integer slice arms, where the Regexp operand
-       was a hard TypeError (#4457: the useragent port's `c[pattern, 0]`,
-       on every request through campfire's browser gate). */
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_REGEX) {
-      int tp = ++g_tmp;
-      buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
-      buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? sp_re_match_str : NULL; })", tp, tp, r);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 &&
-             comp_ntype(c, argv[0]) == TY_REGEX && nt_type(c->nt, argv[1]) &&
-             (sp_streq(nt_type(c->nt, argv[1]), "SymbolNode") ||
-              sp_streq(nt_type(c->nt, argv[1]), "StringNode") ||
-              comp_ntype(c, argv[1]) == TY_STRING)) {
-      int tp = ++g_tmp, tnm = ++g_tmp;
-      const char *nty = nt_type(c->nt, argv[1]);
-      buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
-      buf_printf(b, "; const char *_t%d = ", tnm);
-      if (sp_streq(nty, "SymbolNode")) buf_printf(b, "\"%s\"", nt_str(c->nt, argv[1], "value") ? nt_str(c->nt, argv[1], "value") : "");
-      else emit_str_expr(c, argv[1], b);
-      buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? sp_re_named_capture(_t%d, _t%d) : NULL; })",
-                 tp, tp, r, tp, tnm);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2 &&
-             comp_ntype(c, argv[0]) == TY_REGEX) {
-      int tp = ++g_tmp, tn = ++g_tmp;
-      buf_printf(b, "({ mrb_regexp_pattern *_t%d = ", tp); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
-      buf_printf(b, "; _t%d && sp_re_match(_t%d, %s) >= 0 ? "
-                    "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
-                 tp, tp, r, tn, tn, tn, tn);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_RANGE &&
-             !(nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode"))) {
-      /* a Range VALUE (variable / expression): slice through the runtime
-         bounds (the literal form keeps its specialized arm below) */
-      int trg2 = ++g_tmp;
-      buf_printf(b, "({ sp_Range _t%d = ", trg2); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_str_sub_range_r(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })",
-                 r, trg2, trg2, trg2);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
-             sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
-      /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
-      int rn = argv[0];
-      int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
-      int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
-      /* the end may read the receiver's length (an endless Range, or a nil
-         end), so the receiver is bound once: evaluated twice, a receiver
-         with a side effect ran twice */
-      int trs = ++g_tmp;
-      char none_hi[64];
-      snprintf(none_hi, sizeof none_hi, "(sp_int)sp_str_length(_t%d)", trs);
-      buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_str_sub_range_r(_t%d, ",
-                 trs, r, trs, trs);
-      if (lo >= 0) emit_int_expr_bound(c, lo, "0", b); else buf_puts(b, "0");
-      buf_puts(b, ", ");
-      if (hi >= 0) { emit_int_expr_bound(c, hi, none_hi, b); buf_printf(b, ", %d); })", excl); }
-      else buf_printf(b, "%s, 0); })", none_hi);  /* endless: to the end */
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2) {
-      /* s[start, len] */
-      buf_printf(b, "sp_str_sub_range(%s, ", r);
-      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
-      /* s["sub"] -> the substring if present, else nil */
-      int tsub = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = ", tsub); emit_str_expr(c, argv[0], b);
-      buf_printf(b, "; (strstr(%s, _t%d) ? _t%d : NULL); })", r, tsub, tsub);
-    }
-    else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1) {
-      buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
-    else if (sp_streq(name, "split") && argc == 1) {
-      /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
-      const char *aty = nt_type(c->nt, argv[0]);
-      int nil_arg = aty && sp_streq(aty, "NilNode");
-      int ws = nil_arg || (aty && sp_streq(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
-               sp_streq(nt_str(c->nt, argv[0], "content"), " ") && nt_str_len(c->nt, argv[0], "content") == 1);
-      if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
-      else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ")"); }
-    }
-    else if (sp_streq(name, "split") && argc == 2) {
-      buf_printf(b, "sp_str_split_limit(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "clamp") && (argc == 2 ||
-             (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
-      int lo_n, hi_n;
-      if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
-      else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
-      /* an exclusive Range has no greatest member to clamp to, and a
-         two-argument min above max is out of order: both raise (#3593) */
-      int excl_r = (argc == 1 && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
-      int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo);
-      if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
-      buf_printf(b, "; const char *_t%d = ", thi);
-      if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
-      buf_puts(b, ";");
-      if (excl_r)
-        buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
-      buf_printf(b, " if (_t%d && _t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0)"
-                    " sp_raise_cls(\"ArgumentError\", \"min argument must be smaller than max argument\");",
-                 tlo, thi, tlo, thi);
-      /* a one-sided Range clamps on the side it has (#3593) */
-      buf_printf(b, " (_t%d && sp_str_cmp_bytes(_t%d, _t%d) < 0) ? _t%d :"
-                    " ((_t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0) ? _t%d : _t%d); })",
-                 tlo, tc, tlo, tlo, thi, tc, thi, thi, tc);
-    }
-    /* force_encoding / encode! set state ON the receiver: CRuby raises on a
-       frozen string whether or not the call would change anything (#3334).
-       `b` and non-bang `encode` return a NEW string, so they never raise. */
-    else if ((sp_streq(name, "force_encoding") || sp_streq(name, "encode!")) && argc <= 2) {
-      char feref[1024];
-      if (strbuf_slot_ref(c, recv, feref, sizeof feref)) emit_strbuf_force_encoding(c, name, feref, argv, argc, b);
-      else emit_str_force_encoding(c, name, r, argv, argc, b);
-    }
-    else if ((sp_streq(name, "=~") || sp_streq(name, "!~")) && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_NIL) {
-      /* `str =~ nil` is nil in CRuby (and `!~` its negation), not a missing
-         method; the operand still evaluates (it can be a nil-typed call) */
-      buf_printf(b, "((void)(%s), (void)(", r);
-      emit_expr(c, argv[0], b);
-      if (sp_streq(name, "!~")) buf_puts(b, "), (sp_bool)1)");
-      else if (comp_ntype(c, id) == TY_POLY) buf_puts(b, "), sp_box_nil())");
-      else buf_printf(b, "), %s)", raise_tail_value(comp_ntype(c, id)));
-    }
-    /* encode with no argument is the receiver; with a destination it is a
-       transcode between the two encodings the runtime models (#4439) */
-    else if (sp_streq(name, "encode") && argc <= 3) emit_str_encode_call(c, r, argv, argc, b);
-    /* an operand whose class answers #to_str: CRuby converts it and
-       compares, where the arm below discarded it and answered nil. The
-       answer is boxed because the conversion can still come back empty --
-       a #to_str that answers nil is CRuby's nil casecmp, not a comparison
-       with "" -- so the call is typed TY_POLY, as it is for a poly operand
-       above (analyze_infer.c, analyze_infer_recv.c). */
-    else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
-             str_cmp_conv_shape(c, argv[0])) {
-      int tr, to, ts;
-      emit_str_cmp_prologue(c, r, argv[0], &tr, &to, &ts, b);
-      if (sp_streq(name, "casecmp"))
-        buf_printf(b, "sp_box_int(sp_str_casecmp(_t%d, _t%d))", tr, ts);
-      else
-        buf_printf(b, "sp_box_bool(sp_str_casecmp(_t%d, _t%d) == 0)", tr, ts);
-      buf_puts(b, " : sp_box_nil(); })");
-    }
-    else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
-             comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_UNKNOWN) {
-      /* statically non-string argument: nil (the call typed TY_NIL); the
-         argument still evaluates for effect */
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-    }
-    else if (sp_streq(name, "setbyte") && argc == 2) {
-      /* copy-on-write: rebind an lvalue receiver to the mutated copy
-         (a literal's bytes live in static storage, #2029) */
-      int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
-      int tv2 = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tv2); emit_int_expr(c, argv[1], b);
-      buf_puts(b, "; ");
-      if (lvw) { emit_expr(c, recv, b); buf_puts(b, " = "); }
-      buf_printf(b, "sp_str_setbyte_cow(%s, ", r); emit_int_expr(c, argv[0], b);
-      buf_printf(b, ", _t%d); _t%d; })", tv2, tv2);
-    }
-    else if (sp_streq(name, "getbyte") && argc == 1) {
-      /* Bounds/negative-correct: a negative index counts from the end and an
-         out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int.
-         A String whose bytes the loop being emitted holds (hc_string) reads
-         an index in range there and takes this call for anything else. */
-      char hd[48], hl[48];
-      if (hc_string(c, recv, hd, hl, sizeof hd)) {
-        int tk = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? (sp_int)(unsigned char)%s[_t%d] : sp_str_getbyte_opt(%s, _t%d); })",
-                   tk, hl, hd, tk, r, tk);
-      }
-      else { buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    }
+    else if (str_arms_slice_encode(c, id, b, name, recv, argc, argv, r)) ;
     else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); { *out = 1; return 1; } }
     else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); { *out = 1; return 1; } }
     else if (str_arms_convert(c, id, b, nt, name, recv, argc, argv, a0, r)) ;
