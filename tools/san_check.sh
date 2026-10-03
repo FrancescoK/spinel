@@ -54,41 +54,47 @@ list() {
 # output). Any other failing status with no report is kept the same way as
 # .left: the summary counts those, since no text tells a refusal from a
 # failure to parse or to write (a refusal may end with its count or with
-# one message alone)
-list "$@" | xargs -P "$JOBS" -I{} sh -c '
-  key=$(printf %s "$1" | tr / _)
-  "$2" -c --no-line-map "$1" -o "$3/$key.c" > "$3/$key.log" 2>&1
+# one message alone). The files are named by the program's place in the
+# list, not by its path: test/a_b.rb and test/a/b.rb, or one program named
+# twice, would share a name made from the path, and the later compile
+# would take the earlier one's report with it
+TAB=$(printf '\t')
+list "$@" | awk '{ printf "%06d\t%s\n", NR, $0 }' | xargs -P "$JOBS" -I{} sh -c '
+  key=${1%%"$4"*}
+  f=${1#*"$4"}
+  "$2" -c --no-line-map "$f" -o "$3/$key.c" > "$3/$key.log" 2>&1
   st=$?
   rm -f "$3/$key.c"
   grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" && exit 0
   kind=left
   [ "$st" -le 128 ] || kind=died
-  [ "$st" -eq 0 ] || { echo "$st $1"; cat "$3/$key.log"; } > "$3/$key.$kind"
+  [ "$st" -eq 0 ] || { echo "$st $f"; cat "$3/$key.log"; } > "$3/$key.$kind"
   rm -f "$3/$key.log"
-' _ {} "$SP" "$LOGS"
+' _ {} "$SP" "$LOGS" "$TAB"
 # the command above answers 0 for every program, so anything else is xargs
 # not starting, or one of its commands killed: no log then means no
 # compile, not no report
-xst=${PIPESTATUS[1]}
+xst=${PIPESTATUS[2]}
 [ "$xst" -eq 0 ] || { echo "san-check: xargs ended with status $xst, not every program was compiled" >&2; exit 2; }
 
 total=$(list "$@" | wc -l)
 [ "$total" -gt 0 ] || { echo "san-check: no program to compile" >&2; exit 2; }
 bad=$(find "$LOGS" -name '*.log' | wc -l)
 if [ "$bad" -gt 0 ]; then
-  # one line per program and site, "site<TAB>program<TAB>what": the
+  # one line per program and site, "site<TAB>program<TAB>what<TAB>log": the
   # sanitizer's own file:line for undefined behaviour, the first frame in a
   # .c file for a memory error (the frames above it are inlined helpers)
-  TAB=$(printf '\t')
-  list "$@" | while read -r f; do
-    log=$LOGS/$(printf %s "$f" | tr / _).log
+  i=0
+  list "$@" | while IFS= read -r f; do
+    i=$((i + 1))
+    log=$LOGS/$(printf %06d "$i").log
     [ -f "$log" ] || continue
     grep -o 'src/[a-z_0-9]*\.[ch]:[0-9]*:[0-9]*: runtime error: .*' "$log" |
-      sed "s|^\(src/[^:]*:[0-9]*\):[0-9]*: runtime error: |\1$TAB$f$TAB|" | sort -u -t"$TAB" -k1,1
+      sed -e "s|^\(src/[^:]*:[0-9]*\):[0-9]*: runtime error: |\1$TAB$f$TAB|" -e "s|\$|$TAB$log|" | sort -u -t"$TAB" -k1,1
     if grep -q 'ERROR: AddressSanitizer' "$log"; then
       kind=$(grep -m1 -o 'ERROR: AddressSanitizer: [a-z-]*' "$log" | sed 's/.*: //')
       grep -m1 -o ' in [A-Za-z_0-9]* src/[a-z_0-9]*\.c:[0-9]*' "$log" |
-        sed "s|^ in \([^ ]*\) \(.*\)|\2$TAB$f$TAB$kind in \1|"
+        sed "s|^ in \([^ ]*\) \(.*\)|\2$TAB$f$TAB$kind in \1$TAB$log|"
     fi
   done > "$LOGS/sites"
   cut -f1 "$LOGS/sites" | sort | uniq -c | sort -rn | while read -r n site; do
@@ -98,7 +104,7 @@ if [ "$bad" -gt 0 ]; then
     what=$(printf %s "$first" | cut -f3)
     echo "san-check: $site: $what ($where)"
     if [ "$VERBOSE" -eq 1 ]; then
-      log=$LOGS/$(printf %s "$prog" | tr / _).log
+      log=$(printf %s "$first" | cut -f4)
       if printf %s "$what" | grep -q '^[a-z-]* in [A-Za-z_0-9]*$'; then
         sed -n '/ERROR: AddressSanitizer/,/^SUMMARY/p' "$log"
       else
