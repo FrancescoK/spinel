@@ -9163,6 +9163,1136 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
   g_class_body_id = saved_cbi;
 }
 
+/* A MultiWriteNode whose value is not an Array literal (a, b = x) (emit_multi_write_stmt's arms, in their order) */
+static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int ln, const int *lefts, int value, const char *vty, int tuple, int rn, const int *rights, const char *rest_var, const char *rest_gvar, int rest_tgt, int *ttr, int *ttk) {
+  if (!(!tuple)) return 0;
+  char iv_lhs[320]; int iv_home_cid = -1;   /* an ivar target's home (masgn_ivar_home) */
+  /* scalar RHS (`a, b = 1`): the first target takes the value, the rest
+     their slot default (Ruby gives nil; we land the typed zero). A call /
+     super / yield can return a multi-value tuple, so those are excluded
+     and fall through to the tuple-destructuring path. */
+  TyKind st = comp_ntype(c, value);
+  /* RHS `*expr` (a, *b = *x) builds an ARRAY (splat-to-array), but
+     comp_ntype answers a SplatNode with the ELEMENT type (that arm
+     serves array-literal splices) -- override so the destructure path
+     below runs; emit_expr's SplatNode arm already yields a normalized
+     sp_PolyArray*. */
+  if (vty && sp_streq(vty, "SplatNode")) st = TY_POLY_ARRAY;
+  int multi_src = vty && (sp_streq(vty, "CallNode") || sp_streq(vty, "SuperNode") ||
+                          sp_streq(vty, "ForwardingSuperNode") || sp_streq(vty, "YieldNode"));
+  /* a TY_POLY value can hold an array at runtime (doom's
+     `lump_name, mirrored = @sprite_index[key]` read through a local),
+     so it must take the runtime-destructure path below, not the
+     scalar fill -- which handed the whole array to the first target. */
+  if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
+    for (int i = 0; i < ln; i++) {
+      const char *lty = nt_type(nt, lefts[i]);
+      /* an instance-variable target: the first takes the value, the rest
+         nil, in the slot's own representation */
+      if (lty && sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
+          masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
+        int ix = comp_ivar_index(&c->classes[iv_home_cid], nt_str(nt, lefts[i], "name"));
+        TyKind ivt = ix >= 0 ? c->classes[iv_home_cid].ivar_types[ix] : TY_POLY;
+        emit_indent(b, indent);
+        buf_printf(b, "%s = ", iv_lhs);
+        if (i == 0) { if (ivt == TY_POLY && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
+        else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else buf_puts(b, nil_sentinel(ivt));
+        buf_puts(b, ";\n");
+        continue;
+      }
+      if (!lty) continue;
+      if (!sp_streq(lty, "LocalVariableTargetNode")) {
+        Buf vb; memset(&vb, 0, sizeof vb);
+        if (i == 0) emit_expr(c, value, &vb);
+        if (!masgn_store(c, id, lefts[i], i == 0 ? (vb.p ? vb.p : "") : NULL, st, ttr[i], ttk[i], indent, b))
+          unsupported(c, id, "multiple assignment target");
+        free(vb.p);
+        continue;
+      }
+      emit_indent(b, indent);
+      const char *lvn = nt_str(nt, lefts[i], "name");
+      emit_local_ref(c, lefts[i], lvn, b); buf_puts(b, " = ");
+      LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+      int lpoly = llv && llv->type == TY_POLY;
+      if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
+      else if (lpoly) {
+        /* under-filled target under a scalar RHS is Ruby nil, not the
+           typed zero (`a, b, c = 1` -> [1, nil, nil]). */
+        buf_puts(b, "sp_box_nil()");
+      }
+      else {
+        /* the target NODE's type can read TY_UNKNOWN here; use the local's
+           DECLARED type so the nil sentinel matches its C slot. */
+        TyKind tt = llv ? llv->type : comp_ntype(c, lefts[i]);
+        buf_puts(b, nil_sentinel(tt));
+      }
+      buf_puts(b, ";\n");
+    }
+    /* rest target under a scalar RHS: `*a = 5` collects [5]; with fixed
+       targets present (`a, *r = 5`) the scalar goes to the first target
+       and the rest is empty. */
+    if (rest_var || rest_gvar || rest_tgt >= 0) {
+      Scope *rsc0 = comp_scope_of(c, id);
+      LocalVar *rlv0 = rest_var ? scope_local(rsc0, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+      TyKind rst0 = rlv0 ? rlv0->type : masgn_slot_type(c, id, rest_tgt);
+      TyKind rat0 = ty_is_array(rst0) ? rst0 : TY_POLY_ARRAY;
+      const char *rk0 = (rat0 == TY_POLY_ARRAY) ? "Poly" : array_kind(rat0);
+      if (!rk0) rk0 = "Poly";
+      int tr0 = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
+      /* The scalar goes into the rest ONLY when there are no fixed targets on
+         either side (`*a = 5` -> [5]); with post-rest targets (`*a, b = 1`)
+         the value aligns to the end and the rest stays empty. */
+      if (ln == 0 && rn == 0) {
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%sArray_push%s(_t%d, ", rk0, nil_store_sfx(c, rk0, value), tr0);
+        if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
+        else emit_expr(c, value, b);
+        buf_puts(b, ");\n");
+      }
+      char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
+      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rat0, -1, -1, indent, b);
+      else {
+        emit_indent(b, indent);
+        if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+        else buf_printf(b, "gv_%s = ", rest_gvar);
+        masgn_conv(c, id, rlv0 ? rlv0->type : rat0, rat0, rx, b);
+        buf_puts(b, ";\n");
+      }
+      if (ln == 0 && rn == 0) return 1;
+    }
+    /* Post-rest targets under a scalar RHS (`*a, b, c = 1`): the empty rest
+       leaves the single value to fill the rights left-to-right, so the first
+       right takes it when no leading target consumed it (ln == 0) and every
+       other right is nil (`*a, b, c = 1` -> a=[], b=1, c=nil). */
+    for (int j = 0; j < rn; j++) {
+      const char *rty2 = nt_type(nt, rights[j]);
+      if (!rty2) continue;
+      if (!sp_streq(rty2, "LocalVariableTargetNode")) {
+        Buf vb; memset(&vb, 0, sizeof vb);
+        if (j == 0 && ln == 0) emit_expr(c, value, &vb);
+        if (!masgn_store(c, id, rights[j], j == 0 && ln == 0 ? (vb.p ? vb.p : "") : NULL, st, -1, -1, indent, b))
+          unsupported(c, id, "multiple assignment target");
+        free(vb.p);
+        continue;
+      }
+      const char *rvn = nt_str(nt, rights[j], "name");
+      LocalVar *rlv = rvn ? scope_local(comp_scope_of(c, id), rvn) : NULL;
+      int rpoly = rlv && rlv->type == TY_POLY;
+      emit_indent(b, indent);
+      emit_local_ref(c, rights[j], rvn, b); buf_puts(b, " = ");
+      if (j == 0 && ln == 0) {
+        if (rpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b);
+      }
+      else if (rpoly) buf_puts(b, "sp_box_nil()");
+      else { TyKind tt = rlv ? rlv->type : comp_ntype(c, rights[j]); buf_puts(b, nil_sentinel(tt)); }
+      buf_puts(b, ";\n");
+    }
+    return 1;
+  }
+  /* any expression returning a typed array: runtime destructure */
+  if (ty_is_array(st) && st != TY_UNKNOWN) {
+    const char *k = (st == TY_POLY_ARRAY) ? "Poly" : array_kind(st);
+    if (!k) k = "Int";
+    TyKind elem = ty_array_elem(st);
+    int tarr = ++g_tmp;
+    emit_indent(b, indent);
+    emit_ctype(c, st, b);
+    buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
+    Scope *rt_scope = comp_scope_of(c, id);
+    for (int i = 0; i < ln; i++) {
+      const char *lty = nt_type(nt, lefts[i]);
+      if (!lty) continue;
+      if (sp_streq(lty, "MultiTargetNode")) {
+        /* nested (a, (b, c)) target: recurse over the boxed element */
+        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        Buf ge; memset(&ge, 0, sizeof ge);
+        buf_printf(&ge, "(%dLL >= _t%d->len ? sp_box_nil() : ", i, tarr);
+        emit_boxed_text(c, elem, gx, &ge);
+        buf_puts(&ge, ")");
+        emit_massign_poly_target(c, id, lefts[i], ge.p, indent, b);
+        free(ge.p);
+      }
+      else if (sp_streq(lty, "LocalVariableTargetNode")) {
+        emit_indent(b, indent);
+        const char *lvn = nt_str(nt, lefts[i], "name");
+        /* Through emit_local_ref: a target captured by a later block lives
+           in a heap cell, and writing `lv_<name>` there names a variable
+           that was never declared -- the C compilation aborts on the
+           assignment while the cell sits right beside it (#3424). */
+        emit_local_ref(c, lefts[i], lvn, b);
+        buf_puts(b, " = ");
+        LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
+        TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+        char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        if (ltt == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
+        else if (sp_streq(k, "Poly") && ltt != TY_POLY && ltt != TY_UNKNOWN) {
+          /* typed target from a poly tuple (known multi-value return) */
+          emit_unbox_text(c, ltt, gx, b);
+        }
+        /* a mutable-String local holds an sp_String *: wrap a String
+           element, as the single write and the tuple path do */
+        else if (ltt == TY_STRBUF && elem == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", gx);
+        else buf_puts(b, gx);
+        buf_puts(b, ";\n");
+      }
+      else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
+               masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
+        const char *ivnm = nt_str(nt, lefts[i], "name");
+        emit_indent(b, indent);
+        char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        TyKind ivt = TY_UNKNOWN;
+        int iv_rt = comp_ivar_index(&c->classes[iv_home_cid], ivnm);
+        if (iv_rt >= 0) ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
+        buf_printf(b, "%s = ", iv_lhs);
+        if (ivt == TY_POLY && elem != TY_POLY) emit_boxed_src(c, elem, get_expr, b);
+        else if (sp_streq(k, "Poly") && ivt != TY_POLY && ivt != TY_UNKNOWN) {
+          /* typed target from a poly tuple (known multi-value return) */
+          emit_unbox_text(c, ivt, get_expr, b);
+        }
+        else buf_puts(b, get_expr);
+        buf_puts(b, ";\n");
+      }
+      else if ((sp_streq(lty, "ConstantTargetNode") || sp_streq(lty, "ConstantPathTargetNode"))) {
+        const char *cnm_rt = nt_str(nt, lefts[i], "name");
+        LocalVar *cv_rt = cnm_rt ? comp_const(c, cnm_rt) : NULL;
+        if (!cv_rt) continue;
+        emit_indent(b, indent);
+        char cgx[80]; snprintf(cgx, sizeof cgx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        buf_printf(b, "cst_%s = ", cnm_rt);
+        if (sp_streq(k, "Poly") && cv_rt->type != TY_POLY && cv_rt->type != TY_UNKNOWN)
+          emit_unbox_text(c, cv_rt->type, cgx, b);  /* typed constant from a poly tuple */
+        else
+          buf_puts(b, cgx);
+        buf_puts(b, ";\n");
+      }
+      else {
+        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        if (!masgn_store(c, id, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
+          unsupported(c, id, "multiple assignment target");
+      }
+    }
+    if (rest_var || rest_gvar || rest_tgt >= 0) {
+      Scope *rscope = comp_scope_of(c, id);
+      LocalVar *rlv = rest_var ? scope_local(rscope, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+      TyKind rslot = rlv ? rlv->type : rest_tgt >= 0 ? masgn_slot_type(c, id, rest_tgt) : st;
+      if (rest_tgt >= 0 && rslot == TY_UNKNOWN) rslot = st;
+      TyKind rest_arr_t = rslot;
+      if (!ty_is_array(rest_arr_t)) rest_arr_t = st;
+      const char *rk = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
+      if (!rk) rk = k;
+      int tr = ++g_tmp;
+      emit_indent(b, indent);
+      /* On underflow (fewer elements than the fixed pre/post targets) the
+         splat collects nothing rather than wrapping to a negative length;
+         clamp the slice length to zero. */
+      /* The slice is taken from the SOURCE array, so it must use the
+         source's kind; the rest local's own kind decides only what the
+         slice is converted to. Slicing a poly array through
+         sp_IntArray_slice read one struct as another (#3975 sweep). */
+      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_slice(_t%d, %dLL, _t%d->len > %dLL ? _t%d->len - %dLL : 0LL);\n",
+                 k, tr, k, tarr, ln, tarr, ln + rn, tarr, ln + rn);
+      emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d);\n", tr);
+      Buf rv; memset(&rv, 0, sizeof rv);
+      TyKind rvt = rest_arr_t;
+      if (rslot == TY_POLY) {
+        char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+        masgn_conv(c, id, TY_POLY, st, rx, &rv);
+        rvt = TY_POLY;
+      }
+      else if (sp_streq(rk, k)) buf_printf(&rv, "_t%d", tr);
+      else if (sp_streq(k, "Poly"))
+        buf_printf(&rv, "sp_%sArray_from_poly_array(_t%d)",
+                   sp_streq(rk, "Int") ? "Int" : sp_streq(rk, "Str") ? "Str" : "Float", tr);
+      else if (sp_streq(rk, "Poly"))
+        buf_printf(&rv, "sp_%sArray_to_poly%s(_t%d)", k, sp_streq(k, "Str") ? "_fmt" : "", tr);
+      else buf_printf(&rv, "_t%d", tr);
+      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rv.p ? rv.p : "", rvt, -1, -1, indent, b);
+      else {
+        emit_indent(b, indent);
+        if (rest_var) emit_local_ref(c, id, rest_var, b); else buf_printf(b, "gv_%s", rest_gvar);
+        buf_printf(b, " = %s;\n", rv.p ? rv.p : "");
+      }
+      free(rv.p);
+    }
+    for (int j = 0; j < rn; j++) {
+      const char *lty = nt_type(nt, rights[j]);
+      if (!lty) continue;
+      if (sp_streq(lty, "LocalVariableTargetNode")) {
+        emit_indent(b, indent);
+        const char *rlvn = nt_str(nt, rights[j], "name");
+        LocalVar *rllv = rlvn ? scope_local(rt_scope, rlvn) : NULL;
+        /* CRuby fills the post-splat targets from the back when the source
+           has enough elements, but on underflow (fewer than ln+rn) it
+           assigns the remaining elements left-to-right starting just past
+           the pre targets and nil-fills the rest. That position is the max
+           of the back-aligned (len-rn+j) and front-aligned (ln+j) indices;
+           a position at or past the end nil-fills. */
+        int tix = ++g_tmp;
+        buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
+                   tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+        emit_indent(b, indent);
+        emit_local_ref(c, rights[j], rlvn, b); buf_puts(b, " = ");
+        char rgx[96]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
+        if (rllv && rllv->type == TY_POLY && !sp_streq(k, "Poly")) {
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, elem, rgx, &bx);
+          buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          buf_puts(b, ")");
+        }
+        else {
+          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
+                           : sp_streq(k, "Int") ? "SP_INT_NIL"
+                           : sp_streq(k, "Float") ? "sp_float_nil()"
+                           : "NULL";
+          buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, rgx);
+        }
+        buf_puts(b, ";\n");
+      }
+      else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, rights[j], "name") &&
+               masgn_ivar_home(c, id, nt_str(nt, rights[j], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
+        const char *ivnm2 = nt_str(nt, rights[j], "name");
+        emit_indent(b, indent);
+        /* Same underflow clamp as the local-variable branch above: pick the
+           post-splat source index as the max of the back-aligned and
+           front-aligned positions, nil-filling any position at or past the
+           end (a, *b, @c = [1] -> @c = nil). */
+        int tix = ++g_tmp;
+        buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
+                   tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+        emit_indent(b, indent);
+        char get_expr2[96];
+        snprintf(get_expr2, sizeof get_expr2, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
+        TyKind ivt2 = TY_UNKNOWN;
+        int iv_rt2 = comp_ivar_index(&c->classes[iv_home_cid], ivnm2);
+        if (iv_rt2 >= 0) ivt2 = c->classes[iv_home_cid].ivar_types[iv_rt2];
+        buf_printf(b, "%s = ", iv_lhs);
+        if (ivt2 == TY_POLY && elem != TY_POLY) {
+          Buf bx2; memset(&bx2, 0, sizeof bx2);
+          emit_boxed_text(c, elem, get_expr2, &bx2);
+          buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
+          buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
+          buf_puts(b, ")");
+        }
+        else {
+          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
+                           : sp_streq(k, "Int") ? "SP_INT_NIL"
+                           : sp_streq(k, "Float") ? "sp_float_nil()"
+                           : "NULL";
+          buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, get_expr2);
+        }
+        buf_puts(b, ";\n");
+      }
+      else {
+        int tix = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
+                   tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+        const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
+                         : sp_streq(k, "Int") ? "SP_INT_NIL"
+                         : sp_streq(k, "Float") ? "sp_float_nil()"
+                         : "NULL";
+        if (sp_streq(lty, "MultiTargetNode")) {
+          char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
+          Buf ge; memset(&ge, 0, sizeof ge);
+          buf_printf(&ge, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
+          emit_boxed_text(c, elem, gx, &ge);
+          buf_puts(&ge, ")");
+          emit_massign_poly_target(c, id, rights[j], ge.p, indent, b);
+          free(ge.p);
+          continue;
+        }
+        char rgx[160];
+        snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
+        if (!masgn_store(c, id, rights[j], rgx, elem, -1, -1, indent, b))
+          unsupported(c, id, "multiple assignment target");
+      }
+    }
+    return 1;
+  }
+  /* poly RHS: destructure with sp_poly_massign_get. Any other value --
+     a hash, or a scalar from a call the fill above leaves alone since it
+     may return a tuple -- is boxed and destructures as itself. */
+  if (st != TY_UNKNOWN) {
+    int tarr = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_RbVal _t%d = ", tarr);
+    if (st == TY_POLY) emit_expr(c, value, b); else emit_boxed(c, value, b);
+    buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", tarr);
+    for (int i = 0; i < ln; i++) {
+      const char *lty = nt_type(nt, lefts[i]);
+      if (!lty) continue;
+      if (sp_streq(lty, "MultiTargetNode")) {
+        /* nested (a, (b, c)) target: recurse over the boxed sub-value */
+        char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
+        emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
+      }
+      else if (sp_streq(lty, "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, lefts[i], "name");
+        emit_indent(b, indent);
+        emit_local_ref(c, lefts[i], lnm, b);
+        buf_puts(b, " = ");
+        { char mge[64]; snprintf(mge, sizeof mge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
+          LocalVar *mlv = scope_local(comp_scope_of(c, lefts[i]), lnm);
+          /* The target's C slot is whatever the fixpoint settled on it: a
+             scalar one takes the unboxed value, not the sp_RbVal. */
+          if (mlv && mlv->type != TY_POLY && mlv->type != TY_UNKNOWN)
+            emit_unbox_text(c, mlv->type, mge, b);
+          else buf_puts(b, mge); }
+        buf_puts(b, ";\n");
+      }
+      else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
+               masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
+        const char *ivnm = nt_str(nt, lefts[i], "name");
+        int iv_rt = comp_ivar_index(&c->classes[iv_home_cid], ivnm);
+        if (iv_rt < 0) continue;
+        TyKind ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
+        emit_indent(b, indent);
+        char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
+        buf_printf(b, "%s = ", iv_lhs);
+        /* a scalar slot another write typed takes an element of its own
+           kind (or nil) and refuses any other (sp_slot_*_ck), rather
+           than reading the other kind's bits as its own */
+        const char *ck = ivt == TY_INT ? "sp_slot_int_ck" : ivt == TY_FLOAT ? "sp_slot_float_ck"
+                       : ivt == TY_STRING ? "sp_slot_str_ck" : ivt == TY_BOOL ? "sp_slot_bool_ck"
+                       : ivt == TY_SYMBOL ? "sp_slot_sym_ck" : NULL;
+        if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
+        else if (ivt != TY_POLY) {
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_unbox_text(c, ivt, get_expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_puts(b, get_expr);
+        buf_puts(b, ";\n");
+      }
+      else {
+        char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
+        if (!masgn_store(c, id, lefts[i], ge, TY_POLY, ttr[i], ttk[i], indent, b))
+          unsupported(c, id, "multiple assignment target");
+      }
+    }
+    /* rest (`b, *r = <poly>`) + post-splat rights, mirroring the typed-array
+       branch but reading the boxed value via sp_poly_arr_get / _len. */
+    if (rest_var || rest_gvar || rest_tgt >= 0 || rn > 0) {
+      int tn = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_int _t%d = sp_poly_massign_len(_t%d);\n", tn, tarr);
+      if (rest_var || rest_gvar || rest_tgt >= 0) {
+        int tr = ++g_tmp, ti = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+        emit_indent(b, indent);
+        buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
+                   ti, ln, ti, tn, rn, ti, tr, tarr, ti);
+        char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+        if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, TY_POLY_ARRAY, -1, -1, indent, b);
+        else {
+          emit_indent(b, indent);
+          LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
+          if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
+          else buf_printf(b, "gv_%s = ", rest_gvar);
+          masgn_conv(c, id, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
+          buf_puts(b, ";\n");
+        }
+      }
+      for (int j = 0; j < rn; j++) {
+        const char *lty = nt_type(nt, rights[j]);
+        if (!lty) continue;
+        const char *rlvn = nt_str(nt, rights[j], "name");
+        if (sp_streq(lty, "LocalVariableTargetNode") && !rlvn) continue;
+        /* CRuby fills post-splat targets from the back; on underflow assign
+           left-to-right past the pre targets and nil-fill (max of the back-
+           and front-aligned index, a position at/past the end -> nil). */
+        int tix = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_int _t%d = (_t%d - %dLL + %dLL) > %dLL ? (_t%d - %dLL + %dLL) : %dLL;\n",
+                   tix, tn, rn, j, ln + j, tn, rn, j, ln + j);
+        if (!sp_streq(lty, "LocalVariableTargetNode")) {
+          char rgx[128];
+          snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tarr, tix);
+          emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
+          continue;
+        }
+        emit_indent(b, indent);
+        emit_local_ref(c, rights[j], rlvn, b);
+        buf_printf(b, " = (_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d));\n",
+                   tix, tn, tarr, tix);
+      }
+    }
+    return 1;
+  }
+  unsupported(c, id, "multiple assignment");
+  return 0;
+}
+
+/* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
+static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "MultiWriteNode"))) return 0;
+  int ln = 0;
+  const int *lefts = nt_arr(nt, id, "lefts", &ln);
+  int value = nt_ref(nt, id, "value");
+  char iv_lhs[320]; int iv_home_cid = -1;   /* an ivar target's home (masgn_ivar_home) */
+  const char *vty = nt_type(nt, value);
+  /* `r, w = IO.pipe` -> make a pipe, bind both ends as IO handles. */
+  if (ln == 2 && vty && sp_streq(vty, "CallNode") && nt_str(nt, value, "name") &&
+      sp_streq(nt_str(nt, value, "name"), "pipe")) {
+    int vrecv = nt_ref(nt, value, "receiver");
+    if (vrecv >= 0 && nt_type(nt, vrecv) && sp_streq(nt_type(nt, vrecv), "ConstantReadNode") &&
+        nt_str(nt, vrecv, "name") && sp_streq(nt_str(nt, vrecv, "name"), "IO") &&
+        nt_type(nt, lefts[0]) && sp_streq(nt_type(nt, lefts[0]), "LocalVariableTargetNode") &&
+        nt_type(nt, lefts[1]) && sp_streq(nt_type(nt, lefts[1]), "LocalVariableTargetNode")) {
+      const char *rn0 = nt_str(nt, lefts[0], "name");
+      const char *wn0 = nt_str(nt, lefts[1], "name");
+      if (rn0 && wn0) {
+        int tf = ++g_tmp;
+        /* a block or lambda that captures an end keeps it in a closure
+           cell, so name both through emit_local_ref */
+        Buf rb, wb; memset(&rb, 0, sizeof rb); memset(&wb, 0, sizeof wb);
+        emit_local_ref(c, lefts[0], rn0, &rb);
+        emit_local_ref(c, lefts[1], wn0, &wb);
+        emit_indent(b, indent);
+        buf_printf(b, "{ int _t%d[2]; sp_io_make_pipe(_t%d); ", tf, tf);
+        buf_printf(b, "%s = sp_io_fdopen(_t%d[0], \"r\"); ", rb.p, tf);
+        /* the write end is sync in CRuby: a write reaches the descriptor at
+           once, so the reader (or an IO.select on it) sees it without a
+           flush. sp_io_pipe does the same for the non-destructured call
+           (#4263). */
+        buf_printf(b, "sp_File *_w%d = sp_io_fdopen(_t%d[1], \"w\"); "
+                      "if (_w%d) { _w%d->sync_on = 1; setvbuf(_w%d->fp, NULL, _IONBF, 0); } "
+                      "%s = _w%d; }\n",
+                   tf, tf, tf, tf, tf, wb.p, tf);
+        free(rb.p); free(wb.p);
+        return 1;
+      }
+    }
+  }
+  int en = 0;
+  const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+  /* A splat among the RHS elements (`*a = *x`, `a, b = 1, *rest`) makes the
+     tuple statically unsized: drop the per-element-temp tuple path and let
+     the runtime-destructure path evaluate the whole ArrayNode (the literal
+     emitter splices splats) and slice it. An empty literal (`a, *r = []`)
+     stays a tuple, of no elements: every target takes nil and a splat
+     target an empty array. */
+  int tuple = vty && sp_streq(vty, "ArrayNode");
+  if (els) {
+    for (int i = 0; i < en; i++) {
+      const char *ety0 = nt_type(nt, els[i]);
+      if (ety0 && sp_streq(ety0, "SplatNode")) { els = NULL; en = 0; tuple = 0; break; }
+    }
+  }
+  int rn = 0;
+  const int *rights = nt_arr(nt, id, "rights", &rn);
+  int rest_nid = nt_ref(nt, id, "rest");
+  int rest_inner = -1;
+  const char *rest_var = NULL;
+  const char *rest_gvar = NULL;  /* global variable name (without $) for *$rest */
+  int rest_tgt = -1;             /* any other splat target node */
+  if (rest_nid >= 0) {
+    const char *rsty = nt_type(nt, rest_nid);
+    if (rsty && sp_streq(rsty, "SplatNode"))
+      rest_inner = nt_ref(nt, rest_nid, "expression");
+    if (rest_inner >= 0 && nt_type(nt, rest_inner)) {
+      if (sp_streq(nt_type(nt, rest_inner), "LocalVariableTargetNode"))
+        rest_var = nt_str(nt, rest_inner, "name");
+      else if (sp_streq(nt_type(nt, rest_inner), "GlobalVariableTargetNode")) {
+        const char *gnm_r = nt_str(nt, rest_inner, "name");
+        if (gnm_r) rest_gvar = comp_resolve_gvar(c, gnm_r + 1);
+        if (!rest_gvar || !comp_gvar(c, rest_gvar))
+          unsupported(c, id, "multiple assignment: a splat into an untyped global");
+      }
+      /* any other target -- an instance or class variable, a constant, an
+         attribute or an index -- takes the collected array through
+         masgn_store */
+      else if (!sp_streq(nt_type(nt, rest_inner), "SplatNode"))
+        rest_tgt = rest_inner;
+    }
+  }
+  /* Ruby evaluates each target's receiver and index before any value, left
+     to right -- `a[i], o.x = f, g` reads a, i and o, then f and g -- and
+     assigns last. A receiver or index that is a plain read or literal
+     answers the same whenever it runs and stays at its store; once any is a
+     call, a literal that allocates or a write, every target's receiver and
+     index goes into a temp, so the order is Ruby's, and a key that is a
+     fresh object is held while the values build. The temps go into the
+     statement's prelude, ahead of what a value hoists there -- a literal's
+     build -- and each part is emitted whole before its declaration is
+     written, and the index after the receiver's, so what a part hoists
+     lands before its own declaration and after the part before it. The
+     temps are rooted outright: a part that is a read is held by its
+     variable only until a later part or a value runs user code -- a call,
+     or the `to_s` an interpolation runs, which no predicate here sees -- a
+     literal part may be boxed on the heap by its slot, a Rational under a
+     poly key, and the hoist happens only where some part is a call or a
+     build. */
+  int *ttr = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
+  int *ttk = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
+  int hoist = 0;
+  for (int i = 0; i < ln; i++) {
+    int r, k;
+    masgn_target_parts(nt, lefts[i], &r, &k);
+    ttr[i] = ttk[i] = -1;
+    if (!masgn_part_plain(c, r, lefts, i) || !masgn_part_plain(c, k, lefts, i)) hoist = 1;
+  }
+  if (hoist) {
+    Buf *hb = g_pre;
+    for (int i = 0; i < ln; i++) {
+      int r, k;
+      masgn_target_parts(nt, lefts[i], &r, &k);
+      if (r < 0) continue;
+      int index = sp_streq(nt_type(nt, lefts[i]), "IndexTargetNode");
+      TyKind rt = comp_ntype(c, r);
+      int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
+      TyKind okt = TY_UNKNOWN;
+      int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
+      if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
+      if (!index && !ty_is_object(rt)) continue;
+      ttr[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
+      if (obj_ix) ttk[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? comp_ntype(c, k) : okt, hb);
+      else if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
+    }
+  }
+  if (emit_multi_write_scalar(c, id, b, indent, nt, ln, lefts, value, vty, tuple, rn, rights, rest_var, rest_gvar, rest_tgt, ttr, ttk)) return 1;
+  /* A store that can run user code -- the general hash's key hooks, a
+     receiver typed at run time -- or that allocates -- the rest array, a
+     value that is a by-value struct into a slot that boxes it -- comes
+     after every value is built and after the targets before it have taken
+     theirs, so it can collect what an earlier target dropped. */
+  int store_alloc = rest_var || rest_gvar || rest_tgt >= 0;
+  for (int i = 0; i < ln && !store_alloc; i++) {
+    int r, k;
+    masgn_target_parts(nt, lefts[i], &r, &k);
+    if (k < 0) continue;
+    TyKind rt = comp_ntype(c, r);
+    store_alloc = rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH;
+  }
+  for (int i = 0; i < en && !store_alloc; i++) {
+    TyKind vt = comp_ntype(c, els[i]);
+    store_alloc = (ty_is_struct_valued(vt) || comp_ty_value_obj(c, vt)) && masgn_slot_boxes(c, id, lefts, ln, i, vt);
+  }
+  /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
+     Save each temp index separately: emit_expr may consume extra g_tmp
+     slots via preludes (e.g. array literals), so base+i is unreliable. */
+  int *tmps = en > 0 ? alloca(sizeof(int) * (size_t)en) : NULL;
+  /* The RESOLVED C type each temp was declared with (empty-literal adoption
+     below can override the element node's inferred type); the assign loop
+     must box/unbox from this, not re-derive comp_ntype (#3280). */
+  TyKind *tmpts = en > 0 ? alloca(sizeof(TyKind) * (size_t)en) : NULL;
+  for (int i = 0; i < en; i++) {
+    tmps[i] = ++g_tmp;
+    emit_indent(b, indent);
+    /* A nil (or void) element has no scalar C type; hold it as a boxed poly
+       temp so the slot is valid and a poly target can read it directly. */
+    TyKind elt = comp_ntype(c, els[i]);
+    /* An empty array/hash literal has no element type of its own, so elt stays
+       UNKNOWN and the temp would be declared `void`. Two independent empty
+       literals (`numbers, strings = [], []`) each take their matching target's
+       concrete container type and materialize a fresh container of it, so each
+       slot is typed from its own later use rather than merged/voided (#3213). */
+    const char *elty = nt_type(nt, els[i]);
+    int el_ec = 0;
+    int el_empty_arr = elty && sp_streq(elty, "ArrayNode") &&
+                       (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
+    int el_empty_hash = elty && (sp_streq(elty, "HashNode") || sp_streq(elty, "KeywordHashNode")) &&
+                        (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
+    if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
+        nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "LocalVariableTargetNode")) {
+      const char *lnm = nt_str(nt, lefts[i], "name");
+      LocalVar *tlv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
+      if (tlv && ((el_empty_arr && ty_is_array(tlv->type)) ||
+                  (el_empty_hash && ty_is_hash(tlv->type)))) elt = tlv->type;
+    }
+    /* an IVAR target adopts its declared ivar type the same way; a poly
+       ivar takes a fresh boxed container (the temp would otherwise be
+       declared `void`, a C error) (#3280) */
+    if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
+        nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "InstanceVariableTargetNode")) {
+      Scope *isc0 = comp_scope_of(c, id);
+      const char *ivn0 = nt_str(nt, lefts[i], "name");
+      if (isc0 && isc0->class_id >= 0 && ivn0) {
+        int ix0 = comp_ivar_index(&c->classes[isc0->class_id], ivn0);
+        TyKind it0 = ix0 >= 0 ? c->classes[isc0->class_id].ivar_types[ix0] : TY_UNKNOWN;
+        if ((el_empty_arr && ty_is_array(it0)) ||
+            (el_empty_hash && ty_is_hash(it0)) || it0 == TY_POLY) elt = it0;
+      }
+    }
+    int adopt_empty_arr = el_empty_arr && ty_is_array(elt);
+    int adopt_empty_hash = el_empty_hash && ty_is_hash(elt);
+    int poly_empty_arr = el_empty_arr && elt == TY_POLY;
+    int poly_empty_hash = el_empty_hash && elt == TY_POLY;
+    int nilish = (elt == TY_NIL || elt == TY_VOID);
+    /* A target that is the shared handle takes the element's own object
+       (`t, u = s, 1` names s as t, promote_local_alias_pairs): a local
+       that is the handle is held as the handle, so a swap (`a, b = b, a`)
+       reads both before either is rebound. */
+    char hsrc[1024];
+    LocalVar *htl = NULL;
+    if (i < ln && nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[i], "name"))
+      htl = scope_local(comp_scope_of(c, id), nt_str(nt, lefts[i], "name"));
+    int hup = htl && htl->type == TY_STRBUF && htl->str_shared ? strbuf_uplus_operand(c, els[i]) : -1;
+    if (htl && htl->type == TY_STRBUF && htl->str_shared && elt != TY_STRBUF &&
+        ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
+         (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)))) {
+      /* `+s` is s itself unless s is frozen */
+      buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
+      if (tmpts) tmpts[i] = TY_STRBUF;
+      int later_alloc_h = store_alloc;
+      for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
+      if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
+      buf_puts(b, "\n");
+      continue;
+    }
+    /* an element with no C type of its own (an unresolved call, which
+       raises) is held boxed: `void _tN` is no declaration */
+    int boxed_el = !nilish && !c_type_name(elt) && !ty_is_object(elt);
+    emit_ctype(c, nilish || boxed_el ? TY_POLY : elt, b);
+    buf_printf(b, " _t%d = ", tmps[i]);
+    if (nilish) {
+      /* A void element (e.g. a call that raises) still runs for its side
+         effects; only its absent value is replaced with nil. */
+      if (!node_is_pure_literal(nt, els[i])) {
+        Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
+        if (vb.p && vb.p[0]) buf_printf(b, "((void)(%s), sp_box_nil())", vb.p);
+        else buf_puts(b, "sp_box_nil()");
+        free(vb.p);
+      }
+      else buf_puts(b, "sp_box_nil()");
+    }
+    else if (adopt_empty_arr) {
+      if (elt == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
+      else buf_printf(b, "sp_%sArray_new()", array_kind(elt) ? array_kind(elt) : "Int");
+    }
+    else if (adopt_empty_hash) {
+      const char *hcn = ty_hash_cname(elt);
+      if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb); buf_puts(b, vb.p ? vb.p : ""); free(vb.p); }
+    }
+    else if (poly_empty_arr)
+      buf_puts(b, "sp_box_nullable_obj((void *)sp_PolyArray_new(), SP_BUILTIN_POLY_ARRAY)");
+    else if (poly_empty_hash)
+      buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
+    else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
+    else {
+      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
+      buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
+    }
+    buf_puts(b, ";");
+    if (tmpts) tmpts[i] = nilish || boxed_el ? TY_POLY : elt;
+    /* Nothing holds the temp until its target takes it, and whatever can
+       allocate after it can run user code that drops its other holder, so
+       it is rooted while a later value or a store can collect. */
+    int later_alloc = store_alloc;
+    for (int j = i + 1; j < en && !later_alloc; j++) later_alloc = masgn_part_allocates(c, els[j]);
+    if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, elt, tmps[i], b);
+    buf_puts(b, "\n");
+  }
+  /* assign lefts */
+  for (int i = 0; i < ln; i++) {
+    const char *lty = nt_type(nt, lefts[i]);
+    if (i >= en) {
+      if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
+        emit_indent(b, indent);
+        const char *lvn = nt_str(nt, lefts[i], "name");
+        /* Use the local's declared type, not the target node's: an
+           under-filled slot lands nil, so the variable is typically widened
+           to poly and needs a boxed-nil default rather than a scalar zero. */
+        LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+        TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+        /* An under-filled massign target is Ruby `nil`, not the type's zero
+           value; emit the slot's nil sentinel (mirroring the typed-array
+           under-fill arm above) so `a, b, c = 1` yields [1, nil, nil]. */
+        const char *nilv = nil_sentinel(ltt);
+        /* a captured TY_PROC cell needs the raw int-laundered lvalue rather
+           than emit_local_ref's non-assignable cast form (see emit_assign). */
+        if (emit_proc_cell_lvalue(c, id, lvn, b)) {
+          buf_printf(b, "%s);\n", nilv);
+        }
+        else {
+          emit_local_ref(c, id, lvn, b);
+          buf_printf(b, " = %s;\n", nilv);
+        }
+      }
+      else if (lty && sp_streq(lty, "MultiTargetNode"))
+        emit_massign_poly_target(c, id, lefts[i], "sp_box_nil()", indent, b);
+      /* every other target past the supplied elements takes nil */
+      else if (!masgn_store(c, id, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
+        unsupported(c, id, "multiple assignment target");
+      continue;
+    }
+    if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
+      emit_indent(b, indent);
+      const char *lvn = nt_str(nt, lefts[i], "name");
+      /* cell-aware lvalue: a target captured by a later lambda (doom's
+         draw_automap `min_x`/`max_y`, closed over by the to_sx/to_sy
+         procs) lives in a heap cell, not a plain lv_ slot -- writing
+         lv_<name> referenced an undeclared identifier. A captured TY_PROC
+         cell needs the raw int-laundered lvalue (emit_local_ref's cast form
+         is not assignable), mirroring emit_assign. */
+      int proc_cell = emit_proc_cell_lvalue(c, id, lvn, b);
+      if (!proc_cell) { emit_local_ref(c, id, lvn, b); buf_puts(b, " = "); }
+      LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+      TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+      TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+      if (proc_cell) {
+        /* The cell stores (sp_int)(uintptr_t)sp_Proc*, so the value has to
+           be a bare pointer. But a nil/void element was pre-evaluated into a
+           boxed sp_RbVal temp, and a poly element into an sp_RbVal too --
+           casting that struct to (sp_int) is invalid C. Extract the proc
+           pointer (NULL for nil, the .v.p slot for a poly) before laundering,
+           mirroring emit_assign's proc-cell write. */
+        if (valt == TY_NIL || valt == TY_VOID) buf_puts(b, "NULL");
+        else if (valt == TY_POLY) buf_printf(b, "_t%d.v.p", tmps[i]);
+        else buf_printf(b, "_t%d", tmps[i]);
+      }
+      else if (ltt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      /* a mutable-String slot holds an sp_String *: a String element is
+         wrapped, as the single write wraps it (emit_strbuf_value) */
+      else if (ltt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
+      else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
+      /* a boxed element into a typed local: unboxed, as a plain write does
+         (`mk, x = 0, nl` with nl only ever nil) */
+      else if (valt == TY_POLY && ltt != TY_POLY && ltt != TY_UNKNOWN) {
+        char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
+        masgn_conv(c, lefts[i], ltt, valt, tv, b);
+      }
+      else buf_printf(b, "_t%d", tmps[i]);
+      if (proc_cell) buf_puts(b, ")");
+      buf_puts(b, ";\n");
+    }
+    else if (lty && (sp_streq(lty, "ConstantPathTargetNode") || sp_streq(lty, "ConstantTargetNode")) &&
+             nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
+      const char *cnm_l = nt_str(nt, lefts[i], "name");
+      TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+      emit_indent(b, indent);
+      buf_printf(b, "cst_%s = ", cnm_l);
+      if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      else buf_printf(b, "_t%d", tmps[i]);
+      buf_puts(b, ";\n");
+    }
+    else if (lty && sp_streq(lty, "InstanceVariableTargetNode")) {
+      const char *ivnm = nt_str(nt, lefts[i], "name");
+      if (!ivnm) continue;
+      Scope *iv_sc = comp_scope_of(c, id);
+      int iv_cid = iv_sc ? iv_sc->class_id : -1;
+      /* outside any class: a class body's module-level slot, or the
+         top-level pseudo-class global, the same homes the single write
+         has (`@x, @y = pair` at the top level wrote `self->iv_x` into a
+         function with no self, and the C did not build) */
+      int iv_global = 0;
+      if (iv_cid < 0 && !(iv_sc && iv_sc->is_cmethod)) {
+        if (g_class_body_id >= 0) { iv_cid = g_class_body_id; iv_global = 1; }
+        else if (comp_class_index(c, "Toplevel") >= 0) { iv_cid = comp_class_index(c, "Toplevel"); iv_global = 1; }
+        else continue;   /* no home for it: the value was evaluated above */
+      }
+      TyKind ivt = TY_UNKNOWN;
+      if (iv_cid >= 0) {
+        int iv_idx = comp_ivar_index(&c->classes[iv_cid], ivnm);
+        if (iv_idx >= 0) ivt = c->classes[iv_cid].ivar_types[iv_idx];
+      }
+      if (!(iv_sc && iv_sc->is_cmethod) && !iv_global && iv_cid >= 0) {
+        Buf fb; memset(&fb, 0, sizeof fb);
+        emit_frozen_obj_guard(c, iv_cid, g_self ? g_self : "self", &fb);
+        masgn_guard_line(&fb, b, indent);
+      }
+      emit_indent(b, indent);
+      if (((iv_sc && iv_sc->is_cmethod) || iv_global) && iv_cid >= 0)
+        buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, iv_c(ivnm + 1));
+      else
+        buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
+      TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+      if (ivt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      else buf_printf(b, "_t%d", tmps[i]);
+      buf_puts(b, ";\n");
+    }
+    else if (lty && sp_streq(lty, "CallTargetNode")) {
+      /* setter call: e.g. @c.v = _t<i> */
+      const char *setnm = nt_str(nt, lefts[i], "name");
+      int recv_id2 = nt_ref(nt, lefts[i], "receiver");
+      size_t snlen = setnm ? strlen(setnm) : 0;
+      if (!setnm || snlen < 2 || setnm[snlen - 1] != '=' || recv_id2 < 0)
+        { unsupported(c, id, "multiple assignment call target"); continue; }
+      TyKind rt2 = comp_ntype(c, recv_id2);
+      if (!ty_is_object(rt2))
+        { unsupported(c, id, "multiple assignment call target non-object"); continue; }
+      char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
+      int rc2 = ty_object_class(rt2);
+      if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
+        /* a writer defined with `def x=` runs as a call */
+        char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
+        if (comp_method_in_chain(c, rc2, setnm, NULL) < 0)
+          unsupported(c, id, "multiple assignment call target no writer");
+        else masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        continue;
+      }
+      char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
+      int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
+      int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
+      TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
+      {
+        Buf rb; memset(&rb, 0, sizeof rb);
+        emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
+        Buf fb; memset(&fb, 0, sizeof fb);
+        emit_frozen_obj_guard(c, rc2, rb.p ? rb.p : "", &fb);
+        masgn_guard_line(&fb, b, indent);
+        emit_indent(b, indent);
+        buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2)); free(rb.p);
+      }
+      /* a nil element lands the slot's own nil, not the boxed temp */
+      char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
+      masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
+      buf_puts(b, ";\n");
+    }
+    else if (lty && sp_streq(lty, "MultiTargetNode")) {
+      /* nested (b, *c, d) = _t<i>: destructure the boxed element */
+      char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
+      Buf ge; memset(&ge, 0, sizeof ge);
+      emit_boxed_text(c, tmpts[i], ex, &ge);
+      emit_massign_poly_target(c, id, lefts[i], ge.p ? ge.p : "sp_box_nil()", indent, b);
+      free(ge.p);
+    }
+    else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
+      const char *gnm = nt_str(nt, lefts[i], "name");
+      const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
+      LocalVar *gv2 = rn2 ? comp_gvar(c, rn2) : NULL;
+      if (!gv2) { unsupported(c, id, "multiple assignment global target"); continue; }
+      emit_indent(b, indent);
+      buf_printf(b, "gv_%s = ", rn2);
+      /* a boxed global (widened under --int-overflow=promote) boxes the
+         typed element, as the ivar target above does */
+      TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+      if (gv2->type == TY_POLY && gvalt != TY_POLY) emit_boxed_tmp(c, gvalt, tmps[i], b);
+      else buf_printf(b, "_t%d", tmps[i]);
+      buf_puts(b, ";\n");
+    }
+    else if (lty && sp_streq(lty, "IndexTargetNode")) {
+      int recv_id = nt_ref(nt, lefts[i], "receiver");
+      int idx_args = nt_ref(nt, lefts[i], "arguments");
+      int idx_argc = 0;
+      const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
+      if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
+      TyKind recv_t = comp_ntype(c, recv_id);
+      if (ty_is_object(recv_t)) {
+        char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
+        masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        continue;
+      }
+      emit_indent(b, indent);
+      if (ty_is_array(recv_t)) {
+        /* a Range index stores a slice, which this arm has no call for */
+        if (comp_ntype(c, idx_argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array range index target"); continue; }
+        const char *k = (recv_t == TY_POLY_ARRAY) ? "Poly" : array_kind(recv_t);
+        if (!k) k = "Int";
+        buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, els[i]));
+        emit_node_or_tmp(c, recv_id, ttr[i], b); buf_puts(b, ", ");
+        /* the index slot is an sp_int; a POLY index (a widened local, #4204)
+           unboxes here, as the boxed-receiver branch below always has */
+        if (ttk[i] >= 0) buf_printf(b, "_t%d", ttk[i]); else emit_int_expr(c, idx_argv[0], b);
+        buf_puts(b, ", ");
+        if (recv_t == TY_POLY_ARRAY) emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
+        else {
+          /* a typed element fed from a boxed right-hand side converts at
+             the sink, as the single store does (#4733) */
+          TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+          TyKind et = ty_array_elem(recv_t);
+          if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
+          else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(_t%d)", tmps[i]);
+          else if (valt == TY_POLY && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(_t%d)", tmps[i]);
+          else buf_printf(b, "_t%d", tmps[i]);
+        }
+        buf_puts(b, ");\n");
+      }
+      else if (recv_t == TY_POLY || recv_t == TY_UNKNOWN) {
+        /* A container the fixpoint could not type -- an attr read whose name
+           several classes own, so the receiver's class is only known at run
+           time -- sets through the boxed index path (#3781). */
+        if (ttr[i] >= 0) buf_printf(b, "sp_poly_arr_set(_t%d, _t%d, ", ttr[i], ttk[i]);
+        else {
+          int tmw = ++g_tmp;
+          buf_printf(b, "{ sp_RbVal _t%d = ", tmw);
+          emit_boxed(c, recv_id, b);
+          buf_puts(b, "; sp_poly_arr_set(_t");
+          buf_printf(b, "%d, ", tmw);
+          emit_int_expr(c, idx_argv[0], b); buf_puts(b, ", ");
+        }
+        emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
+        buf_puts(b, ttr[i] >= 0 ? ");\n" : "); }\n");
+      }
+      else if (ty_is_hash(recv_t)) {
+        const char *hn = ty_hash_cname(recv_t);
+        if (!hn) { unsupported(c, id, "multiple assignment hash index target unknown kind"); continue; }
+        /* The sets do not check for a frozen hash; a single store checks
+           before its set, and so does this store, after the values, where
+           CRuby's assignment raises. */
+        buf_puts(b, "if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv_id, ttr[i], b);
+        buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv_id, ttr[i], b);
+        buf_printf(b, ", %s);\n", hash_box_cls(recv_t));
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%sHash_set(", hn);
+        emit_node_or_tmp(c, recv_id, ttr[i], b); buf_puts(b, ", ");
+        if (ttk[i] >= 0) buf_printf(b, "_t%d", ttk[i]);
+        else if (ty_hash_key(recv_t) == TY_INT) emit_int_expr(c, idx_argv[0], b);
+        else if (ty_hash_key(recv_t) == TY_POLY) emit_boxed(c, idx_argv[0], b);
+        else emit_expr(c, idx_argv[0], b);
+        buf_puts(b, ", ");
+        if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH)
+          emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
+        else {
+          /* a typed value slot fed from a boxed right-hand side (a call's
+             poly answer, every int under --int-overflow=promote) converts
+             at the sink, as the single store does (#4733) */
+          TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+          TyKind hv = ty_hash_val(recv_t);
+          if (valt == TY_POLY && hv == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(_t%d)", tmps[i]);
+          else if (valt == TY_POLY && hv == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(_t%d)", tmps[i]);
+          else buf_printf(b, "_t%d", tmps[i]);
+        }
+        buf_puts(b, ");\n");
+      }
+      else { unsupported(c, id, "multiple assignment index target non-array/hash"); }
+    }
+    else if (lty && sp_streq(lty, "ClassVariableTargetNode")) {
+      const char *cnm = nt_str(nt, lefts[i], "name");
+      if (!cnm || cnm[0] != '@' || cnm[1] != '@') { unsupported(c, id, "multiple assignment class variable target"); continue; }
+      Scope *cv_sc = comp_scope_of(c, id);
+      int cv_cid = (cv_sc && cv_sc->class_id >= 0) ? cv_sc->class_id : g_class_body_id;
+      if (cv_cid < 0) { unsupported(c, id, "multiple assignment class variable target no class"); continue; }
+      cv_cid = comp_cvar_owner(c, cv_cid, cnm);
+      int cv_idx = comp_cvar_index(&c->classes[cv_cid], cnm);
+      if (cv_idx < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
+      emit_indent(b, indent);
+      emit_cvar_set_flag(c, cv_cid, cnm, 0, b);
+      buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
+      TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
+      TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
+      if (cvt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      else buf_printf(b, "_t%d", tmps[i]);
+      buf_puts(b, ";\n");
+    }
+    else unsupported(c, id, "multiple assignment target");
+  }
+  /* build and assign rest (splat) target. A slot that is not a typed
+     array -- a poly local or global -- takes an array typed by the
+     elements, boxed into it. */
+  LocalVar *rest_slot = rest_var ? scope_local(comp_scope_of(c, id), rest_var)
+                      : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
+  if (rest_var || rest_slot || rest_tgt >= 0) {
+    int rstart = ln, rend = en - rn;
+    if (rend < rstart) rend = rstart;
+    TyKind slot_t = rest_slot ? rest_slot->type : TY_INT_ARRAY;
+    if (rest_tgt >= 0) {
+      slot_t = masgn_slot_type(c, id, rest_tgt);
+      if (!ty_is_array(slot_t)) slot_t = TY_POLY;
+    }
+    TyKind rest_arr_t = slot_t;
+    if (slot_t == TY_POLY) {
+      TyKind et = rend > rstart ? tmpts[rstart] : TY_POLY;
+      for (int i = rstart + 1; i < rend; i++)
+        if (tmpts[i] != et) et = TY_POLY;
+      rest_arr_t = ty_array_of(et);
+    }
+    else if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
+    const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
+    if (!k) k = "Int";
+    int tr = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+    if (rest_arr_t == TY_POLY_ARRAY) {
+      for (int i = rstart; i < rend; i++) {
+        char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, tmpts[i], tmp_expr, &bx);
+        emit_indent(b, indent);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s);\n", tr, bx.p ? bx.p : "sp_box_nil()");
+        free(bx.p);
+      }
+    }
+    else {
+      for (int i = rstart; i < rend; i++) {
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%sArray_push%s(_t%d, _t%d);\n", k, nil_store_sfx(c, k, els[i]), tr, tmps[i]);
+      }
+    }
+    char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
+    if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rest_arr_t, -1, -1, indent, b);
+    else {
+      emit_indent(b, indent);
+      if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
+      else buf_printf(b, "gv_%s = ", rest_gvar);
+      masgn_conv(c, id, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
+      buf_puts(b, ";\n");
+    }
+  }
+  /* assign rights (post-splat fixed targets). They fill left-to-right starting
+     just past the splat's actual length (max(0, en-ln-rn)); a target whose
+     source index runs off the end lands nil (`a, *b, c, d = [1, 2]` ->
+     c=2, d=nil) instead of reusing a leading element. */
+  int blen_r = en - ln - rn; if (blen_r < 0) blen_r = 0;
+  for (int j = 0; j < rn; j++) {
+    int ridx = ln + blen_r + j;
+    if (ridx >= en) ridx = -1;
+    const char *lty = nt_type(nt, rights[j]);
+    if (!lty) continue;
+    const char *rnm_j = nt_str(nt, rights[j], "name");
+    if (sp_streq(lty, "LocalVariableTargetNode")) {
+      emit_indent(b, indent);
+      LocalVar *rjlv = rnm_j ? scope_local(comp_scope_of(c, id), rnm_j) : NULL;
+      int rjpoly = rjlv && rjlv->type == TY_POLY;
+      if (ridx >= 0 && ridx < en) {
+        buf_printf(b, "lv_%s = ", rename_local(rnm_j));
+        TyKind valt = comp_ntype(c, els[ridx]);
+        if (rjpoly && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[ridx], b);
+        else buf_printf(b, "_t%d", tmps[ridx]);
+        buf_puts(b, ";\n");
+      }
+      else {
+        buf_printf(b, "lv_%s = ", rename_local(rnm_j));
+        TyKind tt = comp_ntype(c, rights[j]);
+        if (rjpoly) emit_boxed_src(c, tt, default_value_from_compiler(c, tt), b);
+        else buf_puts(b, default_value_from_compiler(c, tt));
+        buf_puts(b, ";\n");
+      }
+    }
+    else if (sp_streq(lty, "InstanceVariableTargetNode") && rnm_j &&
+             masgn_ivar_home(c, id, rnm_j, iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
+      TyKind ivt2 = TY_UNKNOWN;
+      { int iv_idx2 = comp_ivar_index(&c->classes[iv_home_cid], rnm_j);
+        if (iv_idx2 >= 0) ivt2 = c->classes[iv_home_cid].ivar_types[iv_idx2]; }
+      emit_indent(b, indent);
+      buf_printf(b, "%s = ", iv_lhs);
+      if (ridx >= 0 && ridx < en) {
+        TyKind valt2 = (ridx < en) ? comp_ntype(c, els[ridx]) : TY_UNKNOWN;
+        if (ivt2 == TY_POLY && valt2 != TY_POLY) emit_boxed_tmp(c, valt2, tmps[ridx], b);
+        else buf_printf(b, "_t%d", tmps[ridx]);
+      }
+      else buf_puts(b, default_value_from_compiler(c, ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
+      buf_puts(b, ";\n");
+    }
+    else {
+      char rv[32];
+      if (ridx >= 0) snprintf(rv, sizeof rv, "_t%d", tmps[ridx]);
+      TyKind rvt = ridx >= 0 ? (tmpts ? tmpts[ridx] : comp_ntype(c, els[ridx])) : TY_NIL;
+      if (sp_streq(lty, "MultiTargetNode")) {
+        Buf ge; memset(&ge, 0, sizeof ge);
+        if (ridx >= 0) emit_boxed_text(c, rvt, rv, &ge);
+        emit_massign_poly_target(c, id, rights[j], ge.p ? ge.p : "sp_box_nil()", indent, b);
+        free(ge.p);
+      }
+      else if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
+        unsupported(c, id, "multiple assignment target");
+    }
+  }
+  return 1;
+  return 0;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -10920,1126 +12050,7 @@ else {
       buf_puts(b, "; }\n"); }
     return;
   }
-  if (sp_streq(ty, "MultiWriteNode")) {
-    int ln = 0;
-    const int *lefts = nt_arr(nt, id, "lefts", &ln);
-    int value = nt_ref(nt, id, "value");
-    char iv_lhs[320]; int iv_home_cid = -1;   /* an ivar target's home (masgn_ivar_home) */
-    const char *vty = nt_type(nt, value);
-    /* `r, w = IO.pipe` -> make a pipe, bind both ends as IO handles. */
-    if (ln == 2 && vty && sp_streq(vty, "CallNode") && nt_str(nt, value, "name") &&
-        sp_streq(nt_str(nt, value, "name"), "pipe")) {
-      int vrecv = nt_ref(nt, value, "receiver");
-      if (vrecv >= 0 && nt_type(nt, vrecv) && sp_streq(nt_type(nt, vrecv), "ConstantReadNode") &&
-          nt_str(nt, vrecv, "name") && sp_streq(nt_str(nt, vrecv, "name"), "IO") &&
-          nt_type(nt, lefts[0]) && sp_streq(nt_type(nt, lefts[0]), "LocalVariableTargetNode") &&
-          nt_type(nt, lefts[1]) && sp_streq(nt_type(nt, lefts[1]), "LocalVariableTargetNode")) {
-        const char *rn0 = nt_str(nt, lefts[0], "name");
-        const char *wn0 = nt_str(nt, lefts[1], "name");
-        if (rn0 && wn0) {
-          int tf = ++g_tmp;
-          /* a block or lambda that captures an end keeps it in a closure
-             cell, so name both through emit_local_ref */
-          Buf rb, wb; memset(&rb, 0, sizeof rb); memset(&wb, 0, sizeof wb);
-          emit_local_ref(c, lefts[0], rn0, &rb);
-          emit_local_ref(c, lefts[1], wn0, &wb);
-          emit_indent(b, indent);
-          buf_printf(b, "{ int _t%d[2]; sp_io_make_pipe(_t%d); ", tf, tf);
-          buf_printf(b, "%s = sp_io_fdopen(_t%d[0], \"r\"); ", rb.p, tf);
-          /* the write end is sync in CRuby: a write reaches the descriptor at
-             once, so the reader (or an IO.select on it) sees it without a
-             flush. sp_io_pipe does the same for the non-destructured call
-             (#4263). */
-          buf_printf(b, "sp_File *_w%d = sp_io_fdopen(_t%d[1], \"w\"); "
-                        "if (_w%d) { _w%d->sync_on = 1; setvbuf(_w%d->fp, NULL, _IONBF, 0); } "
-                        "%s = _w%d; }\n",
-                     tf, tf, tf, tf, tf, wb.p, tf);
-          free(rb.p); free(wb.p);
-          return;
-        }
-      }
-    }
-    int en = 0;
-    const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
-    /* A splat among the RHS elements (`*a = *x`, `a, b = 1, *rest`) makes the
-       tuple statically unsized: drop the per-element-temp tuple path and let
-       the runtime-destructure path evaluate the whole ArrayNode (the literal
-       emitter splices splats) and slice it. An empty literal (`a, *r = []`)
-       stays a tuple, of no elements: every target takes nil and a splat
-       target an empty array. */
-    int tuple = vty && sp_streq(vty, "ArrayNode");
-    if (els) {
-      for (int i = 0; i < en; i++) {
-        const char *ety0 = nt_type(nt, els[i]);
-        if (ety0 && sp_streq(ety0, "SplatNode")) { els = NULL; en = 0; tuple = 0; break; }
-      }
-    }
-    int rn = 0;
-    const int *rights = nt_arr(nt, id, "rights", &rn);
-    int rest_nid = nt_ref(nt, id, "rest");
-    int rest_inner = -1;
-    const char *rest_var = NULL;
-    const char *rest_gvar = NULL;  /* global variable name (without $) for *$rest */
-    int rest_tgt = -1;             /* any other splat target node */
-    if (rest_nid >= 0) {
-      const char *rsty = nt_type(nt, rest_nid);
-      if (rsty && sp_streq(rsty, "SplatNode"))
-        rest_inner = nt_ref(nt, rest_nid, "expression");
-      if (rest_inner >= 0 && nt_type(nt, rest_inner)) {
-        if (sp_streq(nt_type(nt, rest_inner), "LocalVariableTargetNode"))
-          rest_var = nt_str(nt, rest_inner, "name");
-        else if (sp_streq(nt_type(nt, rest_inner), "GlobalVariableTargetNode")) {
-          const char *gnm_r = nt_str(nt, rest_inner, "name");
-          if (gnm_r) rest_gvar = comp_resolve_gvar(c, gnm_r + 1);
-          if (!rest_gvar || !comp_gvar(c, rest_gvar))
-            unsupported(c, id, "multiple assignment: a splat into an untyped global");
-        }
-        /* any other target -- an instance or class variable, a constant, an
-           attribute or an index -- takes the collected array through
-           masgn_store */
-        else if (!sp_streq(nt_type(nt, rest_inner), "SplatNode"))
-          rest_tgt = rest_inner;
-      }
-    }
-    /* Ruby evaluates each target's receiver and index before any value, left
-       to right -- `a[i], o.x = f, g` reads a, i and o, then f and g -- and
-       assigns last. A receiver or index that is a plain read or literal
-       answers the same whenever it runs and stays at its store; once any is a
-       call, a literal that allocates or a write, every target's receiver and
-       index goes into a temp, so the order is Ruby's, and a key that is a
-       fresh object is held while the values build. The temps go into the
-       statement's prelude, ahead of what a value hoists there -- a literal's
-       build -- and each part is emitted whole before its declaration is
-       written, and the index after the receiver's, so what a part hoists
-       lands before its own declaration and after the part before it. The
-       temps are rooted outright: a part that is a read is held by its
-       variable only until a later part or a value runs user code -- a call,
-       or the `to_s` an interpolation runs, which no predicate here sees -- a
-       literal part may be boxed on the heap by its slot, a Rational under a
-       poly key, and the hoist happens only where some part is a call or a
-       build. */
-    int *ttr = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
-    int *ttk = ln > 0 ? alloca(sizeof(int) * (size_t)ln) : NULL;
-    int hoist = 0;
-    for (int i = 0; i < ln; i++) {
-      int r, k;
-      masgn_target_parts(nt, lefts[i], &r, &k);
-      ttr[i] = ttk[i] = -1;
-      if (!masgn_part_plain(c, r, lefts, i) || !masgn_part_plain(c, k, lefts, i)) hoist = 1;
-    }
-    if (hoist) {
-      Buf *hb = g_pre;
-      for (int i = 0; i < ln; i++) {
-        int r, k;
-        masgn_target_parts(nt, lefts[i], &r, &k);
-        if (r < 0) continue;
-        int index = sp_streq(nt_type(nt, lefts[i]), "IndexTargetNode");
-        TyKind rt = comp_ntype(c, r);
-        int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
-        TyKind okt = TY_UNKNOWN;
-        int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
-        if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
-        if (!index && !ty_is_object(rt)) continue;
-        ttr[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
-        if (obj_ix) ttk[i] = masgn_hoist_part(c, k, okt == TY_UNKNOWN ? comp_ntype(c, k) : okt, hb);
-        else if (index) ttk[i] = masgn_hoist_part(c, k, poly_r || ty_is_array(rt) ? TY_INT : ty_hash_key(rt), hb);
-      }
-    }
-    if (!tuple) {
-      /* scalar RHS (`a, b = 1`): the first target takes the value, the rest
-         their slot default (Ruby gives nil; we land the typed zero). A call /
-         super / yield can return a multi-value tuple, so those are excluded
-         and fall through to the tuple-destructuring path. */
-      TyKind st = comp_ntype(c, value);
-      /* RHS `*expr` (a, *b = *x) builds an ARRAY (splat-to-array), but
-         comp_ntype answers a SplatNode with the ELEMENT type (that arm
-         serves array-literal splices) -- override so the destructure path
-         below runs; emit_expr's SplatNode arm already yields a normalized
-         sp_PolyArray*. */
-      if (vty && sp_streq(vty, "SplatNode")) st = TY_POLY_ARRAY;
-      int multi_src = vty && (sp_streq(vty, "CallNode") || sp_streq(vty, "SuperNode") ||
-                              sp_streq(vty, "ForwardingSuperNode") || sp_streq(vty, "YieldNode"));
-      /* a TY_POLY value can hold an array at runtime (doom's
-         `lump_name, mirrored = @sprite_index[key]` read through a local),
-         so it must take the runtime-destructure path below, not the
-         scalar fill -- which handed the whole array to the first target. */
-      if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
-        for (int i = 0; i < ln; i++) {
-          const char *lty = nt_type(nt, lefts[i]);
-          /* an instance-variable target: the first takes the value, the rest
-             nil, in the slot's own representation */
-          if (lty && sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
-              masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
-            int ix = comp_ivar_index(&c->classes[iv_home_cid], nt_str(nt, lefts[i], "name"));
-            TyKind ivt = ix >= 0 ? c->classes[iv_home_cid].ivar_types[ix] : TY_POLY;
-            emit_indent(b, indent);
-            buf_printf(b, "%s = ", iv_lhs);
-            if (i == 0) { if (ivt == TY_POLY && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
-            else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
-            else buf_puts(b, nil_sentinel(ivt));
-            buf_puts(b, ";\n");
-            continue;
-          }
-          if (!lty) continue;
-          if (!sp_streq(lty, "LocalVariableTargetNode")) {
-            Buf vb; memset(&vb, 0, sizeof vb);
-            if (i == 0) emit_expr(c, value, &vb);
-            if (!masgn_store(c, id, lefts[i], i == 0 ? (vb.p ? vb.p : "") : NULL, st, ttr[i], ttk[i], indent, b))
-              unsupported(c, id, "multiple assignment target");
-            free(vb.p);
-            continue;
-          }
-          emit_indent(b, indent);
-          const char *lvn = nt_str(nt, lefts[i], "name");
-          emit_local_ref(c, lefts[i], lvn, b); buf_puts(b, " = ");
-          LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
-          int lpoly = llv && llv->type == TY_POLY;
-          if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
-          else if (lpoly) {
-            /* under-filled target under a scalar RHS is Ruby nil, not the
-               typed zero (`a, b, c = 1` -> [1, nil, nil]). */
-            buf_puts(b, "sp_box_nil()");
-          }
-          else {
-            /* the target NODE's type can read TY_UNKNOWN here; use the local's
-               DECLARED type so the nil sentinel matches its C slot. */
-            TyKind tt = llv ? llv->type : comp_ntype(c, lefts[i]);
-            buf_puts(b, nil_sentinel(tt));
-          }
-          buf_puts(b, ";\n");
-        }
-        /* rest target under a scalar RHS: `*a = 5` collects [5]; with fixed
-           targets present (`a, *r = 5`) the scalar goes to the first target
-           and the rest is empty. */
-        if (rest_var || rest_gvar || rest_tgt >= 0) {
-          Scope *rsc0 = comp_scope_of(c, id);
-          LocalVar *rlv0 = rest_var ? scope_local(rsc0, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
-          TyKind rst0 = rlv0 ? rlv0->type : masgn_slot_type(c, id, rest_tgt);
-          TyKind rat0 = ty_is_array(rst0) ? rst0 : TY_POLY_ARRAY;
-          const char *rk0 = (rat0 == TY_POLY_ARRAY) ? "Poly" : array_kind(rat0);
-          if (!rk0) rk0 = "Poly";
-          int tr0 = ++g_tmp;
-          emit_indent(b, indent);
-          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
-          /* The scalar goes into the rest ONLY when there are no fixed targets on
-             either side (`*a = 5` -> [5]); with post-rest targets (`*a, b = 1`)
-             the value aligns to the end and the rest stays empty. */
-          if (ln == 0 && rn == 0) {
-            emit_indent(b, indent);
-            buf_printf(b, "sp_%sArray_push%s(_t%d, ", rk0, nil_store_sfx(c, rk0, value), tr0);
-            if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
-            else emit_expr(c, value, b);
-            buf_puts(b, ");\n");
-          }
-          char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr0);
-          if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rat0, -1, -1, indent, b);
-          else {
-            emit_indent(b, indent);
-            if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
-            else buf_printf(b, "gv_%s = ", rest_gvar);
-            masgn_conv(c, id, rlv0 ? rlv0->type : rat0, rat0, rx, b);
-            buf_puts(b, ";\n");
-          }
-          if (ln == 0 && rn == 0) return;
-        }
-        /* Post-rest targets under a scalar RHS (`*a, b, c = 1`): the empty rest
-           leaves the single value to fill the rights left-to-right, so the first
-           right takes it when no leading target consumed it (ln == 0) and every
-           other right is nil (`*a, b, c = 1` -> a=[], b=1, c=nil). */
-        for (int j = 0; j < rn; j++) {
-          const char *rty2 = nt_type(nt, rights[j]);
-          if (!rty2) continue;
-          if (!sp_streq(rty2, "LocalVariableTargetNode")) {
-            Buf vb; memset(&vb, 0, sizeof vb);
-            if (j == 0 && ln == 0) emit_expr(c, value, &vb);
-            if (!masgn_store(c, id, rights[j], j == 0 && ln == 0 ? (vb.p ? vb.p : "") : NULL, st, -1, -1, indent, b))
-              unsupported(c, id, "multiple assignment target");
-            free(vb.p);
-            continue;
-          }
-          const char *rvn = nt_str(nt, rights[j], "name");
-          LocalVar *rlv = rvn ? scope_local(comp_scope_of(c, id), rvn) : NULL;
-          int rpoly = rlv && rlv->type == TY_POLY;
-          emit_indent(b, indent);
-          emit_local_ref(c, rights[j], rvn, b); buf_puts(b, " = ");
-          if (j == 0 && ln == 0) {
-            if (rpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b);
-          }
-          else if (rpoly) buf_puts(b, "sp_box_nil()");
-          else { TyKind tt = rlv ? rlv->type : comp_ntype(c, rights[j]); buf_puts(b, nil_sentinel(tt)); }
-          buf_puts(b, ";\n");
-        }
-        return;
-      }
-      /* any expression returning a typed array: runtime destructure */
-      if (ty_is_array(st) && st != TY_UNKNOWN) {
-        const char *k = (st == TY_POLY_ARRAY) ? "Poly" : array_kind(st);
-        if (!k) k = "Int";
-        TyKind elem = ty_array_elem(st);
-        int tarr = ++g_tmp;
-        emit_indent(b, indent);
-        emit_ctype(c, st, b);
-        buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
-        emit_indent(b, indent);
-        buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
-        Scope *rt_scope = comp_scope_of(c, id);
-        for (int i = 0; i < ln; i++) {
-          const char *lty = nt_type(nt, lefts[i]);
-          if (!lty) continue;
-          if (sp_streq(lty, "MultiTargetNode")) {
-            /* nested (a, (b, c)) target: recurse over the boxed element */
-            char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            Buf ge; memset(&ge, 0, sizeof ge);
-            buf_printf(&ge, "(%dLL >= _t%d->len ? sp_box_nil() : ", i, tarr);
-            emit_boxed_text(c, elem, gx, &ge);
-            buf_puts(&ge, ")");
-            emit_massign_poly_target(c, id, lefts[i], ge.p, indent, b);
-            free(ge.p);
-          }
-          else if (sp_streq(lty, "LocalVariableTargetNode")) {
-            emit_indent(b, indent);
-            const char *lvn = nt_str(nt, lefts[i], "name");
-            /* Through emit_local_ref: a target captured by a later block lives
-               in a heap cell, and writing `lv_<name>` there names a variable
-               that was never declared -- the C compilation aborts on the
-               assignment while the cell sits right beside it (#3424). */
-            emit_local_ref(c, lefts[i], lvn, b);
-            buf_puts(b, " = ");
-            LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
-            TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-            char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            if (ltt == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
-            else if (sp_streq(k, "Poly") && ltt != TY_POLY && ltt != TY_UNKNOWN) {
-              /* typed target from a poly tuple (known multi-value return) */
-              emit_unbox_text(c, ltt, gx, b);
-            }
-            /* a mutable-String local holds an sp_String *: wrap a String
-               element, as the single write and the tuple path do */
-            else if (ltt == TY_STRBUF && elem == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", gx);
-            else buf_puts(b, gx);
-            buf_puts(b, ";\n");
-          }
-          else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
-                   masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
-            const char *ivnm = nt_str(nt, lefts[i], "name");
-            emit_indent(b, indent);
-            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            TyKind ivt = TY_UNKNOWN;
-            int iv_rt = comp_ivar_index(&c->classes[iv_home_cid], ivnm);
-            if (iv_rt >= 0) ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
-            buf_printf(b, "%s = ", iv_lhs);
-            if (ivt == TY_POLY && elem != TY_POLY) emit_boxed_src(c, elem, get_expr, b);
-            else if (sp_streq(k, "Poly") && ivt != TY_POLY && ivt != TY_UNKNOWN) {
-              /* typed target from a poly tuple (known multi-value return) */
-              emit_unbox_text(c, ivt, get_expr, b);
-            }
-            else buf_puts(b, get_expr);
-            buf_puts(b, ";\n");
-          }
-          else if ((sp_streq(lty, "ConstantTargetNode") || sp_streq(lty, "ConstantPathTargetNode"))) {
-            const char *cnm_rt = nt_str(nt, lefts[i], "name");
-            LocalVar *cv_rt = cnm_rt ? comp_const(c, cnm_rt) : NULL;
-            if (!cv_rt) continue;
-            emit_indent(b, indent);
-            char cgx[80]; snprintf(cgx, sizeof cgx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            buf_printf(b, "cst_%s = ", cnm_rt);
-            if (sp_streq(k, "Poly") && cv_rt->type != TY_POLY && cv_rt->type != TY_UNKNOWN)
-              emit_unbox_text(c, cv_rt->type, cgx, b);  /* typed constant from a poly tuple */
-            else
-              buf_puts(b, cgx);
-            buf_puts(b, ";\n");
-          }
-          else {
-            char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-            if (!masgn_store(c, id, lefts[i], gx, elem, ttr[i], ttk[i], indent, b))
-              unsupported(c, id, "multiple assignment target");
-          }
-        }
-        if (rest_var || rest_gvar || rest_tgt >= 0) {
-          Scope *rscope = comp_scope_of(c, id);
-          LocalVar *rlv = rest_var ? scope_local(rscope, rest_var) : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
-          TyKind rslot = rlv ? rlv->type : rest_tgt >= 0 ? masgn_slot_type(c, id, rest_tgt) : st;
-          if (rest_tgt >= 0 && rslot == TY_UNKNOWN) rslot = st;
-          TyKind rest_arr_t = rslot;
-          if (!ty_is_array(rest_arr_t)) rest_arr_t = st;
-          const char *rk = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
-          if (!rk) rk = k;
-          int tr = ++g_tmp;
-          emit_indent(b, indent);
-          /* On underflow (fewer elements than the fixed pre/post targets) the
-             splat collects nothing rather than wrapping to a negative length;
-             clamp the slice length to zero. */
-          /* The slice is taken from the SOURCE array, so it must use the
-             source's kind; the rest local's own kind decides only what the
-             slice is converted to. Slicing a poly array through
-             sp_IntArray_slice read one struct as another (#3975 sweep). */
-          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_slice(_t%d, %dLL, _t%d->len > %dLL ? _t%d->len - %dLL : 0LL);\n",
-                     k, tr, k, tarr, ln, tarr, ln + rn, tarr, ln + rn);
-          emit_indent(b, indent);
-          buf_printf(b, "SP_GC_ROOT(_t%d);\n", tr);
-          Buf rv; memset(&rv, 0, sizeof rv);
-          TyKind rvt = rest_arr_t;
-          if (rslot == TY_POLY) {
-            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-            masgn_conv(c, id, TY_POLY, st, rx, &rv);
-            rvt = TY_POLY;
-          }
-          else if (sp_streq(rk, k)) buf_printf(&rv, "_t%d", tr);
-          else if (sp_streq(k, "Poly"))
-            buf_printf(&rv, "sp_%sArray_from_poly_array(_t%d)",
-                       sp_streq(rk, "Int") ? "Int" : sp_streq(rk, "Str") ? "Str" : "Float", tr);
-          else if (sp_streq(rk, "Poly"))
-            buf_printf(&rv, "sp_%sArray_to_poly%s(_t%d)", k, sp_streq(k, "Str") ? "_fmt" : "", tr);
-          else buf_printf(&rv, "_t%d", tr);
-          if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rv.p ? rv.p : "", rvt, -1, -1, indent, b);
-          else {
-            emit_indent(b, indent);
-            if (rest_var) emit_local_ref(c, id, rest_var, b); else buf_printf(b, "gv_%s", rest_gvar);
-            buf_printf(b, " = %s;\n", rv.p ? rv.p : "");
-          }
-          free(rv.p);
-        }
-        for (int j = 0; j < rn; j++) {
-          const char *lty = nt_type(nt, rights[j]);
-          if (!lty) continue;
-          if (sp_streq(lty, "LocalVariableTargetNode")) {
-            emit_indent(b, indent);
-            const char *rlvn = nt_str(nt, rights[j], "name");
-            LocalVar *rllv = rlvn ? scope_local(rt_scope, rlvn) : NULL;
-            /* CRuby fills the post-splat targets from the back when the source
-               has enough elements, but on underflow (fewer than ln+rn) it
-               assigns the remaining elements left-to-right starting just past
-               the pre targets and nil-fills the rest. That position is the max
-               of the back-aligned (len-rn+j) and front-aligned (ln+j) indices;
-               a position at or past the end nil-fills. */
-            int tix = ++g_tmp;
-            buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
-                       tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
-            emit_indent(b, indent);
-            emit_local_ref(c, rights[j], rlvn, b); buf_puts(b, " = ");
-            char rgx[96]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
-            if (rllv && rllv->type == TY_POLY && !sp_streq(k, "Poly")) {
-              Buf bx; memset(&bx, 0, sizeof bx);
-              emit_boxed_text(c, elem, rgx, &bx);
-              buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
-              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-              buf_puts(b, ")");
-            }
-            else {
-              const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                               : sp_streq(k, "Int") ? "SP_INT_NIL"
-                               : sp_streq(k, "Float") ? "sp_float_nil()"
-                               : "NULL";
-              buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, rgx);
-            }
-            buf_puts(b, ";\n");
-          }
-          else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, rights[j], "name") &&
-                   masgn_ivar_home(c, id, nt_str(nt, rights[j], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
-            const char *ivnm2 = nt_str(nt, rights[j], "name");
-            emit_indent(b, indent);
-            /* Same underflow clamp as the local-variable branch above: pick the
-               post-splat source index as the max of the back-aligned and
-               front-aligned positions, nil-filling any position at or past the
-               end (a, *b, @c = [1] -> @c = nil). */
-            int tix = ++g_tmp;
-            buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
-                       tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
-            emit_indent(b, indent);
-            char get_expr2[96];
-            snprintf(get_expr2, sizeof get_expr2, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
-            TyKind ivt2 = TY_UNKNOWN;
-            int iv_rt2 = comp_ivar_index(&c->classes[iv_home_cid], ivnm2);
-            if (iv_rt2 >= 0) ivt2 = c->classes[iv_home_cid].ivar_types[iv_rt2];
-            buf_printf(b, "%s = ", iv_lhs);
-            if (ivt2 == TY_POLY && elem != TY_POLY) {
-              Buf bx2; memset(&bx2, 0, sizeof bx2);
-              emit_boxed_text(c, elem, get_expr2, &bx2);
-              buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
-              buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
-              buf_puts(b, ")");
-            }
-            else {
-              const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                               : sp_streq(k, "Int") ? "SP_INT_NIL"
-                               : sp_streq(k, "Float") ? "sp_float_nil()"
-                               : "NULL";
-              buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, get_expr2);
-            }
-            buf_puts(b, ";\n");
-          }
-          else {
-            int tix = ++g_tmp;
-            emit_indent(b, indent);
-            buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
-                       tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
-            const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                             : sp_streq(k, "Int") ? "SP_INT_NIL"
-                             : sp_streq(k, "Float") ? "sp_float_nil()"
-                             : "NULL";
-            if (sp_streq(lty, "MultiTargetNode")) {
-              char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
-              Buf ge; memset(&ge, 0, sizeof ge);
-              buf_printf(&ge, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
-              emit_boxed_text(c, elem, gx, &ge);
-              buf_puts(&ge, ")");
-              emit_massign_poly_target(c, id, rights[j], ge.p, indent, b);
-              free(ge.p);
-              continue;
-            }
-            char rgx[160];
-            snprintf(rgx, sizeof rgx, "(_t%d >= _t%d->len ? %s : sp_%sArray_get(_t%d, _t%d))", tix, tarr, nilv, k, tarr, tix);
-            if (!masgn_store(c, id, rights[j], rgx, elem, -1, -1, indent, b))
-              unsupported(c, id, "multiple assignment target");
-          }
-        }
-        return;
-      }
-      /* poly RHS: destructure with sp_poly_massign_get. Any other value --
-         a hash, or a scalar from a call the fill above leaves alone since it
-         may return a tuple -- is boxed and destructures as itself. */
-      if (st != TY_UNKNOWN) {
-        int tarr = ++g_tmp;
-        emit_indent(b, indent);
-        buf_printf(b, "sp_RbVal _t%d = ", tarr);
-        if (st == TY_POLY) emit_expr(c, value, b); else emit_boxed(c, value, b);
-        buf_puts(b, ";\n");
-        emit_indent(b, indent);
-        buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", tarr);
-        for (int i = 0; i < ln; i++) {
-          const char *lty = nt_type(nt, lefts[i]);
-          if (!lty) continue;
-          if (sp_streq(lty, "MultiTargetNode")) {
-            /* nested (a, (b, c)) target: recurse over the boxed sub-value */
-            char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-            emit_massign_poly_target(c, id, lefts[i], ge, indent, b);
-          }
-          else if (sp_streq(lty, "LocalVariableTargetNode")) {
-            const char *lnm = nt_str(nt, lefts[i], "name");
-            emit_indent(b, indent);
-            emit_local_ref(c, lefts[i], lnm, b);
-            buf_puts(b, " = ");
-            { char mge[64]; snprintf(mge, sizeof mge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-              LocalVar *mlv = scope_local(comp_scope_of(c, lefts[i]), lnm);
-              /* The target's C slot is whatever the fixpoint settled on it: a
-                 scalar one takes the unboxed value, not the sp_RbVal. */
-              if (mlv && mlv->type != TY_POLY && mlv->type != TY_UNKNOWN)
-                emit_unbox_text(c, mlv->type, mge, b);
-              else buf_puts(b, mge); }
-            buf_puts(b, ";\n");
-          }
-          else if (sp_streq(lty, "InstanceVariableTargetNode") && nt_str(nt, lefts[i], "name") &&
-                   masgn_ivar_home(c, id, nt_str(nt, lefts[i], "name"), iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
-            const char *ivnm = nt_str(nt, lefts[i], "name");
-            int iv_rt = comp_ivar_index(&c->classes[iv_home_cid], ivnm);
-            if (iv_rt < 0) continue;
-            TyKind ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
-            emit_indent(b, indent);
-            char get_expr[64]; snprintf(get_expr, sizeof get_expr, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-            buf_printf(b, "%s = ", iv_lhs);
-            /* a scalar slot another write typed takes an element of its own
-               kind (or nil) and refuses any other (sp_slot_*_ck), rather
-               than reading the other kind's bits as its own */
-            const char *ck = ivt == TY_INT ? "sp_slot_int_ck" : ivt == TY_FLOAT ? "sp_slot_float_ck"
-                           : ivt == TY_STRING ? "sp_slot_str_ck" : ivt == TY_BOOL ? "sp_slot_bool_ck"
-                           : ivt == TY_SYMBOL ? "sp_slot_sym_ck" : NULL;
-            if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
-            else if (ivt != TY_POLY) {
-              Buf bx; memset(&bx, 0, sizeof bx);
-              emit_unbox_text(c, ivt, get_expr, &bx);
-              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-            }
-            else buf_puts(b, get_expr);
-            buf_puts(b, ";\n");
-          }
-          else {
-            char ge[80]; snprintf(ge, sizeof ge, "sp_poly_massign_get(_t%d, %dLL)", tarr, i);
-            if (!masgn_store(c, id, lefts[i], ge, TY_POLY, ttr[i], ttk[i], indent, b))
-              unsupported(c, id, "multiple assignment target");
-          }
-        }
-        /* rest (`b, *r = <poly>`) + post-splat rights, mirroring the typed-array
-           branch but reading the boxed value via sp_poly_arr_get / _len. */
-        if (rest_var || rest_gvar || rest_tgt >= 0 || rn > 0) {
-          int tn = ++g_tmp;
-          emit_indent(b, indent);
-          buf_printf(b, "sp_int _t%d = sp_poly_massign_len(_t%d);\n", tn, tarr);
-          if (rest_var || rest_gvar || rest_tgt >= 0) {
-            int tr = ++g_tmp, ti = ++g_tmp;
-            emit_indent(b, indent);
-            buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
-            emit_indent(b, indent);
-            buf_printf(b, "for (sp_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_massign_get(_t%d, _t%d));\n",
-                       ti, ln, ti, tn, rn, ti, tr, tarr, ti);
-            char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-            if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, TY_POLY_ARRAY, -1, -1, indent, b);
-            else {
-              emit_indent(b, indent);
-              LocalVar *rg = rest_var ? scope_local(comp_scope_of(c, id), rest_var) : comp_gvar(c, rest_gvar);
-              if (rest_var) { emit_local_ref(c, id, rest_var, b); buf_puts(b, " = "); }
-              else buf_printf(b, "gv_%s = ", rest_gvar);
-              masgn_conv(c, id, rg ? rg->type : TY_POLY_ARRAY, TY_POLY_ARRAY, rx, b);
-              buf_puts(b, ";\n");
-            }
-          }
-          for (int j = 0; j < rn; j++) {
-            const char *lty = nt_type(nt, rights[j]);
-            if (!lty) continue;
-            const char *rlvn = nt_str(nt, rights[j], "name");
-            if (sp_streq(lty, "LocalVariableTargetNode") && !rlvn) continue;
-            /* CRuby fills post-splat targets from the back; on underflow assign
-               left-to-right past the pre targets and nil-fill (max of the back-
-               and front-aligned index, a position at/past the end -> nil). */
-            int tix = ++g_tmp;
-            emit_indent(b, indent);
-            buf_printf(b, "sp_int _t%d = (_t%d - %dLL + %dLL) > %dLL ? (_t%d - %dLL + %dLL) : %dLL;\n",
-                       tix, tn, rn, j, ln + j, tn, rn, j, ln + j);
-            if (!sp_streq(lty, "LocalVariableTargetNode")) {
-              char rgx[128];
-              snprintf(rgx, sizeof rgx, "(_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d))", tix, tn, tarr, tix);
-              emit_massign_poly_target(c, id, rights[j], rgx, indent, b);
-              continue;
-            }
-            emit_indent(b, indent);
-            emit_local_ref(c, rights[j], rlvn, b);
-            buf_printf(b, " = (_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d));\n",
-                       tix, tn, tarr, tix);
-          }
-        }
-        return;
-      }
-      unsupported(c, id, "multiple assignment");
-    }
-    /* A store that can run user code -- the general hash's key hooks, a
-       receiver typed at run time -- or that allocates -- the rest array, a
-       value that is a by-value struct into a slot that boxes it -- comes
-       after every value is built and after the targets before it have taken
-       theirs, so it can collect what an earlier target dropped. */
-    int store_alloc = rest_var || rest_gvar || rest_tgt >= 0;
-    for (int i = 0; i < ln && !store_alloc; i++) {
-      int r, k;
-      masgn_target_parts(nt, lefts[i], &r, &k);
-      if (k < 0) continue;
-      TyKind rt = comp_ntype(c, r);
-      store_alloc = rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH;
-    }
-    for (int i = 0; i < en && !store_alloc; i++) {
-      TyKind vt = comp_ntype(c, els[i]);
-      store_alloc = (ty_is_struct_valued(vt) || comp_ty_value_obj(c, vt)) && masgn_slot_boxes(c, id, lefts, ln, i, vt);
-    }
-    /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
-       Save each temp index separately: emit_expr may consume extra g_tmp
-       slots via preludes (e.g. array literals), so base+i is unreliable. */
-    int *tmps = en > 0 ? alloca(sizeof(int) * (size_t)en) : NULL;
-    /* The RESOLVED C type each temp was declared with (empty-literal adoption
-       below can override the element node's inferred type); the assign loop
-       must box/unbox from this, not re-derive comp_ntype (#3280). */
-    TyKind *tmpts = en > 0 ? alloca(sizeof(TyKind) * (size_t)en) : NULL;
-    for (int i = 0; i < en; i++) {
-      tmps[i] = ++g_tmp;
-      emit_indent(b, indent);
-      /* A nil (or void) element has no scalar C type; hold it as a boxed poly
-         temp so the slot is valid and a poly target can read it directly. */
-      TyKind elt = comp_ntype(c, els[i]);
-      /* An empty array/hash literal has no element type of its own, so elt stays
-         UNKNOWN and the temp would be declared `void`. Two independent empty
-         literals (`numbers, strings = [], []`) each take their matching target's
-         concrete container type and materialize a fresh container of it, so each
-         slot is typed from its own later use rather than merged/voided (#3213). */
-      const char *elty = nt_type(nt, els[i]);
-      int el_ec = 0;
-      int el_empty_arr = elty && sp_streq(elty, "ArrayNode") &&
-                         (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
-      int el_empty_hash = elty && (sp_streq(elty, "HashNode") || sp_streq(elty, "KeywordHashNode")) &&
-                          (nt_arr(nt, els[i], "elements", &el_ec), el_ec == 0);
-      if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
-          nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "LocalVariableTargetNode")) {
-        const char *lnm = nt_str(nt, lefts[i], "name");
-        LocalVar *tlv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
-        if (tlv && ((el_empty_arr && ty_is_array(tlv->type)) ||
-                    (el_empty_hash && ty_is_hash(tlv->type)))) elt = tlv->type;
-      }
-      /* an IVAR target adopts its declared ivar type the same way; a poly
-         ivar takes a fresh boxed container (the temp would otherwise be
-         declared `void`, a C error) (#3280) */
-      if ((el_empty_arr || el_empty_hash) && (elt == TY_UNKNOWN || elt == TY_VOID) && i < ln &&
-          nt_type(nt, lefts[i]) && sp_streq(nt_type(nt, lefts[i]), "InstanceVariableTargetNode")) {
-        Scope *isc0 = comp_scope_of(c, id);
-        const char *ivn0 = nt_str(nt, lefts[i], "name");
-        if (isc0 && isc0->class_id >= 0 && ivn0) {
-          int ix0 = comp_ivar_index(&c->classes[isc0->class_id], ivn0);
-          TyKind it0 = ix0 >= 0 ? c->classes[isc0->class_id].ivar_types[ix0] : TY_UNKNOWN;
-          if ((el_empty_arr && ty_is_array(it0)) ||
-              (el_empty_hash && ty_is_hash(it0)) || it0 == TY_POLY) elt = it0;
-        }
-      }
-      int adopt_empty_arr = el_empty_arr && ty_is_array(elt);
-      int adopt_empty_hash = el_empty_hash && ty_is_hash(elt);
-      int poly_empty_arr = el_empty_arr && elt == TY_POLY;
-      int poly_empty_hash = el_empty_hash && elt == TY_POLY;
-      int nilish = (elt == TY_NIL || elt == TY_VOID);
-      /* A target that is the shared handle takes the element's own object
-         (`t, u = s, 1` names s as t, promote_local_alias_pairs): a local
-         that is the handle is held as the handle, so a swap (`a, b = b, a`)
-         reads both before either is rebound. */
-      char hsrc[1024];
-      LocalVar *htl = NULL;
-      if (i < ln && nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[i], "name"))
-        htl = scope_local(comp_scope_of(c, id), nt_str(nt, lefts[i], "name"));
-      int hup = htl && htl->type == TY_STRBUF && htl->str_shared ? strbuf_uplus_operand(c, els[i]) : -1;
-      if (htl && htl->type == TY_STRBUF && htl->str_shared && elt != TY_STRBUF &&
-          ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
-           (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)))) {
-        /* `+s` is s itself unless s is frozen */
-        buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
-        if (tmpts) tmpts[i] = TY_STRBUF;
-        int later_alloc_h = store_alloc;
-        for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
-        if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
-        buf_puts(b, "\n");
-        continue;
-      }
-      /* an element with no C type of its own (an unresolved call, which
-         raises) is held boxed: `void _tN` is no declaration */
-      int boxed_el = !nilish && !c_type_name(elt) && !ty_is_object(elt);
-      emit_ctype(c, nilish || boxed_el ? TY_POLY : elt, b);
-      buf_printf(b, " _t%d = ", tmps[i]);
-      if (nilish) {
-        /* A void element (e.g. a call that raises) still runs for its side
-           effects; only its absent value is replaced with nil. */
-        if (!node_is_pure_literal(nt, els[i])) {
-          Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
-          if (vb.p && vb.p[0]) buf_printf(b, "((void)(%s), sp_box_nil())", vb.p);
-          else buf_puts(b, "sp_box_nil()");
-          free(vb.p);
-        }
-        else buf_puts(b, "sp_box_nil()");
-      }
-      else if (adopt_empty_arr) {
-        if (elt == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
-        else buf_printf(b, "sp_%sArray_new()", array_kind(elt) ? array_kind(elt) : "Int");
-      }
-      else if (adopt_empty_hash) {
-        const char *hcn = ty_hash_cname(elt);
-        if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
-        else { Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb); buf_puts(b, vb.p ? vb.p : ""); free(vb.p); }
-      }
-      else if (poly_empty_arr)
-        buf_puts(b, "sp_box_nullable_obj((void *)sp_PolyArray_new(), SP_BUILTIN_POLY_ARRAY)");
-      else if (poly_empty_hash)
-        buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
-      else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
-      else {
-        Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
-        buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
-      }
-      buf_puts(b, ";");
-      if (tmpts) tmpts[i] = nilish || boxed_el ? TY_POLY : elt;
-      /* Nothing holds the temp until its target takes it, and whatever can
-         allocate after it can run user code that drops its other holder, so
-         it is rooted while a later value or a store can collect. */
-      int later_alloc = store_alloc;
-      for (int j = i + 1; j < en && !later_alloc; j++) later_alloc = masgn_part_allocates(c, els[j]);
-      if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, elt, tmps[i], b);
-      buf_puts(b, "\n");
-    }
-    /* assign lefts */
-    for (int i = 0; i < ln; i++) {
-      const char *lty = nt_type(nt, lefts[i]);
-      if (i >= en) {
-        if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
-          emit_indent(b, indent);
-          const char *lvn = nt_str(nt, lefts[i], "name");
-          /* Use the local's declared type, not the target node's: an
-             under-filled slot lands nil, so the variable is typically widened
-             to poly and needs a boxed-nil default rather than a scalar zero. */
-          LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
-          TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-          /* An under-filled massign target is Ruby `nil`, not the type's zero
-             value; emit the slot's nil sentinel (mirroring the typed-array
-             under-fill arm above) so `a, b, c = 1` yields [1, nil, nil]. */
-          const char *nilv = nil_sentinel(ltt);
-          /* a captured TY_PROC cell needs the raw int-laundered lvalue rather
-             than emit_local_ref's non-assignable cast form (see emit_assign). */
-          if (emit_proc_cell_lvalue(c, id, lvn, b)) {
-            buf_printf(b, "%s);\n", nilv);
-          }
-          else {
-            emit_local_ref(c, id, lvn, b);
-            buf_printf(b, " = %s;\n", nilv);
-          }
-        }
-        else if (lty && sp_streq(lty, "MultiTargetNode"))
-          emit_massign_poly_target(c, id, lefts[i], "sp_box_nil()", indent, b);
-        /* every other target past the supplied elements takes nil */
-        else if (!masgn_store(c, id, lefts[i], NULL, TY_NIL, ttr[i], ttk[i], indent, b))
-          unsupported(c, id, "multiple assignment target");
-        continue;
-      }
-      if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
-        emit_indent(b, indent);
-        const char *lvn = nt_str(nt, lefts[i], "name");
-        /* cell-aware lvalue: a target captured by a later lambda (doom's
-           draw_automap `min_x`/`max_y`, closed over by the to_sx/to_sy
-           procs) lives in a heap cell, not a plain lv_ slot -- writing
-           lv_<name> referenced an undeclared identifier. A captured TY_PROC
-           cell needs the raw int-laundered lvalue (emit_local_ref's cast form
-           is not assignable), mirroring emit_assign. */
-        int proc_cell = emit_proc_cell_lvalue(c, id, lvn, b);
-        if (!proc_cell) { emit_local_ref(c, id, lvn, b); buf_puts(b, " = "); }
-        LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
-        TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (proc_cell) {
-          /* The cell stores (sp_int)(uintptr_t)sp_Proc*, so the value has to
-             be a bare pointer. But a nil/void element was pre-evaluated into a
-             boxed sp_RbVal temp, and a poly element into an sp_RbVal too --
-             casting that struct to (sp_int) is invalid C. Extract the proc
-             pointer (NULL for nil, the .v.p slot for a poly) before laundering,
-             mirroring emit_assign's proc-cell write. */
-          if (valt == TY_NIL || valt == TY_VOID) buf_puts(b, "NULL");
-          else if (valt == TY_POLY) buf_printf(b, "_t%d.v.p", tmps[i]);
-          else buf_printf(b, "_t%d", tmps[i]);
-        }
-        else if (ltt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
-        /* a mutable-String slot holds an sp_String *: a String element is
-           wrapped, as the single write wraps it (emit_strbuf_value) */
-        else if (ltt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
-        else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
-        /* a boxed element into a typed local: unboxed, as a plain write does
-           (`mk, x = 0, nl` with nl only ever nil) */
-        else if (valt == TY_POLY && ltt != TY_POLY && ltt != TY_UNKNOWN) {
-          char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
-          masgn_conv(c, lefts[i], ltt, valt, tv, b);
-        }
-        else buf_printf(b, "_t%d", tmps[i]);
-        if (proc_cell) buf_puts(b, ")");
-        buf_puts(b, ";\n");
-      }
-      else if (lty && (sp_streq(lty, "ConstantPathTargetNode") || sp_streq(lty, "ConstantTargetNode")) &&
-               nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
-        const char *cnm_l = nt_str(nt, lefts[i], "name");
-        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        emit_indent(b, indent);
-        buf_printf(b, "cst_%s = ", cnm_l);
-        if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
-        else buf_printf(b, "_t%d", tmps[i]);
-        buf_puts(b, ";\n");
-      }
-      else if (lty && sp_streq(lty, "InstanceVariableTargetNode")) {
-        const char *ivnm = nt_str(nt, lefts[i], "name");
-        if (!ivnm) continue;
-        Scope *iv_sc = comp_scope_of(c, id);
-        int iv_cid = iv_sc ? iv_sc->class_id : -1;
-        /* outside any class: a class body's module-level slot, or the
-           top-level pseudo-class global, the same homes the single write
-           has (`@x, @y = pair` at the top level wrote `self->iv_x` into a
-           function with no self, and the C did not build) */
-        int iv_global = 0;
-        if (iv_cid < 0 && !(iv_sc && iv_sc->is_cmethod)) {
-          if (g_class_body_id >= 0) { iv_cid = g_class_body_id; iv_global = 1; }
-          else if (comp_class_index(c, "Toplevel") >= 0) { iv_cid = comp_class_index(c, "Toplevel"); iv_global = 1; }
-          else continue;   /* no home for it: the value was evaluated above */
-        }
-        TyKind ivt = TY_UNKNOWN;
-        if (iv_cid >= 0) {
-          int iv_idx = comp_ivar_index(&c->classes[iv_cid], ivnm);
-          if (iv_idx >= 0) ivt = c->classes[iv_cid].ivar_types[iv_idx];
-        }
-        if (!(iv_sc && iv_sc->is_cmethod) && !iv_global && iv_cid >= 0) {
-          Buf fb; memset(&fb, 0, sizeof fb);
-          emit_frozen_obj_guard(c, iv_cid, g_self ? g_self : "self", &fb);
-          masgn_guard_line(&fb, b, indent);
-        }
-        emit_indent(b, indent);
-        if (((iv_sc && iv_sc->is_cmethod) || iv_global) && iv_cid >= 0)
-          buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, iv_c(ivnm + 1));
-        else
-          buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
-        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (ivt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
-        else buf_printf(b, "_t%d", tmps[i]);
-        buf_puts(b, ";\n");
-      }
-      else if (lty && sp_streq(lty, "CallTargetNode")) {
-        /* setter call: e.g. @c.v = _t<i> */
-        const char *setnm = nt_str(nt, lefts[i], "name");
-        int recv_id2 = nt_ref(nt, lefts[i], "receiver");
-        size_t snlen = setnm ? strlen(setnm) : 0;
-        if (!setnm || snlen < 2 || setnm[snlen - 1] != '=' || recv_id2 < 0)
-          { unsupported(c, id, "multiple assignment call target"); continue; }
-        TyKind rt2 = comp_ntype(c, recv_id2);
-        if (!ty_is_object(rt2))
-          { unsupported(c, id, "multiple assignment call target non-object"); continue; }
-        char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
-        int rc2 = ty_object_class(rt2);
-        if (!comp_writer_in_chain(c, rc2, base2, NULL)) {
-          /* a writer defined with `def x=` runs as a call */
-          char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-          if (comp_method_in_chain(c, rc2, setnm, NULL) < 0)
-            unsupported(c, id, "multiple assignment call target no writer");
-          else masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
-          continue;
-        }
-        char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
-        int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
-        int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
-        TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
-        {
-          Buf rb; memset(&rb, 0, sizeof rb);
-          emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
-          Buf fb; memset(&fb, 0, sizeof fb);
-          emit_frozen_obj_guard(c, rc2, rb.p ? rb.p : "", &fb);
-          masgn_guard_line(&fb, b, indent);
-          emit_indent(b, indent);
-          buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2)); free(rb.p);
-        }
-        /* a nil element lands the slot's own nil, not the boxed temp */
-        char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
-        masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
-        buf_puts(b, ";\n");
-      }
-      else if (lty && sp_streq(lty, "MultiTargetNode")) {
-        /* nested (b, *c, d) = _t<i>: destructure the boxed element */
-        char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
-        Buf ge; memset(&ge, 0, sizeof ge);
-        emit_boxed_text(c, tmpts[i], ex, &ge);
-        emit_massign_poly_target(c, id, lefts[i], ge.p ? ge.p : "sp_box_nil()", indent, b);
-        free(ge.p);
-      }
-      else if (lty && sp_streq(lty, "GlobalVariableTargetNode")) {
-        const char *gnm = nt_str(nt, lefts[i], "name");
-        const char *rn2 = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
-        LocalVar *gv2 = rn2 ? comp_gvar(c, rn2) : NULL;
-        if (!gv2) { unsupported(c, id, "multiple assignment global target"); continue; }
-        emit_indent(b, indent);
-        buf_printf(b, "gv_%s = ", rn2);
-        /* a boxed global (widened under --int-overflow=promote) boxes the
-           typed element, as the ivar target above does */
-        TyKind gvalt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (gv2->type == TY_POLY && gvalt != TY_POLY) emit_boxed_tmp(c, gvalt, tmps[i], b);
-        else buf_printf(b, "_t%d", tmps[i]);
-        buf_puts(b, ";\n");
-      }
-      else if (lty && sp_streq(lty, "IndexTargetNode")) {
-        int recv_id = nt_ref(nt, lefts[i], "receiver");
-        int idx_args = nt_ref(nt, lefts[i], "arguments");
-        int idx_argc = 0;
-        const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
-        if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
-        TyKind recv_t = comp_ntype(c, recv_id);
-        if (ty_is_object(recv_t)) {
-          char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
-          masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
-          continue;
-        }
-        emit_indent(b, indent);
-        if (ty_is_array(recv_t)) {
-          /* a Range index stores a slice, which this arm has no call for */
-          if (comp_ntype(c, idx_argv[0]) == TY_RANGE) { unsupported(c, id, "multiple assignment array range index target"); continue; }
-          const char *k = (recv_t == TY_POLY_ARRAY) ? "Poly" : array_kind(recv_t);
-          if (!k) k = "Int";
-          buf_printf(b, "sp_%sArray_set%s(", k, nil_store_sfx(c, k, els[i]));
-          emit_node_or_tmp(c, recv_id, ttr[i], b); buf_puts(b, ", ");
-          /* the index slot is an sp_int; a POLY index (a widened local, #4204)
-             unboxes here, as the boxed-receiver branch below always has */
-          if (ttk[i] >= 0) buf_printf(b, "_t%d", ttk[i]); else emit_int_expr(c, idx_argv[0], b);
-          buf_puts(b, ", ");
-          if (recv_t == TY_POLY_ARRAY) emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
-          else {
-            /* a typed element fed from a boxed right-hand side converts at
-               the sink, as the single store does (#4733) */
-            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-            TyKind et = ty_array_elem(recv_t);
-            if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
-            else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(_t%d)", tmps[i]);
-            else if (valt == TY_POLY && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(_t%d)", tmps[i]);
-            else buf_printf(b, "_t%d", tmps[i]);
-          }
-          buf_puts(b, ");\n");
-        }
-        else if (recv_t == TY_POLY || recv_t == TY_UNKNOWN) {
-          /* A container the fixpoint could not type -- an attr read whose name
-             several classes own, so the receiver's class is only known at run
-             time -- sets through the boxed index path (#3781). */
-          if (ttr[i] >= 0) buf_printf(b, "sp_poly_arr_set(_t%d, _t%d, ", ttr[i], ttk[i]);
-          else {
-            int tmw = ++g_tmp;
-            buf_printf(b, "{ sp_RbVal _t%d = ", tmw);
-            emit_boxed(c, recv_id, b);
-            buf_puts(b, "; sp_poly_arr_set(_t");
-            buf_printf(b, "%d, ", tmw);
-            emit_int_expr(c, idx_argv[0], b); buf_puts(b, ", ");
-          }
-          emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
-          buf_puts(b, ttr[i] >= 0 ? ");\n" : "); }\n");
-        }
-        else if (ty_is_hash(recv_t)) {
-          const char *hn = ty_hash_cname(recv_t);
-          if (!hn) { unsupported(c, id, "multiple assignment hash index target unknown kind"); continue; }
-          /* The sets do not check for a frozen hash; a single store checks
-             before its set, and so does this store, after the values, where
-             CRuby's assignment raises. */
-          buf_puts(b, "if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv_id, ttr[i], b);
-          buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv_id, ttr[i], b);
-          buf_printf(b, ", %s);\n", hash_box_cls(recv_t));
-          emit_indent(b, indent);
-          buf_printf(b, "sp_%sHash_set(", hn);
-          emit_node_or_tmp(c, recv_id, ttr[i], b); buf_puts(b, ", ");
-          if (ttk[i] >= 0) buf_printf(b, "_t%d", ttk[i]);
-          else if (ty_hash_key(recv_t) == TY_INT) emit_int_expr(c, idx_argv[0], b);
-          else if (ty_hash_key(recv_t) == TY_POLY) emit_boxed(c, idx_argv[0], b);
-          else emit_expr(c, idx_argv[0], b);
-          buf_puts(b, ", ");
-          if (recv_t == TY_SYM_POLY_HASH || recv_t == TY_STR_POLY_HASH || recv_t == TY_POLY_POLY_HASH)
-            emit_boxed_tmp(c, tmpts ? tmpts[i] : comp_ntype(c, els[i]), tmps[i], b);
-          else {
-            /* a typed value slot fed from a boxed right-hand side (a call's
-               poly answer, every int under --int-overflow=promote) converts
-               at the sink, as the single store does (#4733) */
-            TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-            TyKind hv = ty_hash_val(recv_t);
-            if (valt == TY_POLY && hv == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(_t%d)", tmps[i]);
-            else if (valt == TY_POLY && hv == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(_t%d)", tmps[i]);
-            else buf_printf(b, "_t%d", tmps[i]);
-          }
-          buf_puts(b, ");\n");
-        }
-        else { unsupported(c, id, "multiple assignment index target non-array/hash"); }
-      }
-      else if (lty && sp_streq(lty, "ClassVariableTargetNode")) {
-        const char *cnm = nt_str(nt, lefts[i], "name");
-        if (!cnm || cnm[0] != '@' || cnm[1] != '@') { unsupported(c, id, "multiple assignment class variable target"); continue; }
-        Scope *cv_sc = comp_scope_of(c, id);
-        int cv_cid = (cv_sc && cv_sc->class_id >= 0) ? cv_sc->class_id : g_class_body_id;
-        if (cv_cid < 0) { unsupported(c, id, "multiple assignment class variable target no class"); continue; }
-        cv_cid = comp_cvar_owner(c, cv_cid, cnm);
-        int cv_idx = comp_cvar_index(&c->classes[cv_cid], cnm);
-        if (cv_idx < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
-        emit_indent(b, indent);
-        emit_cvar_set_flag(c, cv_cid, cnm, 0, b);
-        buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
-        TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
-        TyKind valt = tmpts ? tmpts[i] : comp_ntype(c, els[i]);
-        if (cvt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
-        else buf_printf(b, "_t%d", tmps[i]);
-        buf_puts(b, ";\n");
-      }
-      else unsupported(c, id, "multiple assignment target");
-    }
-    /* build and assign rest (splat) target. A slot that is not a typed
-       array -- a poly local or global -- takes an array typed by the
-       elements, boxed into it. */
-    LocalVar *rest_slot = rest_var ? scope_local(comp_scope_of(c, id), rest_var)
-                        : rest_gvar ? comp_gvar(c, rest_gvar) : NULL;
-    if (rest_var || rest_slot || rest_tgt >= 0) {
-      int rstart = ln, rend = en - rn;
-      if (rend < rstart) rend = rstart;
-      TyKind slot_t = rest_slot ? rest_slot->type : TY_INT_ARRAY;
-      if (rest_tgt >= 0) {
-        slot_t = masgn_slot_type(c, id, rest_tgt);
-        if (!ty_is_array(slot_t)) slot_t = TY_POLY;
-      }
-      TyKind rest_arr_t = slot_t;
-      if (slot_t == TY_POLY) {
-        TyKind et = rend > rstart ? tmpts[rstart] : TY_POLY;
-        for (int i = rstart + 1; i < rend; i++)
-          if (tmpts[i] != et) et = TY_POLY;
-        rest_arr_t = ty_array_of(et);
-      }
-      else if (!ty_is_array(rest_arr_t)) rest_arr_t = TY_INT_ARRAY;
-      const char *k = (rest_arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(rest_arr_t);
-      if (!k) k = "Int";
-      int tr = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
-      if (rest_arr_t == TY_POLY_ARRAY) {
-        for (int i = rstart; i < rend; i++) {
-          char tmp_expr[32]; snprintf(tmp_expr, sizeof tmp_expr, "_t%d", tmps[i]);
-          Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, tmpts[i], tmp_expr, &bx);
-          emit_indent(b, indent);
-          buf_printf(b, "sp_PolyArray_push(_t%d, %s);\n", tr, bx.p ? bx.p : "sp_box_nil()");
-          free(bx.p);
-        }
-      }
-      else {
-        for (int i = rstart; i < rend; i++) {
-          emit_indent(b, indent);
-          buf_printf(b, "sp_%sArray_push%s(_t%d, _t%d);\n", k, nil_store_sfx(c, k, els[i]), tr, tmps[i]);
-        }
-      }
-      char rx[32]; snprintf(rx, sizeof rx, "_t%d", tr);
-      if (rest_tgt >= 0) masgn_store(c, id, rest_tgt, rx, rest_arr_t, -1, -1, indent, b);
-      else {
-        emit_indent(b, indent);
-        if (rest_var) buf_printf(b, "lv_%s = ", rename_local(rest_var));
-        else buf_printf(b, "gv_%s = ", rest_gvar);
-        masgn_conv(c, id, slot_t == TY_POLY ? TY_POLY : rest_arr_t, rest_arr_t, rx, b);
-        buf_puts(b, ";\n");
-      }
-    }
-    /* assign rights (post-splat fixed targets). They fill left-to-right starting
-       just past the splat's actual length (max(0, en-ln-rn)); a target whose
-       source index runs off the end lands nil (`a, *b, c, d = [1, 2]` ->
-       c=2, d=nil) instead of reusing a leading element. */
-    int blen_r = en - ln - rn; if (blen_r < 0) blen_r = 0;
-    for (int j = 0; j < rn; j++) {
-      int ridx = ln + blen_r + j;
-      if (ridx >= en) ridx = -1;
-      const char *lty = nt_type(nt, rights[j]);
-      if (!lty) continue;
-      const char *rnm_j = nt_str(nt, rights[j], "name");
-      if (sp_streq(lty, "LocalVariableTargetNode")) {
-        emit_indent(b, indent);
-        LocalVar *rjlv = rnm_j ? scope_local(comp_scope_of(c, id), rnm_j) : NULL;
-        int rjpoly = rjlv && rjlv->type == TY_POLY;
-        if (ridx >= 0 && ridx < en) {
-          buf_printf(b, "lv_%s = ", rename_local(rnm_j));
-          TyKind valt = comp_ntype(c, els[ridx]);
-          if (rjpoly && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[ridx], b);
-          else buf_printf(b, "_t%d", tmps[ridx]);
-          buf_puts(b, ";\n");
-        }
-        else {
-          buf_printf(b, "lv_%s = ", rename_local(rnm_j));
-          TyKind tt = comp_ntype(c, rights[j]);
-          if (rjpoly) emit_boxed_src(c, tt, default_value_from_compiler(c, tt), b);
-          else buf_puts(b, default_value_from_compiler(c, tt));
-          buf_puts(b, ";\n");
-        }
-      }
-      else if (sp_streq(lty, "InstanceVariableTargetNode") && rnm_j &&
-               masgn_ivar_home(c, id, rnm_j, iv_lhs, sizeof iv_lhs, &iv_home_cid)) {
-        TyKind ivt2 = TY_UNKNOWN;
-        { int iv_idx2 = comp_ivar_index(&c->classes[iv_home_cid], rnm_j);
-          if (iv_idx2 >= 0) ivt2 = c->classes[iv_home_cid].ivar_types[iv_idx2]; }
-        emit_indent(b, indent);
-        buf_printf(b, "%s = ", iv_lhs);
-        if (ridx >= 0 && ridx < en) {
-          TyKind valt2 = (ridx < en) ? comp_ntype(c, els[ridx]) : TY_UNKNOWN;
-          if (ivt2 == TY_POLY && valt2 != TY_POLY) emit_boxed_tmp(c, valt2, tmps[ridx], b);
-          else buf_printf(b, "_t%d", tmps[ridx]);
-        }
-        else buf_puts(b, default_value_from_compiler(c, ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
-        buf_puts(b, ";\n");
-      }
-      else {
-        char rv[32];
-        if (ridx >= 0) snprintf(rv, sizeof rv, "_t%d", tmps[ridx]);
-        TyKind rvt = ridx >= 0 ? (tmpts ? tmpts[ridx] : comp_ntype(c, els[ridx])) : TY_NIL;
-        if (sp_streq(lty, "MultiTargetNode")) {
-          Buf ge; memset(&ge, 0, sizeof ge);
-          if (ridx >= 0) emit_boxed_text(c, rvt, rv, &ge);
-          emit_massign_poly_target(c, id, rights[j], ge.p ? ge.p : "sp_box_nil()", indent, b);
-          free(ge.p);
-        }
-        else if (!masgn_store(c, id, rights[j], ridx >= 0 ? rv : NULL, rvt, -1, -1, indent, b))
-          unsupported(c, id, "multiple assignment target");
-      }
-    }
-    return;
-  }
+  if (emit_multi_write_stmt(c, id, b, indent, nt, ty)) return;
   if (sp_streq(ty, "SingletonClassNode")) {
     /* `class << self` / `class << Const`: the inner `def`s were registered as
        class methods during scope analysis and are emitted from the method
