@@ -2966,6 +2966,271 @@ else {
   return 0;
 }
 
+/* An if or unless in value position (and the ternary) (emit_expr_node's arms, in their order) */
+static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode"))) return 0;
+  /* if/unless as a value: a ternary when both branches are single
+     value-expressions. Arm emission (boxing / empty-literal typing) lives
+     in emit_ternary_arm below the switch. */
+  int pred = nt_ref(nt, id, "predicate");
+  int then_b = nt_ref(nt, id, "statements");
+  int is_unless = sp_streq(ty, "UnlessNode");
+  int sub = nt_ref(nt, id, is_unless ? "else_clause" : "subsequent");
+  int tn = 0;
+  const int *tb = then_b >= 0 ? nt_arr(nt, then_b, "body", &tn) : NULL;
+  int else_stmts = -1;
+  if (sub >= 0 && nt_type(nt, sub) && sp_streq(nt_type(nt, sub), "ElseNode"))
+    else_stmts = nt_ref(nt, sub, "statements");
+  int en = 0;
+  const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
+  /* A statically-answered defined?, is_a? or block_given? predicate folds to
+     its live arm: the dead arm may not even type-check against the
+     receiver's storage type (a blockless yield has no type of its own).
+     Mirrors emit_if's statement-form fold and the inference fold. */
+  {
+    int df = comp_defined_guard_false(c, pred);
+    int dt = df ? 0 : comp_defined_guard_true(c, pred);
+    int known = df ? 0 : (dt ? 1 : static_isa_cond(c, pred));
+    if (known < 0 && !df && !dt) known = static_respond_to_cond(c, pred);
+    /* a `block_given? ? a : b` pair: the live arm alone, rendered at the
+       result type as the unfolded pair renders each arm */
+    if (known < 0 && !df && !dt && tn == 1 && en == 1) {
+      int bg = static_block_given_cond(c, pred);
+      if (bg >= 0) {
+        TyKind res = comp_ntype(c, id);
+        if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
+        emit_ternary_arm(c, (is_unless ? !bg : bg) ? tb[0] : eb[0], res, b);
+        return 1;
+      }
+    }
+    if (known >= 0) {
+      int take_then = is_unless ? !known : known;
+      if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&
+          sp_streq(nt_type(nt, sub), "IfNode")) {
+        emit_expr(c, sub, b);  /* the elsif chain continues as the value */
+        return 1;
+      }
+      int live = take_then ? then_b : else_stmts;
+      int ln = 0;
+      const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
+      if (ln == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
+      /* The live arm still has to be rendered at the WHOLE expression's
+         type, the way the unfolded pair below is: the slot receiving this
+         was declared from that type, and the arm's own may be narrower.
+         Emitting the arm raw put a `const char *` into an sp_RbVal local
+         whenever an is_a? predicate folded (#4280's tmpdir package could
+         not compile at its simplest call). */
+      TyKind fres = comp_ntype(c, id);
+      if (fres == TY_VOID || fres == TY_NIL) fres = TY_POLY;
+      /* Only the WIDENING conversion, into a poly result. Forcing a narrower
+         one would convert rather than carry -- and where the result type is
+         narrower than the arm the analysis has already gone wrong, so the C
+         type error that raises is the honest answer, not a silent value. */
+      int fbox = fres == TY_POLY && comp_ntype(c, lb[ln - 1]) != TY_POLY;
+      if (ln == 1) {
+        if (fbox) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
+        return 1;
+      }
+      /* The leading statements go into the PRELUDE, not inside a statement
+         expression around the value. The last element is emitted with
+         emit_expr, and an arm that is itself a conditional hoists its own
+         branches into the prelude -- which is emitted before this whole
+         expression. Holding the leading statements here instead put them
+         AFTER the code that reads what they assign: `range = H[expected]`
+         landed below the `if range.nil?` testing it, so the nil arm always
+         won and a branch reached its tail without running its own first
+         line (#4139). The prelude keeps them in source order. */
+      for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], g_pre, g_indent);
+      if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
+      else emit_expr(c, lb[ln - 1], b);
+      return 1;
+    }
+  }
+  if (tn == 1 && en == 1) {
+    TyKind res = comp_ntype(c, id);
+    /* A void/nil-typed if (e.g. an arm that is a writer call, doom's
+       `self.fullscreen = value if respond_to?(...)`), or an untyped one
+       whose every arm diverges, has no C storage type -- emit_ctype would
+       declare `void _tN` -- so hold the result boxed; void arms degrade
+       to nil. */
+    if (res == TY_VOID || res == TY_NIL || res == TY_UNKNOWN) res = TY_POLY;
+    /* Emit each arm with a CAPTURED prelude: an arm whose sub-expressions
+       hoist statements (a rooted call argument, a constructed receiver, ...)
+       cannot ride a flat C ternary -- a shared prelude would evaluate BOTH
+       arms eagerly (`File.exist?(f) ? File.read(f) : x` raised on the
+       untaken read). Preludeless arms keep the flat form; otherwise the
+       arms become real branches with their preludes scoped inside. */
+    Buf ta; memset(&ta, 0, sizeof ta);
+    Buf te; memset(&te, 0, sizeof te);
+    Buf pa; memset(&pa, 0, sizeof pa);
+    Buf pe; memset(&pe, 0, sizeof pe);
+    /* a `raise`/`fail` arm diverges: it produces no value to assign, so it
+       cannot ride the flat C ternary (which needs both arms to be values of
+       the result type) -- force the branch form and emit it as a statement. */
+    int then_raise = node_is_raise(c, tb[0]);
+    int else_raise = node_is_raise(c, eb[0]);
+    Buf *sv_pre = g_pre;
+    g_pre = &pa; emit_ternary_arm(c, tb[0], res, &ta);
+    g_pre = &pe; emit_ternary_arm(c, eb[0], res, &te);
+    g_pre = sv_pre;
+    int hoists = (pa.p && pa.p[0]) || (pe.p && pe.p[0]) || then_raise || else_raise;
+    if (!hoists) {
+      buf_puts(b, "(");
+      if (is_unless) buf_puts(b, "!(");
+      emit_cond(c, pred, b);
+      if (is_unless) buf_puts(b, ")");
+      buf_puts(b, " ? ");
+      buf_puts(b, ta.p ? ta.p : "0");
+      buf_puts(b, " : ");
+      buf_puts(b, te.p ? te.p : "0");
+      buf_puts(b, ")");
+    }
+    else {
+      int tr = ++g_tmp;
+      buf_puts(b, "({ ");
+      emit_ctype(c, res, b);
+      /* braced zero: valid for scalars, pointers, AND by-value structs
+         (value-class objects, sp_Range); both branches assign over it */
+      buf_printf(b, " _t%d = {0}; if (", tr);
+      if (is_unless) buf_puts(b, "!(");
+      emit_cond(c, pred, b);
+      if (is_unless) buf_puts(b, ")");
+      buf_puts(b, ") {\n");
+      buf_puts(b, pa.p ? pa.p : "");
+      /* a diverging (raise/fail) arm is emitted as a statement; the result
+         temp keeps its default (never read, since the arm never returns) */
+      if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
+      else buf_printf(b, " _t%d = %s;\n", tr, ta.p ? ta.p : "0");
+      buf_puts(b, "}\nelse {\n");
+      buf_puts(b, pe.p ? pe.p : "");
+      if (else_raise) buf_printf(b, " %s;\n", te.p ? te.p : "0");
+      else buf_printf(b, " _t%d = %s;\n", tr, te.p ? te.p : "0");
+      buf_printf(b, "} _t%d; })", tr);
+    }
+    free(ta.p); free(te.p); free(pa.p); free(pe.p);
+    return 1;
+  }
+  /* Multi-stmt branches or no-else: emit as if/else block with a result temp.
+     Preludes and the if structure go into g_pre; `b` receives only _t<N>. */
+  {
+    TyKind res = comp_ntype(c, id);
+    /* void/nil result: no C storage type (see the ternary form above). */
+    if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
+    int tr = ++g_tmp;
+    /* Declare the temp and default-initialize it. */
+    emit_indent(g_pre, g_indent);
+    emit_ctype(c, res, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", tr,
+               res == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, res));
+    /* The temp is set here, in the statement's prelude, and read where the
+       `if` stands in the statement, after what is written ahead of it
+       there has run: the receiver, in `src(i).merge(note: ("n#{i}" if
+       i > 0))`. A value the branch allocated has no other holder in
+       between, and a collection there freed it. Root it, as the case/in
+       value's temp is rooted. */
+    if (ty_gc_holds_refs(c, res)) {
+      emit_indent(g_pre, g_indent);
+      emit_gc_root_tmp_refs(c, res, tr, g_pre);
+      buf_puts(g_pre, "\n");
+    }
+    /* Emit the condition into its own buffer: any prolog it hoists is a
+       statement, and writing it to g_pre after "if (" had been written left
+       the declaration in the middle of the expression. */
+    Buf cnd; memset(&cnd, 0, sizeof cnd);
+    emit_cond(c, pred, &cnd);
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "if (");
+    if (is_unless) buf_puts(g_pre, "!(");
+    buf_puts(g_pre, cnd.p ? cnd.p : "0");
+    if (is_unless) buf_puts(g_pre, ")");
+    buf_puts(g_pre, ") {\n");
+    free(cnd.p);
+    /* Then branch: side-effect stmts, then assign last expr to temp. */
+    for (int i = 0; i < tn - 1; i++) emit_stmt(c, tb[i], g_pre, g_indent + 2);
+    if (tn > 0) {
+      int last_then = tb[tn - 1];
+      TyKind lt = comp_ntype(c, last_then);
+      /* An empty `[]` / `{}` caches TY_UNKNOWN for a reason that is not
+         "has no value": it has no ELEMENT type until something supplies
+         one. Running it for effect leaves the slot at its default, which
+         is how `if c then [] end` answered nil where CRuby answers [].
+         emit_ternary_arm already builds it against a result type. */
+      int elen = 0;
+      const char *ety = nt_type(nt, last_then);
+      int empty_lit = lt == TY_UNKNOWN && ety &&
+                      (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode")) &&
+                      (nt_arr(nt, last_then, "elements", &elen), elen == 0);
+      if (empty_lit) {
+        Buf le; memset(&le, 0, sizeof le);
+        emit_ternary_arm(c, last_then, res, &le);
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value_from_compiler(c, res));
+        free(le.p);
+      }
+      else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) {
+        emit_stmt(c, last_then, g_pre, g_indent + 2);
+      }
+      else emit_if_arm_value(c, last_then, res, tr);
+    }
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "}\n");
+    /* Else / elsif branch. */
+    if (sub >= 0) {
+      const char *sub_ty = nt_type(nt, sub);
+      if (sub_ty && sp_streq(sub_ty, "ElseNode")) {
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "else {\n");
+        for (int i = 0; i < en - 1; i++) emit_stmt(c, eb[i], g_pre, g_indent + 2);
+        if (en > 0) {
+          int last_else = eb[en - 1];
+          TyKind lt2 = comp_ntype(c, last_else);
+          if (lt2 == TY_NIL || lt2 == TY_UNKNOWN || lt2 == TY_VOID) {
+            emit_stmt(c, last_else, g_pre, g_indent + 2);
+          }
+          else emit_if_arm_value(c, last_else, res, tr);
+        }
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "}\n");
+      }
+      else {
+        /* elsif (sub is IfNode) or other subsequent: recurse via emit_expr */
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "else {\n");
+        int saved_gi3 = g_indent; g_indent = g_indent + 2;
+        Buf sub_e; memset(&sub_e, 0, sizeof sub_e);
+        emit_expr(c, sub, &sub_e);
+        g_indent = saved_gi3;
+        emit_indent(g_pre, g_indent + 2);
+        buf_printf(g_pre, "_t%d = ", tr);
+        /* The nested elsif chain types on its own arms: a concrete chain
+           (string/string) under a poly outer if (the empty then-arm's nil)
+           must box into the poly temp, same as the then/else arms above. */
+        TyKind subt = comp_ntype(c, sub);
+        if (res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
+            subt != TY_UNKNOWN && subt != TY_VOID) {
+          Buf bx3; memset(&bx3, 0, sizeof bx3);
+          emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), &bx3);
+          buf_puts(g_pre, bx3.p ? bx3.p : "sp_box_nil()"); free(bx3.p);
+        }
+        /* a nested chain whose every written arm raises is the implicit
+           nil, held in a boxed temp; into a concrete slot with a nil of
+           its own (a nullable String, #4567) it is that nil, not the box */
+        else if (subt == TY_NIL && res != TY_POLY && nil_value(res))
+          buf_puts(g_pre, nil_value(res));
+        else if (emit_arm_text_as_bigint(res, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), g_pre)) { }
+        else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value_from_compiler(c, res));
+        buf_puts(g_pre, ";\n");
+        free(sub_e.p);
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "}\n");
+      }
+    }
+    buf_printf(b, "_t%d", tr);
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3688,267 +3953,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
   if (emit_array_hash_literal_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
-    /* if/unless as a value: a ternary when both branches are single
-       value-expressions. Arm emission (boxing / empty-literal typing) lives
-       in emit_ternary_arm below the switch. */
-    int pred = nt_ref(nt, id, "predicate");
-    int then_b = nt_ref(nt, id, "statements");
-    int is_unless = sp_streq(ty, "UnlessNode");
-    int sub = nt_ref(nt, id, is_unless ? "else_clause" : "subsequent");
-    int tn = 0;
-    const int *tb = then_b >= 0 ? nt_arr(nt, then_b, "body", &tn) : NULL;
-    int else_stmts = -1;
-    if (sub >= 0 && nt_type(nt, sub) && sp_streq(nt_type(nt, sub), "ElseNode"))
-      else_stmts = nt_ref(nt, sub, "statements");
-    int en = 0;
-    const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
-    /* A statically-answered defined?, is_a? or block_given? predicate folds to
-       its live arm: the dead arm may not even type-check against the
-       receiver's storage type (a blockless yield has no type of its own).
-       Mirrors emit_if's statement-form fold and the inference fold. */
-    {
-      int df = comp_defined_guard_false(c, pred);
-      int dt = df ? 0 : comp_defined_guard_true(c, pred);
-      int known = df ? 0 : (dt ? 1 : static_isa_cond(c, pred));
-      if (known < 0 && !df && !dt) known = static_respond_to_cond(c, pred);
-      /* a `block_given? ? a : b` pair: the live arm alone, rendered at the
-         result type as the unfolded pair renders each arm */
-      if (known < 0 && !df && !dt && tn == 1 && en == 1) {
-        int bg = static_block_given_cond(c, pred);
-        if (bg >= 0) {
-          TyKind res = comp_ntype(c, id);
-          if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
-          emit_ternary_arm(c, (is_unless ? !bg : bg) ? tb[0] : eb[0], res, b);
-          return;
-        }
-      }
-      if (known >= 0) {
-        int take_then = is_unless ? !known : known;
-        if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&
-            sp_streq(nt_type(nt, sub), "IfNode")) {
-          emit_expr(c, sub, b);  /* the elsif chain continues as the value */
-          return;
-        }
-        int live = take_then ? then_b : else_stmts;
-        int ln = 0;
-        const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
-        if (ln == 0) { buf_puts(b, "sp_box_nil()"); return; }
-        /* The live arm still has to be rendered at the WHOLE expression's
-           type, the way the unfolded pair below is: the slot receiving this
-           was declared from that type, and the arm's own may be narrower.
-           Emitting the arm raw put a `const char *` into an sp_RbVal local
-           whenever an is_a? predicate folded (#4280's tmpdir package could
-           not compile at its simplest call). */
-        TyKind fres = comp_ntype(c, id);
-        if (fres == TY_VOID || fres == TY_NIL) fres = TY_POLY;
-        /* Only the WIDENING conversion, into a poly result. Forcing a narrower
-           one would convert rather than carry -- and where the result type is
-           narrower than the arm the analysis has already gone wrong, so the C
-           type error that raises is the honest answer, not a silent value. */
-        int fbox = fres == TY_POLY && comp_ntype(c, lb[ln - 1]) != TY_POLY;
-        if (ln == 1) {
-          if (fbox) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
-          return;
-        }
-        /* The leading statements go into the PRELUDE, not inside a statement
-           expression around the value. The last element is emitted with
-           emit_expr, and an arm that is itself a conditional hoists its own
-           branches into the prelude -- which is emitted before this whole
-           expression. Holding the leading statements here instead put them
-           AFTER the code that reads what they assign: `range = H[expected]`
-           landed below the `if range.nil?` testing it, so the nil arm always
-           won and a branch reached its tail without running its own first
-           line (#4139). The prelude keeps them in source order. */
-        for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], g_pre, g_indent);
-        if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
-        else emit_expr(c, lb[ln - 1], b);
-        return;
-      }
-    }
-    if (tn == 1 && en == 1) {
-      TyKind res = comp_ntype(c, id);
-      /* A void/nil-typed if (e.g. an arm that is a writer call, doom's
-         `self.fullscreen = value if respond_to?(...)`), or an untyped one
-         whose every arm diverges, has no C storage type -- emit_ctype would
-         declare `void _tN` -- so hold the result boxed; void arms degrade
-         to nil. */
-      if (res == TY_VOID || res == TY_NIL || res == TY_UNKNOWN) res = TY_POLY;
-      /* Emit each arm with a CAPTURED prelude: an arm whose sub-expressions
-         hoist statements (a rooted call argument, a constructed receiver, ...)
-         cannot ride a flat C ternary -- a shared prelude would evaluate BOTH
-         arms eagerly (`File.exist?(f) ? File.read(f) : x` raised on the
-         untaken read). Preludeless arms keep the flat form; otherwise the
-         arms become real branches with their preludes scoped inside. */
-      Buf ta; memset(&ta, 0, sizeof ta);
-      Buf te; memset(&te, 0, sizeof te);
-      Buf pa; memset(&pa, 0, sizeof pa);
-      Buf pe; memset(&pe, 0, sizeof pe);
-      /* a `raise`/`fail` arm diverges: it produces no value to assign, so it
-         cannot ride the flat C ternary (which needs both arms to be values of
-         the result type) -- force the branch form and emit it as a statement. */
-      int then_raise = node_is_raise(c, tb[0]);
-      int else_raise = node_is_raise(c, eb[0]);
-      Buf *sv_pre = g_pre;
-      g_pre = &pa; emit_ternary_arm(c, tb[0], res, &ta);
-      g_pre = &pe; emit_ternary_arm(c, eb[0], res, &te);
-      g_pre = sv_pre;
-      int hoists = (pa.p && pa.p[0]) || (pe.p && pe.p[0]) || then_raise || else_raise;
-      if (!hoists) {
-        buf_puts(b, "(");
-        if (is_unless) buf_puts(b, "!(");
-        emit_cond(c, pred, b);
-        if (is_unless) buf_puts(b, ")");
-        buf_puts(b, " ? ");
-        buf_puts(b, ta.p ? ta.p : "0");
-        buf_puts(b, " : ");
-        buf_puts(b, te.p ? te.p : "0");
-        buf_puts(b, ")");
-      }
-      else {
-        int tr = ++g_tmp;
-        buf_puts(b, "({ ");
-        emit_ctype(c, res, b);
-        /* braced zero: valid for scalars, pointers, AND by-value structs
-           (value-class objects, sp_Range); both branches assign over it */
-        buf_printf(b, " _t%d = {0}; if (", tr);
-        if (is_unless) buf_puts(b, "!(");
-        emit_cond(c, pred, b);
-        if (is_unless) buf_puts(b, ")");
-        buf_puts(b, ") {\n");
-        buf_puts(b, pa.p ? pa.p : "");
-        /* a diverging (raise/fail) arm is emitted as a statement; the result
-           temp keeps its default (never read, since the arm never returns) */
-        if (then_raise) buf_printf(b, " %s;\n", ta.p ? ta.p : "0");
-        else buf_printf(b, " _t%d = %s;\n", tr, ta.p ? ta.p : "0");
-        buf_puts(b, "}\nelse {\n");
-        buf_puts(b, pe.p ? pe.p : "");
-        if (else_raise) buf_printf(b, " %s;\n", te.p ? te.p : "0");
-        else buf_printf(b, " _t%d = %s;\n", tr, te.p ? te.p : "0");
-        buf_printf(b, "} _t%d; })", tr);
-      }
-      free(ta.p); free(te.p); free(pa.p); free(pe.p);
-      return;
-    }
-    /* Multi-stmt branches or no-else: emit as if/else block with a result temp.
-       Preludes and the if structure go into g_pre; `b` receives only _t<N>. */
-    {
-      TyKind res = comp_ntype(c, id);
-      /* void/nil result: no C storage type (see the ternary form above). */
-      if (res == TY_VOID || res == TY_NIL) res = TY_POLY;
-      int tr = ++g_tmp;
-      /* Declare the temp and default-initialize it. */
-      emit_indent(g_pre, g_indent);
-      emit_ctype(c, res, g_pre);
-      buf_printf(g_pre, " _t%d = %s;\n", tr,
-                 res == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, res));
-      /* The temp is set here, in the statement's prelude, and read where the
-         `if` stands in the statement, after what is written ahead of it
-         there has run: the receiver, in `src(i).merge(note: ("n#{i}" if
-         i > 0))`. A value the branch allocated has no other holder in
-         between, and a collection there freed it. Root it, as the case/in
-         value's temp is rooted. */
-      if (ty_gc_holds_refs(c, res)) {
-        emit_indent(g_pre, g_indent);
-        emit_gc_root_tmp_refs(c, res, tr, g_pre);
-        buf_puts(g_pre, "\n");
-      }
-      /* Emit the condition into its own buffer: any prolog it hoists is a
-         statement, and writing it to g_pre after "if (" had been written left
-         the declaration in the middle of the expression. */
-      Buf cnd; memset(&cnd, 0, sizeof cnd);
-      emit_cond(c, pred, &cnd);
-      emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "if (");
-      if (is_unless) buf_puts(g_pre, "!(");
-      buf_puts(g_pre, cnd.p ? cnd.p : "0");
-      if (is_unless) buf_puts(g_pre, ")");
-      buf_puts(g_pre, ") {\n");
-      free(cnd.p);
-      /* Then branch: side-effect stmts, then assign last expr to temp. */
-      for (int i = 0; i < tn - 1; i++) emit_stmt(c, tb[i], g_pre, g_indent + 2);
-      if (tn > 0) {
-        int last_then = tb[tn - 1];
-        TyKind lt = comp_ntype(c, last_then);
-        /* An empty `[]` / `{}` caches TY_UNKNOWN for a reason that is not
-           "has no value": it has no ELEMENT type until something supplies
-           one. Running it for effect leaves the slot at its default, which
-           is how `if c then [] end` answered nil where CRuby answers [].
-           emit_ternary_arm already builds it against a result type. */
-        int elen = 0;
-        const char *ety = nt_type(nt, last_then);
-        int empty_lit = lt == TY_UNKNOWN && ety &&
-                        (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode")) &&
-                        (nt_arr(nt, last_then, "elements", &elen), elen == 0);
-        if (empty_lit) {
-          Buf le; memset(&le, 0, sizeof le);
-          emit_ternary_arm(c, last_then, res, &le);
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value_from_compiler(c, res));
-          free(le.p);
-        }
-        else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) {
-          emit_stmt(c, last_then, g_pre, g_indent + 2);
-        }
-        else emit_if_arm_value(c, last_then, res, tr);
-      }
-      emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "}\n");
-      /* Else / elsif branch. */
-      if (sub >= 0) {
-        const char *sub_ty = nt_type(nt, sub);
-        if (sub_ty && sp_streq(sub_ty, "ElseNode")) {
-          emit_indent(g_pre, g_indent);
-          buf_puts(g_pre, "else {\n");
-          for (int i = 0; i < en - 1; i++) emit_stmt(c, eb[i], g_pre, g_indent + 2);
-          if (en > 0) {
-            int last_else = eb[en - 1];
-            TyKind lt2 = comp_ntype(c, last_else);
-            if (lt2 == TY_NIL || lt2 == TY_UNKNOWN || lt2 == TY_VOID) {
-              emit_stmt(c, last_else, g_pre, g_indent + 2);
-            }
-            else emit_if_arm_value(c, last_else, res, tr);
-          }
-          emit_indent(g_pre, g_indent);
-          buf_puts(g_pre, "}\n");
-        }
-        else {
-          /* elsif (sub is IfNode) or other subsequent: recurse via emit_expr */
-          emit_indent(g_pre, g_indent);
-          buf_puts(g_pre, "else {\n");
-          int saved_gi3 = g_indent; g_indent = g_indent + 2;
-          Buf sub_e; memset(&sub_e, 0, sizeof sub_e);
-          emit_expr(c, sub, &sub_e);
-          g_indent = saved_gi3;
-          emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "_t%d = ", tr);
-          /* The nested elsif chain types on its own arms: a concrete chain
-             (string/string) under a poly outer if (the empty then-arm's nil)
-             must box into the poly temp, same as the then/else arms above. */
-          TyKind subt = comp_ntype(c, sub);
-          if (res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
-              subt != TY_UNKNOWN && subt != TY_VOID) {
-            Buf bx3; memset(&bx3, 0, sizeof bx3);
-            emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), &bx3);
-            buf_puts(g_pre, bx3.p ? bx3.p : "sp_box_nil()"); free(bx3.p);
-          }
-          /* a nested chain whose every written arm raises is the implicit
-             nil, held in a boxed temp; into a concrete slot with a nil of
-             its own (a nullable String, #4567) it is that nil, not the box */
-          else if (subt == TY_NIL && res != TY_POLY && nil_value(res))
-            buf_puts(g_pre, nil_value(res));
-          else if (emit_arm_text_as_bigint(res, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), g_pre)) { }
-          else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value_from_compiler(c, res));
-          buf_puts(g_pre, ";\n");
-          free(sub_e.p);
-          emit_indent(g_pre, g_indent);
-          buf_puts(g_pre, "}\n");
-        }
-      }
-      buf_printf(b, "_t%d", tr);
-      return;
-    }
-  }
+  if (emit_if_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "CallNode")) { emit_call(c, id, b); return; }
   if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
     if (!emit_super_inline(c, id, b, 0, 1)) emit_super(c, id, b);
