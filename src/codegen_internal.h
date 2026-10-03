@@ -992,6 +992,7 @@ const char *typed_elem_box_fn(TyKind t);
 const char *nil_store_sfx(Compiler *c, const char *k, int node);
 #define NIL_STORE_BOXED (-2)   /* nil_store_sfx's node for a boxed element */
 int enum_builtin_node(Compiler *c, int node);
+const char *nomethod_head(const char *name);
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);

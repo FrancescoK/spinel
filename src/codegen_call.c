@@ -19181,13 +19181,20 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               }
               recv_evaluated = 1;
               const char *rv = rvb.p ? rvb.p : "0";
-              snprintf(gmsg, sizeof gmsg, "(%s%s%s ? \"undefined method '%s' for nil\" : \"undefined method '%s' for %s\")",
+              char hd[96], hd2[96];
+              snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
+              snprintf(hd2, sizeof hd2, nomethod_head(nm), nm ? nm : "?");
+              snprintf(gmsg, sizeof gmsg, "(%s%s%s ? \"%s nil\" : \"%s %s\")",
                        grt == TY_FLOAT ? "sp_float_is_nil(" : "(", rv,
                        grt == TY_FLOAT ? ")" : grt == TY_INT ? ") == SP_INT_NIL" : ") == NULL",
-                       nm ? nm : "?", nm ? nm : "?", rdesc);
+                       hd, hd2, rdesc);
               free(rvb.p);
             }
-            else snprintf(gmsg, sizeof gmsg, "\"undefined method '%s' for %s\"", nm ? nm : "?", rdesc);
+            else {
+              char hd[96];
+              snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
+              snprintf(gmsg, sizeof gmsg, "\"%s %s\"", hd, rdesc);
+            }
           }
           #define EMIT_GATE_MSG() do { \
             const char *_stagefn = gstage ? "sp_stage_recv_args_msg" : "sp_stage_recv_msg"; \

@@ -4201,6 +4201,15 @@ SP_NORETURN SP_COLD static void sp_raise_poly_nomethod(const char *m, sp_RbVal v
    "module <Name>", anything else as "an instance of <Class>". Only builds the
    message -- the caller keeps the recognizable sp_raise_nomethod(...) form
    the coercion paths key on. */
+/* The methods Kernel defines private: sent to an explicit receiver that does
+   not define them itself they are "private method 'select' called for ...",
+   not "undefined method" (the list is CRuby's Kernel.private_instance_methods;
+   src/codegen_util.c keeps the compiler's copy). */
+static int sp_nomethod_kernel_private(const char *m) {
+  static const char *const k[] = { "Array", "Complex", "Float", "Hash", "Integer", "Rational", "String", "abort", "at_exit", "autoload", "autoload?", "binding", "block_given?", "caller", "caller_locations", "catch", "eval", "exec", "exit", "exit!", "fail", "fork", "format", "gets", "global_variables", "iterator?", "lambda", "load", "local_variables", "loop", "open", "p", "pp", "print", "printf", "proc", "putc", "puts", "raise", "rand", "readline", "readlines", "require", "require_relative", "select", "set_trace_func", "sleep", "spawn", "sprintf", "srand", "syscall", "system", "test", "throw", "trace_var", "trap", "untrace_var", "warn", NULL };
+  for (int i = 0; k[i]; i++) if (!strcmp(m, k[i])) return 1;
+  return 0;
+}
 SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
   sp_exc_stage_recv(v);
   const char *d = (v.tag == SP_TAG_NIL) ? "nil"
@@ -4209,6 +4218,7 @@ SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
                   ? sp_sprintf("%s %s", strcmp(sp_poly_class_name(v), "Module") ? "class" : "module",
                                sp_class_val_name(v))
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
+  if (sp_nomethod_kernel_private(m)) return sp_sprintf("private method '%s' called for %s", m, d);
   return sp_sprintf("undefined method '%s' for %s", m, d);
 }
 /* #succ / #next on a boxed receiver. Every kind that answers them has its own
@@ -15050,6 +15060,9 @@ static sp_Enumerator *sp_poly_enum_for_each(sp_RbVal v) {
 static sp_Enumerator *sp_poly_blockless_enum(sp_RbVal v, const char *m) {
   if (v.tag != SP_TAG_OBJ || !v.v.p || v.cls_id == SP_BUILTIN_STRBUF)
     sp_raise_cls("NoMethodError", sp_nomethod_msg(m, v));
+  /* a user object with no #each answers the NoMethodError of the call (it
+     enumerated as an empty one); one with an #each is walked once, here */
+  if (v.cls_id >= 0) return sp_Enumerator_new_from(sp_box_poly_array(sp_poly_to_a_arr_as(v, m, 0)));
   return sp_Enumerator_new_from(v);
 }
 static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {

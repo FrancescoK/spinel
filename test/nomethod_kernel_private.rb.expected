@@ -1,0 +1,39 @@
+int select: private method 'select' called for an instance of Integer
+str select: private method 'select' called for an instance of String
+sym select: private method 'select' called for an instance of Symbol
+nil select: private method 'select' called for nil
+obj select: private method 'select' called for an instance of Nope
+float select: private method 'select' called for an instance of Float
+int puts: private method 'puts' called for an instance of Integer
+nil puts: private method 'puts' called for nil
+obj format: private method 'format' called for an instance of Nope
+obj sleep: private method 'sleep' called for an instance of Nope
+obj rand: private method 'rand' called for an instance of Nope
+obj open: private method 'open' called for an instance of Nope
+obj undefined: undefined method 'frobnicate' for an instance of Nope
+int undefined: undefined method 'frobnicate' for an instance of Integer
+nil filter: undefined method 'filter' for nil
+boxed select: private method 'select' called for nil
+boxed select noblk: private method 'select' called for nil
+boxed filter: undefined method 'filter' for nil
+boxed puts: private method 'puts' called for nil
+boxed select: private method 'select' called for an instance of Integer
+boxed select noblk: private method 'select' called for an instance of Integer
+boxed filter: undefined method 'filter' for an instance of Integer
+boxed puts: private method 'puts' called for an instance of Integer
+boxed select: private method 'select' called for an instance of Symbol
+boxed select noblk: private method 'select' called for an instance of Symbol
+boxed filter: undefined method 'filter' for an instance of Symbol
+boxed puts: private method 'puts' called for an instance of Symbol
+boxed select: private method 'select' called for an instance of String
+boxed select noblk: private method 'select' called for an instance of String
+boxed filter: undefined method 'filter' for an instance of String
+boxed puts: private method 'puts' called for an instance of String
+boxed select: private method 'select' called for an instance of Nope
+boxed select noblk: private method 'select' called for an instance of Nope
+boxed filter: undefined method 'filter' for an instance of Nope
+boxed puts: private method 'puts' called for an instance of Nope
+boxed select: private method 'select' called for an instance of Float
+boxed select noblk: private method 'select' called for an instance of Float
+boxed filter: undefined method 'filter' for an instance of Float
+boxed puts: private method 'puts' called for an instance of Float
