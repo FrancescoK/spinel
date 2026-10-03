@@ -7732,6 +7732,138 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
   return 0;
 }
 
+/* A YieldNode: the block's value at its call sites (infer_uncached's arms, in their order) */
+static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind nk, TyKind *out) {
+  if (!(nk == NK_YieldNode)) return 0;
+  int ymi = (int)(comp_scope_of(c, id) - c->scopes);
+  /* In a proc form the block is a real proc, so the yield is a call on it:
+     poly, uniformly, whatever any individual call site's block answers. That
+     is the whole point of the clone -- everything the yield feeds widens with
+     it, so one body serves every site (#3399). */
+  if (getenv("SP_DBG_PF2")) fprintf(stderr, "[y] node=%d scope=%d pf=%d name=%s\n", id, ymi, (ymi>=0&&ymi<c->nscopes)?c->scopes[ymi].is_proc_form:-1, (ymi>=0&&ymi<c->nscopes&&c->scopes[ymi].name)?c->scopes[ymi].name:"?");
+  if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_proc_form) { *out = TY_POLY; return 1; }
+  /* A lowered method's block is a proc as well, and its yield is a call
+     on it: poly. Without this a lowered method no site ever gave a block
+     (its `if block_given?` arm is dead at every site, but compiled) had an
+     UNKNOWN yield in a condition, which the emitter refused. */
+  if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_lowered_yield) { *out = TY_POLY; return 1; }
+  /* When the block value diverges across call sites (string block at one,
+     int at another) AND this yield is the value of an assignment (its result
+     flows into a LOCAL), the local settles its type from the first site and
+     the other site miscompiles into that slot. Type the yield poly so the
+     local is a boxed carrier and each inlined site boxes its own value. A
+     bare-yield tail is handled per-site by emit_block_invoke_coerced /
+     method_call_ret and must keep its concrete first-site type. */
+  if (yield_value_diverges(c, ymi)) {
+    for (int u = yield_uses(c, id); u >= 0; u = g_yu_next[u]) {
+      int w = g_yu_node[u];
+      switch (g_yu_kind[u]) {
+      case YU_WRITE:
+        /* An instance, global or class variable written from the yield, or
+           from a conditional one of whose arms is the yield (`@y =
+           block_given? ? yield(x) : "nil"`), is in the same position as a
+           local: the variable takes one type, the first site's, and the
+           other site's value was emitted into it (`@y = yield(x)` with a
+           String block, then an Integer one, stopped the build). */
+        if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) { *out = TY_POLY; return 1; }
+        break;
+      case YU_ELEMENT: {
+        /* An array literal's element likewise: `[yield(x)]` built its
+           array from the first site's element type. */
+        int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
+        for (int e = 0; e < en; e++)
+          if (value_arm_is(nt, ev[e], id)) { *out = TY_POLY; return 1; }
+        break;
+      }
+      case YU_ARGUMENT: {
+        /* An argument to a method the program defines likewise: its
+           parameter took the first site's type, and the other site's value
+           was converted to it at run time. `show(yield)` with a String
+           block at one site and a Float block at another raised TypeError
+           where CRuby prints both. Only a call that can reach a user
+           method (call_may_reach_user_method): a builtin on the yield
+           (`yield + yield`, an Array's `push(yield)`) is lowered per site
+           to its concrete form, which a poly operand does not fit, and an
+           unrelated class defining a method of the same name does not
+           change that. */
+        int an = nt_ref(nt, w, "arguments");
+        if (an < 0) break;
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || !call_may_reach_user_method(c, w, wn)) break;
+        int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
+        for (int e = 0; e < ac; e++)
+          if (value_arm_is(nt, av[e], id)) { *out = TY_POLY; return 1; }
+        break;
+      }
+      case YU_BLOCK: {
+        /* The value of a block handed to a method the program defines
+           likewise: that method's own yield takes it into a slot typed
+           from the first site, so `def run2(x) = run(x) { |u| yield u }`
+           with an Integer block at one site and a String one at another
+           emitted the String into an sp_int. Poly boxes each site's. */
+        const char *wn = nt_str(nt, w, "name");
+        if (wn && call_may_reach_user_method(c, w, wn)) { *out = TY_POLY; return 1; }
+        break;
+      }
+      case YU_RECEIVER: {
+        /* The receiver of a builtin arithmetic operator too: `yield +
+           yield` typed its `+`, and the method's return, from the first
+           site's block, so a String block at one site and a Float one at
+           another put the Float into a `const char *`. Poly makes the
+           result a boxed carrier, and codegen types each site's operator
+           from that site's block (yield_operator_site_type), so the value
+           it emits is boxed into it. Only the operators that helper types:
+           for another method on the yield, codegen still emits one site's
+           concrete result into the slot unboxed. */
+        if (nt_ref(nt, w, "receiver") != id || nt_ref(nt, w, "block") >= 0) break;
+        const char *op = nt_str(nt, w, "name");
+        int an = nt_ref(nt, w, "arguments"), ac = 0;
+        if (an >= 0) nt_arr(nt, an, "arguments", &ac);
+        if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
+                              sp_streq(op, "/") || sp_streq(op, "%")))
+          { *out = TY_POLY; return 1; }
+        /* A builtin whose result follows the receiver's kind (yield.abs,
+           yield.first, yield.dup): the same mismatch, the slot typed from
+           the first site's receiver and the other site's concrete result
+           (a double from fabs, a const char * from a String Array's first)
+           stored into it. yield_builtin_method_site_type types each site's
+           call from ty_recv_builtin_result, so widen only where that table
+           answers every site's block kind: a site it does not answer would
+           emit its concrete value into the poly slot unboxed, which turned
+           a wrong value into C that does not compile when this arm widened
+           every method. */
+        if (yield_recv_builtin_every_site(c, w)) { *out = TY_POLY; return 1; }
+        break;
+      }
+      case YU_FRAME: {
+        /* A yield whose value leaves through an ENSURE frame is in the
+           same position as one written to a local, for the same reason:
+           the frame carries the value in a slot of its own, and that slot
+           settles its type at whichever call site is analyzed first. The
+           per-site coercion the comment above relies on handles the
+           method's own tail, and does not reach a tail one frame in. So
+           `def run; begin; yield 7; ensure; nil; end; end` answered its
+           first site's type at its second -- `p run { |x| x == 7 }` then
+           `p run { |x| x * 3 }` printed true twice, where CRuby says true
+           and 21, and a pair whose types do not share a C slot stopped the
+           build instead. Poly makes the slot a boxed carrier, and each
+           inlined site boxes its own value. A rescue frame the same: its
+           value slot takes the body's value or the rescue arm's, `def
+           guarded; yield; rescue; "rescued"; end`. */
+        if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
+        int st = nt_ref(nt, w, "statements");
+        if (st < 0) break;
+        int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
+        if (bs && bn > 0 && bs[bn - 1] == id) { *out = TY_POLY; return 1; }
+        break;
+      }
+      }
+    }
+  }
+  { *out = yield_value_type(c, ymi); return 1; }
+  return 0;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -8478,134 +8610,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     return TY_NIL;
   }
-  if (nk == NK_YieldNode) {
-    int ymi = (int)(comp_scope_of(c, id) - c->scopes);
-    /* In a proc form the block is a real proc, so the yield is a call on it:
-       poly, uniformly, whatever any individual call site's block answers. That
-       is the whole point of the clone -- everything the yield feeds widens with
-       it, so one body serves every site (#3399). */
-    if (getenv("SP_DBG_PF2")) fprintf(stderr, "[y] node=%d scope=%d pf=%d name=%s\n", id, ymi, (ymi>=0&&ymi<c->nscopes)?c->scopes[ymi].is_proc_form:-1, (ymi>=0&&ymi<c->nscopes&&c->scopes[ymi].name)?c->scopes[ymi].name:"?");
-    if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_proc_form) return TY_POLY;
-    /* A lowered method's block is a proc as well, and its yield is a call
-       on it: poly. Without this a lowered method no site ever gave a block
-       (its `if block_given?` arm is dead at every site, but compiled) had an
-       UNKNOWN yield in a condition, which the emitter refused. */
-    if (ymi >= 0 && ymi < c->nscopes && c->scopes[ymi].is_lowered_yield) return TY_POLY;
-    /* When the block value diverges across call sites (string block at one,
-       int at another) AND this yield is the value of an assignment (its result
-       flows into a LOCAL), the local settles its type from the first site and
-       the other site miscompiles into that slot. Type the yield poly so the
-       local is a boxed carrier and each inlined site boxes its own value. A
-       bare-yield tail is handled per-site by emit_block_invoke_coerced /
-       method_call_ret and must keep its concrete first-site type. */
-    if (yield_value_diverges(c, ymi)) {
-      for (int u = yield_uses(c, id); u >= 0; u = g_yu_next[u]) {
-        int w = g_yu_node[u];
-        switch (g_yu_kind[u]) {
-        case YU_WRITE:
-          /* An instance, global or class variable written from the yield, or
-             from a conditional one of whose arms is the yield (`@y =
-             block_given? ? yield(x) : "nil"`), is in the same position as a
-             local: the variable takes one type, the first site's, and the
-             other site's value was emitted into it (`@y = yield(x)` with a
-             String block, then an Integer one, stopped the build). */
-          if (value_arm_is(nt, nt_ref(nt, w, "value"), id)) return TY_POLY;
-          break;
-        case YU_ELEMENT: {
-          /* An array literal's element likewise: `[yield(x)]` built its
-             array from the first site's element type. */
-          int en = 0; const int *ev = nt_arr(nt, w, "elements", &en);
-          for (int e = 0; e < en; e++)
-            if (value_arm_is(nt, ev[e], id)) return TY_POLY;
-          break;
-        }
-        case YU_ARGUMENT: {
-          /* An argument to a method the program defines likewise: its
-             parameter took the first site's type, and the other site's value
-             was converted to it at run time. `show(yield)` with a String
-             block at one site and a Float block at another raised TypeError
-             where CRuby prints both. Only a call that can reach a user
-             method (call_may_reach_user_method): a builtin on the yield
-             (`yield + yield`, an Array's `push(yield)`) is lowered per site
-             to its concrete form, which a poly operand does not fit, and an
-             unrelated class defining a method of the same name does not
-             change that. */
-          int an = nt_ref(nt, w, "arguments");
-          if (an < 0) break;
-          const char *wn = nt_str(nt, w, "name");
-          if (!wn || !call_may_reach_user_method(c, w, wn)) break;
-          int ac = 0; const int *av = nt_arr(nt, an, "arguments", &ac);
-          for (int e = 0; e < ac; e++)
-            if (value_arm_is(nt, av[e], id)) return TY_POLY;
-          break;
-        }
-        case YU_BLOCK: {
-          /* The value of a block handed to a method the program defines
-             likewise: that method's own yield takes it into a slot typed
-             from the first site, so `def run2(x) = run(x) { |u| yield u }`
-             with an Integer block at one site and a String one at another
-             emitted the String into an sp_int. Poly boxes each site's. */
-          const char *wn = nt_str(nt, w, "name");
-          if (wn && call_may_reach_user_method(c, w, wn)) return TY_POLY;
-          break;
-        }
-        case YU_RECEIVER: {
-          /* The receiver of a builtin arithmetic operator too: `yield +
-             yield` typed its `+`, and the method's return, from the first
-             site's block, so a String block at one site and a Float one at
-             another put the Float into a `const char *`. Poly makes the
-             result a boxed carrier, and codegen types each site's operator
-             from that site's block (yield_operator_site_type), so the value
-             it emits is boxed into it. Only the operators that helper types:
-             for another method on the yield, codegen still emits one site's
-             concrete result into the slot unboxed. */
-          if (nt_ref(nt, w, "receiver") != id || nt_ref(nt, w, "block") >= 0) break;
-          const char *op = nt_str(nt, w, "name");
-          int an = nt_ref(nt, w, "arguments"), ac = 0;
-          if (an >= 0) nt_arr(nt, an, "arguments", &ac);
-          if (ac == 1 && op && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
-                                sp_streq(op, "/") || sp_streq(op, "%")))
-            return TY_POLY;
-          /* A builtin whose result follows the receiver's kind (yield.abs,
-             yield.first, yield.dup): the same mismatch, the slot typed from
-             the first site's receiver and the other site's concrete result
-             (a double from fabs, a const char * from a String Array's first)
-             stored into it. yield_builtin_method_site_type types each site's
-             call from ty_recv_builtin_result, so widen only where that table
-             answers every site's block kind: a site it does not answer would
-             emit its concrete value into the poly slot unboxed, which turned
-             a wrong value into C that does not compile when this arm widened
-             every method. */
-          if (yield_recv_builtin_every_site(c, w)) return TY_POLY;
-          break;
-        }
-        case YU_FRAME: {
-          /* A yield whose value leaves through an ENSURE frame is in the
-             same position as one written to a local, for the same reason:
-             the frame carries the value in a slot of its own, and that slot
-             settles its type at whichever call site is analyzed first. The
-             per-site coercion the comment above relies on handles the
-             method's own tail, and does not reach a tail one frame in. So
-             `def run; begin; yield 7; ensure; nil; end; end` answered its
-             first site's type at its second -- `p run { |x| x == 7 }` then
-             `p run { |x| x * 3 }` printed true twice, where CRuby says true
-             and 21, and a pair whose types do not share a C slot stopped the
-             build instead. Poly makes the slot a boxed carrier, and each
-             inlined site boxes its own value. A rescue frame the same: its
-             value slot takes the body's value or the rescue arm's, `def
-             guarded; yield; rescue; "rescued"; end`. */
-          if (nt_ref(nt, w, "ensure_clause") < 0 && nt_ref(nt, w, "rescue_clause") < 0) break;
-          int st = nt_ref(nt, w, "statements");
-          if (st < 0) break;
-          int bn = 0; const int *bs = nt_arr(nt, st, "body", &bn);
-          if (bs && bn > 0 && bs[bn - 1] == id) return TY_POLY;
-          break;
-        }
-        }
-      }
-    }
-    return yield_value_type(c, ymi);
-  }
+  { TyKind r; if (infer_yield_node(c, id, nt, nk, &r)) return r; }
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {
     if (g_plan_check && id >= 0 && id < c->node_cap) c->ucall_inf[id].via = UC_NONE;
     Scope *s = comp_scope_of(c, id);
