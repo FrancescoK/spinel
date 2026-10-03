@@ -1381,6 +1381,456 @@ static void emit_engine_const_str(const char *var, const char *lit, Buf *b) {
   buf_printf(b, "((const char *)%s.d)", var);
 }
 
+/* Local-variable reads and writes and instance-variable writes in value position (emit_expr_node's arms, in their order) */
+static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "LocalVariableReadNode")) {
+    const char *lrn = nt_str(nt, id, "name");
+    /* compile-time define_method substitution: the loop var IS the literal */
+    if (g_dm_subst_name && lrn && sp_streq(lrn, g_dm_subst_name) && g_dm_subst_node >= 0) {
+      emit_expr(c, g_dm_subst_node, b); return 1;
+    }
+    /* a `return .. if p.nil?`-guarded param read: unbox the poly slot to the
+       non-nil type the narrowing pass proved (#1661) */
+    if (c->nilnarrow[id] != TY_UNKNOWN) {
+      Buf rb2; memset(&rb2, 0, sizeof rb2);
+      emit_local_ref(c, id, lrn, &rb2);
+      /* A `rescue K => e` arm's read of a binding two arms share (#4343). The
+         slot is a sp_Exception *, and every user exception subclass's struct
+         opens with that header, so the arm's class is a plain pointer cast --
+         not the poly unbox the guards below want. */
+      {
+        LocalVar *elv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
+        if (elv && elv->type == TY_EXCEPTION && ty_is_object(c->nilnarrow[id])) {
+          buf_puts(b, "((");
+          emit_ctype(c, c->nilnarrow[id], b);
+          buf_printf(b, ")%s)", rb2.p ? rb2.p : "");
+          free(rb2.p);
+          return 1;
+        }
+      }
+      /* The narrowing was recorded while the slot was boxed; a slot that
+         has since settled on the narrowed type itself (`v = yield x` whose
+         every site answers an Array) is read as it is, not unboxed from a
+         box it never was. */
+      {
+        LocalVar *nlv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
+        if (nlv && nlv->type == c->nilnarrow[id] && nlv->type != TY_POLY) {
+          buf_puts(b, rb2.p ? rb2.p : "");
+          free(rb2.p);
+          return 1;
+        }
+      }
+      /* An `is_a?(Array)`-narrowed read: a boxed array can be any element-typed
+         representation (Int/Float/Str/Poly array), so normalize to a PolyArray
+         at runtime rather than casting the raw .v.p to one kind. */
+      if (c->nilnarrow[id] == TY_POLY_ARRAY)
+        buf_printf(b, "sp_poly_to_poly_array(%s)", rb2.p ? rb2.p : "");
+      else
+        emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
+      free(rb2.p);
+      return 1;
+    }
+    LocalVar *slv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
+    /* The node cache can lag a later narrowing of the local itself (a
+       map-block hash-key param settling from poly to string): a POLY-typed
+       read of a concretely-declared local boxes the declared value so the
+       consumer's poly dispatch stays well-typed (#2730). */
+    if (slv && slv->type != TY_POLY && slv->type != TY_UNKNOWN &&
+        slv->type != TY_STRBUF && comp_ntype(c, id) == TY_POLY) {
+      Buf rb3; memset(&rb3, 0, sizeof rb3);
+      emit_local_ref(c, id, lrn, &rb3);
+      emit_boxed_text(c, slv->type, rb3.p ? rb3.p : "", b);
+      free(rb3.p);
+      return 1;
+    }
+    if (slv && slv->type == TY_STRBUF) {
+      /* A container-store / equal?-arg read of a shared-mutable string yields
+         the live HANDLE, not a copy (#3227 phase 3). */
+      if (c->strbuf_box[id]) {
+        emit_local_ref(c, id, lrn, b);
+        return 1;
+      }
+      /* A mutable-string local read yields an independent GC string copy: its
+         sp_String buffer is not itself a GC object, so a bare cstr pointer
+         would dangle once the wrapper is unreachable (e.g. after `return`).
+         Transient append/length use the raw sp_String via dedicated paths. */
+      /* publish the handle to the deep-return side channel as the copy is
+         read out: a marked caller of a shared-returning method picks it up
+         right after the call (#3227 P6) */
+      buf_puts(b, "(_sp_ret_strbuf = (void *)");
+      emit_local_ref(c, id, lrn, b);
+      /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
+         or `def run(cmd, text: nil)` whose block appends to it: nil is a NULL
+         handle, and reads as nil. So is a local's (`q = nil; q = +"x" if c`
+         with `q.tap { |w| w << "!" if w }` making q the handle). */
+      if (slv->dyn_handle || slv->is_param || slv->str_shared) {
+        buf_puts(b, ", ");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, " ? sp_str_concat(sp_String_cstr(");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, "), (&(\"\\xff\")[1])) : NULL)");
+        return 1;
+      }
+      buf_puts(b, ", sp_str_concat(sp_String_cstr(");
+      emit_local_ref(c, id, lrn, b);
+      buf_puts(b, "), (&(\"\\xff\")[1])))");
+      return 1;
+    }
+    /* A POLY variable handed to a parameter the callee appends to in place:
+       a plain String it holds becomes the shared handle and is stored back
+       first, so the callee appends to the variable's own String (#6179). */
+    if (c->poly_strbuf_lift[id] && slv && slv->type == TY_POLY) {
+      Buf rl; memset(&rl, 0, sizeof rl);
+      emit_local_ref(c, id, lrn, &rl);
+      emit_poly_lift_ref(rl.p ? rl.p : "", b);
+      free(rl.p);
+      return 1;
+    }
+    emit_local_ref(c, id, lrn, b); return 1;
+  }
+  if (sp_streq(ty, "LocalVariableWriteNode")) {
+    /* assignment used as expression: ({ lv = rhs; lv; }) */
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    /* `x = y = nil` as expression: inner writes become statements inside the
+       stmt-expr; this target takes its own typed nil (not the inner slot). */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) {
+        buf_puts(b, "({ ");
+        emit_stmt_inner(c, v, b, 0);
+        emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+        if (lv && lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
+        else if (lv) buf_puts(b, default_value_from_compiler(c, lv->type));
+        else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
+        return 1;
+      }
+    }
+    if (lv && lv->type == TY_STRBUF) {
+      /* a shared-handle local: the statement form owns every way a value
+         becomes the handle (alias, boxed element, fresh wrap); the raw
+         const char * went into the sp_String * slot here (a write inside
+         Array.new's block, whose non-tail statements are emitted as
+         expressions). The value is the slot's ordinary read face, as the
+         ivar twin's is. */
+      buf_puts(b, "({ ");
+      emit_assign(c, id, b, 0);
+      /* a nil write leaves the handle NULL: the value is nil, not a read
+         through it (CodeRabbit on #4990) */
+      buf_puts(b, " (_sp_ret_strbuf = (void *)");
+      emit_local_ref(c, id, nm, b);
+      buf_puts(b, ", _sp_ret_strbuf ? sp_str_concat(sp_String_cstr(");
+      emit_local_ref(c, id, nm, b);
+      buf_puts(b, "), (&(\"\\xff\")[1])) : NULL); })");
+      return 1;
+    }
+    buf_puts(b, "({ ");
+    emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+    int ven = 0;
+    int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
+    if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    /* an empty `[]` is built at the slot's representation, as the statement
+       form and the ivar twin below build it: its own default, an IntArray,
+       went into an sp_PolyArray *, sp_FloatArray * or sp_PtrArray * slot.
+       Array.new's block emits its non-tail statements here, so
+       `y = [] if i == 0` there stopped the C build. */
+    else if (lv && v_empty_array && ty_is_ptr_array(lv->type)) buf_puts(b, "sp_PtrArray_new()");
+    else if (lv && v_empty_array && emit_empty_container_for_slot(c, v, lv->type, b)) { }
+    else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
+             comp_ntype(c, v) != TY_POLY_ARRAY) {
+      /* a typed array into a poly-array slot: convert, as emit_assign does
+         (the statement form; this is its expression twin, #2834) */
+      TyKind avt = comp_ntype(c, v);
+      buf_printf(b, "sp_PolyArray_from_%s(",
+                 avt == TY_INT_ARRAY ? "int_array"
+                 : avt == TY_STR_ARRAY ? "str_array" : "float_array");
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
+             comp_ntype(c, v) == TY_UNKNOWN)
+      /* `if (x = obj.unresolved(...)) ...`: the gate's raise-all token into a
+         typed slot, coerced (mirrors the statement-form emit_assign). */
+      emit_unresolved_coerced(c, v, lv->type, b);
+    /* an int or boxed value into a TY_BIGINT slot wraps, exactly as the
+       statement form and the return path do. This is the INNER write of a
+       chain (`b = a = 0` with `a` promoted to bigint by its loop), which is
+       the one write that reaches this expression twin with a bigint target:
+       raw, the literal was reinterpreted as an sp_Bigint* and a boxed chain
+       value did not compile at all. */
+    else if (lv && lv->type == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) {
+      if (comp_ntype(c, v) == TY_POLY) {
+        buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, v, b); buf_puts(b, ")");
+      }
+      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
+    }
+    /* poly RHS into a scalar/string slot: the same unbox the statement form
+       applies (emit_poly_rhs_coerced) */
+    else if (lv && emit_poly_rhs_coerced(c, lv->type, v, b)) { }
+    else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
+    else emit_expr(c, v, b);
+    buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
+    return 1;
+  }
+  if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
+    /* c += 3 used as expression: ({ <op-assign>; <c>; }). The value-yielding
+       read goes through emit_local_ref so a celled (captured) local derefs its
+       shared cell (*_cell_c) instead of a bare lv_c -- the latter is undeclared
+       inside a block that captured c by cell (e.g. `mutex.synchronize { c += 1 }`
+       in a thread). */
+    const char *nm = nt_str(nt, id, "name");
+    buf_puts(b, "({ ");
+    emit_op_assign(c, id, b, 0);
+    emit_local_ref(c, id, nm, b);
+    buf_puts(b, "; })");
+    return 1;
+  }
+  if (sp_streq(ty, "InstanceVariableWriteNode")) {
+    /* @ivar = rhs used as expression: ({ self->iv_x = rhs; self->iv_x; }) */
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *cws = comp_scope_of(c, id);
+    int cid2 = cws ? cws->class_id : -1;
+    if (cid2 < 0 && g_class_body_id >= 0) cid2 = g_class_body_id;
+    if (!nm || v < 0) { buf_puts(b, "0"); return 1; }
+    /* inside an instance_eval/exec splice the block scope has no class_id, so
+       the ivar belongs to the rebound receiver class (g_ie_class_id). */
+    int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id;
+    /* a top-level ivar's slot is the Toplevel pseudo-class's, the one the
+       store below writes (civ_Toplevel_x): without its kind the value went
+       in as it was, and `y = (@a = [])` put an Integer array into a slot
+       a later write had made a poly array */
+    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
+    TyKind ivt2 = TY_UNKNOWN;
+    if (ivcls2 >= 0) {
+      int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
+      if (iv2 >= 0) ivt2 = c->classes[ivcls2].ivar_types[iv2];
+    }
+    const char *vty2 = nt_type(nt, v);
+    int ven2 = 0;
+    int v_empty_array2 = vty2 && sp_streq(vty2, "ArrayNode") && (nt_arr(nt, v, "elements", &ven2), ven2 == 0);
+    int v_empty_hash2 = 0;
+    if (!v_empty_array2 && vty2) {
+      int hen2 = 0;
+      if (sp_streq(vty2, "HashNode") || sp_streq(vty2, "KeywordHashNode"))
+        v_empty_hash2 = (nt_arr(nt, v, "elements", &hen2), hen2 == 0);
+    }
+    char ref2e[300];
+    int fz_cid = -1;  /* instance-path writes guard the frozen bit */
+    if (cws && cws->is_cmethod && cid2 >= 0)
+      snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, iv_c(nm + 1));
+    else if (cid2 < 0 && g_ie_class_id >= 0) {
+      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+      fz_cid = g_ie_class_id;
+    }
+    else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
+      snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
+    else {
+      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+      fz_cid = cid2;
+    }
+    /* `@a = @b = nil` as expression: inner writes become statements inside the
+       stmt-expr; this target takes its own typed nil (not the inner slot). */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) {
+        buf_puts(b, "({ ");
+        if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
+        emit_stmt_inner(c, v, b, 0);
+        buf_printf(b, "%s = ", ref2e);
+        switch (ivt2) {
+        case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
+        case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
+        case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
+        case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
+        case TY_STRING: buf_puts(b, "NULL"); break;
+        default: buf_puts(b, default_value_from_compiler(c, ivt2)); break;
+        }
+        buf_printf(b, "; %s; })", ref2e);
+        return 1;
+      }
+    }
+    buf_puts(b, "({ ");
+    if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
+    buf_printf(b, "%s = ", ref2e);
+    if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
+    else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
+    else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));
+    else if (v_empty_hash2 && ty_is_hash(ivt2)) {
+      const char *hcn = ty_hash_cname(ivt2);
+      if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else emit_expr(c, v, b);
+    }
+    else if (ivt2 == TY_STRBUF && comp_ntype(c, v) != TY_STRBUF && comp_ntype(c, v) != TY_POLY) {
+      /* a shared-handle slot takes an alias RHS by handle and wraps anything
+         else in a fresh handle, exactly as the statement form does; the raw
+         const char * went into the sp_String * slot here (a value-position
+         write, `def w(v) = (@body = v.to_s)`, #3993 / #4567). The value of
+         the expression is the slot's ordinary read face below. */
+      char srefW2[1024];
+      if (strbuf_slot_ref(c, v, srefW2, sizeof srefW2)) buf_puts(b, srefW2);
+      else {
+        buf_puts(b, "sp_String_new_shared(");
+        emit_str_expr(c, v, b);
+        buf_puts(b, ")");
+      }
+      buf_printf(b, "; (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
+                 ref2e, ref2e, ref2e);
+      return 1;
+    }
+    else if (ivt2 == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    /* a typed array into the general Array slot the ivar widened to (an
+       `o.a << nil` through its reader), rebuilt as the statement form does:
+       an endless `def initialize(z) = (@a = [z])` assigned the typed array
+       itself and the C did not build */
+    else if (emit_array_into_poly_slot(c, ivt2, v, b)) { }
+    else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v))) {
+      /* an array of another kind into a seed-pinned array ivar: converted,
+         as the statement form does */
+      emit_array_store_value(c, ivt2, v, b);
+    }
+    else if (ivt2 != TY_POLY && ivt2 != TY_UNKNOWN && comp_ntype(c, v) == TY_POLY) {
+      /* poly rhs assigned to a typed ivar: unbox to the concrete type */
+      Buf _rb; memset(&_rb, 0, sizeof _rb);
+      emit_expr(c, v, &_rb);
+      Buf _ck; memset(&_ck, 0, sizeof _ck);
+      if (ivcls2 >= 0 && class_ivar_pinned(&c->classes[ivcls2], nm))
+        emit_rbs_checked_text(c, ivt2, nm, _rb.p ? _rb.p : "sp_box_nil()", &_ck);
+      else buf_puts(&_ck, _rb.p ? _rb.p : "sp_box_nil()");
+      emit_unbox_text(c, ivt2, _ck.p ? _ck.p : "sp_box_nil()", b);
+      free(_ck.p);
+      free(_rb.p);
+    }
+    else {
+      /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
+      emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
+      emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
+    }
+    /* The expression's value is the slot read back, at the node's own type:
+       a write retyped for an instance_exec receiver (ie_body_retype) is typed
+       by its value, `:sym`, while a poly slot reads back boxed. */
+    { TyKind wt = comp_ntype(c, id);
+      if (ivt2 == TY_POLY && wt != TY_POLY && wt != TY_UNKNOWN && wt != TY_VOID && wt != TY_NIL &&
+          is_scalar_ret(wt)) {
+        buf_puts(b, "; ");
+        emit_unbox_text(c, wt, ref2e, b);
+        buf_puts(b, "; })");
+        return 1;
+      } }
+    buf_printf(b, "; %s; })", ref2e);
+    return 1;
+  }
+  if (sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "InstanceVariableAndWriteNode")) {
+    int is_or = sp_streq(ty, "InstanceVariableOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    Scope *cws3 = comp_scope_of(c, id);
+    int cid3 = cws3 ? cws3->class_id : -1;
+    if (cid3 < 0 && g_class_body_id >= 0) cid3 = g_class_body_id;
+    /* a toplevel method's ivar is the Toplevel pseudo-class global, as in
+       the statement form */
+    int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
+    if (tl3) cid3 = comp_class_index(c, "Toplevel");
+    TyKind ivt3 = TY_UNKNOWN;
+    if (cid3 >= 0) { int iv3 = comp_ivar_index(&c->classes[cid3], nm); if (iv3 >= 0) ivt3 = c->classes[cid3].ivar_types[iv3]; }
+    char ref3[300];
+    if (cws3 && cws3->is_cmethod && cid3 >= 0)
+      snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
+    else if (tl3 && cid3 >= 0)
+      snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", iv_c(nm + 1));
+    else
+      snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
+    return 1;
+  }
+  if (sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
+    int is_or = sp_streq(ty, "LocalVariableOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    TyKind t = lv ? lv->type : TY_UNKNOWN;
+    /* the local as every other write names it: a captured one lives in its
+       cell (`(*_cell_x)`), an inlined one under its renamed C name */
+    /* a number local given a boxed value (`u = (v &&= z)`, z boxed) answers
+       a boxed value, as its type says: the local's number, or nil for its
+       nil sentinel */
+    static int orw_boxing_id = -1;
+    if ((t == TY_INT || t == TY_FLOAT) && comp_ntype(c, id) == TY_POLY && orw_boxing_id != id) {
+      int sv = orw_boxing_id; orw_boxing_id = id;
+      buf_puts(b, t == TY_INT ? "sp_box_int_or_nil(" : "sp_box_float_or_nil(");
+      emit_expr_node(c, id, b);
+      buf_puts(b, ")");
+      orw_boxing_id = sv;
+      return 1;
+    }
+    char lhs[300];
+    { Buf lr; memset(&lr, 0, sizeof lr); emit_local_ref(c, id, nm, &lr);
+      snprintf(lhs, sizeof lhs, "%s", lr.p ? lr.p : ""); free(lr.p); }
+    char cond[400];
+    if (t == TY_POLY) {
+      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
+    }
+    else if (t == TY_BOOL) {
+      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
+    }
+    else if (t == TY_SYMBOL) {
+      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
+      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
+    }
+    else if (!is_or) {
+      /* `x &&= v` assigns only when x is not nil, as the statement form
+         tests (a slot with no nil representation always assigns) */
+      Buf nb; memset(&nb, 0, sizeof nb);
+      if (local_nil_test(c, lv, lhs, &nb)) {
+        /* through emit_assign, as `||=` below: a nil or boxed value takes
+           the coercion the plain `x = v` does (the sentinel, not 0) */
+        Buf apre, abody;
+        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = &apre; g_indent = 0;
+        emit_assign(c, id, &abody, 0);
+        g_pre = sv_pre; g_indent = sv_ind;
+        buf_printf(b, "({ if (!(%s)) { ", nb.p);
+        if (apre.p) buf_puts(b, apre.p);
+        if (abody.p) buf_puts(b, abody.p);
+        buf_printf(b, " } %s; })", lhs);
+        free(apre.p); free(abody.p);
+      }
+      else emit_orw_guard(c, v, t, NULL, lhs, 1, 0, b);
+      free(nb.p);
+    }
+    else {
+      /* `x ||= v` in value position on a slot that can hold nil (see
+         local_nil_test): the old bare read assumed every non-poly local was
+         already truthy and dropped the assignment entirely (#3388). */
+      Buf rb; memset(&rb, 0, sizeof rb); emit_local_ref(c, id, nm, &rb);
+      Buf nb; memset(&nb, 0, sizeof nb);
+      if (rb.p && local_nil_test(c, lv, rb.p, &nb)) {
+        Buf apre, abody;
+        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
+        Buf *sv_pre = g_pre; int sv_ind = g_indent;
+        g_pre = &apre; g_indent = 0;
+        emit_assign(c, id, &abody, 0);
+        g_pre = sv_pre; g_indent = sv_ind;
+        buf_printf(b, "({ if (%s) { ", nb.p);
+        if (apre.p) buf_puts(b, apre.p);
+        if (abody.p) buf_puts(b, abody.p);
+        buf_printf(b, " } %s; })", rb.p);
+        free(apre.p); free(abody.p);
+      }
+      else buf_puts(b, lhs);
+      free(nb.p); free(rb.p);
+    }
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -1665,451 +2115,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, ", %d)", excl);
     return;
   }
-  if (sp_streq(ty, "LocalVariableReadNode")) {
-    const char *lrn = nt_str(nt, id, "name");
-    /* compile-time define_method substitution: the loop var IS the literal */
-    if (g_dm_subst_name && lrn && sp_streq(lrn, g_dm_subst_name) && g_dm_subst_node >= 0) {
-      emit_expr(c, g_dm_subst_node, b); return;
-    }
-    /* a `return .. if p.nil?`-guarded param read: unbox the poly slot to the
-       non-nil type the narrowing pass proved (#1661) */
-    if (c->nilnarrow[id] != TY_UNKNOWN) {
-      Buf rb2; memset(&rb2, 0, sizeof rb2);
-      emit_local_ref(c, id, lrn, &rb2);
-      /* A `rescue K => e` arm's read of a binding two arms share (#4343). The
-         slot is a sp_Exception *, and every user exception subclass's struct
-         opens with that header, so the arm's class is a plain pointer cast --
-         not the poly unbox the guards below want. */
-      {
-        LocalVar *elv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
-        if (elv && elv->type == TY_EXCEPTION && ty_is_object(c->nilnarrow[id])) {
-          buf_puts(b, "((");
-          emit_ctype(c, c->nilnarrow[id], b);
-          buf_printf(b, ")%s)", rb2.p ? rb2.p : "");
-          free(rb2.p);
-          return;
-        }
-      }
-      /* The narrowing was recorded while the slot was boxed; a slot that
-         has since settled on the narrowed type itself (`v = yield x` whose
-         every site answers an Array) is read as it is, not unboxed from a
-         box it never was. */
-      {
-        LocalVar *nlv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
-        if (nlv && nlv->type == c->nilnarrow[id] && nlv->type != TY_POLY) {
-          buf_puts(b, rb2.p ? rb2.p : "");
-          free(rb2.p);
-          return;
-        }
-      }
-      /* An `is_a?(Array)`-narrowed read: a boxed array can be any element-typed
-         representation (Int/Float/Str/Poly array), so normalize to a PolyArray
-         at runtime rather than casting the raw .v.p to one kind. */
-      if (c->nilnarrow[id] == TY_POLY_ARRAY)
-        buf_printf(b, "sp_poly_to_poly_array(%s)", rb2.p ? rb2.p : "");
-      else
-        emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
-      free(rb2.p);
-      return;
-    }
-    LocalVar *slv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
-    /* The node cache can lag a later narrowing of the local itself (a
-       map-block hash-key param settling from poly to string): a POLY-typed
-       read of a concretely-declared local boxes the declared value so the
-       consumer's poly dispatch stays well-typed (#2730). */
-    if (slv && slv->type != TY_POLY && slv->type != TY_UNKNOWN &&
-        slv->type != TY_STRBUF && comp_ntype(c, id) == TY_POLY) {
-      Buf rb3; memset(&rb3, 0, sizeof rb3);
-      emit_local_ref(c, id, lrn, &rb3);
-      emit_boxed_text(c, slv->type, rb3.p ? rb3.p : "", b);
-      free(rb3.p);
-      return;
-    }
-    if (slv && slv->type == TY_STRBUF) {
-      /* A container-store / equal?-arg read of a shared-mutable string yields
-         the live HANDLE, not a copy (#3227 phase 3). */
-      if (c->strbuf_box[id]) {
-        emit_local_ref(c, id, lrn, b);
-        return;
-      }
-      /* A mutable-string local read yields an independent GC string copy: its
-         sp_String buffer is not itself a GC object, so a bare cstr pointer
-         would dangle once the wrapper is unreachable (e.g. after `return`).
-         Transient append/length use the raw sp_String via dedicated paths. */
-      /* publish the handle to the deep-return side channel as the copy is
-         read out: a marked caller of a shared-returning method picks it up
-         right after the call (#3227 P6) */
-      buf_puts(b, "(_sp_ret_strbuf = (void *)");
-      emit_local_ref(c, id, lrn, b);
-      /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
-         or `def run(cmd, text: nil)` whose block appends to it: nil is a NULL
-         handle, and reads as nil. So is a local's (`q = nil; q = +"x" if c`
-         with `q.tap { |w| w << "!" if w }` making q the handle). */
-      if (slv->dyn_handle || slv->is_param || slv->str_shared) {
-        buf_puts(b, ", ");
-        emit_local_ref(c, id, lrn, b);
-        buf_puts(b, " ? sp_str_concat(sp_String_cstr(");
-        emit_local_ref(c, id, lrn, b);
-        buf_puts(b, "), (&(\"\\xff\")[1])) : NULL)");
-        return;
-      }
-      buf_puts(b, ", sp_str_concat(sp_String_cstr(");
-      emit_local_ref(c, id, lrn, b);
-      buf_puts(b, "), (&(\"\\xff\")[1])))");
-      return;
-    }
-    /* A POLY variable handed to a parameter the callee appends to in place:
-       a plain String it holds becomes the shared handle and is stored back
-       first, so the callee appends to the variable's own String (#6179). */
-    if (c->poly_strbuf_lift[id] && slv && slv->type == TY_POLY) {
-      Buf rl; memset(&rl, 0, sizeof rl);
-      emit_local_ref(c, id, lrn, &rl);
-      emit_poly_lift_ref(rl.p ? rl.p : "", b);
-      free(rl.p);
-      return;
-    }
-    emit_local_ref(c, id, lrn, b); return;
-  }
-  if (sp_streq(ty, "LocalVariableWriteNode")) {
-    /* assignment used as expression: ({ lv = rhs; lv; }) */
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-    /* `x = y = nil` as expression: inner writes become statements inside the
-       stmt-expr; this target takes its own typed nil (not the inner slot). */
-    {
-      int ncb = comp_nil_chain_bottom(nt, v);
-      if (ncb >= 0) {
-        buf_puts(b, "({ ");
-        emit_stmt_inner(c, v, b, 0);
-        emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
-        if (lv && lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
-        else if (lv) buf_puts(b, default_value_from_compiler(c, lv->type));
-        else buf_puts(b, "sp_box_nil()");
-        buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
-        return;
-      }
-    }
-    if (lv && lv->type == TY_STRBUF) {
-      /* a shared-handle local: the statement form owns every way a value
-         becomes the handle (alias, boxed element, fresh wrap); the raw
-         const char * went into the sp_String * slot here (a write inside
-         Array.new's block, whose non-tail statements are emitted as
-         expressions). The value is the slot's ordinary read face, as the
-         ivar twin's is. */
-      buf_puts(b, "({ ");
-      emit_assign(c, id, b, 0);
-      /* a nil write leaves the handle NULL: the value is nil, not a read
-         through it (CodeRabbit on #4990) */
-      buf_puts(b, " (_sp_ret_strbuf = (void *)");
-      emit_local_ref(c, id, nm, b);
-      buf_puts(b, ", _sp_ret_strbuf ? sp_str_concat(sp_String_cstr(");
-      emit_local_ref(c, id, nm, b);
-      buf_puts(b, "), (&(\"\\xff\")[1])) : NULL); })");
-      return;
-    }
-    buf_puts(b, "({ ");
-    emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
-    int ven = 0;
-    int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
-    if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-    /* an empty `[]` is built at the slot's representation, as the statement
-       form and the ivar twin below build it: its own default, an IntArray,
-       went into an sp_PolyArray *, sp_FloatArray * or sp_PtrArray * slot.
-       Array.new's block emits its non-tail statements here, so
-       `y = [] if i == 0` there stopped the C build. */
-    else if (lv && v_empty_array && ty_is_ptr_array(lv->type)) buf_puts(b, "sp_PtrArray_new()");
-    else if (lv && v_empty_array && emit_empty_container_for_slot(c, v, lv->type, b)) { }
-    else if (lv && lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
-             comp_ntype(c, v) != TY_POLY_ARRAY) {
-      /* a typed array into a poly-array slot: convert, as emit_assign does
-         (the statement form; this is its expression twin, #2834) */
-      TyKind avt = comp_ntype(c, v);
-      buf_printf(b, "sp_PolyArray_from_%s(",
-                 avt == TY_INT_ARRAY ? "int_array"
-                 : avt == TY_STR_ARRAY ? "str_array" : "float_array");
-      emit_expr(c, v, b);
-      buf_puts(b, ")");
-    }
-    else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
-             comp_ntype(c, v) == TY_UNKNOWN)
-      /* `if (x = obj.unresolved(...)) ...`: the gate's raise-all token into a
-         typed slot, coerced (mirrors the statement-form emit_assign). */
-      emit_unresolved_coerced(c, v, lv->type, b);
-    /* an int or boxed value into a TY_BIGINT slot wraps, exactly as the
-       statement form and the return path do. This is the INNER write of a
-       chain (`b = a = 0` with `a` promoted to bigint by its loop), which is
-       the one write that reaches this expression twin with a bigint target:
-       raw, the literal was reinterpreted as an sp_Bigint* and a boxed chain
-       value did not compile at all. */
-    else if (lv && lv->type == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) {
-      if (comp_ntype(c, v) == TY_POLY) {
-        buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, v, b); buf_puts(b, ")");
-      }
-      else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
-    }
-    /* poly RHS into a scalar/string slot: the same unbox the statement form
-       applies (emit_poly_rhs_coerced) */
-    else if (lv && emit_poly_rhs_coerced(c, lv->type, v, b)) { }
-    else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
-    else emit_expr(c, v, b);
-    buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
-    return;
-  }
-  if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
-    /* c += 3 used as expression: ({ <op-assign>; <c>; }). The value-yielding
-       read goes through emit_local_ref so a celled (captured) local derefs its
-       shared cell (*_cell_c) instead of a bare lv_c -- the latter is undeclared
-       inside a block that captured c by cell (e.g. `mutex.synchronize { c += 1 }`
-       in a thread). */
-    const char *nm = nt_str(nt, id, "name");
-    buf_puts(b, "({ ");
-    emit_op_assign(c, id, b, 0);
-    emit_local_ref(c, id, nm, b);
-    buf_puts(b, "; })");
-    return;
-  }
-  if (sp_streq(ty, "InstanceVariableWriteNode")) {
-    /* @ivar = rhs used as expression: ({ self->iv_x = rhs; self->iv_x; }) */
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    Scope *cws = comp_scope_of(c, id);
-    int cid2 = cws ? cws->class_id : -1;
-    if (cid2 < 0 && g_class_body_id >= 0) cid2 = g_class_body_id;
-    if (!nm || v < 0) { buf_puts(b, "0"); return; }
-    /* inside an instance_eval/exec splice the block scope has no class_id, so
-       the ivar belongs to the rebound receiver class (g_ie_class_id). */
-    int ivcls2 = cid2 >= 0 ? cid2 : g_ie_class_id;
-    /* a top-level ivar's slot is the Toplevel pseudo-class's, the one the
-       store below writes (civ_Toplevel_x): without its kind the value went
-       in as it was, and `y = (@a = [])` put an Integer array into a slot
-       a later write had made a poly array */
-    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
-    TyKind ivt2 = TY_UNKNOWN;
-    if (ivcls2 >= 0) {
-      int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
-      if (iv2 >= 0) ivt2 = c->classes[ivcls2].ivar_types[iv2];
-    }
-    const char *vty2 = nt_type(nt, v);
-    int ven2 = 0;
-    int v_empty_array2 = vty2 && sp_streq(vty2, "ArrayNode") && (nt_arr(nt, v, "elements", &ven2), ven2 == 0);
-    int v_empty_hash2 = 0;
-    if (!v_empty_array2 && vty2) {
-      int hen2 = 0;
-      if (sp_streq(vty2, "HashNode") || sp_streq(vty2, "KeywordHashNode"))
-        v_empty_hash2 = (nt_arr(nt, v, "elements", &hen2), hen2 == 0);
-    }
-    char ref2e[300];
-    int fz_cid = -1;  /* instance-path writes guard the frozen bit */
-    if (cws && cws->is_cmethod && cid2 >= 0)
-      snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, iv_c(nm + 1));
-    else if (cid2 < 0 && g_ie_class_id >= 0) {
-      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-      fz_cid = g_ie_class_id;
-    }
-    else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
-      snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
-    else {
-      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-      fz_cid = cid2;
-    }
-    /* `@a = @b = nil` as expression: inner writes become statements inside the
-       stmt-expr; this target takes its own typed nil (not the inner slot). */
-    {
-      int ncb = comp_nil_chain_bottom(nt, v);
-      if (ncb >= 0) {
-        buf_puts(b, "({ ");
-        if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
-        emit_stmt_inner(c, v, b, 0);
-        buf_printf(b, "%s = ", ref2e);
-        switch (ivt2) {
-        case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
-        case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
-        case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
-        case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
-        case TY_STRING: buf_puts(b, "NULL"); break;
-        default: buf_puts(b, default_value_from_compiler(c, ivt2)); break;
-        }
-        buf_printf(b, "; %s; })", ref2e);
-        return;
-      }
-    }
-    buf_puts(b, "({ ");
-    if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
-    buf_printf(b, "%s = ", ref2e);
-    if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
-    else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
-    else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));
-    else if (v_empty_hash2 && ty_is_hash(ivt2)) {
-      const char *hcn = ty_hash_cname(ivt2);
-      if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
-      else emit_expr(c, v, b);
-    }
-    else if (ivt2 == TY_STRBUF && comp_ntype(c, v) != TY_STRBUF && comp_ntype(c, v) != TY_POLY) {
-      /* a shared-handle slot takes an alias RHS by handle and wraps anything
-         else in a fresh handle, exactly as the statement form does; the raw
-         const char * went into the sp_String * slot here (a value-position
-         write, `def w(v) = (@body = v.to_s)`, #3993 / #4567). The value of
-         the expression is the slot's ordinary read face below. */
-      char srefW2[1024];
-      if (strbuf_slot_ref(c, v, srefW2, sizeof srefW2)) buf_puts(b, srefW2);
-      else {
-        buf_puts(b, "sp_String_new_shared(");
-        emit_str_expr(c, v, b);
-        buf_puts(b, ")");
-      }
-      buf_printf(b, "; (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
-                 ref2e, ref2e, ref2e);
-      return;
-    }
-    else if (ivt2 == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-    /* a typed array into the general Array slot the ivar widened to (an
-       `o.a << nil` through its reader), rebuilt as the statement form does:
-       an endless `def initialize(z) = (@a = [z])` assigned the typed array
-       itself and the C did not build */
-    else if (emit_array_into_poly_slot(c, ivt2, v, b)) { }
-    else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v))) {
-      /* an array of another kind into a seed-pinned array ivar: converted,
-         as the statement form does */
-      emit_array_store_value(c, ivt2, v, b);
-    }
-    else if (ivt2 != TY_POLY && ivt2 != TY_UNKNOWN && comp_ntype(c, v) == TY_POLY) {
-      /* poly rhs assigned to a typed ivar: unbox to the concrete type */
-      Buf _rb; memset(&_rb, 0, sizeof _rb);
-      emit_expr(c, v, &_rb);
-      Buf _ck; memset(&_ck, 0, sizeof _ck);
-      if (ivcls2 >= 0 && class_ivar_pinned(&c->classes[ivcls2], nm))
-        emit_rbs_checked_text(c, ivt2, nm, _rb.p ? _rb.p : "sp_box_nil()", &_ck);
-      else buf_puts(&_ck, _rb.p ? _rb.p : "sp_box_nil()");
-      emit_unbox_text(c, ivt2, _ck.p ? _ck.p : "sp_box_nil()", b);
-      free(_ck.p);
-      free(_rb.p);
-    }
-    else {
-      /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
-      emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
-      emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
-    }
-    /* The expression's value is the slot read back, at the node's own type:
-       a write retyped for an instance_exec receiver (ie_body_retype) is typed
-       by its value, `:sym`, while a poly slot reads back boxed. */
-    { TyKind wt = comp_ntype(c, id);
-      if (ivt2 == TY_POLY && wt != TY_POLY && wt != TY_UNKNOWN && wt != TY_VOID && wt != TY_NIL &&
-          is_scalar_ret(wt)) {
-        buf_puts(b, "; ");
-        emit_unbox_text(c, wt, ref2e, b);
-        buf_puts(b, "; })");
-        return;
-      } }
-    buf_printf(b, "; %s; })", ref2e);
-    return;
-  }
-  if (sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "InstanceVariableAndWriteNode")) {
-    int is_or = sp_streq(ty, "InstanceVariableOrWriteNode");
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    Scope *cws3 = comp_scope_of(c, id);
-    int cid3 = cws3 ? cws3->class_id : -1;
-    if (cid3 < 0 && g_class_body_id >= 0) cid3 = g_class_body_id;
-    /* a toplevel method's ivar is the Toplevel pseudo-class global, as in
-       the statement form */
-    int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
-    if (tl3) cid3 = comp_class_index(c, "Toplevel");
-    TyKind ivt3 = TY_UNKNOWN;
-    if (cid3 >= 0) { int iv3 = comp_ivar_index(&c->classes[cid3], nm); if (iv3 >= 0) ivt3 = c->classes[cid3].ivar_types[iv3]; }
-    char ref3[300];
-    if (cws3 && cws3->is_cmethod && cid3 >= 0)
-      snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
-    else if (tl3 && cid3 >= 0)
-      snprintf(ref3, sizeof ref3, "civ_Toplevel_%s", iv_c(nm + 1));
-    else
-      snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
-    return;
-  }
-  if (sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
-    int is_or = sp_streq(ty, "LocalVariableOrWriteNode");
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-    TyKind t = lv ? lv->type : TY_UNKNOWN;
-    /* the local as every other write names it: a captured one lives in its
-       cell (`(*_cell_x)`), an inlined one under its renamed C name */
-    /* a number local given a boxed value (`u = (v &&= z)`, z boxed) answers
-       a boxed value, as its type says: the local's number, or nil for its
-       nil sentinel */
-    static int orw_boxing_id = -1;
-    if ((t == TY_INT || t == TY_FLOAT) && comp_ntype(c, id) == TY_POLY && orw_boxing_id != id) {
-      int sv = orw_boxing_id; orw_boxing_id = id;
-      buf_puts(b, t == TY_INT ? "sp_box_int_or_nil(" : "sp_box_float_or_nil(");
-      emit_expr_node(c, id, b);
-      buf_puts(b, ")");
-      orw_boxing_id = sv;
-      return;
-    }
-    char lhs[300];
-    { Buf lr; memset(&lr, 0, sizeof lr); emit_local_ref(c, id, nm, &lr);
-      snprintf(lhs, sizeof lhs, "%s", lr.p ? lr.p : ""); free(lr.p); }
-    char cond[400];
-    if (t == TY_POLY) {
-      snprintf(cond, sizeof cond, "%ssp_poly_truthy(%s)", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
-    }
-    else if (t == TY_BOOL) {
-      snprintf(cond, sizeof cond, "%s%s", is_or ? "!" : "", lhs);
-      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
-    }
-    else if (t == TY_SYMBOL) {
-      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
-      snprintf(cond, sizeof cond, "%s %s= (sp_sym)-1", lhs, is_or ? "=" : "!");
-      emit_orw_guard(c, v, t, cond, lhs, 1, 0, b);
-    }
-    else if (!is_or) {
-      /* `x &&= v` assigns only when x is not nil, as the statement form
-         tests (a slot with no nil representation always assigns) */
-      Buf nb; memset(&nb, 0, sizeof nb);
-      if (local_nil_test(c, lv, lhs, &nb)) {
-        /* through emit_assign, as `||=` below: a nil or boxed value takes
-           the coercion the plain `x = v` does (the sentinel, not 0) */
-        Buf apre, abody;
-        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
-        Buf *sv_pre = g_pre; int sv_ind = g_indent;
-        g_pre = &apre; g_indent = 0;
-        emit_assign(c, id, &abody, 0);
-        g_pre = sv_pre; g_indent = sv_ind;
-        buf_printf(b, "({ if (!(%s)) { ", nb.p);
-        if (apre.p) buf_puts(b, apre.p);
-        if (abody.p) buf_puts(b, abody.p);
-        buf_printf(b, " } %s; })", lhs);
-        free(apre.p); free(abody.p);
-      }
-      else emit_orw_guard(c, v, t, NULL, lhs, 1, 0, b);
-      free(nb.p);
-    }
-    else {
-      /* `x ||= v` in value position on a slot that can hold nil (see
-         local_nil_test): the old bare read assumed every non-poly local was
-         already truthy and dropped the assignment entirely (#3388). */
-      Buf rb; memset(&rb, 0, sizeof rb); emit_local_ref(c, id, nm, &rb);
-      Buf nb; memset(&nb, 0, sizeof nb);
-      if (rb.p && local_nil_test(c, lv, rb.p, &nb)) {
-        Buf apre, abody;
-        memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
-        Buf *sv_pre = g_pre; int sv_ind = g_indent;
-        g_pre = &apre; g_indent = 0;
-        emit_assign(c, id, &abody, 0);
-        g_pre = sv_pre; g_indent = sv_ind;
-        buf_printf(b, "({ if (%s) { ", nb.p);
-        if (apre.p) buf_puts(b, apre.p);
-        if (abody.p) buf_puts(b, abody.p);
-        buf_printf(b, " } %s; })", rb.p);
-        free(apre.p); free(abody.p);
-      }
-      else buf_puts(b, lhs);
-      free(nb.p); free(rb.p);
-    }
-    return;
-  }
+  if (emit_local_ivar_write_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) {
     /* A loop in value position evaluates to nil, unless a valued `break`
        supplies a value. When it can, declare a poly result temp defaulting to
