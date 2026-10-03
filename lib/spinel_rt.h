@@ -3383,6 +3383,12 @@ static SP_NOINLINE SP_COLD void sp_ffi_nil_dbl_raise(void) { sp_raise_cls("TypeE
    receiver. Anything else converts as sp_poly_to_i does. */
 static SP_UNUSED sp_int sp_poly_arg_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(0); return sp_poly_to_i(v); }
 static SP_UNUSED sp_int sp_poly_arg_i_msg(sp_RbVal v, const char *msg) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", msg); return sp_poly_to_i(v); }
+/* The right operand of an Integer or Float op-assign read out of a box:
+   `x += nil` is the coercion TypeError ("nil can't be coerced into
+   Integer"), and a shift count the conversion one, as CRuby raises. */
+static SP_UNUSED sp_int sp_poly_opnd_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_int_op(0, SP_INT_NIL, ""); return sp_poly_to_i(v); }
+static SP_UNUSED sp_float sp_poly_opnd_f(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_float_op(0, ""); return sp_poly_to_f(v); }
+static SP_UNUSED sp_int sp_poly_arg_i_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(1); return sp_poly_to_i(v); }
 static SP_UNUSED sp_int sp_poly_recv_i(const char *m, sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_poly_to_i(v); }
 /* Time.new / Time.utc / Time.local field `i` read out of a box: a nil month
    or day is 1 and a nil hour, minute or second 0, as CRuby defaults them; a

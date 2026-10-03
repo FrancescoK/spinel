@@ -2020,7 +2020,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   /* a boxed rhs of a Float op is kept boxed for the nil test below */
   else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
   else if (vt == TY_POLY) {
-    buf_puts(&rb, t == TY_FLOAT ? "sp_poly_to_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : "sp_poly_to_i(");
+    buf_puts(&rb, t == TY_FLOAT ? "sp_poly_opnd_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : op_assign_int_conv(t, op));
     emit_expr(c, v, &rb); buf_puts(&rb, ")");
   }
   else if (t == TY_BIGINT && vt == TY_INT) {
@@ -5456,6 +5456,16 @@ static int subjless_cond_raw(Compiler *c, int cond) {
 static void emit_case_int_label(Buf *b, long long v) {
   if (v == INT64_MIN) buf_puts(b, "(-9223372036854775807LL - 1)");
   else buf_printf(b, "%lldLL", v);
+}
+
+/* The conversion of a boxed right operand of an op-assign into an Integer
+   (or boolean) slot: nil is CRuby's TypeError -- the coercion one for an
+   arithmetic or bitwise operator, the conversion one for a shift count. A
+   boolean slot keeps the plain conversion (true | nil is true). */
+const char *op_assign_int_conv(TyKind slot, const char *op) {
+  if (slot == TY_BOOL) return "sp_poly_to_i(";
+  if (op && (sp_streq(op, "<<") || sp_streq(op, ">>"))) return "sp_poly_arg_i_of(";
+  return "sp_poly_opnd_i(";
 }
 
 void emit_poly_unboxed(Compiler *c, int node, TyKind t, const char *conv, Buf *b) {
@@ -10301,10 +10311,10 @@ else {
       /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
          scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
       if (rhst == TY_POLY && (vt == TY_INT || vt == TY_BOOL)) {
-        buf_puts(b, "sp_poly_to_i("); emit_expr(c, ival, b); buf_puts(b, ")");
+        buf_puts(b, op_assign_int_conv(vt, op)); emit_expr(c, ival, b); buf_puts(b, ")");
       }
       else if (rhst == TY_POLY && vt == TY_FLOAT) {
-        buf_puts(b, "sp_poly_to_f("); emit_expr(c, ival, b); buf_puts(b, ")");
+        buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, ival, b); buf_puts(b, ")");
       }
       else emit_coerce(c, ival, vt, CO_HOLD, "the operand of an `op=`", b);
       buf_puts(b, ";\n");
@@ -10386,9 +10396,9 @@ else {
       }
       else if (ivt == TY_POLY) {
         /* bitwise op-assign on a boxed slot: coerce to int, re-box */
-        buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_to_i(_t%d%siv_%s) %s (",
-                   trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op);
-        emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
+        buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_recv_i(\"%s\", _t%d%siv_%s) %s (",
+                   trecv, acc, iv_c(rn), op, trecv, acc, iv_c(rn), op);
+        emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
         buf_puts(b, ")));\n");
       }
       else if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) {
@@ -10402,10 +10412,10 @@ else {
         if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, c->classes[rdcls].ivar_nullable_int[ivx], b)) return;
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
-          buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
+          buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
         }
         else if (rhst == TY_POLY && ivt == TY_FLOAT) {
-          buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")");
+          buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
         }
         else emit_expr(c, val, b);
         buf_puts(b, ";\n");
@@ -10461,9 +10471,9 @@ else {
         }
         else if (nany) {
           /* bitwise on a boxed attribute: coerce to int, re-box */
-          buf_printf(b, "%s(_t%d, sp_box_int(sp_poly_to_i(%s(_t%d)) %s (",
-                     nwm->csym, trecv, nrm->csym, trecv, op);
-          emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
+          buf_printf(b, "%s(_t%d, sp_box_int(sp_poly_recv_i(\"%s\", %s(_t%d)) %s (",
+                     nwm->csym, trecv, op, nrm->csym, trecv, op);
+          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
           buf_puts(b, ")));\n");
         }
         else if (rhst != TY_POLY && !bitop) {
@@ -10478,7 +10488,7 @@ else {
         }
         else {
           buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
-          emit_poly_unboxed(c, val, rhst, nint ? "sp_poly_to_i(" : "sp_poly_to_f(", b);
+          emit_poly_unboxed(c, val, rhst, nint ? op_assign_int_conv(TY_INT, op) : "sp_poly_opnd_f(", b);
           buf_puts(b, ");\n");
         }
         return;
@@ -10547,8 +10557,8 @@ else {
         else if (ivt == TY_POLY) {
           /* bitwise op-assign on a boxed slot: coerce to int, re-box */
           buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
-          buf_printf(b, " = sp_box_int((sp_poly_to_i(_o->iv_%s) %s (", iv_c(rn), op);
-          emit_poly_unboxed(c, val, rhst, "sp_poly_to_i(", b);
+          buf_printf(b, " = sp_box_int((sp_poly_recv_i(\"%s\", _o->iv_%s) %s (", op, iv_c(rn), op);
+          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
           buf_puts(b, "))); break; }\n");
         }
         else {
@@ -10560,10 +10570,10 @@ else {
           buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = _o->iv_"); buf_puts(b, iv_c(rn));
           buf_printf(b, " %s ", op ? op : "+");
           if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
-            buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
+            buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
           }
           else if (rhst == TY_POLY && ivt == TY_FLOAT) {
-            buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")");
+            buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
           }
           else emit_expr(c, val, b);
           buf_puts(b, "; break; }\n");
@@ -14606,7 +14616,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "%s(%s(%s(%s), %s))", unbox, pf, box, slot, rhs);
     }
     /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
-    else if (vt == TY_POLY) buf_printf(b, "%s %s sp_poly_to_i(%s)", slot, op, rhs);
+    else if (vt == TY_POLY) buf_printf(b, "%s %s %s%s)", slot, op, op_assign_int_conv(TY_INT, op), rhs);
     else if (iow_scalar_fold(ty_array_elem(rt), op, vt, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
