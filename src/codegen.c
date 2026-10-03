@@ -13855,6 +13855,614 @@ static void refuse_syserr_errno_const(Compiler *c) {
   }
 }
 
+/* The class machinery a program with classes or class values needs: class tables, names, is_a and the class-value runtime (codegen_program's steps, in their order) */
+static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char **isa_ext, size_t *isa_ext_at) {
+  if (g_needs_class_machinery) {
+  /* sp_cls_is_module[i]: 1 if user class i was defined as a module, 0 if class */
+  if (c->nclasses > 0) {
+    buf_printf(b, "static const int sp_cls_is_module[%d] = {", c->nclasses);
+    for (int i = 0; i < c->nclasses; i++) {
+      if (i) buf_puts(b, ",");
+      const char *dt = nt_type(c->nt, c->classes[i].def_node);
+      buf_printf(b, "%d", (dt && sp_streq(dt, "ModuleNode")) ? 1 : 0);
+    }
+    buf_puts(b, "};\n");
+  }
+  /* sp_class_is_module_val: true if sp_Class c is a module (not a class) */
+  buf_puts(b, "static int sp_class_is_module_val(sp_Class c){\n");
+  if (c->nclasses > 0)
+    buf_printf(b, "  if(c.cls_id>=0&&c.cls_id<%d)return sp_cls_is_module[c.cls_id];\n", c->nclasses);
+  /* builtin modules: Comparable(-114), Enumerable(-115), Kernel(-119) */
+  buf_puts(b, "  return(c.cls_id==-114||c.cls_id==-115||c.cls_id==-119||c.cls_id==-162);\n}\n");
+
+  /* sp_class_superclass: parent class for user classes (negative ids map to
+     Object builtin). Returns ((sp_Class){-116}) for unknown/root. */
+  {
+    buf_puts(b, "static sp_Class sp_class_superclass(sp_Class c){\n");
+    /* A rescued exception's #class carries its name with cls_id 0, which would
+       otherwise read as user class 0; resolve those by name first (#3031). */
+    buf_puts(b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
+                 "if(_p){sp_int _id=sp_builtin_id_of_name(_p);"
+                 "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
+    buf_puts(b, "  switch(c.cls_id){\n");
+    for (int i = 0; i < c->nclasses; i++) {
+      if (is_builtin_reopen(c->classes[i].name)) continue;
+      int par = c->classes[i].parent;
+      if (par >= 0) {
+        buf_printf(b, "  case %d: return ((sp_Class){%d});\n", i, par);
+      }
+      else if (class_builtin_superclass_name(c, i)) {
+        buf_printf(b, "  case %d: return ((sp_Class){-1, SPL(\"%s\")});\n", i,
+                   class_builtin_superclass_name(c, i));
+      }
+      else {
+        buf_printf(b, "  case %d: return ((sp_Class){%d});\n", i, class_builtin_superclass(c, i));
+      }
+    }
+    buf_puts(b, "  default: return ((sp_Class){-116});\n  }\n}\n");
+  }
+  /* Forward decl: sp_builtin_superclass is defined below but used by sp_class_is_ancestor. */
+  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c);\n");
+  /* sp_class_is_ancestor(anc, desc): 1 if anc is an ancestor of desc (or same). */
+  {
+    /* sp_class_is_ancestor is declared before sp_builtin_superclass; used only by
+       the simple sp_class_le before modules. sp_class_le_mod (defined after
+       sp_class_ancestors) supersedes it. Keep simple for non-module programs. */
+    buf_puts(b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc);\n");
+    buf_puts(b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc){\n");
+    buf_puts(b, "  sp_Class cur = desc;\n");
+    int depth = c->nclasses + 40;
+    buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth);
+    /* sp_class_eq, not the ids: a name-backed class (an id-less builtin
+       exception such as LoadError or Errno::ENOENT) carries cls_id -1 with
+       its name, so every two of them would compare equal by id */
+    buf_puts(b, "    if(sp_class_eq(cur,anc))return 1;\n");
+    buf_puts(b, "    if(cur.cls_id==-117)break;\n"); /* BasicObject: root */
+    buf_puts(b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
+    buf_puts(b, "    if(sp_class_eq(next,cur))break;\n");
+    buf_puts(b, "    cur=next;\n");
+    buf_puts(b, "  }\n");
+    buf_puts(b, "  return 0;\n}\n");
+    /* The same walk up from a user class, matching an ANCESTOR by name: the
+       runtime's poly is_a? and class-arm helper hold the arm's class as the
+       name it was written with. The class itself was compared before the
+       call, and Object and BasicObject were answered there too, so the walk
+       starts one step up and stops at Object: a plain user class costs no
+       compare, a Struct.new class one. (A name-to-id table scan would cost
+       eighty per call, on every poly is_a? a user object fails.) */
+    buf_puts(b, "static int sp_class_kind_of_name(int cls, const char *cn){\n");
+    buf_puts(b, "  sp_Class cur = {cls, NULL};\n");
+    buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth);
+    buf_puts(b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
+    buf_puts(b, "    if(sp_class_eq(next,cur)||next.cls_id==-116||next.cls_id==-117)return 0;\n");
+    buf_puts(b, "    const char *s=sp_class_to_s(next);\n");
+    buf_puts(b, "    if(s&&s[0]&&!strcmp(s,cn))return 1;\n");
+    buf_puts(b, "    cur=next;\n");
+    buf_puts(b, "  }\n");
+    buf_puts(b, "  return 0;\n}\n");
+  }
+  /* Builtin superclass chain (simplified Ruby class hierarchy) */
+  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c){\n");
+  /* nil has no superclass: stay nil rather than falling to the Object default,
+     which would resurrect a terminated chain into a cycle (#2654) */
+  buf_puts(b, "  if(sp_class_nil_p(c))return SP_CLASS_NIL;\n");
+  /* A class carried by NAME (a rescued exception's #class) has no builtin
+     cls_id to switch on; resolve its superclass through the exception
+     hierarchy rather than defaulting to Object (#3031). */
+  buf_puts(b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
+               "if(_p){sp_int _id=sp_builtin_id_of_name(_p);"
+               "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
+  buf_puts(b, "  switch(c.cls_id){\n");
+  /* Integer, Float, Complex, Rational -> Numeric -> Object */
+  buf_puts(b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
+  /* Numeric, String, Array, Hash, Range, Symbol, Time -> Object */
+  buf_puts(b, "  case -102:case -103:case -104:case -105:case -106:case -107:case -113: return ((sp_Class){-116});\n");
+  /* Exception -> Object */
+  buf_puts(b, "  case -122: return ((sp_Class){-116});\n");
+  /* StandardError, ScriptError -> Exception */
+  buf_puts(b, "  case -123:case -141: return ((sp_Class){-122});\n");
+  /* TypeError, ArgumentError, NameError, StopIteration, RuntimeError,
+     IndexError, RangeError, ZeroDivisionError, IOError, LocalJumpError
+     -> StandardError (RuntimeError previously said Exception; CRuby says
+     StandardError) */
+  buf_puts(b, "  case -124:case -125:case -126:case -127:"
+               "case -132:case -134:case -136:case -138:case -139: return ((sp_Class){-123});\n");
+  /* StopIteration -> IndexError (#2760) */
+  buf_puts(b, "  case -129: return ((sp_Class){-132});\n");
+  /* KeyError -> IndexError; FloatDomainError -> RangeError; FrozenError ->
+     RuntimeError; NotImplementedError -> ScriptError */
+  buf_puts(b, "  case -133: return ((sp_Class){-132});\n");
+  buf_puts(b, "  case -135: return ((sp_Class){-134});\n");
+  buf_puts(b, "  case -137: return ((sp_Class){-124});\n");
+  buf_puts(b, "  case -140: return ((sp_Class){-141});\n");
+  /* NoMethodError -> NameError */
+  buf_puts(b, "  case -128: return ((sp_Class){-127});\n");
+  /* the rarer exception subclasses (#2768):
+     RegexpError, EncodingError, ThreadError, FiberError,
+     NoMatchingPatternError, Math::DomainError -> StandardError */
+  buf_puts(b, "  case -149:case -150:case -153:case -154:case -157:case -160: return ((sp_Class){-123});\n");
+  /* SyntaxError -> ScriptError; SecurityError, SignalException -> Exception */
+  buf_puts(b, "  case -147: return ((sp_Class){-141});\n");
+  buf_puts(b, "  case -148:case -151:case -161: return ((sp_Class){-122});\n");
+  /* Interrupt -> SignalException; ClosedQueueError -> StopIteration;
+     UncaughtThrowError -> ArgumentError; NoMatchingPatternKeyError ->
+     NoMatchingPatternError; EOFError -> IOError */
+  buf_puts(b, "  case -152: return ((sp_Class){-151});\n");
+  buf_puts(b, "  case -155: return ((sp_Class){-129});\n");
+  buf_puts(b, "  case -156: return ((sp_Class){-126});\n");
+  buf_puts(b, "  case -158: return ((sp_Class){-157});\n");
+  buf_puts(b, "  case -159: return ((sp_Class){-138});\n");
+  /* NilClass, TrueClass, FalseClass, Proc, Struct, Data -> Object */
+  buf_puts(b, "  case -110:case -111:case -112:case -118:case -145:case -146: return ((sp_Class){-116});\n");
+  /* Module -> Object, Class -> Module */
+  buf_puts(b, "  case -108: return ((sp_Class){-116});\n");
+  buf_puts(b, "  case -109: return ((sp_Class){-108});\n");
+  /* File, IO -> Object (a socket's chain terminates through IO) */
+  buf_puts(b, "  case -120: return ((sp_Class){-116});\n");
+  buf_puts(b, "  case -121: return ((sp_Class){-120});\n");
+  /* Dir -> Object */
+  buf_puts(b, "  case -165: return ((sp_Class){-116});\n");
+  /* the socket chain, as CRuby's:
+     TCPServer -> TCPSocket -> IPSocket -> BasicSocket -> IO,
+     UDPSocket -> IPSocket, UNIXServer -> UNIXSocket -> BasicSocket,
+     Socket -> BasicSocket */
+  buf_puts(b, "  case -166: return ((sp_Class){-120});\n");
+  buf_puts(b, "  case -167:case -171:case -173: return ((sp_Class){-166});\n");
+  buf_puts(b, "  case -168:case -170: return ((sp_Class){-167});\n");
+  buf_puts(b, "  case -169: return ((sp_Class){-168});\n");
+  buf_puts(b, "  case -172: return ((sp_Class){-171});\n");
+  /* Thread / Mutex / Queue / ConditionVariable / Fiber -> Object, and
+     SizedQueue -> Queue as CRuby has it */
+  buf_puts(b, "  case -174:case -175:case -176:case -178:case -179: return ((sp_Class){-116});\n");
+  buf_puts(b, "  case -177: return ((sp_Class){-176});\n");
+  /* Object -> BasicObject */
+  buf_puts(b, "  case -116: return ((sp_Class){-117});\n");
+  /* BasicObject: the hierarchy root -- its superclass is nil (#2654) */
+  buf_puts(b, "  case -117: return SP_CLASS_NIL;\n");
+  buf_puts(b, "  default: return ((sp_Class){-116});\n  }\n}\n");
+
+  buf_puts(b, "static int sp_class_lt(sp_Class a,sp_Class b){return !sp_class_eq(a,b)&&sp_class_is_ancestor(b,a);}\n");
+  buf_puts(b, "static int sp_class_le(sp_Class a,sp_Class b){return sp_class_is_ancestor(b,a);}\n");
+  /* the runtime archive's view of the same question, by id (sp_class_le_id_fn) */
+  buf_puts(b, "static int sp_class_le_ids(int a,int b){return sp_class_is_ancestor((sp_Class){b},(sp_Class){a});}\n");
+  buf_puts(b, "static int sp_class_gt(sp_Class a,sp_Class b){return sp_class_lt(b,a);}\n");
+  buf_puts(b, "static int sp_class_ge(sp_Class a,sp_Class b){return sp_class_le(b,a);}\n");
+  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437). */
+  buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
+               "  if(v.tag==SP_TAG_NIL)return NULL;\n"
+               "  if(v.tag==SP_TAG_OBJ&&sp_class_le((sp_Class){v.cls_id},(sp_Class){cls}))return v.v.p;\n"
+               "  sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %s (expected %s)\", sp_poly_class_name(v), want));\n"
+               "  return NULL;\n}\n");
+  /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
+     for two classes with no subclass relationship (not false / not raising).
+     Macros so `sp_class_le` resolves at the call site to whichever version is
+     in effect there -- the module-aware sp_class_le_mod when the program mixes
+     in modules (Integer < Comparable), the plain chain walk otherwise. */
+  buf_puts(b, "#define sp_class_lt3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_bool(0):(sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil())); })\n");
+  buf_puts(b, "#define sp_class_le3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil()); })\n");
+  buf_puts(b, "#define sp_class_gt3(A,B) sp_class_lt3(B,A)\n");
+  buf_puts(b, "#define sp_class_ge3(A,B) sp_class_le3(B,A)\n");
+  buf_puts(b, "#define sp_class_cmp3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_int(0):(sp_class_le(_cx,_cy)?sp_box_int(-1):(sp_class_le(_cy,_cx)?sp_box_int(1):sp_box_nil())); })\n");
+  /* module-aware versions (replace after sp_class_ancestors is defined) */
+  /* sp_class_includes_<i>: static array of included module cls_ids per class */
+  /* Also update sp_class_is_ancestor to walk includes. */
+  /* Build per-class includes array by scanning the AST. */
+  {
+    /* For each user class, collect included module ids (in include order). */
+    int **cls_incs = calloc((size_t)c->nclasses, sizeof(int *));
+    int  *cls_nincs = calloc((size_t)c->nclasses, sizeof(int));
+    /* `prepend M` puts M BEFORE the class in #ancestors, so it is collected
+       separately from the includes that follow the class (#2702). */
+    int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
+    int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
+    /* One pass over every class/module body (class_body_list, a Struct.new
+       block included), in source order so each class sees its includes in
+       the order they run. Scanning the whole table once per class was
+       O(classes * N) and dominated codegen on class-heavy programs. */
+    {
+      int *bcls, *bbody;
+      int nbodies = class_body_list(c, &bcls, &bbody);
+      int (*bord)[2] = malloc((size_t)(nbodies > 0 ? nbodies : 1) * sizeof *bord);
+      for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
+      qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
+      for (int bx = 0; bx < nbodies; bx++) {
+        int ci = bord[bx][1];
+        int body2 = bord[bx][0];
+        int bn2 = 0;
+        const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
+        for (int k2 = 0; k2 < bn2; k2++) {
+          const char *sty2 = nt_type(c->nt, stmts2[k2]);
+          if (!sty2 || !sp_streq(sty2, "CallNode")) continue;
+          const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
+          if (!nm2 || (!sp_streq(nm2, "include") && !sp_streq(nm2, "prepend"))) continue;
+          int is_prep2 = sp_streq(nm2, "prepend");
+          int **tgt_mods = is_prep2 ? cls_preps : cls_incs;
+          int  *tgt_n    = is_prep2 ? cls_npreps : cls_nincs;
+          if (nt_ref(c->nt, stmts2[k2], "receiver") >= 0) continue;
+          int anode2 = nt_ref(c->nt, stmts2[k2], "arguments");
+          int an2 = 0;
+          const int *aargs = anode2 >= 0 ? nt_arr(c->nt, anode2, "arguments", &an2) : NULL;
+          for (int j2 = 0; j2 < an2; j2++) {
+            const char *aty2 = nt_type(c->nt, aargs[j2]);
+            const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
+            if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
+            int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
+            int is_builtin_mod = 0;
+            /* a builtin module (Enumerable/Comparable/Kernel/Math) has no user
+               class index; record its (negative) builtin id so ancestors
+               reflects it -- the generic `mid2 < 0` skip must not drop it. */
+            if (mid2 < 0 && mname2) {
+              if (sp_streq(mname2, "Enumerable")) { mid2 = -115; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Comparable")) { mid2 = -114; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Kernel")) { mid2 = -119; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Math")) { mid2 = -130; is_builtin_mod = 1; }
+            }
+            if (mid2 < 0 && !is_builtin_mod) continue;
+            /* deduplicate */
+            int found2 = 0;
+            for (int q = 0; q < tgt_n[ci]; q++) if (tgt_mods[ci][q] == mid2) { found2 = 1; break; }
+            if (found2) continue;
+            tgt_mods[ci] = realloc(tgt_mods[ci], sizeof(int) * (size_t)(tgt_n[ci] + 1));
+            tgt_mods[ci][tgt_n[ci]++] = mid2;
+          }
+        }
+      }
+      free(bord);
+      free(bcls);
+      free(bbody);
+    }
+    /* An `obj.extend(Mod)` records its membership on the synthesized singleton
+       subclass rather than as an `include` statement in a class body, so the
+       scan above cannot see it -- the extended object answered is_a?(Mod) with
+       false (#4080). Merge what analyze recorded, deduped against the scan. */
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      ClassInfo *mci = &c->classes[ci];
+      for (int m = 0; m < mci->nincluded_mods; m++) {
+        int mid3 = mci->included_mods[m];
+        if (mid3 < 0 || mid3 >= c->nclasses) continue;
+        int seen3 = 0;
+        for (int q = 0; q < cls_nincs[ci]; q++) if (cls_incs[ci][q] == mid3) { seen3 = 1; break; }
+        if (seen3) continue;
+        cls_incs[ci] = realloc(cls_incs[ci], sizeof(int) * (size_t)(cls_nincs[ci] + 1));
+        if (!cls_incs[ci]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        cls_incs[ci][cls_nincs[ci]++] = mid3;
+      }
+    }
+    /* A module's own includes are part of every includer's ancestry:
+       `module M2; include M1; end; class A; include M2; end` gives A the
+       ancestors [A, M2, M1, ...], and A.include?(M1) / A.new.is_a?(M1) are
+       true. The tables held direct includes only, so those answered false
+       (activesupport's concerns include one another this way). Close each
+       list transitively, keeping the include-order convention the emission
+       below reverses: a module's closure goes right BEFORE the module. */
+    {
+      int **closed = calloc((size_t)c->nclasses, sizeof(int *));
+      int  *nclosed = calloc((size_t)c->nclasses, sizeof(int));
+      for (int ci = 0; ci < c->nclasses; ci++) {
+        int *out = NULL, nout = 0;
+        /* iterative DFS in include order: push m's closure, then m */
+        int *seen = calloc((size_t)c->nclasses, sizeof(int));
+        seen[ci] = 1;
+        /* frame: (class index, next include position) */
+        int fr_ci[128], fr_q[128]; int nfr = 0;
+        fr_ci[nfr] = ci; fr_q[nfr] = 0; nfr++;
+        while (nfr > 0) {
+          int cur = fr_ci[nfr - 1]; int q = fr_q[nfr - 1];
+          if (q >= cls_nincs[cur]) {
+            nfr--;
+            if (nfr > 0) { int m = cur; int dup = 0;
+              for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
+              if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; } }
+            continue;
+          }
+          fr_q[nfr - 1] = q + 1;
+          int m = cls_incs[cur][q];
+          if (m < 0) {   /* a builtin module: no includes of its own */
+            int dup = 0; for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
+            if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; }
+            continue;
+          }
+          if (m >= c->nclasses || seen[m] || nfr >= 128) continue;
+          seen[m] = 1;
+          fr_ci[nfr] = m; fr_q[nfr] = 0; nfr++;
+        }
+        free(seen);
+        closed[ci] = out; nclosed[ci] = nout;
+      }
+      for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); cls_incs[ci] = closed[ci]; cls_nincs[ci] = nclosed[ci]; }
+      free(closed); free(nclosed);
+    }
+    /* Emit sp_class_ancestors using the include info. */
+    buf_puts(b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n");
+    buf_puts(b, "  sp_PolyArray *a=sp_PolyArray_new();\n");
+    buf_puts(b, "  sp_Class cur=c;\n");
+    int depth2 = c->nclasses + 20;
+    buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth2);
+    /* When the walk reaches a builtin class (a user class's eventual Object
+       parent, or a builtin start), follow the full builtin chain with module
+       includes so e.g. Dog.ancestors == [Dog, Animal, Object, Kernel,
+       BasicObject], matching CRuby. */
+    buf_puts(b, "    if(cur.cls_id<0){\n");
+    /* a builtin Module (Comparable/Enumerable/Kernel/Math) has no superclass
+       chain: its ancestors are just itself (#2285). */
+    buf_puts(b, "      if(cur.cls_id==-114||cur.cls_id==-115||cur.cls_id==-119||cur.cls_id==-130){\n");
+    buf_puts(b, "        sp_PolyArray_push(a,sp_box_class(cur)); break;\n      }\n");
+    buf_puts(b, "      while(1){\n");
+    buf_puts(b, "        sp_PolyArray_push(a,sp_box_class(cur));\n");
+    /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
+    buf_puts(b, "        if(cur.cls_id==-113) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* Numeric->Comparable */
+    buf_puts(b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
+    buf_puts(b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
+    buf_puts(b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
+    /* a name-backed exception class's modules (IO::EAGAINWaitReadable
+       includes IO::WaitReadable), as the rescue match reads them */
+    buf_puts(b, "        if(cur.name){const char*const*_m=sp_exc_modules_of_name(cur.name);"
+                 "for(int _k=0;_m&&_m[_k];_k++)sp_PolyArray_push(a,sp_box_class_name(_m[_k]));}\n");
+    buf_puts(b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
+    /* the root (BasicObject) yields the nil class: that terminates the walk.
+       Chain end used to be marked by a self-reference, so keep that check too. */
+    buf_puts(b, "        if(sp_class_nil_p(bn)||sp_class_eq(bn,cur))break;\n");
+    buf_puts(b, "        cur=bn;\n");
+    buf_puts(b, "      }\n");
+    buf_puts(b, "      break;\n    }\n");
+    /* prepended modules come BEFORE the class itself (#2702) */
+    {
+      int any_prep = 0;
+      for (int ci = 0; ci < c->nclasses; ci++) if (cls_npreps[ci]) { any_prep = 1; break; }
+      if (any_prep) {
+        buf_puts(b, "    switch(cur.cls_id){\n");
+        for (int ci = 0; ci < c->nclasses; ci++) {
+          if (cls_npreps[ci] == 0) continue;
+          buf_printf(b, "    case %d:", ci);
+          /* last prepend wins, so it lands closest to the front */
+          for (int q = cls_npreps[ci] - 1; q >= 0; q--)
+            buf_printf(b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_preps[ci][q]);
+          buf_puts(b, " break;\n");
+        }
+        buf_puts(b, "    }\n");
+      }
+    }
+    buf_puts(b, "    sp_PolyArray_push(a,sp_box_class(cur));\n");
+    /* inline the includes switch for this class */
+    buf_puts(b, "    switch(cur.cls_id){\n");
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      if (cls_nincs[ci] == 0) continue;
+      buf_printf(b, "    case %d:", ci);
+      /* Ruby includes are prepended: last include is highest priority, so
+         insert in reverse include order after the class itself. */
+      for (int q = cls_nincs[ci] - 1; q >= 0; q--)
+        buf_printf(b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_incs[ci][q]);
+      buf_puts(b, " break;\n");
+    }
+    buf_puts(b, "    }\n");
+    /* A module has no superclass chain: `M.ancestors` is [M] and
+       `N.ancestors` (N includes M) is [N, M]. The walk used to follow the
+       Object parent a module shares with a class and append Object, Kernel,
+       BasicObject to both. */
+    buf_puts(b, "    if(sp_class_is_module_val(cur))break;\n");
+    buf_puts(b, "    sp_Class next=sp_class_superclass(cur);\n");
+    buf_puts(b, "    if(sp_class_eq(next,cur))break;\n");
+    buf_puts(b, "    cur=next;\n");
+    buf_puts(b, "  }\n");
+    buf_puts(b, "  return a;\n}\n\n");
+    /* Module#included_modules: the ancestors that are modules (#2674). The
+       ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
+       the cls_id rides the int slot. */
+    buf_puts(b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) SP_UNUSED;\n");
+    buf_puts(b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n");
+    buf_puts(b, "  sp_PolyArray *a=sp_class_ancestors(c); SP_GC_ROOT(a);\n");
+    buf_puts(b, "  sp_PolyArray *r=sp_PolyArray_new(); SP_GC_ROOT(r);\n");
+    /* the receiver itself is not one of the modules it includes: a module's
+       ancestors now start with the module, and it showed up in its own list */
+    buf_puts(b, "  for(sp_int i=0;a&&i<a->len;i++){ sp_Class m={a->data[i].v.i,NULL};\n");
+    buf_puts(b, "    if(m.cls_id==c.cls_id) continue;\n");
+    buf_puts(b, "    if(sp_class_is_module_val(m)) sp_PolyArray_push(r,a->data[i]); }\n");
+    buf_puts(b, "  return r;\n}\n\n");
+    /* Module-aware <= by walking sp_class_ancestors (replaces simpler versions). */
+    buf_puts(b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n");
+    buf_puts(b, "  /* a<=b: b is an ancestor of a, so b must appear in a's ancestors */\n");
+    buf_puts(b, "  sp_PolyArray *ancs=sp_class_ancestors(a);\n");
+    buf_puts(b, "  for(sp_int _i=0;_i<sp_PolyArray_length(ancs);_i++){\n");
+    buf_puts(b, "    sp_RbVal v=sp_PolyArray_get(ancs,_i);\n");
+    buf_puts(b, "    if(v.tag==7&&sp_class_eq(sp_unbox_class(v),b))return 1;\n");
+    buf_puts(b, "  }\n");
+    /* User-class sp_class_ancestors stops before builtin parents.
+       If the target is a builtin, fall back to the chain-walking check. */
+    buf_puts(b, "  if(b.cls_id<0)return sp_class_is_ancestor(b,a);\n");
+    buf_puts(b, "  return 0;\n}\n");
+    buf_puts(b, "#undef sp_class_le\n#define sp_class_le sp_class_le_mod\n");
+    buf_puts(b, "#undef sp_class_lt\n#define sp_class_lt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(a,b))\n");
+    buf_puts(b, "#undef sp_class_gt\n#define sp_class_gt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(b,a))\n");
+    buf_puts(b, "#undef sp_class_ge\n#define sp_class_ge(a,b) sp_class_le_mod(b,a)\n");
+    /* sp_poly_get_class: maps a poly value to its sp_Class for dynamic is_a? */
+    buf_puts(b,
+      "static sp_Class sp_poly_get_class(sp_RbVal v){\n"
+      "  switch(v.tag){\n"
+      "  case SP_TAG_INT: return ((sp_Class){-100});\n"
+      /* a Bignum is an Integer too, to grep, all? and === */
+      "  case SP_TAG_BIGINT: return ((sp_Class){-100});\n"
+      "  case SP_TAG_STR: return ((sp_Class){-102});\n"
+      "  case SP_TAG_FLT: return ((sp_Class){-101});\n"
+      "  case SP_TAG_BOOL: return v.v.b?((sp_Class){-111}):((sp_Class){-112});\n"
+      "  case SP_TAG_NIL: return ((sp_Class){-110});\n"
+      "  case SP_TAG_SYM: return ((sp_Class){-103});\n"
+      "  case SP_TAG_CLASS: return sp_class_is_module_val(sp_unbox_class(v))?((sp_Class){-108}):((sp_Class){-109});\n"
+      "  case SP_TAG_OBJ: if(v.cls_id>=0)return ((sp_Class){v.cls_id});\n"
+      /* a String builder (a shared-mutable String handle) is a String; a
+         box with no handle is not one */
+      "    if(v.cls_id==SP_BUILTIN_STRBUF&&v.v.p)return ((sp_Class){-102});\n"
+      "    if(sp_poly_is_array_kind(v.cls_id))return ((sp_Class){-104});\n"
+      "    if(v.cls_id==SP_BUILTIN_RANGE||v.cls_id==SP_BUILTIN_STR_RANGE)return ((sp_Class){-106});\n"
+      "    if(v.cls_id==SP_BUILTIN_TIME)return ((sp_Class){-107});\n"
+      "    if(v.cls_id==SP_BUILTIN_PROC)return ((sp_Class){-118});\n"
+      "    if(v.cls_id==SP_BUILTIN_ENUMERATOR)return ((sp_Class){-144});\n"
+      "    if(v.cls_id>=-12)return ((sp_Class){-116});\n"
+      "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
+      /* a BasicObject.new is a BasicObject, not an Object or a Kernel */
+      "    if(v.cls_id==SP_BUILTIN_BASIC_OBJECT)return ((sp_Class){-117});\n"
+      "    return ((sp_Class){-116});\n"
+      "  default: return ((sp_Class){-116});\n"
+      "  }\n}\n"
+      /* a boxed exception walks its name chain (Errno::ENOENT -> SystemCallError
+         -> StandardError), and a name-backed class (SystemCallError, Errno::*,
+         OpenStruct) matches by name -- both are invisible to the cls_id walk */
+      "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
+      "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
+      "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
+      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
+    /* a class value is also an instance of the modules it (or a superclass)
+       extends, its singleton's ancestors: one arm per such class. The arms
+       are spliced in here at the end, and only when the program calls
+       sp_poly_is_a: most programs that extend a module never do. */
+    { int any_ext = 0;
+      for (int k = 0; k < c->nclasses && !any_ext; k++) if (comp_class_extends_any(c, k)) any_ext = 1;
+      if (any_ext) {
+        Buf eb; memset(&eb, 0, sizeof eb);
+        buf_puts(&eb, "  if (obj.tag == SP_TAG_CLASS) switch (sp_unbox_class(obj).cls_id) {\n");
+        for (int k = 0; k < c->nclasses; k++) {
+          if (!comp_class_extends_any(c, k)) continue;
+          buf_printf(&eb, "  case %d: if (", k);
+          int any = 0;
+          for (int m = 0; m < c->nclasses; m++)
+            if (comp_class_is_module(c, &c->classes[m]) && comp_class_singleton_has_module(c, k, m)) {
+              buf_printf(&eb, "%sklass.cls_id == %d", any ? " || " : "", m);
+              any = 1;
+            }
+          buf_puts(&eb, any ? ") return 1; break;\n" : "0) return 1; break;\n");
+        }
+        buf_puts(&eb, "  default: break;\n  }\n");
+        *isa_ext = eb.p;
+        *isa_ext_at = b->len;
+      } }
+    buf_puts(b,
+      "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
+    /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
+       answer of sp_class_lt3 and friends, TypeError for a non-class operand
+       (nil for <=>), and the ordinary poly comparison when the receiver turns
+       out not to be a class. The runtime reaches the same answer through
+       sp_class_cmp_fn. */
+    buf_puts(b,
+      "static sp_RbVal sp_class_cmp_rv(sp_RbVal a, sp_RbVal b){return sp_class_cmp3(sp_unbox_class(a),sp_unbox_class(b));}\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op) SP_UNUSED;\n"
+      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op){\n"
+      "  if(a.tag!=SP_TAG_CLASS){\n"
+      "    switch(op){\n"
+      "    case 0: return sp_box_bool(sp_poly_lt(a,b));\n"
+      "    case 1: return sp_box_bool(sp_poly_le(a,b));\n"
+      "    case 2: return sp_box_bool(sp_poly_gt(a,b));\n"
+      "    case 3: return sp_box_bool(sp_poly_ge(a,b));\n"
+      "    default: { sp_int r=sp_poly_spaceship(a,b); return r==SP_INT_NIL?sp_box_nil():sp_box_int(r); }\n"
+      "    }\n"
+      "  }\n"
+      "  if(b.tag!=SP_TAG_CLASS){\n"
+      "    if(op==4)return sp_box_nil();\n"
+      "    sp_raise_cls(\"TypeError\",\"compared with non class/module\");\n"
+      "  }\n"
+      "  sp_Class x=sp_unbox_class(a),y=sp_unbox_class(b);\n"
+      "  switch(op){\n"
+      "  case 0: return sp_class_lt3(x,y);\n"
+      "  case 1: return sp_class_le3(x,y);\n"
+      "  case 2: return sp_class_gt3(x,y);\n"
+      "  case 3: return sp_class_ge3(x,y);\n"
+      "  default: return sp_class_cmp3(x,y);\n"
+      "  }\n}\n");
+    for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); free(cls_preps[ci]); }
+    free(cls_incs); free(cls_nincs); free(cls_preps); free(cls_npreps);
+  }
+  /* User exception hierarchy: sp_user_exc_parent(cls) -> parent class name.
+     Used by sp_exc_cls_matches (rescue arms) and sp_exc_is_a (is_a?). */
+  {
+    int any = 0;
+    for (int i = 0; i < c->nclasses; i++) {
+      if (class_is_exc_subclass(c, i)) { any = 1; break; }
+    }
+    buf_puts(b, "static const char *sp_user_exc_parent(const char *cls){\n");
+    if (!any) buf_puts(b, "  (void)cls;\n");
+    if (any) {
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        /* snapshot: class_ruby_name returns a shared static buffer for nested
+           names, and the parent canonicalization below calls it again. Copy to
+           the heap, not a fixed buffer: the top-level path returns the class's
+           own arbitrary-length name, which a fixed size would truncate out of
+           agreement with the constructor emission. An unnamed entry has
+           nothing to match on. */
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        char *cn = strdup(cn0);
+        /* find the direct parent name (builtin or user) */
+        const char *par = NULL;
+        int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
+        if (sc >= 0) {
+          const char *sty = nt_type(c->nt, sc);
+          if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")))
+            par = nt_str(c->nt, sc, "name");
+          /* a builtin exception by its whole path (Errno::ENOENT) */
+          const char *bpar = superclass_builtin_exc_name(c->nt, sc);
+          if (bpar) par = bpar;
+        }
+        if (!par && c->classes[i].parent >= 0)
+          par = c->classes[c->classes[i].parent].name;
+        /* canonicalize a user parent to its qualified Ruby name so the
+           hierarchy walk meets the raised / rescue-arm names (both emitted
+           qualified); a builtin parent keeps its runtime name */
+        if (par && !is_exc_name(par)) {
+          int pci = comp_class_index(c, par);
+          if (pci >= 0) {
+            const char *pqn = class_ruby_name(c, pci);
+            if (pqn) par = pqn;
+          }
+        }
+        if (par) {
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", cn, par);
+          /* also register the leaf name if different from qualified name */
+          if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
+            buf_printf(b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", c->classes[i].name, par);
+        }
+        free(cn);
+      }
+    }
+    buf_puts(b, "  return 0;\n}\n");
+    /* The modules each exception class includes, for the module-aware match.
+       Reuses the same include walk sp_class_ancestors is built from, so
+       `rescue SomeModule` and `e.is_a?(SomeModule)` agree. */
+    buf_puts(b, "static const char *const *sp_user_exc_modules(const char *cls){\n");
+    if (!any) buf_puts(b, "  (void)cls;\n");
+    if (any) {
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        if (c->classes[i].nincluded_mods == 0 &&
+            c->classes[i].nincluded_mod_names == 0) continue;
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        char *cn = strdup(cn0);
+        buf_printf(b, "  { static const char *const _m%d[] = {", i);
+        for (int m = 0; m < c->classes[i].nincluded_mods; m++) {
+          int mi = c->classes[i].included_mods[m];
+          if (mi < 0 || mi >= c->nclasses) continue;
+          const char *mn = class_ruby_name(c, mi);
+          if (!mn) mn = c->classes[mi].name;
+          if (mn) buf_printf(b, "\"%s\", ", mn);
+        }
+        /* Builtin modules named by path carry no class index; their qualified
+           string is what the match compares. */
+        for (int m = 0; m < c->classes[i].nincluded_mod_names; m++)
+          buf_printf(b, "\"%s\", ", c->classes[i].included_mod_names[m]);
+        buf_puts(b, "0 };\n");
+        buf_printf(b, "    if(!strcmp(cls,\"%s\"))return _m%d;\n", cn, i);
+        if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
+          buf_printf(b, "    if(!strcmp(cls,\"%s\"))return _m%d;\n", c->classes[i].name, i);
+        buf_puts(b, "  }\n");
+        free(cn);
+      }
+    }
+    buf_puts(b, "  return 0;\n}\n");
+  }
+  }  /* if (g_needs_class_machinery) */
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -14326,610 +14934,7 @@ char *codegen_program(const NodeTable *nt) {
      a guard-page crash waiting for the right input, so it is worth a warning
      rather than a silent SIGSEGV (#3913). */
   if (fi_fiber_stack_risk(c)) buf_puts(&b, "/* SPINEL_FIBER_FRAME_GUARD */\n");
-  if (g_needs_class_machinery) {
-  /* sp_cls_is_module[i]: 1 if user class i was defined as a module, 0 if class */
-  if (c->nclasses > 0) {
-    buf_printf(&b, "static const int sp_cls_is_module[%d] = {", c->nclasses);
-    for (int i = 0; i < c->nclasses; i++) {
-      if (i) buf_puts(&b, ",");
-      const char *dt = nt_type(c->nt, c->classes[i].def_node);
-      buf_printf(&b, "%d", (dt && sp_streq(dt, "ModuleNode")) ? 1 : 0);
-    }
-    buf_puts(&b, "};\n");
-  }
-  /* sp_class_is_module_val: true if sp_Class c is a module (not a class) */
-  buf_puts(&b, "static int sp_class_is_module_val(sp_Class c){\n");
-  if (c->nclasses > 0)
-    buf_printf(&b, "  if(c.cls_id>=0&&c.cls_id<%d)return sp_cls_is_module[c.cls_id];\n", c->nclasses);
-  /* builtin modules: Comparable(-114), Enumerable(-115), Kernel(-119) */
-  buf_puts(&b, "  return(c.cls_id==-114||c.cls_id==-115||c.cls_id==-119||c.cls_id==-162);\n}\n");
-
-  /* sp_class_superclass: parent class for user classes (negative ids map to
-     Object builtin). Returns ((sp_Class){-116}) for unknown/root. */
-  {
-    buf_puts(&b, "static sp_Class sp_class_superclass(sp_Class c){\n");
-    /* A rescued exception's #class carries its name with cls_id 0, which would
-       otherwise read as user class 0; resolve those by name first (#3031). */
-    buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
-                 "if(_p){sp_int _id=sp_builtin_id_of_name(_p);"
-                 "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
-    buf_puts(&b, "  switch(c.cls_id){\n");
-    for (int i = 0; i < c->nclasses; i++) {
-      if (is_builtin_reopen(c->classes[i].name)) continue;
-      int par = c->classes[i].parent;
-      if (par >= 0) {
-        buf_printf(&b, "  case %d: return ((sp_Class){%d});\n", i, par);
-      }
-      else if (class_builtin_superclass_name(c, i)) {
-        buf_printf(&b, "  case %d: return ((sp_Class){-1, SPL(\"%s\")});\n", i,
-                   class_builtin_superclass_name(c, i));
-      }
-      else {
-        buf_printf(&b, "  case %d: return ((sp_Class){%d});\n", i, class_builtin_superclass(c, i));
-      }
-    }
-    buf_puts(&b, "  default: return ((sp_Class){-116});\n  }\n}\n");
-  }
-  /* Forward decl: sp_builtin_superclass is defined below but used by sp_class_is_ancestor. */
-  buf_puts(&b, "static sp_Class sp_builtin_superclass(sp_Class c);\n");
-  /* sp_class_is_ancestor(anc, desc): 1 if anc is an ancestor of desc (or same). */
-  {
-    /* sp_class_is_ancestor is declared before sp_builtin_superclass; used only by
-       the simple sp_class_le before modules. sp_class_le_mod (defined after
-       sp_class_ancestors) supersedes it. Keep simple for non-module programs. */
-    buf_puts(&b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc);\n");
-    buf_puts(&b, "static int sp_class_is_ancestor(sp_Class anc, sp_Class desc){\n");
-    buf_puts(&b, "  sp_Class cur = desc;\n");
-    int depth = c->nclasses + 40;
-    buf_printf(&b, "  for(int _i=0;_i<%d;_i++){\n", depth);
-    /* sp_class_eq, not the ids: a name-backed class (an id-less builtin
-       exception such as LoadError or Errno::ENOENT) carries cls_id -1 with
-       its name, so every two of them would compare equal by id */
-    buf_puts(&b, "    if(sp_class_eq(cur,anc))return 1;\n");
-    buf_puts(&b, "    if(cur.cls_id==-117)break;\n"); /* BasicObject: root */
-    buf_puts(&b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
-    buf_puts(&b, "    if(sp_class_eq(next,cur))break;\n");
-    buf_puts(&b, "    cur=next;\n");
-    buf_puts(&b, "  }\n");
-    buf_puts(&b, "  return 0;\n}\n");
-    /* The same walk up from a user class, matching an ANCESTOR by name: the
-       runtime's poly is_a? and class-arm helper hold the arm's class as the
-       name it was written with. The class itself was compared before the
-       call, and Object and BasicObject were answered there too, so the walk
-       starts one step up and stops at Object: a plain user class costs no
-       compare, a Struct.new class one. (A name-to-id table scan would cost
-       eighty per call, on every poly is_a? a user object fails.) */
-    buf_puts(&b, "static int sp_class_kind_of_name(int cls, const char *cn){\n");
-    buf_puts(&b, "  sp_Class cur = {cls, NULL};\n");
-    buf_printf(&b, "  for(int _i=0;_i<%d;_i++){\n", depth);
-    buf_puts(&b, "    sp_Class next=cur.cls_id>=0?sp_class_superclass(cur):sp_builtin_superclass(cur);\n");
-    buf_puts(&b, "    if(sp_class_eq(next,cur)||next.cls_id==-116||next.cls_id==-117)return 0;\n");
-    buf_puts(&b, "    const char *s=sp_class_to_s(next);\n");
-    buf_puts(&b, "    if(s&&s[0]&&!strcmp(s,cn))return 1;\n");
-    buf_puts(&b, "    cur=next;\n");
-    buf_puts(&b, "  }\n");
-    buf_puts(&b, "  return 0;\n}\n");
-  }
-  /* Builtin superclass chain (simplified Ruby class hierarchy) */
-  buf_puts(&b, "static sp_Class sp_builtin_superclass(sp_Class c){\n");
-  /* nil has no superclass: stay nil rather than falling to the Object default,
-     which would resurrect a terminated chain into a cycle (#2654) */
-  buf_puts(&b, "  if(sp_class_nil_p(c))return SP_CLASS_NIL;\n");
-  /* A class carried by NAME (a rescued exception's #class) has no builtin
-     cls_id to switch on; resolve its superclass through the exception
-     hierarchy rather than defaulting to Object (#3031). */
-  buf_puts(&b, "  if(c.name){const char*_p=sp_exc_parent_of_name(c.name);"
-               "if(_p){sp_int _id=sp_builtin_id_of_name(_p);"
-               "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
-  buf_puts(&b, "  switch(c.cls_id){\n");
-  /* Integer, Float, Complex, Rational -> Numeric -> Object */
-  buf_puts(&b, "  case -100:case -101:case -131:case -142: return ((sp_Class){-113});\n"); /* -> Numeric */
-  /* Numeric, String, Array, Hash, Range, Symbol, Time -> Object */
-  buf_puts(&b, "  case -102:case -103:case -104:case -105:case -106:case -107:case -113: return ((sp_Class){-116});\n");
-  /* Exception -> Object */
-  buf_puts(&b, "  case -122: return ((sp_Class){-116});\n");
-  /* StandardError, ScriptError -> Exception */
-  buf_puts(&b, "  case -123:case -141: return ((sp_Class){-122});\n");
-  /* TypeError, ArgumentError, NameError, StopIteration, RuntimeError,
-     IndexError, RangeError, ZeroDivisionError, IOError, LocalJumpError
-     -> StandardError (RuntimeError previously said Exception; CRuby says
-     StandardError) */
-  buf_puts(&b, "  case -124:case -125:case -126:case -127:"
-               "case -132:case -134:case -136:case -138:case -139: return ((sp_Class){-123});\n");
-  /* StopIteration -> IndexError (#2760) */
-  buf_puts(&b, "  case -129: return ((sp_Class){-132});\n");
-  /* KeyError -> IndexError; FloatDomainError -> RangeError; FrozenError ->
-     RuntimeError; NotImplementedError -> ScriptError */
-  buf_puts(&b, "  case -133: return ((sp_Class){-132});\n");
-  buf_puts(&b, "  case -135: return ((sp_Class){-134});\n");
-  buf_puts(&b, "  case -137: return ((sp_Class){-124});\n");
-  buf_puts(&b, "  case -140: return ((sp_Class){-141});\n");
-  /* NoMethodError -> NameError */
-  buf_puts(&b, "  case -128: return ((sp_Class){-127});\n");
-  /* the rarer exception subclasses (#2768):
-     RegexpError, EncodingError, ThreadError, FiberError,
-     NoMatchingPatternError, Math::DomainError -> StandardError */
-  buf_puts(&b, "  case -149:case -150:case -153:case -154:case -157:case -160: return ((sp_Class){-123});\n");
-  /* SyntaxError -> ScriptError; SecurityError, SignalException -> Exception */
-  buf_puts(&b, "  case -147: return ((sp_Class){-141});\n");
-  buf_puts(&b, "  case -148:case -151:case -161: return ((sp_Class){-122});\n");
-  /* Interrupt -> SignalException; ClosedQueueError -> StopIteration;
-     UncaughtThrowError -> ArgumentError; NoMatchingPatternKeyError ->
-     NoMatchingPatternError; EOFError -> IOError */
-  buf_puts(&b, "  case -152: return ((sp_Class){-151});\n");
-  buf_puts(&b, "  case -155: return ((sp_Class){-129});\n");
-  buf_puts(&b, "  case -156: return ((sp_Class){-126});\n");
-  buf_puts(&b, "  case -158: return ((sp_Class){-157});\n");
-  buf_puts(&b, "  case -159: return ((sp_Class){-138});\n");
-  /* NilClass, TrueClass, FalseClass, Proc, Struct, Data -> Object */
-  buf_puts(&b, "  case -110:case -111:case -112:case -118:case -145:case -146: return ((sp_Class){-116});\n");
-  /* Module -> Object, Class -> Module */
-  buf_puts(&b, "  case -108: return ((sp_Class){-116});\n");
-  buf_puts(&b, "  case -109: return ((sp_Class){-108});\n");
-  /* File, IO -> Object (a socket's chain terminates through IO) */
-  buf_puts(&b, "  case -120: return ((sp_Class){-116});\n");
-  buf_puts(&b, "  case -121: return ((sp_Class){-120});\n");
-  /* Dir -> Object */
-  buf_puts(&b, "  case -165: return ((sp_Class){-116});\n");
-  /* the socket chain, as CRuby's:
-     TCPServer -> TCPSocket -> IPSocket -> BasicSocket -> IO,
-     UDPSocket -> IPSocket, UNIXServer -> UNIXSocket -> BasicSocket,
-     Socket -> BasicSocket */
-  buf_puts(&b, "  case -166: return ((sp_Class){-120});\n");
-  buf_puts(&b, "  case -167:case -171:case -173: return ((sp_Class){-166});\n");
-  buf_puts(&b, "  case -168:case -170: return ((sp_Class){-167});\n");
-  buf_puts(&b, "  case -169: return ((sp_Class){-168});\n");
-  buf_puts(&b, "  case -172: return ((sp_Class){-171});\n");
-  /* Thread / Mutex / Queue / ConditionVariable / Fiber -> Object, and
-     SizedQueue -> Queue as CRuby has it */
-  buf_puts(&b, "  case -174:case -175:case -176:case -178:case -179: return ((sp_Class){-116});\n");
-  buf_puts(&b, "  case -177: return ((sp_Class){-176});\n");
-  /* Object -> BasicObject */
-  buf_puts(&b, "  case -116: return ((sp_Class){-117});\n");
-  /* BasicObject: the hierarchy root -- its superclass is nil (#2654) */
-  buf_puts(&b, "  case -117: return SP_CLASS_NIL;\n");
-  buf_puts(&b, "  default: return ((sp_Class){-116});\n  }\n}\n");
-
-  buf_puts(&b, "static int sp_class_lt(sp_Class a,sp_Class b){return !sp_class_eq(a,b)&&sp_class_is_ancestor(b,a);}\n");
-  buf_puts(&b, "static int sp_class_le(sp_Class a,sp_Class b){return sp_class_is_ancestor(b,a);}\n");
-  /* the runtime archive's view of the same question, by id (sp_class_le_id_fn) */
-  buf_puts(&b, "static int sp_class_le_ids(int a,int b){return sp_class_is_ancestor((sp_Class){b},(sp_Class){a});}\n");
-  buf_puts(&b, "static int sp_class_gt(sp_Class a,sp_Class b){return sp_class_lt(b,a);}\n");
-  buf_puts(&b, "static int sp_class_ge(sp_Class a,sp_Class b){return sp_class_le(b,a);}\n");
-  /* The checked unbox emit_unbox_text uses for class-typed slots (#4437). */
-  buf_puts(&b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want){\n"
-               "  if(v.tag==SP_TAG_NIL)return NULL;\n"
-               "  if(v.tag==SP_TAG_OBJ&&sp_class_le((sp_Class){v.cls_id},(sp_Class){cls}))return v.v.p;\n"
-               "  sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %s (expected %s)\", sp_poly_class_name(v), want));\n"
-               "  return NULL;\n}\n");
-  /* Tri-state class ordering: CRuby's Class#< / <= / > / >= / <=> answer nil
-     for two classes with no subclass relationship (not false / not raising).
-     Macros so `sp_class_le` resolves at the call site to whichever version is
-     in effect there -- the module-aware sp_class_le_mod when the program mixes
-     in modules (Integer < Comparable), the plain chain walk otherwise. */
-  buf_puts(&b, "#define sp_class_lt3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_bool(0):(sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil())); })\n");
-  buf_puts(&b, "#define sp_class_le3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_le(_cx,_cy)?sp_box_bool(1):(sp_class_le(_cy,_cx)?sp_box_bool(0):sp_box_nil()); })\n");
-  buf_puts(&b, "#define sp_class_gt3(A,B) sp_class_lt3(B,A)\n");
-  buf_puts(&b, "#define sp_class_ge3(A,B) sp_class_le3(B,A)\n");
-  buf_puts(&b, "#define sp_class_cmp3(A,B) ({ sp_Class _cx=(A),_cy=(B); sp_class_eq(_cx,_cy)?sp_box_int(0):(sp_class_le(_cx,_cy)?sp_box_int(-1):(sp_class_le(_cy,_cx)?sp_box_int(1):sp_box_nil())); })\n");
-  /* module-aware versions (replace after sp_class_ancestors is defined) */
-  /* sp_class_includes_<i>: static array of included module cls_ids per class */
-  /* Also update sp_class_is_ancestor to walk includes. */
-  /* Build per-class includes array by scanning the AST. */
-  {
-    /* For each user class, collect included module ids (in include order). */
-    int **cls_incs = calloc((size_t)c->nclasses, sizeof(int *));
-    int  *cls_nincs = calloc((size_t)c->nclasses, sizeof(int));
-    /* `prepend M` puts M BEFORE the class in #ancestors, so it is collected
-       separately from the includes that follow the class (#2702). */
-    int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
-    int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
-    /* One pass over every class/module body (class_body_list, a Struct.new
-       block included), in source order so each class sees its includes in
-       the order they run. Scanning the whole table once per class was
-       O(classes * N) and dominated codegen on class-heavy programs. */
-    {
-      int *bcls, *bbody;
-      int nbodies = class_body_list(c, &bcls, &bbody);
-      int (*bord)[2] = malloc((size_t)(nbodies > 0 ? nbodies : 1) * sizeof *bord);
-      for (int bi = 0; bi < nbodies; bi++) { bord[bi][0] = bbody[bi]; bord[bi][1] = bcls[bi]; }
-      qsort(bord, (size_t)nbodies, sizeof *bord, cmp_int_pair);
-      for (int bx = 0; bx < nbodies; bx++) {
-        int ci = bord[bx][1];
-        int body2 = bord[bx][0];
-        int bn2 = 0;
-        const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
-        for (int k2 = 0; k2 < bn2; k2++) {
-          const char *sty2 = nt_type(c->nt, stmts2[k2]);
-          if (!sty2 || !sp_streq(sty2, "CallNode")) continue;
-          const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
-          if (!nm2 || (!sp_streq(nm2, "include") && !sp_streq(nm2, "prepend"))) continue;
-          int is_prep2 = sp_streq(nm2, "prepend");
-          int **tgt_mods = is_prep2 ? cls_preps : cls_incs;
-          int  *tgt_n    = is_prep2 ? cls_npreps : cls_nincs;
-          if (nt_ref(c->nt, stmts2[k2], "receiver") >= 0) continue;
-          int anode2 = nt_ref(c->nt, stmts2[k2], "arguments");
-          int an2 = 0;
-          const int *aargs = anode2 >= 0 ? nt_arr(c->nt, anode2, "arguments", &an2) : NULL;
-          for (int j2 = 0; j2 < an2; j2++) {
-            const char *aty2 = nt_type(c->nt, aargs[j2]);
-            const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
-            if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
-            int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
-            int is_builtin_mod = 0;
-            /* a builtin module (Enumerable/Comparable/Kernel/Math) has no user
-               class index; record its (negative) builtin id so ancestors
-               reflects it -- the generic `mid2 < 0` skip must not drop it. */
-            if (mid2 < 0 && mname2) {
-              if (sp_streq(mname2, "Enumerable")) { mid2 = -115; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Comparable")) { mid2 = -114; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Kernel")) { mid2 = -119; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Math")) { mid2 = -130; is_builtin_mod = 1; }
-            }
-            if (mid2 < 0 && !is_builtin_mod) continue;
-            /* deduplicate */
-            int found2 = 0;
-            for (int q = 0; q < tgt_n[ci]; q++) if (tgt_mods[ci][q] == mid2) { found2 = 1; break; }
-            if (found2) continue;
-            tgt_mods[ci] = realloc(tgt_mods[ci], sizeof(int) * (size_t)(tgt_n[ci] + 1));
-            tgt_mods[ci][tgt_n[ci]++] = mid2;
-          }
-        }
-      }
-      free(bord);
-      free(bcls);
-      free(bbody);
-    }
-    /* An `obj.extend(Mod)` records its membership on the synthesized singleton
-       subclass rather than as an `include` statement in a class body, so the
-       scan above cannot see it -- the extended object answered is_a?(Mod) with
-       false (#4080). Merge what analyze recorded, deduped against the scan. */
-    for (int ci = 0; ci < c->nclasses; ci++) {
-      ClassInfo *mci = &c->classes[ci];
-      for (int m = 0; m < mci->nincluded_mods; m++) {
-        int mid3 = mci->included_mods[m];
-        if (mid3 < 0 || mid3 >= c->nclasses) continue;
-        int seen3 = 0;
-        for (int q = 0; q < cls_nincs[ci]; q++) if (cls_incs[ci][q] == mid3) { seen3 = 1; break; }
-        if (seen3) continue;
-        cls_incs[ci] = realloc(cls_incs[ci], sizeof(int) * (size_t)(cls_nincs[ci] + 1));
-        if (!cls_incs[ci]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        cls_incs[ci][cls_nincs[ci]++] = mid3;
-      }
-    }
-    /* A module's own includes are part of every includer's ancestry:
-       `module M2; include M1; end; class A; include M2; end` gives A the
-       ancestors [A, M2, M1, ...], and A.include?(M1) / A.new.is_a?(M1) are
-       true. The tables held direct includes only, so those answered false
-       (activesupport's concerns include one another this way). Close each
-       list transitively, keeping the include-order convention the emission
-       below reverses: a module's closure goes right BEFORE the module. */
-    {
-      int **closed = calloc((size_t)c->nclasses, sizeof(int *));
-      int  *nclosed = calloc((size_t)c->nclasses, sizeof(int));
-      for (int ci = 0; ci < c->nclasses; ci++) {
-        int *out = NULL, nout = 0;
-        /* iterative DFS in include order: push m's closure, then m */
-        int *seen = calloc((size_t)c->nclasses, sizeof(int));
-        seen[ci] = 1;
-        /* frame: (class index, next include position) */
-        int fr_ci[128], fr_q[128]; int nfr = 0;
-        fr_ci[nfr] = ci; fr_q[nfr] = 0; nfr++;
-        while (nfr > 0) {
-          int cur = fr_ci[nfr - 1]; int q = fr_q[nfr - 1];
-          if (q >= cls_nincs[cur]) {
-            nfr--;
-            if (nfr > 0) { int m = cur; int dup = 0;
-              for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
-              if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; } }
-            continue;
-          }
-          fr_q[nfr - 1] = q + 1;
-          int m = cls_incs[cur][q];
-          if (m < 0) {   /* a builtin module: no includes of its own */
-            int dup = 0; for (int j = 0; j < nout; j++) if (out[j] == m) dup = 1;
-            if (!dup) { out = realloc(out, sizeof(int) * (size_t)(nout + 1)); out[nout++] = m; }
-            continue;
-          }
-          if (m >= c->nclasses || seen[m] || nfr >= 128) continue;
-          seen[m] = 1;
-          fr_ci[nfr] = m; fr_q[nfr] = 0; nfr++;
-        }
-        free(seen);
-        closed[ci] = out; nclosed[ci] = nout;
-      }
-      for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); cls_incs[ci] = closed[ci]; cls_nincs[ci] = nclosed[ci]; }
-      free(closed); free(nclosed);
-    }
-    /* Emit sp_class_ancestors using the include info. */
-    buf_puts(&b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n");
-    buf_puts(&b, "  sp_PolyArray *a=sp_PolyArray_new();\n");
-    buf_puts(&b, "  sp_Class cur=c;\n");
-    int depth2 = c->nclasses + 20;
-    buf_printf(&b, "  for(int _i=0;_i<%d;_i++){\n", depth2);
-    /* When the walk reaches a builtin class (a user class's eventual Object
-       parent, or a builtin start), follow the full builtin chain with module
-       includes so e.g. Dog.ancestors == [Dog, Animal, Object, Kernel,
-       BasicObject], matching CRuby. */
-    buf_puts(&b, "    if(cur.cls_id<0){\n");
-    /* a builtin Module (Comparable/Enumerable/Kernel/Math) has no superclass
-       chain: its ancestors are just itself (#2285). */
-    buf_puts(&b, "      if(cur.cls_id==-114||cur.cls_id==-115||cur.cls_id==-119||cur.cls_id==-130){\n");
-    buf_puts(&b, "        sp_PolyArray_push(a,sp_box_class(cur)); break;\n      }\n");
-    buf_puts(&b, "      while(1){\n");
-    buf_puts(&b, "        sp_PolyArray_push(a,sp_box_class(cur));\n");
-    /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
-    buf_puts(&b, "        if(cur.cls_id==-113) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* Numeric->Comparable */
-    buf_puts(&b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
-    buf_puts(&b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
-    buf_puts(&b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
-    /* a name-backed exception class's modules (IO::EAGAINWaitReadable
-       includes IO::WaitReadable), as the rescue match reads them */
-    buf_puts(&b, "        if(cur.name){const char*const*_m=sp_exc_modules_of_name(cur.name);"
-                 "for(int _k=0;_m&&_m[_k];_k++)sp_PolyArray_push(a,sp_box_class_name(_m[_k]));}\n");
-    buf_puts(&b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
-    /* the root (BasicObject) yields the nil class: that terminates the walk.
-       Chain end used to be marked by a self-reference, so keep that check too. */
-    buf_puts(&b, "        if(sp_class_nil_p(bn)||sp_class_eq(bn,cur))break;\n");
-    buf_puts(&b, "        cur=bn;\n");
-    buf_puts(&b, "      }\n");
-    buf_puts(&b, "      break;\n    }\n");
-    /* prepended modules come BEFORE the class itself (#2702) */
-    {
-      int any_prep = 0;
-      for (int ci = 0; ci < c->nclasses; ci++) if (cls_npreps[ci]) { any_prep = 1; break; }
-      if (any_prep) {
-        buf_puts(&b, "    switch(cur.cls_id){\n");
-        for (int ci = 0; ci < c->nclasses; ci++) {
-          if (cls_npreps[ci] == 0) continue;
-          buf_printf(&b, "    case %d:", ci);
-          /* last prepend wins, so it lands closest to the front */
-          for (int q = cls_npreps[ci] - 1; q >= 0; q--)
-            buf_printf(&b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_preps[ci][q]);
-          buf_puts(&b, " break;\n");
-        }
-        buf_puts(&b, "    }\n");
-      }
-    }
-    buf_puts(&b, "    sp_PolyArray_push(a,sp_box_class(cur));\n");
-    /* inline the includes switch for this class */
-    buf_puts(&b, "    switch(cur.cls_id){\n");
-    for (int ci = 0; ci < c->nclasses; ci++) {
-      if (cls_nincs[ci] == 0) continue;
-      buf_printf(&b, "    case %d:", ci);
-      /* Ruby includes are prepended: last include is highest priority, so
-         insert in reverse include order after the class itself. */
-      for (int q = cls_nincs[ci] - 1; q >= 0; q--)
-        buf_printf(&b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_incs[ci][q]);
-      buf_puts(&b, " break;\n");
-    }
-    buf_puts(&b, "    }\n");
-    /* A module has no superclass chain: `M.ancestors` is [M] and
-       `N.ancestors` (N includes M) is [N, M]. The walk used to follow the
-       Object parent a module shares with a class and append Object, Kernel,
-       BasicObject to both. */
-    buf_puts(&b, "    if(sp_class_is_module_val(cur))break;\n");
-    buf_puts(&b, "    sp_Class next=sp_class_superclass(cur);\n");
-    buf_puts(&b, "    if(sp_class_eq(next,cur))break;\n");
-    buf_puts(&b, "    cur=next;\n");
-    buf_puts(&b, "  }\n");
-    buf_puts(&b, "  return a;\n}\n\n");
-    /* Module#included_modules: the ancestors that are modules (#2674). The
-       ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
-       the cls_id rides the int slot. */
-    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c) SP_UNUSED;\n");
-    buf_puts(&b, "static sp_PolyArray *sp_class_included_modules(sp_Class c){\n");
-    buf_puts(&b, "  sp_PolyArray *a=sp_class_ancestors(c); SP_GC_ROOT(a);\n");
-    buf_puts(&b, "  sp_PolyArray *r=sp_PolyArray_new(); SP_GC_ROOT(r);\n");
-    /* the receiver itself is not one of the modules it includes: a module's
-       ancestors now start with the module, and it showed up in its own list */
-    buf_puts(&b, "  for(sp_int i=0;a&&i<a->len;i++){ sp_Class m={a->data[i].v.i,NULL};\n");
-    buf_puts(&b, "    if(m.cls_id==c.cls_id) continue;\n");
-    buf_puts(&b, "    if(sp_class_is_module_val(m)) sp_PolyArray_push(r,a->data[i]); }\n");
-    buf_puts(&b, "  return r;\n}\n\n");
-    /* Module-aware <= by walking sp_class_ancestors (replaces simpler versions). */
-    buf_puts(&b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n");
-    buf_puts(&b, "  /* a<=b: b is an ancestor of a, so b must appear in a's ancestors */\n");
-    buf_puts(&b, "  sp_PolyArray *ancs=sp_class_ancestors(a);\n");
-    buf_puts(&b, "  for(sp_int _i=0;_i<sp_PolyArray_length(ancs);_i++){\n");
-    buf_puts(&b, "    sp_RbVal v=sp_PolyArray_get(ancs,_i);\n");
-    buf_puts(&b, "    if(v.tag==7&&sp_class_eq(sp_unbox_class(v),b))return 1;\n");
-    buf_puts(&b, "  }\n");
-    /* User-class sp_class_ancestors stops before builtin parents.
-       If the target is a builtin, fall back to the chain-walking check. */
-    buf_puts(&b, "  if(b.cls_id<0)return sp_class_is_ancestor(b,a);\n");
-    buf_puts(&b, "  return 0;\n}\n");
-    buf_puts(&b, "#undef sp_class_le\n#define sp_class_le sp_class_le_mod\n");
-    buf_puts(&b, "#undef sp_class_lt\n#define sp_class_lt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(a,b))\n");
-    buf_puts(&b, "#undef sp_class_gt\n#define sp_class_gt(a,b) (!sp_class_eq(a,b)&&sp_class_le_mod(b,a))\n");
-    buf_puts(&b, "#undef sp_class_ge\n#define sp_class_ge(a,b) sp_class_le_mod(b,a)\n");
-    /* sp_poly_get_class: maps a poly value to its sp_Class for dynamic is_a? */
-    buf_puts(&b,
-      "static sp_Class sp_poly_get_class(sp_RbVal v){\n"
-      "  switch(v.tag){\n"
-      "  case SP_TAG_INT: return ((sp_Class){-100});\n"
-      /* a Bignum is an Integer too, to grep, all? and === */
-      "  case SP_TAG_BIGINT: return ((sp_Class){-100});\n"
-      "  case SP_TAG_STR: return ((sp_Class){-102});\n"
-      "  case SP_TAG_FLT: return ((sp_Class){-101});\n"
-      "  case SP_TAG_BOOL: return v.v.b?((sp_Class){-111}):((sp_Class){-112});\n"
-      "  case SP_TAG_NIL: return ((sp_Class){-110});\n"
-      "  case SP_TAG_SYM: return ((sp_Class){-103});\n"
-      "  case SP_TAG_CLASS: return sp_class_is_module_val(sp_unbox_class(v))?((sp_Class){-108}):((sp_Class){-109});\n"
-      "  case SP_TAG_OBJ: if(v.cls_id>=0)return ((sp_Class){v.cls_id});\n"
-      /* a String builder (a shared-mutable String handle) is a String; a
-         box with no handle is not one */
-      "    if(v.cls_id==SP_BUILTIN_STRBUF&&v.v.p)return ((sp_Class){-102});\n"
-      "    if(sp_poly_is_array_kind(v.cls_id))return ((sp_Class){-104});\n"
-      "    if(v.cls_id==SP_BUILTIN_RANGE||v.cls_id==SP_BUILTIN_STR_RANGE)return ((sp_Class){-106});\n"
-      "    if(v.cls_id==SP_BUILTIN_TIME)return ((sp_Class){-107});\n"
-      "    if(v.cls_id==SP_BUILTIN_PROC)return ((sp_Class){-118});\n"
-      "    if(v.cls_id==SP_BUILTIN_ENUMERATOR)return ((sp_Class){-144});\n"
-      "    if(v.cls_id>=-12)return ((sp_Class){-116});\n"
-      "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
-      /* a BasicObject.new is a BasicObject, not an Object or a Kernel */
-      "    if(v.cls_id==SP_BUILTIN_BASIC_OBJECT)return ((sp_Class){-117});\n"
-      "    return ((sp_Class){-116});\n"
-      "  default: return ((sp_Class){-116});\n"
-      "  }\n}\n"
-      /* a boxed exception walks its name chain (Errno::ENOENT -> SystemCallError
-         -> StandardError), and a name-backed class (SystemCallError, Errno::*,
-         OpenStruct) matches by name -- both are invisible to the cls_id walk */
-      "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
-      "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
-      "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
-      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
-    /* a class value is also an instance of the modules it (or a superclass)
-       extends, its singleton's ancestors: one arm per such class. The arms
-       are spliced in here at the end, and only when the program calls
-       sp_poly_is_a: most programs that extend a module never do. */
-    { int any_ext = 0;
-      for (int k = 0; k < c->nclasses && !any_ext; k++) if (comp_class_extends_any(c, k)) any_ext = 1;
-      if (any_ext) {
-        Buf eb; memset(&eb, 0, sizeof eb);
-        buf_puts(&eb, "  if (obj.tag == SP_TAG_CLASS) switch (sp_unbox_class(obj).cls_id) {\n");
-        for (int k = 0; k < c->nclasses; k++) {
-          if (!comp_class_extends_any(c, k)) continue;
-          buf_printf(&eb, "  case %d: if (", k);
-          int any = 0;
-          for (int m = 0; m < c->nclasses; m++)
-            if (comp_class_is_module(c, &c->classes[m]) && comp_class_singleton_has_module(c, k, m)) {
-              buf_printf(&eb, "%sklass.cls_id == %d", any ? " || " : "", m);
-              any = 1;
-            }
-          buf_puts(&eb, any ? ") return 1; break;\n" : "0) return 1; break;\n");
-        }
-        buf_puts(&eb, "  default: break;\n  }\n");
-        isa_ext = eb.p;
-        isa_ext_at = b.len;
-      } }
-    buf_puts(&b,
-      "  return sp_class_le(sp_poly_get_class(obj),klass);\n}\n");
-    /* Module#< / <= / > / >= / <=> where an operand is boxed: the tri-state
-       answer of sp_class_lt3 and friends, TypeError for a non-class operand
-       (nil for <=>), and the ordinary poly comparison when the receiver turns
-       out not to be a class. The runtime reaches the same answer through
-       sp_class_cmp_fn. */
-    buf_puts(&b,
-      "static sp_RbVal sp_class_cmp_rv(sp_RbVal a, sp_RbVal b){return sp_class_cmp3(sp_unbox_class(a),sp_unbox_class(b));}\n"
-      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op) SP_UNUSED;\n"
-      "static sp_RbVal sp_class_op_rv(sp_RbVal a, sp_RbVal b, int op){\n"
-      "  if(a.tag!=SP_TAG_CLASS){\n"
-      "    switch(op){\n"
-      "    case 0: return sp_box_bool(sp_poly_lt(a,b));\n"
-      "    case 1: return sp_box_bool(sp_poly_le(a,b));\n"
-      "    case 2: return sp_box_bool(sp_poly_gt(a,b));\n"
-      "    case 3: return sp_box_bool(sp_poly_ge(a,b));\n"
-      "    default: { sp_int r=sp_poly_spaceship(a,b); return r==SP_INT_NIL?sp_box_nil():sp_box_int(r); }\n"
-      "    }\n"
-      "  }\n"
-      "  if(b.tag!=SP_TAG_CLASS){\n"
-      "    if(op==4)return sp_box_nil();\n"
-      "    sp_raise_cls(\"TypeError\",\"compared with non class/module\");\n"
-      "  }\n"
-      "  sp_Class x=sp_unbox_class(a),y=sp_unbox_class(b);\n"
-      "  switch(op){\n"
-      "  case 0: return sp_class_lt3(x,y);\n"
-      "  case 1: return sp_class_le3(x,y);\n"
-      "  case 2: return sp_class_gt3(x,y);\n"
-      "  case 3: return sp_class_ge3(x,y);\n"
-      "  default: return sp_class_cmp3(x,y);\n"
-      "  }\n}\n");
-    for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); free(cls_preps[ci]); }
-    free(cls_incs); free(cls_nincs); free(cls_preps); free(cls_npreps);
-  }
-  /* User exception hierarchy: sp_user_exc_parent(cls) -> parent class name.
-     Used by sp_exc_cls_matches (rescue arms) and sp_exc_is_a (is_a?). */
-  {
-    int any = 0;
-    for (int i = 0; i < c->nclasses; i++) {
-      if (class_is_exc_subclass(c, i)) { any = 1; break; }
-    }
-    buf_puts(&b, "static const char *sp_user_exc_parent(const char *cls){\n");
-    if (!any) buf_puts(&b, "  (void)cls;\n");
-    if (any) {
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
-        /* snapshot: class_ruby_name returns a shared static buffer for nested
-           names, and the parent canonicalization below calls it again. Copy to
-           the heap, not a fixed buffer: the top-level path returns the class's
-           own arbitrary-length name, which a fixed size would truncate out of
-           agreement with the constructor emission. An unnamed entry has
-           nothing to match on. */
-        const char *cn0 = class_ruby_name(c, i);
-        if (!cn0) cn0 = c->classes[i].name;
-        if (!cn0) continue;
-        char *cn = strdup(cn0);
-        /* find the direct parent name (builtin or user) */
-        const char *par = NULL;
-        int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
-        if (sc >= 0) {
-          const char *sty = nt_type(c->nt, sc);
-          if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")))
-            par = nt_str(c->nt, sc, "name");
-          /* a builtin exception by its whole path (Errno::ENOENT) */
-          const char *bpar = superclass_builtin_exc_name(c->nt, sc);
-          if (bpar) par = bpar;
-        }
-        if (!par && c->classes[i].parent >= 0)
-          par = c->classes[c->classes[i].parent].name;
-        /* canonicalize a user parent to its qualified Ruby name so the
-           hierarchy walk meets the raised / rescue-arm names (both emitted
-           qualified); a builtin parent keeps its runtime name */
-        if (par && !is_exc_name(par)) {
-          int pci = comp_class_index(c, par);
-          if (pci >= 0) {
-            const char *pqn = class_ruby_name(c, pci);
-            if (pqn) par = pqn;
-          }
-        }
-        if (par) {
-          buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", cn, par);
-          /* also register the leaf name if different from qualified name */
-          if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
-            buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", c->classes[i].name, par);
-        }
-        free(cn);
-      }
-    }
-    buf_puts(&b, "  return 0;\n}\n");
-    /* The modules each exception class includes, for the module-aware match.
-       Reuses the same include walk sp_class_ancestors is built from, so
-       `rescue SomeModule` and `e.is_a?(SomeModule)` agree. */
-    buf_puts(&b, "static const char *const *sp_user_exc_modules(const char *cls){\n");
-    if (!any) buf_puts(&b, "  (void)cls;\n");
-    if (any) {
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
-        if (c->classes[i].nincluded_mods == 0 &&
-            c->classes[i].nincluded_mod_names == 0) continue;
-        const char *cn0 = class_ruby_name(c, i);
-        if (!cn0) cn0 = c->classes[i].name;
-        if (!cn0) continue;
-        char *cn = strdup(cn0);
-        buf_printf(&b, "  { static const char *const _m%d[] = {", i);
-        for (int m = 0; m < c->classes[i].nincluded_mods; m++) {
-          int mi = c->classes[i].included_mods[m];
-          if (mi < 0 || mi >= c->nclasses) continue;
-          const char *mn = class_ruby_name(c, mi);
-          if (!mn) mn = c->classes[mi].name;
-          if (mn) buf_printf(&b, "\"%s\", ", mn);
-        }
-        /* Builtin modules named by path carry no class index; their qualified
-           string is what the match compares. */
-        for (int m = 0; m < c->classes[i].nincluded_mod_names; m++)
-          buf_printf(&b, "\"%s\", ", c->classes[i].included_mod_names[m]);
-        buf_puts(&b, "0 };\n");
-        buf_printf(&b, "    if(!strcmp(cls,\"%s\"))return _m%d;\n", cn, i);
-        if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
-          buf_printf(&b, "    if(!strcmp(cls,\"%s\"))return _m%d;\n", c->classes[i].name, i);
-        buf_puts(&b, "  }\n");
-        free(cn);
-      }
-    }
-    buf_puts(&b, "  return 0;\n}\n");
-  }
-  }  /* if (g_needs_class_machinery) */
+  emit_class_machinery(nt, c, &b, &isa_ext, &isa_ext_at);
 
   /* class structs + GC scan functions. Forward-declare every typedef first so
      a class struct may embed a pointer to a class defined later. */
