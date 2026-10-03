@@ -67,7 +67,7 @@ const struct an_poly_raw_row AN_POLY_RAW[] = {
       /* Integer parts can themselves be boxed Bigints. */
       { "numerator", 0, TY_POLY }, { "denominator", 0, TY_POLY },
       { "to_i", 0, TY_INT }, { "hash", 0, TY_INT }, { "object_id", 0, TY_INT },
-      { "begin", 0, TY_INT }, { "end", 0, TY_INT }, { "count", 0, TY_INT },
+      { "begin", 0, TY_POLY }, { "end", 0, TY_POLY }, { "count", 0, TY_INT },   /* a Range's bound: Integer, Float or nil */
       { "to_f", 0, TY_FLOAT }, { "to_r", 0, TY_RATIONAL }, { "to_c", 0, TY_COMPLEX },
       { "class", 0, TY_CLASS }, { "bytes", 0, TY_INT_ARRAY },
       { NULL, 0, TY_UNKNOWN } };
@@ -2510,8 +2510,9 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
             sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
             sp_streq(name, "nonzero?")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
         if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
-            sp_streq(name, "bit_length") ||
-            sp_streq(name, "begin") || sp_streq(name, "end")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+            sp_streq(name, "bit_length")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+        /* a boxed Range's bound is boxed: an Integer, a Float or nil */
+        if (sp_streq(name, "begin") || sp_streq(name, "end")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       }
       /* Numeric#round(ndigits) on a boxed value: Float when n > 0, Integer
          when n <= 0 -- either way a boxed poly (sp_poly_round_n). */

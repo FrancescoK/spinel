@@ -12538,8 +12538,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         sp_streq(name, "bit_length") ? "sp_poly_bit_length" :
         sp_streq(name, "numerator")   ? "sp_poly_numerator" :
         sp_streq(name, "denominator") ? "sp_poly_denominator" :
-        sp_streq(name, "begin")       ? "sp_poly_range_begin" :
-        sp_streq(name, "end")         ? "sp_poly_range_end" :
+        sp_streq(name, "begin")       ? "sp_poly_range_begin_v" :
+        sp_streq(name, "end")         ? "sp_poly_range_end_v" :
         sp_streq(name, "exclude_end?") ? "sp_poly_range_exclude_end_p" : NULL;
       if (pfn) {
         int nf = sp_streq(name, "next_float") || sp_streq(name, "prev_float");

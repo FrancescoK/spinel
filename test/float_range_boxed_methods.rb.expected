@@ -1,0 +1,68 @@
+int beginless each: TypeError: can't iterate from NilClass
+int frozen: true
+int begin: nil
+int end: 3
+1.5..3.0 inspect: 1.5..3.0
+begin: 1.5
+end: 3.0
+first: 1.5
+last: 3.0
+min: 1.5
+max: 3.0
+size: TypeError: can't iterate from Float
+count: TypeError: can't iterate from Float
+include: true
+cover: true
+===: true
+exclude_end: false
+to_s: "1.5..3.0"
+to_a: TypeError: can't iterate from Float
+each: TypeError: can't iterate from Float
+sum: TypeError: can't iterate from Float
+==: true
+eql: true
+class: Range
+frozen: true
+dup: 1.5..3.0
+...2.5 inspect: ...2.5
+begin: nil
+end: 2.5
+first: RangeError: cannot get the first element of beginless range
+last: 2.5
+min: RangeError: cannot get the minimum of beginless range
+max: TypeError: cannot exclude non Integer end value
+size: TypeError: can't iterate from NilClass
+include: true
+cover: true
+===: true
+exclude_end: true
+to_s: "...2.5"
+to_a: TypeError: can't iterate from NilClass
+each: TypeError: can't iterate from NilClass
+sum: TypeError: can't iterate from NilClass
+==: false
+eql: false
+class: Range
+frozen: true
+dup: ...2.5
+1.5.. inspect: 1.5..
+begin: 1.5
+end: nil
+first: 1.5
+last: RangeError: cannot get the last element of endless range
+min: 1.5
+max: RangeError: cannot get the maximum of endless range
+size: TypeError: can't iterate from Float
+include: true
+cover: true
+===: true
+exclude_end: false
+to_s: "1.5.."
+to_a: RangeError: cannot convert endless range to an array
+each: TypeError: can't iterate from Float
+sum: TypeError: can't iterate from Float
+==: false
+eql: false
+class: Range
+frozen: true
+dup: 1.5..
