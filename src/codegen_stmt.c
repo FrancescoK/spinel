@@ -10645,6 +10645,509 @@ else {
   return 0;
 }
 
+/* Instance- and class-variable writes: =, the class-variable operator and or/and writes, the instance-variable operator write (emit_stmt_inner's arms, in their order) */
+static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "InstanceVariableWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    /* `@a = @b = nil`: emit the inner writes as their own statements (each
+       target renders nil for its own slot type), then write nil here too. */
+    {
+      int ncb = comp_nil_chain_bottom(nt, v);
+      if (ncb >= 0) { emit_stmt_inner(c, v, b, indent); v = ncb; }
+    }
+    Scope *cws = comp_scope_of(c, id);
+    /* Ivar write inside instance_eval block: access ivar via receiver pointer. */
+    if (cws && cws->class_id < 0 && !cws->is_cmethod && g_ie_class_id >= 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
+    }
+    /* Ivar write in a class/module body (outside any def): write to the
+       module-level civ_ variable. */
+    else if (cws && cws->class_id < 0 && !cws->is_cmethod && g_class_body_id >= 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, iv_c(nm + 1));
+    }
+    /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
+    else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
+             comp_class_index(c, "Toplevel") >= 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "civ_Toplevel_%s = ", iv_c(nm + 1));
+    }
+    /* True top-level or no-class scope: skip. */
+    else if (!cws || (cws->class_id < 0 && !cws->is_cmethod)) { return 1; }
+    else {
+      emit_indent(b, indent);
+      if (cws && cws->is_cmethod && cws->class_id >= 0)
+        buf_printf(b, "civ_%s_%s = ", c->classes[cws->class_id].name, iv_c(nm + 1));
+      else {
+        if (cws && cws->class_id >= 0)
+          emit_frozen_obj_guard(c, cws->class_id, g_self ? g_self : "self", b);
+        buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
+      }
+    }
+    const char *vty = nt_type(nt, v);
+    int sc = cws ? cws->class_id : -1;
+    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
+    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    TyKind ivt = TY_INT;
+    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) ivt = c->classes[sc].ivar_types[iv]; }
+    int ven = 0;
+    int v_empty_array = vty && sp_streq(vty, "ArrayNode") && (nt_arr(nt, v, "elements", &ven), ven == 0);
+    int v_empty_hash = 0;
+    if (!v_empty_array && vty) {
+      int hen = 0;
+      if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))
+        v_empty_hash = (nt_arr(nt, v, "elements", &hen), hen == 0);
+    }
+    /* `@t = Array.new(n) { <int array> }` into a narrowed pointer-array ivar:
+       the generator emits from the NODE's type, which the narrowing (a slot
+       decision) does not change. Lend it the slot's type, exactly as the local
+       write does, or the sp_PolyArray * it builds lands in an sp_PtrArray *
+       field and every read of the table dereferences the wrong shape. */
+    if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "CallNode") &&
+        nt_ref(nt, v, "block") >= 0 && nt_str(nt, v, "name") &&
+        sp_streq(nt_str(nt, v, "name"), "new") && nt_ref(nt, v, "receiver") >= 0 &&
+        nt_type(nt, nt_ref(nt, v, "receiver")) &&
+        sp_streq(nt_type(nt, nt_ref(nt, v, "receiver")), "ConstantReadNode") &&
+        nt_str(nt, nt_ref(nt, v, "receiver"), "name") &&
+        sp_streq(nt_str(nt, nt_ref(nt, v, "receiver"), "name"), "Array")) {
+      int vw = view_push(c, v, ivt);
+      emit_expr(c, v, b);
+      view_pop(c, vw);
+    }
+    else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, "sp_PtrArray_new()");
+    /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
+       sp_PtrArray with the unboxed element pointers, as the local write does. */
+    else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "ArrayNode")) {
+      int tpa = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
+      int pen = 0; const int *pel = nt_arr(nt, v, "elements", &pen);
+      for (int e = 0; e < pen; e++) {
+        buf_printf(b, " sp_PtrArray_push(_t%d, ", tpa); emit_expr(c, pel[e], b); buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", tpa);
+    }
+    else if (ivt == TY_INT && emit_nullable_int_ternary(c, v, b)) {
+      /* `@iv = cond ? nil : <int>` emitted in int context (nil -> SP_INT_NIL) */
+    }
+    else if (vty && sp_streq(vty, "NilNode")) {
+      switch (ivt) {
+      case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
+      case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
+      case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
+      case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
+      case TY_STRING: buf_puts(b, "NULL"); break;
+      default: buf_puts(b, default_value_from_compiler(c, ivt)); break;
+      }
+    }
+    else if ((v_empty_array || v_empty_hash) && emit_empty_literal_as(c, v, ivt, b)) {
+      /* the literal took the slot's variant */
+    }
+    else if (ivt == TY_STRBUF) {
+      /* shared handle slot: an alias RHS (a shared local/ivar read) copies
+         the handle; anything else wraps a fresh handle, inheriting the
+         source's frozen state (#3227 P4) */
+      char srefW[1024];
+      if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
+      else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      else {
+        buf_puts(b, "sp_String_new_shared(");
+        emit_str_expr(c, v, b);
+        buf_puts(b, ")");
+      }
+    }
+    else if (ivt == TY_POLY && comp_ntype(c, v) != TY_POLY) {
+      /* a poly ivar slot needs a boxed RHS */
+      emit_boxed(c, v, b);
+    }
+    else if (ivt == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
+             comp_ntype(c, v) != TY_POLY_ARRAY) {
+      /* a typed array RHS into a poly-array ivar slot is rebuilt with its
+         elements boxed, the same conversion the local write makes -- the
+         slot widened on element evidence (a push of another type, #4196)
+         that the RHS's own node never saw */
+      emit_poly_array_from(c, v, b);
+    }
+    /* An int RHS into a bigint ivar is promoted at the boundary, the same way
+       the local assignment and the argument binding do it. Without it `@n = 0`
+       on an ivar that elsewhere sees a Bignum wrote the integer 0 into an
+       sp_Bigint * slot -- a null pointer constant, so the C compiled clean and
+       the first sp_bigint_add on it segfaulted (#3399 sibling; found while
+       fixing the argument side). */
+    else if (ivt == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT &&
+             ty_is_numeric(comp_ntype(c, v))) {
+      buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, v, b); buf_puts(b, ")");
+    }
+    else if (seeded_array_kind_mismatch(ivt, comp_ntype(c, v))) {
+      /* An array of another kind into an array ivar a true --rbs seed kept at
+         its own kind: `@storage: Array[Integer]` assigned a helper's result
+         that inference, seeing only an empty `[]` default, typed a general
+         Array. The slot cannot widen, so the value converts the way a boxed
+         one does (#4424); the raw pointer went into the other struct's slot
+         and the C did not build. */
+      emit_array_store_value(c, ivt, v, b);
+    }
+    else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_POLY) {
+      /* poly rhs assigned to a typed ivar: unbox to the concrete type. The
+         nil-preserving form -- the RHS is a tagged union whose nil-ness is not
+         ruled out here, and an --rbs `Integer?` / `Float?` pin makes this
+         exactly the slot a nil is expected to survive in (#3412). */
+      Buf _rb; memset(&_rb, 0, sizeof _rb);
+      emit_expr(c, v, &_rb);
+      /* A seeded slot is the only place a narrowing can be WRONG rather than
+         merely lossy, so that is where the assertion goes (#3412). */
+      Buf _ck; memset(&_ck, 0, sizeof _ck);
+      if (sc >= 0 && class_ivar_pinned(&c->classes[sc], nm))
+        emit_rbs_checked_text(c, ivt, nm, _rb.p ? _rb.p : "sp_box_nil()", &_ck);
+      else buf_puts(&_ck, _rb.p ? _rb.p : "sp_box_nil()");
+      emit_unbox_nilable_text(c, ivt, _ck.p ? _ck.p : "sp_box_nil()", b);
+      free(_ck.p);
+      free(_rb.p);
+    }
+    else if (comp_ntype(c, v) == TY_UNKNOWN && (ty_is_array(ivt) || ty_is_hash(ivt)) &&
+             emit_empty_container_for_slot(c, v, ivt, b)) {
+      /* an untyped `Hash.new` / `Array.new` (a top-level ivar's, which no use
+         typed) is built at the slot's type, not taken for a raising call */
+    }
+    else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_UNKNOWN) {
+      /* an unresolved call typed TY_UNKNOWN whose value is the gate's
+         sp_raise_nomethod(...) poly token, assigned to a typed ivar slot
+         (`@settings = TypedStore.write(...)` where write is unresolved):
+         coerce the token to the slot type, keeping the raise. */
+      emit_unresolved_coerced(c, v, ivt, b);
+    }
+    else {
+      /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
+      emit_obj_upcast_prefix(c, ivt, comp_ntype(c, v), b);
+      emit_coerce(c, v, ivt, CO_HOLD, "an instance variable write", b);
+    }
+    buf_puts(b, ";\n");
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
+    int v = nt_ref(nt, id, "value");
+    int sc = comp_scope_of(c, id)->class_id;
+    if (sc < 0) sc = g_class_body_id;
+    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0) { unsupported(c, id, "class variable write (no class scope)"); return 1; }
+    sc = comp_cvar_owner(c, sc, nm);
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[sc], nm);
+    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
+    emit_indent(b, indent);
+    buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
+    if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
+    else if (ct == TY_POLY) emit_boxed(c, v, b);
+    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
+    /* `@@x = nil` into a slot typed by its later writes is the slot's nil,
+       not the numeric 0 a bare NilNode renders as: `@@quiet = nil` then
+       `@@quiet = 1` read back 0 before the write (mattr_accessor's default) */
+    else if (nt_kind(nt, v) == NK_NilNode && ct != TY_UNKNOWN) emit_ret_nil(c, ct, b);
+    /* an int into a bigint slot promotes at the boundary, as everywhere else */
+    else if (ct == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) emit_bigint_operand_ext(c, v, b);
+    /* a boxed value into a typed slot is unboxed into it (see the value form) */
+    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
+      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
+    }
+    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
+    buf_puts(b, "; ");
+    emit_cvar_set_flag(c, sc, nm, 0, b);
+    buf_puts(b, "\n");
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    int sc = comp_scope_of(c, id)->class_id;
+    if (sc < 0) sc = g_class_body_id;
+    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return 1; }
+    sc = comp_cvar_owner(c, sc, nm);
+    TyKind ct = TY_INT;
+    int idx = comp_cvar_index(&c->classes[sc], nm);
+    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
+    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
+    emit_indent(b, indent);
+    if (ct == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
+      emit_str_expr(c, v, b); buf_puts(b, ");\n");
+    }
+    else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
+    else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1,
+                                   idx >= 0 && c->classes[sc].cvar_nullable_int[idx], b)) { }
+    else {
+      buf_printf(b, "%s %s= ", ref, op ? op : "+");
+      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "ClassVariableOrWriteNode") || sp_streq(ty, "ClassVariableAndWriteNode")) {
+    int is_or = sp_streq(ty, "ClassVariableOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    int sc = comp_scope_of(c, id)->class_id;
+    if (sc < 0) sc = g_class_body_id;
+    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return 1; }
+    sc = comp_cvar_owner(c, sc, nm);
+    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
+    int oidx = comp_cvar_index(&c->classes[sc], nm);
+    TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
+    emit_indent(b, indent);
+    /* a boxed slot (one written nil and a bool, #4884) tests and stores as
+       the value form does */
+    buf_puts(b, is_or ? "if (!" : "if ");
+    emit_slot_truthy(ot, ref, b);
+    buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
+    if (ot == TY_POLY) emit_boxed(c, v, b);
+    else emit_coerce(c, v, ot, CO_HOLD, "a class variable's `||=` or `&&=`", b);
+    buf_puts(b, "; ");
+    emit_cvar_set_flag(c, sc, nm, 0, b);
+    buf_puts(b, "}\n");
+    return 1;
+  }
+  if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int sc = comp_scope_of(c, id)->class_id;
+    /* same scope ladder as the plain-write form: class body civ_, then the
+       Toplevel pseudo-class global (a bare `self` here is undeclared C) */
+    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
+    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
+    TyKind vt = TY_UNKNOWN;
+    int vnil = 0;
+    if (sc >= 0) {
+      int iv = comp_ivar_index(&c->classes[sc], nm);
+      if (iv >= 0) { vt = c->classes[sc].ivar_types[iv]; vnil = c->classes[sc].ivar_nullable_int[iv]; }
+    }
+    char ref[300];
+    Scope *cs = comp_scope_of(c, id);
+    if (cs && cs->is_cmethod && cs->class_id >= 0)
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             g_class_body_id >= 0)
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             comp_class_index(c, "Toplevel") >= 0)
+      snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
+    else
+      snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
+    emit_indent(b, indent);
+    /* An op-assign is a write, so a frozen receiver refuses it the way a plain
+       `@x = v` does: `c.freeze; c.bump` was changing the ivar (#3736). */
+    if (cs && cs->class_id >= 0 && !cs->is_cmethod &&
+        strncmp(ref, "civ_", 4) != 0)
+      emit_frozen_obj_guard(c, cs->class_id, g_self ? g_self : "self", b);
+    /* A bigint ivar has no C operator: `@n += 1` emitted pointer arithmetic on
+       an incomplete struct. Route it through the bigint helpers, promoting an
+       int operand at the boundary like every other bigint slot. */
+    if (vt == TY_BIGINT && op && is_add_sub_mul(op)) {
+      const char *fn = sp_streq(op, "+") ? "sp_bigint_add"
+                     : sp_streq(op, "-") ? "sp_bigint_sub" : "sp_bigint_mul";
+      buf_printf(b, "%s = %s(%s, ", ref, fn, ref);
+      emit_bigint_operand_ext(c, nt_ref(nt, id, "value"), b);
+      buf_puts(b, ");\n");
+    }
+    /* `@t += n` / `@t -= n` on a Time slot: the same arm the local form
+       takes (a Time is a struct; the raw C operator below cannot add to it) */
+    else if (vt == TY_TIME && op && (sp_streq(op, "+") || sp_streq(op, "-")) &&
+             (comp_ntype(c, nt_ref(nt, id, "value")) == TY_INT ||
+              comp_ntype(c, nt_ref(nt, id, "value")) == TY_FLOAT)) {
+      int ival = nt_ref(nt, id, "value");
+      int neg = sp_streq(op, "-");
+      if (comp_ntype(c, ival) == TY_INT) {
+        buf_printf(b, "%s = %s(%s, ", ref, neg ? "sp_time_sub_i" : "sp_time_add_i", ref);
+        emit_expr(c, ival, b); buf_puts(b, ");\n");
+      }
+      else {
+        buf_printf(b, "%s = sp_time_add_f(%s, %s(", ref, ref, neg ? "-" : "");
+        emit_expr(c, ival, b); buf_puts(b, "));\n");
+      }
+    }
+    else if (vt == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
+      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
+    }
+    else if (op && sp_streq(op, "+") && ty_is_array(vt)) {
+      /* `@arr += other` = `@arr = @arr + other` (#3289), mirroring the
+         local-variable arm: same-kind concat, empty-literal rhs is a no-op
+         concat with NULL */
+      int ival2 = nt_ref(nt, id, "value");
+      TyKind rvt2 = comp_ntype(c, ival2);
+      const char *k2 = (vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt);
+      int rhs_empty2 = 0;
+      { const char *vty2 = nt_type(nt, ival2);
+        if (vty2 && sp_streq(vty2, "ArrayNode")) {
+          int nel2 = 0; nt_arr(nt, ival2, "elements", &nel2);
+          rhs_empty2 = (nel2 == 0);
+        } }
+      if (k2 && (rvt2 == vt || rhs_empty2) && emit_array_op_assign(c, ref, vt, op, ival2, b)) { }
+      else if (vt == TY_POLY_ARRAY) {
+        buf_printf(b, "%s = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(%s), ",
+                   ref, ref);
+        emit_boxed(c, ival2, b);
+        buf_puts(b, "));\n");
+      }
+      else {
+        unsupported(c, id, "ivar += with a mismatched array kind");
+      }
+    }
+    else if (emit_array_op_assign(c, ref, vt, op, nt_ref(nt, id, "value"), b)) { }
+    else if (op && ty_is_object(vt)) {
+      int idefcls = -1;
+      int icid = ty_object_class(vt);
+      int imi = comp_method_in_chain(c, icid, op, &idefcls);
+      if (imi >= 0) {
+        Scope *ims = &c->scopes[imi];
+        LocalVar *ip = ims->nparams >= 1 ? scope_local(ims, ims->pnames[0]) : NULL;
+        int iatmp = ++g_tmp;
+        int ival = nt_ref(nt, id, "value");
+        TyKind ipt = ip ? ip->type : comp_ntype(c, ival);
+        /* render the value into a side buffer FIRST: an RHS that is itself a
+           call hoists its own argument temps through g_pre, and emitting it
+           while this declaration line is half-written spliced those
+           statements into the initializer (#4204) */
+        Buf irv; memset(&irv, 0, sizeof irv);
+        /* box the rhs when the operator's param widened to poly (promote mode) */
+        if (ipt == TY_POLY && comp_ntype(c, ival) != TY_POLY) emit_boxed(c, ival, &irv);
+        else emit_expr(c, ival, &irv);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, ipt, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
+        free(irv.p);
+        buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
+                   ref, c->classes[idefcls].c_name, mc(ims->name),
+                   c->classes[idefcls].c_name, ref, iatmp);
+      }
+      else {
+        buf_printf(b, "%s %s= ", ref, op);
+        emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
+      }
+    }
+    else if (op && vt == TY_POLY) {
+      /* @ivar OP= rhs where ivar is poly (e.g. nil | user_object). Scan for a
+         unique user class defining OP and dispatch through .v.p cast. */
+      int poly_defcls = -1, poly_mi = -1;
+      for (int _ci = 0; _ci < c->nclasses; _ci++) {
+        int _di = -1;
+        int _mi2 = comp_method_in_chain(c, _ci, op, &_di);
+        if (_mi2 >= 0) { poly_mi = _mi2; poly_defcls = _di; break; }
+      }
+      if (poly_mi >= 0 && poly_defcls >= 0) {
+        int ival = nt_ref(nt, id, "value");
+        TyKind rhst = comp_ntype(c, ival);
+        Scope *pms = &c->scopes[poly_mi];
+        LocalVar *pp = pms->nparams >= 1 ? scope_local(pms, pms->pnames[0]) : NULL;
+        TyKind paramt = (pp && pp->type != TY_UNKNOWN) ? pp->type : rhst;
+        if (paramt == TY_UNKNOWN) paramt = TY_INT;
+        int iatmp = ++g_tmp;
+        /* render the value into a side buffer FIRST: an RHS that is itself a
+           call hoists its own argument temps through g_pre, and emitting it
+           while this declaration line is half-written spliced those
+           statements into the initializer -- `@result += sum(0)` with a
+           widened sum came out as a declaration inside a declaration (#4204) */
+        Buf irv; memset(&irv, 0, sizeof irv);
+        /* the temp is declared with the OPERATOR's parameter type, so the
+           call-site value has to be converted into it (a raw sp_int landed
+           in an sp_RbVal slot, #3733) */
+        if (paramt == TY_POLY && rhst != TY_POLY) emit_boxed(c, ival, &irv);
+        else if (paramt != TY_POLY && rhst == TY_POLY) {
+          Buf rvb; memset(&rvb, 0, sizeof rvb); emit_expr(c, ival, &rvb);
+          emit_unbox_text(c, paramt, rvb.p ? rvb.p : "sp_box_nil()", &irv);
+          free(rvb.p);
+        }
+        else emit_expr(c, ival, &irv);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, paramt, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
+        free(irv.p);
+        if (paramt == TY_POLY) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", iatmp);
+        }
+        /* The operator method can `return nil` (a NULL reference); box a
+           reference-type result via sp_box_nullable_obj so NULL becomes nil, not
+           a truthy wrapper. A value-type class is never NULL, and its operator
+           answers a STRUCT: sp_box_vobj_<C> is the boxer that takes one and
+           heap-copies it, the same one every other value-type arm uses. The
+           by-value/by-pointer pair below moves with it (#4278). */
+        int pval = c->classes[poly_defcls].is_value_type;
+        char pboxbuf[160];
+        if (pval)
+          snprintf(pboxbuf, sizeof pboxbuf, "sp_box_vobj_%s(", c->classes[poly_defcls].c_name);
+        const char *pbox = pval ? pboxbuf : "sp_box_nullable_obj((void *)(";
+        const char *pboxc = pval ? ")" : "), %d)";
+        /* The slot is POLY: the user operator is only the right answer when the
+           value really is an instance of that class. An Integer in the same
+           slot takes the numeric path, as it does everywhere else a poly
+           receiver dispatches to a user arm (#3733). */
+        /* ...the bit and shift operators as well: with one user `|` in the
+           program an Integer slot was read as that class's object and the
+           program crashed (#5469) */
+        const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
+                         : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
+                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
+                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
+                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
+                         : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
+        if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
+                             ref, ref, ref, poly_defcls);
+        else buf_printf(b, "%s = ", ref);
+        /* A value-type class takes `self` BY VALUE, so the boxed payload has
+           to be dereferenced -- `*(sp_X *)v.p`, the same unboxing the poly
+           dispatch arms make. Passing the pointer straight in did not compile
+           (#4278, the op-assign twin of #4091). */
+        buf_printf(b, "%ssp_%s_%s(%s(sp_%s *)(%s).v.p, _t%d)", pbox,
+                   c->classes[poly_defcls].c_name, mc(pms->name),
+                   pval ? "*" : "",
+                   c->classes[poly_defcls].c_name, ref, iatmp);
+        if (pval) buf_puts(b, pboxc);
+        else buf_printf(b, pboxc, poly_defcls);
+        if (pnum) {
+          /* the OTHER runtime kind folds the SAME evaluated value: re-emitting
+             the RHS ran its side effects twice (#4204) */
+          buf_printf(b, " : %s(%s, ", pnum, ref);
+          if (paramt == TY_POLY) buf_printf(b, "_t%d", iatmp);
+          else { char itn[24]; snprintf(itn, sizeof itn, "_t%d", iatmp);
+                 emit_boxed_text(c, paramt, itn, b); }
+          buf_puts(b, ")");
+        }
+        buf_puts(b, ";\n");
+      }
+      else if (emit_poly_op_assign(c, ref, op, nt_ref(nt, id, "value"), 1, b)) { }
+      else {
+        buf_printf(b, "%s %s= ", ref, op);
+        emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
+      }
+    }
+    else {
+      int ival = nt_ref(nt, id, "value");
+      TyKind rhst = comp_ntype(c, ival);
+      /* An int ivar op-assign takes the overflow-checked helpers like the
+         binary form (raw `@x *= y` wrapped where `@x * y` raised), and reads
+         the ivar before an effectful rhs, which may reassign it. */
+      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, vnil, b)) return 1;
+      buf_printf(b, "%s %s= ", ref, op ? op : "+");
+      /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
+         scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
+      if (rhst == TY_POLY && (vt == TY_INT || vt == TY_BOOL)) {
+        buf_puts(b, op_assign_int_conv(vt, op)); emit_expr(c, ival, b); buf_puts(b, ")");
+      }
+      else if (rhst == TY_POLY && vt == TY_FLOAT) {
+        buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, ival, b); buf_puts(b, ")");
+      }
+      else emit_coerce(c, ival, vt, CO_HOLD, "the operand of an `op=`", b);
+      buf_puts(b, ";\n");
+    }
+    return 1;
+  }
+  return 0;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -10991,504 +11494,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "(void)"); emit_slot_orw_value(c, ivt, lhs, v, is_or, b); buf_puts(b, "; }\n");
     return;
   }
-  if (sp_streq(ty, "InstanceVariableWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    /* `@a = @b = nil`: emit the inner writes as their own statements (each
-       target renders nil for its own slot type), then write nil here too. */
-    {
-      int ncb = comp_nil_chain_bottom(nt, v);
-      if (ncb >= 0) { emit_stmt_inner(c, v, b, indent); v = ncb; }
-    }
-    Scope *cws = comp_scope_of(c, id);
-    /* Ivar write inside instance_eval block: access ivar via receiver pointer. */
-    if (cws && cws->class_id < 0 && !cws->is_cmethod && g_ie_class_id >= 0) {
-      emit_indent(b, indent);
-      buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
-    }
-    /* Ivar write in a class/module body (outside any def): write to the
-       module-level civ_ variable. */
-    else if (cws && cws->class_id < 0 && !cws->is_cmethod && g_class_body_id >= 0) {
-      emit_indent(b, indent);
-      buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, iv_c(nm + 1));
-    }
-    /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
-    else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
-             comp_class_index(c, "Toplevel") >= 0) {
-      emit_indent(b, indent);
-      buf_printf(b, "civ_Toplevel_%s = ", iv_c(nm + 1));
-    }
-    /* True top-level or no-class scope: skip. */
-    else if (!cws || (cws->class_id < 0 && !cws->is_cmethod)) { return; }
-    else {
-      emit_indent(b, indent);
-      if (cws && cws->is_cmethod && cws->class_id >= 0)
-        buf_printf(b, "civ_%s_%s = ", c->classes[cws->class_id].name, iv_c(nm + 1));
-      else {
-        if (cws && cws->class_id >= 0)
-          emit_frozen_obj_guard(c, cws->class_id, g_self ? g_self : "self", b);
-        buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(nm + 1));
-      }
-    }
-    const char *vty = nt_type(nt, v);
-    int sc = cws ? cws->class_id : -1;
-    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    TyKind ivt = TY_INT;
-    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) ivt = c->classes[sc].ivar_types[iv]; }
-    int ven = 0;
-    int v_empty_array = vty && sp_streq(vty, "ArrayNode") && (nt_arr(nt, v, "elements", &ven), ven == 0);
-    int v_empty_hash = 0;
-    if (!v_empty_array && vty) {
-      int hen = 0;
-      if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))
-        v_empty_hash = (nt_arr(nt, v, "elements", &hen), hen == 0);
-    }
-    /* `@t = Array.new(n) { <int array> }` into a narrowed pointer-array ivar:
-       the generator emits from the NODE's type, which the narrowing (a slot
-       decision) does not change. Lend it the slot's type, exactly as the local
-       write does, or the sp_PolyArray * it builds lands in an sp_PtrArray *
-       field and every read of the table dereferences the wrong shape. */
-    if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "CallNode") &&
-        nt_ref(nt, v, "block") >= 0 && nt_str(nt, v, "name") &&
-        sp_streq(nt_str(nt, v, "name"), "new") && nt_ref(nt, v, "receiver") >= 0 &&
-        nt_type(nt, nt_ref(nt, v, "receiver")) &&
-        sp_streq(nt_type(nt, nt_ref(nt, v, "receiver")), "ConstantReadNode") &&
-        nt_str(nt, nt_ref(nt, v, "receiver"), "name") &&
-        sp_streq(nt_str(nt, nt_ref(nt, v, "receiver"), "name"), "Array")) {
-      int vw = view_push(c, v, ivt);
-      emit_expr(c, v, b);
-      view_pop(c, vw);
-    }
-    else if (ty_is_ptr_array(ivt) && v_empty_array) buf_puts(b, "sp_PtrArray_new()");
-    /* `@t = [[..], [..]]` into a narrowed pointer-array ivar: build the
-       sp_PtrArray with the unboxed element pointers, as the local write does. */
-    else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "ArrayNode")) {
-      int tpa = ++g_tmp;
-      buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", tpa, tpa);
-      int pen = 0; const int *pel = nt_arr(nt, v, "elements", &pen);
-      for (int e = 0; e < pen; e++) {
-        buf_printf(b, " sp_PtrArray_push(_t%d, ", tpa); emit_expr(c, pel[e], b); buf_puts(b, ");");
-      }
-      buf_printf(b, " _t%d; })", tpa);
-    }
-    else if (ivt == TY_INT && emit_nullable_int_ternary(c, v, b)) {
-      /* `@iv = cond ? nil : <int>` emitted in int context (nil -> SP_INT_NIL) */
-    }
-    else if (vty && sp_streq(vty, "NilNode")) {
-      switch (ivt) {
-      case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
-      case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
-      case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
-      case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
-      case TY_STRING: buf_puts(b, "NULL"); break;
-      default: buf_puts(b, default_value_from_compiler(c, ivt)); break;
-      }
-    }
-    else if ((v_empty_array || v_empty_hash) && emit_empty_literal_as(c, v, ivt, b)) {
-      /* the literal took the slot's variant */
-    }
-    else if (ivt == TY_STRBUF) {
-      /* shared handle slot: an alias RHS (a shared local/ivar read) copies
-         the handle; anything else wraps a fresh handle, inheriting the
-         source's frozen state (#3227 P4) */
-      char srefW[1024];
-      if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
-      else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
-      else {
-        buf_puts(b, "sp_String_new_shared(");
-        emit_str_expr(c, v, b);
-        buf_puts(b, ")");
-      }
-    }
-    else if (ivt == TY_POLY && comp_ntype(c, v) != TY_POLY) {
-      /* a poly ivar slot needs a boxed RHS */
-      emit_boxed(c, v, b);
-    }
-    else if (ivt == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
-             comp_ntype(c, v) != TY_POLY_ARRAY) {
-      /* a typed array RHS into a poly-array ivar slot is rebuilt with its
-         elements boxed, the same conversion the local write makes -- the
-         slot widened on element evidence (a push of another type, #4196)
-         that the RHS's own node never saw */
-      emit_poly_array_from(c, v, b);
-    }
-    /* An int RHS into a bigint ivar is promoted at the boundary, the same way
-       the local assignment and the argument binding do it. Without it `@n = 0`
-       on an ivar that elsewhere sees a Bignum wrote the integer 0 into an
-       sp_Bigint * slot -- a null pointer constant, so the C compiled clean and
-       the first sp_bigint_add on it segfaulted (#3399 sibling; found while
-       fixing the argument side). */
-    else if (ivt == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT &&
-             ty_is_numeric(comp_ntype(c, v))) {
-      buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, v, b); buf_puts(b, ")");
-    }
-    else if (seeded_array_kind_mismatch(ivt, comp_ntype(c, v))) {
-      /* An array of another kind into an array ivar a true --rbs seed kept at
-         its own kind: `@storage: Array[Integer]` assigned a helper's result
-         that inference, seeing only an empty `[]` default, typed a general
-         Array. The slot cannot widen, so the value converts the way a boxed
-         one does (#4424); the raw pointer went into the other struct's slot
-         and the C did not build. */
-      emit_array_store_value(c, ivt, v, b);
-    }
-    else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_POLY) {
-      /* poly rhs assigned to a typed ivar: unbox to the concrete type. The
-         nil-preserving form -- the RHS is a tagged union whose nil-ness is not
-         ruled out here, and an --rbs `Integer?` / `Float?` pin makes this
-         exactly the slot a nil is expected to survive in (#3412). */
-      Buf _rb; memset(&_rb, 0, sizeof _rb);
-      emit_expr(c, v, &_rb);
-      /* A seeded slot is the only place a narrowing can be WRONG rather than
-         merely lossy, so that is where the assertion goes (#3412). */
-      Buf _ck; memset(&_ck, 0, sizeof _ck);
-      if (sc >= 0 && class_ivar_pinned(&c->classes[sc], nm))
-        emit_rbs_checked_text(c, ivt, nm, _rb.p ? _rb.p : "sp_box_nil()", &_ck);
-      else buf_puts(&_ck, _rb.p ? _rb.p : "sp_box_nil()");
-      emit_unbox_nilable_text(c, ivt, _ck.p ? _ck.p : "sp_box_nil()", b);
-      free(_ck.p);
-      free(_rb.p);
-    }
-    else if (comp_ntype(c, v) == TY_UNKNOWN && (ty_is_array(ivt) || ty_is_hash(ivt)) &&
-             emit_empty_container_for_slot(c, v, ivt, b)) {
-      /* an untyped `Hash.new` / `Array.new` (a top-level ivar's, which no use
-         typed) is built at the slot's type, not taken for a raising call */
-    }
-    else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, v) == TY_UNKNOWN) {
-      /* an unresolved call typed TY_UNKNOWN whose value is the gate's
-         sp_raise_nomethod(...) poly token, assigned to a typed ivar slot
-         (`@settings = TypedStore.write(...)` where write is unresolved):
-         coerce the token to the slot type, keeping the raise. */
-      emit_unresolved_coerced(c, v, ivt, b);
-    }
-    else {
-      /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
-      emit_obj_upcast_prefix(c, ivt, comp_ntype(c, v), b);
-      emit_coerce(c, v, ivt, CO_HOLD, "an instance variable write", b);
-    }
-    buf_puts(b, ";\n");
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");  /* "@@x" */
-    int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable write (no class scope)"); return; }
-    sc = comp_cvar_owner(c, sc, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[sc], nm);
-    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
-    emit_indent(b, indent);
-    buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
-    if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
-    else if (ct == TY_POLY) emit_boxed(c, v, b);
-    else if (emit_array_into_poly_slot(c, ct, v, b)) { }
-    /* `@@x = nil` into a slot typed by its later writes is the slot's nil,
-       not the numeric 0 a bare NilNode renders as: `@@quiet = nil` then
-       `@@quiet = 1` read back 0 before the write (mattr_accessor's default) */
-    else if (nt_kind(nt, v) == NK_NilNode && ct != TY_UNKNOWN) emit_ret_nil(c, ct, b);
-    /* an int into a bigint slot promotes at the boundary, as everywhere else */
-    else if (ct == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) emit_bigint_operand_ext(c, v, b);
-    /* a boxed value into a typed slot is unboxed into it (see the value form) */
-    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
-      Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
-    }
-    else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
-    buf_puts(b, "; ");
-    emit_cvar_set_flag(c, sc, nm, 0, b);
-    buf_puts(b, "\n");
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return; }
-    sc = comp_cvar_owner(c, sc, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[sc], nm);
-    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
-    emit_indent(b, indent);
-    if (ct == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
-      emit_str_expr(c, v, b); buf_puts(b, ");\n");
-    }
-    else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
-    else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1,
-                                   idx >= 0 && c->classes[sc].cvar_nullable_int[idx], b)) { }
-    else {
-      buf_printf(b, "%s %s= ", ref, op ? op : "+");
-      emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
-    }
-    return;
-  }
-  if (sp_streq(ty, "ClassVariableOrWriteNode") || sp_streq(ty, "ClassVariableAndWriteNode")) {
-    int is_or = sp_streq(ty, "ClassVariableOrWriteNode");
-    const char *nm = nt_str(nt, id, "name");
-    int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return; }
-    sc = comp_cvar_owner(c, sc, nm);
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
-    int oidx = comp_cvar_index(&c->classes[sc], nm);
-    TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
-    emit_indent(b, indent);
-    /* a boxed slot (one written nil and a bool, #4884) tests and stores as
-       the value form does */
-    buf_puts(b, is_or ? "if (!" : "if ");
-    emit_slot_truthy(ot, ref, b);
-    buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
-    if (ot == TY_POLY) emit_boxed(c, v, b);
-    else emit_coerce(c, v, ot, CO_HOLD, "a class variable's `||=` or `&&=`", b);
-    buf_puts(b, "; ");
-    emit_cvar_set_flag(c, sc, nm, 0, b);
-    buf_puts(b, "}\n");
-    return;
-  }
-  if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    const char *op = nt_str(nt, id, "binary_operator");
-    int sc = comp_scope_of(c, id)->class_id;
-    /* same scope ladder as the plain-write form: class body civ_, then the
-       Toplevel pseudo-class global (a bare `self` here is undeclared C) */
-    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
-    TyKind vt = TY_UNKNOWN;
-    int vnil = 0;
-    if (sc >= 0) {
-      int iv = comp_ivar_index(&c->classes[sc], nm);
-      if (iv >= 0) { vt = c->classes[sc].ivar_types[iv]; vnil = c->classes[sc].ivar_nullable_int[iv]; }
-    }
-    char ref[300];
-    Scope *cs = comp_scope_of(c, id);
-    if (cs && cs->is_cmethod && cs->class_id >= 0)
-      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
-    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
-             g_class_body_id >= 0)
-      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
-    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
-             comp_class_index(c, "Toplevel") >= 0)
-      snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
-    else
-      snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-    emit_indent(b, indent);
-    /* An op-assign is a write, so a frozen receiver refuses it the way a plain
-       `@x = v` does: `c.freeze; c.bump` was changing the ivar (#3736). */
-    if (cs && cs->class_id >= 0 && !cs->is_cmethod &&
-        strncmp(ref, "civ_", 4) != 0)
-      emit_frozen_obj_guard(c, cs->class_id, g_self ? g_self : "self", b);
-    /* A bigint ivar has no C operator: `@n += 1` emitted pointer arithmetic on
-       an incomplete struct. Route it through the bigint helpers, promoting an
-       int operand at the boundary like every other bigint slot. */
-    if (vt == TY_BIGINT && op && is_add_sub_mul(op)) {
-      const char *fn = sp_streq(op, "+") ? "sp_bigint_add"
-                     : sp_streq(op, "-") ? "sp_bigint_sub" : "sp_bigint_mul";
-      buf_printf(b, "%s = %s(%s, ", ref, fn, ref);
-      emit_bigint_operand_ext(c, nt_ref(nt, id, "value"), b);
-      buf_puts(b, ");\n");
-    }
-    /* `@t += n` / `@t -= n` on a Time slot: the same arm the local form
-       takes (a Time is a struct; the raw C operator below cannot add to it) */
-    else if (vt == TY_TIME && op && (sp_streq(op, "+") || sp_streq(op, "-")) &&
-             (comp_ntype(c, nt_ref(nt, id, "value")) == TY_INT ||
-              comp_ntype(c, nt_ref(nt, id, "value")) == TY_FLOAT)) {
-      int ival = nt_ref(nt, id, "value");
-      int neg = sp_streq(op, "-");
-      if (comp_ntype(c, ival) == TY_INT) {
-        buf_printf(b, "%s = %s(%s, ", ref, neg ? "sp_time_sub_i" : "sp_time_add_i", ref);
-        emit_expr(c, ival, b); buf_puts(b, ");\n");
-      }
-      else {
-        buf_printf(b, "%s = sp_time_add_f(%s, %s(", ref, ref, neg ? "-" : "");
-        emit_expr(c, ival, b); buf_puts(b, "));\n");
-      }
-    }
-    else if (vt == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
-      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
-    }
-    else if (op && sp_streq(op, "+") && ty_is_array(vt)) {
-      /* `@arr += other` = `@arr = @arr + other` (#3289), mirroring the
-         local-variable arm: same-kind concat, empty-literal rhs is a no-op
-         concat with NULL */
-      int ival2 = nt_ref(nt, id, "value");
-      TyKind rvt2 = comp_ntype(c, ival2);
-      const char *k2 = (vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt);
-      int rhs_empty2 = 0;
-      { const char *vty2 = nt_type(nt, ival2);
-        if (vty2 && sp_streq(vty2, "ArrayNode")) {
-          int nel2 = 0; nt_arr(nt, ival2, "elements", &nel2);
-          rhs_empty2 = (nel2 == 0);
-        } }
-      if (k2 && (rvt2 == vt || rhs_empty2) && emit_array_op_assign(c, ref, vt, op, ival2, b)) { }
-      else if (vt == TY_POLY_ARRAY) {
-        buf_printf(b, "%s = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(%s), ",
-                   ref, ref);
-        emit_boxed(c, ival2, b);
-        buf_puts(b, "));\n");
-      }
-      else {
-        unsupported(c, id, "ivar += with a mismatched array kind");
-      }
-    }
-    else if (emit_array_op_assign(c, ref, vt, op, nt_ref(nt, id, "value"), b)) { }
-    else if (op && ty_is_object(vt)) {
-      int idefcls = -1;
-      int icid = ty_object_class(vt);
-      int imi = comp_method_in_chain(c, icid, op, &idefcls);
-      if (imi >= 0) {
-        Scope *ims = &c->scopes[imi];
-        LocalVar *ip = ims->nparams >= 1 ? scope_local(ims, ims->pnames[0]) : NULL;
-        int iatmp = ++g_tmp;
-        int ival = nt_ref(nt, id, "value");
-        TyKind ipt = ip ? ip->type : comp_ntype(c, ival);
-        /* render the value into a side buffer FIRST: an RHS that is itself a
-           call hoists its own argument temps through g_pre, and emitting it
-           while this declaration line is half-written spliced those
-           statements into the initializer (#4204) */
-        Buf irv; memset(&irv, 0, sizeof irv);
-        /* box the rhs when the operator's param widened to poly (promote mode) */
-        if (ipt == TY_POLY && comp_ntype(c, ival) != TY_POLY) emit_boxed(c, ival, &irv);
-        else emit_expr(c, ival, &irv);
-        emit_indent(g_pre, g_indent);
-        emit_ctype(c, ipt, g_pre);
-        buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
-        free(irv.p);
-        buf_printf(b, "%s = sp_%s_%s((sp_%s *)%s, _t%d);\n",
-                   ref, c->classes[idefcls].c_name, mc(ims->name),
-                   c->classes[idefcls].c_name, ref, iatmp);
-      }
-      else {
-        buf_printf(b, "%s %s= ", ref, op);
-        emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
-      }
-    }
-    else if (op && vt == TY_POLY) {
-      /* @ivar OP= rhs where ivar is poly (e.g. nil | user_object). Scan for a
-         unique user class defining OP and dispatch through .v.p cast. */
-      int poly_defcls = -1, poly_mi = -1;
-      for (int _ci = 0; _ci < c->nclasses; _ci++) {
-        int _di = -1;
-        int _mi2 = comp_method_in_chain(c, _ci, op, &_di);
-        if (_mi2 >= 0) { poly_mi = _mi2; poly_defcls = _di; break; }
-      }
-      if (poly_mi >= 0 && poly_defcls >= 0) {
-        int ival = nt_ref(nt, id, "value");
-        TyKind rhst = comp_ntype(c, ival);
-        Scope *pms = &c->scopes[poly_mi];
-        LocalVar *pp = pms->nparams >= 1 ? scope_local(pms, pms->pnames[0]) : NULL;
-        TyKind paramt = (pp && pp->type != TY_UNKNOWN) ? pp->type : rhst;
-        if (paramt == TY_UNKNOWN) paramt = TY_INT;
-        int iatmp = ++g_tmp;
-        /* render the value into a side buffer FIRST: an RHS that is itself a
-           call hoists its own argument temps through g_pre, and emitting it
-           while this declaration line is half-written spliced those
-           statements into the initializer -- `@result += sum(0)` with a
-           widened sum came out as a declaration inside a declaration (#4204) */
-        Buf irv; memset(&irv, 0, sizeof irv);
-        /* the temp is declared with the OPERATOR's parameter type, so the
-           call-site value has to be converted into it (a raw sp_int landed
-           in an sp_RbVal slot, #3733) */
-        if (paramt == TY_POLY && rhst != TY_POLY) emit_boxed(c, ival, &irv);
-        else if (paramt != TY_POLY && rhst == TY_POLY) {
-          Buf rvb; memset(&rvb, 0, sizeof rvb); emit_expr(c, ival, &rvb);
-          emit_unbox_text(c, paramt, rvb.p ? rvb.p : "sp_box_nil()", &irv);
-          free(rvb.p);
-        }
-        else emit_expr(c, ival, &irv);
-        emit_indent(g_pre, g_indent);
-        emit_ctype(c, paramt, g_pre);
-        buf_printf(g_pre, " _t%d = %s;\n", iatmp, irv.p ? irv.p : "");
-        free(irv.p);
-        if (paramt == TY_POLY) {
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", iatmp);
-        }
-        /* The operator method can `return nil` (a NULL reference); box a
-           reference-type result via sp_box_nullable_obj so NULL becomes nil, not
-           a truthy wrapper. A value-type class is never NULL, and its operator
-           answers a STRUCT: sp_box_vobj_<C> is the boxer that takes one and
-           heap-copies it, the same one every other value-type arm uses. The
-           by-value/by-pointer pair below moves with it (#4278). */
-        int pval = c->classes[poly_defcls].is_value_type;
-        char pboxbuf[160];
-        if (pval)
-          snprintf(pboxbuf, sizeof pboxbuf, "sp_box_vobj_%s(", c->classes[poly_defcls].c_name);
-        const char *pbox = pval ? pboxbuf : "sp_box_nullable_obj((void *)(";
-        const char *pboxc = pval ? ")" : "), %d)";
-        /* The slot is POLY: the user operator is only the right answer when the
-           value really is an instance of that class. An Integer in the same
-           slot takes the numeric path, as it does everywhere else a poly
-           receiver dispatches to a user arm (#3733). */
-        /* ...the bit and shift operators as well: with one user `|` in the
-           program an Integer slot was read as that class's object and the
-           program crashed (#5469) */
-        const char *pnum = sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub"
-                         : sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div"
-                         : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
-                         : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
-                         : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
-                         : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
-        if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
-                             ref, ref, ref, poly_defcls);
-        else buf_printf(b, "%s = ", ref);
-        /* A value-type class takes `self` BY VALUE, so the boxed payload has
-           to be dereferenced -- `*(sp_X *)v.p`, the same unboxing the poly
-           dispatch arms make. Passing the pointer straight in did not compile
-           (#4278, the op-assign twin of #4091). */
-        buf_printf(b, "%ssp_%s_%s(%s(sp_%s *)(%s).v.p, _t%d)", pbox,
-                   c->classes[poly_defcls].c_name, mc(pms->name),
-                   pval ? "*" : "",
-                   c->classes[poly_defcls].c_name, ref, iatmp);
-        if (pval) buf_puts(b, pboxc);
-        else buf_printf(b, pboxc, poly_defcls);
-        if (pnum) {
-          /* the OTHER runtime kind folds the SAME evaluated value: re-emitting
-             the RHS ran its side effects twice (#4204) */
-          buf_printf(b, " : %s(%s, ", pnum, ref);
-          if (paramt == TY_POLY) buf_printf(b, "_t%d", iatmp);
-          else { char itn[24]; snprintf(itn, sizeof itn, "_t%d", iatmp);
-                 emit_boxed_text(c, paramt, itn, b); }
-          buf_puts(b, ")");
-        }
-        buf_puts(b, ";\n");
-      }
-      else if (emit_poly_op_assign(c, ref, op, nt_ref(nt, id, "value"), 1, b)) { }
-      else {
-        buf_printf(b, "%s %s= ", ref, op);
-        emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
-      }
-    }
-    else {
-      int ival = nt_ref(nt, id, "value");
-      TyKind rhst = comp_ntype(c, ival);
-      /* An int ivar op-assign takes the overflow-checked helpers like the
-         binary form (raw `@x *= y` wrapped where `@x * y` raised), and reads
-         the ivar before an effectful rhs, which may reassign it. */
-      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, vnil, b)) return;
-      buf_printf(b, "%s %s= ", ref, op ? op : "+");
-      /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
-         scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
-      if (rhst == TY_POLY && (vt == TY_INT || vt == TY_BOOL)) {
-        buf_puts(b, op_assign_int_conv(vt, op)); emit_expr(c, ival, b); buf_puts(b, ")");
-      }
-      else if (rhst == TY_POLY && vt == TY_FLOAT) {
-        buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, ival, b); buf_puts(b, ")");
-      }
-      else emit_coerce(c, ival, vt, CO_HOLD, "the operand of an `op=`", b);
-      buf_puts(b, ";\n");
-    }
-    return;
-  }
+  if (emit_ivar_cvar_write_stmt(c, id, b, indent, nt, ty)) return;
   if (sp_streq(ty, "CallOperatorWriteNode")) {
     /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
        speed`) has neither a statement-level handler here nor an
