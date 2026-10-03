@@ -2267,7 +2267,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
 /* The Integer receiver of n.times / lo.upto / hi.downto: a boxed one that is
    not an Integer -- nil above all -- has no such method (NoMethodError), where
    the argument conversion raised TypeError for it. */
-static void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
+void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
   if (comp_ntype(c, recv) == TY_POLY) {
     buf_puts(b, "sp_poly_int_recv("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name);
     return;
@@ -25171,70 +25171,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
 
   if (emit_call_safe_nav_arms(c, id, b, nt, name, recv)) return;
 
-  /* range.step(n) { } in expression position: run the loop, evaluate to the
-     receiver range (Ruby returns self) (#2415) */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE) &&
-      sp_streq(name, "step")) {
-    buf_puts(b, "({ ");
-    emit_iteration_stmt(c, id, b, 0);
-    emit_expr(c, recv, b); buf_puts(b, "; })");
-    return;
-  }
-  /* n.times/upto/downto/step { ... } in expression position: run the loop
-     (lowered to a statement) and evaluate to the receiver (Ruby returns self).
-     A Rational receiver only steps. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      ((comp_ntype(c, recv) == TY_INT &&
-        (sp_streq(name, "times") || sp_streq(name, "upto") ||
-         sp_streq(name, "downto") || sp_streq(name, "step"))) ||
-       /* a Float steps too, and a boxed receiver's Float arm re-enters here
-          in expression position (#4763) */
-       ((comp_ntype(c, recv) == TY_RATIONAL || comp_ntype(c, recv) == TY_FLOAT ||
-         comp_ntype(c, recv) == TY_BIGINT) &&
-        sp_streq(name, "step")))) {
-    /* the receiver is read twice, by the loop and as the answer: one that
-       acts (`next_n.times { }`) is bound once */
-    int bound = iter_recv_bind_once(c, recv);
-    buf_puts(b, "({ ");
-    emit_iteration_stmt(c, id, b, 0);
-    emit_expr(c, recv, b); buf_puts(b, "; })");
-    if (bound) view_unbind(g_n_argov - 1);
-    return;
-  }
-  /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
-  /* A boxed receiver (an Integer parameter under promote mode) is unboxed
-     with the argument conversion, which is what the block forms do. */
-  if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
-      (comp_ntype(c, recv) == TY_INT || comp_ntype(c, recv) == TY_POLY) &&
-      comp_ntype(c, id) == TY_RANGE) {
-    if (sp_streq(name, "times")) {
-      buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_int_recv_named(c, recv, name, b); buf_puts(b, ", .excl = 1 }");
-      return;
-    }
-    if (sp_streq(name, "upto") && argc == 1) {
-      /* a Float limit is not truncated: n.upto(2.5) stops at 2, i.e. floor. */
-      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
-      buf_puts(b, "(sp_Range){ .first = "); emit_int_recv_named(c, recv, name, b);
-      buf_puts(b, ", .last = ");
-      if (lf) { buf_puts(b, "(sp_int)floor("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", .excl = 0 }");
-      return;
-    }
-    if (sp_streq(name, "downto") && argc == 1) {
-      /* descending: first=hi(recv), last=lo(arg), step=-1 -- an ascending range
-         cannot carry the direction, which its .to_a would lose. A Float limit
-         is not truncated: n.downto(1.5) stops at 2, i.e. ceil. */
-      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
-      buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
-      buf_puts(b, ", ");
-      if (lf) { buf_puts(b, "(sp_int)ceil("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", 0, -1LL)");
-      return;
-    }
-  }
+  if (emit_call_iter_expr_arms(c, id, b, nt, name, recv, argc, argv)) return;
 
   if (emit_call_poly_callable_arms(c, id, b, nt, name, recv, argc, argv)) return;
   if (emit_call_method_obj_arms(c, id, b, nt, name, recv, argc, argv)) return;
@@ -25498,40 +25435,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && (rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE) &&
       emit_range_call(c, id, b)) return;
 
-  /* string-range literal methods: the int-only sp_Range struct can't hold
-     string bounds, so inline strcmp / char-iteration for a literal
-     `("a".."z")` receiver. */
-  /* A string-range LITERAL is the distinct sp_StrRange value type now, served
-     by emit_range_call; this arm is left for the shapes that still type as the
-     int TY_RANGE (a mixed or beginless/endless string range). (#3064) */
-  if (recv >= 0 && rt == TY_RANGE && nt_type(nt, unwrap_parens(c, recv)) &&
-      sp_streq(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
-    int rnode = unwrap_parens(c, recv);
-    int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
-    if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
-      int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
-      if ((sp_streq(name, "include?") || sp_streq(name, "member?") ||
-           sp_streq(name, "cover?") || sp_streq(name, "===")) && argc == 1) {
-        if (a0 != TY_STRING) {
-          /* a non-string can't be in a string range: false (eval arg) */
-          buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-        }
-        else {
-          int ta = ++g_tmp;
-          buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, argv[0], b);
-          buf_puts(b, "; (sp_str_cmp_bytes("); emit_expr(c, lo, b); buf_printf(b, ", _t%d) <= 0 && sp_str_cmp_bytes(_t%d, ", ta, ta);
-          emit_expr(c, hi, b); buf_printf(b, ") %s 0); })", excl ? "<" : "<=");
-        }
-        return;
-      }
-      if (sp_streq(name, "to_a") && argc == 0) {
-        /* succ-based string range (handles multi-char: "aa".."ac" etc.) */
-        buf_puts(b, "sp_StrArray_from_string_range("); emit_expr(c, lo, b);
-        buf_puts(b, ", "); emit_expr(c, hi, b); buf_printf(b, ", %d)", excl);
-        return;
-      }
-    }
-  }
+  if (emit_call_range_literal_arms(c, b, nt, name, recv, argc, argv, rt, a0)) return;
 
   if (emit_or_take_back(c, id, b, emit_range_call)) return;
 

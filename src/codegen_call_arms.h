@@ -51,6 +51,8 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
 int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_openstruct_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
+int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -238,5 +240,6 @@ int method_node_recv_class(Compiler *c, int recv, int dflt);
 int method_poly_abi(Compiler *c, int mi, int recv_bound, int *out_fixed, int *out_ret);
 int method_scope_arity(Compiler *c, int target, int *out);
 void emit_bm_legacy_ok(Buf *b, int tmp, int argc, const char *arg_sig);
+void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b);
 
 #endif
