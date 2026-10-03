@@ -149,6 +149,7 @@ void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep);
 const char*sp_str_undump(const char*s);
 const char*sp_str_succ_impl(const char*s);
 const char*sp_str_succ(const char*s);
+const char*sp_str_succ_n(const char*s,sp_int n);
 sp_StrArray*sp_str_split(const char*s,const char*sep);
 sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep);
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n);

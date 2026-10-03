@@ -612,6 +612,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STR_RANGE, "instance_of?", 0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_STR_RANGE, "equal?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_STR_RANGE, "respond_to?",  0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { TY_STR_RANGE, "step",         0,   1, BF_REQUIRED, TY_STR_RANGE,   BOPE_NONE },  /* with a block: the receiver, as CRuby */
   { TY_STR_RANGE, "step",         1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_StrArray *_t$t = sp_srange_to_a(_t$T); SP_GC_ROOT(_t$t); sp_int _t$u = $i0; if (_t$u <= 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\"); sp_StrArray *_t$v = sp_StrArray_new(); SP_GC_ROOT(_t$v); for (sp_int _t$w = 0; _t$w < sp_StrArray_length(_t$t); _t$w += _t$u) sp_StrArray_push(_t$v, sp_StrArray_get(_t$t, _t$w)); sp_Enumerator_new_from(sp_box_str_array(_t$v)); })" },
   { TY_STR_RANGE, "%",            1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_StrArray *_t$t = sp_srange_to_a(_t$T); SP_GC_ROOT(_t$t); sp_int _t$u = $i0; if (_t$u <= 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\"); sp_StrArray *_t$v = sp_StrArray_new(); SP_GC_ROOT(_t$v); for (sp_int _t$w = 0; _t$w < sp_StrArray_length(_t$t); _t$w += _t$u) sp_StrArray_push(_t$v, sp_StrArray_get(_t$t, _t$w)); sp_Enumerator_new_from(sp_box_str_array(_t$v)); })" },
   { TY_STR_RANGE, "class",        0, 127, BF_ANY,      TY_CLASS,       BOPE_NONE },

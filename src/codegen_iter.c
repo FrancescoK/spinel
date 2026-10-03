@@ -4151,7 +4151,8 @@ int iter_value_answers_recv(Compiler *c, int id) {
            read a void expression */
         (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0 &&
          (comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_RANGE ||
-          comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_FLOAT_RANGE));
+          comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_FLOAT_RANGE ||
+          comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_STR_RANGE));
 }
 
 /* A receiver the value of an iteration answers is read twice, once under the
@@ -6308,6 +6309,38 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     view_pop(c, v);
     view_unbind(g_n_argov - 1);
     return done;
+  }
+
+  /* ("a".."e").step(k) { |s| ... } walks every k-th member, as CRuby 4.0
+     does: a bounded range's members materialize once, an endless one's
+     follow by succ without end, and a step of zero or less yields the begin
+     alone (CRuby yields it once and stops). It answers the range. */
+  if (sp_streq(name, "step") && rt == TY_STR_RANGE) {
+    int args = nt_ref(nt, id, "arguments"); int sargc = 0;
+    const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
+    if (sargc > 1 || (sargc == 1 && comp_ntype(c, sargv[0]) != TY_INT)) return 0;
+    int tr = ++g_tmp, tk = ++g_tmp, ta = ++g_tmp, tx = ++g_tmp, ti = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "sp_int _t%d = ", tk);
+    if (sargc == 1) emit_int_expr(c, sargv[0], b); else buf_puts(b, "1");
+    buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
+    emit_indent(b, indent);
+    buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; (_t%d > 0 || _t%d == 0) && (_t%d ? _t%d < sp_StrArray_length(_t%d) : 1);"
+                  " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : sp_str_succ_n(_t%d, _t%d)) {\n",
+               ti, tk, ti, ta, ti, ta, ti, tk, tk, tx, ta, tx, tx, tk);
+    char elem[96]; snprintf(elem, sizeof elem, "(_t%d ? sp_StrArray_get(_t%d, _t%d) : _t%d)", ta, ta, ti, tx);
+    if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
   }
 
   /* (range).step(k) { |x| ... } -- materialise the stepped values (shared with

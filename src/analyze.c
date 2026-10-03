@@ -6075,8 +6075,8 @@ static int desugar_str_range_methods(Compiler *c) {
     "to_a", "entries",
     /* Range#size counts integer elements: nil for a string range */
     "size",
-    /* step / % walk the members by stride: their own arm answers. The block
-       form has no arm, so it keeps riding the materialized array (#3671). */
+    /* step / % walk the members by stride: their own arm answers, the block
+       form's too when the stride is an Integer (see below, #3671). */
     "step", "%", NULL };
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
@@ -6094,9 +6094,14 @@ static int desugar_str_range_methods(Compiler *c) {
     int native = 0;
     for (int j = 0; range_native[j]; j++)
       if (sp_streq(nm, range_native[j])) { native = 1; break; }
-    /* a block-driven step is `step(n).each { }`: the blockless arm answers the
-       Enumerator, whose each the array path already drives (#3671) */
-    if (native && sp_streq(nm, "step") && nt_ref(nt, id, "block") >= 0) {
+    /* a block-driven step by an Integer has its own arm (the statement
+       iteration's String-range step), which walks an endless range too and
+       answers the range; any other stride is `step(n).each { }`: the blockless
+       arm answers the Enumerator, whose each the array path already drives
+       (#3671) */
+    int int_stride = an == 0 ||
+        (an == 1 && infer_type(c, nt_arr(nt, argn, "arguments", &an)[0]) == TY_INT);
+    if (native && sp_streq(nm, "step") && nt_ref(nt, id, "block") >= 0 && !int_stride) {
       int inner = nt_new_node(nt, "CallNode");
       if (inner < 0) continue;
       nt_node_set_str(nt, inner, "name", "step");

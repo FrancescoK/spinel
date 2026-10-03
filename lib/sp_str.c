@@ -907,6 +907,9 @@ for(;;){
 /* succ_impl records the real length on every path now, so the old strlen
    normalisation here would UNDO it for a source holding a NUL. */
 const char*sp_str_succ(const char*s){SP_GC_ROOT_STR(s);return sp_str_succ_impl(s);}
+/* succ applied n times (n < 1: the string itself): the next member of an
+   endless String range walked by step(n) */
+const char*sp_str_succ_n(const char*s,sp_int n){SP_GC_ROOT_STR(s);for(sp_int i=0;i<n;i++)s=sp_str_succ_impl(s);return s;}
 sp_StrArray*sp_str_split(const char*s,const char*sep){if(!s)sp_nil_recv("split");
   SP_GC_ROOT_STR(s);
   SP_GC_ROOT_STR(sep);
