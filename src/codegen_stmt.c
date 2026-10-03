@@ -10293,6 +10293,358 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   return 0;
 }
 
+/* A CallNode statement: the statement-level fast paths ahead of emit_expr (emit_stmt_inner's arms, in their order) */
+static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "CallNode"))) return 0;
+  /* Reflection-mutation calls (remove_method/undef_method/remove_class_variable)
+     in a class body are otherwise dropped silently; report the documented
+     limit instead of pretending they took effect (#2954, #2955). */
+  {
+    const char *rnm = nt_str(nt, id, "name");
+    if (rnm && (sp_streq(rnm, "remove_method") || sp_streq(rnm, "undef_method") ||
+                sp_streq(rnm, "remove_class_variable")) &&
+        diagnose_unsupported_call(c, id)) return 1;
+  }
+  /* declarative-only calls emitted as no-ops */
+  {
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 && nm && (sp_streq(nm, "include") || sp_streq(nm, "extend") ||
+                           sp_streq(nm, "prepend") || sp_streq(nm, "module_function") ||
+                           sp_streq(nm, "private") || sp_streq(nm, "protected") ||
+                           sp_streq(nm, "public") || sp_streq(nm, "attr_reader") ||
+                           sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor") ||
+                           sp_streq(nm, "attr"))) {
+      /* These are class-body declarations handled at analysis time; skip.
+         Exception: a visibility call naming a method the class does not
+         define raises NameError when the body executes, per CRuby. */
+      if (is_visibility_name(nm)) {
+        int vcid = g_class_body_id >= 0 ? g_class_body_id
+                 : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
+        if (vcid >= 0) {
+          int vargs = nt_ref(nt, id, "arguments");
+          int van = 0;
+          const int *vav = vargs >= 0 ? nt_arr(nt, vargs, "arguments", &van) : NULL;
+          for (int vi = 0; vi < van; vi++) {
+            const char *vaty = nt_type(nt, vav[vi]);
+            const char *mn = NULL;
+            if (vaty && sp_streq(vaty, "SymbolNode")) mn = nt_str(nt, vav[vi], "value");
+            else if (vaty && sp_streq(vaty, "StringNode")) mn = nt_str(nt, vav[vi], "unescaped");
+            if (!mn) continue;
+            size_t ml = strlen(mn);
+            char wb[256]; wb[0] = '\0';
+            if (ml > 0 && mn[ml - 1] == '=' && ml - 1 < sizeof wb) {
+              memcpy(wb, mn, ml - 1); wb[ml - 1] = '\0';
+            }
+            int found = comp_method_in_chain(c, vcid, mn, NULL) >= 0 ||
+                        comp_reader_in_chain(c, vcid, mn, NULL) ||
+                        (wb[0] && comp_writer_in_chain(c, vcid, wb, NULL));
+            if (!found) {
+              emit_indent(b, indent);
+              buf_printf(b, "sp_raise_cls(\"NameError\", \"undefined method '%s' for class '%s'\");\n",
+                         mn, class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name);
+              return 1;
+            }
+          }
+        }
+      }
+      return 1;
+    }
+  }
+  /* A statement-position call whose block top-level-breaks needs its own
+     wrapper here: the inline/iteration emitters below would splice the
+     block without one, leaving the break to target a WRONG enclosing scope
+     (or a bare C `break`). The wrapper emits everything through g_pre. */
+  if (id != g_brk_skip_id && call_breaks(c, id)) {
+    Buf pre; memset(&pre, 0, sizeof pre);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &pre; g_indent = indent;
+    emit_brk_wrapped_call(c, id, NULL);
+    g_pre = sv_pre; g_indent = sv_ind;
+    if (pre.p) buf_puts(b, pre.p);
+    free(pre.p);
+    return 1;
+  }
+  if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return 1; }
+  { int grecv = -1;
+    if (id != g_ivar_nil_guarded_id && ivar_nil_recv_guard(c, id, &grecv)) {
+      emit_ivar_nil_guard(c, id, grecv, b, indent);
+      int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
+      emit_stmt_inner(c, id, b, indent);
+      g_ivar_nil_guarded_id = sv;
+      return 1;
+    } }
+  if (is_blockless_block_param_call(c, id)) {
+    /* forwarded real proc: <blk>.call(args) for effect; else no block was
+       passed, the parameter is nil, and the call raises NoMethodError */
+    if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
+    else if (!(nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&."))) {
+      emit_indent(b, indent);
+      buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+                 blockless_block_param_call_name(c, id));
+    }
+    return 1;
+  }
+  if (emit_output_call(c, id, b, indent)) return 1;
+  if (emit_inline_call(c, id, b, indent)) return 1;
+  if (emit_poly_recv_block_dispatch(c, id, b, indent)) return 1;
+  /* emit_inline_call is the inliner for a user method that yields; if it
+     declined this block-driving call, no plain-call fallback is valid (a
+     yielding method emits no standalone C function, so the emitted symbol
+     does not exist -> invalid C). Fail loud instead of the silent miscompile
+     (the #2895 diagnostic surviving through an unknown-typed root, #2948). */
+  {
+    const char *ycn = nt_str(nt, id, "name");
+    int yrecv = nt_ref(nt, id, "receiver");
+    if (ycn && yrecv >= 0 && nt_ref(nt, id, "block") >= 0) {
+      TyKind yrt = comp_ntype(c, yrecv);
+      if (ty_is_object(yrt)) {
+        int ycid = ty_object_class(yrt);
+        int ymi = ycid >= 0 ? comp_method_in_chain(c, ycid, ycn, NULL) : -1;
+        if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id))
+          unsupported_feature(c, id,
+            "a block-driving call to a method that yields could not be inlined "
+            "(a yielding method has no standalone function to call)");
+      }
+    }
+  }
+  if (emit_iteration_stmt(c, id, b, indent)) return 1;
+  /* attr writer: obj.x = v */
+  {
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    size_t ln = nm ? strlen(nm) : 0;
+    if (nm && recv >= 0 && ln >= 2 && nm[ln - 1] == '=') {
+      TyKind rt = comp_ntype(c, recv);
+      if (ty_is_object(rt)) {
+        char base[256];
+        if (ln - 1 < sizeof base) {
+          memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+          int args = nt_ref(nt, id, "arguments");
+          int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+          /* attr writer -> field write, UNLESS an explicit `def x=` overrides
+             it at an equal-or-more-derived class (CRuby: attr_accessor
+             defines an ordinary writer method, overridable by a subclass or
+             same-class `def x=`). When overridden, fall through to normal
+             dispatch. The more-derived definition wins; a same-class tie
+             goes to the explicit method. */
+          int writer_wins =
+              comp_resolve_member(c, ty_object_class(rt), base, 1, NULL, NULL) == SP_MEMBER_ATTR;
+          if (writer_wins) {
+            /* `private :x=` on the writer: the refusal, as a statement */
+            Buf vb; memset(&vb, 0, sizeof vb);
+            if (emit_vis_refusal(c, id, &vb)) {
+              emit_indent(b, indent); buf_puts(b, vb.p); buf_puts(b, ";\n");
+              free(vb.p);
+              return 1;
+            }
+            if (an >= 1) {
+              int rc = ty_object_class(rt);
+              char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
+              int defc = -1; comp_writer_in_chain(c, rc, base, &defc);
+              int iv = comp_ivar_index(&c->classes[defc < 0 ? rc : defc], ivn);
+              TyKind ivt = iv >= 0 ? c->classes[defc < 0 ? rc : defc].ivar_types[iv] : TY_UNKNOWN;
+              emit_indent(b, indent);
+              int fo = rc >= 0 && rc < c->nclasses &&
+                       c->classes[rc].freeze_observed && !c->classes[rc].is_value_type;
+              int tw = fo ? ++g_tmp : -1;
+              if (fo) {
+                char twn[32]; snprintf(twn, sizeof twn, "_t%d", tw);
+                buf_printf(b, "{ sp_%s *_t%d = ", c->classes[rc].c_name, tw);
+                emit_expr(c, recv, b); buf_puts(b, "; ");
+                emit_frozen_obj_guard(c, rc, twn, b);
+                buf_printf(b, "_t%d->iv_%s = ", tw, iv_c(base));
+              }
+              else {
+                buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", iv_c(base));
+              }
+              if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
+              /* nil into a scalar slot is that slot's sentinel, as `@x = nil` writes it */
+              else if (nt_kind(nt, argv[0]) == NK_NilNode && (ivt == TY_FLOAT || ivt == TY_INT))
+                buf_puts(b, ivt == TY_FLOAT ? "sp_float_nil()" : "SP_INT_NIL");
+              /* A genuinely poly rhs narrowing into a concrete slot takes
+                 the same unboxing the local-assignment path uses. The slot
+                 is concrete because an --rbs signature said so while the
+                 value is poly from observed dataflow, so the two only meet
+                 here (#4093); without it the sp_RbVal was assigned raw. */
+              else if (ivt != TY_POLY && emit_poly_rhs_coerced(c, ivt, argv[0], b)) { }
+              /* A concrete slot takes the coercing emit: an unresolved rhs
+                 lowers to the gate's raising sp_RbVal token, which assigned
+                 raw into an object-pointer or scalar field is ill-typed C.
+                 Anything that is not the token still emits raw. */
+              /* an empty `[]` / `{}` or a bare Array.new / Hash.new is built at
+                 the slot's kind, as `@x = []` builds it: a bare Array.new
+                 went into a Float array field as the general Array */
+              else if ((ty_is_array(ivt) || ty_is_hash(ivt)) && emit_empty_literal_as(c, argv[0], ivt, b)) { }
+              else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, argv[0]) == TY_UNKNOWN)
+                emit_unresolved_coerced(c, argv[0], ivt, b);
+              else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
+                emit_coerce(c, argv[0], ivt, CO_HOLD, "an attribute writer", b);
+              else emit_expr(c, argv[0], b);
+              buf_puts(b, fo ? "; }\n" : ";\n");
+              return 1;
+            }
+          }
+          else if (comp_method_in_chain(c, ty_object_class(rt), nm, NULL) < 0) {
+            /* writer not in chain and no explicit method: try subclass dispatch via cls_id */
+            int ncand = 0;
+            for (int k = 0; k < c->nclasses; k++)
+              if (comp_is_writer(&c->classes[k], base)) ncand++;
+            if (an >= 1 && ncand > 0) {
+              TyKind at = comp_ntype(c, argv[0]);
+              int tp = ++g_tmp, tval = ++g_tmp;
+              emit_indent(b, indent);
+              buf_printf(b, "{ sp_%s *_t%d = ", c->classes[ty_object_class(rt)].c_name, tp);
+              emit_expr(c, recv, b); buf_puts(b, "; ");
+              emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
+              emit_expr(c, argv[0], b); buf_puts(b, ";");
+              buf_printf(b, " switch (_t%d->cls_id) {", tp);
+              char src[32]; snprintf(src, sizeof src, "_t%d", tval);
+              char objp[32]; snprintf(objp, sizeof objp, "_t%d", tp);
+              emit_boxed_writer_arms(c, base, nm, objp, src, at, b);
+              buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
+                            "sp_box_obj((void *)_t%d, _t%d->cls_id))); break;", nm, tp, tp);
+              buf_puts(b, " } }\n");
+              return 1;
+            }
+          }
+        }
+      }
+      /* poly receiver: switch on cls_id and store into each candidate
+         class's ivar, converting the rhs to that ivar's slot type. */
+      else if (rt == TY_POLY) {
+        char base[256];
+        if (ln - 1 < sizeof base) {
+          memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+          int args = nt_ref(nt, id, "arguments");
+          int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+          int ncand = 0;
+          for (int k = 0; k < c->nclasses; k++)
+            if (comp_is_writer(&c->classes[k], base)) ncand++;
+          if (an >= 1 && ncand > 0) {
+            TyKind at = comp_ntype(c, argv[0]);
+            /* A nil literal RHS has void type; cache it as a boxed-nil
+               sp_RbVal rather than declaring an (illegal) `void` temp. */
+            int nil_rhs = (at == TY_NIL || at == TY_VOID);
+            /* A value of no type -- a call proven to raise NoMethodError --
+               is the raise's sp_RbVal; `void _t` did not compile (#6213). */
+            int unk_rhs = at == TY_UNKNOWN;
+            TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
+            int tv = ++g_tmp, tval = ++g_tmp;
+            emit_indent(b, indent);
+            buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
+            if (nil_rhs) {
+              buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
+            }
+            else if (unk_rhs) {
+              buf_printf(b, "sp_RbVal _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
+            }
+else {
+              emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
+            }
+            /* A boxed NIL carries cls_id 0, which is a real user class id:
+               switching on the field alone let a nil receiver take class 0's
+               arm and write through its NULL pointer (#4048). Ask the tag,
+               as every other cls_id dispatch does. */
+            buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+            char src[32]; snprintf(src, sizeof src, "_t%d", tval);
+            char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
+            emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, b);
+            buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
+            buf_puts(b, " } }\n");
+            return 1;
+          }
+        }
+      }
+    }
+  }
+  /* TY_STRING .freeze as a statement: reassign lv to frozen copy */
+  {
+    const char *fnm = nt_str(nt, id, "name");
+    int frcv = nt_ref(nt, id, "receiver");
+    if (frcv >= 0 && fnm && sp_streq(fnm, "freeze") && comp_ntype(c, frcv) == TY_STRING) {
+      const char *rty2 = nt_type(nt, frcv);
+      if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") || sp_streq(rty2, "InstanceVariableReadNode"))) {
+        int fargs = nt_ref(nt, id, "arguments");
+        int fac = 0; if (fargs >= 0) nt_arr(nt, fargs, "arguments", &fac);
+        if (fac == 0) {
+          /* the receiver must be an assignable name: a shared-buffer local
+             reads back as an expression, which cannot be assigned to (#3749) */
+          Buf fb; memset(&fb, 0, sizeof fb);
+          emit_expr(c, frcv, &fb);
+          int plain = fb.p != NULL;
+          for (const char *q = fb.p; plain && *q; q++)
+            if (!(*q == '_' || (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                  (*q >= '0' && *q <= '9') || *q == '.' || *q == '-' || *q == '>')) plain = 0;
+          if (plain) {
+            emit_indent(b, indent);
+            buf_puts(b, fb.p); buf_puts(b, " = sp_str_freeze_val("); buf_puts(b, fb.p); buf_puts(b, ");\n");
+            free(fb.p);
+            return 1;
+          }
+          free(fb.p);
+          /* a shared-buffer local IS the sp_String: freeze the buffer, which
+             is what every later mutation checks (#3749) */
+          if (sp_streq(rty2, "LocalVariableReadNode")) {
+            const char *lnm = nt_str(nt, frcv, "name");
+            Scope *lsc = comp_scope_of(c, frcv);
+            LocalVar *llv = (lnm && lsc) ? scope_local(lsc, lnm) : NULL;
+            if (llv && llv->type == TY_STRBUF) {
+              emit_indent(b, indent);
+              buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
+              return 1;
+            }
+          }
+          /* Every other name that reads back as an expression is still a
+             String the freeze has to reach: an ivar that holds the shared
+             handle freezes the handle, and a byref parameter's cell or a
+             yielded block parameter's (`(*_cell_x)`) takes the frozen
+             String back through the value form, which assigns it. This
+             emitted `(void)(x)`, so `x.freeze; x << "!"` appended to a
+             String frozen? called unfrozen. */
+          char fzref[1024];
+          if (strbuf_slot_ref(c, frcv, fzref, sizeof fzref)) {
+            emit_indent(b, indent);
+            buf_printf(b, "sp_String_freeze(%s);\n", fzref);
+            return 1;
+          }
+          emit_indent(b, indent);
+          buf_puts(b, "(void)"); emit_expr(c, id, b); buf_puts(b, ";\n");
+          return 1;
+        }
+      }
+    }
+  }
+  if (emit_array_mutate_stmt(c, id, b, indent)) return 1;
+  /* instance_eval/exec or trampoline call in statement position: its value
+     is discarded, so let the splice emit the block's last node as a
+     statement rather than coercing it to an expression. */
+  {
+    const char *snm = nt_str(nt, id, "name");
+    int srecv = nt_ref(nt, id, "receiver");
+    int sblk = nt_ref(nt, id, "block");
+    if (snm && srecv >= 0 && sblk >= 0) {
+      TyKind srt = comp_ntype(c, srecv);
+      int is_ie = sp_streq(snm, "instance_eval") || sp_streq(snm, "instance_exec");
+      int discard = (is_ie && ty_is_object(srt)) ||
+                    (ty_is_object(srt) && comp_trampoline_kind(c, ty_object_class(srt), snm, NULL));
+      if (discard) {
+        int sv = g_ie_discard_value; g_ie_discard_value = 1;
+        emit_indent(b, indent);
+        emit_expr(c, id, b);
+        buf_puts(b, ";\n");
+        g_ie_discard_value = sv;
+        return 1;
+      }
+    }
+  }
+  emit_indent(b, indent);
+  emit_expr(c, id, b);
+  buf_puts(b, ";\n");
+  return 1;
+  return 0;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -10429,354 +10781,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
 
-  if (sp_streq(ty, "CallNode")) {
-    /* Reflection-mutation calls (remove_method/undef_method/remove_class_variable)
-       in a class body are otherwise dropped silently; report the documented
-       limit instead of pretending they took effect (#2954, #2955). */
-    {
-      const char *rnm = nt_str(nt, id, "name");
-      if (rnm && (sp_streq(rnm, "remove_method") || sp_streq(rnm, "undef_method") ||
-                  sp_streq(rnm, "remove_class_variable")) &&
-          diagnose_unsupported_call(c, id)) return;
-    }
-    /* declarative-only calls emitted as no-ops */
-    {
-      const char *nm = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0 && nm && (sp_streq(nm, "include") || sp_streq(nm, "extend") ||
-                             sp_streq(nm, "prepend") || sp_streq(nm, "module_function") ||
-                             sp_streq(nm, "private") || sp_streq(nm, "protected") ||
-                             sp_streq(nm, "public") || sp_streq(nm, "attr_reader") ||
-                             sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor") ||
-                             sp_streq(nm, "attr"))) {
-        /* These are class-body declarations handled at analysis time; skip.
-           Exception: a visibility call naming a method the class does not
-           define raises NameError when the body executes, per CRuby. */
-        if (is_visibility_name(nm)) {
-          int vcid = g_class_body_id >= 0 ? g_class_body_id
-                   : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
-          if (vcid >= 0) {
-            int vargs = nt_ref(nt, id, "arguments");
-            int van = 0;
-            const int *vav = vargs >= 0 ? nt_arr(nt, vargs, "arguments", &van) : NULL;
-            for (int vi = 0; vi < van; vi++) {
-              const char *vaty = nt_type(nt, vav[vi]);
-              const char *mn = NULL;
-              if (vaty && sp_streq(vaty, "SymbolNode")) mn = nt_str(nt, vav[vi], "value");
-              else if (vaty && sp_streq(vaty, "StringNode")) mn = nt_str(nt, vav[vi], "unescaped");
-              if (!mn) continue;
-              size_t ml = strlen(mn);
-              char wb[256]; wb[0] = '\0';
-              if (ml > 0 && mn[ml - 1] == '=' && ml - 1 < sizeof wb) {
-                memcpy(wb, mn, ml - 1); wb[ml - 1] = '\0';
-              }
-              int found = comp_method_in_chain(c, vcid, mn, NULL) >= 0 ||
-                          comp_reader_in_chain(c, vcid, mn, NULL) ||
-                          (wb[0] && comp_writer_in_chain(c, vcid, wb, NULL));
-              if (!found) {
-                emit_indent(b, indent);
-                buf_printf(b, "sp_raise_cls(\"NameError\", \"undefined method '%s' for class '%s'\");\n",
-                           mn, class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name);
-                return;
-              }
-            }
-          }
-        }
-        return;
-      }
-    }
-    /* A statement-position call whose block top-level-breaks needs its own
-       wrapper here: the inline/iteration emitters below would splice the
-       block without one, leaving the break to target a WRONG enclosing scope
-       (or a bare C `break`). The wrapper emits everything through g_pre. */
-    if (id != g_brk_skip_id && call_breaks(c, id)) {
-      Buf pre; memset(&pre, 0, sizeof pre);
-      Buf *sv_pre = g_pre; int sv_ind = g_indent;
-      g_pre = &pre; g_indent = indent;
-      emit_brk_wrapped_call(c, id, NULL);
-      g_pre = sv_pre; g_indent = sv_ind;
-      if (pre.p) buf_puts(b, pre.p);
-      free(pre.p);
-      return;
-    }
-    if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return; }
-    { int grecv = -1;
-      if (id != g_ivar_nil_guarded_id && ivar_nil_recv_guard(c, id, &grecv)) {
-        emit_ivar_nil_guard(c, id, grecv, b, indent);
-        int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
-        emit_stmt_inner(c, id, b, indent);
-        g_ivar_nil_guarded_id = sv;
-        return;
-      } }
-    if (is_blockless_block_param_call(c, id)) {
-      /* forwarded real proc: <blk>.call(args) for effect; else no block was
-         passed, the parameter is nil, and the call raises NoMethodError */
-      if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
-      else if (!(nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&."))) {
-        emit_indent(b, indent);
-        buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
-                   blockless_block_param_call_name(c, id));
-      }
-      return;
-    }
-    if (emit_output_call(c, id, b, indent)) return;
-    if (emit_inline_call(c, id, b, indent)) return;
-    if (emit_poly_recv_block_dispatch(c, id, b, indent)) return;
-    /* emit_inline_call is the inliner for a user method that yields; if it
-       declined this block-driving call, no plain-call fallback is valid (a
-       yielding method emits no standalone C function, so the emitted symbol
-       does not exist -> invalid C). Fail loud instead of the silent miscompile
-       (the #2895 diagnostic surviving through an unknown-typed root, #2948). */
-    {
-      const char *ycn = nt_str(nt, id, "name");
-      int yrecv = nt_ref(nt, id, "receiver");
-      if (ycn && yrecv >= 0 && nt_ref(nt, id, "block") >= 0) {
-        TyKind yrt = comp_ntype(c, yrecv);
-        if (ty_is_object(yrt)) {
-          int ycid = ty_object_class(yrt);
-          int ymi = ycid >= 0 ? comp_method_in_chain(c, ycid, ycn, NULL) : -1;
-          if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id))
-            unsupported_feature(c, id,
-              "a block-driving call to a method that yields could not be inlined "
-              "(a yielding method has no standalone function to call)");
-        }
-      }
-    }
-    if (emit_iteration_stmt(c, id, b, indent)) return;
-    /* attr writer: obj.x = v */
-    {
-      const char *nm = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver");
-      size_t ln = nm ? strlen(nm) : 0;
-      if (nm && recv >= 0 && ln >= 2 && nm[ln - 1] == '=') {
-        TyKind rt = comp_ntype(c, recv);
-        if (ty_is_object(rt)) {
-          char base[256];
-          if (ln - 1 < sizeof base) {
-            memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
-            int args = nt_ref(nt, id, "arguments");
-            int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            /* attr writer -> field write, UNLESS an explicit `def x=` overrides
-               it at an equal-or-more-derived class (CRuby: attr_accessor
-               defines an ordinary writer method, overridable by a subclass or
-               same-class `def x=`). When overridden, fall through to normal
-               dispatch. The more-derived definition wins; a same-class tie
-               goes to the explicit method. */
-            int writer_wins =
-                comp_resolve_member(c, ty_object_class(rt), base, 1, NULL, NULL) == SP_MEMBER_ATTR;
-            if (writer_wins) {
-              /* `private :x=` on the writer: the refusal, as a statement */
-              Buf vb; memset(&vb, 0, sizeof vb);
-              if (emit_vis_refusal(c, id, &vb)) {
-                emit_indent(b, indent); buf_puts(b, vb.p); buf_puts(b, ";\n");
-                free(vb.p);
-                return;
-              }
-              if (an >= 1) {
-                int rc = ty_object_class(rt);
-                char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
-                int defc = -1; comp_writer_in_chain(c, rc, base, &defc);
-                int iv = comp_ivar_index(&c->classes[defc < 0 ? rc : defc], ivn);
-                TyKind ivt = iv >= 0 ? c->classes[defc < 0 ? rc : defc].ivar_types[iv] : TY_UNKNOWN;
-                emit_indent(b, indent);
-                int fo = rc >= 0 && rc < c->nclasses &&
-                         c->classes[rc].freeze_observed && !c->classes[rc].is_value_type;
-                int tw = fo ? ++g_tmp : -1;
-                if (fo) {
-                  char twn[32]; snprintf(twn, sizeof twn, "_t%d", tw);
-                  buf_printf(b, "{ sp_%s *_t%d = ", c->classes[rc].c_name, tw);
-                  emit_expr(c, recv, b); buf_puts(b, "; ");
-                  emit_frozen_obj_guard(c, rc, twn, b);
-                  buf_printf(b, "_t%d->iv_%s = ", tw, iv_c(base));
-                }
-                else {
-                  buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", iv_c(base));
-                }
-                if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
-                /* nil into a scalar slot is that slot's sentinel, as `@x = nil` writes it */
-                else if (nt_kind(nt, argv[0]) == NK_NilNode && (ivt == TY_FLOAT || ivt == TY_INT))
-                  buf_puts(b, ivt == TY_FLOAT ? "sp_float_nil()" : "SP_INT_NIL");
-                /* A genuinely poly rhs narrowing into a concrete slot takes
-                   the same unboxing the local-assignment path uses. The slot
-                   is concrete because an --rbs signature said so while the
-                   value is poly from observed dataflow, so the two only meet
-                   here (#4093); without it the sp_RbVal was assigned raw. */
-                else if (ivt != TY_POLY && emit_poly_rhs_coerced(c, ivt, argv[0], b)) { }
-                /* A concrete slot takes the coercing emit: an unresolved rhs
-                   lowers to the gate's raising sp_RbVal token, which assigned
-                   raw into an object-pointer or scalar field is ill-typed C.
-                   Anything that is not the token still emits raw. */
-                /* an empty `[]` / `{}` or a bare Array.new / Hash.new is built at
-                   the slot's kind, as `@x = []` builds it: a bare Array.new
-                   went into a Float array field as the general Array */
-                else if ((ty_is_array(ivt) || ty_is_hash(ivt)) && emit_empty_literal_as(c, argv[0], ivt, b)) { }
-                else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, argv[0]) == TY_UNKNOWN)
-                  emit_unresolved_coerced(c, argv[0], ivt, b);
-                else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
-                  emit_coerce(c, argv[0], ivt, CO_HOLD, "an attribute writer", b);
-                else emit_expr(c, argv[0], b);
-                buf_puts(b, fo ? "; }\n" : ";\n");
-                return;
-              }
-            }
-            else if (comp_method_in_chain(c, ty_object_class(rt), nm, NULL) < 0) {
-              /* writer not in chain and no explicit method: try subclass dispatch via cls_id */
-              int ncand = 0;
-              for (int k = 0; k < c->nclasses; k++)
-                if (comp_is_writer(&c->classes[k], base)) ncand++;
-              if (an >= 1 && ncand > 0) {
-                TyKind at = comp_ntype(c, argv[0]);
-                int tp = ++g_tmp, tval = ++g_tmp;
-                emit_indent(b, indent);
-                buf_printf(b, "{ sp_%s *_t%d = ", c->classes[ty_object_class(rt)].c_name, tp);
-                emit_expr(c, recv, b); buf_puts(b, "; ");
-                emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
-                emit_expr(c, argv[0], b); buf_puts(b, ";");
-                buf_printf(b, " switch (_t%d->cls_id) {", tp);
-                char src[32]; snprintf(src, sizeof src, "_t%d", tval);
-                char objp[32]; snprintf(objp, sizeof objp, "_t%d", tp);
-                emit_boxed_writer_arms(c, base, nm, objp, src, at, b);
-                buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
-                              "sp_box_obj((void *)_t%d, _t%d->cls_id))); break;", nm, tp, tp);
-                buf_puts(b, " } }\n");
-                return;
-              }
-            }
-          }
-        }
-        /* poly receiver: switch on cls_id and store into each candidate
-           class's ivar, converting the rhs to that ivar's slot type. */
-        else if (rt == TY_POLY) {
-          char base[256];
-          if (ln - 1 < sizeof base) {
-            memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
-            int args = nt_ref(nt, id, "arguments");
-            int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            int ncand = 0;
-            for (int k = 0; k < c->nclasses; k++)
-              if (comp_is_writer(&c->classes[k], base)) ncand++;
-            if (an >= 1 && ncand > 0) {
-              TyKind at = comp_ntype(c, argv[0]);
-              /* A nil literal RHS has void type; cache it as a boxed-nil
-                 sp_RbVal rather than declaring an (illegal) `void` temp. */
-              int nil_rhs = (at == TY_NIL || at == TY_VOID);
-              /* A value of no type -- a call proven to raise NoMethodError --
-                 is the raise's sp_RbVal; `void _t` did not compile (#6213). */
-              int unk_rhs = at == TY_UNKNOWN;
-              TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
-              int tv = ++g_tmp, tval = ++g_tmp;
-              emit_indent(b, indent);
-              buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
-              if (nil_rhs) {
-                buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
-              }
-              else if (unk_rhs) {
-                buf_printf(b, "sp_RbVal _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
-              }
-else {
-                emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
-              }
-              /* A boxed NIL carries cls_id 0, which is a real user class id:
-                 switching on the field alone let a nil receiver take class 0's
-                 arm and write through its NULL pointer (#4048). Ask the tag,
-                 as every other cls_id dispatch does. */
-              buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
-              char src[32]; snprintf(src, sizeof src, "_t%d", tval);
-              char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-              emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, b);
-              buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
-              buf_puts(b, " } }\n");
-              return;
-            }
-          }
-        }
-      }
-    }
-    /* TY_STRING .freeze as a statement: reassign lv to frozen copy */
-    {
-      const char *fnm = nt_str(nt, id, "name");
-      int frcv = nt_ref(nt, id, "receiver");
-      if (frcv >= 0 && fnm && sp_streq(fnm, "freeze") && comp_ntype(c, frcv) == TY_STRING) {
-        const char *rty2 = nt_type(nt, frcv);
-        if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") || sp_streq(rty2, "InstanceVariableReadNode"))) {
-          int fargs = nt_ref(nt, id, "arguments");
-          int fac = 0; if (fargs >= 0) nt_arr(nt, fargs, "arguments", &fac);
-          if (fac == 0) {
-            /* the receiver must be an assignable name: a shared-buffer local
-               reads back as an expression, which cannot be assigned to (#3749) */
-            Buf fb; memset(&fb, 0, sizeof fb);
-            emit_expr(c, frcv, &fb);
-            int plain = fb.p != NULL;
-            for (const char *q = fb.p; plain && *q; q++)
-              if (!(*q == '_' || (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
-                    (*q >= '0' && *q <= '9') || *q == '.' || *q == '-' || *q == '>')) plain = 0;
-            if (plain) {
-              emit_indent(b, indent);
-              buf_puts(b, fb.p); buf_puts(b, " = sp_str_freeze_val("); buf_puts(b, fb.p); buf_puts(b, ");\n");
-              free(fb.p);
-              return;
-            }
-            free(fb.p);
-            /* a shared-buffer local IS the sp_String: freeze the buffer, which
-               is what every later mutation checks (#3749) */
-            if (sp_streq(rty2, "LocalVariableReadNode")) {
-              const char *lnm = nt_str(nt, frcv, "name");
-              Scope *lsc = comp_scope_of(c, frcv);
-              LocalVar *llv = (lnm && lsc) ? scope_local(lsc, lnm) : NULL;
-              if (llv && llv->type == TY_STRBUF) {
-                emit_indent(b, indent);
-                buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
-                return;
-              }
-            }
-            /* Every other name that reads back as an expression is still a
-               String the freeze has to reach: an ivar that holds the shared
-               handle freezes the handle, and a byref parameter's cell or a
-               yielded block parameter's (`(*_cell_x)`) takes the frozen
-               String back through the value form, which assigns it. This
-               emitted `(void)(x)`, so `x.freeze; x << "!"` appended to a
-               String frozen? called unfrozen. */
-            char fzref[1024];
-            if (strbuf_slot_ref(c, frcv, fzref, sizeof fzref)) {
-              emit_indent(b, indent);
-              buf_printf(b, "sp_String_freeze(%s);\n", fzref);
-              return;
-            }
-            emit_indent(b, indent);
-            buf_puts(b, "(void)"); emit_expr(c, id, b); buf_puts(b, ";\n");
-            return;
-          }
-        }
-      }
-    }
-    if (emit_array_mutate_stmt(c, id, b, indent)) return;
-    /* instance_eval/exec or trampoline call in statement position: its value
-       is discarded, so let the splice emit the block's last node as a
-       statement rather than coercing it to an expression. */
-    {
-      const char *snm = nt_str(nt, id, "name");
-      int srecv = nt_ref(nt, id, "receiver");
-      int sblk = nt_ref(nt, id, "block");
-      if (snm && srecv >= 0 && sblk >= 0) {
-        TyKind srt = comp_ntype(c, srecv);
-        int is_ie = sp_streq(snm, "instance_eval") || sp_streq(snm, "instance_exec");
-        int discard = (is_ie && ty_is_object(srt)) ||
-                      (ty_is_object(srt) && comp_trampoline_kind(c, ty_object_class(srt), snm, NULL));
-        if (discard) {
-          int sv = g_ie_discard_value; g_ie_discard_value = 1;
-          emit_indent(b, indent);
-          emit_expr(c, id, b);
-          buf_puts(b, ";\n");
-          g_ie_discard_value = sv;
-          return;
-        }
-      }
-    }
-    emit_indent(b, indent);
-    emit_expr(c, id, b);
-    buf_puts(b, ";\n");
-    return;
-  }
+  if (emit_call_stmt(c, id, b, indent, nt, ty)) return;
   if (sp_streq(ty, "LocalVariableWriteNode")) {
     emit_assign(c, id, b, indent);
     /* `k = Struct.new(...) do ... end`: the block's statements run too */
