@@ -22,3 +22,22 @@ p s.bytes
 
 p String.new("é").encoding.to_s
 p String.new(encoding: Encoding::UTF_8).encoding.to_s
+
+s = String.new
+s << "a"
+s << "é"
+p s.encoding.to_s
+p s[1]
+
+def make_string
+  s = String.new
+  s << "A"
+  s << "é"
+  s
+end
+
+s = make_string
+p s.encoding.to_s
+p s.length
+p s.bytesize
+p s[1]
