@@ -1,0 +1,10 @@
+min rev: "e"
+max rev: "a"
+min by length: "aa"
+max by length: nil
+excl: "d"
+empty: nil
+plain: ["a", "e"]
+literal: "b"
+"e"
+"a"

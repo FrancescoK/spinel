@@ -6098,6 +6098,9 @@ static int desugar_str_range_methods(Compiler *c) {
        (an endless range has no maximum, where the walk could not convert);
        the comparator form walks the members */
     if (sp_streq(nm, "minmax") && an == 0 && nt_ref(nt, id, "block") < 0) native = 1;
+    /* min / max with a comparator block walk the members as Enumerable's do;
+       the endpoint readers answered as though there were no block */
+    if ((sp_streq(nm, "min") || sp_streq(nm, "max")) && nt_ref(nt, id, "block") >= 0) native = 0;
     /* a block-driven step by an Integer has its own arm (the statement
        iteration's String-range step), which walks an endless range too and
        answers the range; any other stride is `step(n).each { }`: the blockless
