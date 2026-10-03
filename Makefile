@@ -3235,7 +3235,8 @@ gate-props:
 # The ty_traits table (types.c) against the functions each column names,
 # for every builtin kind, in both integer-overflow modes.
 # Each builtin-op row with a count range of its own against CRuby's accepted
-# counts for its class and name (the arity table, codegen_call.c).
+# counts for its class and name (the arity table, codegen_call.c), the
+# Method#arity table against the same counts, and no stale keyword exemption.
 bop-arity-check-test: $(SPINEL)
 	@$(SPINEL) --check-bop-arity
 

@@ -16538,20 +16538,45 @@ static const char *bop_spec_class(TyKind k) {
 }
 /* rows whose count includes a keyword hash the positional arity table does
    not count */
+static const char *const bop_arity_kw_rows[][2] = {
+  {"Rational", "round"}, {"Rational", "floor"}, {"Rational", "ceil"}, {"Rational", "truncate"},  /* half: */
+  {"Proc", "parameters"},   /* lambda: */
+  {"String", "unpack"},     /* offset: */
+  {"Queue", "pop"}, {"Queue", "shift"}, {"Queue", "deq"},    /* timeout: */
+  {"Queue", "push"}, {"Queue", "<<"}, {"Queue", "enq"},      /* timeout: (SizedQueue's) */
+  {NULL, NULL}
+};
 static int bop_arity_kw_row(const char *cls, const char *name) {
-  static const char *const KW[][2] = {
-    {"Rational", "round"}, {"Rational", "floor"}, {"Rational", "ceil"}, {"Rational", "truncate"},  /* half: */
-    {"Proc", "parameters"},   /* lambda: */
-    {"String", "unpack"},     /* offset: */
-    {"Queue", "pop"}, {"Queue", "shift"}, {"Queue", "deq"},    /* timeout: */
-    {"Queue", "push"}, {"Queue", "<<"}, {"Queue", "enq"},      /* timeout: (SizedQueue's) */
-    {NULL, NULL}
-  };
-  for (int i = 0; KW[i][0]; i++) if (sp_streq(cls, KW[i][0]) && sp_streq(name, KW[i][1])) return 1;
+  for (int i = 0; bop_arity_kw_rows[i][0]; i++)
+    if (sp_streq(cls, bop_arity_kw_rows[i][0]) && sp_streq(name, bop_arity_kw_rows[i][1])) return 1;
   return 0;
 }
-int builtin_ops_arity_check(void) {
+/* The Method#arity table against the spec table both come from (the same
+   generator, the same CRuby): a fixed arity n is exactly the counts n..n,
+   and -n-1 at least n required. A C method that counts its own arguments
+   reads -1 and its spec row is narrower, which is no contradiction. */
+static int builtin_arity_tables_agree(void) {
   int checked = 0, bad = 0;
+  for (int i = 0; sp_builtin_arity_tbl[i].cls; i++) {
+    const char *cls = sp_builtin_arity_tbl[i].cls, *m = sp_builtin_arity_tbl[i].m;
+    int a = sp_builtin_arity_tbl[i].a;
+    const SpAritySpec *sp = NULL;
+    for (const SpAritySpec *t = sp_builtin_arity_spec_tbl; t->cls; t++)
+      if (sp_streq(t->cls, cls) && sp_streq(t->m, m)) { sp = t; break; }
+    if (!sp || sp->min < 0) continue;   /* no row, or the bare side unproved */
+    checked++;
+    if (a >= 0 ? sp->min == a && sp->max == a : sp->min >= -a - 1) continue;
+    fprintf(stderr, "check-bop-arity: %s#%s: Method#arity %d, counts %d..%d\n", cls, m, a,
+            sp->min, sp->max);
+    bad++;
+  }
+  fprintf(stderr, "check-bop-arity: %d Method#arity rows checked, %d against their counts\n",
+          checked, bad);
+  return bad;
+}
+int builtin_ops_arity_check(void) {
+  int checked = 0, bad = builtin_arity_tables_agree();
+  int kw_used[sizeof bop_arity_kw_rows / sizeof bop_arity_kw_rows[0]] = {0};
   for (int i = 0; i < bop_row_count(); i++) {
     const BuiltinOp *r = bop_row(i);
     if (r->argc_max == BOP_ARGC_ANY) continue;   /* the row leaves the count to the table */
@@ -16569,7 +16594,11 @@ int builtin_ops_arity_check(void) {
     if (sp->blk_min >= 0 && hi != -1 && (sp->blk_max == -1 || sp->blk_max > hi)) hi = sp->blk_max;
     checked++;
     if (r->argc_min >= lo && (hi < 0 || r->argc_max <= hi)) continue;
-    if (bop_arity_kw_row(cls, r->name)) continue;
+    if (bop_arity_kw_row(cls, r->name)) {
+      for (int k = 0; bop_arity_kw_rows[k][0]; k++)
+        if (sp_streq(cls, bop_arity_kw_rows[k][0]) && sp_streq(r->name, bop_arity_kw_rows[k][1])) kw_used[k] = 1;
+      continue;
+    }
     char his[16];
     if (hi < 0) snprintf(his, sizeof his, "any");
     else snprintf(his, sizeof his, "%d", hi);
@@ -16577,6 +16606,13 @@ int builtin_ops_arity_check(void) {
             r->argc_min, r->argc_max, lo, his);
     bad++;
   }
+  /* an exemption no row needs any more is a stale hand entry */
+  for (int k = 0; bop_arity_kw_rows[k][0]; k++)
+    if (!kw_used[k]) {
+      fprintf(stderr, "check-bop-arity: %s#%s: keyword exemption no row needs\n",
+              bop_arity_kw_rows[k][0], bop_arity_kw_rows[k][1]);
+      bad++;
+    }
   fprintf(stderr, "check-bop-arity: %d rows checked, %d outside CRuby's counts\n", checked, bad);
   return bad;
 }
