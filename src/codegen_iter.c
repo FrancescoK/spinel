@@ -4653,6 +4653,638 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
   else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, get, nil);
 }
 
+/* emit_iteration_stmt_body's tap, Array#each_slice, and String#split / scan
+   with a block (answers 1 emitted, 0 declined, -1 to go on) */
+static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
+  /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
+  if (sp_streq(name, "tap") && recv >= 0) {
+    TyKind et = infer_type(c, recv);
+    /* a receiver of no type -- a call proven to raise NoMethodError -- is
+       the raise's sp_RbVal; `void _t` did not compile (#6213) */
+    if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
+    Scope *tsc = p0_orig ? comp_scope_of(c, block) : NULL;
+    LocalVar *tlv0 = (tsc && p0_orig) ? scope_local(tsc, p0_orig) : NULL;
+    TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
+    int use_shadow_t = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
+    int tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent); emit_ctype(c, et, b);
+    buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
+    /* An OBJECT-receiver tap whose param widened to poly (it escaped through
+       yield(_1) / a store) cannot be shadowed with a concrete object slot;
+       box the receiver into the poly param instead (#3140). An array/hash
+       receiver keeps its shadow path -- boxing would strip its methods and
+       break `nums.tap { |a| a.sort! }`. */
+    int tap_escapes = tlv0 && tsaved0 == TY_POLY && ty_is_object(et);
+    /* A boxed receiver over a SCALAR param: keep the param typed and unbox
+       the value into it (raising past the word, as the other typed sinks
+       do) rather than shadowing it as boxed -- the body was inferred against
+       the scalar, and the shadow's retype does not reach the cached node
+       types, so `v.negative?` read an sp_int out of an sp_RbVal and the C did
+       not build. Under --int-overflow=promote every Integer local is boxed
+       while a block param is not, which is where the shape lives (#4730).
+       The expression-form emitter (emit_tap_then_expr) does the same. */
+    const char *tap_unbox = NULL;
+    if (use_shadow_t && et == TY_POLY && tsaved0 == TY_INT) tap_unbox = "sp_poly_to_i";
+    else if (use_shadow_t && et == TY_POLY && tsaved0 == TY_FLOAT) tap_unbox = "sp_poly_to_f";
+    if (tap_unbox) use_shadow_t = 0;
+    /* tap runs the block once, not in a loop, so a `next` in it has no C loop
+       to continue out of: give it one (#3978). */
+    int tap_next = subtree_has_own_next(nt, body);
+    const char *sv_tap_nx = g_ie_next_var;
+    if (tap_next) g_ie_next_var = NULL;
+    if (use_shadow_t && !tap_escapes) {
+      int tbody_bn = 0; const int *tbody_bb = body >= 0 ? nt_arr(nt, body, "body", &tbody_bn) : NULL;
+      tlv0->type = et;
+      for (int j = 0; j < tbody_bn; j++) infer_type(c, tbody_bb[j]);
+      emit_indent(b, indent); buf_puts(b, tap_next ? "do {\n" : "{\n");
+      emit_indent(b, indent + 1); emit_ctype(c, et, b);
+      buf_printf(b, " lv_%s = _t%d;\n", p0, tr);
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, tap_next ? "} while (0);\n" : "}\n");
+      tlv0->type = tsaved0;
+    }
+    else {
+      if (p0) {
+        emit_indent(b, indent);
+        /* the param's declared slot may be wider than the receiver -- a `_1`
+           that escapes through `yield(_1)` widens to poly, so box the object
+           into it rather than assigning the raw pointer (#3140) */
+        TyKind ptt = tlv0 ? tlv0->type : et;
+        if (ptt == TY_POLY && ty_is_object(et)) {
+          char src[32]; snprintf(src, sizeof src, "_t%d", tr);
+          buf_printf(b, "lv_%s = ", p0);
+          emit_boxed_text(c, et, src, b);
+          buf_puts(b, ";\n");
+        }
+        else if (tap_unbox) {
+          buf_printf(b, "lv_%s = %s(_t%d);\n", p0, tap_unbox, tr);
+        }
+        else {
+          buf_printf(b, "lv_%s = _t%d;\n", p0, tr);
+        }
+      }
+      if (tap_next) { emit_indent(b, indent); buf_puts(b, "do {\n"); }
+      emit_loop_body(c, body, b, indent + (tap_next ? 1 : 0));
+      if (tap_next) { emit_indent(b, indent); buf_puts(b, "} while (0);\n"); }
+    }
+    g_ie_next_var = sv_tap_nx;
+    return 1;
+  }
+
+  /* array.each_slice(n) { |p| body } -- yield subarrays of size n. Rooted
+     hoist, as each_cons above. */
+  if (sp_streq(name, "each_slice") && ty_is_array(rt)) {
+    int args = nt_ref(nt, id, "arguments");
+    int es_argc = 0; const int *es_argv = args >= 0 ? nt_arr(nt, args, "arguments", &es_argc) : NULL;
+    if (es_argc != 1) return 0;
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    if (!k) return 0;
+    int np_es = 0; while (block_param_name(c, block, np_es)) np_es++;
+    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+    int use_shadow_es = np_es == 1 && clv0 && clv0->type != rt && rt != TY_UNKNOWN;
+    int ta = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent); emit_ctype(c, rt, b);
+    buf_printf(b, " _t%d = %s; ", ta, rb.p ? rb.p : ""); free(rb.p);
+    emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n");
+    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", ts);
+    emit_int_expr(c, es_argv[0], b); buf_puts(b, ";\n");
+    /* a size of 0 stepped the loop by nothing, forever */
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"invalid slice size\");\n", ts);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d += _t%d) {\n",
+               ti, ti, k, ta, ti, ts);
+    int bodyIndent = indent + 1;
+    if (np_es > 1) {
+      /* multi-param: destructure slice elements into individual params */
+      long long lit = nt_kind(nt, es_argv[0]) == NK_IntegerNode ? nt_int(nt, es_argv[0], "value", 0) : 0;
+      for (int pj = 0; pj < np_es; pj++)
+        emit_row_param_bind(c, block, pj, k, rt, ta, ti, ts, lit, bodyIndent, b);
+      emit_loop_body(c, body, b, bodyIndent);
+    }
+    else if (use_shadow_es) {
+      int esb_bn = 0; const int *esb_bb = body >= 0 ? nt_arr(nt, body, "body", &esb_bn) : NULL;
+      clv0->type = rt;
+      for (int j = 0; j < esb_bn; j++) infer_type(c, esb_bb[j]);
+      emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
+      emit_indent(b, bodyIndent); emit_ctype(c, rt, b);
+      buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts);
+      emit_loop_body(c, body, b, bodyIndent);
+      bodyIndent--;
+      emit_indent(b, bodyIndent); buf_puts(b, "}\n");
+      clv0->type = csaved0;
+    }
+    else {
+      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts); }
+      emit_loop_body(c, body, b, bodyIndent);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* str.split(sep) { |piece| body } -- iterate over the substrings; the call
+     yields each piece and evaluates to the receiver (handled in statement
+     position, where the value is discarded). */
+  if (sp_streq(name, "split") && rt == TY_STRING) {
+    int args = nt_ref(nt, id, "arguments");
+    int sp_argc = 0; const int *sp_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sp_argc) : NULL;
+    if (sp_argc > 2) return 0;
+    TyKind et = TY_STRING;
+    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+    int use_shadow_sp = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    int tm = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrArray *_t%d = ", tm);
+    if (sp_argc == 0) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
+    else if (sp_argc == 1) {
+      const char *aty = nt_type(nt, sp_argv[0]);
+      int ws = (aty && sp_streq(aty, "NilNode")) ||
+               (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
+                sp_streq(nt_str(nt, sp_argv[0], "content"), " ") && nt_str_len(nt, sp_argv[0], "content") == 1);
+      int reli = re_lit_index(c, sp_argv[0]);
+      if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
+      /* a Regexp separator splits with the engine, the way the expression
+         arm does; it is the one class the pattern slot must not word as a
+         wrong argument */
+      else if (reli >= 0) buf_printf(b, "sp_re_split(sp_re_pat_%d, %s);\n", reli, rb.p ? rb.p : "");
+      else if (comp_ntype(c, sp_argv[0]) == TY_REGEX) {
+        buf_puts(b, "sp_re_split("); emit_expr(c, sp_argv[0], b);
+        buf_printf(b, ", %s);\n", rb.p ? rb.p : "");
+      }
+      else {
+        buf_printf(b, "sp_str_split_drop_trailing(%s, ", rb.p ? rb.p : ""); emit_str_pattern_expr(c, sp_argv[0], b); buf_puts(b, ");\n");
+      }
+    }
+    else {
+      int reli = re_lit_index(c, sp_argv[0]);
+      if (reli >= 0) buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", reli, rb.p ? rb.p : "");
+      else if (comp_ntype(c, sp_argv[0]) == TY_REGEX) {
+        buf_puts(b, "sp_re_split_limit("); emit_expr(c, sp_argv[0], b);
+        buf_printf(b, ", %s, ", rb.p ? rb.p : "");
+      }
+      else {
+        buf_printf(b, "sp_str_split_limit(%s, ", rb.p ? rb.p : ""); emit_str_pattern_expr(c, sp_argv[0], b);
+        buf_puts(b, ", ");
+      }
+      emit_int_expr(c, sp_argv[1], b); buf_puts(b, ");\n");
+    }
+    free(rb.p);
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, tm, ti);
+    int spIndent = indent + 1;
+    if (use_shadow_sp) {
+      int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
+      clv0->type = et;
+      for (int j = 0; j < sb_bn; j++) infer_type(c, sb_bb[j]);
+      emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
+      emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_loop_body(c, body, b, spIndent);
+      spIndent--;
+      emit_indent(b, spIndent); buf_puts(b, "}\n");
+      clv0->type = csaved0;
+    }
+    else {
+      if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      emit_loop_body(c, body, b, spIndent);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* str.scan(pattern) { |m| body } -- iterate over matches. A regexp pattern
+     with capture groups yields group rows, not whole matches: that shape
+     is handled by the value-form emitter (which binds/destructures the
+     rows), so defer to it. */
+  if (sp_streq(name, "scan") && rt == TY_STRING) {
+    int args = nt_ref(nt, id, "arguments");
+    int sc_argc = 0; const int *sc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sc_argc) : NULL;
+    if (sc_argc != 1) return 0;
+    int sc_re = re_lit_index(c, sc_argv[0]);
+    if (sc_re < 0 && comp_ntype(c, sc_argv[0]) != TY_STRING) return 0;
+    if (sc_re >= 0 && an_re_has_captures(re_lit_src(c, sc_argv[0]))) return 0;
+    /* a body that reads `$~` or a capture global sees its own turn's match,
+       which the value-form emitter walks the subject for (#3601) */
+    if (subtree_reads_match_globals(c, body)) return 0;
+    TyKind et = TY_STRING;
+    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+    int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    int tm = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    if (sc_re >= 0)
+      buf_printf(b, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, %s);\n",
+                 tm, sc_re, rb.p ? rb.p : "");
+    else {
+      buf_printf(b, "sp_StrArray *_t%d = sp_str_scan(%s, ", tm, rb.p ? rb.p : "");
+      emit_expr(c, sc_argv[0], b); buf_puts(b, ");\n");
+    }
+    free(rb.p);
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n",
+               ti, ti, tm, ti);
+    int bodyIndent = indent + 1;
+    if (use_shadow_sc) {
+      int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
+      clv0->type = et;
+      for (int j = 0; j < scb_bn; j++) infer_type(c, scb_bb[j]);
+      emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
+      emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_loop_body(c, body, b, bodyIndent);
+      bodyIndent--;
+      emit_indent(b, bodyIndent); buf_puts(b, "}\n");
+      clv0->type = csaved0;
+    }
+    else {
+      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      emit_loop_body(c, body, b, bodyIndent);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+  return -1;
+}
+
+/* emit_iteration_stmt_body's Range#each with and without a block parameter,
+   Integer#upto / downto, and String#upto (answers 1 emitted, 0 declined, -1
+   to go on) */
+static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
+  /* ("a".."e").each { |s| ... } -- a string-endpoint range has no int sp_Range
+     representation, so materialize the succ-sequence as a StrArray and loop over
+     it. The block param is shadow-typed String for the body. */
+  /* `(1..2).each { body }` with no block parameter iterates just the same: the
+     emitter required one, so a paramless block fell through to NoMethodError
+     (the `throw` idiom under catch is written that way) (#3858). */
+  if (sp_streq(name, "each") && rt == TY_RANGE && !p0 && block >= 0 &&
+      nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode") &&
+      !range_float_begin(c, recv)) {
+    int t0 = ++g_tmp, ts0 = ++g_tmp, te0 = ++g_tmp, ti0 = ++g_tmp;
+    Buf rb0; memset(&rb0, 0, sizeof rb0); emit_expr(c, recv, &rb0);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_Range _t%d = %s;\n", t0, rb0.p ? rb0.p : "");
+    free(rb0.p);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
+               ts0, t0, te0, t0, t0, ts0);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+               ti0, t0, ts0, ti0, te0, ti0, te0, ti0, ts0);
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+  if (sp_streq(name, "each") && rt == TY_RANGE && p0) {
+    if (range_float_begin(c, recv)) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from Float\");\n");
+      return 1;
+    }
+    {
+      /* a beginless range cannot be enumerated from nil (#3066) */
+      int rn0 = unwrap_parens(c, recv);
+      if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
+          nt_ref(nt, rn0, "left") < 0) {
+        emit_indent(b, indent);
+        buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n");
+        return 1;
+      }
+    }
+    int rnode = unwrap_parens(c, recv);
+    if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
+      int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
+      if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
+        int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
+        int ta = ++g_tmp, ti = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta);
+        emit_expr(c, lo, b); buf_puts(b, ", "); emit_expr(c, hi, b); buf_printf(b, ", %d);\n", excl);
+        /* Root the materialized array: the loop body can allocate (and trigger
+           GC), which would otherwise sweep it out from under sp_StrArray_get. */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+        Scope *ssc = comp_scope_of(c, block);
+        LocalVar *slv = (ssc && p0_orig) ? scope_local(ssc, p0_orig) : NULL;
+        TyKind saved = slv ? slv->type : TY_UNKNOWN;
+        int use_shadow = slv && slv->type != TY_STRING;
+        emit_indent(b, indent);
+        buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+        if (use_shadow) {
+          int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
+          slv->type = TY_STRING;
+          for (int j = 0; j < sbn; j++) infer_type(c, sbb[j]);
+          emit_indent(b, indent + 1);
+          buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          emit_loop_body(c, body, b, indent + 1);
+          slv->type = saved;
+        }
+        else {
+          emit_indent(b, indent + 1);
+          buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          emit_loop_body(c, body, b, indent + 1);
+        }
+        emit_indent(b, indent); buf_puts(b, "}\n");
+        return 1;
+      }
+    }
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_Range _t%d = ", t); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n");
+    free(rb.p);
+    /* Under --int-overflow=promote the loop var is widened to poly; drive the
+       loop with a fresh sp_int temp and re-box the counter each iteration
+       (mirrors emit_for's poly-counter arm). */
+    LocalVar *clv = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+    /* Direction-aware bounds: a descending range (n.downto(m)) walks by its
+       negative step, which the plain ascending loop would skip entirely. */
+    int ts = ++g_tmp, te = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
+               ts, t, te, t, t, ts);
+    /* a beginless Range held in a variable or built at run time cannot be
+       enumerated from nil, as the literal `(..3).each` above refuses; it
+       walked up from INTPTR_MIN, whose first value read back as nil */
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d.first == INTPTR_MIN && _t%d > 0) sp_range_nil_begin_raise();\n", t, ts);
+    if (clv && clv->type == TY_POLY) {
+      int tc = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+                 tc, t, ts, tc, te, tc, te, tc, ts);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p0, tc);
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+    emit_indent(b, indent);
+    buf_printf(b, "for (lv_%s = _t%d.first; _t%d > 0 ? lv_%s <= _t%d : lv_%s >= _t%d; lv_%s += _t%d) {\n",
+               p0, t, ts, p0, te, p0, te, p0, ts);
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* n.upto(m) / n.downto(m) { [|i|] ... } -- a fresh temp drives the loop and
+     the block param (if any) is rebound from it each iteration, like n.times.
+     A blockless-param form (`1.upto(5) { body }`) must still run the body. */
+  if ((sp_streq(name, "upto") || sp_streq(name, "downto")) && rt == TY_INT) {
+    int up = sp_streq(name, "upto");
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = NULL;
+    if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc != 1) return 0;
+    Buf lo; memset(&lo, 0, sizeof lo); emit_expr(c, recv, &lo);
+    /* a boxed limit (the receiver reached this arm through the poly face,
+       and its limit is boxed too) is unboxed to the counter's sp_int; it did
+       not compile against it (#4665). A typed limit stays as it is: a Float
+       one compares as a Float (`-5.upto(-1.3)` stops at -2). */
+    Buf hi; memset(&hi, 0, sizeof hi);
+    if (comp_ntype(c, argv[0]) == TY_POLY) emit_int_expr(c, argv[0], &hi);
+    else emit_expr(c, argv[0], &hi);
+    int ti = ++g_tmp;
+    /* the limit sits in the loop condition, so a side-effecting one would be
+       re-evaluated every round: it is computed once in Ruby */
+    if (subtree_has_side_effect(c, argv[0])) {
+      int th = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_int _t%d = %s;\n", th, hi.p ? hi.p : "0");
+      free(hi.p); memset(&hi, 0, sizeof hi);
+      buf_printf(&hi, "_t%d", th);
+    }
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = ", ti); buf_puts(b, lo.p);
+    buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
+    buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
+    if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
+    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", ti);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    free(lo.p); free(hi.p);
+    return 1;
+  }
+
+  /* "a".upto("e") { |c| ... } -- string succ-sequence loop, mirrors
+     sp_StrArray_from_string_range semantics (inclusive, 4096-cap) */
+  if (sp_streq(name, "upto") && rt == TY_STRING && p0) {
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc != 1) return 0;
+    int te = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp, tcmp = ++g_tmp;
+    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", te); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
+    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    emit_indent(b, indent); buf_printf(b, "for (int _t%d = 0; _t%d < 4096; _t%d++) {\n", ti, ti, ti);
+    emit_indent(b, indent + 1); buf_printf(b, "int _t%d = sp_str_cmp_bytes(_t%d, _t%d);\n", tcmp, tc, te);
+    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
+    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
+    emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+  return -1;
+}
+
+/* emit_iteration_stmt_body's combination / permutation family with a block
+   (its refusals and its forms) and Array#each_cons (answers 1 emitted, 0
+   declined, -1 to go on) */
+static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0, TyKind rt) {
+  /* The arms below bind the tuple to the first parameter only. CRuby
+     spreads it across a block taking two or more parameters (or a rest, an
+     optional or a post). desugar_builtin_iter_block_shapes lowers such a
+     block to one parameter; a block it leaves as written (a `&.` call, a
+     destructuring parameter it does not take) would bind m to the whole
+     tuple and n to nil, so it is refused rather than answered differently. */
+  if (is_combination_family(name) &&
+      (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_FLOAT_ARRAY) && block >= 0 &&
+      (block_lead_only(c, block) || block_rest_marker(c, block) ||
+       block_opt_name(c, block, 0) || block_post_name(c, block, 0)))
+    unsupported_feature(c, id, "a block taking more than one parameter on combination, permutation or their repeated forms");
+
+  /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
+     sub-array as a fresh int_array. permutation also accepts the argless
+     (full-length) form. */
+  if (is_combination_family(name) &&
+      rt == TY_INT_ARRAY) {
+    int is_perm = sp_streq(name, "permutation");
+    const char *genfn = sp_streq(name, "permutation") ? "sp_IntArray_permutation"
+                      : sp_streq(name, "combination") ? "sp_IntArray_combination"
+                      : sp_streq(name, "repeated_permutation") ? "sp_IntArray_repeated_permutation"
+                      : "sp_IntArray_repeated_combination";
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 && !(is_perm && ac == 0)) return 0;
+    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent); buf_printf(b, "{ sp_IntArray *_t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n"); free(rb.p);
+    emit_indent(b, indent + 1); buf_printf(b, "sp_PtrArray *_t%d = %s(_t%d, ", tc, genfn, ta);
+    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
+    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
+    if (p0) {
+      Scope *cbsc = comp_scope_of(c, block);
+      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
+      emit_indent(b, indent + 2);
+      if (cpt == TY_POLY || cpt == TY_UNKNOWN)
+        buf_printf(b, "lv_%s = sp_box_obj((sp_IntArray *)_t%d->data[_t%d], SP_BUILTIN_INT_ARRAY);\n", p0, tc, ti);
+      else
+        buf_printf(b, "lv_%s = (sp_IntArray *)_t%d->data[_t%d];\n", p0, tc, ti);
+    }
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* the same over a poly array: the runtime builds each sub-array boxed, and
+     the block binds it boxed, or as the poly array a typed parameter holds
+     (#4919) */
+  if (is_combination_family(name) &&
+      rt == TY_POLY_ARRAY) {
+    int is_perm = sp_streq(name, "permutation");
+    const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                      : sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                      : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
+                      : "sp_PolyArray_repeated_combination";
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 && !(is_perm && ac == 0)) return 0;
+    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent); buf_printf(b, "{ sp_PolyArray *_t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_printf(b, "; SP_GC_ROOT(_t%d);\n", ta); free(rb.p);
+    emit_indent(b, indent + 1); buf_printf(b, "sp_PolyArray *_t%d = %s(_t%d, ", tc, genfn, ta);
+    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
+    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
+    if (p0) {
+      Scope *cbsc = comp_scope_of(c, block);
+      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
+      emit_indent(b, indent + 2);
+      if (cpt == TY_POLY_ARRAY)
+        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
+      else
+        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
+    }
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* the same over a Float array: the boxed implementation builds the
+     sub-arrays, and a parameter typed Float array takes each one unboxed
+     (the block was not emitted at all, and the call fell to the unresolved
+     NoMethodError) */
+  if (is_combination_family(name) &&
+      rt == TY_FLOAT_ARRAY) {
+    int is_perm = sp_streq(name, "permutation");
+    const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
+                      : sp_streq(name, "combination") ? "sp_PolyArray_combination"
+                      : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
+                      : "sp_PolyArray_repeated_combination";
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 && !(is_perm && ac == 0)) return 0;
+    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    emit_indent(b, indent + 1); buf_printf(b, "sp_PolyArray *_t%d = %s(_t%d, ", tc, genfn, ta);
+    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
+    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
+    if (p0) {
+      Scope *cbsc = comp_scope_of(c, block);
+      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
+      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
+      emit_indent(b, indent + 2);
+      if (cpt == TY_FLOAT_ARRAY)
+        buf_printf(b, "lv_%s = sp_FloatArray_from_poly_array((sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p);\n", p0, tc, ti);
+      else if (cpt == TY_POLY_ARRAY)
+        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
+      else
+        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
+    }
+    emit_loop_body(c, body, b, indent + 2);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* array.each_cons(n) { |a, b, ...| } -- sliding window of n consecutive
+     elements; a single param binds the n-element sub-array, multiple params
+     destructure the window. The hoisted receiver is rooted for the same
+     reason Hash#each's above is: its length is the loop bound, re-read every
+     turn, and a receiver the program does not name has no other holder. */
+  if (sp_streq(name, "each_cons") && ty_is_array(rt)) {
+    int args = nt_ref(nt, id, "arguments");
+    int ec = 0; const int *eav = args >= 0 ? nt_arr(nt, args, "arguments", &ec) : NULL;
+    if (ec != 1) return 0;
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    if (!k) return 0;
+    int np = 0; while (block_param_name(c, block, np)) np++;
+    int ta = ++g_tmp, tnn = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent); emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s; ", ta, rb.p ? rb.p : ""); free(rb.p);
+    emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n");
+    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tnn); emit_int_expr(c, eav[0], b); buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"invalid size\");\n", tnn);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d + _t%d - 1 < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, tnn, k, ta, ti);
+    if (np == 1) {
+      const char *pn = block_param_name(c, block, 0);
+      const char *rpn = rename_local(pn);
+      Scope *csc_ec = comp_scope_of(c, block);
+      LocalVar *clv_ec = csc_ec ? scope_local(csc_ec, pn) : NULL;
+      TyKind csaved_ec = clv_ec ? clv_ec->type : TY_UNKNOWN;
+      int use_shadow_ec = clv_ec && clv_ec->type != rt && rt != TY_UNKNOWN;
+      if (use_shadow_ec) {
+        int bodyBn = 0; const int *bodyBb = body >= 0 ? nt_arr(nt, body, "body", &bodyBn) : NULL;
+        clv_ec->type = rt;
+        for (int j = 0; j < bodyBn; j++) infer_type(c, bodyBb[j]);
+        emit_indent(b, indent + 1); buf_puts(b, "{\n");
+        emit_indent(b, indent + 2); emit_ctype(c, rt, b);
+        buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
+        emit_loop_body(c, body, b, indent + 2);
+        emit_indent(b, indent + 1); buf_puts(b, "}\n");
+        clv_ec->type = csaved_ec;
+      }
+      else {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
+        emit_loop_body(c, body, b, indent + 1);
+      }
+    }
+    else {
+      long long lit = nt_kind(nt, eav[0]) == NK_IntegerNode ? nt_int(nt, eav[0], "value", 0) : 0;
+      for (int pj = 0; pj < np; pj++)
+        emit_row_param_bind(c, block, pj, k, rt, ta, ti, tnn, lit, indent + 1, b);
+      emit_loop_body(c, body, b, indent + 1);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+  return -1;
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -5906,620 +6538,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* The arms below bind the tuple to the first parameter only. CRuby
-     spreads it across a block taking two or more parameters (or a rest, an
-     optional or a post). desugar_builtin_iter_block_shapes lowers such a
-     block to one parameter; a block it leaves as written (a `&.` call, a
-     destructuring parameter it does not take) would bind m to the whole
-     tuple and n to nil, so it is refused rather than answered differently. */
-  if (is_combination_family(name) &&
-      (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_FLOAT_ARRAY) && block >= 0 &&
-      (block_lead_only(c, block) || block_rest_marker(c, block) ||
-       block_opt_name(c, block, 0) || block_post_name(c, block, 0)))
-    unsupported_feature(c, id, "a block taking more than one parameter on combination, permutation or their repeated forms");
+  { int rv = iter_combination_cons_arms(c, id, b, indent, nt, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }
 
-  /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
-     sub-array as a fresh int_array. permutation also accepts the argless
-     (full-length) form. */
-  if (is_combination_family(name) &&
-      rt == TY_INT_ARRAY) {
-    int is_perm = sp_streq(name, "permutation");
-    const char *genfn = sp_streq(name, "permutation") ? "sp_IntArray_permutation"
-                      : sp_streq(name, "combination") ? "sp_IntArray_combination"
-                      : sp_streq(name, "repeated_permutation") ? "sp_IntArray_repeated_permutation"
-                      : "sp_IntArray_repeated_combination";
-    int args = nt_ref(nt, id, "arguments");
-    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1 && !(is_perm && ac == 0)) return 0;
-    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent); buf_printf(b, "{ sp_IntArray *_t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n"); free(rb.p);
-    emit_indent(b, indent + 1); buf_printf(b, "sp_PtrArray *_t%d = %s(_t%d, ", tc, genfn, ta);
-    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
-    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
-    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
-    if (p0) {
-      Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
-      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
-      emit_indent(b, indent + 2);
-      if (cpt == TY_POLY || cpt == TY_UNKNOWN)
-        buf_printf(b, "lv_%s = sp_box_obj((sp_IntArray *)_t%d->data[_t%d], SP_BUILTIN_INT_ARRAY);\n", p0, tc, ti);
-      else
-        buf_printf(b, "lv_%s = (sp_IntArray *)_t%d->data[_t%d];\n", p0, tc, ti);
-    }
-    emit_loop_body(c, body, b, indent + 2);
-    emit_indent(b, indent + 1); buf_puts(b, "}\n");
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
+  { int rv = iter_range_upto_arms(c, id, b, indent, nt, block, name, recv, body, p0_orig, p0, rt); if (rv >= 0) return rv; }
 
-  /* the same over a poly array: the runtime builds each sub-array boxed, and
-     the block binds it boxed, or as the poly array a typed parameter holds
-     (#4919) */
-  if (is_combination_family(name) &&
-      rt == TY_POLY_ARRAY) {
-    int is_perm = sp_streq(name, "permutation");
-    const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
-                      : sp_streq(name, "combination") ? "sp_PolyArray_combination"
-                      : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
-                      : "sp_PolyArray_repeated_combination";
-    int args = nt_ref(nt, id, "arguments");
-    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1 && !(is_perm && ac == 0)) return 0;
-    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent); buf_printf(b, "{ sp_PolyArray *_t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_printf(b, "; SP_GC_ROOT(_t%d);\n", ta); free(rb.p);
-    emit_indent(b, indent + 1); buf_printf(b, "sp_PolyArray *_t%d = %s(_t%d, ", tc, genfn, ta);
-    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
-    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
-    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
-    if (p0) {
-      Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
-      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
-      emit_indent(b, indent + 2);
-      if (cpt == TY_POLY_ARRAY)
-        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
-      else
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
-    }
-    emit_loop_body(c, body, b, indent + 2);
-    emit_indent(b, indent + 1); buf_puts(b, "}\n");
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* the same over a Float array: the boxed implementation builds the
-     sub-arrays, and a parameter typed Float array takes each one unboxed
-     (the block was not emitted at all, and the call fell to the unresolved
-     NoMethodError) */
-  if (is_combination_family(name) &&
-      rt == TY_FLOAT_ARRAY) {
-    int is_perm = sp_streq(name, "permutation");
-    const char *genfn = sp_streq(name, "permutation") ? "sp_PolyArray_permutation"
-                      : sp_streq(name, "combination") ? "sp_PolyArray_combination"
-                      : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
-                      : "sp_PolyArray_repeated_combination";
-    int args = nt_ref(nt, id, "arguments");
-    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1 && !(is_perm && ac == 0)) return 0;
-    int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
-    emit_indent(b, indent);
-    buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
-    free(rb.p);
-    emit_indent(b, indent + 1); buf_printf(b, "sp_PolyArray *_t%d = %s(_t%d, ", tc, genfn, ta);
-    if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
-    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
-    emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
-    if (p0) {
-      Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
-      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
-      emit_indent(b, indent + 2);
-      if (cpt == TY_FLOAT_ARRAY)
-        buf_printf(b, "lv_%s = sp_FloatArray_from_poly_array((sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p);\n", p0, tc, ti);
-      else if (cpt == TY_POLY_ARRAY)
-        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
-      else
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
-    }
-    emit_loop_body(c, body, b, indent + 2);
-    emit_indent(b, indent + 1); buf_puts(b, "}\n");
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* array.each_cons(n) { |a, b, ...| } -- sliding window of n consecutive
-     elements; a single param binds the n-element sub-array, multiple params
-     destructure the window. The hoisted receiver is rooted for the same
-     reason Hash#each's above is: its length is the loop bound, re-read every
-     turn, and a receiver the program does not name has no other holder. */
-  if (sp_streq(name, "each_cons") && ty_is_array(rt)) {
-    int args = nt_ref(nt, id, "arguments");
-    int ec = 0; const int *eav = args >= 0 ? nt_arr(nt, args, "arguments", &ec) : NULL;
-    if (ec != 1) return 0;
-    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
-    if (!k) return 0;
-    int np = 0; while (block_param_name(c, block, np)) np++;
-    int ta = ++g_tmp, tnn = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent); emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s; ", ta, rb.p ? rb.p : ""); free(rb.p);
-    emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n");
-    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tnn); emit_int_expr(c, eav[0], b); buf_puts(b, ";\n");
-    emit_indent(b, indent);
-    buf_printf(b, "if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"invalid size\");\n", tnn);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d + _t%d - 1 < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, tnn, k, ta, ti);
-    if (np == 1) {
-      const char *pn = block_param_name(c, block, 0);
-      const char *rpn = rename_local(pn);
-      Scope *csc_ec = comp_scope_of(c, block);
-      LocalVar *clv_ec = csc_ec ? scope_local(csc_ec, pn) : NULL;
-      TyKind csaved_ec = clv_ec ? clv_ec->type : TY_UNKNOWN;
-      int use_shadow_ec = clv_ec && clv_ec->type != rt && rt != TY_UNKNOWN;
-      if (use_shadow_ec) {
-        int bodyBn = 0; const int *bodyBb = body >= 0 ? nt_arr(nt, body, "body", &bodyBn) : NULL;
-        clv_ec->type = rt;
-        for (int j = 0; j < bodyBn; j++) infer_type(c, bodyBb[j]);
-        emit_indent(b, indent + 1); buf_puts(b, "{\n");
-        emit_indent(b, indent + 2); emit_ctype(c, rt, b);
-        buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
-        emit_loop_body(c, body, b, indent + 2);
-        emit_indent(b, indent + 1); buf_puts(b, "}\n");
-        clv_ec->type = csaved_ec;
-      }
-      else {
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
-        emit_loop_body(c, body, b, indent + 1);
-      }
-    }
-    else {
-      long long lit = nt_kind(nt, eav[0]) == NK_IntegerNode ? nt_int(nt, eav[0], "value", 0) : 0;
-      for (int pj = 0; pj < np; pj++)
-        emit_row_param_bind(c, block, pj, k, rt, ta, ti, tnn, lit, indent + 1, b);
-      emit_loop_body(c, body, b, indent + 1);
-    }
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* ("a".."e").each { |s| ... } -- a string-endpoint range has no int sp_Range
-     representation, so materialize the succ-sequence as a StrArray and loop over
-     it. The block param is shadow-typed String for the body. */
-  /* `(1..2).each { body }` with no block parameter iterates just the same: the
-     emitter required one, so a paramless block fell through to NoMethodError
-     (the `throw` idiom under catch is written that way) (#3858). */
-  if (sp_streq(name, "each") && rt == TY_RANGE && !p0 && block >= 0 &&
-      nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode") &&
-      !range_float_begin(c, recv)) {
-    int t0 = ++g_tmp, ts0 = ++g_tmp, te0 = ++g_tmp, ti0 = ++g_tmp;
-    Buf rb0; memset(&rb0, 0, sizeof rb0); emit_expr(c, recv, &rb0);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_Range _t%d = %s;\n", t0, rb0.p ? rb0.p : "");
-    free(rb0.p);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
-               ts0, t0, te0, t0, t0, ts0);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
-               ti0, t0, ts0, ti0, te0, ti0, te0, ti0, ts0);
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-  if (sp_streq(name, "each") && rt == TY_RANGE && p0) {
-    if (range_float_begin(c, recv)) {
-      emit_indent(b, indent);
-      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from Float\");\n");
-      return 1;
-    }
-    {
-      /* a beginless range cannot be enumerated from nil (#3066) */
-      int rn0 = unwrap_parens(c, recv);
-      if (rn0 >= 0 && nt_type(nt, rn0) && sp_streq(nt_type(nt, rn0), "RangeNode") &&
-          nt_ref(nt, rn0, "left") < 0) {
-        emit_indent(b, indent);
-        buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n");
-        return 1;
-      }
-    }
-    int rnode = unwrap_parens(c, recv);
-    if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
-      int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
-      if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
-        int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
-        int ta = ++g_tmp, ti = ++g_tmp;
-        emit_indent(b, indent);
-        buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta);
-        emit_expr(c, lo, b); buf_puts(b, ", "); emit_expr(c, hi, b); buf_printf(b, ", %d);\n", excl);
-        /* Root the materialized array: the loop body can allocate (and trigger
-           GC), which would otherwise sweep it out from under sp_StrArray_get. */
-        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
-        Scope *ssc = comp_scope_of(c, block);
-        LocalVar *slv = (ssc && p0_orig) ? scope_local(ssc, p0_orig) : NULL;
-        TyKind saved = slv ? slv->type : TY_UNKNOWN;
-        int use_shadow = slv && slv->type != TY_STRING;
-        emit_indent(b, indent);
-        buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
-        if (use_shadow) {
-          int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
-          slv->type = TY_STRING;
-          for (int j = 0; j < sbn; j++) infer_type(c, sbb[j]);
-          emit_indent(b, indent + 1);
-          buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
-          emit_loop_body(c, body, b, indent + 1);
-          slv->type = saved;
-        }
-        else {
-          emit_indent(b, indent + 1);
-          buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
-          emit_loop_body(c, body, b, indent + 1);
-        }
-        emit_indent(b, indent); buf_puts(b, "}\n");
-        return 1;
-      }
-    }
-    int t = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_Range _t%d = ", t); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n");
-    free(rb.p);
-    /* Under --int-overflow=promote the loop var is widened to poly; drive the
-       loop with a fresh sp_int temp and re-box the counter each iteration
-       (mirrors emit_for's poly-counter arm). */
-    LocalVar *clv = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
-    /* Direction-aware bounds: a descending range (n.downto(m)) walks by its
-       negative step, which the plain ascending loop would skip entirely. */
-    int ts = ++g_tmp, te = ++g_tmp;
-    emit_indent(b, indent);
-    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
-               ts, t, te, t, t, ts);
-    /* a beginless Range held in a variable or built at run time cannot be
-       enumerated from nil, as the literal `(..3).each` above refuses; it
-       walked up from INTPTR_MIN, whose first value read back as nil */
-    emit_indent(b, indent);
-    buf_printf(b, "if (_t%d.first == INTPTR_MIN && _t%d > 0) sp_range_nil_begin_raise();\n", t, ts);
-    if (clv && clv->type == TY_POLY) {
-      int tc = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
-                 tc, t, ts, tc, te, tc, te, tc, ts);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p0, tc);
-      emit_loop_body(c, body, b, indent + 1);
-      emit_indent(b, indent); buf_puts(b, "}\n");
-      return 1;
-    }
-    emit_indent(b, indent);
-    buf_printf(b, "for (lv_%s = _t%d.first; _t%d > 0 ? lv_%s <= _t%d : lv_%s >= _t%d; lv_%s += _t%d) {\n",
-               p0, t, ts, p0, te, p0, te, p0, ts);
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* n.upto(m) / n.downto(m) { [|i|] ... } -- a fresh temp drives the loop and
-     the block param (if any) is rebound from it each iteration, like n.times.
-     A blockless-param form (`1.upto(5) { body }`) must still run the body. */
-  if ((sp_streq(name, "upto") || sp_streq(name, "downto")) && rt == TY_INT) {
-    int up = sp_streq(name, "upto");
-    int args = nt_ref(nt, id, "arguments");
-    int argc = 0;
-    const int *argv = NULL;
-    if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
-    if (argc != 1) return 0;
-    Buf lo; memset(&lo, 0, sizeof lo); emit_expr(c, recv, &lo);
-    /* a boxed limit (the receiver reached this arm through the poly face,
-       and its limit is boxed too) is unboxed to the counter's sp_int; it did
-       not compile against it (#4665). A typed limit stays as it is: a Float
-       one compares as a Float (`-5.upto(-1.3)` stops at -2). */
-    Buf hi; memset(&hi, 0, sizeof hi);
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_int_expr(c, argv[0], &hi);
-    else emit_expr(c, argv[0], &hi);
-    int ti = ++g_tmp;
-    /* the limit sits in the loop condition, so a side-effecting one would be
-       re-evaluated every round: it is computed once in Ruby */
-    if (subtree_has_side_effect(c, argv[0])) {
-      int th = ++g_tmp;
-      emit_indent(b, indent);
-      buf_printf(b, "sp_int _t%d = %s;\n", th, hi.p ? hi.p : "0");
-      free(hi.p); memset(&hi, 0, sizeof hi);
-      buf_printf(&hi, "_t%d", th);
-    }
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = ", ti); buf_puts(b, lo.p);
-    buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
-    buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
-    if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
-    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", ti);
-      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
-      emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    free(lo.p); free(hi.p);
-    return 1;
-  }
-
-  /* "a".upto("e") { |c| ... } -- string succ-sequence loop, mirrors
-     sp_StrArray_from_string_range semantics (inclusive, 4096-cap) */
-  if (sp_streq(name, "upto") && rt == TY_STRING && p0) {
-    int args = nt_ref(nt, id, "arguments");
-    int argc = 0;
-    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-    if (argc != 1) return 0;
-    int te = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp, tcmp = ++g_tmp;
-    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", te); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
-    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";\n");
-    emit_indent(b, indent); buf_printf(b, "for (int _t%d = 0; _t%d < 4096; _t%d++) {\n", ti, ti, ti);
-    emit_indent(b, indent + 1); buf_printf(b, "int _t%d = sp_str_cmp_bytes(_t%d, _t%d);\n", tcmp, tc, te);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
-  if (sp_streq(name, "tap") && recv >= 0) {
-    TyKind et = infer_type(c, recv);
-    /* a receiver of no type -- a call proven to raise NoMethodError -- is
-       the raise's sp_RbVal; `void _t` did not compile (#6213) */
-    if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
-    Scope *tsc = p0_orig ? comp_scope_of(c, block) : NULL;
-    LocalVar *tlv0 = (tsc && p0_orig) ? scope_local(tsc, p0_orig) : NULL;
-    TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
-    int use_shadow_t = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
-    int tr = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent); emit_ctype(c, et, b);
-    buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
-    /* An OBJECT-receiver tap whose param widened to poly (it escaped through
-       yield(_1) / a store) cannot be shadowed with a concrete object slot;
-       box the receiver into the poly param instead (#3140). An array/hash
-       receiver keeps its shadow path -- boxing would strip its methods and
-       break `nums.tap { |a| a.sort! }`. */
-    int tap_escapes = tlv0 && tsaved0 == TY_POLY && ty_is_object(et);
-    /* A boxed receiver over a SCALAR param: keep the param typed and unbox
-       the value into it (raising past the word, as the other typed sinks
-       do) rather than shadowing it as boxed -- the body was inferred against
-       the scalar, and the shadow's retype does not reach the cached node
-       types, so `v.negative?` read an sp_int out of an sp_RbVal and the C did
-       not build. Under --int-overflow=promote every Integer local is boxed
-       while a block param is not, which is where the shape lives (#4730).
-       The expression-form emitter (emit_tap_then_expr) does the same. */
-    const char *tap_unbox = NULL;
-    if (use_shadow_t && et == TY_POLY && tsaved0 == TY_INT) tap_unbox = "sp_poly_to_i";
-    else if (use_shadow_t && et == TY_POLY && tsaved0 == TY_FLOAT) tap_unbox = "sp_poly_to_f";
-    if (tap_unbox) use_shadow_t = 0;
-    /* tap runs the block once, not in a loop, so a `next` in it has no C loop
-       to continue out of: give it one (#3978). */
-    int tap_next = subtree_has_own_next(nt, body);
-    const char *sv_tap_nx = g_ie_next_var;
-    if (tap_next) g_ie_next_var = NULL;
-    if (use_shadow_t && !tap_escapes) {
-      int tbody_bn = 0; const int *tbody_bb = body >= 0 ? nt_arr(nt, body, "body", &tbody_bn) : NULL;
-      tlv0->type = et;
-      for (int j = 0; j < tbody_bn; j++) infer_type(c, tbody_bb[j]);
-      emit_indent(b, indent); buf_puts(b, tap_next ? "do {\n" : "{\n");
-      emit_indent(b, indent + 1); emit_ctype(c, et, b);
-      buf_printf(b, " lv_%s = _t%d;\n", p0, tr);
-      emit_loop_body(c, body, b, indent + 1);
-      emit_indent(b, indent); buf_puts(b, tap_next ? "} while (0);\n" : "}\n");
-      tlv0->type = tsaved0;
-    }
-    else {
-      if (p0) {
-        emit_indent(b, indent);
-        /* the param's declared slot may be wider than the receiver -- a `_1`
-           that escapes through `yield(_1)` widens to poly, so box the object
-           into it rather than assigning the raw pointer (#3140) */
-        TyKind ptt = tlv0 ? tlv0->type : et;
-        if (ptt == TY_POLY && ty_is_object(et)) {
-          char src[32]; snprintf(src, sizeof src, "_t%d", tr);
-          buf_printf(b, "lv_%s = ", p0);
-          emit_boxed_text(c, et, src, b);
-          buf_puts(b, ";\n");
-        }
-        else if (tap_unbox) {
-          buf_printf(b, "lv_%s = %s(_t%d);\n", p0, tap_unbox, tr);
-        }
-        else {
-          buf_printf(b, "lv_%s = _t%d;\n", p0, tr);
-        }
-      }
-      if (tap_next) { emit_indent(b, indent); buf_puts(b, "do {\n"); }
-      emit_loop_body(c, body, b, indent + (tap_next ? 1 : 0));
-      if (tap_next) { emit_indent(b, indent); buf_puts(b, "} while (0);\n"); }
-    }
-    g_ie_next_var = sv_tap_nx;
-    return 1;
-  }
-
-  /* array.each_slice(n) { |p| body } -- yield subarrays of size n. Rooted
-     hoist, as each_cons above. */
-  if (sp_streq(name, "each_slice") && ty_is_array(rt)) {
-    int args = nt_ref(nt, id, "arguments");
-    int es_argc = 0; const int *es_argv = args >= 0 ? nt_arr(nt, args, "arguments", &es_argc) : NULL;
-    if (es_argc != 1) return 0;
-    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
-    if (!k) return 0;
-    int np_es = 0; while (block_param_name(c, block, np_es)) np_es++;
-    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
-    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
-    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow_es = np_es == 1 && clv0 && clv0->type != rt && rt != TY_UNKNOWN;
-    int ta = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent); emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s; ", ta, rb.p ? rb.p : ""); free(rb.p);
-    emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n");
-    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", ts);
-    emit_int_expr(c, es_argv[0], b); buf_puts(b, ";\n");
-    /* a size of 0 stepped the loop by nothing, forever */
-    emit_indent(b, indent);
-    buf_printf(b, "if (_t%d <= 0) sp_raise_cls(\"ArgumentError\", \"invalid slice size\");\n", ts);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d += _t%d) {\n",
-               ti, ti, k, ta, ti, ts);
-    int bodyIndent = indent + 1;
-    if (np_es > 1) {
-      /* multi-param: destructure slice elements into individual params */
-      long long lit = nt_kind(nt, es_argv[0]) == NK_IntegerNode ? nt_int(nt, es_argv[0], "value", 0) : 0;
-      for (int pj = 0; pj < np_es; pj++)
-        emit_row_param_bind(c, block, pj, k, rt, ta, ti, ts, lit, bodyIndent, b);
-      emit_loop_body(c, body, b, bodyIndent);
-    }
-    else if (use_shadow_es) {
-      int esb_bn = 0; const int *esb_bb = body >= 0 ? nt_arr(nt, body, "body", &esb_bn) : NULL;
-      clv0->type = rt;
-      for (int j = 0; j < esb_bn; j++) infer_type(c, esb_bb[j]);
-      emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
-      emit_indent(b, bodyIndent); emit_ctype(c, rt, b);
-      buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts);
-      emit_loop_body(c, body, b, bodyIndent);
-      bodyIndent--;
-      emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
-    }
-    else {
-      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts); }
-      emit_loop_body(c, body, b, bodyIndent);
-    }
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* str.split(sep) { |piece| body } -- iterate over the substrings; the call
-     yields each piece and evaluates to the receiver (handled in statement
-     position, where the value is discarded). */
-  if (sp_streq(name, "split") && rt == TY_STRING) {
-    int args = nt_ref(nt, id, "arguments");
-    int sp_argc = 0; const int *sp_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sp_argc) : NULL;
-    if (sp_argc > 2) return 0;
-    TyKind et = TY_STRING;
-    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
-    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
-    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow_sp = clv0 && clv0->type != et && et != TY_UNKNOWN;
-    int tm = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_StrArray *_t%d = ", tm);
-    if (sp_argc == 0) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
-    else if (sp_argc == 1) {
-      const char *aty = nt_type(nt, sp_argv[0]);
-      int ws = (aty && sp_streq(aty, "NilNode")) ||
-               (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
-                sp_streq(nt_str(nt, sp_argv[0], "content"), " ") && nt_str_len(nt, sp_argv[0], "content") == 1);
-      int reli = re_lit_index(c, sp_argv[0]);
-      if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
-      /* a Regexp separator splits with the engine, the way the expression
-         arm does; it is the one class the pattern slot must not word as a
-         wrong argument */
-      else if (reli >= 0) buf_printf(b, "sp_re_split(sp_re_pat_%d, %s);\n", reli, rb.p ? rb.p : "");
-      else if (comp_ntype(c, sp_argv[0]) == TY_REGEX) {
-        buf_puts(b, "sp_re_split("); emit_expr(c, sp_argv[0], b);
-        buf_printf(b, ", %s);\n", rb.p ? rb.p : "");
-      }
-      else {
-        buf_printf(b, "sp_str_split_drop_trailing(%s, ", rb.p ? rb.p : ""); emit_str_pattern_expr(c, sp_argv[0], b); buf_puts(b, ");\n");
-      }
-    }
-    else {
-      int reli = re_lit_index(c, sp_argv[0]);
-      if (reli >= 0) buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", reli, rb.p ? rb.p : "");
-      else if (comp_ntype(c, sp_argv[0]) == TY_REGEX) {
-        buf_puts(b, "sp_re_split_limit("); emit_expr(c, sp_argv[0], b);
-        buf_printf(b, ", %s, ", rb.p ? rb.p : "");
-      }
-      else {
-        buf_printf(b, "sp_str_split_limit(%s, ", rb.p ? rb.p : ""); emit_str_pattern_expr(c, sp_argv[0], b);
-        buf_puts(b, ", ");
-      }
-      emit_int_expr(c, sp_argv[1], b); buf_puts(b, ");\n");
-    }
-    free(rb.p);
-    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, tm, ti);
-    int spIndent = indent + 1;
-    if (use_shadow_sp) {
-      int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
-      clv0->type = et;
-      for (int j = 0; j < sb_bn; j++) infer_type(c, sb_bb[j]);
-      emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
-      emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
-      emit_loop_body(c, body, b, spIndent);
-      spIndent--;
-      emit_indent(b, spIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
-    }
-    else {
-      if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
-      emit_loop_body(c, body, b, spIndent);
-    }
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* str.scan(pattern) { |m| body } -- iterate over matches. A regexp pattern
-     with capture groups yields group rows, not whole matches: that shape
-     is handled by the value-form emitter (which binds/destructures the
-     rows), so defer to it. */
-  if (sp_streq(name, "scan") && rt == TY_STRING) {
-    int args = nt_ref(nt, id, "arguments");
-    int sc_argc = 0; const int *sc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sc_argc) : NULL;
-    if (sc_argc != 1) return 0;
-    int sc_re = re_lit_index(c, sc_argv[0]);
-    if (sc_re < 0 && comp_ntype(c, sc_argv[0]) != TY_STRING) return 0;
-    if (sc_re >= 0 && an_re_has_captures(re_lit_src(c, sc_argv[0]))) return 0;
-    /* a body that reads `$~` or a capture global sees its own turn's match,
-       which the value-form emitter walks the subject for (#3601) */
-    if (subtree_reads_match_globals(c, body)) return 0;
-    TyKind et = TY_STRING;
-    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
-    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
-    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN;
-    int tm = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    emit_indent(b, indent);
-    if (sc_re >= 0)
-      buf_printf(b, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, %s);\n",
-                 tm, sc_re, rb.p ? rb.p : "");
-    else {
-      buf_printf(b, "sp_StrArray *_t%d = sp_str_scan(%s, ", tm, rb.p ? rb.p : "");
-      emit_expr(c, sc_argv[0], b); buf_puts(b, ");\n");
-    }
-    free(rb.p);
-    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n",
-               ti, ti, tm, ti);
-    int bodyIndent = indent + 1;
-    if (use_shadow_sc) {
-      int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
-      clv0->type = et;
-      for (int j = 0; j < scb_bn; j++) infer_type(c, scb_bb[j]);
-      emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
-      emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
-      emit_loop_body(c, body, b, bodyIndent);
-      bodyIndent--;
-      emit_indent(b, bodyIndent); buf_puts(b, "}\n");
-      clv0->type = csaved0;
-    }
-    else {
-      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
-      emit_loop_body(c, body, b, bodyIndent);
-    }
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
+  { int rv = iter_tap_slice_string_arms(c, id, b, indent, nt, block, name, recv, body, p0_orig, p0, rt); if (rv >= 0) return rv; }
 
   return 0;
 }
