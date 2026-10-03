@@ -11148,6 +11148,577 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
   return 0;
 }
 
+/* Call-operator, global-variable and constant writes: o.x += v, $g = v and its operator and or/and forms, C = v, A::B = v and their operator and or/and forms (emit_stmt_inner's arms, in their order) */
+static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "CallOperatorWriteNode")) {
+    /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
+       speed`) has neither a statement-level handler here nor an
+       expression-level one, so it falls all the way through emit_expr's
+       final "unsupported expression" catch-all. Handles the common
+       case: an object receiver with a plain attr_reader/Struct-member
+       attribute. `recv` is evaluated into a temp exactly once (it may
+       be a hash lookup or other expression with real work behind it,
+       not just a bare local) and both the read and the write go through
+       that same temp. */
+    int recv = nt_ref(nt, id, "receiver");
+    const char *attr = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int val = nt_ref(nt, id, "value");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    TyKind rhst = val >= 0 ? comp_ntype(c, val) : TY_UNKNOWN;
+    /* the dynamic operator for a boxed (poly) slot, and the bitwise set the
+       boxed slot handles via unbox-op-rebox (both mirror the ivar op-assign
+       poly arms above). */
+    const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
+                    : op && sp_streq(op, "-") ? "sp_poly_sub"
+                    : op && sp_streq(op, "*") ? "sp_poly_mul"
+                    : op && sp_streq(op, "/") ? "sp_poly_div"
+                    : op && sp_streq(op, "%") ? "sp_poly_mod"
+                    : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
+    int bitop = op && is_int_bit_op(op);
+    int rdcls = -1;
+    /* Ruby desugars `recv.attr op= v` into a reader call AND a writer call;
+       an attr_reader-only attribute raises NoMethodError for `attr=`, so a
+       reader-only match must not silently lower into an ivar store. */
+    if (recv >= 0 && attr && ty_is_object(rt) &&
+        comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls) &&
+        comp_writer_in_chain(c, ty_object_class(rt), attr, NULL)) {
+      const char *rn = comp_resolve_alias(c, rdcls, attr);
+      char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+      int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
+      /* no resolvable backing slot: fail the lowering rather than guess */
+      if (ivx < 0) unsupported(c, id, "call operator write (reader without an ivar slot)");
+      TyKind ivt = c->classes[rdcls].ivar_types[ivx];
+      /* operators the slot type can't take would otherwise fall through to
+         raw C on an sp_Str pointer or an sp_RbVal (pointer arithmetic / a
+         type error) */
+      if (ivt == TY_STRING && !(op && sp_streq(op, "+")))
+        unsupported(c, id, "call operator write (operator on a string attribute)");
+      if (ivt == TY_POLY && !cpf && !bitop)
+        unsupported(c, id, "call operator write (operator on a boxed attribute)");
+      /* the receiver is bound in g_pre, ahead of any prelude the rhs leaves
+         there: Ruby evaluates it first, and an array slot's op-assign reads
+         the slot through it in g_pre, so it is rooted across that prelude's
+         allocations (#4875) */
+      int trecv = ++g_tmp;
+      Buf rx; memset(&rx, 0, sizeof rx);
+      emit_expr(c, recv, &rx);
+      Buf *rb = g_pre ? g_pre : b;
+      emit_indent(rb, g_pre ? g_indent : indent);
+      emit_ctype(c, rt, rb);
+      buf_printf(rb, " _t%d = ", trecv); buf_puts(rb, rx.p ? rx.p : ""); buf_puts(rb, ";");
+      if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) { buf_puts(rb, " "); emit_gc_root_tmp(c, rt, trecv, rb); }
+      buf_puts(rb, "\n");
+      free(rx.p);
+      const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
+      emit_indent(b, indent);
+      if (ivt == TY_STRING) {
+        buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
+        emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
+        buf_puts(b, ");\n");
+      }
+      else if (ivt == TY_POLY && cpf) {
+        /* boxed slot: dynamic operator on boxed operands (same as the
+           poly-receiver dispatch arms below). */
+        buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, iv_c(rn), cpf, trecv, acc, iv_c(rn));
+        emit_boxed(c, val, b); buf_puts(b, ");\n");
+      }
+      else if (ivt == TY_POLY) {
+        /* bitwise op-assign on a boxed slot: coerce to int, re-box */
+        buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_recv_i(\"%s\", _t%d%siv_%s) %s (",
+                   trecv, acc, iv_c(rn), op, trecv, acc, iv_c(rn), op);
+        emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
+        buf_puts(b, ")));\n");
+      }
+      else if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) {
+        char aref[400]; snprintf(aref, sizeof aref, "_t%d%siv_%s", trecv, acc, iv_c(rn));
+        if (!emit_array_op_assign(c, aref, ivt, op, val, b))
+          unsupported(c, id, "call operator write (operator on an array attribute)");
+      }
+      else {
+        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
+        /* the backing ivar's nil, as `@x op= v` takes it */
+        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, c->classes[rdcls].ivar_nullable_int[ivx], b)) return 1;
+        buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
+        if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
+          buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
+        }
+        else if (rhst == TY_POLY && ivt == TY_FLOAT) {
+          buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
+        }
+        else emit_expr(c, val, b);
+        buf_puts(b, ";\n");
+      }
+      return 1;
+    }
+    /* A native (C-backed) class has no ivar behind its attribute: the read and
+       the write are the C symbols its own `native_method` declarations name.
+       `ctx.options |= FLAG` is the shape this serves, and without it the whole
+       op-assign was refused however the setter itself lowered. */
+    if (recv >= 0 && attr && op && ty_is_object(rt) &&
+        c->classes[ty_object_class(rt)].is_native_class) {
+      int ncid = ty_object_class(rt);
+      char nsetter[300]; snprintf(nsetter, sizeof nsetter, "%s=", attr);
+      int rdm = comp_native_method_find(c, ncid, attr, 0, 0);
+      int wrm = comp_native_method_find(c, ncid, nsetter, 1, 0);
+      if (rdm >= 0 && wrm >= 0) {
+        NativeMethod *nrm = &c->native_methods[rdm];
+        NativeMethod *nwm = &c->native_methods[wrm];
+        int nint = sp_streq(nrm->ret, "int") && nwm->nargs == 1 && sp_streq(nwm->args[0], "int");
+        int nflt = sp_streq(nrm->ret, "float") && nwm->nargs == 1 && sp_streq(nwm->args[0], "float");
+        int nstr = sp_streq(nrm->ret, "string") && nwm->nargs == 1 && sp_streq(nwm->args[0], "string");
+        int nany = sp_streq(nrm->ret, "any") && nwm->nargs == 1 && sp_streq(nwm->args[0], "any");
+        /* the pair has to name a representation the operator exists for: a
+           nullable string return, a `self` return and the container specs
+           would put the C operator on a pointer that cannot take one */
+        if (!nint && !nflt && !nstr && !nany)
+          unsupported(c, id, "call operator write (native attribute the operator has no form for)");
+        if (nflt && bitop)
+          unsupported(c, id, "call operator write (bitwise operator on a float attribute)");
+        if (nstr && !(op && sp_streq(op, "+")))
+          unsupported(c, id, "call operator write (operator other than + on a string attribute)");
+        if (nany && !cpf && !bitop)
+          unsupported(c, id, "call operator write (operator on a boxed attribute)");
+        int trecv = ++g_tmp;
+        emit_indent(b, indent);
+        emit_ctype(c, rt, b);
+        buf_printf(b, " _t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
+        /* the temp can be the receiver's only live reference and the value
+           expression may allocate */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", trecv);
+        emit_indent(b, indent);
+        if (nstr) {
+          /* the reader answers a value, so the concat builds a new string and
+             the writer stores it -- the same shape the string ivar slot takes */
+          buf_printf(b, "%s(_t%d, sp_str_concat(%s(_t%d), ", nwm->csym, trecv, nrm->csym, trecv);
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
+          buf_puts(b, "));\n");
+        }
+        else if (nany && cpf) {
+          buf_printf(b, "%s(_t%d, %s(%s(_t%d), ", nwm->csym, trecv, cpf, nrm->csym, trecv);
+          emit_boxed(c, val, b); buf_puts(b, "));\n");
+        }
+        else if (nany) {
+          /* bitwise on a boxed attribute: coerce to int, re-box */
+          buf_printf(b, "%s(_t%d, sp_box_int(sp_poly_recv_i(\"%s\", %s(_t%d)) %s (",
+                     nwm->csym, trecv, op, nrm->csym, trecv, op);
+          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
+          buf_puts(b, ")));\n");
+        }
+        else if (rhst != TY_POLY && !bitop) {
+          char slot[300]; snprintf(slot, sizeof slot, "%s(_t%d)", nrm->csym, trecv);
+          Buf rb; memset(&rb, 0, sizeof rb);
+          emit_expr(c, val, &rb);
+          buf_printf(b, "%s(_t%d, ", nwm->csym, trecv);
+          if (!iow_scalar_fold(nint ? TY_INT : TY_FLOAT, op, rhst, slot, rb.p ? rb.p : "", b))
+            buf_printf(b, "%s %s (%s)", slot, op, rb.p ? rb.p : "");
+          buf_puts(b, ");\n");
+          free(rb.p);
+        }
+        else {
+          buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
+          emit_poly_unboxed(c, val, rhst, nint ? op_assign_int_conv(TY_INT, op) : "sp_poly_opnd_f(", b);
+          buf_puts(b, ");\n");
+        }
+        return 1;
+      }
+    }
+    if (recv >= 0 && attr && rt == TY_POLY) {
+      /* poly receiver (e.g. a Hash value that was never narrowed to a
+         concrete object type -- doom's `door[:sector]`, where `door`
+         is itself one Hash's poly-boxed value pulled from another).
+         Dispatch on cls_id: emit a case arm for every instantiated
+         class exposing a reader named `attr`, reading/writing that
+         class's ivar directly through the cast pointer. */
+      int trecv = ++g_tmp;
+      emit_indent(b, indent);
+      buf_puts(b, "sp_RbVal ");
+      buf_printf(b, "_t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      /* The temp can be the receiver's only live reference, and a write arm's
+         value expression may allocate: root it for the switch (#3476). */
+      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
+      emit_indent(b, indent);
+      /* Every boxed scalar carries cls_id 0, which aliases the user class at
+         index 0 (cf. issue #1576 and emit_poly_dispatch_key): key a non-object
+         value to a sentinel matching no case so it lands in the default raise
+         rather than dereferencing v.p through a wrong cast. */
+      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
+      int any = 0;
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int pdcls = -1;
+        /* both accessors, same as the concrete arm: a reader-only class must
+           raise NoMethodError for `attr=` (via the default arm), not store */
+        if (!comp_reader_in_chain(c, k, attr, &pdcls)) continue;
+        if (!comp_writer_in_chain(c, k, attr, NULL)) continue;
+        const char *rn = comp_resolve_alias(c, pdcls, attr);
+        char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+        int ivx = comp_ivar_index(&c->classes[pdcls], ivn);
+        if (ivx < 0) continue;  /* no resolvable backing slot: don't guess */
+        TyKind ivt = c->classes[pdcls].ivar_types[ivx];
+        /* skip a class whose slot can't take this operator (the raw C
+           fallthrough would be pointer arithmetic on an sp_Str* or a type
+           error on an sp_RbVal); a runtime object of that class lands in
+           the default raise instead -- same skip-on-static-mismatch shape
+           as the poly attr-write dispatch above. */
+        if (ivt == TY_STRING && !(op && sp_streq(op, "+"))) continue;
+        if (ivt == TY_POLY && !cpf && !bitop) continue;
+        const char *cn = c->classes[pdcls].name;
+        any = 1;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
+        if (ivt == TY_STRING) {
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, iv_c(rn));
+          buf_puts(b, ", ");
+          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
+          buf_puts(b, "); break; }\n");
+        }
+        else if (ivt == TY_POLY && cpf) {
+          /* the slot itself is boxed (a whole-program-widened numeric like
+             Sector#ceiling_height): fold via the dynamic operator on boxed
+             operands rather than raw C arithmetic on an sp_RbVal. */
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
+          buf_printf(b, " = %s(_o->iv_", cpf); buf_puts(b, iv_c(rn)); buf_puts(b, ", ");
+          emit_boxed(c, val, b);
+          buf_puts(b, "); break; }\n");
+        }
+        else if (ivt == TY_POLY) {
+          /* bitwise op-assign on a boxed slot: coerce to int, re-box */
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
+          buf_printf(b, " = sp_box_int((sp_poly_recv_i(\"%s\", _o->iv_%s) %s (", op, iv_c(rn), op);
+          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
+          buf_puts(b, "))); break; }\n");
+        }
+        else {
+          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, c->classes[pdcls].ivar_nullable_int[ivx], b)) {
+            emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
+            continue;
+          }
+          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = _o->iv_"); buf_puts(b, iv_c(rn));
+          buf_printf(b, " %s ", op ? op : "+");
+          if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
+            buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
+          }
+          else if (rhst == TY_POLY && ivt == TY_FLOAT) {
+            buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
+          }
+          else emit_expr(c, val, b);
+          buf_puts(b, "; break; }\n");
+        }
+      }
+      /* a receiver whose runtime class has no such accessor pair (or a boxed
+         scalar) is CRuby's NoMethodError, not a silent no-op */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "default: sp_raise_poly_nomethod(\"%s=\", _t%d);\n", attr, trecv);
+      emit_indent(b, indent);
+      buf_puts(b, "}\n");
+      if (any) return 1;
+    }
+    unsupported(c, id, "call operator write (unsupported receiver/attr)");
+  }
+  if (sp_streq(ty, "GlobalVariableWriteNode") || sp_streq(ty, "ConstantWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int isg = ty[0] == 'G';
+    const char *pfx = isg ? "gv" : "cst";
+    const char *raw_key = isg ? nm + 1 : nm;
+    const char *key = isg ? comp_resolve_gvar(c, raw_key) : raw_key;
+    LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
+    int v = nt_ref(nt, id, "value");
+    if (!lv || (!isg && lv->type == TY_UNKNOWN)) {
+      /* The struct-def constant itself (`Foo = Struct.new(...) do ... end`) has
+         no C runtime value and is skipped -- but any top-level constant writes
+         INSIDE that block still need init code emitted. register_structs only
+         consumes the block for class/ivar/method registration, never as
+         executable statements, so without this such constants stay NULL/default
+         despite being declared and typed (a method reading them, e.g. a Linedef
+         FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
+         fix_struct_block_scopes, which does the analogous fixup for DefNodes. */
+      if (!isg && v >= 0 && is_struct_call(c, v))
+        emit_class_body_stmts(c, comp_class_index(c, nm), class_def_body(c, id), b, indent);
+      return 1;
+    }
+    if (!isg && lv->init_guarded) {
+      /* flag the const as in-progress while its Class.new runs, so a
+         self-referential read inside initialize raises NameError */
+      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 1;\n", key);
+    }
+    emit_indent(b, indent);
+    buf_printf(b, "%s_%s = ", pfx, key);
+    int vlit = empty_literal_node(c, v);
+    /* `X = [].freeze`: the strip above found the literal so the slot's kind
+       builds it; the freeze it stripped still has to happen (#3828). */
+    int v_lit_frozen = (vlit != v);
+    const char *vty = nt_type(nt, vlit);
+    int v_empty_arr = 0, v_empty_hash = 0;
+    if (vty && sp_streq(vty, "ArrayNode")) {
+      int ac = 0; nt_arr(nt, vlit, "elements", &ac); v_empty_arr = (ac == 0);
+    }
+    if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
+      int hec = 0; nt_arr(nt, vlit, "elements", &hec); v_empty_hash = (hec == 0);
+    }
+    /* `$g = Hash.new` (no args/block): an empty hash whose typed slot needs a
+       fresh `sp_XHash_new()`, not the boxed sp_RbVal emit_expr would produce for
+       the untyped Hash.new call (#3205). */
+    int v_hash_dflt = -1;   /* `$g = Hash.new(default)`: the default's node */
+    int v_hash_cap = 0;     /* `$g = Hash.new(capacity: n)` */
+    if (vty && sp_streq(vty, "CallNode") && ty_is_hash(lv->type) &&
+        nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
+        nt_ref(nt, v, "block") < 0) {
+      int hr = nt_ref(nt, v, "receiver");
+      const char *hrn = hr >= 0 && nt_type(nt, hr) && sp_streq(nt_type(nt, hr), "ConstantReadNode")
+                        ? nt_str(nt, hr, "name") : NULL;
+      if (hrn && sp_streq(hrn, "Hash")) {
+        /* the count lives on the ArgumentsNode; asking the CallNode for it
+           answered 0 for every form, which is why `$g = Hash.new(5)` on a
+           typed slot silently emitted the default-less constructor */
+        int ha = nt_ref(nt, v, "arguments"); int han = 0;
+        if (ha >= 0) nt_arr(nt, ha, "arguments", &han);
+        if (han == 0) v_empty_hash = 1;
+        /* `Hash.new(default)` on a typed slot: the same fresh variant, carrying
+           the default, as the local write emits (emit_assign). Before, only the
+           argument-less form took this arm and the default form fell to the
+           boxed poly emit, which the typed slot could not hold. */
+        else if (hash_new_default_arg(c, v) >= 0) {
+          v_empty_hash = 1;
+          v_hash_dflt = hash_new_default_arg(c, v);
+          if (nt_kind(nt, v_hash_dflt) == NK_NilNode) v_hash_dflt = -1;   /* Hash.new(nil) is Hash.new */
+        }
+        else v_hash_cap = han == 1;
+        /* a `capacity:` value left to run (desugar_hash_new_capacity) */
+        if (nt_ref(nt, v, "hash_capacity") >= 0) { v_hash_cap = 1; v_empty_hash = 0; }
+      }
+    }
+    if (vty && sp_streq(vty, "NilNode"))
+      /* Every nullable kind has a sentinel that reads back as nil, and this
+         arm knew only the string one: an int-typed global assigned nil got
+         default_value's 0, which is the zero a fresh slot starts at, not nil.
+         `if $g` then took the truthy branch on a global whose only assignment
+         was nil -- `Process.kill("KILL", -$pgid)` with $pgid nil signalled the
+         caller's own process group (#4248). nil_sentinel is the same rule the
+         ivar and local arms use. */
+      buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : nil_sentinel(lv->type));
+    else if (v_empty_arr && lv->type == TY_POLY_ARRAY) {
+      if (v_lit_frozen) { int _ft = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
+      else buf_puts(b, "sp_PolyArray_new()");
+    }
+    else if (v_empty_arr && array_kind(lv->type)) {
+      if (v_lit_frozen) { int _ft = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
+                   array_kind(lv->type), _ft, array_kind(lv->type), _ft, _ft); }
+      else buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
+    }
+    else if (v_hash_cap && emit_empty_container_for_slot(c, v, lv->type, b)) {
+      /* built at the slot's variant, the capacity evaluated */
+    }
+    else if (v_empty_hash && ty_is_hash(lv->type)) {
+      const char *hcn = ty_hash_cname(lv->type);
+      if (hcn && v_hash_dflt >= 0) {
+        buf_printf(b, "sp_%sHash_new_with_default(", hcn);
+        if (ty_hash_val(lv->type) == TY_POLY) emit_boxed(c, v_hash_dflt, b);
+        else emit_expr(c, v_hash_dflt, b);
+        buf_puts(b, ")");
+      }
+      else if (hcn && v_lit_frozen) buf_printf(b, "sp_gc_freeze(sp_%sHash_new())", hcn);   /* `X = {}.freeze`: the freeze the strip took off (#4510) */
+      else if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else emit_expr(c, v, b);
+    }
+    /* a poly-typed global/const slot boxes a scalar value (`$g = 42` where $g
+       elsewhere holds a string/array, so its slot is sp_RbVal) */
+    else if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    else if (lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
+             comp_ntype(c, v) != TY_POLY_ARRAY) {
+      /* a typed array into a poly-array global: rebuilt with its elements
+         boxed, the conversion the local and ivar writes make (a slot that
+         widened on a write the node never saw -- under --int-overflow=promote
+         every array built from widened Integers, #4738) */
+      if (conv_reads_shared_storage(c, v))
+        unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
+      emit_poly_array_from(c, v, b);
+    }
+    else emit_coerce(c, v, lv->type, CO_HOLD, isg ? "a global variable write" : "a constant write", b);
+    buf_puts(b, ";\n");
+    if (!isg && lv->init_guarded) {
+      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "ConstantPathWriteNode")) {
+    /* `Mod::X = v`: resolve the constant on the path target and assign. The
+       constant must already be typed (registered by analysis), like the
+       operator/or/and path-write forms. */
+    int tgt = nt_ref(nt, id, "target");
+    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!cv || cv->type == TY_UNKNOWN) { unsupported(c, id, "constant path write"); return 1; }
+    int v = nt_ref(nt, id, "value");
+    int vlit = empty_literal_node(c, v);
+    /* `X = [].freeze`: the strip above found the literal so the slot's kind
+       builds it; the freeze it stripped still has to happen (#3828). */
+    int v_lit_frozen = (vlit != v);
+    const char *vty = nt_type(nt, vlit);
+    int v_empty_arr = 0, v_empty_hash = 0;
+    if (vty && sp_streq(vty, "ArrayNode")) {
+      int ac = 0; nt_arr(nt, vlit, "elements", &ac); v_empty_arr = (ac == 0);
+    }
+    if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
+      int hec = 0; nt_arr(nt, vlit, "elements", &hec); v_empty_hash = (hec == 0);
+    }
+    emit_indent(b, indent);
+    buf_printf(b, "cst_%s = ", nm);
+    if (vty && sp_streq(vty, "NilNode"))
+      buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, cv->type));
+    else if (v_empty_arr && cv->type == TY_POLY_ARRAY) {
+      if (v_lit_frozen) { int _ft = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
+      else buf_puts(b, "sp_PolyArray_new()");
+    }
+    else if (v_empty_arr && array_kind(cv->type)) {
+      if (v_lit_frozen) { int _ft = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
+                   array_kind(cv->type), _ft, array_kind(cv->type), _ft, _ft); }
+      else buf_printf(b, "sp_%sArray_new()", array_kind(cv->type));
+    }
+    else if (v_empty_hash && ty_is_hash(cv->type)) {
+      const char *hcn = ty_hash_cname(cv->type);
+      if (hcn && v_lit_frozen) buf_printf(b, "sp_gc_freeze(sp_%sHash_new())", hcn);
+      else if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else emit_expr(c, v, b);
+    }
+    /* a boxed constant slot (widened under promote, or a union) takes the
+       value boxed, as the plain ConstantWriteNode does */
+    else if (cv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    else emit_expr(c, v, b);
+    buf_puts(b, ";\n");
+    return 1;
+  }
+  if (sp_streq(ty, "ConstantPathOperatorWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode")) {
+    int path = sp_streq(ty, "ConstantPathOperatorWriteNode");
+    int tgt = path ? nt_ref(nt, id, "target") : id;
+    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!cv) { if (path) unsupported(c, id, "constant path operator write"); return 1; }
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    emit_indent(b, indent);
+    if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
+    }
+    else {
+      buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
+      emit_coerce(c, v, cv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode")) {
+    int is_or = sp_streq(ty, "ConstantPathOrWriteNode");
+    int tgt = nt_ref(nt, id, "target");
+    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!cv) { unsupported(c, id, "constant path or/and write"); return 1; }
+    int v = nt_ref(nt, id, "value");
+    if (cv->type == TY_POLY) {
+      emit_indent(b, indent);
+      buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) cst_%s = ", is_or ? "!" : "", nm, nm);
+      emit_boxed(c, v, b); buf_puts(b, ";\n");
+    }
+    else if (cv->type == TY_BOOL) {
+      emit_indent(b, indent);
+      buf_printf(b, "if (%scst_%s) cst_%s = ", is_or ? "!" : "", nm, nm); emit_expr(c, v, b); buf_puts(b, ";\n");
+    }
+    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
+      emit_indent(b, indent);
+      buf_printf(b, "cst_%s = ", nm); emit_expr(c, v, b); buf_puts(b, ";\n");
+    }
+    /* ||= on an always-truthy constant: no-op */
+    return 1;
+  }
+  if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode")) {
+    int is_or = sp_streq(ty, "ConstantOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!cv) return 1;
+    int v = nt_ref(nt, id, "value");
+    if (cv->type == TY_POLY) {
+      emit_indent(b, indent);
+      buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) { cst_%s = ", is_or ? "!" : "", nm, nm);
+      emit_boxed(c, v, b); buf_puts(b, "; }\n");
+    }
+    else if (cv->type == TY_BOOL) {
+      emit_indent(b, indent);
+      buf_printf(b, "if (%scst_%s) { cst_%s = ", is_or ? "!" : "", nm, nm);
+      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, "; }\n");
+    }
+    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
+      emit_indent(b, indent);
+      buf_printf(b, "cst_%s = ", nm);
+      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, ";\n");
+    }
+    /* ||= on an always-truthy constant: no-op */
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) return 1;
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    emit_indent(b, indent);
+    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
+    if (lv->type == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "gv_%s = sp_str_concat(gv_%s, ", rn, rn);
+      emit_str_expr(c, v, b); buf_puts(b, ");\n");
+    }
+    else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
+    else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
+    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
+    else {
+      buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
+      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
+    }
+    return 1;
+  }
+  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
+    int is_or = sp_streq(ty, "GlobalVariableOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) return 1;
+    int v = nt_ref(nt, id, "value");
+    /* The slot's own truthiness, not C's: an int-typed global holds nil as
+       SP_INT_NIL, which is a non-zero bit pattern, so a plain `if (!gv_x)`
+       read a never-assigned global as truthy and `$x ||= v` stopped firing
+       once the slot started at the sentinel (#4248). This is also closer to
+       Ruby than the zero test it replaces -- `$x = 0; $x ||= 5` leaves 0,
+       where the C test fired. */
+    { char gref[256];
+      snprintf(gref, sizeof gref, "gv_%s", rn);
+      emit_indent(b, indent);
+      buf_puts(b, "if (");
+      if (!is_or) { /* &&= runs when the slot is truthy */ }
+      else buf_puts(b, "!(");
+      switch (lv->type) {
+      case TY_INT:   buf_printf(b, "%s != SP_INT_NIL", gref); break;
+      case TY_FLOAT: buf_printf(b, "!sp_float_is_nil(%s)", gref); break;
+      case TY_POLY:  buf_printf(b, "sp_poly_truthy(%s)", gref); break;
+      case TY_CLASS: buf_printf(b, "!sp_class_nil_p(%s)", gref); break;
+      default:       buf_puts(b, gref); break;
+      }
+      if (is_or) buf_puts(b, ")");
+      buf_printf(b, ") { gv_%s = ", rn);
+      /* a poly slot boxes the value, as the plain write does: `$g ||= nil`
+         into a global that also holds a bool assigned the bare C 0 */
+      if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+      else emit_coerce(c, v, lv->type, CO_HOLD, "a global variable's `||=` or `&&=`", b);
+      buf_puts(b, "; }\n"); }
+    return 1;
+  }
+  return 0;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -11495,572 +12066,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
   if (emit_ivar_cvar_write_stmt(c, id, b, indent, nt, ty)) return;
-  if (sp_streq(ty, "CallOperatorWriteNode")) {
-    /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
-       speed`) has neither a statement-level handler here nor an
-       expression-level one, so it falls all the way through emit_expr's
-       final "unsupported expression" catch-all. Handles the common
-       case: an object receiver with a plain attr_reader/Struct-member
-       attribute. `recv` is evaluated into a temp exactly once (it may
-       be a hash lookup or other expression with real work behind it,
-       not just a bare local) and both the read and the write go through
-       that same temp. */
-    int recv = nt_ref(nt, id, "receiver");
-    const char *attr = nt_str(nt, id, "name");
-    const char *op = nt_str(nt, id, "binary_operator");
-    int val = nt_ref(nt, id, "value");
-    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
-    TyKind rhst = val >= 0 ? comp_ntype(c, val) : TY_UNKNOWN;
-    /* the dynamic operator for a boxed (poly) slot, and the bitwise set the
-       boxed slot handles via unbox-op-rebox (both mirror the ivar op-assign
-       poly arms above). */
-    const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
-                    : op && sp_streq(op, "-") ? "sp_poly_sub"
-                    : op && sp_streq(op, "*") ? "sp_poly_mul"
-                    : op && sp_streq(op, "/") ? "sp_poly_div"
-                    : op && sp_streq(op, "%") ? "sp_poly_mod"
-                    : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
-    int bitop = op && is_int_bit_op(op);
-    int rdcls = -1;
-    /* Ruby desugars `recv.attr op= v` into a reader call AND a writer call;
-       an attr_reader-only attribute raises NoMethodError for `attr=`, so a
-       reader-only match must not silently lower into an ivar store. */
-    if (recv >= 0 && attr && ty_is_object(rt) &&
-        comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls) &&
-        comp_writer_in_chain(c, ty_object_class(rt), attr, NULL)) {
-      const char *rn = comp_resolve_alias(c, rdcls, attr);
-      char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
-      int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
-      /* no resolvable backing slot: fail the lowering rather than guess */
-      if (ivx < 0) unsupported(c, id, "call operator write (reader without an ivar slot)");
-      TyKind ivt = c->classes[rdcls].ivar_types[ivx];
-      /* operators the slot type can't take would otherwise fall through to
-         raw C on an sp_Str pointer or an sp_RbVal (pointer arithmetic / a
-         type error) */
-      if (ivt == TY_STRING && !(op && sp_streq(op, "+")))
-        unsupported(c, id, "call operator write (operator on a string attribute)");
-      if (ivt == TY_POLY && !cpf && !bitop)
-        unsupported(c, id, "call operator write (operator on a boxed attribute)");
-      /* the receiver is bound in g_pre, ahead of any prelude the rhs leaves
-         there: Ruby evaluates it first, and an array slot's op-assign reads
-         the slot through it in g_pre, so it is rooted across that prelude's
-         allocations (#4875) */
-      int trecv = ++g_tmp;
-      Buf rx; memset(&rx, 0, sizeof rx);
-      emit_expr(c, recv, &rx);
-      Buf *rb = g_pre ? g_pre : b;
-      emit_indent(rb, g_pre ? g_indent : indent);
-      emit_ctype(c, rt, rb);
-      buf_printf(rb, " _t%d = ", trecv); buf_puts(rb, rx.p ? rx.p : ""); buf_puts(rb, ";");
-      if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) { buf_puts(rb, " "); emit_gc_root_tmp(c, rt, trecv, rb); }
-      buf_puts(rb, "\n");
-      free(rx.p);
-      const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
-      emit_indent(b, indent);
-      if (ivt == TY_STRING) {
-        buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn));
-        emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
-        buf_puts(b, ");\n");
-      }
-      else if (ivt == TY_POLY && cpf) {
-        /* boxed slot: dynamic operator on boxed operands (same as the
-           poly-receiver dispatch arms below). */
-        buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, iv_c(rn), cpf, trecv, acc, iv_c(rn));
-        emit_boxed(c, val, b); buf_puts(b, ");\n");
-      }
-      else if (ivt == TY_POLY) {
-        /* bitwise op-assign on a boxed slot: coerce to int, re-box */
-        buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_recv_i(\"%s\", _t%d%siv_%s) %s (",
-                   trecv, acc, iv_c(rn), op, trecv, acc, iv_c(rn), op);
-        emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
-        buf_puts(b, ")));\n");
-      }
-      else if (ty_is_array(ivt) || ivt == TY_POLY_ARRAY) {
-        char aref[400]; snprintf(aref, sizeof aref, "_t%d%siv_%s", trecv, acc, iv_c(rn));
-        if (!emit_array_op_assign(c, aref, ivt, op, val, b))
-          unsupported(c, id, "call operator write (operator on an array attribute)");
-      }
-      else {
-        char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
-        /* the backing ivar's nil, as `@x op= v` takes it */
-        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, c->classes[rdcls].ivar_nullable_int[ivx], b)) return;
-        buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
-        if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
-          buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
-        }
-        else if (rhst == TY_POLY && ivt == TY_FLOAT) {
-          buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
-        }
-        else emit_expr(c, val, b);
-        buf_puts(b, ";\n");
-      }
-      return;
-    }
-    /* A native (C-backed) class has no ivar behind its attribute: the read and
-       the write are the C symbols its own `native_method` declarations name.
-       `ctx.options |= FLAG` is the shape this serves, and without it the whole
-       op-assign was refused however the setter itself lowered. */
-    if (recv >= 0 && attr && op && ty_is_object(rt) &&
-        c->classes[ty_object_class(rt)].is_native_class) {
-      int ncid = ty_object_class(rt);
-      char nsetter[300]; snprintf(nsetter, sizeof nsetter, "%s=", attr);
-      int rdm = comp_native_method_find(c, ncid, attr, 0, 0);
-      int wrm = comp_native_method_find(c, ncid, nsetter, 1, 0);
-      if (rdm >= 0 && wrm >= 0) {
-        NativeMethod *nrm = &c->native_methods[rdm];
-        NativeMethod *nwm = &c->native_methods[wrm];
-        int nint = sp_streq(nrm->ret, "int") && nwm->nargs == 1 && sp_streq(nwm->args[0], "int");
-        int nflt = sp_streq(nrm->ret, "float") && nwm->nargs == 1 && sp_streq(nwm->args[0], "float");
-        int nstr = sp_streq(nrm->ret, "string") && nwm->nargs == 1 && sp_streq(nwm->args[0], "string");
-        int nany = sp_streq(nrm->ret, "any") && nwm->nargs == 1 && sp_streq(nwm->args[0], "any");
-        /* the pair has to name a representation the operator exists for: a
-           nullable string return, a `self` return and the container specs
-           would put the C operator on a pointer that cannot take one */
-        if (!nint && !nflt && !nstr && !nany)
-          unsupported(c, id, "call operator write (native attribute the operator has no form for)");
-        if (nflt && bitop)
-          unsupported(c, id, "call operator write (bitwise operator on a float attribute)");
-        if (nstr && !(op && sp_streq(op, "+")))
-          unsupported(c, id, "call operator write (operator other than + on a string attribute)");
-        if (nany && !cpf && !bitop)
-          unsupported(c, id, "call operator write (operator on a boxed attribute)");
-        int trecv = ++g_tmp;
-        emit_indent(b, indent);
-        emit_ctype(c, rt, b);
-        buf_printf(b, " _t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
-        /* the temp can be the receiver's only live reference and the value
-           expression may allocate */
-        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", trecv);
-        emit_indent(b, indent);
-        if (nstr) {
-          /* the reader answers a value, so the concat builds a new string and
-             the writer stores it -- the same shape the string ivar slot takes */
-          buf_printf(b, "%s(_t%d, sp_str_concat(%s(_t%d), ", nwm->csym, trecv, nrm->csym, trecv);
-          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
-          buf_puts(b, "));\n");
-        }
-        else if (nany && cpf) {
-          buf_printf(b, "%s(_t%d, %s(%s(_t%d), ", nwm->csym, trecv, cpf, nrm->csym, trecv);
-          emit_boxed(c, val, b); buf_puts(b, "));\n");
-        }
-        else if (nany) {
-          /* bitwise on a boxed attribute: coerce to int, re-box */
-          buf_printf(b, "%s(_t%d, sp_box_int(sp_poly_recv_i(\"%s\", %s(_t%d)) %s (",
-                     nwm->csym, trecv, op, nrm->csym, trecv, op);
-          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
-          buf_puts(b, ")));\n");
-        }
-        else if (rhst != TY_POLY && !bitop) {
-          char slot[300]; snprintf(slot, sizeof slot, "%s(_t%d)", nrm->csym, trecv);
-          Buf rb; memset(&rb, 0, sizeof rb);
-          emit_expr(c, val, &rb);
-          buf_printf(b, "%s(_t%d, ", nwm->csym, trecv);
-          if (!iow_scalar_fold(nint ? TY_INT : TY_FLOAT, op, rhst, slot, rb.p ? rb.p : "", b))
-            buf_printf(b, "%s %s (%s)", slot, op, rb.p ? rb.p : "");
-          buf_puts(b, ");\n");
-          free(rb.p);
-        }
-        else {
-          buf_printf(b, "%s(_t%d, %s(_t%d) %s ", nwm->csym, trecv, nrm->csym, trecv, op);
-          emit_poly_unboxed(c, val, rhst, nint ? op_assign_int_conv(TY_INT, op) : "sp_poly_opnd_f(", b);
-          buf_puts(b, ");\n");
-        }
-        return;
-      }
-    }
-    if (recv >= 0 && attr && rt == TY_POLY) {
-      /* poly receiver (e.g. a Hash value that was never narrowed to a
-         concrete object type -- doom's `door[:sector]`, where `door`
-         is itself one Hash's poly-boxed value pulled from another).
-         Dispatch on cls_id: emit a case arm for every instantiated
-         class exposing a reader named `attr`, reading/writing that
-         class's ivar directly through the cast pointer. */
-      int trecv = ++g_tmp;
-      emit_indent(b, indent);
-      buf_puts(b, "sp_RbVal ");
-      buf_printf(b, "_t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
-      emit_indent(b, indent);
-      /* The temp can be the receiver's only live reference, and a write arm's
-         value expression may allocate: root it for the switch (#3476). */
-      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
-      emit_indent(b, indent);
-      /* Every boxed scalar carries cls_id 0, which aliases the user class at
-         index 0 (cf. issue #1576 and emit_poly_dispatch_key): key a non-object
-         value to a sentinel matching no case so it lands in the default raise
-         rather than dereferencing v.p through a wrong cast. */
-      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
-      int any = 0;
-      for (int k = 0; k < c->nclasses; k++) {
-        if (!c->classes[k].instantiated) continue;
-        int pdcls = -1;
-        /* both accessors, same as the concrete arm: a reader-only class must
-           raise NoMethodError for `attr=` (via the default arm), not store */
-        if (!comp_reader_in_chain(c, k, attr, &pdcls)) continue;
-        if (!comp_writer_in_chain(c, k, attr, NULL)) continue;
-        const char *rn = comp_resolve_alias(c, pdcls, attr);
-        char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
-        int ivx = comp_ivar_index(&c->classes[pdcls], ivn);
-        if (ivx < 0) continue;  /* no resolvable backing slot: don't guess */
-        TyKind ivt = c->classes[pdcls].ivar_types[ivx];
-        /* skip a class whose slot can't take this operator (the raw C
-           fallthrough would be pointer arithmetic on an sp_Str* or a type
-           error on an sp_RbVal); a runtime object of that class lands in
-           the default raise instead -- same skip-on-static-mismatch shape
-           as the poly attr-write dispatch above. */
-        if (ivt == TY_STRING && !(op && sp_streq(op, "+"))) continue;
-        if (ivt == TY_POLY && !cpf && !bitop) continue;
-        const char *cn = c->classes[pdcls].name;
-        any = 1;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
-        if (ivt == TY_STRING) {
-          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, iv_c(rn));
-          buf_puts(b, ", ");
-          emit_poly_unboxed(c, val, rhst, "sp_poly_to_s(", b);
-          buf_puts(b, "); break; }\n");
-        }
-        else if (ivt == TY_POLY && cpf) {
-          /* the slot itself is boxed (a whole-program-widened numeric like
-             Sector#ceiling_height): fold via the dynamic operator on boxed
-             operands rather than raw C arithmetic on an sp_RbVal. */
-          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
-          buf_printf(b, " = %s(_o->iv_", cpf); buf_puts(b, iv_c(rn)); buf_puts(b, ", ");
-          emit_boxed(c, val, b);
-          buf_puts(b, "); break; }\n");
-        }
-        else if (ivt == TY_POLY) {
-          /* bitwise op-assign on a boxed slot: coerce to int, re-box */
-          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn));
-          buf_printf(b, " = sp_box_int((sp_poly_recv_i(\"%s\", _o->iv_%s) %s (", op, iv_c(rn), op);
-          emit_poly_unboxed(c, val, rhst, op_assign_int_conv(TY_INT, op), b);
-          buf_puts(b, "))); break; }\n");
-        }
-        else {
-          char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
-          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, c->classes[pdcls].ivar_nullable_int[ivx], b)) {
-            emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
-            continue;
-          }
-          buf_puts(b, "_o->iv_"); buf_puts(b, iv_c(rn)); buf_puts(b, " = _o->iv_"); buf_puts(b, iv_c(rn));
-          buf_printf(b, " %s ", op ? op : "+");
-          if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
-            buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
-          }
-          else if (rhst == TY_POLY && ivt == TY_FLOAT) {
-            buf_puts(b, "sp_poly_opnd_f("); emit_expr(c, val, b); buf_puts(b, ")");
-          }
-          else emit_expr(c, val, b);
-          buf_puts(b, "; break; }\n");
-        }
-      }
-      /* a receiver whose runtime class has no such accessor pair (or a boxed
-         scalar) is CRuby's NoMethodError, not a silent no-op */
-      emit_indent(b, indent + 1);
-      buf_printf(b, "default: sp_raise_poly_nomethod(\"%s=\", _t%d);\n", attr, trecv);
-      emit_indent(b, indent);
-      buf_puts(b, "}\n");
-      if (any) return;
-    }
-    unsupported(c, id, "call operator write (unsupported receiver/attr)");
-  }
-  if (sp_streq(ty, "GlobalVariableWriteNode") || sp_streq(ty, "ConstantWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    int isg = ty[0] == 'G';
-    const char *pfx = isg ? "gv" : "cst";
-    const char *raw_key = isg ? nm + 1 : nm;
-    const char *key = isg ? comp_resolve_gvar(c, raw_key) : raw_key;
-    LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
-    int v = nt_ref(nt, id, "value");
-    if (!lv || (!isg && lv->type == TY_UNKNOWN)) {
-      /* The struct-def constant itself (`Foo = Struct.new(...) do ... end`) has
-         no C runtime value and is skipped -- but any top-level constant writes
-         INSIDE that block still need init code emitted. register_structs only
-         consumes the block for class/ivar/method registration, never as
-         executable statements, so without this such constants stay NULL/default
-         despite being declared and typed (a method reading them, e.g. a Linedef
-         FLAGS[:TWOSIDED] flag helper, silently sees an empty constant). Mirrors
-         fix_struct_block_scopes, which does the analogous fixup for DefNodes. */
-      if (!isg && v >= 0 && is_struct_call(c, v))
-        emit_class_body_stmts(c, comp_class_index(c, nm), class_def_body(c, id), b, indent);
-      return;
-    }
-    if (!isg && lv->init_guarded) {
-      /* flag the const as in-progress while its Class.new runs, so a
-         self-referential read inside initialize raises NameError */
-      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 1;\n", key);
-    }
-    emit_indent(b, indent);
-    buf_printf(b, "%s_%s = ", pfx, key);
-    int vlit = empty_literal_node(c, v);
-    /* `X = [].freeze`: the strip above found the literal so the slot's kind
-       builds it; the freeze it stripped still has to happen (#3828). */
-    int v_lit_frozen = (vlit != v);
-    const char *vty = nt_type(nt, vlit);
-    int v_empty_arr = 0, v_empty_hash = 0;
-    if (vty && sp_streq(vty, "ArrayNode")) {
-      int ac = 0; nt_arr(nt, vlit, "elements", &ac); v_empty_arr = (ac == 0);
-    }
-    if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
-      int hec = 0; nt_arr(nt, vlit, "elements", &hec); v_empty_hash = (hec == 0);
-    }
-    /* `$g = Hash.new` (no args/block): an empty hash whose typed slot needs a
-       fresh `sp_XHash_new()`, not the boxed sp_RbVal emit_expr would produce for
-       the untyped Hash.new call (#3205). */
-    int v_hash_dflt = -1;   /* `$g = Hash.new(default)`: the default's node */
-    int v_hash_cap = 0;     /* `$g = Hash.new(capacity: n)` */
-    if (vty && sp_streq(vty, "CallNode") && ty_is_hash(lv->type) &&
-        nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "new") &&
-        nt_ref(nt, v, "block") < 0) {
-      int hr = nt_ref(nt, v, "receiver");
-      const char *hrn = hr >= 0 && nt_type(nt, hr) && sp_streq(nt_type(nt, hr), "ConstantReadNode")
-                        ? nt_str(nt, hr, "name") : NULL;
-      if (hrn && sp_streq(hrn, "Hash")) {
-        /* the count lives on the ArgumentsNode; asking the CallNode for it
-           answered 0 for every form, which is why `$g = Hash.new(5)` on a
-           typed slot silently emitted the default-less constructor */
-        int ha = nt_ref(nt, v, "arguments"); int han = 0;
-        if (ha >= 0) nt_arr(nt, ha, "arguments", &han);
-        if (han == 0) v_empty_hash = 1;
-        /* `Hash.new(default)` on a typed slot: the same fresh variant, carrying
-           the default, as the local write emits (emit_assign). Before, only the
-           argument-less form took this arm and the default form fell to the
-           boxed poly emit, which the typed slot could not hold. */
-        else if (hash_new_default_arg(c, v) >= 0) {
-          v_empty_hash = 1;
-          v_hash_dflt = hash_new_default_arg(c, v);
-          if (nt_kind(nt, v_hash_dflt) == NK_NilNode) v_hash_dflt = -1;   /* Hash.new(nil) is Hash.new */
-        }
-        else v_hash_cap = han == 1;
-        /* a `capacity:` value left to run (desugar_hash_new_capacity) */
-        if (nt_ref(nt, v, "hash_capacity") >= 0) { v_hash_cap = 1; v_empty_hash = 0; }
-      }
-    }
-    if (vty && sp_streq(vty, "NilNode"))
-      /* Every nullable kind has a sentinel that reads back as nil, and this
-         arm knew only the string one: an int-typed global assigned nil got
-         default_value's 0, which is the zero a fresh slot starts at, not nil.
-         `if $g` then took the truthy branch on a global whose only assignment
-         was nil -- `Process.kill("KILL", -$pgid)` with $pgid nil signalled the
-         caller's own process group (#4248). nil_sentinel is the same rule the
-         ivar and local arms use. */
-      buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : nil_sentinel(lv->type));
-    else if (v_empty_arr && lv->type == TY_POLY_ARRAY) {
-      if (v_lit_frozen) { int _ft = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
-      else buf_puts(b, "sp_PolyArray_new()");
-    }
-    else if (v_empty_arr && array_kind(lv->type)) {
-      if (v_lit_frozen) { int _ft = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
-                   array_kind(lv->type), _ft, array_kind(lv->type), _ft, _ft); }
-      else buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
-    }
-    else if (v_hash_cap && emit_empty_container_for_slot(c, v, lv->type, b)) {
-      /* built at the slot's variant, the capacity evaluated */
-    }
-    else if (v_empty_hash && ty_is_hash(lv->type)) {
-      const char *hcn = ty_hash_cname(lv->type);
-      if (hcn && v_hash_dflt >= 0) {
-        buf_printf(b, "sp_%sHash_new_with_default(", hcn);
-        if (ty_hash_val(lv->type) == TY_POLY) emit_boxed(c, v_hash_dflt, b);
-        else emit_expr(c, v_hash_dflt, b);
-        buf_puts(b, ")");
-      }
-      else if (hcn && v_lit_frozen) buf_printf(b, "sp_gc_freeze(sp_%sHash_new())", hcn);   /* `X = {}.freeze`: the freeze the strip took off (#4510) */
-      else if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
-      else emit_expr(c, v, b);
-    }
-    /* a poly-typed global/const slot boxes a scalar value (`$g = 42` where $g
-       elsewhere holds a string/array, so its slot is sp_RbVal) */
-    else if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-    else if (lv->type == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
-             comp_ntype(c, v) != TY_POLY_ARRAY) {
-      /* a typed array into a poly-array global: rebuilt with its elements
-         boxed, the conversion the local and ivar writes make (a slot that
-         widened on a write the node never saw -- under --int-overflow=promote
-         every array built from widened Integers, #4738) */
-      if (conv_reads_shared_storage(c, v))
-        unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
-      emit_poly_array_from(c, v, b);
-    }
-    else emit_coerce(c, v, lv->type, CO_HOLD, isg ? "a global variable write" : "a constant write", b);
-    buf_puts(b, ";\n");
-    if (!isg && lv->init_guarded) {
-      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
-    }
-    return;
-  }
-  if (sp_streq(ty, "ConstantPathWriteNode")) {
-    /* `Mod::X = v`: resolve the constant on the path target and assign. The
-       constant must already be typed (registered by analysis), like the
-       operator/or/and path-write forms. */
-    int tgt = nt_ref(nt, id, "target");
-    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv || cv->type == TY_UNKNOWN) { unsupported(c, id, "constant path write"); return; }
-    int v = nt_ref(nt, id, "value");
-    int vlit = empty_literal_node(c, v);
-    /* `X = [].freeze`: the strip above found the literal so the slot's kind
-       builds it; the freeze it stripped still has to happen (#3828). */
-    int v_lit_frozen = (vlit != v);
-    const char *vty = nt_type(nt, vlit);
-    int v_empty_arr = 0, v_empty_hash = 0;
-    if (vty && sp_streq(vty, "ArrayNode")) {
-      int ac = 0; nt_arr(nt, vlit, "elements", &ac); v_empty_arr = (ac == 0);
-    }
-    if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
-      int hec = 0; nt_arr(nt, vlit, "elements", &hec); v_empty_hash = (hec == 0);
-    }
-    emit_indent(b, indent);
-    buf_printf(b, "cst_%s = ", nm);
-    if (vty && sp_streq(vty, "NilNode"))
-      buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, cv->type));
-    else if (v_empty_arr && cv->type == TY_POLY_ARRAY) {
-      if (v_lit_frozen) { int _ft = ++g_tmp;
-        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
-      else buf_puts(b, "sp_PolyArray_new()");
-    }
-    else if (v_empty_arr && array_kind(cv->type)) {
-      if (v_lit_frozen) { int _ft = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); _t%d->frozen = 1; _t%d; })",
-                   array_kind(cv->type), _ft, array_kind(cv->type), _ft, _ft); }
-      else buf_printf(b, "sp_%sArray_new()", array_kind(cv->type));
-    }
-    else if (v_empty_hash && ty_is_hash(cv->type)) {
-      const char *hcn = ty_hash_cname(cv->type);
-      if (hcn && v_lit_frozen) buf_printf(b, "sp_gc_freeze(sp_%sHash_new())", hcn);
-      else if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
-      else emit_expr(c, v, b);
-    }
-    /* a boxed constant slot (widened under promote, or a union) takes the
-       value boxed, as the plain ConstantWriteNode does */
-    else if (cv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-    else emit_expr(c, v, b);
-    buf_puts(b, ";\n");
-    return;
-  }
-  if (sp_streq(ty, "ConstantPathOperatorWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode")) {
-    int path = sp_streq(ty, "ConstantPathOperatorWriteNode");
-    int tgt = path ? nt_ref(nt, id, "target") : id;
-    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv) { if (path) unsupported(c, id, "constant path operator write"); return; }
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    emit_indent(b, indent);
-    if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
-    }
-    else {
-      buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
-      emit_coerce(c, v, cv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
-    }
-    return;
-  }
-  if (sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode")) {
-    int is_or = sp_streq(ty, "ConstantPathOrWriteNode");
-    int tgt = nt_ref(nt, id, "target");
-    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv) { unsupported(c, id, "constant path or/and write"); return; }
-    int v = nt_ref(nt, id, "value");
-    if (cv->type == TY_POLY) {
-      emit_indent(b, indent);
-      buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) cst_%s = ", is_or ? "!" : "", nm, nm);
-      emit_boxed(c, v, b); buf_puts(b, ";\n");
-    }
-    else if (cv->type == TY_BOOL) {
-      emit_indent(b, indent);
-      buf_printf(b, "if (%scst_%s) cst_%s = ", is_or ? "!" : "", nm, nm); emit_expr(c, v, b); buf_puts(b, ";\n");
-    }
-    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
-      emit_indent(b, indent);
-      buf_printf(b, "cst_%s = ", nm); emit_expr(c, v, b); buf_puts(b, ";\n");
-    }
-    /* ||= on an always-truthy constant: no-op */
-    return;
-  }
-  if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode")) {
-    int is_or = sp_streq(ty, "ConstantOrWriteNode");
-    const char *nm = nt_str(nt, id, "name");
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (!cv) return;
-    int v = nt_ref(nt, id, "value");
-    if (cv->type == TY_POLY) {
-      emit_indent(b, indent);
-      buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) { cst_%s = ", is_or ? "!" : "", nm, nm);
-      emit_boxed(c, v, b); buf_puts(b, "; }\n");
-    }
-    else if (cv->type == TY_BOOL) {
-      emit_indent(b, indent);
-      buf_printf(b, "if (%scst_%s) { cst_%s = ", is_or ? "!" : "", nm, nm);
-      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, "; }\n");
-    }
-    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
-      emit_indent(b, indent);
-      buf_printf(b, "cst_%s = ", nm);
-      emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, ";\n");
-    }
-    /* ||= on an always-truthy constant: no-op */
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    if (!lv) return;
-    const char *op = nt_str(nt, id, "binary_operator");
-    int v = nt_ref(nt, id, "value");
-    emit_indent(b, indent);
-    char gref[256]; snprintf(gref, sizeof gref, "gv_%s", rn);
-    if (lv->type == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "gv_%s = sp_str_concat(gv_%s, ", rn, rn);
-      emit_str_expr(c, v, b); buf_puts(b, ");\n");
-    }
-    else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
-    else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
-    else {
-      buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
-      emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
-    }
-    return;
-  }
-  if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
-    int is_or = sp_streq(ty, "GlobalVariableOrWriteNode");
-    const char *nm = nt_str(nt, id, "name");
-    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
-    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
-    if (!lv) return;
-    int v = nt_ref(nt, id, "value");
-    /* The slot's own truthiness, not C's: an int-typed global holds nil as
-       SP_INT_NIL, which is a non-zero bit pattern, so a plain `if (!gv_x)`
-       read a never-assigned global as truthy and `$x ||= v` stopped firing
-       once the slot started at the sentinel (#4248). This is also closer to
-       Ruby than the zero test it replaces -- `$x = 0; $x ||= 5` leaves 0,
-       where the C test fired. */
-    { char gref[256];
-      snprintf(gref, sizeof gref, "gv_%s", rn);
-      emit_indent(b, indent);
-      buf_puts(b, "if (");
-      if (!is_or) { /* &&= runs when the slot is truthy */ }
-      else buf_puts(b, "!(");
-      switch (lv->type) {
-      case TY_INT:   buf_printf(b, "%s != SP_INT_NIL", gref); break;
-      case TY_FLOAT: buf_printf(b, "!sp_float_is_nil(%s)", gref); break;
-      case TY_POLY:  buf_printf(b, "sp_poly_truthy(%s)", gref); break;
-      case TY_CLASS: buf_printf(b, "!sp_class_nil_p(%s)", gref); break;
-      default:       buf_puts(b, gref); break;
-      }
-      if (is_or) buf_puts(b, ")");
-      buf_printf(b, ") { gv_%s = ", rn);
-      /* a poly slot boxes the value, as the plain write does: `$g ||= nil`
-         into a global that also holds a bool assigned the bare C 0 */
-      if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
-      else emit_coerce(c, v, lv->type, CO_HOLD, "a global variable's `||=` or `&&=`", b);
-      buf_puts(b, "; }\n"); }
-    return;
-  }
+  if (emit_attr_global_const_write_stmt(c, id, b, indent, nt, ty)) return;
   if (emit_multi_write_stmt(c, id, b, indent, nt, ty)) return;
   if (sp_streq(ty, "SingletonClassNode")) {
     /* `class << self` / `class << Const`: the inner `def`s were registered as
