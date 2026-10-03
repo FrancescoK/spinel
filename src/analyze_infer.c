@@ -5404,6 +5404,96 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
   return 0;
 }
 
+/* An exception receiver: an exception class's methods and an exception-shaped instance's queries (infer_call_inner's rules, in their order) */
+static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
+  /* Exception class-level methods: Cls.exception(msg) is Cls.new (#2740);
+     Exception.to_tty? answers whether stderr is a terminal (#2757). */
+  if (recv >= 0 && nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
+                                          (sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
+                                           comp_class_index(c, nt_str(nt, recv, "name")) < 0))) {
+    /* by its whole path: Errno::ENOENT.exception */
+    const char *ecn = superclass_builtin_exc_name(nt, recv);
+    if (ecn && is_builtin_exception_name(ecn)) {
+      if (sp_streq(name, "exception")) { *out = TY_EXCEPTION; return 1; }
+      if (sp_streq(name, "to_tty?")) { *out = TY_BOOL; return 1; }
+    }
+  }
+
+  /* exception receiver methods */
+  /* A specialized rescue var is typed as the exception subclass object, but
+     its exception-shaped queries still answer as on a base exception, unless
+     the subclass defines its own override (#1415). */
+  /* a method a reopening of a builtin exception class defined, reached on a
+     base-typed exception or on a user subclass instance whose own chain
+     lacks it (`class Exception; def as_json`) */
+  if (recv >= 0 && (rt == TY_EXCEPTION ||
+                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
+                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0))) {
+    /* the runtime class picks among several definers, so the call answers
+       what they all do, or a boxed value when they disagree */
+    int xr[8];
+    int xn = exc_reopen_definers(c, name, xr, 8);
+    if (xn > 0) {
+      TyKind xt = an_user_call(c, id, comp_method_in_chain(c, xr[0], name, NULL), UC_REOPEN, xr[0]);
+      for (int q = 1; q < xn; q++)
+        if (method_call_ret(c, comp_method_in_chain(c, xr[q], name, NULL), id) != xt) { *out = TY_POLY; return 1; }
+      { *out = xt; return 1; }
+    }
+  }
+  int exc_shaped = rt == TY_EXCEPTION ||
+                   (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
+                    comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
+  if (recv >= 0 && exc_shaped) {
+    /* Exception#message is #to_s, so an override answering something other
+       than a String carries that value out: the string-typed helper answered
+       the stored message (the class name) instead (#3868). */
+    if (sp_streq(name, "message") && ty_is_object(rt)) {
+      int mi8 = comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL);
+      if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
+          (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
+        { *out = (TyKind)c->scopes[mi8].ret; return 1; }
+    }
+    /* On a receiver whose class is only known at run time, any exception in the
+       program may be the one answering: when some subclass carries a non-String
+       out of #message, the query is a union and rides the boxed dispatcher. */
+    if (rt == TY_EXCEPTION && (sp_streq(name, "message") || sp_streq(name, "to_s")) &&
+        exc_has_nonstring_msg_override(c))
+      { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "message") || sp_streq(name, "to_s") ||
+        sp_streq(name, "to_str") || sp_streq(name, "inspect") ||
+        sp_streq(name, "full_message") || sp_streq(name, "detailed_message"))
+      { *out = TY_STRING; return 1; }
+    /* #exception answers an instance of the receiver's own class -- itself
+       with no argument, a copy carrying the new message with one; #== is the
+       value comparison. Neither had an arm for a user subclass instance, so
+       the value was discarded into nil (#3870). */
+    if (sp_streq(name, "exception") && argc <= 1) { *out = rt; return 1; }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "class")) { *out = TY_CLASS; return 1; }  /* a Class object, carried by name */
+    if (sp_streq(name, "backtrace")) { *out = TY_STR_ARRAY; return 1; }  /* empty: no frames captured */
+    if (sp_streq(name, "cause")) { *out = TY_EXCEPTION; return 1; }      /* the threaded cause, nil if none */
+    if (sp_streq(name, "result")) { *out = TY_POLY; return 1; }          /* StopIteration#result, nil otherwise */
+    if (sp_streq(name, "errno")) { *out = TY_POLY; return 1; }           /* SystemCallError#errno: the Errno:: class's number, nil for the parent (#4560) */
+    if (sp_streq(name, "name")) { *out = TY_POLY; return 1; }            /* NameError#name, nil otherwise */
+    if (sp_streq(name, "path")) { *out = TY_POLY; return 1; }            /* LoadError#path: nil (no runtime-raised LoadError carries one) */
+    if (sp_streq(name, "dup") || sp_streq(name, "clone")) { *out = rt; return 1; }  /* a copy keeps the (subclass) type */
+    if (sp_streq(name, "key") || sp_streq(name, "receiver") || sp_streq(name, "args") ||
+        sp_streq(name, "reason") || sp_streq(name, "exit_value") ||
+        sp_streq(name, "tag") || sp_streq(name, "value"))
+      { *out = TY_POLY; return 1; }   /* class-gated introspection accessors (#2753-#2756, #2770) */
+    if (sp_streq(name, "private_call?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "status")) { *out = TY_INT; return 1; }       /* SystemExit#status */
+    if (sp_streq(name, "success?")) { *out = TY_BOOL; return 1; }    /* SystemExit#success? */
+    if (sp_streq(name, "signo")) { *out = TY_INT; return 1; }        /* SignalException#signo */
+    if (sp_streq(name, "signm")) { *out = TY_STRING; return 1; }     /* SignalException#signm */
+    if (rt == TY_EXCEPTION && sp_streq(name, "exception")) { *out = TY_EXCEPTION; return 1; }  /* self, or a copy carrying a new message */
+    if (sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "equal?"))
+      { *out = TY_BOOL; return 1; }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6909,91 +6999,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Array receivers: the array face of infer_call (analyze_infer_recv.c). */
   { TyKind rr; if (infer_array_call(c, id, rt, &rr)) return rr; }
 
-  /* Exception class-level methods: Cls.exception(msg) is Cls.new (#2740);
-     Exception.to_tty? answers whether stderr is a terminal (#2757). */
-  if (recv >= 0 && nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-                                          (sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
-                                           comp_class_index(c, nt_str(nt, recv, "name")) < 0))) {
-    /* by its whole path: Errno::ENOENT.exception */
-    const char *ecn = superclass_builtin_exc_name(nt, recv);
-    if (ecn && is_builtin_exception_name(ecn)) {
-      if (sp_streq(name, "exception")) return TY_EXCEPTION;
-      if (sp_streq(name, "to_tty?")) return TY_BOOL;
-    }
-  }
-
-  /* exception receiver methods */
-  /* A specialized rescue var is typed as the exception subclass object, but
-     its exception-shaped queries still answer as on a base exception, unless
-     the subclass defines its own override (#1415). */
-  /* a method a reopening of a builtin exception class defined, reached on a
-     base-typed exception or on a user subclass instance whose own chain
-     lacks it (`class Exception; def as_json`) */
-  if (recv >= 0 && (rt == TY_EXCEPTION ||
-                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
-                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0))) {
-    /* the runtime class picks among several definers, so the call answers
-       what they all do, or a boxed value when they disagree */
-    int xr[8];
-    int xn = exc_reopen_definers(c, name, xr, 8);
-    if (xn > 0) {
-      TyKind xt = an_user_call(c, id, comp_method_in_chain(c, xr[0], name, NULL), UC_REOPEN, xr[0]);
-      for (int q = 1; q < xn; q++)
-        if (method_call_ret(c, comp_method_in_chain(c, xr[q], name, NULL), id) != xt) return TY_POLY;
-      return xt;
-    }
-  }
-  int exc_shaped = rt == TY_EXCEPTION ||
-                   (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
-                    comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
-  if (recv >= 0 && exc_shaped) {
-    /* Exception#message is #to_s, so an override answering something other
-       than a String carries that value out: the string-typed helper answered
-       the stored message (the class name) instead (#3868). */
-    if (sp_streq(name, "message") && ty_is_object(rt)) {
-      int mi8 = comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL);
-      if (mi8 >= 0 && (TyKind)c->scopes[mi8].ret != TY_STRING &&
-          (TyKind)c->scopes[mi8].ret != TY_UNKNOWN)
-        return (TyKind)c->scopes[mi8].ret;
-    }
-    /* On a receiver whose class is only known at run time, any exception in the
-       program may be the one answering: when some subclass carries a non-String
-       out of #message, the query is a union and rides the boxed dispatcher. */
-    if (rt == TY_EXCEPTION && (sp_streq(name, "message") || sp_streq(name, "to_s")) &&
-        exc_has_nonstring_msg_override(c))
-      return TY_POLY;
-    if (sp_streq(name, "message") || sp_streq(name, "to_s") ||
-        sp_streq(name, "to_str") || sp_streq(name, "inspect") ||
-        sp_streq(name, "full_message") || sp_streq(name, "detailed_message"))
-      return TY_STRING;
-    /* #exception answers an instance of the receiver's own class -- itself
-       with no argument, a copy carrying the new message with one; #== is the
-       value comparison. Neither had an arm for a user subclass instance, so
-       the value was discarded into nil (#3870). */
-    if (sp_streq(name, "exception") && argc <= 1) return rt;
-    if ((sp_streq(name, "==") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "class")) return TY_CLASS;  /* a Class object, carried by name */
-    if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
-    if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
-    if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
-    if (sp_streq(name, "errno")) return TY_POLY;           /* SystemCallError#errno: the Errno:: class's number, nil for the parent (#4560) */
-    if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
-    if (sp_streq(name, "path")) return TY_POLY;            /* LoadError#path: nil (no runtime-raised LoadError carries one) */
-    if (sp_streq(name, "dup") || sp_streq(name, "clone")) return rt;  /* a copy keeps the (subclass) type */
-    if (sp_streq(name, "key") || sp_streq(name, "receiver") || sp_streq(name, "args") ||
-        sp_streq(name, "reason") || sp_streq(name, "exit_value") ||
-        sp_streq(name, "tag") || sp_streq(name, "value"))
-      return TY_POLY;   /* class-gated introspection accessors (#2753-#2756, #2770) */
-    if (sp_streq(name, "private_call?")) return TY_BOOL;
-    if (sp_streq(name, "status")) return TY_INT;       /* SystemExit#status */
-    if (sp_streq(name, "success?")) return TY_BOOL;    /* SystemExit#success? */
-    if (sp_streq(name, "signo")) return TY_INT;        /* SignalException#signo */
-    if (sp_streq(name, "signm")) return TY_STRING;     /* SignalException#signm */
-    if (rt == TY_EXCEPTION && sp_streq(name, "exception")) return TY_EXCEPTION;  /* self, or a copy carrying a new message */
-    if (sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
-        sp_streq(name, "equal?"))
-      return TY_BOOL;
-  }
+  { TyKind r; if (infer_exception_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
 
   { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
 
