@@ -2284,7 +2284,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          answer to which (#3383). */
       { TyKind yt = comp_ntype(c, id);
         if (yt == TY_POLY) buf_puts(b, ", _sp_proc_poly_ret)");
-        else if (yt == TY_UNKNOWN || yt == TY_VOID || yt == TY_NIL || yt == TY_INT) buf_puts(b, ", _sp_proc_poly_ret.v.i)");
+        else if (yt == TY_INT) buf_puts(b, ", sp_poly_as_int_or_nil(_sp_proc_poly_ret))");   /* a nil answer is the Integer slot's nil */
+        else if (yt == TY_UNKNOWN || yt == TY_VOID || yt == TY_NIL) buf_puts(b, ", _sp_proc_poly_ret.v.i)");
         else {
           /* a typed slot other than an Integer's reads the boxed answer by
              its own kind: an array answer landed its raw carrier bits in an
