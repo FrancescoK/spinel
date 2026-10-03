@@ -13,7 +13,9 @@
 
 /* ---- the arms ---- */
 int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
+int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
+void emit_bigint_operand(Compiler *c, int node, Buf *b);
 
 #endif
