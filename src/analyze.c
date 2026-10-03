@@ -27753,9 +27753,8 @@ static void an_phase_desugar_register(Compiler *c) {
   register_ffi_decls(c);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
+/* Rescue-variable typing, class parents, inheritance and mixins, the block-aware marks, the synthesized enumeration helpers and the empty-literal marks (analyze_program's steps, in their order) */
+static void an_phase_class_structure(Compiler *c) {
   /* rescue variables (`rescue => e`) are typed as exception objects. When the
      arm names exactly one user exception subclass that carries ivars, type the
      binding as that object instead so `e.<ivar>` reads resolve and the carried
@@ -28004,6 +28003,12 @@ void analyze_program(Compiler *c) {
   (void)mark_empty_hash_key_ctx(c);
   mark_empty_hash_const_writes(c);
   comp_scope_index_set_frozen(0);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
 
   /* A bare identifier inside a class method that names a `class << self`
      attr reader is an implicit-self read of that singleton attribute; give it
