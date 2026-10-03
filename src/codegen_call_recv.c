@@ -6422,6 +6422,159 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   return 1;
 }
 
+/* A String receiver's length, case mapping (upcase, downcase, capitalize,
+   swapcase), chomp, dup / clone, and its searches: start_with?, index /
+   rindex, byteindex / byterindex, partition / rpartition, scrub
+   (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
+static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, const char *r) {
+  if (is_len_alias(name)) {
+    if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), g_hoist_len_recv))
+      buf_puts(b, g_hoist_len_var);
+    else buf_printf(b, "sp_str_length_m(%s)", r);
+  }
+  else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);
+  else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase%s(%s)", case_map_suffix(c, argc, argv), r);
+  else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize%s(%s)", case_map_suffix(c, argc, argv), r);
+  else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase%s(%s)", case_map_suffix(c, argc, argv), r);
+  else if (sp_streq(name, "chomp") && argc == 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && sp_streq(a0ty, "NilNode")) {
+      /* chomp(nil) returns the string unchanged */
+      buf_puts(b, r);
+    }
+    else {
+      buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+  }
+  else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) &&
+           (argc == 0 ||
+            (argc == 1 && sp_streq(name, "clone") && nt_type(nt, argv[0]) &&
+             sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+             ({ int _fv = kwh_lookup(nt, argv[0], "freeze");
+                const char *_ft = _fv >= 0 ? nt_type(nt, _fv) : NULL;
+                _ft && (sp_streq(_ft, "FalseNode") || sp_streq(_ft, "TrueNode") ||
+                        sp_streq(_ft, "NilNode")); })))) {
+    /* sp_str_dup, not dup_external: the receiver is a spinel string, and
+       the byte_len-aware copy carries embedded NULs (dup_external is for
+       unmarked C pointers and must stay strlen-based). clone's literal
+       freeze: keyword forces the copy's frozen state (nil/absent keeps
+       clone's default); a non-literal value stays a loud reject. */
+    int fz1 = 0;
+    if (argc == 1) {
+      int fv = kwh_lookup(nt, argv[0], "freeze");
+      const char *ft = fv >= 0 ? nt_type(nt, fv) : NULL;
+      fz1 = ft && sp_streq(ft, "TrueNode");
+    }
+    if (fz1) buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
+    else buf_printf(b, "sp_str_dup(%s)", r);
+  }
+  else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* s.start_with?(/re/): true when the pattern matches at index 0 */
+    buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "start_with?") && argc == 1) {
+    buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* nullable-int carrier (SP_INT_NIL on miss), matching the inferred
+       type -- the poly-boxed form broke a variable-regexp argument */
+    int tmi = ++g_tmp, tsi = ++g_tmp;
+    /* report the match position in characters, not bytes (#3056) */
+    buf_printf(b, "({ const char *_t%d = %s; sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
+                  " _t%d < 0 ? SP_INT_NIL : sp_str_byte_to_char(_t%d, _t%d); })",
+               tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
+  }
+  /* a Regexp held in a variable or parameter rather than written inline */
+  else if ((sp_streq(name, "index") || sp_streq(name, "rindex")) && (argc == 1 || argc == 2) &&
+           comp_ntype(c, argv[0]) == TY_REGEX) {
+    int tsr = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; sp_re_%sindex_%s(", tsr, r,
+               sp_streq(name, "rindex") ? "r" : "", argc == 2 || name[0] == 'i' ? "from_opt" : "opt");
+    emit_expr(c, argv[0], b); buf_printf(b, ", _t%d", tsr);
+    if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
+    else if (name[0] == 'i') buf_puts(b, ", 0");
+    buf_puts(b, "); })");
+  }
+  else if (sp_streq(name, "index") && argc == 1) {
+    /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
+    buf_printf(b, "sp_str_index_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "index") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_index_from_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+    emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "index") && argc == 2) {
+    buf_printf(b, "sp_str_index_from_opt(%s, ", r);
+    emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  /* byteindex/byterindex over a String needle: BYTE-offset search (result +
+     start are byte offsets). The runtime helpers already carry nil as
+     SP_INT_NIL. A Regexp needle is a separate feature -- not handled here,
+     so it falls through to the unsupported-call reject. */
+  else if (sp_streq(name, "byteindex") && (argc == 1 || argc == 2) &&
+           re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_byteindex_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+    if (argc == 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+    buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "byterindex") && (argc == 1 || argc == 2) &&
+           re_lit_index(c, argv[0]) >= 0) {
+    int tsr = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; sp_re_byterindex_opt(sp_re_pat_%d, _t%d, ",
+               tsr, r, re_lit_index(c, argv[0]), tsr);
+    if (argc == 2) emit_int_expr(c, argv[1], b);
+    else buf_printf(b, "(sp_int)sp_str_byte_len(_t%d)", tsr);
+    buf_puts(b, "); })");
+  }
+  else if (sp_streq(name, "byteindex") && argc == 1 && str_needle_p(c, argv[0])) {
+    buf_printf(b, "sp_str_byteindex(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "byteindex") && argc == 2 && str_needle_p(c, argv[0])) {
+    buf_printf(b, "sp_str_byteindex_from(%s, ", r); emit_str_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "byterindex") && argc == 1 && str_needle_p(c, argv[0])) {
+    buf_printf(b, "sp_str_byterindex(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "byterindex") && argc == 2 && str_needle_p(c, argv[0])) {
+    buf_printf(b, "sp_str_byterindex_from(%s, ", r); emit_str_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if ((sp_streq(name, "partition") || sp_streq(name, "rpartition")) && argc == 1 &&
+           re_lit_index(c, argv[0]) < 0) {
+    buf_printf(b, "sp_str_%s(%s, ", name, r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* [before, match, after] from the first regex match, else [s, "", ""] */
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
+                  " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
+                  " sp_StrArray_push(_t%d, sp_re_pre_match()); sp_StrArray_push(_t%d, sp_re_match_str);"
+                  " sp_StrArray_push(_t%d, sp_re_post_match()); }\nelse {"
+                  " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
+                  " _t%d; })",
+               tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
+  }
+  else if (sp_streq(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "rindex") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_rindex_from_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+    emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -6758,150 +6911,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* the arms that read only the receiver text and the arguments:
        builtin-op rows (builtin_ops.c) */
     else if (emit_builtin_op_text(c, id, recv, TY_STRING, name, r, b)) ;
-    else if (is_len_alias(name)) {
-      if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
-          sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
-          sp_streq(nt_str(nt, recv, "name"), g_hoist_len_recv))
-        buf_puts(b, g_hoist_len_var);
-      else buf_printf(b, "sp_str_length_m(%s)", r);
-    }
-    else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase%s(%s)", case_map_suffix(c, argc, argv), r);
-    else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase%s(%s)", case_map_suffix(c, argc, argv), r);
-    else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize%s(%s)", case_map_suffix(c, argc, argv), r);
-    else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase%s(%s)", case_map_suffix(c, argc, argv), r);
-    else if (sp_streq(name, "chomp") && argc == 1) {
-      const char *a0ty = nt_type(nt, argv[0]);
-      if (a0ty && sp_streq(a0ty, "NilNode")) {
-        /* chomp(nil) returns the string unchanged */
-        buf_puts(b, r);
-      }
-      else {
-        buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-    }
-    else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) &&
-             (argc == 0 ||
-              (argc == 1 && sp_streq(name, "clone") && nt_type(nt, argv[0]) &&
-               sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
-               ({ int _fv = kwh_lookup(nt, argv[0], "freeze");
-                  const char *_ft = _fv >= 0 ? nt_type(nt, _fv) : NULL;
-                  _ft && (sp_streq(_ft, "FalseNode") || sp_streq(_ft, "TrueNode") ||
-                          sp_streq(_ft, "NilNode")); })))) {
-      /* sp_str_dup, not dup_external: the receiver is a spinel string, and
-         the byte_len-aware copy carries embedded NULs (dup_external is for
-         unmarked C pointers and must stay strlen-based). clone's literal
-         freeze: keyword forces the copy's frozen state (nil/absent keeps
-         clone's default); a non-literal value stays a loud reject. */
-      int fz1 = 0;
-      if (argc == 1) {
-        int fv = kwh_lookup(nt, argv[0], "freeze");
-        const char *ft = fv >= 0 ? nt_type(nt, fv) : NULL;
-        fz1 = ft && sp_streq(ft, "TrueNode");
-      }
-      if (fz1) buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
-      else buf_printf(b, "sp_str_dup(%s)", r);
-    }
-    else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      /* s.start_with?(/re/): true when the pattern matches at index 0 */
-      buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "start_with?") && argc == 1) {
-      buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      /* nullable-int carrier (SP_INT_NIL on miss), matching the inferred
-         type -- the poly-boxed form broke a variable-regexp argument */
-      int tmi = ++g_tmp, tsi = ++g_tmp;
-      /* report the match position in characters, not bytes (#3056) */
-      buf_printf(b, "({ const char *_t%d = %s; sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
-                    " _t%d < 0 ? SP_INT_NIL : sp_str_byte_to_char(_t%d, _t%d); })",
-                 tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
-    }
-    /* a Regexp held in a variable or parameter rather than written inline */
-    else if ((sp_streq(name, "index") || sp_streq(name, "rindex")) && (argc == 1 || argc == 2) &&
-             comp_ntype(c, argv[0]) == TY_REGEX) {
-      int tsr = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = %s; sp_re_%sindex_%s(", tsr, r,
-                 sp_streq(name, "rindex") ? "r" : "", argc == 2 || name[0] == 'i' ? "from_opt" : "opt");
-      emit_expr(c, argv[0], b); buf_printf(b, ", _t%d", tsr);
-      if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
-      else if (name[0] == 'i') buf_puts(b, ", 0");
-      buf_puts(b, "); })");
-    }
-    else if (sp_streq(name, "index") && argc == 1) {
-      /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
-      buf_printf(b, "sp_str_index_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "index") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_index_from_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
-      emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "index") && argc == 2) {
-      buf_printf(b, "sp_str_index_from_opt(%s, ", r);
-      emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
-      emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    /* byteindex/byterindex over a String needle: BYTE-offset search (result +
-       start are byte offsets). The runtime helpers already carry nil as
-       SP_INT_NIL. A Regexp needle is a separate feature -- not handled here,
-       so it falls through to the unsupported-call reject. */
-    else if (sp_streq(name, "byteindex") && (argc == 1 || argc == 2) &&
-             re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_byteindex_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
-      if (argc == 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byterindex") && (argc == 1 || argc == 2) &&
-             re_lit_index(c, argv[0]) >= 0) {
-      int tsr = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = %s; sp_re_byterindex_opt(sp_re_pat_%d, _t%d, ",
-                 tsr, r, re_lit_index(c, argv[0]), tsr);
-      if (argc == 2) emit_int_expr(c, argv[1], b);
-      else buf_printf(b, "(sp_int)sp_str_byte_len(_t%d)", tsr);
-      buf_puts(b, "); })");
-    }
-    else if (sp_streq(name, "byteindex") && argc == 1 && str_needle_p(c, argv[0])) {
-      buf_printf(b, "sp_str_byteindex(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byteindex") && argc == 2 && str_needle_p(c, argv[0])) {
-      buf_printf(b, "sp_str_byteindex_from(%s, ", r); emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byterindex") && argc == 1 && str_needle_p(c, argv[0])) {
-      buf_printf(b, "sp_str_byterindex(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byterindex") && argc == 2 && str_needle_p(c, argv[0])) {
-      buf_printf(b, "sp_str_byterindex_from(%s, ", r); emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if ((sp_streq(name, "partition") || sp_streq(name, "rpartition")) && argc == 1 &&
-             re_lit_index(c, argv[0]) < 0) {
-      buf_printf(b, "sp_str_%s(%s, ", name, r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      /* [before, match, after] from the first regex match, else [s, "", ""] */
-      int tr = ++g_tmp;
-      buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
-                    " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
-                    " sp_StrArray_push(_t%d, sp_re_pre_match()); sp_StrArray_push(_t%d, sp_re_match_str);"
-                    " sp_StrArray_push(_t%d, sp_re_post_match()); }\nelse {"
-                    " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
-                    " _t%d; })",
-                 tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
-    }
-    else if (sp_streq(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "rindex") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_rindex_from_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
-      emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_str_expr_nilable(c, argv[0], b); buf_puts(b, ")"); }
+    else if (str_arms_case_search(c, b, nt, name, recv, argc, argv, r)) ;
     else if (str_arms_slice_encode(c, id, b, name, recv, argc, argv, r)) ;
     else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); { *out = 1; return 1; } }
     else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); { *out = 1; return 1; } }
