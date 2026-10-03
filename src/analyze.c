@@ -31823,32 +31823,19 @@ static void an_phase_reconcile_check(Compiler *c) {
 
 void analyze_program(Compiler *c) {
   an_phase_desugar_register(c);
-
   an_phase_class_structure(c);
-
   an_phase_block_inline(c);
-
   an_phase_pre_fixpoint(c);
-
   an_phase_infer_fixpoint(c);
-
   an_phase_post_fixpoint(c);
-
   an_phase_procs(c);
-
   an_phase_method_backstops(c);
-
   an_phase_late_widen(c);
-
   an_phase_proc_returns(c);
-
-
   an_phase_storage(c);
-
-
   an_phase_value_types(c);
-
   an_phase_reconcile_check(c);
+
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
             g_fixpoint_rounds >= 128 ? " (CAP -- did not converge)" : "");
