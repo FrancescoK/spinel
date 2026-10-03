@@ -6033,6 +6033,169 @@ static int emit_scrub_bang(Compiler *c, int recv, TyKind rt, int argc, const int
   return done;
 }
 
+/* A String receiver's conversions and comparisons: lines with keywords,
+   bytes, codepoints, unpack / unpack1, chars, to_i, eql? and equal?
+   (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
+static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r) {
+  /* lines(sep, chomp: true): a separator and the keyword together (#3546) */
+  if (sp_streq(name, "lines") && argc == 2 &&
+           comp_ntype(c, argv[0]) == TY_STRING && nt_type(nt, argv[1]) &&
+           sp_streq(nt_type(nt, argv[1]), "KeywordHashNode")) {
+    int chv = struct_kwarg_value(c, argv[1], "chomp");
+    int isc = kw_flag_static(c, chv);
+    if (isc < 0) { buf_puts(b, "("); emit_cond(c, chv, b); buf_puts(b, " ? "); }
+    if (isc != 0) { buf_printf(b, "sp_str_lines_sep_chomp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    if (isc < 0) buf_puts(b, " : ");
+    if (isc != 1) { buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    if (isc < 0) buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
+           sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+    int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
+    int is_chomp = kw_flag_static(c, chomp_v);
+    if (is_chomp < 0) {
+      buf_puts(b, "("); emit_cond(c, chomp_v, b);
+      buf_printf(b, " ? sp_str_lines_chomp(%s) : sp_str_lines(%s))", r, r);
+    }
+    else buf_printf(b, "%s(%s)", is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", r);
+  }
+  else if (sp_streq(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
+  else if (sp_streq(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
+  /* unpack(fmt, offset: n): a trailing KeywordHashNode carries the offset. */
+  else if ((sp_streq(name, "unpack") || sp_streq(name, "unpack1")) && argc == 2 &&
+           nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") &&
+           struct_kwarg_value(c, argv[1], "offset") >= 0) {
+    int offv = struct_kwarg_value(c, argv[1], "offset");
+    int one = sp_streq(name, "unpack1");
+    TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
+    if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(");
+    else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(sp_PolyArray_get(");
+    else if (one)                    buf_puts(b, "sp_PolyArray_get(");
+    buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_str_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
+    if (one) buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? ", 0))" : ", 0)");
+  }
+  else if (sp_streq(name, "unpack1") && argc == 1) {
+    /* A literal single-directive numeric format fixes the value's type
+       (the analyzer's an_unpack1_lit_type): unbox the extracted element
+       (int, or float? -- the _opt keeps a padded nil from short input
+       as float-nil instead of 0.0). */
+    TyKind u1t = comp_ntype(c, id);
+    if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+    else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f_opt(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+    else                      buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
+    emit_str_expr(c, argv[0], b);
+    buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
+  }
+  else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
+  /* promote mode types the call poly: a Bignum past sp_int */
+  else if (sp_streq(name, "to_i") && argc <= 1 && comp_ntype(c, id) == TY_POLY) {
+    buf_printf(b, "sp_str_to_i_promote(%s, ", r);
+    if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "-1");
+    buf_puts(b, ", 0)");
+  }
+  else if (sp_streq(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
+  else if (sp_streq(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  /* String#eql?(x): byte-equal only when x is itself String-typed (no
+     coercion, unlike ==). A poly arg checks its tag; any other concrete
+     type is never equal. */
+  else if (sp_streq(name, "eql?") && argc == 1) {
+    /* the receiver may be a fresh copy (a shared slot's read): rooted
+       when the argument, evaluated beside it, may allocate -- as == does */
+    if (a0 == TY_STRING && operand_may_allocate(c, argv[0])) {
+      int te = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_str_eq(_t%d, ", te, r, te, te);
+      emit_expr(c, argv[0], b); buf_puts(b, "); })");
+    }
+    else if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (a0 == TY_POLY) {
+      /* a boxed shared String handle is a String too: read its text. The
+         receiver is bound first, as Ruby evaluates it: rendered after the
+         argument, a shared slot's copy allocated while the argument's
+         fresh String sat in an unrooted temp. It is rooted when the
+         argument may allocate. */
+      int te = ++g_tmp, trc = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = %s; ", trc, r);
+      if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT(_t%d); ", trc);
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_deref(", te); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, _t%d); })", te, te, trc);
+    }
+    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+  }
+  /* String#equal?(x): object identity. A String is a `const char *` whose
+     literals the C compiler merges at -O2, so raw pointer equality would
+     wrongly equate distinct equal-valued literals (`a = "x"; b = "x"`).
+     Only the unambiguous reflexive case -- the same side-effect-free local
+     or ivar read on both sides (`x.equal?(x)`) -- is certainly identity-
+     true; every other form is conservatively false, still evaluating the
+     argument for its side effects. */
+  else if (sp_streq(name, "equal?") && argc == 1) {
+    TyKind eqa = comp_ntype(c, argv[0]);
+    /* a mutable StringBuffer local as the argument: compare the buffer's
+       OWN cstr pointer -- the plain read emits a defensive snapshot copy
+       (sp_str_concat(cstr, "")), which would break `(s << "x").equal?(s)`
+       (#2307). Hoist the receiver first so its in-place append lands
+       before the argument's cstr is read. */
+    int eq_sblv = 0;
+    /* a demand-marked reader-call argument already emits the handle */
+    if (!eq_sblv && comp_ntype(c, argv[0]) == TY_STRBUF &&
+        nt_kind(nt, argv[0]) == NK_CallNode) {
+      char rrefE2[192];
+      if (strbuf_slot_ref(c, recv, rrefE2, sizeof rrefE2)) {
+        buf_printf(b, "(%s == ", rrefE2);
+        emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        eq_sblv = 1;
+      }
+    }
+    /* strbuf receiver vs a POLY operand (a container read): runtime
+       handle identity against the boxed value (#3227 P6) */
+    if (!eq_sblv && comp_ntype(c, argv[0]) == TY_POLY) {
+      char rrefE3[192];
+      if (strbuf_slot_ref(c, recv, rrefE3, sizeof rrefE3)) {
+        int teq3 = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", teq3);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
+                      " && (sp_String *)_t%d.v.p == %s); })",
+                   teq3, teq3, teq3, rrefE3);
+        eq_sblv = 1;
+      }
+    }
+    if (!eq_sblv) {
+      char arefE[192];
+      if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
+        /* If the receiver is ALSO a strbuf slot (local or ivar), compare
+           the two sp_String handles directly: a shared alias is one
+           object, so `s1.equal?(s2)` is true (#3227). Otherwise `r` is a
+           live-buffer expr (e.g. `(s << "x")`) and its cstr is compared. */
+        char rrefE[192];
+        if (strbuf_slot_ref(c, recv, rrefE, sizeof rrefE))
+          buf_printf(b, "(%s == %s)", rrefE, arefE);
+        else {
+          int teq = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = %s; "
+                        "(const void *)_t%d == (const void *)sp_String_cstr(%s); })",
+                     teq, r, teq, arefE);
+        }
+        eq_sblv = 1;
+      }
+    }
+    if (eq_sblv) { /* emitted above */ }
+    else if (eqa == TY_STRING) {
+      /* string identity IS pointer identity (s.freeze.equal?(s) must be
+         true: freeze marks in place and returns the same pointer) */
+      buf_printf(b, "((const void *)(%s) == (const void *)(", r);
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "))");
+    }
+    else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
+    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+  }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -6731,161 +6894,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); { *out = 1; return 1; } }
     else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); { *out = 1; return 1; } }
-    /* lines(sep, chomp: true): a separator and the keyword together (#3546) */
-    else if (sp_streq(name, "lines") && argc == 2 &&
-             comp_ntype(c, argv[0]) == TY_STRING && nt_type(nt, argv[1]) &&
-             sp_streq(nt_type(nt, argv[1]), "KeywordHashNode")) {
-      int chv = struct_kwarg_value(c, argv[1], "chomp");
-      int isc = kw_flag_static(c, chv);
-      if (isc < 0) { buf_puts(b, "("); emit_cond(c, chv, b); buf_puts(b, " ? "); }
-      if (isc != 0) { buf_printf(b, "sp_str_lines_sep_chomp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      if (isc < 0) buf_puts(b, " : ");
-      if (isc != 1) { buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      if (isc < 0) buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
-             sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
-      int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
-      int is_chomp = kw_flag_static(c, chomp_v);
-      if (is_chomp < 0) {
-        buf_puts(b, "("); emit_cond(c, chomp_v, b);
-        buf_printf(b, " ? sp_str_lines_chomp(%s) : sp_str_lines(%s))", r, r);
-      }
-      else buf_printf(b, "%s(%s)", is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", r);
-    }
-    else if (sp_streq(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
-    else if (sp_streq(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
-    /* unpack(fmt, offset: n): a trailing KeywordHashNode carries the offset. */
-    else if ((sp_streq(name, "unpack") || sp_streq(name, "unpack1")) && argc == 2 &&
-             nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") &&
-             struct_kwarg_value(c, argv[1], "offset") >= 0) {
-      int offv = struct_kwarg_value(c, argv[1], "offset");
-      int one = sp_streq(name, "unpack1");
-      TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
-      if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(");
-      else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(sp_PolyArray_get(");
-      else if (one)                    buf_puts(b, "sp_PolyArray_get(");
-      buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
-      if (one) buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? ", 0))" : ", 0)");
-    }
-    else if (sp_streq(name, "unpack1") && argc == 1) {
-      /* A literal single-directive numeric format fixes the value's type
-         (the analyzer's an_unpack1_lit_type): unbox the extracted element
-         (int, or float? -- the _opt keeps a padded nil from short input
-         as float-nil instead of 0.0). */
-      TyKind u1t = comp_ntype(c, id);
-      if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(sp_str_unpack(%s, ", r);
-      else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f_opt(sp_PolyArray_get(sp_str_unpack(%s, ", r);
-      else                      buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
-      emit_str_expr(c, argv[0], b);
-      buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
-    }
-    else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
-    /* promote mode types the call poly: a Bignum past sp_int */
-    else if (sp_streq(name, "to_i") && argc <= 1 && comp_ntype(c, id) == TY_POLY) {
-      buf_printf(b, "sp_str_to_i_promote(%s, ", r);
-      if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "-1");
-      buf_puts(b, ", 0)");
-    }
-    else if (sp_streq(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
-    else if (sp_streq(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    /* String#eql?(x): byte-equal only when x is itself String-typed (no
-       coercion, unlike ==). A poly arg checks its tag; any other concrete
-       type is never equal. */
-    else if (sp_streq(name, "eql?") && argc == 1) {
-      /* the receiver may be a fresh copy (a shared slot's read): rooted
-         when the argument, evaluated beside it, may allocate -- as == does */
-      if (a0 == TY_STRING && operand_may_allocate(c, argv[0])) {
-        int te = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_str_eq(_t%d, ", te, r, te, te);
-        emit_expr(c, argv[0], b); buf_puts(b, "); })");
-      }
-      else if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (a0 == TY_POLY) {
-        /* a boxed shared String handle is a String too: read its text. The
-           receiver is bound first, as Ruby evaluates it: rendered after the
-           argument, a shared slot's copy allocated while the argument's
-           fresh String sat in an unrooted temp. It is rooted when the
-           argument may allocate. */
-        int te = ++g_tmp, trc = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; ", trc, r);
-        if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT(_t%d); ", trc);
-        buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_deref(", te); emit_boxed(c, argv[0], b);
-        buf_printf(b, "); _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, _t%d); })", te, te, trc);
-      }
-      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
-    }
-    /* String#equal?(x): object identity. A String is a `const char *` whose
-       literals the C compiler merges at -O2, so raw pointer equality would
-       wrongly equate distinct equal-valued literals (`a = "x"; b = "x"`).
-       Only the unambiguous reflexive case -- the same side-effect-free local
-       or ivar read on both sides (`x.equal?(x)`) -- is certainly identity-
-       true; every other form is conservatively false, still evaluating the
-       argument for its side effects. */
-    else if (sp_streq(name, "equal?") && argc == 1) {
-      TyKind eqa = comp_ntype(c, argv[0]);
-      /* a mutable StringBuffer local as the argument: compare the buffer's
-         OWN cstr pointer -- the plain read emits a defensive snapshot copy
-         (sp_str_concat(cstr, "")), which would break `(s << "x").equal?(s)`
-         (#2307). Hoist the receiver first so its in-place append lands
-         before the argument's cstr is read. */
-      int eq_sblv = 0;
-      /* a demand-marked reader-call argument already emits the handle */
-      if (!eq_sblv && comp_ntype(c, argv[0]) == TY_STRBUF &&
-          nt_kind(nt, argv[0]) == NK_CallNode) {
-        char rrefE2[192];
-        if (strbuf_slot_ref(c, recv, rrefE2, sizeof rrefE2)) {
-          buf_printf(b, "(%s == ", rrefE2);
-          emit_expr(c, argv[0], b);
-          buf_puts(b, ")");
-          eq_sblv = 1;
-        }
-      }
-      /* strbuf receiver vs a POLY operand (a container read): runtime
-         handle identity against the boxed value (#3227 P6) */
-      if (!eq_sblv && comp_ntype(c, argv[0]) == TY_POLY) {
-        char rrefE3[192];
-        if (strbuf_slot_ref(c, recv, rrefE3, sizeof rrefE3)) {
-          int teq3 = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", teq3);
-          emit_boxed(c, argv[0], b);
-          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
-                        " && (sp_String *)_t%d.v.p == %s); })",
-                     teq3, teq3, teq3, rrefE3);
-          eq_sblv = 1;
-        }
-      }
-      if (!eq_sblv) {
-        char arefE[192];
-        if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
-          /* If the receiver is ALSO a strbuf slot (local or ivar), compare
-             the two sp_String handles directly: a shared alias is one
-             object, so `s1.equal?(s2)` is true (#3227). Otherwise `r` is a
-             live-buffer expr (e.g. `(s << "x")`) and its cstr is compared. */
-          char rrefE[192];
-          if (strbuf_slot_ref(c, recv, rrefE, sizeof rrefE))
-            buf_printf(b, "(%s == %s)", rrefE, arefE);
-          else {
-            int teq = ++g_tmp;
-            buf_printf(b, "({ const char *_t%d = %s; "
-                          "(const void *)_t%d == (const void *)sp_String_cstr(%s); })",
-                       teq, r, teq, arefE);
-          }
-          eq_sblv = 1;
-        }
-      }
-      if (eq_sblv) { /* emitted above */ }
-      else if (eqa == TY_STRING) {
-        /* string identity IS pointer identity (s.freeze.equal?(s) must be
-           true: freeze marks in place and returns the same pointer) */
-        buf_printf(b, "((const void *)(%s) == (const void *)(", r);
-        emit_expr(c, argv[0], b);
-        buf_puts(b, "))");
-      }
-      else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
-      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
-    }
+    else if (str_arms_convert(c, id, b, nt, name, recv, argc, argv, a0, r)) ;
     else handled = 0;
   }
   else if (rt == TY_INT) {
