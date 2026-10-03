@@ -12286,23 +12286,24 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       /* An Integer Range equals a Float Range with the same endpoints: Range#==
-         compares its begin and end with ==, and 1 == 1.0 (#3841). */
+         compares its begin and end with ==, and 1 == 1.0 (#3841); an end
+         written as a Float compares as written (sp_range_end_num) */
       if ((fr == 5 && fa == 6) || (fr == 6 && fa == 5)) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ sp_float _t%d, _t%d; int _e1, _e2;", ta, tb);
         if (fr == 5) {
           buf_printf(b, " sp_Range _r%d = ", ta); emit_expr(c, recv, b);
-          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e1 = _r%d.excl;", ta, ta, ta);
+          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e1 = sp_range_excl_end(_r%d);", ta, ta, ta);
           buf_printf(b, " sp_FloatRange _f%d = ", tb); emit_expr(c, argv[0], b);
           buf_printf(b, "; _t%d = _f%d.first; _e2 = _f%d.excl;", tb, tb, tb);
-          buf_printf(b, " (_t%d == _t%d && (sp_float)_r%d.last == _f%d.last && _e1 == _e2)", ta, tb, ta, tb);
+          buf_printf(b, " (_t%d == _t%d && sp_range_end_num(_r%d) == _f%d.last && _e1 == _e2)", ta, tb, ta, tb);
         }
         else {
           buf_printf(b, " sp_FloatRange _f%d = ", ta); emit_expr(c, recv, b);
           buf_printf(b, "; _t%d = _f%d.first; _e1 = _f%d.excl;", ta, ta, ta);
           buf_printf(b, " sp_Range _r%d = ", tb); emit_expr(c, argv[0], b);
-          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e2 = _r%d.excl;", tb, tb, tb);
-          buf_printf(b, " (_t%d == _t%d && _f%d.last == (sp_float)_r%d.last && _e1 == _e2)", ta, tb, ta, tb);
+          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e2 = sp_range_excl_end(_r%d);", tb, tb, tb);
+          buf_printf(b, " (_t%d == _t%d && _f%d.last == sp_range_end_num(_r%d) && _e1 == _e2)", ta, tb, ta, tb);
         }
         buf_printf(b, "%s; })", eq ? "" : " ? 0 : 1");
         return 1;

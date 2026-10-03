@@ -1,0 +1,20 @@
+0 clamp: [2.5, 1, 1.5]
+0 clamp obj: [2.5, 1]
+0 == float range: [true, false, false]
+0 hash key: [1, nil, nil]
+0 rational: [true, true]
+1 clamp: ArgumentError: cannot clamp with an exclusive range
+1 clamp obj: ArgumentError: cannot clamp with an exclusive range
+1 == float range: [false, true, false]
+1 hash key: [nil, nil, 1]
+1 rational: [false, true]
+2 clamp: [2, 1, 1.5]
+2 clamp obj: [2, 1]
+2 == float range: [false, false, true]
+2 hash key: [nil, 1, nil]
+2 rational: [false, false]
+-- boxed
+0 === rational: true
+0 hash key: [1, nil, nil]
+1 === rational: false
+1 hash key: [nil, nil, 1]

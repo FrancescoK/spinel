@@ -3539,6 +3539,21 @@ static SP_UNUSED sp_bool sp_range_cover_rng(sp_Range a, sp_Range b) {
   if (b.fe) return 0;
   return (sp_float)(b.last - 1) <= ae;
 }
+/* Float#clamp(int_range): below the begin answers the begin, past the end
+   the end -- the Float written for (1..2.5), where it answered the walk's 2 --
+   and an exclusive end with a value cannot clamp */
+static SP_UNUSED sp_RbVal sp_float_clamp_range(double x, sp_Range r) {
+  if (sp_range_excl_end(r) && (r.fe || r.last != INTPTR_MAX))
+    sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
+  /* a begin past the end is out of order, as for the two-argument form (the
+     same wording as sp_int_clamp_ck) */
+  if (r.first != INTPTR_MIN && (r.fe || r.last != INTPTR_MAX) && (double)r.first > sp_range_end_num(r))
+    sp_raise_cls("ArgumentError", "min argument must be smaller than max argument");
+  if (r.first != INTPTR_MIN && x < (double)r.first) return sp_box_int(r.first);
+  if (r.fe) return x > r.fend ? sp_box_float(r.fend) : sp_box_float(x);
+  if (r.last != INTPTR_MAX && x > (double)r.last) return sp_box_int(r.last);
+  return sp_box_float(x);
+}
 /* Range#cover?(float_range) on an Integer range: the operand's ends against
    the largest value the receiver includes (an excluded Integer end is one
    less; an excluded Float end admits only an end that is excluded too) */
@@ -5043,10 +5058,11 @@ static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
    and flow to the user `<=>` like any operand. */
 static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) SP_UNUSED;
 static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) {
-  if (r.excl && r.last != INTPTR_MAX)
+  if (sp_range_excl_end(r) && (r.fe || r.last != INTPTR_MAX))
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
   sp_RbVal lo = r.first == INTPTR_MIN ? sp_box_nil() : sp_box_int(r.first);
-  sp_RbVal hi = r.last == INTPTR_MAX ? sp_box_nil() : sp_box_int(r.last);
+  /* an end written as a Float is the bound as written */
+  sp_RbVal hi = r.fe ? sp_box_float(r.fend) : r.last == INTPTR_MAX ? sp_box_nil() : sp_box_int(r.last);
   return sp_obj_clamp(v, lo, hi);
 }
 /* Stable ascending sort of idx[0..n) by the poly key keys[idx[k]], leaving equal
@@ -5337,13 +5353,14 @@ static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
 static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) SP_UNUSED;
 static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
   sp_poly_recv_ck(v, "clamp");
-  if (r.excl && r.last != INTPTR_MAX)
+  if (sp_range_excl_end(r) && (r.fe || r.last != INTPTR_MAX))
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
   if (v.tag == SP_TAG_OBJ && !sp_poly_numeric_p(v)) return sp_obj_clamp_range(v, r);
   /* the sentinels are OPEN sides, not bounds: with the exact comparison a
      Bignum receiver past the word (2**63 against `0..`) would otherwise be
      clamped to the sentinel; the double comparison only hid that (#4777) */
   return sp_num_clamp_open(v, r.first == INTPTR_MIN ? sp_box_nil() : sp_box_int(r.first),
+                              r.fe ? sp_box_float(r.fend) :
                               r.last == INTPTR_MAX ? sp_box_nil() : sp_box_int(r.last));
 }
 /* Integer #** : Spinel has no Rational, so a negative integer exponent --
@@ -8753,8 +8770,7 @@ static sp_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
       if (a.cls_id == SP_BUILTIN_RANGE) {
         /* same bounds, same exclusivity -- paired with the hash above (#3669) */
         sp_Range *ra = (sp_Range *)a.v.p, *rb = (sp_Range *)b.v.p;
-        return (ra && rb) ? (ra->first == rb->first && ra->last == rb->last &&
-                             (!ra->excl) == (!rb->excl)) : (ra == rb);
+        return (ra && rb) ? sp_range_eql(*ra, *rb) : (ra == rb);   /* a Float end too */
       }
       if (a.cls_id == SP_BUILTIN_STR_RANGE) {
         sp_StrRange *ra = (sp_StrRange *)a.v.p, *rb = (sp_StrRange *)b.v.p;
@@ -15324,14 +15340,15 @@ static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
 static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) {
   if (x.tag == SP_TAG_INT) return sp_range_include(r, x.v.i);
   if (x.tag == SP_TAG_FLT) return sp_range_cover_f(r, x.v.f);
-  if (x.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)x.v.p) > 0 ? r->last == INTPTR_MAX : r->first == INTPTR_MIN;
+  if (x.tag == SP_TAG_BIGINT) return sp_bigint_sign((sp_Bigint *)x.v.p) > 0 ? (r->fe ? r->fend == HUGE_VAL : r->last == INTPTR_MAX) : r->first == INTPTR_MIN;
   if (sp_poly_is_rat_kind(x)) {
     SP_GC_ROOT_RBVAL(x);
     sp_bool ok;
     if (r->first != INTPTR_MIN && (sp_poly_cmp(x, sp_box_int(r->first), &ok) < 0 || !ok)) return 0;
-    if (r->last != INTPTR_MAX) {
-      sp_int c = sp_poly_cmp(x, sp_box_int(r->last), &ok);
-      if (!ok || c > 0 || (r->excl && c == 0)) return 0;
+    if (r->fe || r->last != INTPTR_MAX) {
+      /* an end written as a Float compares as written */
+      sp_int c = sp_poly_cmp(x, r->fe ? sp_box_float(r->fend) : sp_box_int(r->last), &ok);
+      if (!ok || c > 0 || (sp_range_excl_end(*r) && c == 0)) return 0;
     }
     return 1;
   }

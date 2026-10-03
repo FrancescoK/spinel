@@ -7638,17 +7638,10 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       else {
         int tf2 = ++g_tmp, trg2 = ++g_tmp;
+        /* sp_float_clamp_range: an end written as a Float clamps to that Float */
         buf_printf(b, "({ double _t%d = (%s); sp_Range _t%d = ", tf2, r, trg2);
         emit_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d.excl && _t%d.last != INTPTR_MAX)"
-                      " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");"
-                      " (_t%d.first != INTPTR_MIN && _t%d < (double)_t%d.first) ? sp_box_int(_t%d.first)"
-                      " : (_t%d.last != INTPTR_MAX && _t%d > (double)_t%d.last) ? sp_box_int(_t%d.last)"
-                      " : sp_box_float(_t%d); })",
-                   trg2, trg2,
-                   trg2, tf2, trg2, trg2,
-                   trg2, tf2, trg2, trg2,
-                   tf2);
+        buf_printf(b, "; sp_float_clamp_range(_t%d, _t%d); })", tf2, trg2);
       }
     }
     else if (sp_streq(name, "to_i"))  buf_printf(b, comp_ntype(c, id) == TY_POLY ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);
