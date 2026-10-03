@@ -5747,6 +5747,106 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
   return 0;
 }
 
+/* A Kernel method that runs its block: loop, catch and throw, instance_eval and instance_exec, a trampoline's block (infer_call_inner's rules, in their order) */
+static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
+  /* loop { break val } -> the type of the break value */
+  if (recv < 0 && sp_streq(name, "loop") && !an_bare_call_class_owned(c, id)) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0) {
+      int body = nt_ref(nt, blk, "body");
+      if (body >= 0) {
+        TyKind bt = scan_break_type(c, body, 0);
+        if (bt != TY_UNKNOWN) { *out = bt; return 1; }
+      }
+      /* A loop ended by StopIteration answers that exception's #result -- the
+         exhausted enumerator. Only a body that pulls from one can end that
+         way; every other break-less loop keeps its nil (#3588). */
+      if (body >= 0 && an_subtree_calls_enum_next(c, body)) { *out = TY_POLY; return 1; }
+      { *out = TY_NIL; return 1; }
+    }
+    /* blockless `loop` is an infinite Enumerator yielding nil (#3236) */
+    { *out = TY_ENUMERATOR; return 1; }
+  }
+
+  /* catch(:tag) { ... } -> unify the block's last value with every throw
+     value that can target the tag, across method boundaries (the throw need
+     not be syntactically inside the body). */
+  if (recv < 0 && !an_bare_call_class_owned(c, id) && sp_streq(name, "catch")) {
+    int blk = nt_ref(nt, id, "block");
+    TyKind result = TY_UNKNOWN;
+    if (blk >= 0) {
+      int body = nt_ref(nt, blk, "body");
+      if (body >= 0) {
+        int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+        if (bn > 0) result = infer_type(c, bb[bn - 1]);
+      }
+      const char *tag = NULL;
+      int targ = nt_ref(nt, id, "arguments");
+      int tac = 0; const int *tav = targ >= 0 ? nt_arr(nt, targ, "arguments", &tac) : NULL;
+      if (tac >= 1 && nt_type(nt, tav[0])) {
+        if (sp_streq(nt_type(nt, tav[0]), "SymbolNode")) tag = nt_str(nt, tav[0], "value");
+        else if (sp_streq(nt_type(nt, tav[0]), "StringNode")) tag = nt_str(nt, tav[0], "unescaped");
+      }
+      TyKind tt = scan_throw_type(c, tag);
+      if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
+    }
+    { *out = result == TY_UNKNOWN ? TY_NIL : result; return 1; }
+  }
+
+  /* recv.instance_eval/exec { ... } -> the block's last-expression type
+     (bare calls inside resolve via the ie node->class map). A trampoline
+     method `recv.M { ... }` resolves the same way. */
+  int ie_kind = (recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
+                 ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
+  /* a non-object receiver (nil, a scalar) is served by the non-object splice;
+     type it by the block's last-expression the same way (#2956) */
+  if (!ie_kind && recv >= 0 && !ty_is_object(rt) &&
+      (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"))) {
+    int nblk = nt_ref(nt, id, "block");
+    if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
+  }
+  if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
+    ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;
+  /* receiverless instance_eval/exec inside an instance method resolves to self */
+  if (!ie_kind && recv < 0 && ie_implicit_self_class(c, id) >= 0) ie_kind = 1;
+  if (ie_kind) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0) {
+      const char *bty = nt_type(nt, blk);
+      if (bty && sp_streq(bty, "BlockArgumentNode")) {
+        /* `instance_exec(args, &b)` forwards the enclosing method's block; the
+           value it produces is that method's own forwarded-block value across
+           call sites (the method inlines per site, splicing the literal). */
+        Scope *encl = comp_scope_of(c, id);
+        int emi = encl ? (int)(encl - c->scopes) : -1;
+        if (emi >= 0) {
+          TyKind ft = yield_value_type(c, emi);
+          if (ft != TY_UNKNOWN && ft != TY_VOID) { *out = ft; return 1; }
+        }
+        /* The forwarded block's value isn't statically pinned here (its call
+           sites may not be typed yet during the fixpoint). It is a real boxed
+           value, not nil -- poly keeps the result a scalar carrier so the
+           enclosing method stays inlinable and the splice yields it per site. */
+        { *out = TY_POLY; return 1; }
+      }
+      int body = nt_ref(nt, blk, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn > 0) {
+        TyKind bt = infer_type(c, bb[bn - 1]);
+        if (bt == TY_VOID) bt = TY_NIL;
+        /* A value-carrying break/next can widen the result past the last
+           expression (e.g. `next val + 1` poly vs trailing `999` int). */
+        TyKind bnt = ie_block_break_next_ty(c, body);
+        if (bnt != TY_UNKNOWN)
+          bt = (bt == TY_NIL || bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
+        { *out = bt; return 1; }
+      }
+      { *out = TY_NIL; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6639,101 +6739,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
   }
 
-  /* loop { break val } -> the type of the break value */
-  if (recv < 0 && sp_streq(name, "loop") && !an_bare_call_class_owned(c, id)) {
-    int blk = nt_ref(nt, id, "block");
-    if (blk >= 0) {
-      int body = nt_ref(nt, blk, "body");
-      if (body >= 0) {
-        TyKind bt = scan_break_type(c, body, 0);
-        if (bt != TY_UNKNOWN) return bt;
-      }
-      /* A loop ended by StopIteration answers that exception's #result -- the
-         exhausted enumerator. Only a body that pulls from one can end that
-         way; every other break-less loop keeps its nil (#3588). */
-      if (body >= 0 && an_subtree_calls_enum_next(c, body)) return TY_POLY;
-      return TY_NIL;
-    }
-    /* blockless `loop` is an infinite Enumerator yielding nil (#3236) */
-    return TY_ENUMERATOR;
-  }
-
-  /* catch(:tag) { ... } -> unify the block's last value with every throw
-     value that can target the tag, across method boundaries (the throw need
-     not be syntactically inside the body). */
-  if (recv < 0 && !an_bare_call_class_owned(c, id) && sp_streq(name, "catch")) {
-    int blk = nt_ref(nt, id, "block");
-    TyKind result = TY_UNKNOWN;
-    if (blk >= 0) {
-      int body = nt_ref(nt, blk, "body");
-      if (body >= 0) {
-        int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-        if (bn > 0) result = infer_type(c, bb[bn - 1]);
-      }
-      const char *tag = NULL;
-      int targ = nt_ref(nt, id, "arguments");
-      int tac = 0; const int *tav = targ >= 0 ? nt_arr(nt, targ, "arguments", &tac) : NULL;
-      if (tac >= 1 && nt_type(nt, tav[0])) {
-        if (sp_streq(nt_type(nt, tav[0]), "SymbolNode")) tag = nt_str(nt, tav[0], "value");
-        else if (sp_streq(nt_type(nt, tav[0]), "StringNode")) tag = nt_str(nt, tav[0], "unescaped");
-      }
-      TyKind tt = scan_throw_type(c, tag);
-      if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
-    }
-    return result == TY_UNKNOWN ? TY_NIL : result;
-  }
-
-  /* recv.instance_eval/exec { ... } -> the block's last-expression type
-     (bare calls inside resolve via the ie node->class map). A trampoline
-     method `recv.M { ... }` resolves the same way. */
-  int ie_kind = (recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
-                 ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
-  /* a non-object receiver (nil, a scalar) is served by the non-object splice;
-     type it by the block's last-expression the same way (#2956) */
-  if (!ie_kind && recv >= 0 && !ty_is_object(rt) &&
-      (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"))) {
-    int nblk = nt_ref(nt, id, "block");
-    if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
-  }
-  if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
-    ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;
-  /* receiverless instance_eval/exec inside an instance method resolves to self */
-  if (!ie_kind && recv < 0 && ie_implicit_self_class(c, id) >= 0) ie_kind = 1;
-  if (ie_kind) {
-    int blk = nt_ref(nt, id, "block");
-    if (blk >= 0) {
-      const char *bty = nt_type(nt, blk);
-      if (bty && sp_streq(bty, "BlockArgumentNode")) {
-        /* `instance_exec(args, &b)` forwards the enclosing method's block; the
-           value it produces is that method's own forwarded-block value across
-           call sites (the method inlines per site, splicing the literal). */
-        Scope *encl = comp_scope_of(c, id);
-        int emi = encl ? (int)(encl - c->scopes) : -1;
-        if (emi >= 0) {
-          TyKind ft = yield_value_type(c, emi);
-          if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;
-        }
-        /* The forwarded block's value isn't statically pinned here (its call
-           sites may not be typed yet during the fixpoint). It is a real boxed
-           value, not nil -- poly keeps the result a scalar carrier so the
-           enclosing method stays inlinable and the splice yields it per site. */
-        return TY_POLY;
-      }
-      int body = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      if (bn > 0) {
-        TyKind bt = infer_type(c, bb[bn - 1]);
-        if (bt == TY_VOID) bt = TY_NIL;
-        /* A value-carrying break/next can widen the result past the last
-           expression (e.g. `next val + 1` poly vs trailing `999` int). */
-        TyKind bnt = ie_block_break_next_ty(c, body);
-        if (bnt != TY_UNKNOWN)
-          bt = (bt == TY_NIL || bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
-        return bt;
-      }
-      return TY_NIL;
-    }
-  }
+  { TyKind r; if (infer_block_kernel_call(c, id, nt, name, recv, rt, &r)) return r; }
 
   /* <StructClass>.members at the class level: symbol array */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
