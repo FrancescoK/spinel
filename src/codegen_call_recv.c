@@ -12224,6 +12224,161 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* Instance-variable and field access on a boxed receiver: an ivar write, a field read dispatched over every class that has it, instance_variable_get and _set, instance_variables (emit_poly_call's arms, in their order) */
+static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
+     write twin of the dispatch below. The value is evaluated once, then
+     stored into whichever instantiated class the receiver is, converted to
+     that class's slot type; a class without the slot takes no write (the
+     inference registered the value's type on every class that has one). The
+     call answers the value. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") &&
+      argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    const char *sym = sp_streq(a0ty, "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    if (sym && sym[0] == '@') {
+      TyKind res = comp_ntype(c, id);
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _ivs%d = ", tv, tv);
+      emit_boxed(c, argv[1], b);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated || c->classes[k].is_struct) continue;
+        if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
+        int iv = comp_ivar_index(&c->classes[k], sym);
+        if (iv < 0) continue;
+        TyKind t = c->classes[k].ivar_types[iv];
+        if (t == TY_STRBUF) continue;
+        char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
+        buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(sym + 1));
+        if (t == TY_POLY) buf_puts(b, val);
+        else if (nil_value(t)) {
+          /* nil into a scalar or String slot is its in-band nil */
+          buf_printf(b, "(%s.tag == SP_TAG_NIL ? %s : ", val, nil_value(t));
+          emit_unbox_text(c, t, val, b);
+          buf_puts(b, ")");
+        }
+        else emit_unbox_text(c, t, val, b);
+        buf_puts(b, "; break;");
+      }
+      /* a bare Object keeps its ivars in a table of its own */
+      buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
+                 tv, sym, tv);
+      buf_puts(b, " } ");
+      if (res != TY_POLY && res != TY_UNKNOWN) {
+        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivs%d", tv);
+        emit_unbox_text(c, res, ivn, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_ivs%d; })", tv);
+      { *out = 1; return 1; }
+    }
+  }
+
+  /* instance_variable_get(:@x) on a POLY receiver with a literal symbol or
+     string name: dispatch the field read over every instantiated class that
+     has the slot, boxing per the slot's declared type (the poly twin of the
+     concrete lowering; see the matching inference rule in analyze_infer.c).
+     A receiver whose runtime class lacks the slot reads as nil, matching
+     CRuby's unset-ivar behavior; the SP_TAG_OBJ guard keeps a boxed scalar
+     (cls_id 0) from aliasing the user class at index 0 (cf. issue #1576). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    const char *sym = sp_streq(a0ty, "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    if (sym && sym[0] == '@') {
+      TyKind res = comp_ntype(c, id);
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
+                 tv, tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int iv = comp_ivar_index(&c->classes[k], sym);
+        if (iv < 0) continue;
+        TyKind t = c->classes[k].ivar_types[iv];
+        char fld[320];
+        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
+        buf_printf(b, " case %d: _ivg%d = ", k, tv);
+        emit_boxed_text(c, t, fld, b);
+        buf_puts(b, "; break;");
+      }
+      buf_printf(b, " case SP_BUILTIN_OBJECT: _ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;",
+                 tv, tv, sym);
+      buf_puts(b, " } ");
+      if (res != TY_POLY && res != TY_UNKNOWN) {
+        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);
+        emit_unbox_text(c, res, ivn, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_ivg%d; })", tv);
+      { *out = 1; return 1; }
+    }
+  }
+
+  /* instance_variable_defined?(:@x) and instance_variables on a POLY
+     receiver: each instantiated class answers from its layout (as the typed
+     forms do), a bare Object from its own table (sp_Object_ivar_defined,
+     sp_Object_ivars), anything else has none. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *sym = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    if (sym && sym[0] == '@') {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_bool _ivd%d = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int iv = comp_ivar_index(&c->classes[k], sym);
+        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
+        char ex[200], tb[300];
+        snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
+        const char *set = ivar_set_test(c, k, sym, ex, tb, sizeof tb);
+        buf_printf(b, " case %d: _ivd%d = %s; break;", k, tv, set ? set : "TRUE");
+      }
+      buf_printf(b, " case SP_BUILTIN_OBJECT: _ivd%d = sp_Object_ivar_defined((sp_Object *)_t%d.v.p, "
+                    "sp_sym_intern(\"%s\")); break; } _ivd%d; })", tv, tv, sym, tv);
+      { *out = 1; return 1; }
+    }
+  }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
+               tv, tv, tv, tv);
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ivc = &c->classes[k];
+      if (!ivc->instantiated) continue;
+      buf_printf(b, " case %d: _ivl%d = sp_PolyArray_new();", k, tv);
+      /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
+      for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
+        char ex[200], tb[300];
+        snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", ivc->c_name, tv, iv_c(ivc->ivars[ji] + 1));
+        const char *set = ivar_set_test(c, k, ivc->ivars[ji], ex, tb, sizeof tb);
+        if (set) buf_printf(b, " if %s", set);
+        buf_printf(b, " sp_PolyArray_push(_ivl%d, sp_box_sym(sp_sym_intern(\"%s\")));", tv, ivc->ivars[ji]);
+      }
+      buf_puts(b, " break;");
+    }
+    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break; }"
+                  " if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv, tv, tv);
+    { *out = 1; return 1; }
+  }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12562,156 +12717,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (is_enc) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
 
-  /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
-     write twin of the dispatch below. The value is evaluated once, then
-     stored into whichever instantiated class the receiver is, converted to
-     that class's slot type; a class without the slot takes no write (the
-     inference registered the value's type on every class that has one). The
-     call answers the value. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") &&
-      argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    const char *sym = sp_streq(a0ty, "SymbolNode")
-                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    if (sym && sym[0] == '@') {
-      TyKind res = comp_ntype(c, id);
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _ivs%d = ", tv, tv);
-      emit_boxed(c, argv[1], b);
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv);
-      for (int k = 0; k < c->nclasses; k++) {
-        if (!c->classes[k].instantiated || c->classes[k].is_struct) continue;
-        if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
-        int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0) continue;
-        TyKind t = c->classes[k].ivar_types[iv];
-        if (t == TY_STRBUF) continue;
-        char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
-        buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(sym + 1));
-        if (t == TY_POLY) buf_puts(b, val);
-        else if (nil_value(t)) {
-          /* nil into a scalar or String slot is its in-band nil */
-          buf_printf(b, "(%s.tag == SP_TAG_NIL ? %s : ", val, nil_value(t));
-          emit_unbox_text(c, t, val, b);
-          buf_puts(b, ")");
-        }
-        else emit_unbox_text(c, t, val, b);
-        buf_puts(b, "; break;");
-      }
-      /* a bare Object keeps its ivars in a table of its own */
-      buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
-                 tv, sym, tv);
-      buf_puts(b, " } ");
-      if (res != TY_POLY && res != TY_UNKNOWN) {
-        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivs%d", tv);
-        emit_unbox_text(c, res, ivn, b);
-        buf_puts(b, "; })");
-      }
-      else buf_printf(b, "_ivs%d; })", tv);
-      return 1;
-    }
-  }
-
-  /* instance_variable_get(:@x) on a POLY receiver with a literal symbol or
-     string name: dispatch the field read over every instantiated class that
-     has the slot, boxing per the slot's declared type (the poly twin of the
-     concrete lowering; see the matching inference rule in analyze_infer.c).
-     A receiver whose runtime class lacks the slot reads as nil, matching
-     CRuby's unset-ivar behavior; the SP_TAG_OBJ guard keeps a boxed scalar
-     (cls_id 0) from aliasing the user class at index 0 (cf. issue #1576). */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") &&
-      argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    const char *sym = sp_streq(a0ty, "SymbolNode")
-                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    if (sym && sym[0] == '@') {
-      TyKind res = comp_ntype(c, id);
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
-                 tv, tv, tv);
-      for (int k = 0; k < c->nclasses; k++) {
-        if (!c->classes[k].instantiated) continue;
-        int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0) continue;
-        TyKind t = c->classes[k].ivar_types[iv];
-        char fld[320];
-        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
-        buf_printf(b, " case %d: _ivg%d = ", k, tv);
-        emit_boxed_text(c, t, fld, b);
-        buf_puts(b, "; break;");
-      }
-      buf_printf(b, " case SP_BUILTIN_OBJECT: _ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;",
-                 tv, tv, sym);
-      buf_puts(b, " } ");
-      if (res != TY_POLY && res != TY_UNKNOWN) {
-        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);
-        emit_unbox_text(c, res, ivn, b);
-        buf_puts(b, "; })");
-      }
-      else buf_printf(b, "_ivg%d; })", tv);
-      return 1;
-    }
-  }
-
-  /* instance_variable_defined?(:@x) and instance_variables on a POLY
-     receiver: each instantiated class answers from its layout (as the typed
-     forms do), a bare Object from its own table (sp_Object_ivar_defined,
-     sp_Object_ivars), anything else has none. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *sym = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
-                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    if (sym && sym[0] == '@') {
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; sp_bool _ivd%d = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv, tv);
-      for (int k = 0; k < c->nclasses; k++) {
-        if (!c->classes[k].instantiated) continue;
-        int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
-        char ex[200], tb[300];
-        snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
-        const char *set = ivar_set_test(c, k, sym, ex, tb, sizeof tb);
-        buf_printf(b, " case %d: _ivd%d = %s; break;", k, tv, set ? set : "TRUE");
-      }
-      buf_printf(b, " case SP_BUILTIN_OBJECT: _ivd%d = sp_Object_ivar_defined((sp_Object *)_t%d.v.p, "
-                    "sp_sym_intern(\"%s\")); break; } _ivd%d; })", tv, tv, sym, tv);
-      return 1;
-    }
-  }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0) {
-    int tv = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-    emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
-               tv, tv, tv, tv);
-    for (int k = 0; k < c->nclasses; k++) {
-      ClassInfo *ivc = &c->classes[k];
-      if (!ivc->instantiated) continue;
-      buf_printf(b, " case %d: _ivl%d = sp_PolyArray_new();", k, tv);
-      /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
-      for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
-        char ex[200], tb[300];
-        snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", ivc->c_name, tv, iv_c(ivc->ivars[ji] + 1));
-        const char *set = ivar_set_test(c, k, ivc->ivars[ji], ex, tb, sizeof tb);
-        if (set) buf_printf(b, " if %s", set);
-        buf_printf(b, " sp_PolyArray_push(_ivl%d, sp_box_sym(sp_sym_intern(\"%s\")));", tv, ivc->ivars[ji]);
-      }
-      buf_puts(b, " break;");
-    }
-    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break; }"
-                  " if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv, tv, tv);
-    return 1;
-  }
+  { int r; if (emit_poly_ivar_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* poly receiver `.to_i(base)`: only String#to_i takes a radix. When the value
      is a String at runtime, parse it (mirroring String#to_i(base)); any other
