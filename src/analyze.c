@@ -27579,7 +27579,8 @@ static void refuse_lent_ivar_copies(Compiler *c) {
 }
 }
 
-void analyze_program(Compiler *c) {
+/* Setup, the AST desugarings and the registration passes: scopes, locals, attrs, aliases, globals and constants, FFI declarations (analyze_program's steps, in their order) */
+static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
@@ -27750,6 +27751,10 @@ void analyze_program(Compiler *c) {
   rewrite_const_alias_receivers(c);
   reject_env_value_uses(c);
   register_ffi_decls(c);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects. When the
      arm names exactly one user exception subclass that carries ivars, type the
