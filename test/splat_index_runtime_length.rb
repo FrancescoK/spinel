@@ -35,3 +35,6 @@ end
     p e.message
   end
 end
+# none on an Array: the Enumerator, as `a.index` gives it
+p a.index(*args())
+p a.rindex(*args()).to_a

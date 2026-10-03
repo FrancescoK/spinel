@@ -650,7 +650,10 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          sp_streq(name, "filter_map") || sp_streq(name, "partition") ||
          sp_streq(name, "take_while") || sp_streq(name, "drop_while") ||
          sp_streq(name, "find_index") || sp_streq(name, "chunk_while") ||
-         sp_streq(name, "minmax_by")) &&
+         sp_streq(name, "minmax_by") ||
+         /* Array#index / #rindex with no argument either: find_index's
+            walk, from the front or the back */
+         sp_streq(name, "index") || sp_streq(name, "rindex")) &&
         !call_is_chain_receiver_with_block(c, id)) { *out = TY_ENUMERATOR; return 1; }
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP)

@@ -17926,7 +17926,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
        sp_streq(name, "filter_map") || sp_streq(name, "partition") ||
        sp_streq(name, "take_while") || sp_streq(name, "drop_while") ||
        sp_streq(name, "find_index") || sp_streq(name, "chunk_while") ||
-       sp_streq(name, "minmax_by") ||
+       sp_streq(name, "minmax_by") || sp_streq(name, "index") || sp_streq(name, "rindex") ||
        sp_streq(name, "each_entry"))) {
     /* a blockless map/select/reject is the same element snapshot; only its
        #inspect method name differs (the deferred block is supplied by a later
@@ -17935,7 +17935,8 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       int te = ++g_tmp;
       buf_puts(b, "({ ");
       if (argc) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
-      buf_printf(b, "sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
+      /* rindex walks from the back, and its Enumerator yields that way */
+      buf_printf(b, "sp_Enumerator *_t%d = sp_Enumerator_new_from%s(", te, sp_streq(name, "rindex") ? "_rev" : "");
       emit_boxed(c, recv, b);
       buf_printf(b, "); _t%d->meth = SPL(\"%s\"); _t%d; })", te,
                  sp_streq(name, "collect") ? "map" :

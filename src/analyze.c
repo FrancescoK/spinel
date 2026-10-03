@@ -26533,16 +26533,6 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
-    /* No argument: String's guard refuses it; an Array answers an
-       Enumerator, which spinel does not build here (its each would be
-       find_index's or rindex's), and says so */
-    if (idx && m == 0) {
-      char nmsg[128];
-      snprintf(nmsg, sizeof nmsg, "spinel: Array#%s with no argument and no block (an Enumerator) is not supported", cnm);
-      int na[2] = { nt_new_node(nt, "ConstantReadNode"), sd_str(nt, nmsg) };
-      nt_node_set_str(nt, na[0], "name", "NotImplementedError");
-      cl = sd_if(nt, sd_is_string(nt, recv), cl, sd_call(nt, "raise", -1, na, 2));
-    }
     /* gsub!(pattern) with no block answers an Enumerator whose each edits
        the receiver, which spinel does not build: say so at the one count
        that needs it rather than raising CRuby's ArgumentError for a call
