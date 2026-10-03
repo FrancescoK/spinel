@@ -57,6 +57,7 @@ int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const 
 int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt);
 int emit_call_handle_op_arms(Compiler *c, int id, Buf *b, const char *name, int recv);
+int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -245,5 +246,8 @@ int method_poly_abi(Compiler *c, int mi, int recv_bound, int *out_fixed, int *ou
 int method_scope_arity(Compiler *c, int target, int *out);
 void emit_bm_legacy_ok(Buf *b, int tmp, int argc, const char *arg_sig);
 void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b);
+int emit_implicit_self_member(Compiler *c, int id, Buf *b);
+int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b);
+int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid);
 
 #endif

@@ -21890,7 +21890,7 @@ int bare_call_class_owned(Compiler *c, int id) {
    sp_RbVal, sp_Range, ... -- and emit_dispatch's cast of it to the user-struct
    pointer was a C error for every one of them (blank.rb). Call it the way the
    explicit-receiver reopen path does. Answers 1 when it emitted the call. */
-static int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
+int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || dispatch_cid < 0 || dispatch_cid >= c->nclasses) return 0;
@@ -21937,7 +21937,7 @@ static int implicit_self_reader_cid(Compiler *c, int id) {
 
 /* the user method a bare call reaches with self of class dispatch_cid, from
    the call's plan, or -1 */
-static int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
+int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
   const CallPlan *spl = cplan_user(c, id);
   if (!(spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid))
     spl = cplan_user_in(c, id, dispatch_cid,
@@ -21945,7 +21945,7 @@ static int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
   return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
 }
 
-static int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
+int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || nt_ref(nt, id, "receiver") >= 0) return 0;
@@ -25204,78 +25204,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
 
   if (emit_call_instance_eval_arms(c, id, b, nt, name, recv, argc)) return;
 
-  /* implicit-self call inside an instance method */
-  if (recv < 0) {
-    Scope *self = comp_scope_of(c, id);
-    /* Inside an instance_eval/exec block, g_ie_class_id is the rebound
-       receiver class and takes priority -- the splice may sit inside a class
-       method whose own class (g_emitting_class_id) is unrelated to the block's
-       self. Otherwise, when emitting a scope transplanted by include
-       (g_emitting_class_id is set), dispatch through the emitting class so
-       overrides are found correctly. */
-    int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
-                     : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
-    if (dispatch_cid >= 0) {
-      if (emit_or_take_back(c, id, b, emit_implicit_self_member)) return;
-      /* the method is the call's plan for self of dispatch_cid
-         (implicit_self_plan_mi); --plan-check holds it against the lookup */
-      int mi = implicit_self_plan_mi(c, id, dispatch_cid);
-      if (g_plan_check) {
-        cplan_served("implicit-self-late");
-        int omi = comp_method_in_chain(c, dispatch_cid, name, NULL);
-        if (omi != mi)
-          fprintf(stderr, "plan-check: cplan-conflict: implicit-self-late node %d %s: plan %d, lookup %d\n",
-                  id, name, mi, omi);
-      }
-      /* Template-method pattern: a base-class method calls an abstract method
-         that is implemented only in subclasses. Not found up the chain, but if a
-         descendant defines it, emit_dispatch can still resolve it virtually on
-         self's runtime class. */
-      if (mi < 0 && !self->is_cmethod) {
-        for (int k = 0; k < c->nclasses; k++) {
-          if (k == dispatch_cid || !is_descendant(c, k, dispatch_cid)) continue;
-          if (comp_method_in_chain(c, k, name, NULL) >= 0) { mi = k; break; }
-        }
-      }
-      if (mi >= 0 && emit_reopen_own_call(c, id, dispatch_cid, b)) return;
-      if (mi >= 0) {
-        emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
-        return;
-      }
-      /* A reopened Object's method is every object's: a bare call to it from
-         an instance method -- activesupport's `acts_like?(:time)` inside
-         DateAndTime::Zones#in_time_zone, copied into Date and Time -- reaches
-         it with self as the receiver, boxed the way the explicit `obj.m`
-         fallback boxes its receiver. Only inlining served it before; the
-         method body itself raised NoMethodError. */
-      if (mi < 0 && !self->is_cmethod && nt_ref(nt, id, "block") < 0 && g_self) {
-        int oc = comp_class_index(c, "Object");
-        int omi = oc >= 0 && oc != dispatch_cid ? comp_method_in_chain(c, oc, name, NULL) : -1;
-        if (omi >= 0) {
-          const char *scn = c->classes[dispatch_cid].name;
-          TyKind st = TY_UNKNOWN;
-          if (!scn) st = TY_UNKNOWN;
-          else if (sp_streq(scn, "String"))  st = TY_STRING;
-          else if (sp_streq(scn, "Integer")) st = TY_INT;
-          else if (sp_streq(scn, "Float"))   st = TY_FLOAT;
-          else if (sp_streq(scn, "Symbol"))  st = TY_SYMBOL;
-          else if (sp_streq(scn, "Time"))    st = TY_TIME;
-          else if (sp_streq(scn, "Array") || sp_streq(scn, "Hash") || sp_streq(scn, "Numeric")) st = TY_POLY;
-          else if (!is_builtin_reopen(scn) && !comp_class_is_module(c, &c->classes[dispatch_cid]) &&
-                   !comp_ty_value_obj(c, ty_object(dispatch_cid))) st = ty_object(dispatch_cid);
-          if (st != TY_UNKNOWN) {
-            if (g_plan_check) ucall_observe(c, id, omi, oc, 0);
-            buf_printf(b, "sp_Object_%s(", mc(c->scopes[omi].name));
-            if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
-            else emit_boxed_text(c, st, g_self, b);
-            emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);
-            buf_puts(b, ")");
-            return;
-          }
-        }
-      }
-    }
-  }
+  if (emit_call_implicit_self_arms(c, id, b, nt, name, recv)) return;
 
   if (emit_call_new_arms(c, id, b, nt, name, recv, argc, argv)) return;
   if (emit_call_builtin_cmethod_arms(c, id, b, nt, name, recv, argc, argv)) return;
