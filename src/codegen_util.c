@@ -104,6 +104,9 @@ static int g_ucobs_cap = 0;
    a call folded away -- has nothing to compare with */
 static unsigned char *g_ucemit = NULL;
 static int g_ucemit_cap = 0;
+/* ... and outside a probe: a call a probe tried and dropped was not
+   emitted, and its refusal was never reported (the refusal shadow) */
+static unsigned char *g_ucemit_np = NULL;
 
 void ucall_emitted(int id) {
   if (id < 0) return;
@@ -111,10 +114,13 @@ void ucall_emitted(int id) {
     int ncap = g_ucemit_cap ? g_ucemit_cap : 1024;
     while (ncap <= id) ncap *= 2;
     g_ucemit = realloc(g_ucemit, (size_t)ncap);
+    g_ucemit_np = realloc(g_ucemit_np, (size_t)ncap);
     memset(g_ucemit + g_ucemit_cap, 0, (size_t)(ncap - g_ucemit_cap));
+    memset(g_ucemit_np + g_ucemit_cap, 0, (size_t)(ncap - g_ucemit_cap));
     g_ucemit_cap = ncap;
   }
   if (!g_ucemit[id]) g_ucemit[id] = 1;
+  if (!g_unsup_probe) g_ucemit_np[id] = 1;
 }
 void ucall_refused(int id) {
   ucall_emitted(id);
@@ -250,9 +256,101 @@ static void ucall_resolver_report(Compiler *c) {
                   " inference %d agree %d differ %d none\n", ac, dc, rc, nc, ai, di, ni);
 }
 
+/* --plan-check for refusals (#7100, CP_REFUSE): each refusal codegen
+   reports outside a probe (unsup_leave), at the node it names, held against
+   the call plan's (cplan_refuse). Classified once, at the end:
+     ok         both refuse the node, in the same words
+     wrong      the plan refuses the node and codegen says something else,
+                or emits the call
+     codegen    codegen refuses a node the plan decides nothing for: its own
+                state decided it. Counted by what is left: call (the final
+                fall-through's dump: which emitter declined), shape (any other
+                internal dump: a statement or value shape, a poly splat),
+                nomethod (CRuby's NoMethodError/NameError words, a rewording
+                of a refusal codegen decided), string-copy (a String handed
+                by value to something that appends to it: the refuse_*
+                family, anchored at the last call codegen emitted), feature
+                (any other documented limit)
+     unreached  the plan refuses a call codegen never emitted outside a
+                probe (dead code, the rest of a unit a refusal abandoned, an
+                arm a probe dropped)
+   A refusal raised while analysis runs is not codegen's and is not held.
+   The report is printed by ucall_report, or at exit for a refused run. */
+typedef struct { int id; char *msg; } RefuseObs;
+static RefuseObs *g_rfobs = NULL;
+static int g_nrfobs = 0, g_rfobs_cap = 0;
+static Compiler *g_rfc = NULL;   /* the compiler, once codegen refuses */
+static int g_rf_node = -1;       /* the node the refusal being reported names */
+static int g_rf_done = 0;
+
+static void refuse_report(Compiler *c) {
+  if (g_rf_done || !c) return;
+  g_rf_done = 1;
+  int ok = 0, wrong = 0, call = 0, shape = 0, nom = 0, strc = 0, feat = 0, unr = 0;
+  int n = c->nt->count;
+  unsigned char *seen = calloc((size_t)n + 1, 1);
+  for (int i = 0; i < g_nrfobs; i++) {
+    int id = g_rfobs[i].id;
+    const char *m = g_rfobs[i].msg;
+    if (id >= 0 && id < n) seen[id] = 1;
+    const CallPlan *p = cplan_refuse(c, id);
+    if (p->dispatch == CP_REFUSE) {
+      if (sp_streq(p->msg, m)) ok++;
+      else {
+        wrong++;
+        fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen \"%s\"\n", id, p->msg, m);
+      }
+    }
+    else if (!strncmp(m, "unsupported call: node ", 23)) call++;
+    else if (!strncmp(m, "unsupported ", 12) && strstr(m, ": node ")) shape++;
+    else if (strstr(m, "(NoMethodError)") || strstr(m, "(NameError)")) nom++;
+    else if (strstr(m, "not yet shared by reference")) strc++;
+    else feat++;
+  }
+  for (int id = 0; id < n; id++) {
+    if (seen[id] || nt_kind(c->nt, id) != NK_CallNode) continue;
+    const CallPlan *p = cplan_refuse(c, id);
+    if (p->dispatch != CP_REFUSE) continue;
+    if (id < g_ucemit_cap && g_ucemit_np[id]) {
+      wrong++;
+      fprintf(stderr, "plan-check: refuse-wrong: node %d: plan \"%s\", codegen emitted the call\n", id, p->msg);
+    }
+    else unr++;
+  }
+  free(seen);
+  fprintf(stderr, "plan-check: refuse: %d ok, %d wrong, %d codegen (%d call, %d shape, %d nomethod, %d string-copy,"
+                  " %d feature), %d unreached\n",
+          ok, wrong, call + shape + nom + strc + feat, call, shape, nom, strc, feat, unr);
+}
+/* a refused run: the plan readers that served it too (ucall_report's) */
+static void refuse_report_at_exit(void) {
+  if (g_rf_done) return;
+  refuse_report(g_rfc);
+  cplan_served_report();
+}
+
+/* unsupported / unsupported_feature: the node a codegen refusal names */
+static void refuse_at(Compiler *c, int id) {
+  if (!g_plan_check || !g_scopes_settled) return;
+  if (!g_rfc) { g_rfc = c; atexit(refuse_report_at_exit); }
+  g_rf_node = id;
+}
+static void refuse_observe(const char *msg) {
+  if (!g_rfc || g_rf_node < 0) return;
+  if (g_nrfobs == g_rfobs_cap) {
+    g_rfobs_cap = g_rfobs_cap ? g_rfobs_cap * 2 : 16;
+    g_rfobs = realloc(g_rfobs, (size_t)g_rfobs_cap * sizeof *g_rfobs);
+  }
+  g_rfobs[g_nrfobs].id = g_rf_node;
+  g_rfobs[g_nrfobs++].msg = strdup(msg);
+  g_rf_node = -1;
+}
+
 void ucall_report(Compiler *c) {
+  refuse_report(c);
   ucall_resolver_report(c);
   cplan_served_report();
+  pa_report();
   static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
                                           "send_blind", "ie", "included", "reopen", "poly" };
   for (int id = 0; id < c->node_cap; id++) {
@@ -342,6 +440,7 @@ static void diag_record(const char *file, int line, const char *msg) {
    is armed (the unit is abandoned), else out of the process. */
 static __attribute__((noreturn)) void unsup_leave(const char *file, int line, const char *msg) {
   diag_record(file, line, msg);
+  refuse_observe(msg);
   if (line > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, line, msg);
   else fprintf(stderr, "spinel: %s\n", msg);
   if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
@@ -446,28 +545,6 @@ void buf_printf(Buf *b, const char *fmt, ...) {
   buf_putn(b, big, (size_t)n); free(big);
 }
 int  g_indent = 0;
-/* Argument-hoist overrides: emit_args_filled pre-evaluates GC-hazardous
-   call arguments into rooted temps; emit_expr then substitutes the temp
-   name when it reaches the overridden node. Twice MAX_ARG_OVERRIDE to start
-   with, so only a call of more arguments than that grows it. */
-static int  argov_node0[2 * MAX_ARG_OVERRIDE];
-static char argov_text0[2 * MAX_ARG_OVERRIDE][32];
-int  *g_argov_node = argov_node0;
-char (*g_argov_text)[32] = argov_text0;
-static int g_argov_cap = 2 * MAX_ARG_OVERRIDE;
-int  g_n_argov = 0;
-/* See codegen_internal.h. */
-void argov_reserve(void) {
-  if (g_n_argov + 1 + MAX_ARG_OVERRIDE <= g_argov_cap) return;
-  int cap = 2 * (g_n_argov + 1 + MAX_ARG_OVERRIDE);
-  int *nodes = malloc(sizeof *nodes * (size_t)cap);
-  char (*texts)[32] = malloc(sizeof *texts * (size_t)cap);
-  if (!nodes || !texts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memcpy(nodes, g_argov_node, sizeof *nodes * (size_t)g_n_argov);
-  memcpy(texts, g_argov_text, sizeof *texts * (size_t)g_n_argov);
-  if (g_argov_node != argov_node0) { free(g_argov_node); free(g_argov_text); }
-  g_argov_node = nodes; g_argov_text = texts; g_argov_cap = cap;
-}
 int  g_setter_stmt_id = -1;
 /* Node id whose safe-nav (&.) guard is already emitted; the re-entrant
    emit_call skips the guard block for exactly this node. */
@@ -475,7 +552,6 @@ int  g_sn_skip = -1;
 /* poly-dispatch builtin-arm re-entry marker: the call node whose dispatch is
    currently emitting its builtin-container arm, so the re-entered emission
    does not build the same dispatch again (#3459). */
-int  g_pd_skip = -1;
 /* Node whose Class-tag dispatch is emitting its non-Class arm, so the
    re-entered emission takes the ordinary path instead of rebuilding it. */
 int  g_cls_tag_skip = -1;
@@ -754,7 +830,7 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
   if (rt == TY_FLOAT && (at == TY_FLOAT || at == TY_INT)) { *out = TY_FLOAT; return 1; }
   if (rt == TY_INT && at == TY_FLOAT) { *out = TY_FLOAT; return 1; }
   if (rt == TY_INT && at == TY_INT) {
-    int promotes = sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*");
+    int promotes = is_add_sub_mul(op);
     if (g_promote_mode && promotes) return 0;
     *out = TY_INT; return 1;
   }
@@ -1731,7 +1807,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
         else if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) {
           emit_indent(b, indent);
           /* A value-type object is stored inline (sp_X, not sp_X*), so its
-             empty/nil reset is a zeroed struct -- default_value()'s blanket
+             empty/nil reset is a zeroed struct -- default_value_from_compiler(c, )'s blanket
              "NULL" would assign a pointer to a struct lvalue (#3267). */
           if (ty_is_object(lv->type) && c->classes[ty_object_class(lv->type)].is_value_type) {
             buf_printf(b, "lv_%s = (sp_%s){0};\n", rename_local(tmpn),
@@ -1739,7 +1815,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
           }
           else {
             const char *nv = nil_value(lv->type);
-            if (!nv) nv = lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type);
+            if (!nv) nv = lv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, lv->type);
             buf_printf(b, "lv_%s = %s;\n", rename_local(tmpn), nv);
           }
         }
@@ -2329,14 +2405,12 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
   view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
   sv->ntok = 2;
   if (sv->ty == TY_STRBUF) { view_push(c, recv, TY_STRING); sv->ntok = 3; }
-  g_argov_node[g_n_argov] = recv;
-  snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "lv__sb%d", tH);
-  g_n_argov++;
+  view_bind(recv, "lv__sb%d", tH);
   return tH;
 }
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv) {
   (void)recv;
-  g_n_argov--;
+  view_unbind(g_n_argov - 1);
   for (int k = sv->ntok - 1; k >= 0; k--) view_pop(c, sv->tok + k);
 }
 const char *g_sb_iv_name = NULL;
@@ -2424,21 +2498,17 @@ const char *rename_local(const char *nm) {
    noise when the answer is "this is a documented limit". #2652 / #2667 / #2668 */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg) {
   if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   unsup_leave(file, ln, msg);
 }
 
-__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
-  /* Silent emittability probe (dynamic-send arm selection): unwind without a
-     diagnostic, the caller just drops this arm. */
-  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+/* The words `unsupported` refuses node id in, into msg; answers what the
+   refusal says the call is (CplanRefuse). self_ci is the class whose body
+   is being emitted (a bare name's NameError names it). Pure: the call plan
+   asks it too (cplan_refuse). */
+int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg, size_t cap) {
   const char *ty = nt_type(c->nt, id);
-  /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
-     line the parser stamped (the same position the #line machinery uses), so
-     the message is anchored to the .rb file instead of an opaque node id.
-     Falls back to the bare form when the position wasn't stamped. */
-  int ln; const char *file = unsup_pos(c, id, &ln);
-  char msg[2400];
   const char *mname = ty && sp_streq(ty, "CallNode") ? nt_str(c->nt, id, "name") : NULL;
   if (mname) {
     int recv = nt_ref(c->nt, id, "receiver");
@@ -2449,10 +2519,10 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
        through to method lookup. Name the enclosing class the way CRuby does. */
     if (recv < 0 && ac == 0 && nt_ref(c->nt, id, "block") < 0 &&
         nt_int(c->nt, id, "vcall", 0)) {
-      const char *cn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
-      snprintf(msg, sizeof msg, "undefined local variable or method '%s' for %s%s (NameError)",
+      const char *cn = self_ci >= 0 ? class_ruby_name(c, self_ci) : NULL;
+      snprintf(msg, cap, "undefined local variable or method '%s' for %s%s (NameError)",
                mname, cn ? "an instance of " : "main", cn ? cn : "");
-      unsup_leave(file, ln, msg);
+      return CR_NAMEERROR;
     }
     /* A call on a typed user object whose class chain has no such method is
        not a compiler gap: it is the program's NoMethodError, caught ahead of
@@ -2475,8 +2545,8 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
             !builtin_object_method_known(mname) &&
             !name_is_enumerable_module_method(mname) &&
             !an_user_defines_method(c, mname)) {
-          snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s (NoMethodError)", mname, bcn);
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for an instance of %s (NoMethodError)", mname, bcn);
+          return CR_NOMETHOD;
         }
       }
       /* A Class value no class answers: `searched_model.none` where the method
@@ -2499,8 +2569,8 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
         int ncc = 0;
         comp_cmethod_candidates(c, mname, &ncc);
         if (ncc == 0 && !builtin_object_method_known(mname) && !str_in(mname, module_surface)) {
-          snprintf(msg, sizeof msg, "undefined method '%s' for a Class: no class in the program defines a class method '%s' (NoMethodError)", mname, mname);
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for a Class: no class in the program defines a class method '%s' (NoMethodError)", mname, mname);
+          return CR_NOMETHOD;
         }
       }
       if (ty_is_object(rvt)) {
@@ -2512,20 +2582,45 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
             comp_method_in_chain(c, cid, mname, NULL) < 0 &&
             !builtin_object_method_known(mname)) {
           const char *cn = class_ruby_name(c, cid);
-          snprintf(msg, sizeof msg, "undefined method '%s' for an instance of %s (NoMethodError)", mname, cn ? cn : "Object");
-          unsup_leave(file, ln, msg);
+          snprintf(msg, cap, "undefined method '%s' for an instance of %s (NoMethodError)", mname, cn ? cn : "Object");
+          return CR_NOMETHOD;
         }
       }
     }
-    int n = snprintf(msg, sizeof msg, "unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
+    int n = snprintf(msg, cap, "unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
                      what, id, ty, mname,
                      recv >= 0 ? nt_type(c->nt, recv) : "-",
                      recv >= 0 ? (int)comp_ntype(c, recv) : -1, ac);
-    if (ac > 0 && av && n > 0 && (size_t)n < sizeof msg)
-      snprintf(msg + n, sizeof msg - (size_t)n, " arg0ty%d", (int)comp_ntype(c, av[0]));
+    if (ac > 0 && av && n > 0 && (size_t)n < cap)
+      snprintf(msg + n, cap - (size_t)n, " arg0ty%d", (int)comp_ntype(c, av[0]));
   }
   else
-    snprintf(msg, sizeof msg, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
+    snprintf(msg, cap, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
+  return CR_GAP;
+}
+
+/* A reader of the call plan's refusal (CP_REFUSE): the plan refuses node id
+   by the decision `from`, so codegen raises it in the plan's words (site: the
+   --plan-check reader name). Returns when the plan does not. */
+void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
+  const CallPlan *p = cplan_refuse(c, id);
+  if (p->dispatch != CP_REFUSE || p->rfrom != from) return;
+  if (g_plan_check && !g_unsup_probe) cplan_served(site);
+  unsupported_feature(c, id, p->msg);
+}
+
+__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
+  /* Silent emittability probe (dynamic-send arm selection): unwind without a
+     diagnostic, the caller just drops this arm. */
+  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
+  refuse_at(c, id);
+  /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
+     line the parser stamped (the same position the #line machinery uses), so
+     the message is anchored to the .rb file instead of an opaque node id.
+     Falls back to the bare form when the position wasn't stamped. */
+  int ln; const char *file = unsup_pos(c, id, &ln);
+  char msg[2400];
+  unsup_message(c, id, what, g_emitting_class_id, msg, sizeof msg);
   /* Back to the driver's per-unit recovery point (when armed), abandoning
      this unit's discarded output, so one run surfaces every gap; else out.
      `unsupported` thus never returns. */
@@ -2634,7 +2729,7 @@ const char *local_init_value(Compiler *c, LocalVar *lv) {
      resource idiom: `def self.open; r = new; begin; yield r; ensure; r.close;
      end; end` on a class small enough to be a value type. */
   if (comp_ty_value_obj(c, lv->type)) return "{0}";
-  return lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type);
+  return lv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, lv->type);
 }
 /* A value landing in a slot of type `slot`. An Integer or Float slot that
    also sees nil is a nullable scalar (ty_unify's nil join), and its nil is
@@ -2983,18 +3078,8 @@ const char *array_times_type_error(TyKind at) {
 }
 
 const char *raise_tail_value_c(Compiler *c, TyKind t) {
-  if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
-    /* rotate: one static buffer would make two of these in a single
-       buf_printf read the same text, and nothing in the signature says so */
-    static char vbuf[4][128];
-    static int vslot = 0;
-    int cid = ty_object_class(t);
-    if (cid >= 0 && cid < c->nclasses) {
-      char *out = vbuf[vslot++ & 3];
-      snprintf(out, sizeof vbuf[0], "((sp_%s){0})", c->classes[cid].c_name);
-      return out;
-    }
-  }
+  /* a value-type object's zero is its struct's (default_value_from_compiler) */
+  if (ty_is_object(t) && comp_ty_value_obj(c, t)) return default_value_from_compiler(c, t);
   return raise_tail_value(t);
 }
 
@@ -3008,11 +3093,14 @@ const char *raise_tail_value_c(Compiler *c, TyKind t) {
    a struct, so its nil slot is the zeroed struct, where a pointer object's is
    NULL. default_value itself cannot tell the two apart from the TyKind alone. */
 const char *default_value_from_compiler(Compiler *c, TyKind t) {
-  if (ty_is_object(t) && comp_ty_value_obj(c, t)) {
-    static char buf[4][96];
+  int cid = ty_is_object(t) ? ty_object_class(t) : -1;
+  if (cid >= 0 && cid < c->nclasses && comp_ty_value_obj(c, t)) {
+    /* rotate: one static buffer would make two of these in a single
+       buf_printf read the same text, and nothing in the signature says so */
+    static char buf[4][128];
     static int slot;
     char *out = buf[slot++ & 3];
-    snprintf(out, sizeof buf[0], "(sp_%s){0}", c->classes[ty_object_class(t)].c_name);
+    snprintf(out, sizeof buf[0], "(sp_%s){0}", c->classes[cid].c_name);
     return out;
   }
   return default_value(t);
@@ -4219,7 +4307,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   if (!self_cls) return -1;
   if (sp_streq(cn, self_cls)) return 1;
   if (exact) return 0;
-  if (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) return 1;
+  if (is_object_root(cn)) return 1;
   if (sp_streq(cn, "Comparable") && (t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
                                      t == TY_FLOAT || t == TY_SYMBOL || t == TY_TIME ||
                                      t == TY_COMPLEX || t == TY_RATIONAL)) return 1;

@@ -1,0 +1,23 @@
+f: 1.5..
+g: 1.5..3
+k: 1.5...4.5
+f include: true
+g include: false
+k include: false
+f ===: false
+f cover: true
+f begin: 1.5
+f end: nil
+k end: 4.5
+f first: 1.5
+f min: 1.5
+f last: RangeError: cannot get the last element of endless range
+f max: RangeError: cannot get the maximum of endless range
+k max: TypeError: cannot exclude non Integer end value
+f each: TypeError: can't iterate from Float
+f to_a: RangeError: cannot convert endless range to an array
+f map: TypeError: can't iterate from Float
+f max2: RangeError: cannot get the maximum of endless range
+f min2: TypeError: can't iterate from Float
+f ==: true
+f exclude_end: false

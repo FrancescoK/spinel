@@ -707,7 +707,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
       Buf ab; memset(&ab, 0, sizeof ab);
       emit_expr(c, nd, &ab);
       const char *nv = nil_value(res);
-      if (!nv) nv = default_value(res);
+      if (!nv) nv = default_value_from_compiler(c, res);
       if (!nv) nv = "0";
       /* a bare `nil` arm emits nothing at all; only a call needs sequencing */
       if (ab.p && ab.p[0]) buf_printf(b, "(%s, %s)", ab.p, nv);
@@ -760,7 +760,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
        -- to keep the C ternary's two arms the same type (#2949). */
     if (ab.p && strncmp(ab.p, "sp_raise_nomethod(", 18) == 0 &&
         res != TY_POLY && res != TY_UNKNOWN && res != TY_VOID) {
-      buf_printf(b, "(%s, %s)", ab.p, default_value(res));
+      buf_printf(b, "(%s, %s)", ab.p, default_value_from_compiler(c, res));
     }
     else buf_puts(b, ab.p ? ab.p : "");
     free(ab.p);
@@ -846,7 +846,7 @@ void emit_slot_nil_test(Compiler *c, TyKind t, int tmp, int want_nil, Buf *b) {
    representation is a bare struct -- `sp_Frame _t9 = NULL` is not valid C. */
 static const char *slot_zero(Compiler *c, TyKind t) {
   if (comp_ty_value_obj(c, t)) return raise_tail_value_c(c, t);
-  return default_value(t);
+  return default_value_from_compiler(c, t);
 }
 
 /* Is `id` somewhere inside the subtree at `root`? */
@@ -1130,7 +1130,7 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
       if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
           strncmp(ivtxt, "(sp_raise_cls(", 14) == 0) {
         Buf w; memset(&w, 0, sizeof w);
-        buf_printf(&w, "(%s, %s)", ivtxt, default_value(t));
+        buf_printf(&w, "(%s, %s)", ivtxt, default_value_from_compiler(c, t));
         free(vval.p); vval = w;
       }
     }
@@ -1353,11 +1353,11 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int tr) {
   buf_printf(g_pre, "_t%d = ", tr);
   if (res == TY_POLY && lt != TY_POLY) {
     Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, lt, le.p ? le.p : default_value(lt), &bx);
+    emit_boxed_text(c, lt, le.p ? le.p : default_value_from_compiler(c, lt), &bx);
     buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
   }
-  else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value(lt), g_pre)) { }
-  else buf_puts(g_pre, le.p ? le.p : default_value(res));
+  else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value_from_compiler(c, lt), g_pre)) { }
+  else buf_puts(g_pre, le.p ? le.p : default_value_from_compiler(c, res));
   buf_puts(g_pre, ";\n");
   free(le.p);
 }
@@ -1483,7 +1483,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     int cr = ++g_tmp;
     emit_indent(g_pre, g_indent);
     emit_ctype(c, rt, g_pre);
-    buf_printf(g_pre, " _t%d = %s;\n", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value(rt));
+    buf_printf(g_pre, " _t%d = %s;\n", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
     if (needs_root(rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, cr, g_pre); buf_puts(g_pre, "\n"); }
     emit_case_match(c, id, g_pre, g_indent, 0, cr);
     buf_printf(b, "_t%d", cr);
@@ -1550,18 +1550,42 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (comp_ntype(c, id) == TY_FLOAT_RANGE) {
       /* A bound written as absent and one written as Float::INFINITY are the
          same value; record which it was so #inspect can tell them apart. */
-      int om = (left < 0 ? 1 : 0) | (right < 0 ? 2 : 0);
+      /* A bound written as nil is the absent one, and a boxed bound is
+         decided at run time: nil leaves that side open, an Integer renders
+         as one (sp_poly_frange_bound and the run-time bits below). */
+      int lnil = left < 0 || comp_ntype(c, left) == TY_NIL;
+      int rnil = right < 0 || comp_ntype(c, right) == TY_NIL;
+      int lpoly = !lnil && comp_ntype(c, left) == TY_POLY;
+      int rpoly = !rnil && comp_ntype(c, right) == TY_POLY;
+      int om = (lnil ? 1 : 0) | (rnil ? 2 : 0);
       /* Each endpoint renders as the user wrote it, so record which one was an
          Integer: a mixed literal (1.5..5) inspects as "1.5..5" (#3896). */
-      if (left >= 0 && comp_ntype(c, left) == TY_INT) om |= 4;
-      if (right >= 0 && comp_ntype(c, right) == TY_INT) om |= 8;
-      buf_printf(b, "sp_frange_new%s(", om ? "_o" : "");
-      if (left >= 0) emit_float_expr(c, left, b); else buf_puts(b, "(-HUGE_VAL)");
+      if (!lnil && comp_ntype(c, left) == TY_INT) om |= 4;
+      if (!rnil && comp_ntype(c, right) == TY_INT) om |= 8;
+      int tl = lpoly ? ++g_tmp : 0, tr = rpoly ? ++g_tmp : 0;
+      if (lpoly || rpoly) {
+        buf_puts(b, "({ ");
+        if (lpoly) { buf_printf(b, "sp_RbVal _t%d = ", tl); emit_expr(c, left, b); buf_puts(b, "; "); }
+        if (rpoly) { buf_printf(b, "sp_RbVal _t%d = ", tr); emit_expr(c, right, b); buf_puts(b, "; "); }
+      }
+      buf_printf(b, "sp_frange_new%s(", (om || lpoly || rpoly) ? "_o" : "");
+      if (lpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, -HUGE_VAL)", tl);
+      else if (left >= 0 && lnil) { buf_puts(b, "((void)("); emit_expr(c, left, b); buf_puts(b, "), -HUGE_VAL)"); }
+      else if (left >= 0) emit_float_expr(c, left, b);
+      else buf_puts(b, "(-HUGE_VAL)");
       buf_puts(b, ", ");
-      if (right >= 0) emit_float_expr(c, right, b); else buf_puts(b, "HUGE_VAL");
+      if (rpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, HUGE_VAL)", tr);
+      else if (right >= 0 && rnil) { buf_puts(b, "((void)("); emit_expr(c, right, b); buf_puts(b, "), HUGE_VAL)"); }
+      else if (right >= 0) emit_float_expr(c, right, b);
+      else buf_puts(b, "HUGE_VAL");
       buf_printf(b, ", %d", excl);
-      if (om) buf_printf(b, ", %d", om);
+      if (om || lpoly || rpoly) {
+        buf_printf(b, ", %d", om);
+        if (lpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 1, 4)", tl);
+        if (rpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 2, 8)", tr);
+      }
       buf_puts(b, ")");
+      if (lpoly || rpoly) buf_puts(b, "; })");
       return;
     }
     /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
@@ -1625,9 +1649,19 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         (nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) ||
         lazy_endpoint_is_infinite(c, right);
     buf_puts(b, "sp_range_new(");
-    if (!left_unbounded) emit_int_expr_nilable(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless; a non-literal nil bound keeps the old looseness */
+    /* a nil that arrives at run time -- boxed, or an Integer slot's
+       sentinel -- is the absent bound too; read as a number, `lo..x` with x
+       nil was the empty `lo..0` */
+    /* A boxed begin before a Float end keeps the integer representation,
+       which holds the end truncated: a beginless (x nil) such range would
+       answer for `..2` where CRuby has `..2.5`. Say so at run time. */
+    if (!left_unbounded && !right_unbounded && comp_ntype(c, left) == TY_POLY &&
+        comp_ntype(c, right) == TY_FLOAT) {
+      buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
+    }
+    else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
-    if (!right_unbounded) emit_int_expr_nilable(c, right, b); else buf_puts(b, "INTPTR_MAX");  /* endless; same */
+    if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
     buf_printf(b, ", %d)", excl);
     return;
   }
@@ -1750,7 +1784,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         emit_stmt_inner(c, v, b, 0);
         emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
         if (lv && lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
-        else if (lv) buf_puts(b, default_value(lv->type));
+        else if (lv) buf_puts(b, default_value_from_compiler(c, lv->type));
         else buf_puts(b, "sp_box_nil()");
         buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
         return;
@@ -1894,7 +1928,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
         case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
         case TY_STRING: buf_puts(b, "NULL"); break;
-        default: buf_puts(b, default_value(ivt2)); break;
+        default: buf_puts(b, default_value_from_compiler(c, ivt2)); break;
         }
         buf_printf(b, "; %s; })", ref2e);
         return;
@@ -2138,9 +2172,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       emit_gc_root_tmp(c, st, ts, &lb);
       buf_puts(&lb, "\n");
       free(eb.p);
-      g_argov_node[g_n_argov] = subs[i];
-      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ts);
-      g_n_argov++;
+      view_bind(subs[i], "_t%d", ts);
     }
     int tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -2154,7 +2186,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     g_loop_break_var = bvbuf; g_ie_res_poly = 1; g_brk_ser_var = NULL;
     emit_for(c, id, &lb, ind);
     g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp; g_brk_ser_var = saved_bs;
-    g_n_argov = sv_argov;
+    view_unbind(sv_argov);
     if (g_pre) {
       if (lb.p) buf_puts(g_pre, lb.p);
       buf_printf(b, "_t%d", tr);
@@ -2286,7 +2318,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          answer to which (#3383). */
       { TyKind yt = comp_ntype(c, id);
         if (yt == TY_POLY) buf_puts(b, ", _sp_proc_poly_ret)");
-        else if (yt == TY_UNKNOWN || yt == TY_VOID || yt == TY_NIL || yt == TY_INT) buf_puts(b, ", _sp_proc_poly_ret.v.i)");
+        else if (yt == TY_INT) buf_puts(b, ", sp_poly_as_int_or_nil(_sp_proc_poly_ret))");   /* a nil answer is the Integer slot's nil */
+        else if (yt == TY_UNKNOWN || yt == TY_VOID || yt == TY_NIL) buf_puts(b, ", _sp_proc_poly_ret.v.i)");
         else {
           /* a typed slot other than an Integer's reads the boxed answer by
              its own kind: an array answer landed its raw carrier bits in an
@@ -2347,7 +2380,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       { TyKind yt = comp_ntype(c, id);
         if (yt == TY_POLY || yt == TY_UNKNOWN || yt == TY_NIL || yt == TY_VOID) buf_puts(b, "sp_box_nil())");
         else if (yt == TY_INT) buf_puts(b, "SP_INT_NIL)");
-        else { buf_puts(b, default_value(yt)); buf_puts(b, ")"); } }
+        else { buf_puts(b, default_value_from_compiler(c, yt)); buf_puts(b, ")"); } }
       return;
     }
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1, comp_ntype(c, id));
@@ -2404,14 +2437,14 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) {
       /* `blk&.call`: the nil parameter answers nil instead of raising */
       const char *nv = nil_value(comp_ntype(c, id));
-      buf_puts(b, nv ? nv : default_value(comp_ntype(c, id)));
+      buf_puts(b, nv ? nv : default_value_from_compiler(c, comp_ntype(c, id)));
     }
     else {
       TyKind _bt = comp_ntype(c, id);
       buf_printf(b, "((void)sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())), %s)",
                  blockless_block_param_call_name(c, id),
                  (_bt == TY_POLY || _bt == TY_UNKNOWN || _bt == TY_NIL || _bt == TY_VOID)
-                   ? "sp_box_nil()" : default_value(_bt));
+                   ? "sp_box_nil()" : default_value_from_compiler(c, _bt));
     }
     return;
   }
@@ -2456,7 +2489,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (g_ie_nil_ivars) {
       TyKind it = comp_ntype(c, id);
       const char *nv = nil_value(it);
-      buf_puts(b, nv ? nv : default_value(it));
+      buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
       return;
     }
     /* inside a shared-mutable shim over THIS slot: both the reads and the
@@ -2491,7 +2524,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       if (!has) {
         TyKind it = comp_ntype(c, id);
         const char *nv = nil_value(it);
-        buf_puts(b, nv ? nv : default_value(it));
+        buf_puts(b, nv ? nv : default_value_from_compiler(c, it));
       }
       else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
     }
@@ -2676,7 +2709,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       return;
     }
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
-    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
+    if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
@@ -2899,7 +2932,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         else emit_expr(c, par_idc, b);
         buf_puts(b, "; ");
         emit_ctype(c, ct, b);
-        buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr, default_value(ct), tk);
+        buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr, default_value_from_compiler(c, ct), tk);
         for (int i = 0; i < nc; i++)
           buf_printf(b, " case %d: _t%d = cst_%s; break;", ccls[i], tr, ckey[i]);
         /* A class with no such constant is CRuby's NameError, not the
@@ -3779,7 +3812,7 @@ else {
       emit_indent(g_pre, g_indent);
       emit_ctype(c, res, g_pre);
       buf_printf(g_pre, " _t%d = %s;\n", tr,
-                 res == TY_RANGE ? "(sp_Range){0}" : default_value(res));
+                 res == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, res));
       /* The temp is set here, in the statement's prelude, and read where the
          `if` stands in the statement, after what is written ahead of it
          there has run: the receiver, in `src(i).merge(note: ("n#{i}" if
@@ -3822,7 +3855,7 @@ else {
           Buf le; memset(&le, 0, sizeof le);
           emit_ternary_arm(c, last_then, res, &le);
           emit_indent(g_pre, g_indent + 2);
-          buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value(res));
+          buf_printf(g_pre, "_t%d = %s;\n", tr, le.p ? le.p : default_value_from_compiler(c, res));
           free(le.p);
         }
         else if (lt == TY_NIL || lt == TY_UNKNOWN || lt == TY_VOID) {
@@ -3867,7 +3900,7 @@ else {
           if (res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
               subt != TY_UNKNOWN && subt != TY_VOID) {
             Buf bx3; memset(&bx3, 0, sizeof bx3);
-            emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value(subt), &bx3);
+            emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), &bx3);
             buf_puts(g_pre, bx3.p ? bx3.p : "sp_box_nil()"); free(bx3.p);
           }
           /* a nested chain whose every written arm raises is the implicit
@@ -3875,8 +3908,8 @@ else {
              its own (a nullable String, #4567) it is that nil, not the box */
           else if (subt == TY_NIL && res != TY_POLY && nil_value(res))
             buf_puts(g_pre, nil_value(res));
-          else if (emit_arm_text_as_bigint(res, subt, sub_e.p ? sub_e.p : default_value(subt), g_pre)) { }
-          else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value(res));
+          else if (emit_arm_text_as_bigint(res, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), g_pre)) { }
+          else buf_puts(g_pre, sub_e.p ? sub_e.p : default_value_from_compiler(c, res));
           buf_puts(g_pre, ";\n");
           free(sub_e.p);
           emit_indent(g_pre, g_indent);
@@ -3970,13 +4003,13 @@ else {
     buf_printf(b, " _t%d = ", t);
     if (lt_falsy_const) {
       buf_puts(b, "("); emit_expr(c, left, b); buf_puts(b, ", ");
-      buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value(res == TY_UNKNOWN ? TY_INT : res));
+      buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res == TY_UNKNOWN ? TY_INT : res));
       buf_puts(b, ")");
     }
     /* an unresolved (TY_UNKNOWN) left emits a poly fallback (sp_box_nil); coerce
        it to the unified scalar result so the temp's declared type matches. */
-    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
     /* a bool-unified chain with an unresolved left (a poly dispatch whose
        node type stayed unknown, e.g. alias-to-reader through a poly element):
        take its truthiness, mirroring the int/float coercions (#3276) */
@@ -4243,8 +4276,7 @@ else {
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
         free(vb.p);
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
-        g_argov_node[g_n_argov++] = v;
+        view_bind(v, "_t%d", t);
         held++;
       }
     }
@@ -4264,7 +4296,7 @@ else {
       emit_indent(g_pre, g_indent);
       if (vt == TY_NIL || vt == TY_VOID) {
         buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "sp_box_nil()");
+        view_bind(v, "sp_box_nil()");
       }
       else {
         int t = ++g_tmp;
@@ -4272,15 +4304,14 @@ else {
         buf_printf(g_pre, " _t%d = %s; ", t, vb.p ? vb.p : "");
         emit_gc_root_tmp(c, vt, t, g_pre);
         buf_puts(g_pre, "\n");
-        snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", t);
+        view_bind(v, "_t%d", t);
       }
       free(vb.p);
-      g_argov_node[g_n_argov++] = v;
       held++;
     }
     emit_stmt(c, id, g_pre, g_indent);
     emit_expr(c, value, b);
-    g_n_argov -= held;
+    view_unbind(g_n_argov - (held));
     return;
   }
 

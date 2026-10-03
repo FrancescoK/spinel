@@ -69,6 +69,10 @@ void repr_seal(Compiler *c);
 /* Whether an Integer or Float node's box has to test for the nil sentinel
    (emit_boxed's sp_box_int_or_nil / sp_box_float_or_nil). */
 int repr_nil_scalar(const Compiler *c, int node, TyKind t);
+/* Does a user object of kind t box with the class id it carries
+   (sp_box_nullable_obj_dyn)? Its class has a subclass, and it is neither a
+   value type nor an exception, whose object starts with its class name. */
+int repr_dyn_cls(const Compiler *c, TyKind t);
 /* the flag readers that decide it (old names: box_nullable_arg, the local
    arm of call_returns_nullable_int) */
 int repr_box_nullable_arg(Compiler *c, int v);

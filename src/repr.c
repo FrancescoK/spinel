@@ -34,7 +34,7 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
 
 /* an object whose class some other class inherits from: its static type is
    only the base, so its box reads the class from the object */
-static int repr_dyn_cls(const Compiler *c, TyKind t) {
+int repr_dyn_cls(const Compiler *c, TyKind t) {
   if (!ty_is_object(t)) return 0;
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return 0;

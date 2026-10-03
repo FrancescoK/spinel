@@ -127,21 +127,40 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
 #define RC_TEXT(why) rc_note(c, node, rc_text_form, (why), 1)
 #define RCT(form) rc_text_note(t, (form))
 
+/* Box `expr`, a value of kind t, into an sp_RbVal.
+
+   A builtin kind writes its ty_traits row's box_text (types.c) and records
+   the row's box_form for --repr-check. The rows box nil as nil wherever the
+   kind's C value can hold it, for these reasons:
+   - An untyped or void value is already a boxed nil or a poly call result,
+     or carries side effects: it is evaluated for effect and yields nil, as
+     emit_boxed does. The int box it fell to fed an sp_RbVal to an sp_int.
+     A nil-typed value is the same, `(void)0` standing in for no text.
+   - A pointer-backed builtin (the handles, the arrays, the hashes, the
+     String handle, OpenStruct) boxes NULL as nil through
+     sp_box_nullable_obj. sp_box_obj wrapped it in a truthy SP_TAG_OBJ that
+     passed `unless x` and then crashed on the first read (#2992, #4134).
+   - An Integer slot can hold the nil sentinel a nilable read left behind
+     (`"a".rindex("/")`), so it boxes through a temp that tests for it; the
+     temp keeps a side-effecting expression evaluated once. A Float slot's
+     sentinel and a Bignum slot's NULL box as nil the same way (#4800).
+   - A nested table boxes by reference, stamped with what its rows hold
+     (#4486).
+   A kind whose row has no box_text cannot be boxed, and stops the compile
+   rather than fall back to an int box (the poly-box bug family). */
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (g_repr_check) { rc_text_form = -1; rc_text_ty = t; }
-  if (t == TY_POLY) { RCT(RF_PASS); buf_puts(b, expr); return; }
-  /* An untyped or void value is already emitted as a boxed sp_RbVal (a nil
-     sentinel or poly call result) -- or carries side effects to preserve. Box
-     it by evaluating for effect and yielding nil, mirroring emit_boxed. Without
-     this, the int-boxing fallback below produced sp_box_int(<sp_RbVal>) -- an
-     sp_int slot fed a boxed value (the recurring poly-box bug family). */
-  if (t == TY_UNKNOWN || t == TY_VOID) { RCT(RF_NIL_EFFECT); buf_printf(b, "(%s, sp_box_nil())", expr); return; }
-  /* Reference-backed builtins are nilable C pointers -- box NULL as nil (see
-     ty_nullable_builtin_id). This also covers TY_PROC/TY_METHOD, which used to
-     fall to the sp_box_proc/sp_box_method switch cases below (both wrapped NULL
-     as a truthy proc/method). */
-  { const char *nbid = ty_nullable_builtin_id(t);
-    if (nbid) { RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, nbid); return; } }
+  const TyTraits *tr = ty_traits_of(t);
+  if (tr) {
+    if (!tr->box_text) {
+      fprintf(stderr, "spinel: emit_boxed_text: cannot box type %d into a poly value\n", (int)t);
+      exit(1);
+    }
+    if (t == TY_NIL && !(expr && *expr)) expr = "(void)0";
+    RCT(tr->box_form);
+    ty_traits_render(tr->box_text, expr, b);
+    return;
+  }
   if (ty_is_object(t)) {
     /* A reference-type object is a genuinely nilable C pointer (a hash/cache
        lookup or a method that can `return nil` -- e.g. doom's
@@ -151,90 +170,37 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
        then segfaults on the first field/method read (renderer draw_wall_column
        `texture.width`). A value-type object (a small Struct passed by value) is
        never NULL and `expr` is not a pointer, so the plain box is correct. */
+    /* the class id the object carries when it may be a subclass's, by the
+       rule emit_boxed follows (repr_dyn_cls): an exception keeps the static
+       id, since its object starts with its class name, not an id */
+    int dyn = repr_dyn_cls(c, t);
     if (comp_ty_value_obj(c, t))
       buf_printf(b, "sp_box_vobj_%s(%s)", c->classes[ty_object_class(t)].c_name, expr);
     else
       buf_printf(b, "sp_box_nullable_obj%s((void *)(%s), %d)",
-                 class_has_subclass(c, ty_object_class(t)) ? "_dyn" : "",
-                 expr, ty_object_class(t));
-    RCT(comp_ty_value_obj(c, t) ? RF_VOBJ
-        : class_has_subclass(c, ty_object_class(t)) ? RF_NULLABLE_DYN : RF_NULLABLE);
+                 dyn ? "_dyn" : "", expr, ty_object_class(t));
+    RCT(comp_ty_value_obj(c, t) ? RF_VOBJ : dyn ? RF_NULLABLE_DYN : RF_NULLABLE);
     return;
   }
-  /* A hash slot is a nilable C pointer for the same reason the object arm
-     above is: an omitted optional parameter, or any slot that can hold nil,
-     arrives as NULL. sp_box_obj wrapped that NULL in a truthy SP_TAG_OBJ, so
-     `initheader.nil?` answered false and the first read of it dereferenced
-     NULL. Reduced from a Net::HTTP::Post whose second parameter one call site
-     omitted and another passed a Hash to (#4134). */
-  if (ty_is_hash(t) && hash_box_cls(t)) {
-    RCT(RF_NULLABLE);
-    buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, hash_box_cls(t));
-    return;
-  }
-  /* a shared-mutable string HANDLE (#3227 phase 3); a NULL handle is a
-     nil (a nil argument, an omitted optional), as in the hash arm above */
-  if (t == TY_STRBUF) { RCT(RF_STRBUF_HANDLE); buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", expr); return; }
-  /* An sp_int slot can hold the nil sentinel a nullable read left behind
-     (`"a".rindex("/")`), so boxing it has to yield nil rather than a boxed
-     INTPTR_MIN that then answers every Integer method. The temp keeps
-     a side-effecting expr evaluated once. */
-  if (t == TY_INT) {
-    int tb = ++g_tmp;
-    buf_printf(b, "({ sp_int _t%d = (%s); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })",
-               tb, expr, tb, tb);
-    RCT(RF_INT_NIL);
-    return;
-  }
-  /* A bigint slot's nil is NULL (nil_value), and sp_box_bigint would wrap it
-     as a truthy Integer that prints 0: box it as nil, the way the nullable
-     pointer types above do (#4800). */
-  if (t == TY_BIGINT) { RCT(RF_BIGINT); buf_printf(b, "sp_box_bigint_or_nil(%s)", expr); return; }
-  const char *fn = NULL;
-  switch (t) {
-    /* the float slot's own nil sentinel boxes as nil, as SP_INT_NIL does above */
-    case TY_FLOAT: fn = "sp_box_float_or_nil"; break;
-    case TY_BIGINT: fn = "sp_box_bigint"; break;
-    case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
-    case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
-    case TY_FLOAT_RANGE: fn = "sp_box_frange"; break;
-    case TY_STR_RANGE: fn = "sp_box_srange"; break;
-    case TY_TMS: fn = "sp_box_tms"; break;
-    case TY_TIME: fn = "sp_box_time"; break;
-    case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
-    /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
-    case TY_CLASS: fn = "sp_box_class"; break;
-    /* Array slots are nilable C pointers (`[x] if cond` in value position is
-       NULL on the else path): box NULL as a proper nil, not a truthy OBJ
-       wrapping NULL that passes truthy checks (#2992). */
-    case TY_INT_ARRAY:   RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_INT_ARRAY)", expr); return;
-    case TY_FLOAT_ARRAY: RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_FLT_ARRAY)", expr); return;
-    case TY_STR_ARRAY:   RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_STR_ARRAY)", expr); return;
-    case TY_POLY_ARRAY:  RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_POLY_ARRAY)", expr); return;
-    case TY_OPENSTRUCT:  RCT(RF_NULLABLE); buf_printf(b, "sp_box_nullable_obj((void *)(%s), SP_BUILTIN_OPENSTRUCT)", expr); return;
-    /* a nested table or an object array boxes by reference, stamped with what
-       its elements are (#4486) */
-    case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY:
-      RCT(RF_PTR_ARRAY); buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return;
-    case TY_NIL:
-      /* a nil-typed expression can still have side effects (puts/print as a
-         block tail): evaluate it for effect, then yield nil */
-      RCT(RF_NIL_EFFECT); buf_printf(b, "(%s, sp_box_nil())", expr && *expr ? expr : "(void)0"); return;
-    default: break;
-  }
-  if (fn) {
-    RCT(t == TY_FLOAT ? RF_FLT_NIL : t == TY_BIGINT ? RF_BIGINT : t == TY_STRING ? RF_STR
-        : t == TY_BOOL ? RF_BOOL : t == TY_SYMBOL ? RF_SYM : RF_STRUCT);
-    buf_printf(b, "%s(%s)", fn, expr);
-  }
-  else {
-    /* Never silently int-box an unexpected type (the root of the poly-box bug
-       family): fail loudly so a missing case is caught at compile time rather
-       than emitting wrong C. The known poly-context types are handled above. */
-    if (ty_is_obj_array(t)) { RCT(RF_PTR_ARRAY); buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return; }
-    fprintf(stderr, "spinel: emit_boxed_text: cannot box type %d into a poly value\n", (int)t);
-    exit(1);
-  }
+  /* an object array boxes by reference, stamped with its element class */
+  if (ty_is_obj_array(t)) { RCT(RF_PTR_ARRAY); buf_printf(b, "sp_box_ptr_array_k((void *)(%s), %s)", expr, ptr_array_stamp(c, t)); return; }
+  fprintf(stderr, "spinel: emit_boxed_text: cannot box type %d into a poly value\n", (int)t);
+  exit(1);
+}
+
+/* The form emit_boxed_text records for kind t under --repr-check, as if an
+   emit_boxed had called it; the C it writes is dropped and every static it
+   touches is put back. ty_traits_check.c reads the box_form column off it. */
+int emit_boxed_text_form(Compiler *c, TyKind t) {
+  int sv_check = g_repr_check, sv_depth = rc_depth, sv_form = rc_text_form, sv_tmp = g_tmp;
+  TyKind sv_ty = rc_text_ty;
+  g_repr_check = 1; rc_depth = 1;
+  Buf b; memset(&b, 0, sizeof b);
+  emit_boxed_text(c, t, "$e", &b);
+  free(b.p);
+  int form = rc_text_form;
+  g_repr_check = sv_check; rc_depth = sv_depth; rc_text_form = sv_form; rc_text_ty = sv_ty; g_tmp = sv_tmp;
+  return form < 0 ? 0 : form;
 }
 
 /* Emit `expr` (a poly value) unboxed to its concrete C representation.
@@ -249,6 +215,12 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
      structs boxed behind a heap copy, so they unbox by dereferencing; the
      cast turned a pointer straight into a struct (#3186, #3619).
    - Class is a by-value struct, read by sp_unbox_class (#2797).
+   - Integer goes through sp_poly_as_int_or_nil: a boxed nil becomes the
+     slot's SP_INT_NIL, never the 0 lying under the nil tag. Integer nil
+     always uses the sentinel, whichever path unboxes it.
+   - Float likewise goes through sp_poly_as_float_or_nil: a boxed nil becomes
+     the sp_float_nil() NaN, never the 0.0 under the tag. A real NaN keeps
+     its own bits, which sp_float_is_nil tells apart.
    - The Int, Float and String arrays, the nested tables and the poly-valued
      hashes are distinct C structs, so a boxed value of another kind is
      converted by its sp_poly_as_* entry, which hands back the pointer when
@@ -293,7 +265,8 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
    all, so a slot that must hold nil is never given those types (see
    parse_seed_type). Use this wherever a poly whose nil-ness is not already
    ruled out is narrowed to a concrete slot; emit_unbox_text stays the
-   unguarded form for the many sites that have. */
+   unguarded form for the many sites that have, except for Integer and
+   Float, whose unbox is the guarded one on every path. */
 void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   /* a builtin kind's ty_traits row's unbox_nil (types.c): the guarded
      sp_poly_as_int_or_nil / sp_poly_as_float_or_nil, the unbox otherwise */
@@ -712,7 +685,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(sp_splat_to_array(", ta);
     if (inner >= 0) emit_boxed(c, inner, b); else buf_puts(b, "sp_box_nil()");
     buf_printf(b, ")); if (_t%d->len != 1) sp_raise_arity(_t%d->len, %lld, %lld, 0);"
-                  " sp_poly_to_i(sp_PolyArray_get(_t%d, 0)); })", ta, ta, lo, hi, ta);
+                  " sp_poly_to_i_or_nil(sp_PolyArray_get(_t%d, 0)); })", ta, ta, lo, hi, ta);
     return;
   }
   if (yield_site_type(c, node) == TY_POLY) {
@@ -806,6 +779,25 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
     return;
   }
   emit_int_expr_ex(c, node, 1, b);
+}
+
+/* An Integer Range literal's endpoint: a nil that arrives at run time is the
+   absent bound `none` (INTPTR_MIN for a beginning, INTPTR_MAX for an end), as
+   the written `nil..5` / `1..nil` are. Anything else is read as before. */
+void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
+  TyKind t = comp_ntype(c, node);
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_poly_range_bound("); emit_expr(c, node, b); buf_printf(b, ", (sp_int)(%s))", none);
+    return;
+  }
+  if (t == TY_INT && nullable_int_value(c, node)) {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tn);
+    emit_int_expr_ex(c, node, 0, b);
+    buf_printf(b, "; _t%d == SP_INT_NIL ? (sp_int)(%s) : _t%d; })", tn, none, tn);
+    return;
+  }
+  emit_int_expr_nilable(c, node, b);
 }
 
 /* Strict, but with CRuby's rb_convert_type wording ("of nil into Integer"):
@@ -1229,7 +1221,7 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
     else emit_unbox_text(c, target, txt, b);  /* pointer/object/hash slot */
   }
   else if (is_cls_tok && target != TY_POLY && target != TY_UNKNOWN) {
-    buf_printf(b, "({ (void)%s; %s; })", txt, default_value(target));
+    buf_printf(b, "({ (void)%s; %s; })", txt, default_value_from_compiler(c, target));
     is_tok = 1;
   }
   /* A call to a method that answers no value is a `void` C call: raw, it put
@@ -1282,7 +1274,7 @@ int call_returns_nullable_int(Compiler *c, int node) {
   /* a proc's result comes back through the boxed slot and is read as the
      sentinel when the proc answered nil (`-> { return; 456 }.call`): box it
      back as nil */
-  if (sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") || sp_streq(nm, "yield")) {
+  if (is_call_or_yield(nm)) {
     int pr = nt_ref(nt, node, "receiver");
     if (pr >= 0 && comp_ntype(c, pr) == TY_PROC) return 1;
   }
@@ -1872,7 +1864,7 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
     case TY_COMPLEX:  buf_puts(&cty, "sp_Complex"); init = "{0}"; break;
     case TY_RATIONAL: buf_puts(&cty, "sp_Rational"); init = "{0}"; break;
     case TY_TMS:    buf_puts(&cty, "sp_Tms"); init = "{0}"; break;
-    case TY_PROCESS_STATUS: buf_puts(&cty, "sp_ProcessStatus *"); init = "NULL"; ptr = 1; break;
+    case TY_PROCESS_STATUS: buf_puts(&cty, c_type_name(t)); init = "NULL"; ptr = 1; break;
     case TY_OPENSTRUCT: buf_puts(&cty, "sp_OpenStruct *"); init = "NULL"; ptr = 1; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "NULL"; ptr = 1; break;  /* nil until assigned (#3295) */
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
@@ -2039,11 +2031,6 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
   free(inb);
 }
 
-static int name_in(char **names, int n, const char *nm) {
-  if (!nm) return 0;
-  for (int i = 0; i < n; i++) if (sp_streq(names[i], nm)) return 1;
-  return 0;
-}
 
 /* Declare a scope's locals. Params are already C function parameters, so
    they only need a GC root; body locals get a full declaration. */
@@ -2234,7 +2221,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
     if (lv->is_cell) { emit_cell_decl(c, s, lv, b); continue; }
-    if (lv->is_param && has_begin && (all_vol || name_in(volnames, nvol, lv->name))) {
+    if (lv->is_param && has_begin && (all_vol || name_list_has(volnames, nvol, lv->name))) {
       /* a parameter the body reassigns inside a begin and reads after the
          rescue or a retry's longjmp: a volatile local copy of the incoming
          value (the signature names it lv_<name>__in) (#6552) */
@@ -2272,7 +2259,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
          type to infer, so `[].each_with_index { |x, i| }` referenced an
          undeclared lv_x (#3853). A boxed slot is what the binding writes. */
       if (lv->type == TY_UNKNOWN && lv->is_block_param) lv->type = TY_POLY;
-      int vol = has_begin && (all_vol || name_in(volnames, nvol, lv->name));
+      int vol = has_begin && (all_vol || name_list_has(volnames, nvol, lv->name));
       declare_local(c, b, lv, vol);
     }
   }
@@ -3468,7 +3455,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   for (int i = 0; i < s->nparams; i++) {
     if (wrote++) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
-    int pv = pbegin && (pall || name_in(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
+    int pv = pbegin && (pall || name_list_has(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
     /* byref string out-param: the caller's slot, so body mutation propagates.
        Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
     if (p && p->byref_out) {
@@ -4774,7 +4761,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     else {
       buf_puts(b, "  return ");
       if (ty_is_object(s->ret)) buf_puts(b, "NULL");
-      else buf_puts(b, default_value(s->ret));
+      else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n}\n");
     }
     return;
@@ -4806,7 +4793,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       emit_str_literal(b, s->name);
       buf_printf(b, ", sp_box_obj((void *)self, %d)));", sg_par);
       if (method_is_void(s)) buf_puts(b, " return; }\n");
-      else buf_printf(b, " return %s; }\n", default_value(s->ret) ? default_value(s->ret) : "0");
+      else buf_printf(b, " return %s; }\n", default_value_from_compiler(c, s->ret) ? default_value_from_compiler(c, s->ret) : "0");
     }
     if (pm >= 0) {
       Scope *ps = &c->scopes[pm];
@@ -4919,7 +4906,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     if (!is_void) {
       buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
       if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");
-      else buf_puts(b, default_value(s->ret));
+      else buf_puts(b, default_value_from_compiler(c, s->ret));
       buf_puts(b, ";\n");
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
@@ -4964,8 +4951,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_printf(b, "%s;\n", s->ret == TY_INT   ? "SP_INT_NIL"
                             : s->ret == TY_FLOAT ? "sp_float_nil()"
                             : s->ret == TY_STRING ? "NULL"
-                                                  : default_value(s->ret));
-    else buf_printf(b, "%s;\n", default_value(s->ret));
+                                                  : default_value_from_compiler(c, s->ret));
+    else buf_printf(b, "%s;\n", default_value_from_compiler(c, s->ret));
   }
   g_result_var = sv_rv2; g_result_poly = sv_rp2;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
@@ -10541,7 +10528,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
+    buf_printf(b, " _t%d = %s;\n", rtag, default_value_from_compiler(c, rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
     TyKind srt = g_result_ty; g_result_ty = rt;
@@ -10968,7 +10955,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);
         emit_struct_super_spread(c, cls, sargv, an, &sb);
-        buf_printf(b, "((void)%s, %s)", sb.p, default_value(comp_ntype(c, id)));
+        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, comp_ntype(c, id)));
         free(sb.p);
         return;
       }
@@ -11028,7 +11015,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
             if (comp_ty_value_obj(c, ivt))
               buf_printf(b, "(sp_%s){0})", c->classes[ty_object_class(ivt)].c_name);
             else
-              buf_printf(b, "%s)", default_value(ivt));
+              buf_printf(b, "%s)", default_value_from_compiler(c, ivt));
           }
           else {
             TyKind at = comp_ntype(c, vnode);
@@ -11055,7 +11042,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         }
         buf_puts(b, ", ");
       }
-      buf_printf(b, "%s)", default_value(comp_ntype(c, id)));
+      buf_printf(b, "%s)", default_value_from_compiler(c, comp_ntype(c, id)));
       return;
     }
     /* `super()` from an initialize no ancestor defines reaches Object's, which
@@ -11068,7 +11055,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
       if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
-        buf_puts(b, default_value(comp_ntype(c, id)));
+        buf_puts(b, default_value_from_compiler(c, comp_ntype(c, id)));
         return;
       }
     }
@@ -12877,7 +12864,7 @@ static char *build_types_json(Compiler *c) {
 }
 
 /* Write `text` to `path`; warn (but don't abort) on failure. */
-static int emit_write_file(const char *path, const char *text) {
+int write_text_file(const char *path, const char *text) {
   FILE *f = fopen(path, "wb");
   if (!f) {
     fprintf(stderr, "spinel: cannot write '%s'\n", path);
@@ -13270,7 +13257,7 @@ typedef struct EmitUnitState {
 
 void emit_unit_state_save(EmitUnitState *s) {
   s->move_depth = comp_scope_move_depth();
-  s->view_depth = view_depth();
+  s->view_depth = view_mark();
   s->ret_type = g_ret_type; s->fn_ret_type = g_fn_ret_type; s->result_ty = g_result_ty;
   s->c_ret_void = g_c_ret_void; s->in_proc_body = g_in_proc_body; s->result_poly = g_result_poly;
   s->proc_body_kind = g_proc_body_kind; s->proc_toplevel_return = g_proc_toplevel_return;
@@ -13459,23 +13446,7 @@ static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "binding")) return;  /* user-defined */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "binding")) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;             /* Kernel#binding is receiverless */
-    int args = nt_ref(nt, id, "arguments");
-    if (args >= 0) { int ac = 0; nt_arr(nt, args, "arguments", &ac); if (ac > 0) continue; }
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "binding is unsupported (no reified local environment in an "
-                       "AOT binary; only binding.local_variable_get(:name) for an "
-                       "in-scope name is)");
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
 /* `const_get(name)` with a runtime name that the lowering could not reach:
@@ -13485,73 +13456,11 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  for (int s = 0; s < c->nscopes; s++) {
-    const char *sn = c->scopes[s].name;
-    if (sn && sp_streq(sn, "const_get")) return;   /* user-defined: normal dispatch */
-  }
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "const_get")) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an < 1 || !av) continue;
-    NodeKind k = nt_kind(nt, av[0]);
-    if (k == NK_SymbolNode || k == NK_StringNode) continue;
-    { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) continue; }
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "const_get with a name known only at run time and no class or module "
-                       "receiver (an instance has no const_get; constants are resolved at compile time)");
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
 }
 
 static void reject_runtime_send(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  static const char *const names[] = { "send", "__send__", "public_send", NULL };
-  for (int s = 0; s < c->nscopes; s++) {
-    const char *sn = c->scopes[s].name;
-    if (!sn) continue;
-    for (int k = 0; names[k]; k++)
-      if (sp_streq(sn, names[k])) return;  /* user-defined: leave to normal dispatch */
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm) continue;
-    int is_send = 0;
-    for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) { is_send = 1; break; }
-    if (!is_send) continue;
-    if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
-    int args = nt_ref(nt, id, "arguments");
-    if (args < 0) continue;
-    int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
-    if (ac < 1 || !av) continue;
-    const char *a0 = nt_type(nt, av[0]);
-    /* a literal name should have been rewritten already; only a runtime name
-       (a variable, a method result, an interpolated string, ...) reaches here */
-    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
-    /* lowered to a static name-dispatch (desugar_dynamic_send) over the
-       program's literals AND the methods it defines: a computed name (an
-       interpolated `"#{name}="`, a concatenation) resolves there too, and a
-       name outside that set raises NoMethodError at the dispatch -- loud at
-       run time rather than here. On a receiver known to be a builtin the
-       set is that class's own methods; a builtin method reached through a
-       computed name on a receiver of no known class is the one shape it
-       does not cover. */
-    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn);
-      if (dn > 0 && (!an_send_name_is_computed(c, av[0]) || nt_int(nt, id, "dyn_send_complete", 0) > 0)) continue; }
-    /* Only diagnose a send that codegen will actually emit. A send in a dead
-       (unreachable) method is pruned before emission, so rejecting it would
-       fail otherwise-valid programs that merely contain an unused method.
-       walk_scope assigns every node -- including those inside blocks -- the
-       enclosing method's scope, and the emit loop emits a scope's body only
-       when it is reachable; mirror that gate here. */
-    int sc = c->nscope[id];
-    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
-    unsupported(c, id, "send with a runtime method name (AOT needs a compile-time-known name)");
-  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 
 
@@ -13988,7 +13897,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *psym_out = getenv("SPINEL_PROFILE_SYMBOL_MAP");
   if (psym_out && *psym_out) {
     char *json = build_symbol_map_json(c);
-    emit_write_file(psym_out, json);
+    write_text_file(psym_out, json);
     free(json);
   }
   /* --warn-widen, once, before the analysis-only modes return: the slots
@@ -13999,7 +13908,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *sym_out = getenv("SPINEL_EMIT_SYMBOL_MAP");
   if (sym_out && *sym_out) {
     char *json = build_symbol_map_json(c);
-    emit_write_file(sym_out, json);
+    write_text_file(sym_out, json);
     free(json);
     comp_free(c);
     return strdup("");
@@ -14007,7 +13916,7 @@ char *codegen_program(const NodeTable *nt) {
   const char *rbs_out = getenv("SPINEL_EMIT_RBS");
   if (rbs_out && *rbs_out) {
     char *rbs = build_rbs_text(c);
-    emit_write_file(rbs_out, rbs);
+    write_text_file(rbs_out, rbs);
     free(rbs);
     comp_free(c);
     return strdup("");
@@ -15911,7 +15820,7 @@ char *codegen_program(const NodeTable *nt) {
      for a reduction). */
   if (types_out) {
     char *json = build_types_json(c);
-    emit_write_file(types_out, json);
+    write_text_file(types_out, json);
     free(json);
     { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
       if (!(keep && *keep)) { free(b.p); b.p = NULL; } }

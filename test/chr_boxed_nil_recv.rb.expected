@@ -1,0 +1,3 @@
+int: "A"
+nil: NoMethodError
+str: "b"

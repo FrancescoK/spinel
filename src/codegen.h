@@ -13,4 +13,12 @@ char *codegen_program(const NodeTable *nt);
    program's analysis, then stop */
 extern int g_check_traits, g_dump_traits;
 
+/* Write `text` to `path`: 1, or 0 with a warning on stderr */
+int write_text_file(const char *path, const char *text);
+
+/* --check-bop-arity: each builtin-op row with a count range of its own
+   against the arity table's accepted counts for its class and name; the
+   rows outside, reported on stderr */
+int builtin_ops_arity_check(void);
+
 #endif

@@ -17,20 +17,29 @@ static const BuiltinOp bop_rows[] = {
 
   /* Process::Status (sp_ProcessStatus *). The runtime helpers take the
      status word and answer unboxed scalars, -1 being nil for exitstatus
-     and termsig; the call site boxes by the inferred type. #class and
-     #inspect type as String here, as they always have. */
-  { TY_PROCESS_STATUS, "signaled?",  0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_signaled_p(($r)->status)", 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "exited?",    0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_exited_p(($r)->status)", 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "coredump?",  0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_coredump_p(($r)->status)", 0, 0, BOPF_BOXED },
+     and termsig; the call site boxes by the inferred type. #class is the
+     class value; it was typed String while no value had this kind, and
+     `p $?.class` passed the sp_Class to a string printer. */
+  { TY_PROCESS_STATUS, "signaled?",  0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_signaled_p(sp_process_status_recv($r, \"signaled?\")->status)", 0, 0, BOPF_BOXED },
+  { TY_PROCESS_STATUS, "exited?",    0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_exited_p(sp_process_status_recv($r, \"exited?\")->status)", 0, 0, BOPF_BOXED },
+  { TY_PROCESS_STATUS, "coredump?",  0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "sp_process_status_coredump_p(sp_process_status_recv($r, \"coredump?\")->status)", 0, 0, BOPF_BOXED },
   { TY_PROCESS_STATUS, "success?",   0, 0, BF_ANY, TY_POLY,   BOPE_PSTATUS_SUCCESS, NULL, 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "exitstatus", 0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_process_status_exitstatus(($r)->status)", 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "termsig",    0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_process_status_termsig(($r)->status)", 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "pid",        0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "($r)->pid", 0, 0, BOPF_BOXED },
-  { TY_PROCESS_STATUS, "to_s",       0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_process_status_to_s(($r)->status, 0)" },
-  { TY_PROCESS_STATUS, "inspect",    0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_process_status_to_s(($r)->status, 1)" },
-  { TY_PROCESS_STATUS, "class",      0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "((sp_Class){(sp_int)-163, NULL})" },
+  { TY_PROCESS_STATUS, "exitstatus", 0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_process_status_exitstatus(sp_process_status_recv($r, \"exitstatus\")->status)", 0, 0, BOPF_BOXED },
+  { TY_PROCESS_STATUS, "termsig",    0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_process_status_termsig(sp_process_status_recv($r, \"termsig\")->status)", 0, 0, BOPF_BOXED },
+  { TY_PROCESS_STATUS, "pid",        0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_process_status_recv($r, \"pid\")->pid", 0, 0, BOPF_BOXED },
+  { TY_PROCESS_STATUS, "to_s",       0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_process_status_str($r, 0)" },
+  { TY_PROCESS_STATUS, "inspect",    0, 0, BF_ANY, TY_STRING, BOPE_TEMPLATE, "sp_process_status_str($r, 1)" },
+  { TY_PROCESS_STATUS, "class",      0, 0, BF_ANY, TY_CLASS,  BOPE_TEMPLATE, "({ sp_ProcessStatus *_t$t = $r; _t$t ? ((sp_Class){(sp_int)-163, NULL}) : ((sp_Class){(sp_int)-1, SPL(\"NilClass\")}); })" },
   { TY_PROCESS_STATUS, "==",         0, 0, BF_ANY, TY_BOOL,    BOPE_PSTATUS_EQ },
   { TY_PROCESS_STATUS, "eql?",       0, 0, BF_ANY, TY_UNKNOWN, BOPE_PSTATUS_EQ },
+  /* `$?` is nil (NULL) before any child has been waited for: the readers
+     above raise NoMethodError for it (sp_process_status_recv), and to_s,
+     inspect, to_i, == and != below answer as nil does */
+  { TY_PROCESS_STATUS, "nil?",       0, 0, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "(($r) == NULL)" },
+  /* the raw status word, and Ruby 3.2's #== against it (`$? == 0`) */
+  { TY_PROCESS_STATUS, "to_i",       0, 0, BF_ANY, TY_INT,    BOPE_TEMPLATE, "({ sp_ProcessStatus *_t$t = $r; _t$t ? _t$t->status : 0; })" },
+  { TY_PROCESS_STATUS, "==",         1, 1, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_ProcessStatus *_t$t = $r; sp_int _t$u = $i0; _t$t && _t$t->status == _t$u; })", BOP_K(TY_INT) },
+  { TY_PROCESS_STATUS, "!=",         1, 1, BF_ANY, TY_BOOL,   BOPE_TEMPLATE, "({ sp_ProcessStatus *_t$t = $r; sp_int _t$u = $i0; !_t$t || _t$t->status != _t$u; })", BOP_K(TY_INT) },
 
   /* Socket::Option. Spinel carries the integer-valued options only, so the
      readers answer through the int the option holds. #class is typed here
@@ -620,12 +629,12 @@ static const BuiltinOp bop_rows[] = {
      poly, which keeps the raise's boxed-nil slot valid and lets respond_to?
      report them present, as CRuby does. The endpoint readers and #size
      read the literal and stay in infer_range_call. */
-  { TY_FLOAT_RANGE, "begin",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; _t$T.first; })", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
-  { TY_FLOAT_RANGE, "first",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; _t$T.first; })", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
-  { TY_FLOAT_RANGE, "min",          0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; _t$T.first; })", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
-  { TY_FLOAT_RANGE, "min",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ (void)($r); (void)($e0); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
-  { TY_FLOAT_RANGE, "max",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ (void)($r); (void)($e0); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
-  { TY_FLOAT_RANGE, "minmax",       0,   0, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_float _t$t = sp_frange_max(_t$T); sp_FloatArray *_r$T = sp_FloatArray_new(); SP_GC_ROOT(_r$T); sp_FloatArray_push(_r$T, _t$T.first); sp_FloatArray_push(_r$T, _t$t); _r$T; })", 0 },  /* the endpoints (#3690) */
+  { TY_FLOAT_RANGE, "begin",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_begin_v($r)", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
+  { TY_FLOAT_RANGE, "first",        0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_first_v($r)", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
+  { TY_FLOAT_RANGE, "min",          0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_min_v($r)", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
+  { TY_FLOAT_RANGE, "min",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_minn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
+  { TY_FLOAT_RANGE, "max",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_maxn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
+  { TY_FLOAT_RANGE, "minmax",       0,   0, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_float _t$u = sp_frange_min_v(_t$T); sp_float _t$t = sp_frange_max_v(_t$T); sp_FloatArray *_r$T = sp_FloatArray_new(); SP_GC_ROOT(_r$T); sp_FloatArray_push(_r$T, _t$u); sp_FloatArray_push(_r$T, _t$t); _r$T; })", 0 },  /* the endpoints (#3690) */
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_frange_cover(_t$T, $f0); })", BOP_K(TY_INT) | BOP_K(TY_FLOAT) },
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_RbVal _a$T = $b0; sp_frange_cover_poly(_t$T, _a$T); })", BOP_K(TY_POLY) },
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($e0), 0)", 0 },  /* never covers a non-number */
@@ -653,8 +662,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "dup",          0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
   { TY_FLOAT_RANGE, "clone",        0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
   { TY_FLOAT_RANGE, "nil?",         0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (sp_bool)0)", 0 },  /* a Range value is never nil */
-  { TY_FLOAT_RANGE, "first",        0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
-  { TY_FLOAT_RANGE, "last",         0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
+  { TY_FLOAT_RANGE, "first",        0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
+  { TY_FLOAT_RANGE, "last",         0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
   { TY_FLOAT_RANGE, "cover?",           0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_FLOAT_RANGE, "include?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_FLOAT_RANGE, "member?",          0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
@@ -672,7 +681,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "respond_to?",      0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_FLOAT_RANGE, "to_s",             0, 127, BF_ANY,      TY_STRING,      BOPE_NONE },
   { TY_FLOAT_RANGE, "inspect",          0, 127, BF_ANY,      TY_STRING,      BOPE_NONE },
-  { TY_FLOAT_RANGE, "minmax",           0,   0, BF_ANY,      TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "minmax",           0,   0, BF_ANY,      TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "step",             0, 127, BF_REQUIRED, TY_FLOAT_RANGE, BOPE_NONE },  /* with a block: the receiver, as CRuby */
   { TY_FLOAT_RANGE, "step",             0, 127, BF_ANY,      TY_FLOAT_ARRAY, BOPE_NONE },
   { TY_FLOAT_RANGE, "bsearch",          0, 127, BF_REQUIRED, TY_FLOAT,       BOPE_NONE },
   { TY_FLOAT_RANGE, "class",            0, 127, BF_ANY,      TY_CLASS,       BOPE_NONE },
@@ -680,58 +690,59 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "itself",           0, 127, BF_ANY,      TY_FLOAT_RANGE, BOPE_NONE },
   { TY_FLOAT_RANGE, "dup",              0, 127, BF_ANY,      TY_FLOAT_RANGE, BOPE_NONE },
   { TY_FLOAT_RANGE, "clone",            0, 127, BF_ANY,      TY_FLOAT_RANGE, BOPE_NONE },
-  { TY_FLOAT_RANGE, "each",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "map",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "collect",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "select",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "filter",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "reject",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "to_a",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "to_h",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "entries",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "find",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "detect",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "find_index",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "count",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "sum",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "sort",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "sort_by",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "min_by",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "max_by",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "reduce",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "inject",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "each_with_index",  0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "flat_map",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "collect_concat",   0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "any?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "all?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "none?",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "one?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "take",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "drop",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "take_while",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "drop_while",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "filter_map",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "partition",        0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "group_by",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "each_with_object", 0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "tally",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "find_all",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "zip",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "grep",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "grep_v",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "uniq",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "reverse",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "minmax",           1, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "join",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "index",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "size",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "lazy",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "each_cons",        0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "each_slice",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "chunk",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "chunk_while",      0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
-  { TY_FLOAT_RANGE, "cycle",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ (void)($r); sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "each",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "map",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "collect",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "select",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "filter",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "reject",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "to_a",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 1); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "to_h",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "entries",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 1); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "find",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "detect",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "find_index",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "count",            0,   0, BF_NONE,     TY_POLY,        BOPE_TEMPLATE, "sp_frange_count_v($r)" },  /* an open one counts Infinity */
+  { TY_FLOAT_RANGE, "count",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "sum",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "sort",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "sort_by",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "min_by",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "max_by",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "reduce",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "inject",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "each_with_index",  0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "flat_map",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "collect_concat",   0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "any?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "all?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "none?",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "one?",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "take",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "drop",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "take_while",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "drop_while",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "filter_map",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "partition",        0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "group_by",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "each_with_object", 0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "tally",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "find_all",         0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "zip",              0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "grep",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "grep_v",           0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "uniq",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "reverse",          0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "minmax",           1, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "join",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "index",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "size",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "lazy",             0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "each_cons",        0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "each_slice",       0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "chunk",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "chunk_while",      0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
+  { TY_FLOAT_RANGE, "cycle",            0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })" },
 
   /* Enumerator. The block forms run over the materialized pairs or the
      lazy #next driver. Enumerator#+ and with_index with a block are typed
@@ -1483,7 +1494,6 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "append_as_bytes", 0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "b",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_b($r)", 0 },
-  { TY_STRING, "b",               1,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
   { TY_STRING, "b",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "encode",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
   { TY_STRING, "encode",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
@@ -2055,6 +2065,9 @@ static int bop_row_fits(const BuiltinOp *r, int argc, int has_block) {
   if (r->block == BF_REQUIRED && !has_block) return 0;
   return 1;
 }
+
+int bop_row_count(void) { return (int)(sizeof bop_rows / sizeof bop_rows[0]); }
+const BuiltinOp *bop_row(int i) { return i >= 0 && i < bop_row_count() ? &bop_rows[i] : NULL; }
 
 const BuiltinOp *bop_find(TyKind rt, const char *name, int argc, int has_block) {
   return bop_find_arg(rt, name, argc, has_block, NULL, NULL);

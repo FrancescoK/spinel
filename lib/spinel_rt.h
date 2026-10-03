@@ -477,6 +477,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args, sp_RbVal opts);
 int sp_process_open_redirect(const char *path, int slot, int *owned);
 SP_NORETURN void sp_process_spawn_fail(int *owned, const char *cls, const char *msg);
 sp_PolyArray *sp_process_waitpid2(sp_int pid);
+sp_int sp_process_waitpid(sp_int pid);   /* Process.wait / waitpid: the pid reaped */
 
 
 /* `recycle`: optional sweep hook. If non-NULL, sp_gc_collect calls
@@ -2607,6 +2608,12 @@ static inline sp_Rational sp_poly_kernel_rational(sp_RbVal v) {
     sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return sp_rational_new(sp_poly_to_i(v), 1);
 }
+/* Kernel#Rational's argument: nil is no number, "can't convert nil into
+   Rational" as CRuby raises; anything else converts as above. */
+static inline sp_Rational sp_poly_kernel_rational_arg(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't convert nil into Rational");
+  return sp_poly_kernel_rational(v);
+}
 /* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
    reduce accumulator typed when the block folds through the poly `+`. */
 static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
@@ -3370,6 +3377,160 @@ static sp_bool sp_frange_cover_poly(sp_FloatRange r, sp_RbVal v) {
    nullable int/float already tests for (#3458). */
 static sp_int sp_poly_to_i_or_nil(sp_RbVal v) { return v.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(v); }
 static sp_float sp_poly_to_f_or_nil(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
+/* An FFI argument or callback return that C takes as an integer or a
+   double: nil is no number there, and the ffi gem's NUM2INT / NUM2DBL raise
+   TypeError for it. A boxed nil, an Integer slot's SP_INT_NIL and a Float
+   slot's nil NaN all are that nil; anything else passes as before. */
+static SP_NOINLINE SP_COLD void sp_ffi_nil_int_raise(void) { sp_raise_cls("TypeError", "no implicit conversion from nil to integer"); }
+static SP_NOINLINE SP_COLD void sp_ffi_nil_dbl_raise(void) { sp_raise_cls("TypeError", "no implicit conversion to float from nil"); }
+/* A boxed value read as an Integer ARGUMENT (an index, a count, a length, a
+   status) or an Integer RECEIVER (`~x`, `x.even?`): nil is neither, and CRuby
+   raises -- the conversion TypeError for the argument, NoMethodError for the
+   receiver. Anything else converts as sp_poly_to_i does. */
+static SP_UNUSED sp_int sp_poly_arg_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(0); return sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_poly_arg_i_msg(sp_RbVal v, const char *msg) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", msg); return sp_poly_to_i(v); }
+/* The right operand of an Integer or Float op-assign read out of a box:
+   `x += nil` is the coercion TypeError ("nil can't be coerced into
+   Integer"), and a shift count the conversion one, as CRuby raises. */
+static SP_UNUSED sp_int sp_poly_opnd_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_int_op(0, SP_INT_NIL, ""); return sp_poly_to_i(v); }
+static SP_UNUSED sp_float sp_poly_opnd_f(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_float_op(0, ""); return sp_poly_to_f(v); }
+static SP_UNUSED sp_int sp_poly_arg_i_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(1); return sp_poly_to_i(v); }
+/* A sort / min / max block's boxed answer: a nil one says the two elements
+   do not compare, which CRuby reports as "comparison of A with b failed". */
+static SP_UNUSED sp_int sp_poly_cmp_ans(sp_RbVal r, sp_RbVal a, sp_RbVal b) {
+  if (SP_UNLIKELY(r.tag == SP_TAG_NIL))
+    sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_cmperr_desc(b)));
+  return sp_poly_to_i(r);
+}
+/* A method nil does not have, called on a boxed receiver that is nil:
+   NoMethodError, answered as a value so it sits in an expression arm. */
+static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_box_nil(); }
+/* The bounds of `for i in lo..hi` read out of a box or an Integer slot that
+   may hold nil: a nil end is an endless range (the loop runs until a break),
+   and a nil beginning cannot be iterated (TypeError, as CRuby). */
+/* A Range literal's endpoint read out of a box: nil is the absent bound
+   (beginless or endless), as the literal `nil..5` / `1..nil` takes it. */
+static SP_UNUSED sp_int sp_poly_range_bound(sp_RbVal v, sp_int none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_i(v); }
+/* Enumerating a beginless Range (first == INTPTR_MIN): CRuby's TypeError. */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_range_nil_begin_raise(void) { sp_raise_cls("TypeError", "can't iterate from NilClass"); }
+/* A Float Range bound read out of a box: nil leaves that side open (the
+   -/+HUGE_VAL sentinel), anything else converts as a Float bound does; the
+   bits record an open side (nil_bit) or an Integer one (int_bit) for
+   #inspect, as the literal's compile-time bits do. */
+/* A Float Range whose bound was OMITTED (written absent or nil, or nil at
+   run time -- not an explicit infinity) answers as CRuby's open range does:
+   #begin / #end are nil (the Float nil), #first / #min of a beginless one and
+   #last / #max of an endless one raise RangeError, and enumerating raises
+   from NilClass for a missing begin (from Float otherwise; an endless one's
+   to_a says it cannot convert). */
+/* A bound that turned out an Integer only at run time (a boxed end) has no
+   Float reading CRuby would give: #end answers the Integer there, which the
+   Float-typed reader cannot. Say so rather than answer 3.0 for 3. Only the
+   run-time bits mark it; a literal Integer bound is typed by inference. */
+#define SP_FRANGE_RT_INT_BEGIN 16
+#define SP_FRANGE_RT_INT_END   32
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_int_bound_raise(const char *m) {
+  sp_raise_cls("NotImplementedError", sp_sprintf("Range#%s: this Float range's bound is an Integer known only at run time, which spinel reads as a Float", m));
+}
+static SP_UNUSED sp_float sp_frange_begin_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("begin"); return r.first; }
+static SP_UNUSED sp_float sp_frange_end_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("end"); return r.last; }
+static SP_UNUSED sp_float sp_frange_first_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the first element of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("first"); return r.first; }
+static SP_UNUSED sp_float sp_frange_min_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("min"); return r.first; }
+static SP_UNUSED sp_float sp_frange_last_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the last element of endless range"); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("last"); return r.last; }
+static SP_UNUSED sp_float sp_frange_max_v(sp_FloatRange r) {
+  if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
+  if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("max");
+  /* an exclusive end CRuby checks first: a Float one has no greatest member */
+  if (r.excl && !(r.omitted & SP_FRANGE_INT_END)) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+  return sp_frange_max(r);
+}
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a);
+/* #count with no block: an open Float range counts Infinity in CRuby; a
+   bounded one cannot enumerate */
+static SP_UNUSED sp_RbVal sp_frange_count_v(sp_FloatRange r) {
+  if (r.omitted & (SP_FRANGE_NO_BEGIN | SP_FRANGE_NO_END)) return sp_box_float(HUGE_VAL);
+  sp_frange_iter_raise(r, 0);
+  return sp_box_nil();
+}
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (to_a && (r.omitted & SP_FRANGE_NO_END)) sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  sp_raise_cls("TypeError", "can't iterate from Float");
+}
+/* #max(n) / #min(n): the n greatest or least members, which an open side
+   has none of (RangeError) and a Float range cannot enumerate (TypeError) */
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_maxn_raise(sp_FloatRange r, sp_int n) {
+  if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
+  if (n < 0) sp_raise_cls("ArgumentError", "negative array size (or size too big)");
+  sp_frange_iter_raise(r, 0);
+}
+static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_minn_raise(sp_FloatRange r, sp_int n) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range");
+  if (n < 0) sp_raise_cls("ArgumentError", "negative array size (or size too big)");
+  sp_frange_iter_raise(r, 0);
+}
+/* The boxed begin of an Integer-represented Range whose end is a Float
+   (`x..2.5`): nil would make it beginless with the Float end, which the
+   integer representation holds truncated. Refuse that one loudly; any other
+   begin converts as a Range endpoint does. */
+static SP_UNUSED sp_int sp_range_lo_float_end(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL))
+    sp_raise_cls("NotImplementedError", "a beginless Range with a Float end decided at run time is not supported by spinel");
+  return sp_poly_to_i(v);
+}
+/* The doubles in the order of their values, as int64 keys (CRuby's
+   double_as_int64 / int64_as_double_to_num for Range#bsearch): a key one
+   up is the next double up, and -Infinity / +Infinity are keys too. */
+static SP_UNUSED int64_t sp_f2key(double d) {
+  union { double d; int64_t i; } u; u.d = fabs(d);
+  return d < 0 ? -u.i : u.i;
+}
+static SP_UNUSED double sp_key2f(int64_t k) {
+  union { double d; int64_t i; } u;
+  if (k < 0) { u.i = -k; return -u.d; }
+  u.i = k; return u.d;
+}
+/* How many steps (r).step(unit) { } takes, as CRuby's ruby_float_step
+   counts them: infinite for an endless range, which the loop walks until a
+   break. A zero step and a NaN bound raise as CRuby does, and a beginless
+   range has no first step. */
+static SP_UNUSED sp_float sp_frange_step_count(sp_FloatRange r, sp_float unit) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("ArgumentError", "#step iteration for beginless ranges is meaningless");
+  if (unit == 0.0) sp_raise_cls("ArgumentError", "step can't be 0");
+  if (isnan(r.first) || isnan(r.last)) sp_raise_cls("ArgumentError", "bad value for range");
+  return sp_float_step_size(r.first, r.last, unit, r.excl);
+}
+/* Range#size / #count of an Integer range whose shape only the run time
+   knows: a beginless one has no size (CRuby's TypeError), and either open
+   one counts Infinity, which the Integer this call answers cannot hold --
+   say so rather than count from the sentinel. */
+static SP_UNUSED sp_int sp_range_count_open(sp_Range r, int is_size) {
+  if (r.first == INTPTR_MIN && is_size) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (r.first == INTPTR_MIN || r.last == INTPTR_MAX)
+    sp_raise_cls("NotImplementedError", is_size ? "Range#size of an endless Range is Infinity, which spinel answers only for a range literal"
+                                                 : "Range#count of a beginless or endless Range is Infinity, which spinel answers only for a range literal");
+  return sp_range_count(r);
+}
+static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_f(v); }
+static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit) { return v.tag == SP_TAG_NIL ? nil_bit : v.tag == SP_TAG_INT ? (int_bit | (int_bit << 2)) : 0; }
+static SP_UNUSED sp_int sp_for_hi_i(sp_int v) { return v == SP_INT_NIL ? (sp_int)INTPTR_MAX : v; }
+static SP_UNUSED sp_int sp_for_lo_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return v; }
+static SP_UNUSED sp_int sp_for_hi(sp_RbVal v) { return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_for_lo(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_poly_recv_i(const char *m, sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_poly_to_i(v); }
+/* Time.new / Time.utc / Time.local field `i` read out of a box: a nil month
+   or day is 1 and a nil hour, minute or second 0, as CRuby defaults them; a
+   nil year is the conversion TypeError. */
+static SP_UNUSED sp_int sp_poly_time_field(sp_RbVal v, int i) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) { if (i == 0) sp_raise_nil_to_int(1); return (i == 1 || i == 2) ? 1 : 0; }
+  return sp_poly_to_i(v);
+}
+static SP_UNUSED sp_int sp_ffi_int_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_ffi_nil_int_raise(); return v.v.i; }
+static SP_UNUSED sp_int sp_ffi_int_of_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_ffi_nil_int_raise(); return v; }
+static SP_UNUSED sp_float sp_ffi_dbl_of(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_ffi_nil_dbl_raise(); return v.v.f; }
+static SP_UNUSED sp_float sp_ffi_dbl_of_f(sp_float v) { if (SP_UNLIKELY(sp_float_is_nil(v))) sp_ffi_nil_dbl_raise(); return v; }
+static SP_UNUSED sp_int sp_ffi_dbl_of_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_ffi_nil_dbl_raise(); return v; }
+static SP_UNUSED sp_float sp_ffi_int_of_f(sp_float v) { if (SP_UNLIKELY(sp_float_is_nil(v))) sp_ffi_nil_int_raise(); return v; }
 /* an Integer slot's nil, the sentinel, into a Float slot: the float sentinel,
    not the sentinel's numeric value */
 static inline sp_float sp_int_to_f_or_nil(sp_int i) { return i == SP_INT_NIL ? sp_float_nil() : (sp_float)i; }
@@ -4291,6 +4452,16 @@ static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
      other operators now do; the field-wise hook below stays the default for
      a class that does not define one (#3501) */
   { sp_RbVal _u; if (sp_poly_user_cmp("==", a, b, &_u)) return sp_poly_truthy(_u); }
+  /* Ruby 3.2's Process::Status#== compares the status word (to_i) with the
+     other side, and Integer#== hands a non-number back to it, so `$? == 0`
+     and `0 == $?` both read the word; two statuses compare their words */
+  { int _pa = a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROCESS_STATUS && a.v.p;
+    int _pb = b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_PROCESS_STATUS && b.v.p;
+    if (_pa || _pb) {
+      sp_RbVal _x = _pa ? sp_box_int(((sp_ProcessStatus *)a.v.p)->status) : a;
+      sp_RbVal _y = _pb ? sp_box_int(((sp_ProcessStatus *)b.v.p)->status) : b;
+      return sp_poly_eq(_x, _y);
+    } }
   { sp_RbVal _u; if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id) && sp_poly_is_user_obj(b) && sp_obj_to_ary_fn &&
                      sp_obj_to_ary_fn((sp_RbVal){ .tag = SP_TAG_OBJ, .cls_id = b.cls_id }).tag == SP_TAG_BOOL &&
                      sp_poly_user_cmp("==", b, a, &_u)) return sp_poly_truthy(_u); }

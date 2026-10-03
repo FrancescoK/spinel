@@ -94,6 +94,14 @@ unsigned ty_poly_face_owner_flags(const char *name, int argc, int has_blk, int p
 /* Does the read-only Hash face answer `name` in some form? The face sites
    ask by name alone, before the call's shape is known. */
 int ty_poly_hash_face_name(const char *nm);
+/* A String value-form bang -- a PF_STR_BANG row of the face table, the one
+   list of them: its PF_STR_BANG and PF_STR_SELF flags, or 0 for any other
+   name. Its plain name is the bang without the '!' (str_bang_plain). */
+unsigned ty_str_bang_flags(const char *name);
+/* ty_str_bang_flags for a receiver known to be a String, which reverse!
+   joins */
+unsigned ty_str_typed_bang_flags(const char *name);
+void str_bang_plain(const char *bang, char *out, int n);
 
 typedef enum {
   TY_UNKNOWN = 0,  /* not yet inferred, or an unsupported construct */
@@ -353,6 +361,7 @@ typedef struct {
   unsigned char struct_valued;/* ty_is_struct_valued */
   unsigned char scalar_ret;   /* is_scalar_ret */
   unsigned char store_class;  /* repr_store_class (SC_*) */
+  unsigned char box_form;     /* the form --repr-check records for box_text (RF_*) */
 } TyTraits;
 #define TY_TRAITS_N ((int)TY_FLOAT_ARRAY_ARRAY + 1)
 extern const TyTraits ty_traits[TY_TRAITS_N];
