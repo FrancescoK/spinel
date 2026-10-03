@@ -29681,21 +29681,8 @@ static void an_phase_procs(Compiler *c) {
   }
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
+/* The method backstops: params of a method reached only by method(:sym) (step 1), the ivar up-propagation and param re-binding, the method_missing warning, the block-splat check, params no typed call site bound (step 2), then the write and return re-inference (analyze_program's steps, in their order) */
+static void an_phase_method_backstops(Compiler *c) {
   /* Backstop step 1: a method reached only via method(:sym) is invoked through
      the bound Method ABI, which passes sp_int args -- default its untyped
      params/ret to int rather than dropping it (which would leave it undeclared).
@@ -30057,6 +30044,24 @@ void analyze_program(Compiler *c) {
      loop-variable promotion, so re-apply it. */
   detect_bigint_loop_vars(c);
   propagate_bigint_cascade(c);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
 
   /* A non-parameter local that inference never resolved holds a value of unknown
      static type -- a block param bound to an element of a poly receiver, or a
