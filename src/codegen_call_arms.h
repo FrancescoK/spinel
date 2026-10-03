@@ -42,6 +42,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -180,5 +183,23 @@ void emit_kconv_call(Compiler *c, int id, const int *av, int ac, int raise, Buf 
 void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta);
 void emit_fiber_storage_key(Compiler *c, int key, Buf *b);
 int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr);
+int attr_writer_named(Compiler *c, int cls, const char *name);
+int boxed_desc_control_arity(const char *name, int argc);
+int boxed_printf_list_ok(Compiler *c, const int *argv, int argc);
+int boxed_stat_name(const char *name);
+int boxed_stat_pred(const char *name);
+extern const char *const boxed_stat_sfield[];
+int boxed_write_takes_list(Compiler *c, int id, const int *argv, int argc);
+int class_method_named(Compiler *c, const char *name);
+void emit_gets_sep_args(Compiler *c, const int *argv, int argc, Buf *b);
+void emit_io_wait(Compiler *c, const char *name, int argc, const int *argv, const char *r, Buf *b);
+void emit_push_arg_list(Compiler *c, const int *argv, int argc, int tpa, Buf *b);
+void emit_stat_handle_nomethod(int th, int tv, const char *name, Buf *b);
+void emit_stat_handle_only(int th, const char *name, Buf *b);
+void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b);
+void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, int ran, Buf *b);
+int file_block_param_poly(Compiler *c, int id, const char *pname);
+void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp);
+int io_line_args_spread(const NodeTable *nt, const int *argv, int argc);
 
 #endif
