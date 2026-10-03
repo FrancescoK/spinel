@@ -17907,8 +17907,10 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       comp_ntype(c, recv) == TY_POLY && comp_ntype(c, id) == TY_ENUMERATOR &&
       is_each_walk(name)) {
-    buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
-    emit_boxed(c, recv, b); buf_puts(b, ")");
+    /* a value that is no collection is the call's NoMethodError, where the
+       Enumerator walked nil or a String as empty (sp_poly_enum_chk) */
+    buf_printf(b, "sp_Enumerator_new_from%s(sp_poly_enum_chk(", sp_streq(name, "reverse_each") ? "_rev" : "");
+    emit_boxed(c, recv, b); buf_printf(b, ", \"%s\"))", name);
     return 1;
   }
   /* A blockless map or selecting call there is the same snapshot under its

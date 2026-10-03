@@ -54,9 +54,12 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (pn9) {
       if (!poly_name_user_claimed(c, name, argc, 1)) {
         Buf cb9; memset(&cb9, 0, sizeof cb9);
-        buf_printf(&cb9, "%s(", pn9);
+        /* a value that is no collection is the call's NoMethodError
+           (sp_poly_enum_chk): nil.take(1) and its siblings answered [] */
+        buf_printf(&cb9, "%s(sp_poly_enum_chk(", pn9);
         { Buf rb9; memset(&rb9, 0, sizeof rb9); emit_expr(c, recv, &rb9);
           buf_puts(&cb9, rb9.p ? rb9.p : "sp_box_nil()"); free(rb9.p); }
+        buf_printf(&cb9, ", \"%s\")", name);
         if (argc == 1) { Buf nb9; memset(&nb9, 0, sizeof nb9); emit_int_expr(c, argv[0], &nb9);
                          buf_puts(&cb9, ", "); buf_puts(&cb9, nb9.p ? nb9.p : "0"); free(nb9.p); }
         else if (!sp_streq(name, "shuffle")) buf_puts(&cb9, ", 1");   /* rotate's default count */

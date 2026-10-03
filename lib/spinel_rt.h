@@ -5947,6 +5947,8 @@ static sp_bool sp_case_splat_match(sp_RbVal scrut, sp_RbVal arr) {
    stays itself, a hash spreads its pairs, any other value wraps in a
    one-element array. */
 static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);
+static sp_PolyArray *sp_poly_to_a_arr_as(sp_RbVal v, const char *m, int nil_ok);
+static sp_RbVal sp_poly_enum_chk(sp_RbVal v, const char *m);
 static sp_RbVal sp_splat_to_array(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return sp_box_poly_array(sp_PolyArray_new());
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
@@ -14243,13 +14245,24 @@ static sp_PolyArray *sp_poly_ewi_items(sp_RbVal v) {
       (sp_poly_is_hash_kind(v.cls_id) || v.cls_id == SP_BUILTIN_RANGE ||
        v.cls_id == SP_BUILTIN_STR_RANGE || (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
     return sp_enum_items_from(v);
+  /* anything but an Array is no collection here: each_with_index's
+     NoMethodError, where it walked nil or a String as empty */
+  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)))
+    return sp_poly_to_a_arr_as(v, "each_with_index", 0);
   return sp_poly_to_poly_array(v);
 }
 /* Poly-receiver #to_a: nil is the empty array, arrays and hashes materialize
    through sp_enum_items_from (a hash yields its [key, value] pairs), and any
    other value raises CRuby's NoMethodError. */
-static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
-  if (v.tag == SP_TAG_NIL) return sp_PolyArray_new();
+static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) { return sp_poly_to_a_arr_as(v, "to_a", 1); }
+/* ... the members an Enumerable method `m` walks: nil has #to_a (the empty
+   Array) but none of the Enumerable methods, so it is m's NoMethodError, as
+   anything else that is no collection is */
+static sp_PolyArray *sp_poly_to_a_arr_as(sp_RbVal v, const char *m, int nil_ok) {
+  if (v.tag == SP_TAG_NIL) {
+    if (!nil_ok) sp_raise_nomethod(sp_nomethod_msg(m, v));
+    return sp_PolyArray_new();
+  }
   /* Array#to_a returns self (identity), so a poly array is returned as-is
      rather than copied; typed arrays and hashes must materialize a new
      PolyArray to reach the poly representation. */
@@ -14273,8 +14286,17 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
      materializer the generated to_a dispatch calls (#3761) */
   { sp_PolyArray *ue = sp_poly_user_elems(v);
     if (ue) return ue; }
-  sp_raise_nomethod(sp_nomethod_msg("to_a", v));
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
   return NULL;
+}
+/* A boxed receiver of the Enumerable method `m` that answers an Enumerator
+   (each_entry, reverse_each, ...): a value that is no collection is m's
+   NoMethodError when the call is made, where the Enumerator walked it as
+   empty (nil, a user object with no #each) */
+static sp_RbVal sp_poly_enum_chk(sp_RbVal v, const char *m) {
+  sp_poly_iter_check(v, m);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) (void)sp_poly_to_a_arr_as(v, m, 0);
+  return v;
 }
 /* Enumerable#entries on a boxed receiver: an Array's elements, a Hash's
    [key, value] pairs, an Integer or String Range's members, an Enumerator's
@@ -15428,7 +15450,7 @@ static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
       ((sp_Range *)v.v.p)->last == INTPTR_MAX)
     return sp_Enumerator_regroup(sp_Enumerator_new_from(v), n, cons);
   sp_RbVal a = v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE ? v
-             : sp_box_poly_array(sp_poly_to_a_arr(v));
+             : sp_box_poly_array(sp_poly_to_a_arr_as(v, cons ? "each_cons" : "each_slice", 0));
   return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
 }
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
