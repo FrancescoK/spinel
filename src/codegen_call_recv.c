@@ -12379,6 +12379,147 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
   return 0;
 }
 
+/* A numeric call on a boxed receiver: to_i with a base, count, round, floor and ceil with digits (emit_poly_call's arms, in their order) */
+static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  /* poly receiver `.to_i(base)`: only String#to_i takes a radix. When the value
+     is a String at runtime, parse it (mirroring String#to_i(base)); any other
+     type -- Integer/Float/nil -- has a zero-arity to_i, so CRuby raises
+     ArgumentError. Guard on the tag rather than blindly sp_poly_to_s'ing, which
+     would silently parse "42".to_i(16) => 66 instead of raising. The no-arg
+     conversions live in the argc == 0 block below, which this form would skip.
+     Receiver then argument are bound in that order to keep CRuby's evaluation
+     order (both are evaluated before the call raises). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i") &&
+      comp_ntype(c, id) != TY_POLY) {
+    int tr = ++g_tmp, tb = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_str_to_i_base(_t%d.v.s, _t%d)"
+                  " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0); })",
+               tr, tr, tb);
+    { *out = 1; return 1; }
+  }
+
+  /* poly receiver count(v): value-equality element count over a boxed Array,
+     Hash, Range or Enumerator (sp_poly_count_val) */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "count") &&
+      nt_ref(nt, id, "block") < 0) {
+    /* Only a user definition that can TAKE one positional argument blocks
+       this arm: a `count(a, b)` or a reader cannot answer the call, and
+       counting it steered a genuine String or Array receiver into the
+       dispatch, whose arity filter then dropped every arm and raised
+       (#4195). Same judgement as the dispatch's own candidate filter. */
+    int has_user_cnt = 0;
+    if (!g_poly_builtin_arm)
+    for (int kk = 0; kk < c->nclasses && !has_user_cnt; kk++) {
+      if (c->classes[kk].is_native_class) {   /* bindings only (#4504) */
+        if (comp_poly_arm_defines_n(c, kk, "count", 1)) has_user_cnt = 1;
+        continue;
+      }
+      int mi_k = comp_method_in_chain(c, kk, "count", NULL);
+      if (mi_k >= 0) {
+        Scope *cs_k = &c->scopes[mi_k];
+        if (cs_k->rest_idx >= 0 || (1 >= cs_k->nrequired && 1 <= cs_k->nparams))
+          has_user_cnt = 1;
+      }
+    }
+    if (!has_user_cnt) {
+      buf_puts(b, "sp_poly_count_val("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  /* Numeric#round(ndigits) on a poly: the digit-taking form the no-arg
+     numeric path cannot express. A user `round` still wins (poly dispatch). */
+  /* `round(half: :even)` -- with or without a digits argument -- on a boxed
+     receiver. The keyword hash is not a positional argument: read as one it
+     reached the digits slot and raised "no implicit conversion of Hash into
+     Integer", where the typed Float and Integer paths have honoured the
+     tie-break mode all along. Peel it off the positional view here, exactly
+     as the typed arm does, so a value that went through a container answers
+     what the same value answers when it did not. */
+  if (recv >= 0 && rt == TY_POLY && (argc == 1 || argc == 2) &&
+      is_round_family(name) &&
+      nt_ref(nt, id, "block") < 0 &&
+      nt_type(nt, argv[argc - 1]) &&
+      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+    int has_user_kw = poly_name_user_claimed(c, name, argc, 1);
+    /* Which keywords were written is a compile-time fact for a literal key;
+       a `**splat` is read at run time, and a key spelled some other way is
+       not read at all -- nothing may be called an unknown keyword on the
+       strength of what cannot be read. The typed Float and Integer arms use
+       the same reader, so a boxed receiver and a typed one cannot disagree
+       about what the call said. */
+    RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
+    if (!has_user_kw) {
+      /* CRuby evaluates the receiver, the positional argument and every
+         keyword value before the call decides anything, so a call it then
+         rejects has still run their side effects. Hold each in a temp here
+         rather than emitting it inside the arm that may raise. */
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      int tn = -1;
+      if (argc == 2) {
+        tn = ++g_tmp;
+        buf_printf(b, "sp_int _t%d = ", tn);
+        emit_int_expr(c, argv[0], b);
+        buf_puts(b, "; ");
+      }
+      /* only #round takes a tie-break mode; the other three reject a keyword
+         outright, with CRuby's words (the typed arm does the same, #3646).
+         With a digit count as well the hash is a second argument, and the
+         arity is what CRuby complains about first. The keyword values are
+         still evaluated: the hash is built before the call rejects it. */
+      if (!sp_streq(name, "round")) {
+        emit_round_kw_effects(c, &kw, b);
+        if (argc == 2)
+          buf_printf(b, "(void)_t%d;"
+                        " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments"
+                        " (given 2, expected 0..1)\");", tn);
+        else
+          /* CRuby's words for a Rational are its own, and which receiver
+             this is only the run time knows */
+          buf_printf(b, "sp_raise_cls(\"TypeError\", sp_poly_is_rational(_t%d)"
+                        " ? \"not an integer\""
+                        " : \"no implicit conversion of Hash into Integer\");", tv);
+        buf_puts(b, " sp_box_nil(); })");
+        { *out = 1; return 1; }
+      }
+      /* `round` takes `half:` and nothing else, so the binder raises for any
+         other key -- a `**` source's keys included, which it reads at run
+         time rather than leaving the mode silently defaulted. */
+      int thalf = emit_round_kw_binds(c, &kw, b);
+      /* the mode reaches the helper as the value it was written as: a
+         Symbol, a String, nil for the default -- deciding which is the
+         helper's job, since only it knows whether the receiver cares */
+      buf_printf(b, "sp_poly_round_half(_t%d, ", tv);
+      if (tn >= 0) buf_printf(b, "_t%d", tn); else buf_puts(b, "0");
+      if (thalf >= 0) buf_printf(b, ", _t%d); })", thalf);
+      else buf_puts(b, ", sp_box_nil()); })");
+      { *out = 1; return 1; }
+    }
+  }
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      is_round_family(name) &&
+      nt_ref(nt, id, "block") < 0) {
+    if (!poly_name_user_claimed(c, name, argc, 1)) {
+      /* ceil / floor / truncate with a precision had no arm at all and
+         raised NoMethodError on a Float (#4532) */
+      if (sp_streq(name, "round")) buf_puts(b, "sp_poly_round_n(");
+      else buf_puts(b, "sp_poly_prec_n(");
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b);
+      if (!sp_streq(name, "round"))
+        buf_printf(b, ", %s", name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC");
+      buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12719,142 +12860,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
 
   { int r; if (emit_poly_ivar_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
 
-  /* poly receiver `.to_i(base)`: only String#to_i takes a radix. When the value
-     is a String at runtime, parse it (mirroring String#to_i(base)); any other
-     type -- Integer/Float/nil -- has a zero-arity to_i, so CRuby raises
-     ArgumentError. Guard on the tag rather than blindly sp_poly_to_s'ing, which
-     would silently parse "42".to_i(16) => 66 instead of raising. The no-arg
-     conversions live in the argc == 0 block below, which this form would skip.
-     Receiver then argument are bound in that order to keep CRuby's evaluation
-     order (both are evaluated before the call raises). */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i") &&
-      comp_ntype(c, id) != TY_POLY) {
-    int tr = ++g_tmp, tb = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
-    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_str_to_i_base(_t%d.v.s, _t%d)"
-                  " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0); })",
-               tr, tr, tb);
-    return 1;
-  }
-
-  /* poly receiver count(v): value-equality element count over a boxed Array,
-     Hash, Range or Enumerator (sp_poly_count_val) */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "count") &&
-      nt_ref(nt, id, "block") < 0) {
-    /* Only a user definition that can TAKE one positional argument blocks
-       this arm: a `count(a, b)` or a reader cannot answer the call, and
-       counting it steered a genuine String or Array receiver into the
-       dispatch, whose arity filter then dropped every arm and raised
-       (#4195). Same judgement as the dispatch's own candidate filter. */
-    int has_user_cnt = 0;
-    if (!g_poly_builtin_arm)
-    for (int kk = 0; kk < c->nclasses && !has_user_cnt; kk++) {
-      if (c->classes[kk].is_native_class) {   /* bindings only (#4504) */
-        if (comp_poly_arm_defines_n(c, kk, "count", 1)) has_user_cnt = 1;
-        continue;
-      }
-      int mi_k = comp_method_in_chain(c, kk, "count", NULL);
-      if (mi_k >= 0) {
-        Scope *cs_k = &c->scopes[mi_k];
-        if (cs_k->rest_idx >= 0 || (1 >= cs_k->nrequired && 1 <= cs_k->nparams))
-          has_user_cnt = 1;
-      }
-    }
-    if (!has_user_cnt) {
-      buf_puts(b, "sp_poly_count_val("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      return 1;
-    }
-  }
-  /* Numeric#round(ndigits) on a poly: the digit-taking form the no-arg
-     numeric path cannot express. A user `round` still wins (poly dispatch). */
-  /* `round(half: :even)` -- with or without a digits argument -- on a boxed
-     receiver. The keyword hash is not a positional argument: read as one it
-     reached the digits slot and raised "no implicit conversion of Hash into
-     Integer", where the typed Float and Integer paths have honoured the
-     tie-break mode all along. Peel it off the positional view here, exactly
-     as the typed arm does, so a value that went through a container answers
-     what the same value answers when it did not. */
-  if (recv >= 0 && rt == TY_POLY && (argc == 1 || argc == 2) &&
-      is_round_family(name) &&
-      nt_ref(nt, id, "block") < 0 &&
-      nt_type(nt, argv[argc - 1]) &&
-      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
-    int has_user_kw = poly_name_user_claimed(c, name, argc, 1);
-    /* Which keywords were written is a compile-time fact for a literal key;
-       a `**splat` is read at run time, and a key spelled some other way is
-       not read at all -- nothing may be called an unknown keyword on the
-       strength of what cannot be read. The typed Float and Integer arms use
-       the same reader, so a boxed receiver and a typed one cannot disagree
-       about what the call said. */
-    RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
-    if (!has_user_kw) {
-      /* CRuby evaluates the receiver, the positional argument and every
-         keyword value before the call decides anything, so a call it then
-         rejects has still run their side effects. Hold each in a temp here
-         rather than emitting it inside the arm that may raise. */
-      int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
-      int tn = -1;
-      if (argc == 2) {
-        tn = ++g_tmp;
-        buf_printf(b, "sp_int _t%d = ", tn);
-        emit_int_expr(c, argv[0], b);
-        buf_puts(b, "; ");
-      }
-      /* only #round takes a tie-break mode; the other three reject a keyword
-         outright, with CRuby's words (the typed arm does the same, #3646).
-         With a digit count as well the hash is a second argument, and the
-         arity is what CRuby complains about first. The keyword values are
-         still evaluated: the hash is built before the call rejects it. */
-      if (!sp_streq(name, "round")) {
-        emit_round_kw_effects(c, &kw, b);
-        if (argc == 2)
-          buf_printf(b, "(void)_t%d;"
-                        " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments"
-                        " (given 2, expected 0..1)\");", tn);
-        else
-          /* CRuby's words for a Rational are its own, and which receiver
-             this is only the run time knows */
-          buf_printf(b, "sp_raise_cls(\"TypeError\", sp_poly_is_rational(_t%d)"
-                        " ? \"not an integer\""
-                        " : \"no implicit conversion of Hash into Integer\");", tv);
-        buf_puts(b, " sp_box_nil(); })");
-        return 1;
-      }
-      /* `round` takes `half:` and nothing else, so the binder raises for any
-         other key -- a `**` source's keys included, which it reads at run
-         time rather than leaving the mode silently defaulted. */
-      int thalf = emit_round_kw_binds(c, &kw, b);
-      /* the mode reaches the helper as the value it was written as: a
-         Symbol, a String, nil for the default -- deciding which is the
-         helper's job, since only it knows whether the receiver cares */
-      buf_printf(b, "sp_poly_round_half(_t%d, ", tv);
-      if (tn >= 0) buf_printf(b, "_t%d", tn); else buf_puts(b, "0");
-      if (thalf >= 0) buf_printf(b, ", _t%d); })", thalf);
-      else buf_puts(b, ", sp_box_nil()); })");
-      return 1;
-    }
-  }
-  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      is_round_family(name) &&
-      nt_ref(nt, id, "block") < 0) {
-    if (!poly_name_user_claimed(c, name, argc, 1)) {
-      /* ceil / floor / truncate with a precision had no arm at all and
-         raised NoMethodError on a Float (#4532) */
-      if (sp_streq(name, "round")) buf_puts(b, "sp_poly_round_n(");
-      else buf_puts(b, "sp_poly_prec_n(");
-      emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_int_expr(c, argv[0], b);
-      if (!sp_streq(name, "round"))
-        buf_printf(b, ", %s", name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC");
-      buf_puts(b, ")");
-      return 1;
-    }
-  }
+  { int r; if (emit_poly_numeric_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   /* poly.scan(re) -- a String read out of a `{}`-then-filled Hash reaches
      here poly-typed, and without an arm it hit the NoMethodError gate
