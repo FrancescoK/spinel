@@ -5947,6 +5947,192 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
   return 0;
 }
 
+/* A block-taking iterator: the each family's value form, select, filter and reject on a boxed receiver, uniq!, a times chain, find_all (infer_call_inner's rules, in their order) */
+static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
+  /* `each_slice(n) { } / each_cons(n) { }` answer the receiver. When the
+     receiver is the marked `to_a` hop above, that is the original Hash or
+     Range, not the pair array the loop walked (#3842). */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      nt_type(nt, nt_ref(nt, id, "block")) &&
+      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
+      ((argc == 1 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) ||
+       /* each_entry answers the receiver too, and the value emitter yields it:
+          left on the pair array's type the two disagreed and the C compiler
+          was handed a hash where an array was declared (#3895) */
+       (argc == 0 && (sp_streq(name, "each_entry") ||
+                      /* each_entry is renamed to each before this point */
+                      sp_streq(name, "each") ||
+                      /* reverse_each over an Enumerator or a Hash reaches the
+                         array machinery through the same marked hop, and answers
+                         that receiver, not the array it walked (#4325) */
+                      sp_streq(name, "reverse_each")))) &&
+      nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_recv")) {
+    int orecv = nt_ref(nt, recv, "receiver");
+    if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }
+  }
+  /* A block each-family call returns its receiver (each, each_value/each_key/
+     each_pair, each_with_index, reverse_each), so the value form composes:
+     r = arr.each { }; arr.each { }.map { }. Gated to receivers that define
+     the method -- the respond_to? machinery probes a synthesized
+     `recv.m { }`, and an unconditional arm would make every type "respond"
+     to each. */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
+      nt_type(nt, nt_ref(nt, id, "block")) &&
+      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
+    /* `obj.__enum_to_a.<m> { }` (m in each / each_with_index / reverse_each) is
+       the desugared each-family call on a user Enumerable / Struct receiver:
+       Ruby returns the enumerable itself, so type it as the original receiver
+       obj, not the intermediate member array (#2546/#2547). The codegen value
+       form (emit_iter_value_expr) yields obj to match. */
+    if ((sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")) &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      const char *rnm = nt_str(nt, recv, "name");
+      int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;
+      if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }
+    }
+    int enumerable_recv = ty_is_array(rt) || ty_is_hash(rt) ||
+                          rt == TY_RANGE || rt == TY_ENUMERATOR;
+    /* each_entry belongs here too: Enumerable#each_entry answers the receiver
+       exactly as #each does, and typing it nil left `arr.each_entry { }.class`
+       reading NilClass (#3395). */
+    if (enumerable_recv &&
+        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")))
+      { *out = rt; return 1; }
+    /* A poly receiver answers `each` with itself, exactly as the typed kinds
+       do -- that is the receiver's own type, so claiming it says nothing the
+       receiver did not already say. Left UNKNOWN, a chained
+       `h.each { }.length` had nothing to dispatch on and was refused at
+       compile time, naming nothing: `JSON.parse("[]").each { }.size` reached
+       that even though the value is an Array at run time (#3987). A receiver
+       with no `each` raises where it always did, from the run-time dispatch.
+       The value form of the iterator (emit_iter_value_expr) yields the
+       receiver for a poly one too, so the two agree. */
+    if (rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
+        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
+         /* each_index's poly arm hands back the boxed receiver as well;
+            untyped, its value read as nil */
+         sp_streq(name, "each_index") ||
+         /* the three Hash walks take the same poly iterator emission, which
+            hands back the boxed receiver; typed through the face table they
+            read as a Hash and the chained inspect was handed an sp_RbVal,
+            a C error (#4485) */
+         sp_streq(name, "each_pair") || sp_streq(name, "each_key") ||
+         sp_streq(name, "each_value")))
+      { *out = TY_POLY; return 1; }
+    if (ty_is_hash(rt) &&
+        (sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
+         sp_streq(name, "each_pair")))
+      { *out = rt; return 1; }
+  }
+  /* `recv.sort_by { }` always returns a new Array. For a typed array receiver
+     it stays that array's type (arm below); for a hash / poly / not-yet-settled
+     receiver it is a generic Array. Without this a hash sort_by whose receiver
+     was still poly when the local was typed settled to poly, and a downstream
+     `.first(n).each` then had no array to iterate (#2876). */
+  if (recv >= 0 && sp_streq(name, "sort_by") && nt_ref(nt, id, "block") >= 0) {
+    /* A hash / poly / not-yet-settled receiver yields a generic Array. A typed
+       array or a Range keep their own element-typed sort path below. */
+    TyKind srt = infer_type(c, recv);
+    if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) { *out = TY_POLY_ARRAY; return 1; }
+  }
+  /* `poly.members` on a Struct/Data read out of a container: the field-name
+     symbols as a generic Array. #deconstruct is the member values (like to_a).
+     A class that reads a value of its own as `members` -- an attr_reader, a
+     Struct/Data member of that name, or an alias of one -- answers it
+     through the dispatch, as the emitter's #members arm stands aside for it
+     (poly_name_user_claimed with readers), so the answer is not the names. */
+  if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
+      argc == 0 && nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
+      !an_user_recv_defines_method(c, name)) {
+    if (!sp_streq(name, "members") || !an_class_reads_name(c, name)) { *out = TY_POLY_ARRAY; return 1; }
+    /* ...and when a class does read it, a Struct or Data value in the same
+       container (an instance without such a member, or a class) still
+       answers its member names: either can come back, boxed. */
+    if (an_program_has_struct(c)) { *out = TY_POLY; return 1; }
+  }
+  /* `poly.reject/select/filter { }` on a value only known to be an array at
+     runtime (read out of a poly container): a filtered generic Array. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "map!") || sp_streq(name, "collect!")) &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY_ARRAY; return 1; }
+  /* The filtering siblings answer whatever kind the receiver is -- Hash#select
+     is a Hash, Array#select an Array -- and only the runtime value says which,
+     so the result rides boxed (#3449). */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY; return 1; }
+  /* `poly.uniq { }` answers a new Array (the boxed emitter hands it back
+     boxed); `uniq! { }` answers the receiver or nil. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "uniq") || sp_streq(name, "uniq!")) &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY; return 1; }
+  /* `poly.times { }` / `upto(n) { }` / `downto(n) { }` answer the receiver,
+     which codegen unboxes to an sp_int before handing the call to the typed
+     emitters. step is left out: a Float owns it too. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      ((argc == 0 && sp_streq(name, "times")) ||
+       (argc == 1 && (sp_streq(name, "upto") || sp_streq(name, "downto")))) &&
+      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
+    { *out = TY_INT; return 1; }
+  /* The blockless forms answer the same range-shaped enumerator the typed
+     Integer arm answers below, so a chain on them (`n.times.map { }`) keeps
+     its array type. Without this arm a boxed receiver -- every Integer
+     parameter under promote mode -- left the chain unknown, and the call on
+     its answer was emitted as a NoMethodError (#4677). */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+      ((argc == 0 && sp_streq(name, "times")) ||
+       (argc == 1 && (sp_streq(name, "upto") || sp_streq(name, "downto")))) &&
+      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
+    { *out = TY_RANGE; return 1; }
+  /* `poly.find { }` / `detect { }` answer the winning ELEMENT, boxed. Without
+     an arm here they fell through to the last-resort Hash face below, which
+     types them as the winning [k, v] pair -- and the emitter, which answers
+     the element either way, then had its already-boxed value boxed a second
+     time under that array type. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
+    { *out = TY_POLY; return 1; }
+  /* find_all is NOT the third spelling of select: Hash#select answers a Hash,
+     Hash#find_all the [k, v] pairs as an Array, whatever the receiver turns
+     out to be. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
+      sp_streq(name, "find_all") && infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY_ARRAY; return 1; }
+  /* `poly.each_slice(n) { }` / `each_cons(n) { }` answer the receiver, whatever
+     kind it turns out to be -- an Array for an Array, the Hash itself for a
+     Hash -- so the result rides boxed, like the filtering siblings above. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 1 &&
+      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY; return 1; }
+  /* `poly.zip(other) { }` / `poly.cycle(n) { }` answer nil, as they do for a
+     typed receiver. */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 1 &&
+      (sp_streq(name, "zip") || sp_streq(name, "cycle")) &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_NIL; return 1; }
+  /* `poly.zip(other...)` on a value only known to be an array at runtime
+     (e.g. a row that is a block param of an outer nested-array iterator):
+     a poly array of tuples, matching the array-receiver form (#3190). */
+  if (recv >= 0 && sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY_ARRAY; return 1; }
+  /* `poly_recv.sum { }` (a group_by bucket, a case-merged local) folds the
+     block result with sp_poly_add, so the accumulation is a boxed poly value.
+     Concrete typed arrays keep their int/float/string sum arms below. (#2872) */
+  if (recv >= 0 && sp_streq(name, "sum") && nt_ref(nt, id, "block") >= 0 &&
+      infer_type(c, recv) == TY_POLY)
+    { *out = TY_POLY; return 1; }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6371,187 +6557,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (ty_is_hash(rt) && sp_streq(name, "each_with_index") &&
       nt_ref(nt, id, "block") >= 0) return rt;
   if (ty_is_hash(rt) && hash_enum_redispatch(c, id)) rt = TY_POLY_ARRAY;
-  /* `each_slice(n) { } / each_cons(n) { }` answer the receiver. When the
-     receiver is the marked `to_a` hop above, that is the original Hash or
-     Range, not the pair array the loop walked (#3842). */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
-      ((argc == 1 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) ||
-       /* each_entry answers the receiver too, and the value emitter yields it:
-          left on the pair array's type the two disagreed and the C compiler
-          was handed a hash where an array was declared (#3895) */
-       (argc == 0 && (sp_streq(name, "each_entry") ||
-                      /* each_entry is renamed to each before this point */
-                      sp_streq(name, "each") ||
-                      /* reverse_each over an Enumerator or a Hash reaches the
-                         array machinery through the same marked hop, and answers
-                         that receiver, not the array it walked (#4325) */
-                      sp_streq(name, "reverse_each")))) &&
-      nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_recv")) {
-    int orecv = nt_ref(nt, recv, "receiver");
-    if (orecv >= 0) return infer_type(c, orecv);
-  }
-  /* A block each-family call returns its receiver (each, each_value/each_key/
-     each_pair, each_with_index, reverse_each), so the value form composes:
-     r = arr.each { }; arr.each { }.map { }. Gated to receivers that define
-     the method -- the respond_to? machinery probes a synthesized
-     `recv.m { }`, and an unconditional arm would make every type "respond"
-     to each. */
-  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
-      nt_type(nt, nt_ref(nt, id, "block")) &&
-      sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
-    /* `obj.__enum_to_a.<m> { }` (m in each / each_with_index / reverse_each) is
-       the desugared each-family call on a user Enumerable / Struct receiver:
-       Ruby returns the enumerable itself, so type it as the original receiver
-       obj, not the intermediate member array (#2546/#2547). The codegen value
-       form (emit_iter_value_expr) yields obj to match. */
-    if ((sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")) &&
-        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
-      const char *rnm = nt_str(nt, recv, "name");
-      int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;
-      if (orecv >= 0) return infer_type(c, orecv);
-    }
-    int enumerable_recv = ty_is_array(rt) || ty_is_hash(rt) ||
-                          rt == TY_RANGE || rt == TY_ENUMERATOR;
-    /* each_entry belongs here too: Enumerable#each_entry answers the receiver
-       exactly as #each does, and typing it nil left `arr.each_entry { }.class`
-       reading NilClass (#3395). */
-    if (enumerable_recv &&
-        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")))
-      return rt;
-    /* A poly receiver answers `each` with itself, exactly as the typed kinds
-       do -- that is the receiver's own type, so claiming it says nothing the
-       receiver did not already say. Left UNKNOWN, a chained
-       `h.each { }.length` had nothing to dispatch on and was refused at
-       compile time, naming nothing: `JSON.parse("[]").each { }.size` reached
-       that even though the value is an Array at run time (#3987). A receiver
-       with no `each` raises where it always did, from the run-time dispatch.
-       The value form of the iterator (emit_iter_value_expr) yields the
-       receiver for a poly one too, so the two agree. */
-    if (rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
-         /* each_index's poly arm hands back the boxed receiver as well;
-            untyped, its value read as nil */
-         sp_streq(name, "each_index") ||
-         /* the three Hash walks take the same poly iterator emission, which
-            hands back the boxed receiver; typed through the face table they
-            read as a Hash and the chained inspect was handed an sp_RbVal,
-            a C error (#4485) */
-         sp_streq(name, "each_pair") || sp_streq(name, "each_key") ||
-         sp_streq(name, "each_value")))
-      return TY_POLY;
-    if (ty_is_hash(rt) &&
-        (sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
-         sp_streq(name, "each_pair")))
-      return rt;
-  }
-  /* `recv.sort_by { }` always returns a new Array. For a typed array receiver
-     it stays that array's type (arm below); for a hash / poly / not-yet-settled
-     receiver it is a generic Array. Without this a hash sort_by whose receiver
-     was still poly when the local was typed settled to poly, and a downstream
-     `.first(n).each` then had no array to iterate (#2876). */
-  if (recv >= 0 && sp_streq(name, "sort_by") && nt_ref(nt, id, "block") >= 0) {
-    /* A hash / poly / not-yet-settled receiver yields a generic Array. A typed
-       array or a Range keep their own element-typed sort path below. */
-    TyKind srt = infer_type(c, recv);
-    if (ty_is_hash(srt) || srt == TY_POLY || srt == TY_UNKNOWN) return TY_POLY_ARRAY;
-  }
-  /* `poly.members` on a Struct/Data read out of a container: the field-name
-     symbols as a generic Array. #deconstruct is the member values (like to_a).
-     A class that reads a value of its own as `members` -- an attr_reader, a
-     Struct/Data member of that name, or an alias of one -- answers it
-     through the dispatch, as the emitter's #members arm stands aside for it
-     (poly_name_user_claimed with readers), so the answer is not the names. */
-  if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
-      argc == 0 && nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
-      !an_user_recv_defines_method(c, name)) {
-    if (!sp_streq(name, "members") || !an_class_reads_name(c, name)) return TY_POLY_ARRAY;
-    /* ...and when a class does read it, a Struct or Data value in the same
-       container (an instance without such a member, or a class) still
-       answers its member names: either can come back, boxed. */
-    if (an_program_has_struct(c)) return TY_POLY;
-  }
-  /* `poly.reject/select/filter { }` on a value only known to be an array at
-     runtime (read out of a poly container): a filtered generic Array. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "map!") || sp_streq(name, "collect!")) &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY_ARRAY;
-  /* The filtering siblings answer whatever kind the receiver is -- Hash#select
-     is a Hash, Array#select an Array -- and only the runtime value says which,
-     so the result rides boxed (#3449). */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "reject") || sp_streq(name, "select") || sp_streq(name, "filter")) &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY;
-  /* `poly.uniq { }` answers a new Array (the boxed emitter hands it back
-     boxed); `uniq! { }` answers the receiver or nil. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "uniq") || sp_streq(name, "uniq!")) &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY;
-  /* `poly.times { }` / `upto(n) { }` / `downto(n) { }` answer the receiver,
-     which codegen unboxes to an sp_int before handing the call to the typed
-     emitters. step is left out: a Float owns it too. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      ((argc == 0 && sp_streq(name, "times")) ||
-       (argc == 1 && (sp_streq(name, "upto") || sp_streq(name, "downto")))) &&
-      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
-    return TY_INT;
-  /* The blockless forms answer the same range-shaped enumerator the typed
-     Integer arm answers below, so a chain on them (`n.times.map { }`) keeps
-     its array type. Without this arm a boxed receiver -- every Integer
-     parameter under promote mode -- left the chain unknown, and the call on
-     its answer was emitted as a NoMethodError (#4677). */
-  if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
-      ((argc == 0 && sp_streq(name, "times")) ||
-       (argc == 1 && (sp_streq(name, "upto") || sp_streq(name, "downto")))) &&
-      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
-    return TY_RANGE;
-  /* `poly.find { }` / `detect { }` answer the winning ELEMENT, boxed. Without
-     an arm here they fell through to the last-resort Hash face below, which
-     types them as the winning [k, v] pair -- and the emitter, which answers
-     the element either way, then had its already-boxed value boxed a second
-     time under that array type. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "find") || sp_streq(name, "detect")) &&
-      infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
-    return TY_POLY;
-  /* find_all is NOT the third spelling of select: Hash#select answers a Hash,
-     Hash#find_all the [k, v] pairs as an Array, whatever the receiver turns
-     out to be. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      sp_streq(name, "find_all") && infer_type(c, recv) == TY_POLY)
-    return TY_POLY_ARRAY;
-  /* `poly.each_slice(n) { }` / `each_cons(n) { }` answer the receiver, whatever
-     kind it turns out to be -- an Array for an Array, the Hash itself for a
-     Hash -- so the result rides boxed, like the filtering siblings above. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 1 &&
-      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY;
-  /* `poly.zip(other) { }` / `poly.cycle(n) { }` answer nil, as they do for a
-     typed receiver. */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 1 &&
-      (sp_streq(name, "zip") || sp_streq(name, "cycle")) &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_NIL;
-  /* `poly.zip(other...)` on a value only known to be an array at runtime
-     (e.g. a row that is a block param of an outer nested-array iterator):
-     a poly array of tuples, matching the array-receiver form (#3190). */
-  if (recv >= 0 && sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY_ARRAY;
-  /* `poly_recv.sum { }` (a group_by bucket, a case-merged local) folds the
-     block result with sp_poly_add, so the accumulation is a boxed poly value.
-     Concrete typed arrays keep their int/float/string sum arms below. (#2872) */
-  if (recv >= 0 && sp_streq(name, "sum") && nt_ref(nt, id, "block") >= 0 &&
-      infer_type(c, recv) == TY_POLY)
-    return TY_POLY;
+  { TyKind r; if (infer_block_iter_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
   /* Object#itself is the receiver, whatever its type -- the scattered per-type
      arms below predate this and remain harmless. */
