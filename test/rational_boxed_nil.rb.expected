@@ -1,0 +1,8 @@
+Rational(x, 1): TypeError: can't convert nil into Rational
+Rational(1, x): TypeError: can't convert nil into Rational
+Rational(x): TypeError: can't convert nil into Rational
+r + x: TypeError: nil can't be coerced into Rational
+r * x: TypeError: nil can't be coerced into Rational
+r == x: false
+Rational(n, 2): (1/2)
+Rational(f): (1/2)

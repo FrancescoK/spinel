@@ -2608,6 +2608,12 @@ static inline sp_Rational sp_poly_kernel_rational(sp_RbVal v) {
     sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return sp_rational_new(sp_poly_to_i(v), 1);
 }
+/* Kernel#Rational's argument: nil is no number, "can't convert nil into
+   Rational" as CRuby raises; anything else converts as above. */
+static inline sp_Rational sp_poly_kernel_rational_arg(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't convert nil into Rational");
+  return sp_poly_kernel_rational(v);
+}
 /* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
    reduce accumulator typed when the block folds through the poly `+`. */
 static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {

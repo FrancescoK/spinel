@@ -2264,6 +2264,15 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
 /* Emit a node as an sp_Rational value: a Rational stays as-is, an Integer is
    lifted to n/1. Used to coerce the other operand of a Rational arithmetic /
    comparison op. */
+/* Kernel#Rational's argument: as emit_rat_coerce, but a boxed nil is the
+   TypeError Rational(nil) raises rather than the integer 0. */
+static void emit_rat_kernel_arg(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_POLY) {
+    buf_puts(b, "sp_poly_kernel_rational_arg("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
+  }
+  emit_rat_coerce(c, node, b);
+}
 void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
   if (comp_ntype(c, node) == TY_FLOAT) {
@@ -3923,7 +3932,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         if (comp_ntype(c, argv[k]) == TY_COMPLEX) {
           buf_puts(b, "sp_complex_to_r("); emit_expr(c, argv[k], b); buf_puts(b, ")");
         }
-        else emit_rat_coerce(c, argv[k], b);
+        else emit_rat_kernel_arg(c, argv[k], b);
       }
       buf_puts(b, ")");
       return 1;
@@ -3941,7 +3950,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
-      emit_rat_coerce(c, argv[0], b);
+      emit_rat_kernel_arg(c, argv[0], b);
       return 1;
     }
     /* Rational(a, b) with a Float or Rational operand: the exact quotient of
@@ -3950,9 +3959,9 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
                       comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL ||
                       comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
       buf_puts(b, "sp_rational_div(");
-      emit_rat_coerce(c, argv[0], b);
+      emit_rat_kernel_arg(c, argv[0], b);
       buf_puts(b, ", ");
-      emit_rat_coerce(c, argv[1], b);
+      emit_rat_kernel_arg(c, argv[1], b);
       buf_puts(b, ")");
       return 1;
     }
