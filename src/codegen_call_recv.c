@@ -7036,6 +7036,241 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   return 1;
 }
 
+/* An Integer receiver's round(half:) and the rounding family, chr, [] / bit
+   reads, and its division family: divmod, div, gcd / lcm, modulo,
+   remainder, gcdlcm (emit_scalar_recv_arms's Integer chain; answers 1 when
+   a branch was taken) */
+static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, const char *r) {
+  /* `round(half: mode)`, with or without a digit count. Only #round takes
+     a tie-break mode; the other three reject the hash outright, and with
+     a digit count as well it is the arity CRuby complains about first. */
+  if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
+           sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
+           is_round_family(name)) {
+    RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); ", tr, r);
+    if (argc == 2) {
+      int tn = ++g_tmp;
+      buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+      if (!sp_streq(name, "round")) {
+        /* the hash is built before the call rejects it */
+        emit_round_kw_effects(c, &kw, b);
+        buf_printf(b, "(void)_t%d; (void)_t%d;"
+                      " sp_raise_cls(\"ArgumentError\", \"wrong number of"
+                      " arguments (given 2, expected 0..1)\"); (sp_int)0; })", tr, tn);
+      }
+      else {
+        int tm = emit_round_kw_binds(c, &kw, b);
+        buf_printf(b, "sp_int_round_half_v(_t%d, _t%d, ", tr, tn);
+        if (tm >= 0) buf_printf(b, "_t%d", tm); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, "); })");
+      }
+    }
+    else if (!sp_streq(name, "round")) {
+      emit_round_kw_effects(c, &kw, b);
+      buf_printf(b, "(void)_t%d; ", tr);
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of Hash"
+                  " into Integer\"); (sp_int)0; })");
+    }
+    else {
+      /* Integer#round with no digit count answers the receiver without
+         reading the keywords at all -- `1.round(half: :bogus)` is 1,
+         where `1.round(0, half: :bogus)` is an ArgumentError. They are
+         still evaluated: the hash is built before the call ignores it. */
+      emit_round_kw_effects(c, &kw, b);
+      buf_printf(b, "_t%d; })", tr);
+    }
+  }
+  else if (is_round_family(name) && argc == 1) {
+    buf_printf(b, "sp_int_%s(%s, ", name, r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "chr") && argc == 1) {
+    /* Integer#chr(Encoding::X): the encoding argument is resolved at
+       compile time from the constant path (Encoding values barely exist
+       as runtime objects). UTF_8 encodes the codepoint (1-4 bytes);
+       the single-byte encodings keep byte semantics. A dynamic or
+       unknown encoding is a loud reject, not a silent byte-truncation
+       (which is what this arm previously did for EVERY chr(enc)). */
+    const char *enm = NULL, *parnm = NULL;
+    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantPathNode")) {
+      enm = nt_str(nt, argv[0], "name");
+      int par = nt_ref(nt, argv[0], "parent");
+      parnm = (par >= 0 && nt_type(nt, par) &&
+               sp_streq(nt_type(nt, par), "ConstantReadNode"))
+              ? nt_str(nt, par, "name") : NULL;
+    }
+    if (parnm && sp_streq(parnm, "Encoding") && enm && sp_streq(enm, "UTF_8"))
+      buf_printf(b, "sp_int_chr_utf8(%s)", r);
+    else if (parnm && sp_streq(parnm, "Encoding") && enm &&
+             (sp_streq(enm, "US_ASCII") || sp_streq(enm, "ASCII_8BIT") ||
+              sp_streq(enm, "BINARY")))
+      buf_printf(b, "sp_int_chr(%s)", r);
+    else
+      unsupported(c, id, "Integer#chr with a non-constant or unsupported encoding");
+  }
+  else if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+    /* bit-slice: n[lo..hi] extracts hi-lo+1 bits starting at lo; an
+       endless range keeps everything above lo; a beginless range raises
+       like CRuby (the field below bit 0 is infinite) */
+    int trb = ++g_tmp;
+    buf_printf(b, "({ sp_Range _t%d = ", trb); emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_int _lo%d = _t%d.first == INTPTR_MIN"
+                  " ? (sp_raise_cls(\"ArgumentError\","
+                  " \"The beginless range for Integer#[] results in infinity\"), 0)"
+                  " : _t%d.first;"
+                  " sp_int _sh%d = ((%s) >> _lo%d);"
+                  " _t%d.last == INTPTR_MAX ? _sh%d"
+                  " : (_sh%d & ((((sp_int)1) << (_t%d.last - _lo%d + (_t%d.excl ? 0 : 1))) - 1)); })",
+               trb, trb, trb,
+               trb, r, trb,
+               trb, trb,
+               trb, trb, trb, trb);
+  }
+  else if (sp_streq(name, "[]") && argc == 1) {
+    /* clamped: a literal-folded out-of-range index was an undefined C
+       shift (right answer on x86's masked shifts, garbage elsewhere).
+       A Bignum index is far past the receiver's width, so the bit is the
+       sign bit: 0 for a non-negative receiver, 1 for a negative one. */
+    if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+      buf_printf(b, "); (sp_int)((%s) < 0 ? 1 : 0); })", r);
+    }
+    else { buf_printf(b, "sp_int_bit((%s), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  }
+  else if (sp_streq(name, "[]") && argc == 2) {
+    /* n[start, len]: the len-bit field starting at bit `start`. Routed
+       through a runtime helper that clamps an out-of-range start/len so
+       the shift never goes undefined. */
+    buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    /* a Float divisor divides as floats: [floor-quotient Integer, Float mod] */
+    int tb = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
+    buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+    buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                  " sp_int _t%d = (sp_int)floor((double)(%s) / _t%d);"
+                  " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                  " sp_PolyArray_push(_t%d, sp_box_float((double)(%s) - (double)_t%d * _t%d)); _t%d; })",
+               tb, tq, r, tb, o, o, o, tq, o, r, tq, tb, o);
+  }
+  else if (sp_streq(name, "divmod") && argc == 1 &&
+           comp_ntype(c, argv[0]) != TY_RATIONAL) {
+    int tb = ++g_tmp, o = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
+                  " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
+  }
+  else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425);
+       a zero divisor is ZeroDivisionError, a NaN one FloatDomainError and a
+       quotient past the Integer range sp_float_fit_i's RangeError */
+    int tx = ++g_tmp, tn = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); sp_float _t%d = ", tx, r, tn);
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                  " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                  " sp_float_fit_i(floor((double)_t%d / _t%d)); })", tn, tn, tx, tn);
+  }
+  /* int receiver, Bignum divisor: the receiver always fits an sp_int, but
+     the quotient has to be computed in bigint since the divisor cannot
+     narrow to one -- emit_int_divisor's plain sp_int cast handed
+     sp_idiv a pointer where it wanted a machine int, and the call never
+     compiled (not merely truncated). Dividing something that fits int64
+     by something that does not always answers -1, 0, or a small
+     quotient bounded by the receiver, so narrow the ANSWER instead,
+     the same shape gcd/lcm's own TY_BIGINT arms below use. */
+  else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+    buf_printf(b, "sp_bigint_to_int(sp_bigint_div(sp_bigint_new_int(%s), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, "))");
+  }
+  else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+  else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
+           (comp_ntype(c, argv[0]) == TY_FLOAT ||
+            comp_ntype(c, argv[0]) == TY_STRING ||
+            comp_ntype(c, argv[0]) == TY_NIL ||
+            comp_ntype(c, argv[0]) == TY_BOOL ||
+            comp_ntype(c, argv[0]) == TY_SYMBOL ||
+            ty_is_array(comp_ntype(c, argv[0])) ||
+            ty_is_hash(comp_ntype(c, argv[0])))) {
+    /* every non-Integer argument is CRuby's "not an integer" TypeError;
+       only a Float was caught, so a String went into sp_gcd's sp_int slot
+       as a pointer (#3644) */
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"not an integer\"); (sp_int)(%s); })", r);
+  }
+  else if (sp_streq(name, "gcd") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+    /* gcd(int, bignum) divides the int receiver, so it always fits an
+       sp_int; compute via the bigint gcd then narrow (#3006) */
+    buf_printf(b, "sp_bigint_to_int(sp_bigint_gcd(sp_bigint_new_int(%s), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, "))");
+  }
+  else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  /* lcm(bignum) is at least as large as the argument, so it stays big */
+  else if (sp_streq(name, "lcm") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+    buf_printf(b, "sp_bigint_lcm(sp_bigint_new_int(%s), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    int tb = ++g_tmp;
+    buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+    buf_printf(b, "; (double)(%s) - _t%d * floor((double)(%s) / _t%d); })",
+               r, tb, r, tb);
+  }
+  else if ((sp_streq(name, "modulo") || sp_streq(name, "%%")) && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    /* Integer % Rational lifts the receiver to n/1 (floor modulo) */
+    buf_printf(b, "sp_rational_mod(sp_rational_new((sp_int)(%s), 1), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "remainder") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    /* x - y * (x/y).truncate, in doubles (7.remainder(2.5) is 2.0); a zero
+       divisor raises like every other division-derived operation (#3649) */
+    int tb = ++g_tmp;
+    buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d == 0 ? (sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\"), 0.0)"
+                  " : (double)(%s) - _t%d * trunc((double)(%s) / _t%d); })",
+               tb, r, tb, r, tb);
+  }
+  else if (sp_streq(name, "remainder") && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    buf_printf(b, "sp_rational_rem(sp_rational_new((sp_int)(%s), 1), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    /* [floor quotient (Integer), self - q*b (Rational)] */
+    int ta = ++g_tmp, tb2 = ++g_tmp, tq2 = ++g_tmp, to2 = ++g_tmp;
+    buf_printf(b, "({ sp_Rational _t%d = sp_rational_new((sp_int)(%s), 1); sp_Rational _t%d = ", ta, r, tb2);
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_int _t%d = sp_rational_floor_i(sp_rational_div(_t%d, _t%d));"
+                  " sp_Rational _r = sp_rational_sub(_t%d, sp_rational_mul(sp_rational_new(_t%d, 1), _t%d));"
+                  " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                  " sp_PolyArray_push(_t%d, sp_box_rational(_r)); _t%d; })",
+               tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
+  }
+  else if (sp_streq(name, "gcdlcm") && argc == 1 &&
+           comp_ntype(c, argv[0]) == TY_FLOAT) {
+    buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+    buf_printf(b, "); (void)(%s); sp_raise_cls(\"TypeError\", \"not an integer\");"
+                  " sp_IntArray_new(); })", r);
+  }
+  else if (sp_streq(name, "gcdlcm") && argc == 1) {
+    int ta = ++g_tmp, o = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
+                  " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
+  }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -7155,232 +7390,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* the arms that read only the receiver and the arguments: builtin-op
        rows (builtin_ops.c) */
     if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
-    /* `round(half: mode)`, with or without a digit count. Only #round takes
-       a tie-break mode; the other three reject the hash outright, and with
-       a digit count as well it is the arity CRuby complains about first. */
-    else if ((argc == 1 || argc == 2) && nt_type(nt, argv[argc - 1]) &&
-             sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode") &&
-             is_round_family(name)) {
-      RoundKw kw; round_kw_read(c, argv[argc - 1], &kw);
-      int tr = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = (%s); ", tr, r);
-      if (argc == 2) {
-        int tn = ++g_tmp;
-        buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
-        if (!sp_streq(name, "round")) {
-          /* the hash is built before the call rejects it */
-          emit_round_kw_effects(c, &kw, b);
-          buf_printf(b, "(void)_t%d; (void)_t%d;"
-                        " sp_raise_cls(\"ArgumentError\", \"wrong number of"
-                        " arguments (given 2, expected 0..1)\"); (sp_int)0; })", tr, tn);
-        }
-        else {
-          int tm = emit_round_kw_binds(c, &kw, b);
-          buf_printf(b, "sp_int_round_half_v(_t%d, _t%d, ", tr, tn);
-          if (tm >= 0) buf_printf(b, "_t%d", tm); else buf_puts(b, "sp_box_nil()");
-          buf_puts(b, "); })");
-        }
-      }
-      else if (!sp_streq(name, "round")) {
-        emit_round_kw_effects(c, &kw, b);
-        buf_printf(b, "(void)_t%d; ", tr);
-        buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of Hash"
-                    " into Integer\"); (sp_int)0; })");
-      }
-      else {
-        /* Integer#round with no digit count answers the receiver without
-           reading the keywords at all -- `1.round(half: :bogus)` is 1,
-           where `1.round(0, half: :bogus)` is an ArgumentError. They are
-           still evaluated: the hash is built before the call ignores it. */
-        emit_round_kw_effects(c, &kw, b);
-        buf_printf(b, "_t%d; })", tr);
-      }
-    }
-    else if (is_round_family(name) && argc == 1) {
-      buf_printf(b, "sp_int_%s(%s, ", name, r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "chr") && argc == 1) {
-      /* Integer#chr(Encoding::X): the encoding argument is resolved at
-         compile time from the constant path (Encoding values barely exist
-         as runtime objects). UTF_8 encodes the codepoint (1-4 bytes);
-         the single-byte encodings keep byte semantics. A dynamic or
-         unknown encoding is a loud reject, not a silent byte-truncation
-         (which is what this arm previously did for EVERY chr(enc)). */
-      const char *enm = NULL, *parnm = NULL;
-      if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantPathNode")) {
-        enm = nt_str(nt, argv[0], "name");
-        int par = nt_ref(nt, argv[0], "parent");
-        parnm = (par >= 0 && nt_type(nt, par) &&
-                 sp_streq(nt_type(nt, par), "ConstantReadNode"))
-                ? nt_str(nt, par, "name") : NULL;
-      }
-      if (parnm && sp_streq(parnm, "Encoding") && enm && sp_streq(enm, "UTF_8"))
-        buf_printf(b, "sp_int_chr_utf8(%s)", r);
-      else if (parnm && sp_streq(parnm, "Encoding") && enm &&
-               (sp_streq(enm, "US_ASCII") || sp_streq(enm, "ASCII_8BIT") ||
-                sp_streq(enm, "BINARY")))
-        buf_printf(b, "sp_int_chr(%s)", r);
-      else
-        unsupported(c, id, "Integer#chr with a non-constant or unsupported encoding");
-    }
-    else if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-      /* bit-slice: n[lo..hi] extracts hi-lo+1 bits starting at lo; an
-         endless range keeps everything above lo; a beginless range raises
-         like CRuby (the field below bit 0 is infinite) */
-      int trb = ++g_tmp;
-      buf_printf(b, "({ sp_Range _t%d = ", trb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_int _lo%d = _t%d.first == INTPTR_MIN"
-                    " ? (sp_raise_cls(\"ArgumentError\","
-                    " \"The beginless range for Integer#[] results in infinity\"), 0)"
-                    " : _t%d.first;"
-                    " sp_int _sh%d = ((%s) >> _lo%d);"
-                    " _t%d.last == INTPTR_MAX ? _sh%d"
-                    " : (_sh%d & ((((sp_int)1) << (_t%d.last - _lo%d + (_t%d.excl ? 0 : 1))) - 1)); })",
-                 trb, trb, trb,
-                 trb, r, trb,
-                 trb, trb,
-                 trb, trb, trb, trb);
-    }
-    else if (sp_streq(name, "[]") && argc == 1) {
-      /* clamped: a literal-folded out-of-range index was an undefined C
-         shift (right answer on x86's masked shifts, garbage elsewhere).
-         A Bignum index is far past the receiver's width, so the bit is the
-         sign bit: 0 for a non-negative receiver, 1 for a negative one. */
-      if (comp_ntype(c, argv[0]) == TY_BIGINT) {
-        buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
-        buf_printf(b, "); (sp_int)((%s) < 0 ? 1 : 0); })", r);
-      }
-      else { buf_printf(b, "sp_int_bit((%s), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    }
-    else if (sp_streq(name, "[]") && argc == 2) {
-      /* n[start, len]: the len-bit field starting at bit `start`. Routed
-         through a runtime helper that clamps an out-of-range start/len so
-         the shift never goes undefined. */
-      buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      /* a Float divisor divides as floats: [floor-quotient Integer, Float mod] */
-      int tb = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                    " sp_int _t%d = (sp_int)floor((double)(%s) / _t%d);"
-                    " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                    " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                    " sp_PolyArray_push(_t%d, sp_box_float((double)(%s) - (double)_t%d * _t%d)); _t%d; })",
-                 tb, tq, r, tb, o, o, o, tq, o, r, tq, tb, o);
-    }
-    else if (sp_streq(name, "divmod") && argc == 1 &&
-             comp_ntype(c, argv[0]) != TY_RATIONAL) {
-      int tb = ++g_tmp, o = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
-                    " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
-    }
-    else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425);
-         a zero divisor is ZeroDivisionError, a NaN one FloatDomainError and a
-         quotient past the Integer range sp_float_fit_i's RangeError */
-      int tx = ++g_tmp, tn = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = (%s); sp_float _t%d = ", tx, r, tn);
-      emit_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                    " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
-                    " sp_float_fit_i(floor((double)_t%d / _t%d)); })", tn, tn, tx, tn);
-    }
-    /* int receiver, Bignum divisor: the receiver always fits an sp_int, but
-       the quotient has to be computed in bigint since the divisor cannot
-       narrow to one -- emit_int_divisor's plain sp_int cast handed
-       sp_idiv a pointer where it wanted a machine int, and the call never
-       compiled (not merely truncated). Dividing something that fits int64
-       by something that does not always answers -1, 0, or a small
-       quotient bounded by the receiver, so narrow the ANSWER instead,
-       the same shape gcd/lcm's own TY_BIGINT arms below use. */
-    else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
-      buf_printf(b, "sp_bigint_to_int(sp_bigint_div(sp_bigint_new_int(%s), ", r);
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
-    }
-    else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-    else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
-             (comp_ntype(c, argv[0]) == TY_FLOAT ||
-              comp_ntype(c, argv[0]) == TY_STRING ||
-              comp_ntype(c, argv[0]) == TY_NIL ||
-              comp_ntype(c, argv[0]) == TY_BOOL ||
-              comp_ntype(c, argv[0]) == TY_SYMBOL ||
-              ty_is_array(comp_ntype(c, argv[0])) ||
-              ty_is_hash(comp_ntype(c, argv[0])))) {
-      /* every non-Integer argument is CRuby's "not an integer" TypeError;
-         only a Float was caught, so a String went into sp_gcd's sp_int slot
-         as a pointer (#3644) */
-      buf_puts(b, "({ (void)(");
-      emit_expr(c, argv[0], b);
-      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"not an integer\"); (sp_int)(%s); })", r);
-    }
-    else if (sp_streq(name, "gcd") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
-      /* gcd(int, bignum) divides the int receiver, so it always fits an
-         sp_int; compute via the bigint gcd then narrow (#3006) */
-      buf_printf(b, "sp_bigint_to_int(sp_bigint_gcd(sp_bigint_new_int(%s), ", r);
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
-    }
-    else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    /* lcm(bignum) is at least as large as the argument, so it stays big */
-    else if (sp_streq(name, "lcm") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
-      buf_printf(b, "sp_bigint_lcm(sp_bigint_new_int(%s), ", r);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      int tb = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; (double)(%s) - _t%d * floor((double)(%s) / _t%d); })",
-                 r, tb, r, tb);
-    }
-    else if ((sp_streq(name, "modulo") || sp_streq(name, "%%")) && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_RATIONAL) {
-      /* Integer % Rational lifts the receiver to n/1 (floor modulo) */
-      buf_printf(b, "sp_rational_mod(sp_rational_new((sp_int)(%s), 1), ", r);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "remainder") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      /* x - y * (x/y).truncate, in doubles (7.remainder(2.5) is 2.0); a zero
-         divisor raises like every other division-derived operation (#3649) */
-      int tb = ++g_tmp;
-      buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; _t%d == 0 ? (sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\"), 0.0)"
-                    " : (double)(%s) - _t%d * trunc((double)(%s) / _t%d); })",
-                 tb, r, tb, r, tb);
-    }
-    else if (sp_streq(name, "remainder") && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_RATIONAL) {
-      buf_printf(b, "sp_rational_rem(sp_rational_new((sp_int)(%s), 1), ", r);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
-      /* [floor quotient (Integer), self - q*b (Rational)] */
-      int ta = ++g_tmp, tb2 = ++g_tmp, tq2 = ++g_tmp, to2 = ++g_tmp;
-      buf_printf(b, "({ sp_Rational _t%d = sp_rational_new((sp_int)(%s), 1); sp_Rational _t%d = ", ta, r, tb2);
-      emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_int _t%d = sp_rational_floor_i(sp_rational_div(_t%d, _t%d));"
-                    " sp_Rational _r = sp_rational_sub(_t%d, sp_rational_mul(sp_rational_new(_t%d, 1), _t%d));"
-                    " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                    " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                    " sp_PolyArray_push(_t%d, sp_box_rational(_r)); _t%d; })",
-                 tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
-    }
-    else if (sp_streq(name, "gcdlcm") && argc == 1 &&
-             comp_ntype(c, argv[0]) == TY_FLOAT) {
-      buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
-      buf_printf(b, "); (void)(%s); sp_raise_cls(\"TypeError\", \"not an integer\");"
-                    " sp_IntArray_new(); })", r);
-    }
-    else if (sp_streq(name, "gcdlcm") && argc == 1) {
-      int ta = ++g_tmp, o = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
-                    " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
-    }
+    else if (int_arms_round_divide(c, id, b, nt, name, argc, argv, r)) ;
     else if (int_arms_clamp_pow(c, b, nt, name, recv, argc, argv, a0, r)) ;
     else handled = 0;
   }
