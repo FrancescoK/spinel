@@ -1,0 +1,6 @@
+["c", "d"]
+["c", "d"]
+["c", "d"]
+["C", "D"]
+2
+NoMethodError

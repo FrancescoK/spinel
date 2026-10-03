@@ -7525,7 +7525,15 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     /* grapheme clusters == characters over the supported text domain (no
        combining sequences): alias to the chars/each_char machinery */
     int grc = nt_ref(nt, id, "receiver");
-    if (grc >= 0 && infer_type(c, grc) == TY_STRING) {
+    TyKind grt = grc >= 0 ? infer_type(c, grc) : TY_UNKNOWN;
+    /* a boxed receiver (a String read out of a container) reaches the
+       poly chars / each_char arms, which run it when it is a String at run
+       time and raise NoMethodError otherwise; a program that defines any of
+       the names itself keeps the call to its own dispatch */
+    int grpoly = grt == TY_POLY && nt_ref(nt, id, "arguments") < 0 &&
+                 !an_user_defines_or_reads(c, nm) &&
+                 !an_user_defines_or_reads(c, sp_streq(nm, "grapheme_clusters") ? "chars" : "each_char");
+    if (grt == TY_STRING || grpoly) {
       nt_node_set_str(nt, id, "name",
                       sp_streq(nm, "grapheme_clusters") ? "chars" : "each_char");
       *changed = 1;
