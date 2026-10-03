@@ -5469,6 +5469,22 @@ const char *op_assign_int_conv(TyKind slot, const char *op) {
   return "sp_poly_opnd_i(";
 }
 
+/* The receiver an iterator answers, re-read at the tail: a boxed receiver of
+   a numeric iterator (`x.times { }` with x boxed) answers in the call's own
+   kind, Integer or Float -- the loop already refused a receiver of any other
+   kind, so the box is read as one. Re-read raw, the sp_RbVal landed where
+   the call's Integer belongs and the C did not compile. */
+void emit_tail_recv_value(Compiler *c, int id, int rr, Buf *b) {
+  TyKind ct = comp_ntype(c, id);
+  if (comp_ntype(c, rr) == TY_POLY && (ct == TY_INT || ct == TY_FLOAT)) {
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, rr, &rb);
+    emit_unbox_text(c, ct, rb.p ? rb.p : "sp_box_nil()", b);
+    free(rb.p);
+    return;
+  }
+  emit_expr(c, rr, b);
+}
+
 void emit_poly_unboxed(Compiler *c, int node, TyKind t, const char *conv, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, conv); emit_expr(c, node, b); buf_puts(b, ")"); }
   else emit_expr(c, node, b);
@@ -12877,7 +12893,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
              comp_ntype(c, id) != TY_VOID && comp_ntype(c, id) != TY_UNKNOWN) {
       emit_indent(b, indent);
       emit_tail_lead(b);
-      emit_expr(c, _rr, b);
+      emit_tail_recv_value(c, id, _rr, b);
       buf_puts(b, ";\n");
     }
     else if (_named) {
@@ -12887,7 +12903,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          is the loop's, which is void, and the slot it is assigned to rejects
          it (or, for an Array receiver, takes the loop counter). */
       emit_indent(b, indent);
-      emit_expr(c, _rr, b);
+      emit_tail_recv_value(c, id, _rr, b);
       buf_puts(b, ";\n");
     }
     return;

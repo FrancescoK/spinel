@@ -1669,6 +1669,7 @@ int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
                         int capture, Buf *b);
 void emit_poly_unboxed(Compiler *c, int node, TyKind t, const char *conv, Buf *b);
 void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b);
+void emit_tail_recv_value(Compiler *c, int id, int rr, Buf *b);
 const char *op_assign_int_conv(TyKind slot, const char *op);
 void emit_cond(Compiler *c, int id, Buf *b);
 int static_isa_cond(Compiler *c, int pred);

@@ -3116,7 +3116,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (as_expr && bbody >= 0) {
       int bn4 = 0; const int *bd4 = nt_arr(c->nt, bbody, "body", &bn4);
       int rr4 = (bd4 && bn4 > 0) ? tail_iter_receiver(c, bd4[bn4 - 1]) : -1;
-      if (rr4 >= 0) { emit_expr(c, rr4, b); buf_puts(b, "; "); }
+      if (rr4 >= 0) { emit_tail_recv_value(c, bd4[bn4 - 1], rr4, b); buf_puts(b, "; "); }
     }
   }
   if (rd_lbl) g_redo_depth--;
