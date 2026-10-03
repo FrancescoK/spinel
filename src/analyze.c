@@ -28005,11 +28005,8 @@ static void an_phase_class_structure(Compiler *c) {
   comp_scope_index_set_frozen(0);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
+/* Explicit self receivers for implicit-self reads, then the block-forward inlining: a callee whose block is only called or forwarded is inlined at its call sites (analyze_program's steps, in their order) */
+static void an_phase_block_inline(Compiler *c) {
   /* A bare identifier inside a class method that names a `class << self`
      attr reader is an implicit-self read of that singleton attribute; give it
      an explicit self receiver so it resolves like `self.reader` instead of
@@ -28385,6 +28382,14 @@ void analyze_program(Compiler *c) {
   free(scope_keeps_blk);
   free(blk_cond_pred);
   free(blk_fwd_callee);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
 
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {
