@@ -14653,6 +14653,188 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
   }
 }
 
+/* The symbol table runtime (under g_emit_sym_rt) and sp_class_to_s, the class names the poly render arms print (under g_emit_class_names) (codegen_program's steps, in their order) */
+static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
+  if (g_emit_sym_rt) {
+    int ns = c->nsymbols;
+    if (ns > 0) {
+      /* A name holding a NUL cannot use either inline literal form: both are
+         GNU statement expressions, and this is a STATIC initializer, which
+         needs constant expressions. A file-scope object with a real sp_str_hdr
+         is one -- `_sym_N.d` is an address constant -- so such a name gets its
+         own struct beside the table and the table points at it. Ordinary
+         names keep the compact marked-literal form and cost nothing extra.
+         sp_str_byte_len then reads the header for the 0xf1 entries and falls
+         back to strlen for the 0xff ones, which is right for both. */
+      for (int i = 0; i < ns; i++) {
+        size_t sl = c->symbol_lens ? c->symbol_lens[i] : strlen(c->symbols[i]);
+        if (sl <= strlen(c->symbols[i])) continue;
+        buf_printf(b, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _sym_%d = "
+                       "{ { NULL, %zu, %zu, 0 }, 0xf1, \"", sl + 1, i, sl + 1, sl);
+        emit_c_escaped_n(b, c->symbols[i], sl);
+        buf_puts(b, "\" };\n");
+      }
+      buf_printf(b, "static const char *const sp_sym_names[%d] = {", ns);
+      for (int i = 0; i < ns; i++) {
+        if (i) buf_puts(b, ", ");
+        size_t sl = c->symbol_lens ? c->symbol_lens[i] : strlen(c->symbols[i]);
+        if (sl > strlen(c->symbols[i])) buf_printf(b, "_sym_%d.d", i);
+        else emit_str_literal(b, c->symbols[i]);
+      }
+      buf_puts(b, "};\n");
+    }
+    /* dynamic intern pool: symbols minted at runtime (Symbol#upcase,
+       :"interp", String#to_sym) get ids >= the static count. */
+    buf_puts(b, "static const char *sp_dyn_syms[SP_DYN_SYMS_MAX]; static int sp_ndyn = 0;\n");
+    /* Those entries are string-heap strings (sp_str_dup_external) held only by
+       this static array, which the collector does not walk: the string sweep
+       freed them and the next intern compared against a corpse. Emitted here,
+       right after the array, so the declaration is always in scope. */
+    buf_puts(b, "static void sp_mark_dyn_syms(void){for(int _i=0;_i<sp_ndyn;_i++)sp_mark_string(sp_dyn_syms[_i]);}\n");
+    g_has_dyn_syms = 1;
+    /* Every arm must hand back a MARKED string. sp_sym_names[] entries
+       carry the 0xff rodata marker, but a bare "" literal does not, and
+       callers root the result (`const char *t = sp_sym_to_s(x);
+       SP_GC_ROOT(t);`). sp_gc_mark then reads the arbitrary rodata byte
+       before the literal, fails to recognise a marker, treats it as a
+       heap object and writes its mark word. A nil Symbol lands on the
+       out-of-range arm (id -1), so this was reachable from ordinary
+       Ruby. sp_str_empty is the marked empty string. */
+    buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
+    buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
+                   "if(id>=0&&id<%d)return %s;"
+                   "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
+                   "return sp_str_empty;}\n",
+                   ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
+    /* Byte-exact interning: a name may hold a NUL, which strcmp cannot see
+       past. The stored entries carry their length (a 0xf1 struct entry in its
+       header, a 0xff literal through strlen, a dyn entry through its heap
+       header), so sp_str_byte_len answers for all three.
+
+       sp_sym_intern keeps strlen semantics for its argument: generated code
+       calls it with BARE C literals, which have no marker byte in front, and
+       asking sp_str_byte_len for one reads past the object. A caller that HAS
+       a spinel string -- String#to_sym -- calls the _n form with the real
+       length. The first-byte test keeps strcmp's early exit: without it every
+       candidate paid a full length walk before the compare could fail. */
+    buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
+    buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
+                   "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
+                   "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
+                   "if(sp_ndyn<SP_DYN_SYMS_MAX){sp_dyn_syms[sp_ndyn]=sp_str_from_bytes(s,n);return (sp_sym)(%d+sp_ndyn++);}"
+                   "return (sp_sym)0;}\n", ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
+    buf_printf(b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
+               g_ext_init_name ? "" : "static ");
+  }
+  /* sp_class_to_s serves the runtime's SP_TAG_CLASS render arms (sp_poly_puts
+     / sp_poly_to_s / sp_poly_inspect). Emitted whenever anything in the
+     program could reach those (user classes, class values, any poly-capable
+     slot -- see the render-reach scan); a purely-scalar program skips it. */
+  if (g_emit_class_names) {
+    buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
+    buf_puts(b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
+    for (int i = 0; i < c->nclasses; i++) {
+      /* a reopened builtin's entry (`class Object; def m` gives Object one)
+         is what its constant boxes to, and it prints the builtin's name;
+         the Toplevel pseudo-class alone has no Ruby name */
+      if (is_builtin_reopen(c->classes[i].name) && !sp_streq(c->classes[i].name, "Toplevel")) {
+        buf_printf(b, "case %d:return SPL(\"%s\");", i, c->classes[i].name);
+        continue;
+      }
+      if (!is_builtin_reopen(c->classes[i].name)) {
+        /* An anonymous Struct/Data class has no Ruby-visible name -- the
+           StructAnon_<n> the compiler keys it by is not one -- and CRuby
+           renders it as the address form. #name already answers nil; this is
+           the same class seen through #to_s / #inspect / `p` (#4031). */
+        if (c->classes[i].is_anon_struct) {
+          buf_printf(b, "case %d:return sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
+                         "(unsigned long long)(uintptr_t)&sp_class_to_s+%d);", i, i);
+          continue;
+        }
+        const char *qname = class_ruby_name(c, i);
+        if (!qname) qname = c->classes[i].name;
+        buf_printf(b, "case %d:return SPL(\"%s\");", i, qname);
+      }
+    }
+    /* builtin class name cases (negative cls_ids) */
+    buf_puts(b, "case -100:return SPL(\"Integer\");case -101:return SPL(\"Float\");");
+    buf_puts(b, "case -102:return SPL(\"String\");case -103:return SPL(\"Symbol\");");
+    buf_puts(b, "case -104:return SPL(\"Array\");case -105:return SPL(\"Hash\");");
+    buf_puts(b, "case -106:return SPL(\"Range\");case -107:return SPL(\"Time\");");
+    buf_puts(b, "case -108:return SPL(\"Module\");case -109:return SPL(\"Class\");");
+    buf_puts(b, "case -110:return SPL(\"NilClass\");case -111:return SPL(\"TrueClass\");");
+    buf_puts(b, "case -112:return SPL(\"FalseClass\");case -113:return SPL(\"Numeric\");");
+    buf_puts(b, "case -114:return SPL(\"Comparable\");case -115:return SPL(\"Enumerable\");");
+    buf_puts(b, "case -116:return SPL(\"Object\");case -117:return SPL(\"BasicObject\");");
+    buf_puts(b, "case -118:return SPL(\"Proc\");case -119:return SPL(\"Kernel\");");
+    buf_puts(b, "case -120:return SPL(\"IO\");case -121:return SPL(\"File\");");
+    buf_puts(b, "case -122:return SPL(\"Exception\");case -123:return SPL(\"StandardError\");");
+    buf_puts(b, "case -124:return SPL(\"RuntimeError\");case -125:return SPL(\"TypeError\");");
+    buf_puts(b, "case -126:return SPL(\"ArgumentError\");case -127:return SPL(\"NameError\");");
+    buf_puts(b, "case -128:return SPL(\"NoMethodError\");case -129:return SPL(\"StopIteration\");");
+    buf_puts(b, "case -130:return SPL(\"Math\");case -131:return SPL(\"Complex\");");
+    buf_puts(b, "case -132:return SPL(\"IndexError\");case -133:return SPL(\"KeyError\");");
+    buf_puts(b, "case -134:return SPL(\"RangeError\");case -135:return SPL(\"FloatDomainError\");");
+    buf_puts(b, "case -136:return SPL(\"ZeroDivisionError\");case -137:return SPL(\"FrozenError\");");
+    buf_puts(b, "case -138:return SPL(\"IOError\");case -139:return SPL(\"LocalJumpError\");");
+    buf_puts(b, "case -140:return SPL(\"NotImplementedError\");case -141:return SPL(\"ScriptError\");");
+    buf_puts(b, "case -142:return SPL(\"Rational\");case -143:return SPL(\"Regexp\");");
+    buf_puts(b, "case -144:return SPL(\"Enumerator\");case -145:return SPL(\"Struct\");");
+    buf_puts(b, "case -146:return SPL(\"Data\");");
+    buf_puts(b, "case -147:return SPL(\"SyntaxError\");case -148:return SPL(\"SecurityError\");");
+    buf_puts(b, "case -149:return SPL(\"RegexpError\");case -150:return SPL(\"EncodingError\");");
+    buf_puts(b, "case -151:return SPL(\"SignalException\");case -152:return SPL(\"Interrupt\");");
+    buf_puts(b, "case -153:return SPL(\"ThreadError\");case -154:return SPL(\"FiberError\");");
+    buf_puts(b, "case -155:return SPL(\"ClosedQueueError\");case -156:return SPL(\"UncaughtThrowError\");");
+    buf_puts(b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
+    buf_puts(b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
+    buf_puts(b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
+    buf_puts(b, "case -163:return SPL(\"Process::Status\");case -164:return SPL(\"Process::Tms\");");
+    buf_puts(b, "case -165:return SPL(\"Dir\");");
+    buf_puts(b, "case -166:return SPL(\"BasicSocket\");case -167:return SPL(\"IPSocket\");");
+    buf_puts(b, "case -168:return SPL(\"TCPSocket\");case -169:return SPL(\"TCPServer\");");
+    buf_puts(b, "case -170:return SPL(\"UDPSocket\");case -171:return SPL(\"UNIXSocket\");");
+    buf_puts(b, "case -172:return SPL(\"UNIXServer\");case -173:return SPL(\"Socket\");");
+    /* The concurrency classes name themselves the way CRuby does: the
+       top-level constant is an alias, #name answers the qualified form. */
+    buf_puts(b, "case -174:return SPL(\"Thread\");case -175:return SPL(\"Thread::Mutex\");");
+    buf_puts(b, "case -176:return SPL(\"Thread::Queue\");case -177:return SPL(\"Thread::SizedQueue\");");
+    buf_puts(b, "case -178:return SPL(\"Thread::ConditionVariable\");case -179:return SPL(\"Fiber\");");
+    buf_puts(b, "case -180:return SPL(\"MatchData\");");
+    buf_puts(b, "default:return sp_str_empty;} }\n\n");
+    /* CRuby INSPECTS a keyword-init Struct class as `K(keyword_init: true)`
+       while its name and to_s stay the bare name, so the render arms need a
+       second table rather than a suffixed sp_class_to_s (#3947). Emitted
+       alongside it, and identical to it when no such class exists. */
+    buf_puts(b, "static const char *sp_class_inspect_name(sp_Class c){switch(c.cls_id){");
+    for (int i = 0; i < c->nclasses; i++) {
+      if (is_builtin_reopen(c->classes[i].name)) continue;
+      if (!c->classes[i].is_struct || c->classes[i].kw_init != 1) continue;
+      const char *qname = class_ruby_name(c, i);
+      if (!qname) qname = c->classes[i].name;
+      buf_printf(b, "case %d:return SPL(\"%s(keyword_init: true)\");", i, qname);
+    }
+    buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    /* #name of an ANONYMOUS class is nil, where #to_s and #inspect are the
+       address form sp_class_to_s renders. The static spelling
+       (`Struct.new(:a).name`) has always answered nil; this is the same class
+       reached through a value (`obj.class.name`) (#4031). */
+    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){switch(c.cls_id){");
+    for (int i = 0; i < c->nclasses; i++)
+      if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
+        buf_printf(b, "case %d:return NULL;", i);
+    buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    /* Inverse of the table above, for resolving a class carried by NAME back to
+       its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold
+       path only (superclass/ancestors), so a linear scan is fine. */
+    buf_puts(b, "static sp_int sp_builtin_id_of_name(const char *n){\n");
+    buf_puts(b, "  if(!n||!n[0])return SP_CLASS_NIL_ID;\n");
+    buf_puts(b, "  for(sp_int i=-100;i>=-179;i--){const char*s=sp_class_to_s((sp_Class){i,NULL});"
+                 "if(s&&s[0]&&!strcmp(s,n))return i;}\n");
+    buf_puts(b, "  return SP_CLASS_NIL_ID;\n}\n\n");
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -14751,184 +14933,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
   buf_puts(&b, "#include \"spinel_rt.h\"\n");
   emit_ffi_decls(c, &b);
-  if (g_emit_sym_rt) {
-    int ns = c->nsymbols;
-    if (ns > 0) {
-      /* A name holding a NUL cannot use either inline literal form: both are
-         GNU statement expressions, and this is a STATIC initializer, which
-         needs constant expressions. A file-scope object with a real sp_str_hdr
-         is one -- `_sym_N.d` is an address constant -- so such a name gets its
-         own struct beside the table and the table points at it. Ordinary
-         names keep the compact marked-literal form and cost nothing extra.
-         sp_str_byte_len then reads the header for the 0xf1 entries and falls
-         back to strlen for the 0xff ones, which is right for both. */
-      for (int i = 0; i < ns; i++) {
-        size_t sl = c->symbol_lens ? c->symbol_lens[i] : strlen(c->symbols[i]);
-        if (sl <= strlen(c->symbols[i])) continue;
-        buf_printf(&b, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _sym_%d = "
-                       "{ { NULL, %zu, %zu, 0 }, 0xf1, \"", sl + 1, i, sl + 1, sl);
-        emit_c_escaped_n(&b, c->symbols[i], sl);
-        buf_puts(&b, "\" };\n");
-      }
-      buf_printf(&b, "static const char *const sp_sym_names[%d] = {", ns);
-      for (int i = 0; i < ns; i++) {
-        if (i) buf_puts(&b, ", ");
-        size_t sl = c->symbol_lens ? c->symbol_lens[i] : strlen(c->symbols[i]);
-        if (sl > strlen(c->symbols[i])) buf_printf(&b, "_sym_%d.d", i);
-        else emit_str_literal(&b, c->symbols[i]);
-      }
-      buf_puts(&b, "};\n");
-    }
-    /* dynamic intern pool: symbols minted at runtime (Symbol#upcase,
-       :"interp", String#to_sym) get ids >= the static count. */
-    buf_puts(&b, "static const char *sp_dyn_syms[SP_DYN_SYMS_MAX]; static int sp_ndyn = 0;\n");
-    /* Those entries are string-heap strings (sp_str_dup_external) held only by
-       this static array, which the collector does not walk: the string sweep
-       freed them and the next intern compared against a corpse. Emitted here,
-       right after the array, so the declaration is always in scope. */
-    buf_puts(&b, "static void sp_mark_dyn_syms(void){for(int _i=0;_i<sp_ndyn;_i++)sp_mark_string(sp_dyn_syms[_i]);}\n");
-    g_has_dyn_syms = 1;
-    /* Every arm must hand back a MARKED string. sp_sym_names[] entries
-       carry the 0xff rodata marker, but a bare "" literal does not, and
-       callers root the result (`const char *t = sp_sym_to_s(x);
-       SP_GC_ROOT(t);`). sp_gc_mark then reads the arbitrary rodata byte
-       before the literal, fails to recognise a marker, treats it as a
-       heap object and writes its mark word. A nil Symbol lands on the
-       out-of-range arm (id -1), so this was reachable from ordinary
-       Ruby. sp_str_empty is the marked empty string. */
-    buf_printf(&b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(&b, "const char *sp_sym_to_s(sp_sym id){"
-                   "if(id>=0&&id<%d)return %s;"
-                   "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
-                   "return sp_str_empty;}\n",
-                   ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
-    /* Byte-exact interning: a name may hold a NUL, which strcmp cannot see
-       past. The stored entries carry their length (a 0xf1 struct entry in its
-       header, a 0xff literal through strlen, a dyn entry through its heap
-       header), so sp_str_byte_len answers for all three.
-
-       sp_sym_intern keeps strlen semantics for its argument: generated code
-       calls it with BARE C literals, which have no marker byte in front, and
-       asking sp_str_byte_len for one reads past the object. A caller that HAS
-       a spinel string -- String#to_sym -- calls the _n form with the real
-       length. The first-byte test keeps strcmp's early exit: without it every
-       candidate paid a full length walk before the compare could fail. */
-    buf_printf(&b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(&b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
-                   "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
-                   "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
-                   "if(sp_ndyn<SP_DYN_SYMS_MAX){sp_dyn_syms[sp_ndyn]=sp_str_from_bytes(s,n);return (sp_sym)(%d+sp_ndyn++);}"
-                   "return (sp_sym)0;}\n", ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
-    buf_printf(&b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
-               g_ext_init_name ? "" : "static ");
-  }
-  /* sp_class_to_s serves the runtime's SP_TAG_CLASS render arms (sp_poly_puts
-     / sp_poly_to_s / sp_poly_inspect). Emitted whenever anything in the
-     program could reach those (user classes, class values, any poly-capable
-     slot -- see the render-reach scan); a purely-scalar program skips it. */
-  if (g_emit_class_names) {
-    buf_printf(&b, "%s", g_ext_init_name ? "" : "static ");
-    buf_puts(&b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
-    for (int i = 0; i < c->nclasses; i++) {
-      /* a reopened builtin's entry (`class Object; def m` gives Object one)
-         is what its constant boxes to, and it prints the builtin's name;
-         the Toplevel pseudo-class alone has no Ruby name */
-      if (is_builtin_reopen(c->classes[i].name) && !sp_streq(c->classes[i].name, "Toplevel")) {
-        buf_printf(&b, "case %d:return SPL(\"%s\");", i, c->classes[i].name);
-        continue;
-      }
-      if (!is_builtin_reopen(c->classes[i].name)) {
-        /* An anonymous Struct/Data class has no Ruby-visible name -- the
-           StructAnon_<n> the compiler keys it by is not one -- and CRuby
-           renders it as the address form. #name already answers nil; this is
-           the same class seen through #to_s / #inspect / `p` (#4031). */
-        if (c->classes[i].is_anon_struct) {
-          buf_printf(&b, "case %d:return sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
-                         "(unsigned long long)(uintptr_t)&sp_class_to_s+%d);", i, i);
-          continue;
-        }
-        const char *qname = class_ruby_name(c, i);
-        if (!qname) qname = c->classes[i].name;
-        buf_printf(&b, "case %d:return SPL(\"%s\");", i, qname);
-      }
-    }
-    /* builtin class name cases (negative cls_ids) */
-    buf_puts(&b, "case -100:return SPL(\"Integer\");case -101:return SPL(\"Float\");");
-    buf_puts(&b, "case -102:return SPL(\"String\");case -103:return SPL(\"Symbol\");");
-    buf_puts(&b, "case -104:return SPL(\"Array\");case -105:return SPL(\"Hash\");");
-    buf_puts(&b, "case -106:return SPL(\"Range\");case -107:return SPL(\"Time\");");
-    buf_puts(&b, "case -108:return SPL(\"Module\");case -109:return SPL(\"Class\");");
-    buf_puts(&b, "case -110:return SPL(\"NilClass\");case -111:return SPL(\"TrueClass\");");
-    buf_puts(&b, "case -112:return SPL(\"FalseClass\");case -113:return SPL(\"Numeric\");");
-    buf_puts(&b, "case -114:return SPL(\"Comparable\");case -115:return SPL(\"Enumerable\");");
-    buf_puts(&b, "case -116:return SPL(\"Object\");case -117:return SPL(\"BasicObject\");");
-    buf_puts(&b, "case -118:return SPL(\"Proc\");case -119:return SPL(\"Kernel\");");
-    buf_puts(&b, "case -120:return SPL(\"IO\");case -121:return SPL(\"File\");");
-    buf_puts(&b, "case -122:return SPL(\"Exception\");case -123:return SPL(\"StandardError\");");
-    buf_puts(&b, "case -124:return SPL(\"RuntimeError\");case -125:return SPL(\"TypeError\");");
-    buf_puts(&b, "case -126:return SPL(\"ArgumentError\");case -127:return SPL(\"NameError\");");
-    buf_puts(&b, "case -128:return SPL(\"NoMethodError\");case -129:return SPL(\"StopIteration\");");
-    buf_puts(&b, "case -130:return SPL(\"Math\");case -131:return SPL(\"Complex\");");
-    buf_puts(&b, "case -132:return SPL(\"IndexError\");case -133:return SPL(\"KeyError\");");
-    buf_puts(&b, "case -134:return SPL(\"RangeError\");case -135:return SPL(\"FloatDomainError\");");
-    buf_puts(&b, "case -136:return SPL(\"ZeroDivisionError\");case -137:return SPL(\"FrozenError\");");
-    buf_puts(&b, "case -138:return SPL(\"IOError\");case -139:return SPL(\"LocalJumpError\");");
-    buf_puts(&b, "case -140:return SPL(\"NotImplementedError\");case -141:return SPL(\"ScriptError\");");
-    buf_puts(&b, "case -142:return SPL(\"Rational\");case -143:return SPL(\"Regexp\");");
-    buf_puts(&b, "case -144:return SPL(\"Enumerator\");case -145:return SPL(\"Struct\");");
-    buf_puts(&b, "case -146:return SPL(\"Data\");");
-    buf_puts(&b, "case -147:return SPL(\"SyntaxError\");case -148:return SPL(\"SecurityError\");");
-    buf_puts(&b, "case -149:return SPL(\"RegexpError\");case -150:return SPL(\"EncodingError\");");
-    buf_puts(&b, "case -151:return SPL(\"SignalException\");case -152:return SPL(\"Interrupt\");");
-    buf_puts(&b, "case -153:return SPL(\"ThreadError\");case -154:return SPL(\"FiberError\");");
-    buf_puts(&b, "case -155:return SPL(\"ClosedQueueError\");case -156:return SPL(\"UncaughtThrowError\");");
-    buf_puts(&b, "case -157:return SPL(\"NoMatchingPatternError\");case -158:return SPL(\"NoMatchingPatternKeyError\");");
-    buf_puts(&b, "case -159:return SPL(\"EOFError\");case -160:return SPL(\"Math::DomainError\");");
-    buf_puts(&b, "case -161:return SPL(\"SystemExit\");case -162:return SPL(\"Signal\");");
-    buf_puts(&b, "case -163:return SPL(\"Process::Status\");case -164:return SPL(\"Process::Tms\");");
-    buf_puts(&b, "case -165:return SPL(\"Dir\");");
-    buf_puts(&b, "case -166:return SPL(\"BasicSocket\");case -167:return SPL(\"IPSocket\");");
-    buf_puts(&b, "case -168:return SPL(\"TCPSocket\");case -169:return SPL(\"TCPServer\");");
-    buf_puts(&b, "case -170:return SPL(\"UDPSocket\");case -171:return SPL(\"UNIXSocket\");");
-    buf_puts(&b, "case -172:return SPL(\"UNIXServer\");case -173:return SPL(\"Socket\");");
-    /* The concurrency classes name themselves the way CRuby does: the
-       top-level constant is an alias, #name answers the qualified form. */
-    buf_puts(&b, "case -174:return SPL(\"Thread\");case -175:return SPL(\"Thread::Mutex\");");
-    buf_puts(&b, "case -176:return SPL(\"Thread::Queue\");case -177:return SPL(\"Thread::SizedQueue\");");
-    buf_puts(&b, "case -178:return SPL(\"Thread::ConditionVariable\");case -179:return SPL(\"Fiber\");");
-    buf_puts(&b, "case -180:return SPL(\"MatchData\");");
-    buf_puts(&b, "default:return sp_str_empty;} }\n\n");
-    /* CRuby INSPECTS a keyword-init Struct class as `K(keyword_init: true)`
-       while its name and to_s stay the bare name, so the render arms need a
-       second table rather than a suffixed sp_class_to_s (#3947). Emitted
-       alongside it, and identical to it when no such class exists. */
-    buf_puts(&b, "static const char *sp_class_inspect_name(sp_Class c){switch(c.cls_id){");
-    for (int i = 0; i < c->nclasses; i++) {
-      if (is_builtin_reopen(c->classes[i].name)) continue;
-      if (!c->classes[i].is_struct || c->classes[i].kw_init != 1) continue;
-      const char *qname = class_ruby_name(c, i);
-      if (!qname) qname = c->classes[i].name;
-      buf_printf(&b, "case %d:return SPL(\"%s(keyword_init: true)\");", i, qname);
-    }
-    buf_puts(&b, "default:break;} return sp_class_to_s(c); }\n\n");
-    /* #name of an ANONYMOUS class is nil, where #to_s and #inspect are the
-       address form sp_class_to_s renders. The static spelling
-       (`Struct.new(:a).name`) has always answered nil; this is the same class
-       reached through a value (`obj.class.name`) (#4031). */
-    buf_puts(&b, "static const char *sp_class_name_or_nil(sp_Class c){switch(c.cls_id){");
-    for (int i = 0; i < c->nclasses; i++)
-      if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
-        buf_printf(&b, "case %d:return NULL;", i);
-    buf_puts(&b, "default:break;} return sp_class_to_s(c); }\n\n");
-    /* Inverse of the table above, for resolving a class carried by NAME back to
-       its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold
-       path only (superclass/ancestors), so a linear scan is fine. */
-    buf_puts(&b, "static sp_int sp_builtin_id_of_name(const char *n){\n");
-    buf_puts(&b, "  if(!n||!n[0])return SP_CLASS_NIL_ID;\n");
-    buf_puts(&b, "  for(sp_int i=-100;i>=-179;i--){const char*s=sp_class_to_s((sp_Class){i,NULL});"
-                 "if(s&&s[0]&&!strcmp(s,n))return i;}\n");
-    buf_puts(&b, "  return SP_CLASS_NIL_ID;\n}\n\n");
-  }
+  emit_sym_class_name_rt(c, &b);
   /* Threaded-runtime marker: the driver greps for this and links the
      -DSP_THREADS runtime variant (libspinel_rt_mt.a) plus -lpthread instead of
      the byte-identical single-threaded archive. Emitted only when the program
