@@ -6718,6 +6718,42 @@ static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
   return found;
 }
 
+/* Whether the pieces of an interpolated String or Symbol can spell `name`:
+   the literal ones in order, a `#{}` standing for any text. `open` says a
+   `#{}` came just before, so the next literal piece may start anywhere. */
+static int interp_pieces_spell(const NodeTable *nt, const int *parts, int pn, int k, int open, const char *name) {
+  for (; k < pn; k++) {
+    const char *s = sym_or_str_literal(nt, parts[k]);
+    if (!s) { open = 1; continue; }
+    size_t n = strlen(s);
+    if (!n) continue;
+    if (!open) { if (strncmp(name, s, n)) return 0; name += n; continue; }
+    for (const char *h = strstr(name, s); h; h = strstr(h + 1, s))
+      if (interp_pieces_spell(nt, parts, pn, k + 1, 0, h + n)) return 1;
+    return 0;
+  }
+  return open || !*name;
+}
+
+/* A `define_method` call whose name is an interpolated String or Symbol that
+   can spell define_method or define_singleton_method. The methods an `each`
+   over literals names (collect_dm_each_unroll) get theirs put together at
+   compile time, with no literal in the program spelling it whole:
+
+     [:method].each { |v| define_method("define_#{v}") { |n, &b| b.call } } */
+static int dm_interp_name_may_be_dm(const NodeTable *nt, int call) {
+  const char *cn = nt_str(nt, call, "name");
+  if (!cn || !sp_streq(cn, "define_method")) return 0;
+  int args = nt_ref(nt, call, "arguments"), an = 0, pn = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return 0;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k != NK_InterpolatedStringNode && k != NK_InterpolatedSymbolNode) return 0;
+  const int *parts = nt_arr(nt, av[0], "parts", &pn);
+  return interp_pieces_spell(nt, parts, pn, 0, 0, "define_method") ||
+         interp_pieces_spell(nt, parts, pn, 0, 0, "define_singleton_method");
+}
+
 /* A define_method or define_singleton_method block that is registered as a
    method is that method's body, compiled as a C function with no loop for a
    `continue` to name, and a `next` it owns ends the call with its value,
@@ -6733,12 +6769,15 @@ static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
    may run the block as a block. A `def` makes one, and so does an `alias`
    or an `alias_method`, which names it by a Symbol or a String, so a Symbol
    or String literal spelling either name anywhere in the program counts as
-   one. The program is searched only when the body owns a `next`. */
+   one, and so does a `define_method` whose interpolated name can spell it.
+   The program is searched only when the body owns a `next`. */
 int method_body_next_to_return(NodeTable *nt, int id) {
   if (!owned_next_walk(nt, id, 0, 0)) return 0;
   for (int d = 0; d < nt->count; d++) {
-    const char *dn = nt_kind(nt, d) == NK_DefNode ? nt_str(nt, d, "name") : sym_or_str_literal(nt, d);
+    NodeKind k = nt_kind(nt, d);
+    const char *dn = k == NK_DefNode ? nt_str(nt, d, "name") : sym_or_str_literal(nt, d);
     if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
+    if (k == NK_CallNode && dm_interp_name_may_be_dm(nt, d)) return 0;
   }
   return owned_next_walk(nt, id, 0, 1);
 }
