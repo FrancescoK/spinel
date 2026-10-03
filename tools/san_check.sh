@@ -18,7 +18,9 @@
 # that reach it and the first of them. -v adds that program's report.
 # Leaks are not reported: the compiler frees little before it exits.
 #
-# Exit status: 0 no report, 1 some program reported, 2 infrastructure error.
+# Exit status: 0 no report, 1 some program reported, 2 infrastructure error
+# (the compiler is not built, xargs did not run, or the compiler was killed
+# by a signal on some program without a report).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -43,12 +45,17 @@ list() {
 }
 
 # one log per program: a program the compiler refuses is not a finding, a
-# sanitizer's report is, whatever the exit status
+# sanitizer's report is, whatever the exit status. A compiler killed by a
+# signal with no report is neither: it did not compile the program, and
+# what it left is kept as .died (the status and the program, then its output)
 list "$@" | xargs -P "$JOBS" -I{} sh -c '
   key=$(printf %s "$1" | tr / _)
   "$2" -c --no-line-map "$1" -o "$3/$key.c" > "$3/$key.log" 2>&1
+  st=$?
   rm -f "$3/$key.c"
-  grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" || rm -f "$3/$key.log"
+  grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" && exit 0
+  [ "$st" -le 128 ] || { echo "$st $1"; cat "$3/$key.log"; } > "$3/$key.died"
+  rm -f "$3/$key.log"
 ' _ {} "$SP" "$LOGS"
 # the command above answers 0 for every program, so anything else is xargs
 # itself not running them: no log then means no compile, not no report
@@ -89,4 +96,13 @@ if [ "$bad" -gt 0 ]; then
   done
 fi
 echo "san-check: $total programs, $bad with a report"
+died=0
+for d in "$LOGS"/*.died; do
+  [ -f "$d" ] || continue
+  died=1
+  read -r st f < "$d"
+  echo "san-check: $f: the compiler died with status $st and no report" >&2
+  [ "$VERBOSE" -eq 1 ] && sed 1d "$d" >&2
+done
+[ "$died" -eq 0 ] || exit 2
 [ "$bad" -eq 0 ]
