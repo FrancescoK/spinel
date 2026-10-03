@@ -30276,25 +30276,8 @@ static void an_phase_late_widen(Compiler *c) {
     infer_type(c, id);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
-  an_phase_method_backstops(c);
-
-  an_phase_late_widen(c);
-
+/* The proc-return re-derivation: ret_proc_ret and proc_ret from the now-widened bodies, as a focused fixpoint, then the node-type cache refresh (analyze_program's steps, in their order) */
+static void an_phase_proc_returns(Compiler *c) {
   /* --int-overflow=promote: the widen above can change a proc body's return
      type (a captured int local widened to poly), so a proc's caller-side
      proc_ret / a factory method's ret_proc_ret must be re-derived from the
@@ -30802,6 +30785,28 @@ void analyze_program(Compiler *c) {
     for (int id = 0; id < nt->count; id++)
       infer_type(c, id);
   }
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
+
+  an_phase_late_widen(c);
+
+  an_phase_proc_returns(c);
 
 
   /* Re-infer nodes inside instance_eval block bodies with the receiver's class
