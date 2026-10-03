@@ -4387,6 +4387,259 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* A call with no receiver (implicit self, a class body's, a free function) and a Kernel conversion sent to an explicit receiver (infer_call_inner's rules, in their order) */
+static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
+  /* implicit-self call inside an instance method */
+  if (recv < 0) {
+    Scope *self = comp_scope_of(c, id);
+    if (self->class_id >= 0 && ie_class_of(c, id) < 0) {
+      /* inside a class method self is the class, so its class methods come
+         first, as comp_self_call_mi and the inline splice resolve the call:
+         an instance method or reader of the same name stood in for
+         `def self.go` and typed the call by the wrong body */
+      if (self->is_cmethod && !sp_streq(name, "new")) {
+        int cmi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+        if (cmi >= 0) { *out = an_self_call_ret(c, self, name, cmi, id); return 1; }
+      }
+      { int rdcls2 = -1;
+        if (comp_reader_in_chain(c, self->class_id, name, &rdcls2)) {
+          const char *rname2 = comp_resolve_alias(c, self->class_id, name);
+          char ivn[256];
+          snprintf(ivn, sizeof ivn, "@%s", rname2);
+          ClassInfo *rci2 = (rdcls2 >= 0 && rdcls2 < c->nclasses) ? &c->classes[rdcls2] : &c->classes[self->class_id];
+          int iv = comp_ivar_index(rci2, ivn);
+          if (iv >= 0) {
+            /* a def in a subclass overrides the reader for that subclass */
+            TyKind rt2 = ivar_value_ty(rci2, iv);
+            int base_mi2 = comp_method_in_chain(c, self->class_id, name, NULL);
+            for (int k = 0; k < c->nclasses; k++) {
+              if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
+              int kmi = comp_method_in_chain(c, k, name, NULL);
+              if (kmi < 0 || kmi == base_mi2) continue;
+              TyKind kr = (TyKind)c->scopes[kmi].ret;
+              if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
+            }
+            { *out = rt2; return 1; }
+          }
+        }
+      }
+      /* bare `new` inside a class method returns an instance of self's class */
+      if (self->is_cmethod && sp_streq(name, "new"))
+        { *out = ty_object(self->class_id); return 1; }
+      int mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      if (mi < 0 && self->is_cmethod)
+        mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+      if (mi >= 0) { *out = an_self_call_ret(c, self, name, mi, id); return 1; }
+      /* A reopened Object's method is every object's: a bare call to it from
+         an instance method reaches it with self as the receiver (the codegen
+         boxes self for it), so the call answers the method's return. Below
+         the builtin surface, as Ruby's lookup puts Object last. */
+      if (mi < 0 && !self->is_cmethod) {
+        int oc = comp_class_index(c, "Object");
+        int omi = oc >= 0 && oc != self->class_id ? comp_method_in_chain(c, oc, name, NULL) : -1;
+        if (omi >= 0) { *out = c->scopes[omi].ret; return 1; }
+      }
+      /* Method defined only in descendants (not in base chain): unify the
+         return types of all descendant implementations -- codegen emits a
+         cls_id virtual dispatch for exactly this shape, so leaving the node
+         UNKNOWN made emit_boxed discard the dispatch's value through the
+         effect-comma nil (a Comparable base <=> over int/float subclass
+         keys compared nil, #3237). Instance methods included. */
+      {
+        TyKind r = TY_UNKNOWN; int found = 0;
+        int nd = 0; const int *ds = comp_descendants(c, self->class_id, &nd);
+        for (int di = 0; di < nd; di++) {
+          int k = ds[di];
+          int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
+                                     : comp_method_in_class(c, k, name);
+          if (dmi < 0) continue;
+          r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
+          found = 1;
+        }
+        if (found) { *out = r; return 1; }
+      }
+    }
+  }
+
+  /* bare call inside a module/class body -> class method of that module/class.
+     Use the per-node enclosing-cbody: g_cbody_class_id is only set during the
+     scope pass, not the inference fixpoint, so relying on it leaves a bare
+     module-body cmethod call (e.g. `take(mk)` where mk is `def self.mk`) typed
+     void. The scope pass records the enclosing cbody per node in node_cbody[id]
+     (cf. analyze_scope.c, analyze.c which already read it during inference). */
+  if (recv < 0) {
+    int cbody = c->node_cbody[id];
+    if (cbody < 0) cbody = g_cbody_class_id;
+    if (cbody >= 0) {
+      int smi = comp_cmethod_in_chain(c, cbody, name, NULL);
+      if (smi >= 0) { *out = an_user_call(c, id, smi, UC_CMETH, cbody); return 1; }
+    }
+  }
+  /* bare call inside an instance_eval/exec block: dispatch on receiver class */
+  if (recv < 0) {
+    int iec = ie_class_of(c, id);
+    if (iec >= 0) {
+      int imi = comp_method_in_chain(c, iec, name, NULL);
+      if (imi >= 0) { *out = an_user_call(c, id, imi, UC_IE, iec); return 1; }
+      TyKind at;
+      if (argc == 0 && attr_reader_ty(c, iec, name, &at)) { *out = at; return 1; }
+    }
+    int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
+    TyKind pr = TY_UNKNOWN;
+    for (int i = 0; i < npk; i++) {
+      int imi = comp_method_in_chain(c, pk[i], name, NULL);
+      if (imi < 0) continue;
+      TyKind t = method_call_ret(c, imi, id);
+      pr = pr == TY_UNKNOWN ? t : ty_unify(pr, t);
+    }
+    if (pr != TY_UNKNOWN) { *out = pr; return 1; }
+  }
+  /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
+     desugars to obj.Float(x); the private Kernel method is available on every
+     object, so it types like the receiverless form when the receiver's chain
+     does not define the name (mirrors the codegen dispatch).
+     The NAME gate must come first: inferring the receiver for every 1/2-arg
+     call added an infer_call<->infer_type recursion edge that other arms
+     avoid structurally, and looped forever on whole-program shapes with
+     zero conversion calls (the tep regression). Only the six capitalized
+     conversion names ever pay the receiver inference. */
+  /* Kernel#Integer/#Float take `exception: false`; the keyword hash is not one
+     of the value arguments, so it must not shift the arity (#3718) */
+  int kw_argc = argc;
+  if (argc > 0) {
+    const char *lkt = nt_type(c->nt, argv[argc - 1]);
+    if (lkt && sp_streq(lkt, "KeywordHashNode")) kw_argc--;
+  }
+  if (recv >= 0 && (kw_argc == 1 || kw_argc == 2) && name[0] >= 'A' && name[0] <= 'Z' &&
+      (sp_streq(name, "Integer") || sp_streq(name, "Float") ||
+       sp_streq(name, "String") || sp_streq(name, "Rational") ||
+       sp_streq(name, "Complex") || sp_streq(name, "Array"))) {
+    TyKind krt = infer_type(c, recv);
+    int kdisp = (ty_is_object(krt) &&
+                 comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0) ||
+                ((krt == TY_NIL || krt == TY_POLY || krt == TY_UNKNOWN) &&
+                 comp_method_index(c, name) < 0);
+    if (kdisp) {
+      if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {
+        /* a Float argument converts to an Integer that promote mode lets be a
+           Bignum, as Float#to_i does there (#4688) */
+        if (g_promote_mode && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
+        { *out = kconv_integer_kind(c, argv[0], kw_argc < argc && kconv_noraise_kw(c, argc, argv)); return 1; }
+      }
+      if (kw_argc == 1) {
+        if (sp_streq(name, "Float"))    { *out = TY_FLOAT; return 1; }
+        if (sp_streq(name, "String"))   { *out = TY_STRING; return 1; }
+        if (sp_streq(name, "Rational")) { *out = TY_RATIONAL; return 1; }
+        if (sp_streq(name, "Complex"))  { *out = TY_COMPLEX; return 1; }
+        if (sp_streq(name, "Array")) {
+          TyKind kat = infer_type(c, argv[0]);
+          if (ty_is_array(kat)) { *out = kat; return 1; }
+          if (kat == TY_INT)    { *out = TY_INT_ARRAY; return 1; }
+          if (kat == TY_FLOAT)  { *out = TY_FLOAT_ARRAY; return 1; }
+          if (kat == TY_STRING) { *out = TY_STR_ARRAY; return 1; }
+          /* an object answers through its own to_ary/to_a (#3721) */
+          if (ty_is_object(kat)) {
+            int aci = ty_object_class(kat), ami = comp_method_in_chain(c, aci, "to_ary", NULL);
+            if (ami < 0) ami = comp_method_in_chain(c, aci, "to_a", NULL);
+            if (ami >= 0) { *out = (TyKind)c->scopes[ami].ret; return 1; }
+          }
+        }
+      }
+    }
+  }
+
+  /* user-defined free-function call (no receiver) */
+  if (recv < 0) {
+    int mi = comp_method_index(c, name), fvia = UC_TOP;
+    if (mi < 0) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
+    if (mi >= 0) { *out = an_user_call(c, id, mi, fvia, fvia == UC_TOP ? -1 : c->scopes[mi].class_id); return 1; }
+    /* Kernel conversions */
+    if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {
+      if (g_promote_mode && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }   /* see above (#4688) */
+      { *out = kconv_integer_kind(c, argv[0], kw_argc < argc && kconv_noraise_kw(c, argc, argv)); return 1; }
+    }
+    if (sp_streq(name, "Float") && kw_argc == 1) { *out = TY_FLOAT; return 1; }
+    if (sp_streq(name, "String") && argc == 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "Array") && argc == 1) {
+      TyKind at = infer_type(c, argv[0]);
+      if (ty_is_array(at)) { *out = at; return 1; }
+      /* an object answers through its own to_ary/to_a (#3721) */
+      if (ty_is_object(at)) {
+        int aci2 = ty_object_class(at), ami2 = comp_method_in_chain(c, aci2, "to_ary", NULL);
+        if (ami2 < 0) ami2 = comp_method_in_chain(c, aci2, "to_a", NULL);
+        if (ami2 >= 0) { *out = (TyKind)c->scopes[ami2].ret; return 1; }
+      }
+      if (at == TY_INT)    { *out = TY_INT_ARRAY; return 1; }    /* Array(int)   -> [int]   */
+      if (at == TY_FLOAT)  { *out = TY_FLOAT_ARRAY; return 1; }  /* Array(float) -> [float] */
+      if (at == TY_STRING) { *out = TY_STR_ARRAY; return 1; }    /* Array(str)   -> [str]   */
+      if (at == TY_RANGE)  { *out = TY_INT_ARRAY; return 1; }    /* Array(range) enumerates */
+      { *out = TY_POLY_ARRAY; return 1; }
+    }
+    if (sp_streq(name, "Hash") && argc == 1) {
+      TyKind at = infer_type(c, argv[0]);
+      if (ty_is_hash(at)) { *out = at; return 1; }              /* Hash(hash) -> the hash */
+      /* an object answers through its own #to_hash (#3721) */
+      if (ty_is_object(at)) {
+        int hci2 = ty_object_class(at), hmi = comp_method_in_chain(c, hci2, "to_hash", NULL);
+        if (hmi >= 0) { *out = (TyKind)c->scopes[hmi].ret; return 1; }
+      }
+      if (at == TY_POLY) { *out = TY_POLY; return 1; }          /* nil-or-hash decided at runtime */
+      { *out = TY_POLY_POLY_HASH; return 1; }                   /* Hash(nil) / Hash([]) -> {} */
+    }
+    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "system") && argc >= 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "trap") && argc >= 1) { *out = TY_POLY; return 1; }  /* the previous handler: a command string or a Proc */
+    /* at_exit answers the Proc it registered, so the handler stays callable (#3727) */
+    if (sp_streq(name, "at_exit") && nt_ref(nt, id, "block") >= 0) { *out = TY_PROC; return 1; }
+    if (sp_streq(name, "rand")) {
+      if (argc == 0) { *out = TY_FLOAT; return 1; }
+      if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) { *out = TY_FLOAT; return 1; }   /* rand(float range) */
+      const char *atype = nt_type(nt, argv[0]);
+      if (atype && sp_streq(atype, "RangeNode")) {
+        int lo = nt_ref(nt, argv[0], "left");
+        int hi = nt_ref(nt, argv[0], "right");
+        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) { *out = TY_FLOAT; return 1; }   /* rand(float_range) */
+        /* a statically empty/reversed int range yields nil (#2519) */
+        if (lo >= 0 && hi >= 0 &&
+            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
+            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
+          long long lov = nt_int(nt, lo, "value", 0);
+          long long hiv = nt_int(nt, hi, "value", 0);
+          int excl = (nt_int(nt, argv[0], "flags", 0) & 4) ? 1 : 0;
+          if ((excl ? hiv - 1 : hiv) < lov) { *out = TY_POLY; return 1; }   /* nil */
+        }
+        { *out = TY_INT; return 1; }
+      }
+      /* rand(int range held in a variable): an Integer, or nil if the range is
+         empty at runtime -> a poly (#3221). (A Float range in a variable is
+         TY_FLOAT_RANGE, handled above.) */
+      if (infer_type(c, argv[0]) == TY_RANGE) { *out = TY_POLY; return 1; }
+      /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
+      if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
+        { *out = TY_FLOAT; return 1; }
+      if (infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }   /* rand(Bignum bound) (#3058) */
+      /* rand(Float max): CRuby truncates a positive max to an Integer range and
+         returns an Integer, but max 0.0 falls back to a Float in [0,1) -- so a
+         Float argument is a runtime-chosen poly (#2549). */
+      if (infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
+      /* a literal nonzero Integer is an Integer; a dynamic Integer could be 0
+         (Float) or nonzero (Integer), so its result is a runtime-chosen poly. */
+      if (atype && sp_streq(atype, "IntegerNode")) { *out = TY_INT; return 1; }
+      /* Any dynamic (non-literal) argument -- an Integer var, a poly value, a
+         destructured tuple element -- may be 0 (a Float [0,1)) or nonzero (an
+         Integer), so codegen boxes the result; type it poly to match rather
+         than the old TY_INT default, which left `rand(poly) == 0` comparing a
+         boxed value with an int (#2897). */
+      { *out = TY_POLY; return 1; }
+    }
+    if (sp_streq(name, "srand")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "sleep") && argc <= 1) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
+      { *out = TY_STRING; return 1; }   /* ARGF's next line, or nil */
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6146,254 +6399,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Object receivers: the user-object face of infer_call (analyze_infer_recv.c). */
   { TyKind rr; if (infer_object_call(c, id, rt, &rr)) return rr; }
 
-  /* implicit-self call inside an instance method */
-  if (recv < 0) {
-    Scope *self = comp_scope_of(c, id);
-    if (self->class_id >= 0 && ie_class_of(c, id) < 0) {
-      /* inside a class method self is the class, so its class methods come
-         first, as comp_self_call_mi and the inline splice resolve the call:
-         an instance method or reader of the same name stood in for
-         `def self.go` and typed the call by the wrong body */
-      if (self->is_cmethod && !sp_streq(name, "new")) {
-        int cmi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
-        if (cmi >= 0) return an_self_call_ret(c, self, name, cmi, id);
-      }
-      { int rdcls2 = -1;
-        if (comp_reader_in_chain(c, self->class_id, name, &rdcls2)) {
-          const char *rname2 = comp_resolve_alias(c, self->class_id, name);
-          char ivn[256];
-          snprintf(ivn, sizeof ivn, "@%s", rname2);
-          ClassInfo *rci2 = (rdcls2 >= 0 && rdcls2 < c->nclasses) ? &c->classes[rdcls2] : &c->classes[self->class_id];
-          int iv = comp_ivar_index(rci2, ivn);
-          if (iv >= 0) {
-            /* a def in a subclass overrides the reader for that subclass */
-            TyKind rt2 = ivar_value_ty(rci2, iv);
-            int base_mi2 = comp_method_in_chain(c, self->class_id, name, NULL);
-            for (int k = 0; k < c->nclasses; k++) {
-              if (k == self->class_id || !is_descendant(c, k, self->class_id)) continue;
-              int kmi = comp_method_in_chain(c, k, name, NULL);
-              if (kmi < 0 || kmi == base_mi2) continue;
-              TyKind kr = (TyKind)c->scopes[kmi].ret;
-              if (kr != TY_UNKNOWN && kr != rt2) rt2 = ty_unify(rt2, kr);
-            }
-            return rt2;
-          }
-        }
-      }
-      /* bare `new` inside a class method returns an instance of self's class */
-      if (self->is_cmethod && sp_streq(name, "new"))
-        return ty_object(self->class_id);
-      int mi = comp_method_in_chain(c, self->class_id, name, NULL);
-      if (mi < 0 && self->is_cmethod)
-        mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
-      if (mi >= 0) return an_self_call_ret(c, self, name, mi, id);
-      /* A reopened Object's method is every object's: a bare call to it from
-         an instance method reaches it with self as the receiver (the codegen
-         boxes self for it), so the call answers the method's return. Below
-         the builtin surface, as Ruby's lookup puts Object last. */
-      if (mi < 0 && !self->is_cmethod) {
-        int oc = comp_class_index(c, "Object");
-        int omi = oc >= 0 && oc != self->class_id ? comp_method_in_chain(c, oc, name, NULL) : -1;
-        if (omi >= 0) return c->scopes[omi].ret;
-      }
-      /* Method defined only in descendants (not in base chain): unify the
-         return types of all descendant implementations -- codegen emits a
-         cls_id virtual dispatch for exactly this shape, so leaving the node
-         UNKNOWN made emit_boxed discard the dispatch's value through the
-         effect-comma nil (a Comparable base <=> over int/float subclass
-         keys compared nil, #3237). Instance methods included. */
-      {
-        TyKind r = TY_UNKNOWN; int found = 0;
-        int nd = 0; const int *ds = comp_descendants(c, self->class_id, &nd);
-        for (int di = 0; di < nd; di++) {
-          int k = ds[di];
-          int dmi = self->is_cmethod ? comp_cmethod_in_class(c, k, name)
-                                     : comp_method_in_class(c, k, name);
-          if (dmi < 0) continue;
-          r = found ? ty_unify(r, (TyKind)c->scopes[dmi].ret) : (TyKind)c->scopes[dmi].ret;
-          found = 1;
-        }
-        if (found) return r;
-      }
-    }
-  }
-
-  /* bare call inside a module/class body -> class method of that module/class.
-     Use the per-node enclosing-cbody: g_cbody_class_id is only set during the
-     scope pass, not the inference fixpoint, so relying on it leaves a bare
-     module-body cmethod call (e.g. `take(mk)` where mk is `def self.mk`) typed
-     void. The scope pass records the enclosing cbody per node in node_cbody[id]
-     (cf. analyze_scope.c, analyze.c which already read it during inference). */
-  if (recv < 0) {
-    int cbody = c->node_cbody[id];
-    if (cbody < 0) cbody = g_cbody_class_id;
-    if (cbody >= 0) {
-      int smi = comp_cmethod_in_chain(c, cbody, name, NULL);
-      if (smi >= 0) return an_user_call(c, id, smi, UC_CMETH, cbody);
-    }
-  }
-  /* bare call inside an instance_eval/exec block: dispatch on receiver class */
-  if (recv < 0) {
-    int iec = ie_class_of(c, id);
-    if (iec >= 0) {
-      int imi = comp_method_in_chain(c, iec, name, NULL);
-      if (imi >= 0) return an_user_call(c, id, imi, UC_IE, iec);
-      TyKind at;
-      if (argc == 0 && attr_reader_ty(c, iec, name, &at)) return at;
-    }
-    int pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
-    TyKind pr = TY_UNKNOWN;
-    for (int i = 0; i < npk; i++) {
-      int imi = comp_method_in_chain(c, pk[i], name, NULL);
-      if (imi < 0) continue;
-      TyKind t = method_call_ret(c, imi, id);
-      pr = pr == TY_UNKNOWN ? t : ty_unify(pr, t);
-    }
-    if (pr != TY_UNKNOWN) return pr;
-  }
-  /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
-     desugars to obj.Float(x); the private Kernel method is available on every
-     object, so it types like the receiverless form when the receiver's chain
-     does not define the name (mirrors the codegen dispatch).
-     The NAME gate must come first: inferring the receiver for every 1/2-arg
-     call added an infer_call<->infer_type recursion edge that other arms
-     avoid structurally, and looped forever on whole-program shapes with
-     zero conversion calls (the tep regression). Only the six capitalized
-     conversion names ever pay the receiver inference. */
-  /* Kernel#Integer/#Float take `exception: false`; the keyword hash is not one
-     of the value arguments, so it must not shift the arity (#3718) */
-  int kw_argc = argc;
-  if (argc > 0) {
-    const char *lkt = nt_type(c->nt, argv[argc - 1]);
-    if (lkt && sp_streq(lkt, "KeywordHashNode")) kw_argc--;
-  }
-  if (recv >= 0 && (kw_argc == 1 || kw_argc == 2) && name[0] >= 'A' && name[0] <= 'Z' &&
-      (sp_streq(name, "Integer") || sp_streq(name, "Float") ||
-       sp_streq(name, "String") || sp_streq(name, "Rational") ||
-       sp_streq(name, "Complex") || sp_streq(name, "Array"))) {
-    TyKind krt = infer_type(c, recv);
-    int kdisp = (ty_is_object(krt) &&
-                 comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0) ||
-                ((krt == TY_NIL || krt == TY_POLY || krt == TY_UNKNOWN) &&
-                 comp_method_index(c, name) < 0);
-    if (kdisp) {
-      if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {
-        /* a Float argument converts to an Integer that promote mode lets be a
-           Bignum, as Float#to_i does there (#4688) */
-        if (g_promote_mode && infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
-        return kconv_integer_kind(c, argv[0], kw_argc < argc && kconv_noraise_kw(c, argc, argv));
-      }
-      if (kw_argc == 1) {
-        if (sp_streq(name, "Float"))    return TY_FLOAT;
-        if (sp_streq(name, "String"))   return TY_STRING;
-        if (sp_streq(name, "Rational")) return TY_RATIONAL;
-        if (sp_streq(name, "Complex"))  return TY_COMPLEX;
-        if (sp_streq(name, "Array")) {
-          TyKind kat = infer_type(c, argv[0]);
-          if (ty_is_array(kat)) return kat;
-          if (kat == TY_INT)    return TY_INT_ARRAY;
-          if (kat == TY_FLOAT)  return TY_FLOAT_ARRAY;
-          if (kat == TY_STRING) return TY_STR_ARRAY;
-          /* an object answers through its own to_ary/to_a (#3721) */
-          if (ty_is_object(kat)) {
-            int aci = ty_object_class(kat), ami = comp_method_in_chain(c, aci, "to_ary", NULL);
-            if (ami < 0) ami = comp_method_in_chain(c, aci, "to_a", NULL);
-            if (ami >= 0) return (TyKind)c->scopes[ami].ret;
-          }
-        }
-      }
-    }
-  }
-
-  /* user-defined free-function call (no receiver) */
-  if (recv < 0) {
-    int mi = comp_method_index(c, name), fvia = UC_TOP;
-    if (mi < 0) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
-    if (mi >= 0) return an_user_call(c, id, mi, fvia, fvia == UC_TOP ? -1 : c->scopes[mi].class_id);
-    /* Kernel conversions */
-    if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {
-      if (g_promote_mode && infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;   /* see above (#4688) */
-      return kconv_integer_kind(c, argv[0], kw_argc < argc && kconv_noraise_kw(c, argc, argv));
-    }
-    if (sp_streq(name, "Float") && kw_argc == 1) return TY_FLOAT;
-    if (sp_streq(name, "String") && argc == 1) return TY_STRING;
-    if (sp_streq(name, "Array") && argc == 1) {
-      TyKind at = infer_type(c, argv[0]);
-      if (ty_is_array(at)) return at;
-      /* an object answers through its own to_ary/to_a (#3721) */
-      if (ty_is_object(at)) {
-        int aci2 = ty_object_class(at), ami2 = comp_method_in_chain(c, aci2, "to_ary", NULL);
-        if (ami2 < 0) ami2 = comp_method_in_chain(c, aci2, "to_a", NULL);
-        if (ami2 >= 0) return (TyKind)c->scopes[ami2].ret;
-      }
-      if (at == TY_INT)    return TY_INT_ARRAY;    /* Array(int)   -> [int]   */
-      if (at == TY_FLOAT)  return TY_FLOAT_ARRAY;  /* Array(float) -> [float] */
-      if (at == TY_STRING) return TY_STR_ARRAY;    /* Array(str)   -> [str]   */
-      if (at == TY_RANGE)  return TY_INT_ARRAY;    /* Array(range) enumerates */
-      return TY_POLY_ARRAY;
-    }
-    if (sp_streq(name, "Hash") && argc == 1) {
-      TyKind at = infer_type(c, argv[0]);
-      if (ty_is_hash(at)) return at;              /* Hash(hash) -> the hash */
-      /* an object answers through its own #to_hash (#3721) */
-      if (ty_is_object(at)) {
-        int hci2 = ty_object_class(at), hmi = comp_method_in_chain(c, hci2, "to_hash", NULL);
-        if (hmi >= 0) return (TyKind)c->scopes[hmi].ret;
-      }
-      if (at == TY_POLY) return TY_POLY;          /* nil-or-hash decided at runtime */
-      return TY_POLY_POLY_HASH;                   /* Hash(nil) / Hash([]) -> {} */
-    }
-    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) return TY_STRING;
-    if (sp_streq(name, "system") && argc >= 1) return TY_BOOL;
-    if (sp_streq(name, "trap") && argc >= 1) return TY_POLY;  /* the previous handler: a command string or a Proc */
-    /* at_exit answers the Proc it registered, so the handler stays callable (#3727) */
-    if (sp_streq(name, "at_exit") && nt_ref(nt, id, "block") >= 0) return TY_PROC;
-    if (sp_streq(name, "rand")) {
-      if (argc == 0) return TY_FLOAT;
-      if (infer_type(c, argv[0]) == TY_FLOAT_RANGE) return TY_FLOAT;   /* rand(float range) */
-      const char *atype = nt_type(nt, argv[0]);
-      if (atype && sp_streq(atype, "RangeNode")) {
-        int lo = nt_ref(nt, argv[0], "left");
-        int hi = nt_ref(nt, argv[0], "right");
-        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;   /* rand(float_range) */
-        /* a statically empty/reversed int range yields nil (#2519) */
-        if (lo >= 0 && hi >= 0 &&
-            nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
-            nt_type(nt, hi) && sp_streq(nt_type(nt, hi), "IntegerNode")) {
-          long long lov = nt_int(nt, lo, "value", 0);
-          long long hiv = nt_int(nt, hi, "value", 0);
-          int excl = (nt_int(nt, argv[0], "flags", 0) & 4) ? 1 : 0;
-          if ((excl ? hiv - 1 : hiv) < lov) return TY_POLY;   /* nil */
-        }
-        return TY_INT;
-      }
-      /* rand(int range held in a variable): an Integer, or nil if the range is
-         empty at runtime -> a poly (#3221). (A Float range in a variable is
-         TY_FLOAT_RANGE, handled above.) */
-      if (infer_type(c, argv[0]) == TY_RANGE) return TY_POLY;
-      /* rand(literal 0) is a Float in [0,1) like rand(); nonzero -> Integer */
-      if (atype && sp_streq(atype, "IntegerNode") && nt_int(nt, argv[0], "value", 0) == 0)
-        return TY_FLOAT;
-      if (infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;   /* rand(Bignum bound) (#3058) */
-      /* rand(Float max): CRuby truncates a positive max to an Integer range and
-         returns an Integer, but max 0.0 falls back to a Float in [0,1) -- so a
-         Float argument is a runtime-chosen poly (#2549). */
-      if (infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
-      /* a literal nonzero Integer is an Integer; a dynamic Integer could be 0
-         (Float) or nonzero (Integer), so its result is a runtime-chosen poly. */
-      if (atype && sp_streq(atype, "IntegerNode")) return TY_INT;
-      /* Any dynamic (non-literal) argument -- an Integer var, a poly value, a
-         destructured tuple element -- may be 0 (a Float [0,1)) or nonzero (an
-         Integer), so codegen boxes the result; type it poly to match rather
-         than the old TY_INT default, which left `rand(poly) == 0` comparing a
-         boxed value with an int (#2897). */
-      return TY_POLY;
-    }
-    if (sp_streq(name, "srand")) return TY_INT;
-    if (sp_streq(name, "sleep") && argc <= 1) return TY_INT;
-    if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
-      return TY_STRING;   /* ARGF's next line, or nil */
-  }
+  { TyKind r; if (infer_receiverless_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
   /* Kernel.sleep(seconds) / ::Kernel.sleep -> Integer seconds slept */
   if (recv >= 0 && sp_streq(name, "sleep") && argc <= 1) {
     const char *rty = nt_type(nt, recv);
