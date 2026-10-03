@@ -5239,6 +5239,171 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   return 0;
 }
 
+/* An enumerator chain (each_slice, with_index, the each family's value form) and an object array's iterators (infer_call_inner's rules, in their order) */
+static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int args, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* each_slice(n).map/collect { |...| } chain: return array of block result type.
+     The blockless each_slice receiver types as TY_ENUMERATOR (a first-class
+     enumerator value); the codegen fold still unrolls this chain syntactically,
+     so accept that receiver type here too and keep the array result. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
+                                   sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
+      nt_ref(nt, recv, "block") < 0) {
+    int blk_es = nt_ref(nt, id, "block");
+    if (blk_es >= 0) {
+      int body_es = nt_ref(nt, blk_es, "body");
+      int bn_es = 0; const int *bb_es = body_es >= 0 ? nt_arr(nt, body_es, "body", &bn_es) : NULL;
+      { *out = ty_array_of(bn_es > 0 ? infer_type(c, bb_es[bn_es - 1]) : TY_UNKNOWN); return 1; }
+    }
+  }
+
+  /* each_cons(n).with_index(off).map/collect { |...| } chain. The receiver used
+     to infer TY_UNKNOWN; a blockless enum.with_index is now itself a
+     materialized Enumerator, so accept that type here too -- the chain arm must
+     keep winning over the generic enumerator surface. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
+      (ty_iter_shape(name) == TY_ITER_MAP) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
+      nt_ref(nt, recv, "block") < 0) {
+    int wi_recv = nt_ref(nt, recv, "receiver");
+    if (wi_recv >= 0 && nt_type(nt, wi_recv) && sp_streq(nt_type(nt, wi_recv), "CallNode") &&
+        nt_str(nt, wi_recv, "name") && sp_streq(nt_str(nt, wi_recv, "name"), "each_cons") &&
+        nt_ref(nt, wi_recv, "block") < 0) {
+      int blk_wi = nt_ref(nt, id, "block");
+      if (blk_wi >= 0) {
+        int body_wi = nt_ref(nt, blk_wi, "body");
+        int bn_wi = 0; const int *bb_wi = body_wi >= 0 ? nt_arr(nt, body_wi, "body", &bn_wi) : NULL;
+        { *out = ty_array_of(bn_wi > 0 ? infer_type(c, bb_wi[bn_wi - 1]) : TY_UNKNOWN); return 1; }
+      }
+    }
+  }
+
+  /* array.{map,each,select,...}.with_index(off) { |x, i| } result: map collects
+     the block value (array of body type); each yields the receiver; select/reject
+     filter, preserving the receiver's array type. */
+  if (recv >= 0 && sp_streq(name, "with_index") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, recv, "block") < 0) {
+    const char *inner = nt_str(nt, recv, "name");
+    int arr_recv = nt_ref(nt, recv, "receiver");
+    TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+    /* an Integer Range source behaves as an int array (materialized by the
+       emitter); each.with_index still yields the Range itself (#3228) */
+    TyKind arr_t0 = arr_t;
+    if (arr_t == TY_RANGE) arr_t = TY_INT_ARRAY;
+    if (inner && ty_is_array(arr_t)) {
+      if (sp_streq(inner, "map") || sp_streq(inner, "collect")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          { *out = ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN); return 1; }
+        }
+      }
+      else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
+               sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
+               sp_streq(inner, "take_while") || sp_streq(inner, "drop_while") ||
+               sp_streq(inner, "map!") || sp_streq(inner, "collect!"))
+        { *out = (arr_t0 == TY_RANGE && sp_streq(inner, "each")) ? TY_RANGE
+             : arr_t; return 1; }   /* take_while/drop_while keep the element type (subset) */
+    }
+  }
+
+  /* arr.each.with_index(off).<terminal> / arr.each_with_index.<terminal>:
+     a blockless [elem, index]-pair enumerator consumed by the terminal.
+     (matz/spinel#1481 inject/reduce result; #1483 others.) */
+  if (recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, recv, "block") < 0) {
+    int chain_arr = an_indexed_each_source(nt, recv);
+    TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
+    if (ty_is_array(chain_at)) {
+      TyKind elem = ty_array_elem(chain_at);
+      if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
+        int args = nt_ref(nt, id, "arguments");
+        int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+        TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
+        /* an empty `{}` seed is a general boxed-key/value hash builder, like
+           each_with_object({}) -- not the element type (#2958) */
+        if (acc == TY_UNKNOWN && argc > 0 && argv && nt_type(nt, argv[0]) &&
+            sp_streq(nt_type(nt, argv[0]), "HashNode")) {
+          int hn = 0; nt_arr(nt, argv[0], "elements", &hn);
+          if (hn == 0) acc = TY_POLY_POLY_HASH;
+        }
+        if (acc == TY_UNKNOWN) acc = elem;
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          if (bn > 0) {
+            TyKind bt = infer_type(c, bb[bn - 1]);
+            if (ty_is_numeric(bt)) acc = ty_promote_numeric(acc, bt);
+            /* a boxed body (a fold that may promote under
+               --int-overflow=promote, a Rational) cannot fold back into a
+               numeric seed slot: the accumulator is boxed, as the array
+               inject rule has it */
+            else if (ty_is_numeric(acc) && (bt == TY_POLY || bt == TY_BIGINT || bt == TY_RATIONAL || bt == TY_COMPLEX))
+              acc = TY_POLY;
+          }
+        }
+        { *out = acc; return 1; }
+      }
+      int blk = nt_ref(nt, id, "block");
+      int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      /* The codegen path only handles the |v, i| two-param block form; gate the
+         result type on it so single-param forms fall to their normal rules. */
+      int two_param = blk >= 0 && !block_param_is_multi(c, blk, 0) &&
+                      block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
+      if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
+        { *out = ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN); return 1; }
+      if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
+          (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
+        { *out = TY_POLY_ARRAY; return 1; }   /* an array of [element, index] pairs */
+      if (blk < 0 && sp_streq(name, "to_h")) {
+        /* an array of [element, index] pairs collected into {element => index};
+           the block form instead maps each pair, so leave it to its own rule. */
+        TyKind h = ty_hash_of(elem, TY_INT);
+        { *out = h != TY_UNKNOWN ? h : TY_POLY_POLY_HASH; return 1; }
+      }
+      if (two_param && sp_streq(name, "count")) { *out = TY_INT; return 1; }
+      if (two_param && (sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?")))
+        { *out = TY_BOOL; return 1; }
+    }
+  }
+
+  /* homogeneous object array (sp_PtrArray of unboxed sp_X*): the typed
+     counterpart of the poly-array block below, for the narrowed TY_OBJ_ARRAY
+     type. Only the ops narrow_object_arrays admits appear here. */
+  if (recv >= 0 && ty_is_obj_array(rt)) {
+    int ecls = ty_obj_array_class(rt);
+    if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) { *out = ty_object(ecls); return 1; }
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    if (sp_streq(name, "[]=") && argc == 2) { *out = ty_object(ecls); return 1; }
+    if (is_push_alias(name)) { *out = rt; return 1; }
+    if (is_len_alias(name) && argc == 0) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "empty?") && argc == 0) { *out = TY_BOOL; return 1; }
+    /* no-block comparisons (admitted by the narrowing pass only for element
+       classes with `<=>`): sort keeps the array type, min/max yield an
+       element (NULL-encoded nil when empty). */
+    if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) && argc == 0) { *out = rt; return 1; }
+    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    /* the block iterators the narrowing pass admits (nested_row_iter_call):
+       each and its kin answer the receiver, map the block's values (#4846) */
+    { int oblk = nt_ref(nt, id, "block");
+      if (oblk >= 0 && nt_kind(nt, oblk) == NK_BlockNode) {
+        if ((sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
+             sp_streq(name, "each_entry") || sp_streq(name, "each_with_index")) && argc == 0)
+          { *out = rt; return 1; }
+        if ((sp_streq(name, "map") || sp_streq(name, "collect")) && argc == 0)
+          { *out = infer_map_block_ty(c, id, oblk); return 1; }
+      } }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6738,166 +6903,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     }
   }
 
-  /* each_slice(n).map/collect { |...| } chain: return array of block result type.
-     The blockless each_slice receiver types as TY_ENUMERATOR (a first-class
-     enumerator value); the codegen fold still unrolls this chain syntactically,
-     so accept that receiver type here too and keep the array result. */
-  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
-                                   sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
-      nt_ref(nt, recv, "block") < 0) {
-    int blk_es = nt_ref(nt, id, "block");
-    if (blk_es >= 0) {
-      int body_es = nt_ref(nt, blk_es, "body");
-      int bn_es = 0; const int *bb_es = body_es >= 0 ? nt_arr(nt, body_es, "body", &bn_es) : NULL;
-      return ty_array_of(bn_es > 0 ? infer_type(c, bb_es[bn_es - 1]) : TY_UNKNOWN);
-    }
-  }
-
-  /* each_cons(n).with_index(off).map/collect { |...| } chain. The receiver used
-     to infer TY_UNKNOWN; a blockless enum.with_index is now itself a
-     materialized Enumerator, so accept that type here too -- the chain arm must
-     keep winning over the generic enumerator surface. */
-  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
-      (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
-      nt_ref(nt, recv, "block") < 0) {
-    int wi_recv = nt_ref(nt, recv, "receiver");
-    if (wi_recv >= 0 && nt_type(nt, wi_recv) && sp_streq(nt_type(nt, wi_recv), "CallNode") &&
-        nt_str(nt, wi_recv, "name") && sp_streq(nt_str(nt, wi_recv, "name"), "each_cons") &&
-        nt_ref(nt, wi_recv, "block") < 0) {
-      int blk_wi = nt_ref(nt, id, "block");
-      if (blk_wi >= 0) {
-        int body_wi = nt_ref(nt, blk_wi, "body");
-        int bn_wi = 0; const int *bb_wi = body_wi >= 0 ? nt_arr(nt, body_wi, "body", &bn_wi) : NULL;
-        return ty_array_of(bn_wi > 0 ? infer_type(c, bb_wi[bn_wi - 1]) : TY_UNKNOWN);
-      }
-    }
-  }
-
-  /* array.{map,each,select,...}.with_index(off) { |x, i| } result: map collects
-     the block value (array of body type); each yields the receiver; select/reject
-     filter, preserving the receiver's array type. */
-  if (recv >= 0 && sp_streq(name, "with_index") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_ref(nt, recv, "block") < 0) {
-    const char *inner = nt_str(nt, recv, "name");
-    int arr_recv = nt_ref(nt, recv, "receiver");
-    TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
-    /* an Integer Range source behaves as an int array (materialized by the
-       emitter); each.with_index still yields the Range itself (#3228) */
-    TyKind arr_t0 = arr_t;
-    if (arr_t == TY_RANGE) arr_t = TY_INT_ARRAY;
-    if (inner && ty_is_array(arr_t)) {
-      if (sp_streq(inner, "map") || sp_streq(inner, "collect")) {
-        int blk = nt_ref(nt, id, "block");
-        if (blk >= 0) {
-          int body = nt_ref(nt, blk, "body");
-          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-          return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
-        }
-      }
-      else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
-               sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
-               sp_streq(inner, "take_while") || sp_streq(inner, "drop_while") ||
-               sp_streq(inner, "map!") || sp_streq(inner, "collect!"))
-        return (arr_t0 == TY_RANGE && sp_streq(inner, "each")) ? TY_RANGE
-             : arr_t;   /* take_while/drop_while keep the element type (subset) */
-    }
-  }
-
-  /* arr.each.with_index(off).<terminal> / arr.each_with_index.<terminal>:
-     a blockless [elem, index]-pair enumerator consumed by the terminal.
-     (matz/spinel#1481 inject/reduce result; #1483 others.) */
-  if (recv >= 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_ref(nt, recv, "block") < 0) {
-    int chain_arr = an_indexed_each_source(nt, recv);
-    TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
-    if (ty_is_array(chain_at)) {
-      TyKind elem = ty_array_elem(chain_at);
-      if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
-        int args = nt_ref(nt, id, "arguments");
-        int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-        TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
-        /* an empty `{}` seed is a general boxed-key/value hash builder, like
-           each_with_object({}) -- not the element type (#2958) */
-        if (acc == TY_UNKNOWN && argc > 0 && argv && nt_type(nt, argv[0]) &&
-            sp_streq(nt_type(nt, argv[0]), "HashNode")) {
-          int hn = 0; nt_arr(nt, argv[0], "elements", &hn);
-          if (hn == 0) acc = TY_POLY_POLY_HASH;
-        }
-        if (acc == TY_UNKNOWN) acc = elem;
-        int blk = nt_ref(nt, id, "block");
-        if (blk >= 0) {
-          int body = nt_ref(nt, blk, "body");
-          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-          if (bn > 0) {
-            TyKind bt = infer_type(c, bb[bn - 1]);
-            if (ty_is_numeric(bt)) acc = ty_promote_numeric(acc, bt);
-            /* a boxed body (a fold that may promote under
-               --int-overflow=promote, a Rational) cannot fold back into a
-               numeric seed slot: the accumulator is boxed, as the array
-               inject rule has it */
-            else if (ty_is_numeric(acc) && (bt == TY_POLY || bt == TY_BIGINT || bt == TY_RATIONAL || bt == TY_COMPLEX))
-              acc = TY_POLY;
-          }
-        }
-        return acc;
-      }
-      int blk = nt_ref(nt, id, "block");
-      int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
-      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      /* The codegen path only handles the |v, i| two-param block form; gate the
-         result type on it so single-param forms fall to their normal rules. */
-      int two_param = blk >= 0 && !block_param_is_multi(c, blk, 0) &&
-                      block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
-      if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
-        return ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN);
-      if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
-          (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
-        return TY_POLY_ARRAY;   /* an array of [element, index] pairs */
-      if (blk < 0 && sp_streq(name, "to_h")) {
-        /* an array of [element, index] pairs collected into {element => index};
-           the block form instead maps each pair, so leave it to its own rule. */
-        TyKind h = ty_hash_of(elem, TY_INT);
-        return h != TY_UNKNOWN ? h : TY_POLY_POLY_HASH;
-      }
-      if (two_param && sp_streq(name, "count")) return TY_INT;
-      if (two_param && (sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?")))
-        return TY_BOOL;
-    }
-  }
-
-  /* homogeneous object array (sp_PtrArray of unboxed sp_X*): the typed
-     counterpart of the poly-array block below, for the narrowed TY_OBJ_ARRAY
-     type. Only the ops narrow_object_arrays admits appear here. */
-  if (recv >= 0 && ty_is_obj_array(rt)) {
-    int ecls = ty_obj_array_class(rt);
-    if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) return ty_object(ecls);
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return ty_object(ecls);
-    if (sp_streq(name, "[]=") && argc == 2) return ty_object(ecls);
-    if (is_push_alias(name)) return rt;
-    if (is_len_alias(name) && argc == 0) return TY_INT;
-    if (sp_streq(name, "empty?") && argc == 0) return TY_BOOL;
-    /* no-block comparisons (admitted by the narrowing pass only for element
-       classes with `<=>`): sort keeps the array type, min/max yield an
-       element (NULL-encoded nil when empty). */
-    if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) && argc == 0) return rt;
-    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) return ty_object(ecls);
-    /* the block iterators the narrowing pass admits (nested_row_iter_call):
-       each and its kin answer the receiver, map the block's values (#4846) */
-    { int oblk = nt_ref(nt, id, "block");
-      if (oblk >= 0 && nt_kind(nt, oblk) == NK_BlockNode) {
-        if ((sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
-             sp_streq(name, "each_entry") || sp_streq(name, "each_with_index")) && argc == 0)
-          return rt;
-        if ((sp_streq(name, "map") || sp_streq(name, "collect")) && argc == 0)
-          return infer_map_block_ty(c, id, oblk);
-      } }
-  }
+  { TyKind r; if (infer_enum_chain_call(c, id, nt, name, recv, args, argc, argv, rt, &r)) return r; }
 
   /* array receiver methods */
   /* Array receivers: the array face of infer_call (analyze_infer_recv.c). */
