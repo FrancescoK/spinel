@@ -15254,6 +15254,7 @@ sp_builtin_arity_spec_tbl[] = {
   {"Object","singleton_methods",0,1,NULL,"0..1",0,1,NULL,"0..1"},
   {"Object","tap",0,0,NULL,"0",0,0,NULL,"0"},
   {"Object","then",0,0,NULL,"0",0,0,NULL,"0"},
+  {"Object","to_json",0,1,NULL,"0..1",0,1,NULL,"0..1"},
   {"Object","to_s",0,0,NULL,"0",0,0,NULL,"0"},
   {"Object","yield_self",0,0,NULL,"0",0,0,NULL,"0"},
   {"StringIO","<<",1,1,"1","1",1,1,"1","1"},
