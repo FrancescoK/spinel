@@ -4043,6 +4043,350 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
   return 0;
 }
 
+/* A Class receiver, Class and Module reflection, and the declarations of a class body (infer_call_inner's rules, in their order) */
+static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* k = Struct.new(:a, :b): the value IS the synthesized anonymous struct
+     class, as a first-class class object */
+  if (anon_struct_ci_for_value(c, id) >= 0) { *out = TY_CLASS; return 1; }
+
+  /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
+     Exception: self.class.new(...) resolves to the enclosing class statically. */
+  if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
+      nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+    int _is_self_class = self_class_static_ci(c, recv) >= 0;
+    /* a local statically holding one STRUCT class (k = Struct.new(..) /
+       k = StructKlass) falls through to the static-class .new arms below --
+       its typed member accessors then dispatch statically. A plain class
+       stays on the Tier-5 dynamic boxed path (test/dynamic_class_new.rb). */
+    int _cvi = _is_self_class ? -1 : class_var_static_ci(c, recv);
+    if (!_is_self_class &&
+        (_cvi < 0 || !(c->classes[_cvi].is_struct || c->classes[_cvi].is_data)))
+      { *out = TY_POLY; return 1; }
+  }
+
+  if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
+    if (argc == 0 && is_name_reader(name))
+      { *out = TY_STRING; return 1; }
+    /* Thread.current / Fiber.current through a class value: a boxed handle
+       (activesupport's IsolatedExecutionState keeps its scope as the class
+       itself); a user class method of that name keeps its dispatch below */
+    if (argc == 0 && sp_streq(name, "current") && nt_type(nt, recv) &&
+        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+      int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
+      if (ncc == 0) { *out = TY_POLY; return 1; }
+    }
+    if (argc == 0 && sp_streq(name, "nil?")) { *out = TY_BOOL; return 1; }
+    if (argc == 0 && sp_streq(name, "singleton_class?")) { *out = TY_BOOL; return 1; }
+    if (argc == 0 && sp_streq(name, "frozen?")) { *out = TY_BOOL; return 1; }
+    /* Module#constants -> sym array, recovered from the AST (#2674) */
+    /* Class.const_set(:K, v) stores into the existing constant and yields the
+       value; only a literal name whose type matches is emittable (#2675). */
+    if (sp_streq(name, "const_set") && argc == 2) {
+      const char *cs_aty = nt_type(nt, argv[0]);
+      const char *cs_qm = NULL;
+      if (cs_aty && sp_streq(cs_aty, "SymbolNode")) cs_qm = nt_str(nt, argv[0], "value");
+      else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
+      LocalVar *cv = cs_qm ? comp_const(c, cs_qm) : NULL;
+      if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; }
+    }
+    if (sp_streq(name, "constants") && argc <= 1) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "class_variables") && argc == 0) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "included_modules") && argc == 0) { *out = TY_POLY_ARRAY; return 1; }
+    if (argc == 0 && sp_streq(name, "class")) { *out = TY_CLASS; return 1; }
+    /* #superclass is a (nullable) class value: BasicObject's is the nil-class
+       sentinel, carried within TY_CLASS (#2654). */
+    if (argc == 0 && sp_streq(name, "superclass")) { *out = TY_CLASS; return 1; }
+    if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
+                      sp_streq(name, "==="))) { *out = TY_BOOL; return 1; }
+    /* Class ordering is tri-state: true/false when related, nil when the two
+       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil.
+       A class that defines the operator itself answers with its own method's
+       type, from the class-method dispatch below. */
+    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) {
+      int oci = class_recv_static_ci(c, recv);
+      if (oci < 0 || comp_cmethod_in_chain(c, oci, name, NULL) < 0) { *out = TY_POLY; return 1; }
+    }
+    if (argc == 0 && sp_streq(name, "ancestors")) { *out = TY_POLY_ARRAY; return 1; }
+    if (argc == 0 && sp_streq(name, "subclasses")) { *out = TY_POLY_ARRAY; return 1; }
+    if (argc == 1 && is_kind_query(name)) { *out = TY_BOOL; return 1; }
+    if (argc == 1 && sp_streq(name, "include?")) { *out = TY_BOOL; return 1; }
+    if (argc == 1 && sp_streq(name, "class_variable_defined?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) { *out = TY_POLY; return 1; }
+    if (argc <= 1 && (sp_streq(name, "instance_methods") ||
+                      sp_streq(name, "public_instance_methods") ||
+                      sp_streq(name, "private_instance_methods") ||
+                      sp_streq(name, "protected_instance_methods"))) { *out = TY_POLY; return 1; }
+    if (argc <= 1 && sp_streq(name, "singleton_methods") &&
+        nt_kind(nt, recv) == NK_ConstantReadNode &&
+        an_class_singleton_methods_listable(c, comp_class_index(c, nt_str(nt, recv, "name"))))
+      { *out = TY_POLY; return 1; }
+    /* a user class method on a Class-typed value carried in a plain variable
+       (`model.table_name`): unify the return types of every user class
+       defining it (poly on disagreement). A constant/accessor receiver keeps
+       its existing dispatch, so only fire for a variable receiver (#2445). */
+    {
+      int recv_is_var = class_recv_is_dynamic(c, recv);
+      TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
+      int ncc = 0, nblk = 0;
+      int has_blk = nt_ref(nt, id, "block") >= 0, splat = 0;
+      for (int a = 0; a < argc; a++)
+        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat++;
+      const PolyCand *ccs = recv_is_var ? comp_cmethod_candidates(c, name, &ncc) : NULL;
+      for (int ki = 0; ki < ncc; ki++) {
+        int k = ccs[ki].cls;
+        if (is_builtin_reopen(c->classes[k].name)) continue;
+        int kmi = ccs[ki].mi;
+        /* A candidate that yields, takes a block, or has a rest param has no
+           arm the emitter can build, so it kills the whole dispatch. A
+           candidate with the WRONG ARITY does not: this call cannot reach it,
+           so it neither contributes a return type nor vetoes the others
+           (#4129). Codegen's cls_arm_takes_argc is the same rule.
+           A candidate taking a block (a yielding one through its
+           proc form) is reached by the poly receiver's class-tag dispatch
+           instead, which answers poly. */
+        if (c->scopes[kmi].rest_idx < 0 &&
+            (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
+          if (splat ? argc - splat <= c->scopes[kmi].nparams : argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
+          continue;
+        }
+        /* a *rest the emitter packs is an arm like any other */
+        int rest_ok = rest_packable_arm(c, &c->scopes[kmi]);
+        if ((c->scopes[kmi].rest_idx >= 0 && !rest_ok) || c->scopes[kmi].yields ||
+            (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; nblk = 0; break; }
+        /* with a splat, the count is the gather's to judge at run time: each
+           splat may spread to nothing, so only the other arguments count */
+        if (splat ? c->scopes[kmi].rest_idx < 0 && argc - splat > c->scopes[kmi].nparams
+                  : argc < c->scopes[kmi].nrequired ||
+                    (c->scopes[kmi].rest_idx < 0 && argc > c->scopes[kmi].nparams)) continue;
+        nc++;
+        TyKind kr = (TyKind)c->scopes[kmi].ret;
+        if (!set) { uret = kr; set = 1; }
+        else if (kr != uret) uret = TY_POLY;
+      }
+      if (nblk > 0) { *out = TY_POLY; return 1; }
+      if (nc > 0 && !has_blk)
+        { *out = (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret; return 1; }
+    }
+  }
+
+  /* `attr_reader :a` in a class body answers the names it defined */
+  if (attr_decl_call(c, id)) { *out = TY_POLY_ARRAY; return 1; }
+  /* `private def m ... end` in a class body answers :m */
+  switch (vis_decl_call(c, id)) {
+    case VIS_DECL_NIL: { *out = TY_NIL; return 1; }
+    case VIS_DECL_SYM: { *out = TY_SYMBOL; return 1; }
+    case VIS_DECL_ARRAY: { *out = TY_POLY_ARRAY; return 1; }
+    case VIS_DECL_SELF: { *out = TY_CLASS; return 1; }
+  }
+
+  /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
+     nil at the top level, where the enclosing scope has no name (matching
+     the codegen, which emits sp_box_nil() there) */
+  if (recv < 0 && argc == 0 &&
+      (sp_streq(name, "__method__") || sp_streq(name, "__callee__"))) {
+    Scope *s = comp_scope_of(c, id);
+    { *out = (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL; return 1; }
+  }
+
+  /* identity methods: return the receiver unchanged (clone also with its
+     freeze: keyword argument) */
+  if (recv >= 0 &&
+      (argc == 0 ||
+       (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
+        sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
+      is_self_copy(name) &&
+      /* a generated READER of the name owns it on a concrete object, as any
+         reader does in CRuby: fall through to the member-read rule (#4190);
+         so does a method the class defines itself, whose value is what its
+         body answers -- `def dup = self.class.new(...)` answers boxed (#5461) */
+      !(ty_is_object(rt) &&
+        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE))
+    { *out = rt; return 1; }
+
+  /* bareword freeze (implicit self) returns self, so `def seal = freeze` and
+     other freeze-as-value uses stay typed as the instance. (Matches the
+     codegen arm that lowers bareword freeze to self.) */
+  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "freeze")) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id >= 0 && comp_method_in_chain(c, s->class_id, name, NULL) < 0)
+      { *out = ty_object(s->class_id); return 1; }
+  }
+  /* bareword frozen? reads the instance's GC-header bit (see the codegen arm) */
+  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "frozen?")) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id >= 0 && !s->is_cmethod &&
+        comp_method_in_chain(c, s->class_id, name, NULL) < 0)
+      { *out = TY_BOOL; return 1; }
+  }
+
+  /* x.class -> a first-class Class value for every known receiver kind
+     (name-backed for builtins, id-backed for user objects) */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
+    /* empty container literal receivers coerce like everywhere else */
+    if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
+      const char *rty0 = nt_type(nt, recv);
+      int en0 = 0;
+      if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
+      if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) { *out = TY_CLASS; return 1; } }
+      /* an argument-less `Array.new` is that same empty array (#3613) */
+      if (sp_streq(rty0, "CallNode") && nt_str(nt, recv, "name") &&
+          sp_streq(nt_str(nt, recv, "name"), "new") && nt_ref(nt, recv, "block") < 0) {
+        int arn0 = nt_ref(nt, recv, "receiver");
+        int aa0 = nt_ref(nt, recv, "arguments"); int aac0 = 0;
+        if (aa0 >= 0) nt_arr(nt, aa0, "arguments", &aac0);
+        if (aac0 == 0 && arn0 >= 0 && nt_type(nt, arn0) &&
+            sp_streq(nt_type(nt, arn0), "ConstantReadNode") &&
+            nt_str(nt, arn0, "name") && sp_streq(nt_str(nt, arn0, "name"), "Array"))
+          { *out = TY_CLASS; return 1; }
+      }
+      /* top-level `self.class`: self is main (an Object) -> Object (#3035) */
+      if (sp_streq(rty0, "SelfNode")) {
+        Scope *ss = comp_scope_of(c, id);
+        if (!ss || ss->class_id < 0) { *out = TY_CLASS; return 1; }
+      }
+    }
+    /* a member/method literally named `class` (a Data/Struct member) shadows
+       Object#class: fall through to the reader/method dispatch (#2975) */
+    if (ty_is_object(rt) &&
+        !(ty_object_class(rt) >= 0 && comp_reader_in_chain(c, ty_object_class(rt), "class", NULL)))
+      { *out = TY_CLASS; return 1; }
+    if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
+        rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
+        rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
+        rt == TY_MATCHDATA || rt == TY_REGEX ||
+        rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_CURRY ||
+        rt == TY_FIBER || rt == TY_ENUMERATOR || rt == TY_TMS ||
+        ty_is_array(rt) || ty_is_hash(rt))
+      { *out = TY_CLASS; return 1; }
+  }
+
+  /* X.class.name / .to_s -> the class-name string (X.class is already that) */
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class"))
+    { *out = TY_STRING; return 1; }
+
+  /* <enc>.encoding.name -> the encoding name string */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "name") && rt == TY_POLY &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
+    { *out = TY_STRING; return 1; }
+
+  /* Module.singleton_writer= / Module.singleton_reader */
+  if (recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
+       sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
+    const char *cn = nt_str(nt, recv, "name");
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    TyKind sgt;
+    if (ci >= 0 && sg_accessor_type(c, ci, name, &sgt)) { *out = sgt; return 1; }
+  }
+  /* self.singleton_writer= / self.singleton_reader: inside a class method
+     or directly in a class/module body (g_cbody_class_id). */
+  if ((recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) ||
+      (recv < 0 && argc == 0)) {
+    Scope *_self = comp_scope_of(c, id);
+    int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
+                  ? _self->class_id : g_cbody_class_id;
+    if (_sg_cid < 0 && _self && _self->class_id < 0) _sg_cid = c->node_cbody[id];
+    TyKind sgt;
+    if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) { *out = sgt; return 1; }
+  }
+
+  /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
+  if (recv >= 0 && nt_type(nt, recv)) {
+    const char *rty_ffi = nt_type(nt, recv);
+    const char *rcmod = NULL;
+    if (sp_streq(rty_ffi, "ConstantReadNode"))
+      rcmod = nt_str(nt, recv, "name");
+    else if (sp_streq(rty_ffi, "ConstantPathNode"))
+      rcmod = nt_str(nt, recv, "name");
+    if (rcmod) {
+      /* native binding (Path B): a native_func returns its declared type,
+         gated by the module's require-gate feature. */
+      int nvi = comp_native_find(c, rcmod, name);
+      if (nvi >= 0) {
+        const char *feat = c->native_funcs[nvi].feat;
+        if (!feat || !feat[0] || sp_feature_enabled(feat))
+          { *out = native_spec_to_ty(c->native_funcs[nvi].ret); return 1; }
+      }
+      int fi = ffi_find_func(c, rcmod, name);
+      if (fi >= 0) { *out = ffi_spec_to_ty(c->ffi_funcs[fi].ret); return 1; }
+      /* ffi_buffer: Module.buf_name returns the static char* (ptr type -> TY_POLY) */
+      if (ffi_find_buf(c, rcmod, name) >= 0) { *out = TY_POLY; return 1; }
+      /* ffi_read_*: Module.reader_name(buf) returns int or ptr */
+      int ri = ffi_find_reader(c, rcmod, name);
+      if (ri >= 0) {
+        const char *kind = c->ffi_readers[ri].kind;
+        if (kind && sp_streq(kind, "ptr")) { *out = TY_POLY; return 1; }
+        { *out = TY_INT; return 1; }
+      }
+      /* ffi_struct: Name_new -> ptr, Name_get_<f> -> the field's type,
+         Name_set_<f> -> nil. */
+      int fsi, ffi;
+      int fsm = ffi_struct_method(c, rcmod, name, &fsi, &ffi);
+      if (fsm == FFI_SM_NEW) { *out = TY_POLY; return 1; }
+      if (fsm == FFI_SM_GET) { *out = ffi_spec_to_ty(c->ffi_structs[fsi].fields[ffi].spec); return 1; }
+      if (fsm == FFI_SM_SET) { *out = TY_NIL; return 1; }
+      /* ffi_write_*: Module.writer_name(buf, val) returns the written value */
+      int wi = ffi_find_writer(c, rcmod, name);
+      if (wi >= 0) {
+        const char *kind = c->ffi_writers[wi].kind;
+        if (kind && sp_streq(kind, "ptr")) { *out = TY_POLY; return 1; }
+        { *out = TY_INT; return 1; }
+      }
+    }
+  }
+
+  /* SomeClass.superclass -> sp_Class value for the parent class */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
+    { *out = TY_CLASS; return 1; }
+
+  /* SomeClass.ancestors -> PolyArray of class objects */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "ancestors") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
+    { *out = TY_POLY_ARRAY; return 1; }
+
+  /* SomeClass.instance_methods / .public_instance_methods -> PolyArray of symbols */
+  if (recv >= 0 && argc <= 1 &&
+      (sp_streq(name, "instance_methods") || sp_streq(name, "public_instance_methods") ||
+       sp_streq(name, "private_instance_methods") || sp_streq(name, "protected_instance_methods")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
+    { *out = TY_POLY_ARRAY; return 1; }
+
+  /* self.class.new(...) in a class no class inherits from -> an instance of it */
+  if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0)
+    { *out = ty_object(self_class_static_ci(c, recv)); return 1; }
+
+  /* allocate on the class the method runs for: an instance of that class
+     (a subclass's, typed as the base, as a bare `new` in a class method is) */
+  {
+    int oc = allocate_on_own_class(c, id);
+    if (oc >= 0 && !class_is_exc_subclass(c, oc)) { *out = ty_object(oc); return 1; }
+  }
+  /* Class#allocate -> a bare instance of that class (no initialize run). */
+  if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
+         so inference and emission agree on which classes take the allocate path. */
+      if (ci >= 0 && !class_is_exc_subclass(c, ci)) { *out = ty_object(ci); return 1; }
+      const char *bcn = nt_str(nt, recv, "name");
+      if (bcn && sp_streq(bcn, "String")) { *out = TY_STRING; return 1; }
+      if (bcn && sp_streq(bcn, "Array"))  { *out = TY_POLY_ARRAY; return 1; }
+      if (bcn && sp_streq(bcn, "Hash"))   { *out = TY_POLY_POLY_HASH; return 1; }
+      if (bcn && sp_streq(bcn, "Object")) { *out = TY_POLY; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -5321,345 +5665,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && ty_is_hash(rt) && argc == 1 && sp_streq(name, "default_proc="))
     return TY_PROC;
 
-  /* k = Struct.new(:a, :b): the value IS the synthesized anonymous struct
-     class, as a first-class class object */
-  if (anon_struct_ci_for_value(c, id) >= 0) return TY_CLASS;
-
-  /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
-     Exception: self.class.new(...) resolves to the enclosing class statically. */
-  if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
-      nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
-    int _is_self_class = self_class_static_ci(c, recv) >= 0;
-    /* a local statically holding one STRUCT class (k = Struct.new(..) /
-       k = StructKlass) falls through to the static-class .new arms below --
-       its typed member accessors then dispatch statically. A plain class
-       stays on the Tier-5 dynamic boxed path (test/dynamic_class_new.rb). */
-    int _cvi = _is_self_class ? -1 : class_var_static_ci(c, recv);
-    if (!_is_self_class &&
-        (_cvi < 0 || !(c->classes[_cvi].is_struct || c->classes[_cvi].is_data)))
-      return TY_POLY;
-  }
-
-  if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
-    if (argc == 0 && is_name_reader(name))
-      return TY_STRING;
-    /* Thread.current / Fiber.current through a class value: a boxed handle
-       (activesupport's IsolatedExecutionState keeps its scope as the class
-       itself); a user class method of that name keeps its dispatch below */
-    if (argc == 0 && sp_streq(name, "current") && nt_type(nt, recv) &&
-        !sp_streq(nt_type(nt, recv), "ConstantReadNode") && !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
-      int ncc = 0; comp_cmethod_candidates(c, name, &ncc);
-      if (ncc == 0) return TY_POLY;
-    }
-    if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
-    if (argc == 0 && sp_streq(name, "singleton_class?")) return TY_BOOL;
-    if (argc == 0 && sp_streq(name, "frozen?")) return TY_BOOL;
-    /* Module#constants -> sym array, recovered from the AST (#2674) */
-    /* Class.const_set(:K, v) stores into the existing constant and yields the
-       value; only a literal name whose type matches is emittable (#2675). */
-    if (sp_streq(name, "const_set") && argc == 2) {
-      const char *cs_aty = nt_type(nt, argv[0]);
-      const char *cs_qm = NULL;
-      if (cs_aty && sp_streq(cs_aty, "SymbolNode")) cs_qm = nt_str(nt, argv[0], "value");
-      else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
-      LocalVar *cv = cs_qm ? comp_const(c, cs_qm) : NULL;
-      if (cv && cv->type != TY_UNKNOWN) return cv->type;
-    }
-    if (sp_streq(name, "constants") && argc <= 1) return TY_POLY_ARRAY;
-    if (sp_streq(name, "class_variables") && argc == 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "included_modules") && argc == 0) return TY_POLY_ARRAY;
-    if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
-    /* #superclass is a (nullable) class value: BasicObject's is the nil-class
-       sentinel, carried within TY_CLASS (#2654). */
-    if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
-    if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=") ||
-                      sp_streq(name, "==="))) return TY_BOOL;
-    /* Class ordering is tri-state: true/false when related, nil when the two
-       classes have no subclass relationship (CRuby). <=> is -1/0/1 or nil.
-       A class that defines the operator itself answers with its own method's
-       type, from the class-method dispatch below. */
-    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
-                      sp_streq(name, ">=") || sp_streq(name, "<=>"))) {
-      int oci = class_recv_static_ci(c, recv);
-      if (oci < 0 || comp_cmethod_in_chain(c, oci, name, NULL) < 0) return TY_POLY;
-    }
-    if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
-    if (argc == 0 && sp_streq(name, "subclasses")) return TY_POLY_ARRAY;
-    if (argc == 1 && is_kind_query(name)) return TY_BOOL;
-    if (argc == 1 && sp_streq(name, "include?")) return TY_BOOL;
-    if (argc == 1 && sp_streq(name, "class_variable_defined?")) return TY_BOOL;
-    if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) return TY_POLY;
-    if (argc <= 1 && (sp_streq(name, "instance_methods") ||
-                      sp_streq(name, "public_instance_methods") ||
-                      sp_streq(name, "private_instance_methods") ||
-                      sp_streq(name, "protected_instance_methods"))) return TY_POLY;
-    if (argc <= 1 && sp_streq(name, "singleton_methods") &&
-        nt_kind(nt, recv) == NK_ConstantReadNode &&
-        an_class_singleton_methods_listable(c, comp_class_index(c, nt_str(nt, recv, "name"))))
-      return TY_POLY;
-    /* a user class method on a Class-typed value carried in a plain variable
-       (`model.table_name`): unify the return types of every user class
-       defining it (poly on disagreement). A constant/accessor receiver keeps
-       its existing dispatch, so only fire for a variable receiver (#2445). */
-    {
-      int recv_is_var = class_recv_is_dynamic(c, recv);
-      TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
-      int ncc = 0, nblk = 0;
-      int has_blk = nt_ref(nt, id, "block") >= 0, splat = 0;
-      for (int a = 0; a < argc; a++)
-        if (nt_kind(nt, argv[a]) == NK_SplatNode) splat++;
-      const PolyCand *ccs = recv_is_var ? comp_cmethod_candidates(c, name, &ncc) : NULL;
-      for (int ki = 0; ki < ncc; ki++) {
-        int k = ccs[ki].cls;
-        if (is_builtin_reopen(c->classes[k].name)) continue;
-        int kmi = ccs[ki].mi;
-        /* A candidate that yields, takes a block, or has a rest param has no
-           arm the emitter can build, so it kills the whole dispatch. A
-           candidate with the WRONG ARITY does not: this call cannot reach it,
-           so it neither contributes a return type nor vetoes the others
-           (#4129). Codegen's cls_arm_takes_argc is the same rule.
-           A candidate taking a block (a yielding one through its
-           proc form) is reached by the poly receiver's class-tag dispatch
-           instead, which answers poly. */
-        if (c->scopes[kmi].rest_idx < 0 &&
-            (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
-          if (splat ? argc - splat <= c->scopes[kmi].nparams : argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
-          continue;
-        }
-        /* a *rest the emitter packs is an arm like any other */
-        int rest_ok = rest_packable_arm(c, &c->scopes[kmi]);
-        if ((c->scopes[kmi].rest_idx >= 0 && !rest_ok) || c->scopes[kmi].yields ||
-            (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; nblk = 0; break; }
-        /* with a splat, the count is the gather's to judge at run time: each
-           splat may spread to nothing, so only the other arguments count */
-        if (splat ? c->scopes[kmi].rest_idx < 0 && argc - splat > c->scopes[kmi].nparams
-                  : argc < c->scopes[kmi].nrequired ||
-                    (c->scopes[kmi].rest_idx < 0 && argc > c->scopes[kmi].nparams)) continue;
-        nc++;
-        TyKind kr = (TyKind)c->scopes[kmi].ret;
-        if (!set) { uret = kr; set = 1; }
-        else if (kr != uret) uret = TY_POLY;
-      }
-      if (nblk > 0) return TY_POLY;
-      if (nc > 0 && !has_blk)
-        return (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret;
-    }
-  }
-
-  /* `attr_reader :a` in a class body answers the names it defined */
-  if (attr_decl_call(c, id)) return TY_POLY_ARRAY;
-  /* `private def m ... end` in a class body answers :m */
-  switch (vis_decl_call(c, id)) {
-    case VIS_DECL_NIL: return TY_NIL;
-    case VIS_DECL_SYM: return TY_SYMBOL;
-    case VIS_DECL_ARRAY: return TY_POLY_ARRAY;
-    case VIS_DECL_SELF: return TY_CLASS;
-  }
-
-  /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
-     nil at the top level, where the enclosing scope has no name (matching
-     the codegen, which emits sp_box_nil() there) */
-  if (recv < 0 && argc == 0 &&
-      (sp_streq(name, "__method__") || sp_streq(name, "__callee__"))) {
-    Scope *s = comp_scope_of(c, id);
-    return (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL;
-  }
-
-  /* identity methods: return the receiver unchanged (clone also with its
-     freeze: keyword argument) */
-  if (recv >= 0 &&
-      (argc == 0 ||
-       (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
-        sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
-      is_self_copy(name) &&
-      /* a generated READER of the name owns it on a concrete object, as any
-         reader does in CRuby: fall through to the member-read rule (#4190);
-         so does a method the class defines itself, whose value is what its
-         body answers -- `def dup = self.class.new(...)` answers boxed (#5461) */
-      !(ty_is_object(rt) &&
-        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE))
-    return rt;
-
-  /* bareword freeze (implicit self) returns self, so `def seal = freeze` and
-     other freeze-as-value uses stay typed as the instance. (Matches the
-     codegen arm that lowers bareword freeze to self.) */
-  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "freeze")) {
-    Scope *s = comp_scope_of(c, id);
-    if (s && s->class_id >= 0 && comp_method_in_chain(c, s->class_id, name, NULL) < 0)
-      return ty_object(s->class_id);
-  }
-  /* bareword frozen? reads the instance's GC-header bit (see the codegen arm) */
-  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "frozen?")) {
-    Scope *s = comp_scope_of(c, id);
-    if (s && s->class_id >= 0 && !s->is_cmethod &&
-        comp_method_in_chain(c, s->class_id, name, NULL) < 0)
-      return TY_BOOL;
-  }
-
-  /* x.class -> a first-class Class value for every known receiver kind
-     (name-backed for builtins, id-backed for user objects) */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
-    /* empty container literal receivers coerce like everywhere else */
-    if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
-      const char *rty0 = nt_type(nt, recv);
-      int en0 = 0;
-      if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
-      if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
-      /* an argument-less `Array.new` is that same empty array (#3613) */
-      if (sp_streq(rty0, "CallNode") && nt_str(nt, recv, "name") &&
-          sp_streq(nt_str(nt, recv, "name"), "new") && nt_ref(nt, recv, "block") < 0) {
-        int arn0 = nt_ref(nt, recv, "receiver");
-        int aa0 = nt_ref(nt, recv, "arguments"); int aac0 = 0;
-        if (aa0 >= 0) nt_arr(nt, aa0, "arguments", &aac0);
-        if (aac0 == 0 && arn0 >= 0 && nt_type(nt, arn0) &&
-            sp_streq(nt_type(nt, arn0), "ConstantReadNode") &&
-            nt_str(nt, arn0, "name") && sp_streq(nt_str(nt, arn0, "name"), "Array"))
-          return TY_CLASS;
-      }
-      /* top-level `self.class`: self is main (an Object) -> Object (#3035) */
-      if (sp_streq(rty0, "SelfNode")) {
-        Scope *ss = comp_scope_of(c, id);
-        if (!ss || ss->class_id < 0) return TY_CLASS;
-      }
-    }
-    /* a member/method literally named `class` (a Data/Struct member) shadows
-       Object#class: fall through to the reader/method dispatch (#2975) */
-    if (ty_is_object(rt) &&
-        !(ty_object_class(rt) >= 0 && comp_reader_in_chain(c, ty_object_class(rt), "class", NULL)))
-      return TY_CLASS;
-    if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
-        rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
-        rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
-        rt == TY_MATCHDATA || rt == TY_REGEX ||
-        rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_CURRY ||
-        rt == TY_FIBER || rt == TY_ENUMERATOR || rt == TY_TMS ||
-        ty_is_array(rt) || ty_is_hash(rt))
-      return TY_CLASS;
-  }
-
-  /* X.class.name / .to_s -> the class-name string (X.class is already that) */
-  if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class"))
-    return TY_STRING;
-
-  /* <enc>.encoding.name -> the encoding name string */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "name") && rt == TY_POLY &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
-    return TY_STRING;
-
-  /* Module.singleton_writer= / Module.singleton_reader */
-  if (recv >= 0 && nt_type(nt, recv) &&
-      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
-       sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
-    const char *cn = nt_str(nt, recv, "name");
-    int ci = cn ? comp_class_index(c, cn) : -1;
-    TyKind sgt;
-    if (ci >= 0 && sg_accessor_type(c, ci, name, &sgt)) return sgt;
-  }
-  /* self.singleton_writer= / self.singleton_reader: inside a class method
-     or directly in a class/module body (g_cbody_class_id). */
-  if ((recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) ||
-      (recv < 0 && argc == 0)) {
-    Scope *_self = comp_scope_of(c, id);
-    int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
-                  ? _self->class_id : g_cbody_class_id;
-    if (_sg_cid < 0 && _self && _self->class_id < 0) _sg_cid = c->node_cbody[id];
-    TyKind sgt;
-    if (_sg_cid >= 0 && sg_accessor_type(c, _sg_cid, name, &sgt)) return sgt;
-  }
-
-  /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
-  if (recv >= 0 && nt_type(nt, recv)) {
-    const char *rty_ffi = nt_type(nt, recv);
-    const char *rcmod = NULL;
-    if (sp_streq(rty_ffi, "ConstantReadNode"))
-      rcmod = nt_str(nt, recv, "name");
-    else if (sp_streq(rty_ffi, "ConstantPathNode"))
-      rcmod = nt_str(nt, recv, "name");
-    if (rcmod) {
-      /* native binding (Path B): a native_func returns its declared type,
-         gated by the module's require-gate feature. */
-      int nvi = comp_native_find(c, rcmod, name);
-      if (nvi >= 0) {
-        const char *feat = c->native_funcs[nvi].feat;
-        if (!feat || !feat[0] || sp_feature_enabled(feat))
-          return native_spec_to_ty(c->native_funcs[nvi].ret);
-      }
-      int fi = ffi_find_func(c, rcmod, name);
-      if (fi >= 0) return ffi_spec_to_ty(c->ffi_funcs[fi].ret);
-      /* ffi_buffer: Module.buf_name returns the static char* (ptr type -> TY_POLY) */
-      if (ffi_find_buf(c, rcmod, name) >= 0) return TY_POLY;
-      /* ffi_read_*: Module.reader_name(buf) returns int or ptr */
-      int ri = ffi_find_reader(c, rcmod, name);
-      if (ri >= 0) {
-        const char *kind = c->ffi_readers[ri].kind;
-        if (kind && sp_streq(kind, "ptr")) return TY_POLY;
-        return TY_INT;
-      }
-      /* ffi_struct: Name_new -> ptr, Name_get_<f> -> the field's type,
-         Name_set_<f> -> nil. */
-      int fsi, ffi;
-      int fsm = ffi_struct_method(c, rcmod, name, &fsi, &ffi);
-      if (fsm == FFI_SM_NEW) return TY_POLY;
-      if (fsm == FFI_SM_GET) return ffi_spec_to_ty(c->ffi_structs[fsi].fields[ffi].spec);
-      if (fsm == FFI_SM_SET) return TY_NIL;
-      /* ffi_write_*: Module.writer_name(buf, val) returns the written value */
-      int wi = ffi_find_writer(c, rcmod, name);
-      if (wi >= 0) {
-        const char *kind = c->ffi_writers[wi].kind;
-        if (kind && sp_streq(kind, "ptr")) return TY_POLY;
-        return TY_INT;
-      }
-    }
-  }
-
-  /* SomeClass.superclass -> sp_Class value for the parent class */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
-    return TY_CLASS;
-
-  /* SomeClass.ancestors -> PolyArray of class objects */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "ancestors") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
-    return TY_POLY_ARRAY;
-
-  /* SomeClass.instance_methods / .public_instance_methods -> PolyArray of symbols */
-  if (recv >= 0 && argc <= 1 &&
-      (sp_streq(name, "instance_methods") || sp_streq(name, "public_instance_methods") ||
-       sp_streq(name, "private_instance_methods") || sp_streq(name, "protected_instance_methods")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
-    return TY_POLY_ARRAY;
-
-  /* self.class.new(...) in a class no class inherits from -> an instance of it */
-  if (recv >= 0 && sp_streq(name, "new") && self_class_static_ci(c, recv) >= 0)
-    return ty_object(self_class_static_ci(c, recv));
-
-  /* allocate on the class the method runs for: an instance of that class
-     (a subclass's, typed as the base, as a bare `new` in a class method is) */
-  {
-    int oc = allocate_on_own_class(c, id);
-    if (oc >= 0 && !class_is_exc_subclass(c, oc)) return ty_object(oc);
-  }
-  /* Class#allocate -> a bare instance of that class (no initialize run). */
-  if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-      /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
-         so inference and emission agree on which classes take the allocate path. */
-      if (ci >= 0 && !class_is_exc_subclass(c, ci)) return ty_object(ci);
-      const char *bcn = nt_str(nt, recv, "name");
-      if (bcn && sp_streq(bcn, "String")) return TY_STRING;
-      if (bcn && sp_streq(bcn, "Array"))  return TY_POLY_ARRAY;
-      if (bcn && sp_streq(bcn, "Hash"))   return TY_POLY_POLY_HASH;
-      if (bcn && sp_streq(bcn, "Object")) return TY_POLY;
-    }
-  }
+  { TyKind r; if (infer_class_module_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   { TyKind r; if (infer_new_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
