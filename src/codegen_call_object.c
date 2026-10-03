@@ -2017,6 +2017,20 @@ int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const 
   return 0;
 }
 
+static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid, Buf *b) {
+  const char *dn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+  int td = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", td);
+  emit_boxed(c, recv, b);
+  buf_puts(b, "; (void)(");
+  emit_boxed(c, value, b);
+  buf_printf(b, "); sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); ", td, dn);
+  Repr rp = repr_of(c, id);
+  TyKind rt9 = rp.as_ty;
+  buf_printf(b, "%s; })", rp.kind == RK_BOXED || rp.kind == RK_NONE ? "sp_box_nil()" : default_value(rt9));
+  return 1;
+}
+
 /* Literal ivar access depends on the class layout and member boundary,
    not just the receiver kind and argument kinds of a builtin row. */
 int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKind rt,
@@ -2047,6 +2061,7 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
                  sym ? sym : "");
       return 1;
     }
+    if (is_set && c->classes[cid].is_data) return emit_data_ivar_set(c, id, recv, argv[1], cid, b);
     int mi = -1;
     /* Data/Struct members live in the layout but are NOT @-instance
        variables in CRuby: a get answers nil, not the member (#2849) */
