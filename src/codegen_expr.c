@@ -3231,6 +3231,322 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
   return 0;
 }
 
+/* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
+static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {
+    int is_and = sp_streq(ty, "AndNode");
+    int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
+    TyKind lt = comp_ntype(c, left), res = comp_ntype(c, id);
+    /* `v = lookup or return`: the right operand diverges, so it has no value
+       for an arm to assign. Run it as a statement inside the short-circuit and
+       answer the left, which is the only value the chain can produce (#3777). */
+    if (right >= 0 && nt_type(nt, right) &&
+        (sp_streq(nt_type(nt, right), "ReturnNode") ||
+         sp_streq(nt_type(nt, right), "BreakNode") ||
+         sp_streq(nt_type(nt, right), "NextNode"))) {
+      TyKind vt = lt;
+      if (vt == TY_VOID || vt == TY_UNKNOWN || vt == TY_NIL) vt = TY_POLY;
+      int t2 = ++g_tmp;
+      Buf lb; memset(&lb, 0, sizeof lb);
+      if (vt == TY_POLY && lt != TY_POLY) emit_boxed(c, left, &lb);
+      else emit_expr(c, left, &lb);
+      Buf tc2; memset(&tc2, 0, sizeof tc2);
+      if (vt == TY_POLY)       buf_printf(&tc2, "sp_poly_truthy(_t%d)", t2);
+      else if (vt == TY_BOOL)  buf_printf(&tc2, "_t%d", t2);
+      else if (vt == TY_INT)   buf_printf(&tc2, "(_t%d != SP_INT_NIL)", t2);
+      else if (vt == TY_FLOAT) buf_printf(&tc2, "(!sp_float_is_nil(_t%d))", t2);
+      else if (vt == TY_SYMBOL) buf_printf(&tc2, "(_t%d != (sp_sym)-1)", t2);
+      else if (vt == TY_CLASS) buf_printf(&tc2, "(!sp_class_nil_p(_t%d))", t2);
+      else if (vt == TY_STRING || ty_is_array(vt) || ty_is_hash(vt) || ty_is_object(vt) ||
+               vt == TY_PROC || vt == TY_MATCHDATA || vt == TY_EXCEPTION ||
+               ty_nullable_builtin_id(vt))
+        buf_printf(&tc2, "(_t%d != 0)", t2);
+      else buf_puts(&tc2, "1");
+      buf_puts(b, "({ ");
+      emit_ctype(c, vt, b);
+      buf_printf(b, " _t%d = %s; if (%s%s) {\n", t2, lb.p ? lb.p : "0",
+                 is_and ? "" : "!", tc2.p ? tc2.p : "1");
+      emit_stmt(c, right, b, g_indent + 1);
+      buf_printf(b, "}\n _t%d; })", t2);
+      free(lb.p); free(tc2.p);
+      return 1;
+    }
+    if (lt == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
+      /* Capture the right operand's prelude: an object subexpression there
+         (`a && b.c == x`) hoists a GC-rooted temp that must run inside the
+         short-circuit, not above the whole chain (issue #1773). No prelude ->
+         the flat C `&&`/`||`; otherwise a real branch scopes it. */
+      Buf rarm; memset(&rarm, 0, sizeof rarm);
+      Buf rpre; memset(&rpre, 0, sizeof rpre);
+      { Buf *sv_pre2 = g_pre; g_pre = &rpre; emit_expr(c, right, &rarm); g_pre = sv_pre2; }
+      if (!(rpre.p && rpre.p[0])) {
+        buf_puts(b, "(");
+        emit_expr(c, left, b);
+        buf_puts(b, is_and ? " && " : " || ");
+        buf_puts(b, rarm.p ? rarm.p : "0");
+        buf_puts(b, ")");
+      }
+      else {
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_bool _t%d; if (", tr);
+        emit_expr(c, left, b);
+        if (is_and) buf_printf(b, ") {\n%s_t%d = %s;\n}\nelse { _t%d = 0; } _t%d; })",
+                               rpre.p, tr, rarm.p ? rarm.p : "0", tr, tr);
+        else        buf_printf(b, ") { _t%d = 1; }\nelse {\n%s_t%d = %s;\n} _t%d; })",
+                               tr, rpre.p, tr, rarm.p ? rarm.p : "0", tr);
+      }
+      free(rarm.p); free(rpre.p);
+      return 1;
+    }
+    /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
+       Evaluate the left once into a temp; results widen to the unified type.
+       The result is always a real value (a nil left boxes to sp_box_nil), never
+       void -- a VOID/UNKNOWN unified type (`() && true`, an empty-parens operand
+       whose cached type settled void) becomes poly so the temp is not `void`. */
+    if (res == TY_VOID || res == TY_UNKNOWN || res == TY_NIL) res = TY_POLY;
+    int t = ++g_tmp;
+    int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
+    buf_puts(b, "({ ");
+    emit_ctype(c, (lt == TY_UNKNOWN || lt_falsy_const) ? res : lt, b);
+    buf_printf(b, " _t%d = ", t);
+    if (lt_falsy_const) {
+      buf_puts(b, "("); emit_expr(c, left, b); buf_puts(b, ", ");
+      buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res == TY_UNKNOWN ? TY_INT : res));
+      buf_puts(b, ")");
+    }
+    /* an unresolved (TY_UNKNOWN) left emits a poly fallback (sp_box_nil); coerce
+       it to the unified scalar result so the temp's declared type matches. */
+    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    /* a bool-unified chain with an unresolved left (a poly dispatch whose
+       node type stayed unknown, e.g. alias-to-reader through a poly element):
+       take its truthiness, mirroring the int/float coercions (#3276) */
+    else if (lt == TY_UNKNOWN && res == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    /* The left may be an unresolved call emitting an sp_RbVal raise token
+       (`x.details || "~"`, where details is typed String from the `||` but
+       lowers to sp_raise_nomethod); coerce it to the temp's DECLARED type (res
+       when the left itself is unknown) rather than assigning the raw token. A
+       normal left emits unchanged. */
+    else emit_unresolved_coerced(c, left, lt == TY_UNKNOWN ? res : lt, b);
+    buf_puts(b, "; ");
+    /* Truthiness of the left, built into its own buffer so the arms can be
+       captured before it is committed to `b`. */
+    Buf tcond; memset(&tcond, 0, sizeof tcond);
+    if (lt == TY_POLY)      buf_printf(&tcond, "sp_poly_truthy(_t%d)", t);
+    else if (lt == TY_BOOL) buf_printf(&tcond, "_t%d", t);
+    else if (lt_falsy_const) buf_puts(&tcond, "0");
+    else if (lt == TY_INT)  buf_printf(&tcond, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
+    else if (lt == TY_FLOAT) buf_printf(&tcond, "(!sp_float_is_nil(_t%d))", t);
+    else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
+             lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION ||
+             lt == TY_BIGINT || ty_nullable_builtin_id(lt))
+      buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
+    else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
+    else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(&tcond, "_t%d", t);  /* temp holds sp_poly_truthy(left) (#3276) */
+    else if (lt == TY_CLASS) buf_printf(&tcond, "(!sp_class_nil_p(_t%d))", t);
+    else                    buf_puts(&tcond, "1");  /* concrete value: always truthy */
+    /* Capture each arm (widened to res). The RIGHT arm's prelude is captured
+       separately: an object subexpression there (`a && b.c`) hoists a GC-rooted
+       temp, which must be evaluated INSIDE the short-circuit -- after the left,
+       and only when the left is truthy -- not lifted above the whole chain
+       (issue #1773). The kept-left arm is pure temp/box and never hoists. */
+    Buf larm; memset(&larm, 0, sizeof larm);
+    Buf rarm; memset(&rarm, 0, sizeof rarm);
+    Buf rpre; memset(&rpre, 0, sizeof rpre);
+    #define EMIT_ARM(IS_RIGHT, TB) do { \
+      if (IS_RIGHT) { emit_ternary_arm(c, right, res, (TB)); } \
+      else { if (res == TY_POLY && lt != TY_POLY) { /* box the temp by left type */ \
+               /* In `a && b` the kept-left arm is reached only when the left is
+                  FALSY, and for a scalar slot that means it holds the nil
+                  sentinel: box it as nil, or the result answers nil? with
+                  false and survives compact. `a || b` keeps a truthy left, so
+                  there the plain box is right. */ \
+               if (lt==TY_INT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
+                                 else buf_printf((TB), "sp_box_int(_t%d)", t); } \
+               else if (lt==TY_STRING) buf_printf((TB), "sp_box_nullable_str(_t%d)", t); \
+               else if (lt==TY_FLOAT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
+                                        else buf_printf((TB), "sp_box_float(_t%d)", t); } \
+               else if (lt==TY_BOOL) buf_printf((TB), "sp_box_bool(_t%d)", t); \
+               else if (lt==TY_SYMBOL) buf_printf((TB), "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
+               else if (ty_is_object(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
+               else if (ty_is_hash(lt) && hash_box_cls(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, hash_box_cls(lt)); \
+               else if (ty_is_array(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, \
+                        lt==TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : lt==TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : \
+                        lt==TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : "SP_BUILTIN_POLY_ARRAY"); \
+               else if (lt == TY_MATCHDATA && is_and) buf_puts((TB), "sp_box_nil()"); /* MatchData has no poly box; in `m && x` the kept-left arm is reached only when m is NULL, i.e. nil (#2896) */ \
+               /* every remaining nullable builtin handle -- a Mutex, Queue,
+                  Fiber, Thread, ConditionVariable -- boxes like the object and
+                  container arms above. Without this the arm assigned a raw
+                  sp_mutex * where the sibling arm is an sp_RbVal, and the C
+                  compiler rejected the ternary outright (#3484). */ \
+               else if (ty_nullable_builtin_id(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, ty_nullable_builtin_id(lt)); \
+               else if (lt == TY_CLASS) buf_printf((TB), "sp_box_class(_t%d)", t); \
+               else buf_printf((TB), "_t%d", t); } \
+             else buf_printf((TB), "_t%d", t); } \
+    } while (0)
+    EMIT_ARM(0, &larm);
+    { Buf *sv_pre2 = g_pre; g_pre = &rpre; EMIT_ARM(1, &rarm); g_pre = sv_pre2; }
+    #undef EMIT_ARM
+    int rhoists = rpre.p && rpre.p[0];
+    if (!rhoists) {
+      buf_printf(b, "%s ? %s : %s; })", tcond.p ? tcond.p : "1",
+                 is_and ? (rarm.p ? rarm.p : "0") : (larm.p ? larm.p : "0"),
+                 is_and ? (larm.p ? larm.p : "0") : (rarm.p ? rarm.p : "0"));
+    }
+    else {
+      /* Right arm hoists: run it inside a real branch so its prelude is scoped
+         and short-circuited. `res` may be void/nil (a writer arm) -- hold poly. */
+      TyKind rres = (res == TY_VOID || res == TY_NIL) ? TY_POLY : res;
+      int tr = ++g_tmp;
+      emit_ctype(c, rres, b); buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
+      if (is_and) buf_printf(b, "%s_t%d = %s;\n}\nelse { _t%d = %s; } _t%d; })",
+                             rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr, larm.p ? larm.p : "0", tr);
+      else        buf_printf(b, "_t%d = %s;\n}\nelse { %s_t%d = %s; } _t%d; })",
+                             tr, larm.p ? larm.p : "0", rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr);
+    }
+    free(tcond.p); free(larm.p); free(rarm.p); free(rpre.p);
+    return 1;
+  }
+
+  if (sp_streq(ty, "RescueModifierNode")) {
+    /* `expr rescue fallback` as an rvalue: evaluate expr under setjmp;
+       on exception, evaluate fallback instead. */
+    int e  = nt_ref(nt, id, "expression");
+    int r  = nt_ref(nt, id, "rescue_expression");
+    TyKind rt = comp_ntype(c, id);
+    int t = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, rt, b);
+    buf_printf(b, " _t%d = %s; sp_exc_check_depth(); sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp; sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n", t, slot_zero(c, rt));
+    buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    /* expression arm -- assign result to temp (skip diverging exprs like raise) */
+    TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
+    /* An empty container's type reads UNKNOWN for want of an element type; it
+       still produces a value, so it must be assigned rather than emitted for
+       effect and discarded (#3495). */
+    int e_diverges = (et == TY_UNKNOWN || et == TY_VOID) && !node_is_empty_container(nt, e);
+    /* A call spinel folds into an unconditional raise carries whatever C type
+       that raise helper returns, which need not match the merged slot (the
+       constant-folded `nil.clone(freeze: false)` yields an int against an
+       sp_Class slot). Control never reaches the assignment, so treat it as
+       diverging and emit it for effect alone. (#3021) */
+    if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt &&
+        !ty_is_numeric(rt) && nt_type(nt, e) && sp_streq(nt_type(nt, e), "CallNode"))
+      e_diverges = 1;
+    buf_puts(b, "  ");
+    /* the expression arm's own preludes (an inline-spliced body, a rooted
+       temp) must land INSIDE the protected region -- with the enclosing
+       statement's g_pre they would run before the setjmp, unprotected
+       (#2723). Same swap the rescue arm below has always done. */
+    if (e >= 0 && !e_diverges) {
+      Buf epre; memset(&epre, 0, sizeof epre);
+      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
+      g_pre = &epre; g_indent = 1;
+      Buf ev; memset(&ev, 0, sizeof ev);
+      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, &ev);
+      else emit_expr_slot(c, e, rt, &ev);
+      g_pre = sv_pre0; g_indent = sv_ind0;
+      if (epre.p) buf_puts(b, epre.p);
+      buf_printf(b, "_t%d = %s;", t, ev.p ? ev.p : "");
+      free(epre.p); free(ev.p);
+    }
+    else if (e >= 0) {
+      /* diverging expression like raise: emit as stmt (no assignment) */
+      Buf epre; memset(&epre, 0, sizeof epre);
+      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
+      g_pre = &epre; g_indent = 1;
+      Buf ev; memset(&ev, 0, sizeof ev);
+      emit_expr(c, e, &ev);
+      g_pre = sv_pre0; g_indent = sv_ind0;
+      if (epre.p) buf_puts(b, epre.p);
+      buf_printf(b, "%s;", ev.p ? ev.p : "");
+      free(epre.p); free(ev.p);
+    }
+    /* restore the handled-exception depth too: a body that exits by raising
+       out of its own rescue leaves its push behind, and `$!` would keep
+       reading it long after the handler is gone (#3726) */
+    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n  "
+                "sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n  "
+                "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  "
+                /* a bare rescue catches StandardError and its descendants only:
+                   this arm caught everything, so a subclass of Exception was
+                   swallowed (#3725) */
+                "if (!sp_exc_is_standard_error((const char *)sp_last_exc_cls)) {\n    "
+                "  sp_pending_exc_obj = sp_exc_obj[sp_exc_top]; sp_bt_keep = 1;\n    "
+                "  sp_raise_cls((const char *)sp_last_exc_cls, sp_exc_msg[sp_exc_top]);\n  "
+                "}\n  ");
+    /* materialize the handled exception and push it so `$!` (and #cause
+       threading for a nested raise) see it inside the fallback, exactly like
+       a full rescue arm; popped when the arm value settles. */
+    int tce = ++g_tmp;
+    buf_printf(b, "sp_Exception *_t%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                  " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n  ", tce);
+    buf_printf(b, "sp_gc_wb((void *)_t%d); _t%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n  ", tce, tce);
+    buf_printf(b, "sp_rescue_push((void *)_t%d);\n  ", tce);
+    /* rescue arm: its preludes (e.g. a hoisted `$!` read) must land INSIDE
+       this else block, after the push -- swap g_pre to a local buffer. */
+    if (r >= 0) {
+      Buf rpre; memset(&rpre, 0, sizeof rpre);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = &rpre; g_indent = 1;
+      Buf rv; memset(&rv, 0, sizeof rv);
+      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, &rv);
+      else emit_expr_slot(c, r, rt, &rv);
+      g_pre = sv_pre; g_indent = sv_ind;
+      if (rpre.p) buf_puts(b, rpre.p);
+      free(rpre.p);
+      buf_printf(b, "_t%d = %s;", t, rv.p ? rv.p : "");
+      free(rv.p);
+    }
+    buf_puts(b, "\n  sp_rescue_sp--;");
+    buf_printf(b, "\n}\n_t%d; })", t);
+    return 1;
+  }
+
+  if (sp_streq(ty, "BeginNode")) {
+    /* begin/rescue as an rvalue: hoist the block into g_pre so the temp
+       is assigned before the surrounding expression reads it. */
+    TyKind rt = comp_ntype(c, id);
+    /* a void/nil-typed begin (its tail is a writer call or another
+       value-less statement) has no C storage type; hold the result boxed
+       and let the value-less tail leave it nil. */
+    if (rt == TY_VOID || rt == TY_NIL) rt = TY_POLY;
+    int t = ++g_tmp;
+    char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
+    int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
+    TyKind srt = g_result_ty; g_result_ty = rt;
+    /* the value sits in the temp while the ensure body runs, which may
+       allocate; the root goes in front of the region so the landing's
+       watermark restore keeps it. An empty ensure clause runs nothing between
+       the write and the read, so it gets no root. */
+    int ec = nt_ref(c->nt, id, "ensure_clause");
+    int hold = ec >= 0 && nt_ref(c->nt, ec, "statements") >= 0 && ty_gc_rootable(c, rt);
+    if (g_pre) {
+      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+      buf_printf(g_pre, " _t%d = %s;", t, slot_zero(c, rt));
+      if (hold) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, rt, t, g_pre); }
+      buf_puts(g_pre, "\n");
+      emit_begin(c, id, g_pre, g_indent, rv);
+    }
+    else {
+      /* No prelude available (e.g. inside another expression's prelude):
+         fall back to a GCC statement expression. */
+      buf_puts(b, "({ ");
+      emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s;", t, slot_zero(c, rt));
+      if (hold) { buf_puts(b, " "); emit_gc_root_tmp(c, rt, t, b); }
+      buf_puts(b, "\n");
+      emit_begin(c, id, b, 0, rv);
+      buf_printf(b, "_t%d; })", t);
+      g_result_poly = sp; g_result_ty = srt;
+      return 1;
+    }
+    g_result_poly = sp; g_result_ty = srt;
+    buf_printf(b, "_t%d", t);
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3959,317 +4275,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     if (!emit_super_inline(c, id, b, 0, 1)) emit_super(c, id, b);
     return;
   }
-  if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {
-    int is_and = sp_streq(ty, "AndNode");
-    int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
-    TyKind lt = comp_ntype(c, left), res = comp_ntype(c, id);
-    /* `v = lookup or return`: the right operand diverges, so it has no value
-       for an arm to assign. Run it as a statement inside the short-circuit and
-       answer the left, which is the only value the chain can produce (#3777). */
-    if (right >= 0 && nt_type(nt, right) &&
-        (sp_streq(nt_type(nt, right), "ReturnNode") ||
-         sp_streq(nt_type(nt, right), "BreakNode") ||
-         sp_streq(nt_type(nt, right), "NextNode"))) {
-      TyKind vt = lt;
-      if (vt == TY_VOID || vt == TY_UNKNOWN || vt == TY_NIL) vt = TY_POLY;
-      int t2 = ++g_tmp;
-      Buf lb; memset(&lb, 0, sizeof lb);
-      if (vt == TY_POLY && lt != TY_POLY) emit_boxed(c, left, &lb);
-      else emit_expr(c, left, &lb);
-      Buf tc2; memset(&tc2, 0, sizeof tc2);
-      if (vt == TY_POLY)       buf_printf(&tc2, "sp_poly_truthy(_t%d)", t2);
-      else if (vt == TY_BOOL)  buf_printf(&tc2, "_t%d", t2);
-      else if (vt == TY_INT)   buf_printf(&tc2, "(_t%d != SP_INT_NIL)", t2);
-      else if (vt == TY_FLOAT) buf_printf(&tc2, "(!sp_float_is_nil(_t%d))", t2);
-      else if (vt == TY_SYMBOL) buf_printf(&tc2, "(_t%d != (sp_sym)-1)", t2);
-      else if (vt == TY_CLASS) buf_printf(&tc2, "(!sp_class_nil_p(_t%d))", t2);
-      else if (vt == TY_STRING || ty_is_array(vt) || ty_is_hash(vt) || ty_is_object(vt) ||
-               vt == TY_PROC || vt == TY_MATCHDATA || vt == TY_EXCEPTION ||
-               ty_nullable_builtin_id(vt))
-        buf_printf(&tc2, "(_t%d != 0)", t2);
-      else buf_puts(&tc2, "1");
-      buf_puts(b, "({ ");
-      emit_ctype(c, vt, b);
-      buf_printf(b, " _t%d = %s; if (%s%s) {\n", t2, lb.p ? lb.p : "0",
-                 is_and ? "" : "!", tc2.p ? tc2.p : "1");
-      emit_stmt(c, right, b, g_indent + 1);
-      buf_printf(b, "}\n _t%d; })", t2);
-      free(lb.p); free(tc2.p);
-      return;
-    }
-    if (lt == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
-      /* Capture the right operand's prelude: an object subexpression there
-         (`a && b.c == x`) hoists a GC-rooted temp that must run inside the
-         short-circuit, not above the whole chain (issue #1773). No prelude ->
-         the flat C `&&`/`||`; otherwise a real branch scopes it. */
-      Buf rarm; memset(&rarm, 0, sizeof rarm);
-      Buf rpre; memset(&rpre, 0, sizeof rpre);
-      { Buf *sv_pre2 = g_pre; g_pre = &rpre; emit_expr(c, right, &rarm); g_pre = sv_pre2; }
-      if (!(rpre.p && rpre.p[0])) {
-        buf_puts(b, "(");
-        emit_expr(c, left, b);
-        buf_puts(b, is_and ? " && " : " || ");
-        buf_puts(b, rarm.p ? rarm.p : "0");
-        buf_puts(b, ")");
-      }
-      else {
-        int tr = ++g_tmp;
-        buf_printf(b, "({ sp_bool _t%d; if (", tr);
-        emit_expr(c, left, b);
-        if (is_and) buf_printf(b, ") {\n%s_t%d = %s;\n}\nelse { _t%d = 0; } _t%d; })",
-                               rpre.p, tr, rarm.p ? rarm.p : "0", tr, tr);
-        else        buf_printf(b, ") { _t%d = 1; }\nelse {\n%s_t%d = %s;\n} _t%d; })",
-                               tr, rpre.p, tr, rarm.p ? rarm.p : "0", tr);
-      }
-      free(rarm.p); free(rpre.p);
-      return;
-    }
-    /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
-       Evaluate the left once into a temp; results widen to the unified type.
-       The result is always a real value (a nil left boxes to sp_box_nil), never
-       void -- a VOID/UNKNOWN unified type (`() && true`, an empty-parens operand
-       whose cached type settled void) becomes poly so the temp is not `void`. */
-    if (res == TY_VOID || res == TY_UNKNOWN || res == TY_NIL) res = TY_POLY;
-    int t = ++g_tmp;
-    int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
-    buf_puts(b, "({ ");
-    emit_ctype(c, (lt == TY_UNKNOWN || lt_falsy_const) ? res : lt, b);
-    buf_printf(b, " _t%d = ", t);
-    if (lt_falsy_const) {
-      buf_puts(b, "("); emit_expr(c, left, b); buf_puts(b, ", ");
-      buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res == TY_UNKNOWN ? TY_INT : res));
-      buf_puts(b, ")");
-    }
-    /* an unresolved (TY_UNKNOWN) left emits a poly fallback (sp_box_nil); coerce
-       it to the unified scalar result so the temp's declared type matches. */
-    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    /* a bool-unified chain with an unresolved left (a poly dispatch whose
-       node type stayed unknown, e.g. alias-to-reader through a poly element):
-       take its truthiness, mirroring the int/float coercions (#3276) */
-    else if (lt == TY_UNKNOWN && res == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    /* The left may be an unresolved call emitting an sp_RbVal raise token
-       (`x.details || "~"`, where details is typed String from the `||` but
-       lowers to sp_raise_nomethod); coerce it to the temp's DECLARED type (res
-       when the left itself is unknown) rather than assigning the raw token. A
-       normal left emits unchanged. */
-    else emit_unresolved_coerced(c, left, lt == TY_UNKNOWN ? res : lt, b);
-    buf_puts(b, "; ");
-    /* Truthiness of the left, built into its own buffer so the arms can be
-       captured before it is committed to `b`. */
-    Buf tcond; memset(&tcond, 0, sizeof tcond);
-    if (lt == TY_POLY)      buf_printf(&tcond, "sp_poly_truthy(_t%d)", t);
-    else if (lt == TY_BOOL) buf_printf(&tcond, "_t%d", t);
-    else if (lt_falsy_const) buf_puts(&tcond, "0");
-    else if (lt == TY_INT)  buf_printf(&tcond, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
-    else if (lt == TY_FLOAT) buf_printf(&tcond, "(!sp_float_is_nil(_t%d))", t);
-    else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
-             lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION ||
-             lt == TY_BIGINT || ty_nullable_builtin_id(lt))
-      buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
-    else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
-    else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(&tcond, "_t%d", t);  /* temp holds sp_poly_truthy(left) (#3276) */
-    else if (lt == TY_CLASS) buf_printf(&tcond, "(!sp_class_nil_p(_t%d))", t);
-    else                    buf_puts(&tcond, "1");  /* concrete value: always truthy */
-    /* Capture each arm (widened to res). The RIGHT arm's prelude is captured
-       separately: an object subexpression there (`a && b.c`) hoists a GC-rooted
-       temp, which must be evaluated INSIDE the short-circuit -- after the left,
-       and only when the left is truthy -- not lifted above the whole chain
-       (issue #1773). The kept-left arm is pure temp/box and never hoists. */
-    Buf larm; memset(&larm, 0, sizeof larm);
-    Buf rarm; memset(&rarm, 0, sizeof rarm);
-    Buf rpre; memset(&rpre, 0, sizeof rpre);
-    #define EMIT_ARM(IS_RIGHT, TB) do { \
-      if (IS_RIGHT) { emit_ternary_arm(c, right, res, (TB)); } \
-      else { if (res == TY_POLY && lt != TY_POLY) { /* box the temp by left type */ \
-               /* In `a && b` the kept-left arm is reached only when the left is
-                  FALSY, and for a scalar slot that means it holds the nil
-                  sentinel: box it as nil, or the result answers nil? with
-                  false and survives compact. `a || b` keeps a truthy left, so
-                  there the plain box is right. */ \
-               if (lt==TY_INT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
-                                 else buf_printf((TB), "sp_box_int(_t%d)", t); } \
-               else if (lt==TY_STRING) buf_printf((TB), "sp_box_nullable_str(_t%d)", t); \
-               else if (lt==TY_FLOAT) { if (is_and) buf_puts((TB), "sp_box_nil()"); \
-                                        else buf_printf((TB), "sp_box_float(_t%d)", t); } \
-               else if (lt==TY_BOOL) buf_printf((TB), "sp_box_bool(_t%d)", t); \
-               else if (lt==TY_SYMBOL) buf_printf((TB), "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
-               else if (ty_is_object(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
-               else if (ty_is_hash(lt) && hash_box_cls(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, hash_box_cls(lt)); \
-               else if (ty_is_array(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, \
-                        lt==TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : lt==TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : \
-                        lt==TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : "SP_BUILTIN_POLY_ARRAY"); \
-               else if (lt == TY_MATCHDATA && is_and) buf_puts((TB), "sp_box_nil()"); /* MatchData has no poly box; in `m && x` the kept-left arm is reached only when m is NULL, i.e. nil (#2896) */ \
-               /* every remaining nullable builtin handle -- a Mutex, Queue,
-                  Fiber, Thread, ConditionVariable -- boxes like the object and
-                  container arms above. Without this the arm assigned a raw
-                  sp_mutex * where the sibling arm is an sp_RbVal, and the C
-                  compiler rejected the ternary outright (#3484). */ \
-               else if (ty_nullable_builtin_id(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, ty_nullable_builtin_id(lt)); \
-               else if (lt == TY_CLASS) buf_printf((TB), "sp_box_class(_t%d)", t); \
-               else buf_printf((TB), "_t%d", t); } \
-             else buf_printf((TB), "_t%d", t); } \
-    } while (0)
-    EMIT_ARM(0, &larm);
-    { Buf *sv_pre2 = g_pre; g_pre = &rpre; EMIT_ARM(1, &rarm); g_pre = sv_pre2; }
-    #undef EMIT_ARM
-    int rhoists = rpre.p && rpre.p[0];
-    if (!rhoists) {
-      buf_printf(b, "%s ? %s : %s; })", tcond.p ? tcond.p : "1",
-                 is_and ? (rarm.p ? rarm.p : "0") : (larm.p ? larm.p : "0"),
-                 is_and ? (larm.p ? larm.p : "0") : (rarm.p ? rarm.p : "0"));
-    }
-    else {
-      /* Right arm hoists: run it inside a real branch so its prelude is scoped
-         and short-circuited. `res` may be void/nil (a writer arm) -- hold poly. */
-      TyKind rres = (res == TY_VOID || res == TY_NIL) ? TY_POLY : res;
-      int tr = ++g_tmp;
-      emit_ctype(c, rres, b); buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
-      if (is_and) buf_printf(b, "%s_t%d = %s;\n}\nelse { _t%d = %s; } _t%d; })",
-                             rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr, larm.p ? larm.p : "0", tr);
-      else        buf_printf(b, "_t%d = %s;\n}\nelse { %s_t%d = %s; } _t%d; })",
-                             tr, larm.p ? larm.p : "0", rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr);
-    }
-    free(tcond.p); free(larm.p); free(rarm.p); free(rpre.p);
-    return;
-  }
-
-  if (sp_streq(ty, "RescueModifierNode")) {
-    /* `expr rescue fallback` as an rvalue: evaluate expr under setjmp;
-       on exception, evaluate fallback instead. */
-    int e  = nt_ref(nt, id, "expression");
-    int r  = nt_ref(nt, id, "rescue_expression");
-    TyKind rt = comp_ntype(c, id);
-    int t = ++g_tmp;
-    buf_puts(b, "({ ");
-    emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s; sp_exc_check_depth(); sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp; sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n", t, slot_zero(c, rt));
-    buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
-    /* expression arm -- assign result to temp (skip diverging exprs like raise) */
-    TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
-    /* An empty container's type reads UNKNOWN for want of an element type; it
-       still produces a value, so it must be assigned rather than emitted for
-       effect and discarded (#3495). */
-    int e_diverges = (et == TY_UNKNOWN || et == TY_VOID) && !node_is_empty_container(nt, e);
-    /* A call spinel folds into an unconditional raise carries whatever C type
-       that raise helper returns, which need not match the merged slot (the
-       constant-folded `nil.clone(freeze: false)` yields an int against an
-       sp_Class slot). Control never reaches the assignment, so treat it as
-       diverging and emit it for effect alone. (#3021) */
-    if (!e_diverges && e >= 0 && rt != TY_POLY && et != rt &&
-        !ty_is_numeric(rt) && nt_type(nt, e) && sp_streq(nt_type(nt, e), "CallNode"))
-      e_diverges = 1;
-    buf_puts(b, "  ");
-    /* the expression arm's own preludes (an inline-spliced body, a rooted
-       temp) must land INSIDE the protected region -- with the enclosing
-       statement's g_pre they would run before the setjmp, unprotected
-       (#2723). Same swap the rescue arm below has always done. */
-    if (e >= 0 && !e_diverges) {
-      Buf epre; memset(&epre, 0, sizeof epre);
-      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
-      g_pre = &epre; g_indent = 1;
-      Buf ev; memset(&ev, 0, sizeof ev);
-      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, &ev);
-      else emit_expr_slot(c, e, rt, &ev);
-      g_pre = sv_pre0; g_indent = sv_ind0;
-      if (epre.p) buf_puts(b, epre.p);
-      buf_printf(b, "_t%d = %s;", t, ev.p ? ev.p : "");
-      free(epre.p); free(ev.p);
-    }
-    else if (e >= 0) {
-      /* diverging expression like raise: emit as stmt (no assignment) */
-      Buf epre; memset(&epre, 0, sizeof epre);
-      Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
-      g_pre = &epre; g_indent = 1;
-      Buf ev; memset(&ev, 0, sizeof ev);
-      emit_expr(c, e, &ev);
-      g_pre = sv_pre0; g_indent = sv_ind0;
-      if (epre.p) buf_puts(b, epre.p);
-      buf_printf(b, "%s;", ev.p ? ev.p : "");
-      free(epre.p); free(ev.p);
-    }
-    /* restore the handled-exception depth too: a body that exits by raising
-       out of its own rescue leaves its push behind, and `$!` would keep
-       reading it long after the handler is gone (#3726) */
-    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n  "
-                "sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n  "
-                "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  "
-                /* a bare rescue catches StandardError and its descendants only:
-                   this arm caught everything, so a subclass of Exception was
-                   swallowed (#3725) */
-                "if (!sp_exc_is_standard_error((const char *)sp_last_exc_cls)) {\n    "
-                "  sp_pending_exc_obj = sp_exc_obj[sp_exc_top]; sp_bt_keep = 1;\n    "
-                "  sp_raise_cls((const char *)sp_last_exc_cls, sp_exc_msg[sp_exc_top]);\n  "
-                "}\n  ");
-    /* materialize the handled exception and push it so `$!` (and #cause
-       threading for a nested raise) see it inside the fallback, exactly like
-       a full rescue arm; popped when the arm value settles. */
-    int tce = ++g_tmp;
-    buf_printf(b, "sp_Exception *_t%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                  " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n  ", tce);
-    buf_printf(b, "sp_gc_wb((void *)_t%d); _t%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n  ", tce, tce);
-    buf_printf(b, "sp_rescue_push((void *)_t%d);\n  ", tce);
-    /* rescue arm: its preludes (e.g. a hoisted `$!` read) must land INSIDE
-       this else block, after the push -- swap g_pre to a local buffer. */
-    if (r >= 0) {
-      Buf rpre; memset(&rpre, 0, sizeof rpre);
-      Buf *sv_pre = g_pre; int sv_ind = g_indent;
-      g_pre = &rpre; g_indent = 1;
-      Buf rv; memset(&rv, 0, sizeof rv);
-      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, &rv);
-      else emit_expr_slot(c, r, rt, &rv);
-      g_pre = sv_pre; g_indent = sv_ind;
-      if (rpre.p) buf_puts(b, rpre.p);
-      free(rpre.p);
-      buf_printf(b, "_t%d = %s;", t, rv.p ? rv.p : "");
-      free(rv.p);
-    }
-    buf_puts(b, "\n  sp_rescue_sp--;");
-    buf_printf(b, "\n}\n_t%d; })", t);
-    return;
-  }
-
-  if (sp_streq(ty, "BeginNode")) {
-    /* begin/rescue as an rvalue: hoist the block into g_pre so the temp
-       is assigned before the surrounding expression reads it. */
-    TyKind rt = comp_ntype(c, id);
-    /* a void/nil-typed begin (its tail is a writer call or another
-       value-less statement) has no C storage type; hold the result boxed
-       and let the value-less tail leave it nil. */
-    if (rt == TY_VOID || rt == TY_NIL) rt = TY_POLY;
-    int t = ++g_tmp;
-    char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
-    int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
-    TyKind srt = g_result_ty; g_result_ty = rt;
-    /* the value sits in the temp while the ensure body runs, which may
-       allocate; the root goes in front of the region so the landing's
-       watermark restore keeps it. An empty ensure clause runs nothing between
-       the write and the read, so it gets no root. */
-    int ec = nt_ref(c->nt, id, "ensure_clause");
-    int hold = ec >= 0 && nt_ref(c->nt, ec, "statements") >= 0 && ty_gc_rootable(c, rt);
-    if (g_pre) {
-      emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-      buf_printf(g_pre, " _t%d = %s;", t, slot_zero(c, rt));
-      if (hold) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, rt, t, g_pre); }
-      buf_puts(g_pre, "\n");
-      emit_begin(c, id, g_pre, g_indent, rv);
-    }
-    else {
-      /* No prelude available (e.g. inside another expression's prelude):
-         fall back to a GCC statement expression. */
-      buf_puts(b, "({ ");
-      emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s;", t, slot_zero(c, rt));
-      if (hold) { buf_puts(b, " "); emit_gc_root_tmp(c, rt, t, b); }
-      buf_puts(b, "\n");
-      emit_begin(c, id, b, 0, rv);
-      buf_printf(b, "_t%d; })", t);
-      g_result_poly = sp; g_result_ty = srt;
-      return;
-    }
-    g_result_poly = sp; g_result_ty = srt;
-    buf_printf(b, "_t%d", t);
-    return;
-  }
+  if (emit_and_or_begin_expr(c, id, b, nt, ty)) return;
 
   /* MultiWriteNode as expression: execute the destructuring (side effect),
      then return the RHS value (Ruby semantics: value of `a, b = arr` is arr). */
