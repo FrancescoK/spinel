@@ -14835,6 +14835,158 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
   }
 }
 
+/* User exception classes: the class-name to index map a poly dispatch keys them by, and the #message / #to_s override dispatchers (const char * and boxed) (codegen_program's steps, in their order) */
+static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
+  /* A boxed exception carries SP_BUILTIN_EXCEPTION, not its user class's
+     index, so a poly dispatch over a user exception class's own method keys
+     it through this map instead (emit_poly_dispatch_key's exc_cand): its
+     class name to that index, the arm's struct being the exception header
+     followed by the class's ivars (#5093). The name an exception carries is
+     its qualified Ruby name ("Storage::WriteError"), as class_ruby_name
+     gives it, not the class table's short name. */
+  /* A builtin exception's reopening (`class KeyError; def hint`) is an entry
+     too: a boxed exception of exactly that class keys to it by name, and one
+     of a class under it (a builtin the runtime raised, with only its
+     ancestor reopened) by the runtime's ancestry, most-derived reopening
+     first in declaration order, a base Exception reopening last. */
+  { int any_exc = 0;
+    for (int i = 0; i < c->nclasses && !any_exc; i++)
+      any_exc = class_is_exc_subclass(c, i) || class_is_exc_reopen(c, i);
+    if (any_exc) {
+      buf_puts(b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
+      buf_puts(b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
+        const char *qn = class_ruby_name(c, i);
+        if (!qn) qn = c->classes[i].name;
+        if (!qn) continue;
+        buf_printf(b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
+      }
+      /* the reopening nearest the runtime class up its ancestry, so a
+         RuntimeError keys to a RuntimeError reopening ahead of a
+         StandardError one declared before it */
+      int xr[256], xn = 0;
+      for (int i = 0; i < c->nclasses && xn < 256; i++)
+        if (class_is_exc_reopen(c, i)) xr[xn++] = i;
+      if (xn > 0) {
+        buf_puts(b, "  { ");
+        int t = emit_exc_reopen_pick_head(c, xr, xn, "n", b);
+        buf_printf(b, "static const int _xc%d[] = {", t);
+        for (int q = 0; q < xn; q++) buf_printf(b, "%s%d", q ? ", " : "", xr[q]);
+        buf_printf(b, "}; if (_xi%d >= 0) return _xc%d[_xi%d]; }\n", t, t, t);
+      }
+      buf_puts(b, "  return 0x7fffffff;\n}\n");
+    } }
+
+  /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
+     the default message path yields the user-overridden text. Ruby's #message
+     calls #to_s, so #to_s uses a user #to_s if defined else the stored message,
+     and #message uses a user #message, else a user #to_s, else the stored
+     message. Emitted after the method prototypes it calls. Marked unused: a
+     program can define an override yet never query it, and the call sites only
+     reference these when a query is compiled. */
+  /* a reopening's #message / #to_s answering something other than a String
+     cannot stand in for the stored message the runtime reads: refused
+     rather than left unseen by #message */
+  if (any_exc_reopen(c))
+    for (int i = 0; i < c->nclasses; i++) {
+      if (!class_is_exc_reopen(c, i)) continue;
+      for (int k = 0; k < 2; k++) {
+        int mi = comp_method_in_chain(c, i, k ? "to_s" : "message", NULL);
+        if (mi < 0 || c->scopes[mi].class_id != i) continue;
+        TyKind mr = (TyKind)c->scopes[mi].ret;
+        if (mr != TY_STRING && mr != TY_UNKNOWN)
+          unsupported_feature(c, c->scopes[mi].def_node,
+                              "a builtin exception reopening's #message / #to_s that answers a non-String");
+      }
+    }
+  if (exc_has_user_msg_override(c)) {
+    for (int pass = 0; pass < 2; pass++) {
+      int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
+      buf_printf(b, "SP_UNUSED static const char *%s(sp_Exception *e){\n",
+                 want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
+      buf_puts(b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        int dcls = -1; const char *fn = NULL;
+        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
+        if (mi < 0) continue;
+        if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
+        /* a reopening's method is picked by the runtime class below */
+        if (class_is_exc_reopen(c, dcls)) continue;
+        const char *dcn = c->classes[dcls].c_name;
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
+                   cn0, dcn, fn, dcn);
+        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
+                     c->classes[i].name, dcn, fn, dcn);
+      }
+      /* a builtin exception's reopening: #message is the nearest reopening's
+         #message, else (Exception#message calls #to_s) the nearest #to_s,
+         else the stored message */
+      for (int f = want_message ? 0 : 1; f < 2; f++) {
+        const char *fn = f ? "to_s" : "message";
+        int xr0[8], xr[8], xn = 0;
+        int xn0 = exc_reopen_definers(c, fn, xr0, 8);
+        for (int q = 0; q < xn0; q++) {
+          int mi = comp_method_in_chain(c, xr0[q], fn, NULL);
+          if ((TyKind)c->scopes[mi].ret == TY_STRING) xr[xn++] = xr0[q];
+        }
+        if (xn == 0) continue;
+        buf_puts(b, "  { ");
+        int pk = emit_exc_reopen_pick_head(c, xr, xn, "cls", b);
+        buf_puts(b, "\n");
+        for (int q = 0; q < xn; q++)
+          buf_printf(b, "    if (_xi%d == %d) return sp_%s_%s(e);\n", pk, q, mc_reopen_cls(c, xr[q], fn), mc(fn));
+        buf_puts(b, "  }\n");
+      }
+      buf_puts(b, "  return sp_exc_message(e);\n}\n");
+    }
+  }
+  /* The boxed pair: an override answering something other than a String cannot
+     be represented by the const char * dispatchers above, so #message on an
+     exception whose class is only known at run time reported the stored message
+     (the class name) instead of what #to_s answered (#3868). */
+  if (exc_has_nonstring_msg_override(c)) {
+    for (int pass = 0; pass < 2; pass++) {
+      int want_message = pass;
+      buf_printf(b, "SP_UNUSED static sp_RbVal %s(sp_Exception *e){\n",
+                 want_message ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v");
+      buf_puts(b, "  if(!e)return sp_box_str((&(\"\\xff\")[1]));\n  const char *cls=e->cls_name;\n");
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        int dcls = -1; const char *fn = NULL;
+        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
+        if (mi < 0) continue;
+        TyKind mret = (TyKind)c->scopes[mi].ret;
+        if (mret == TY_UNKNOWN || mret == TY_VOID) continue;
+        if (class_is_exc_reopen(c, dcls)) continue;   /* picked by sp_user_exc_message */
+        const char *dcn = c->classes[dcls].c_name;
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        char callx[256];
+        snprintf(callx, sizeof callx, "sp_%s_%s((sp_%s*)e)", dcn, fn, dcn);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        if (mret == TY_POLY) buf_puts(&bx, callx);
+        else emit_boxed_text(c, mret, callx, &bx);
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))return %s;\n", cn0, bx.p ? bx.p : "sp_box_nil()");
+        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))return %s;\n",
+                     c->classes[i].name, bx.p ? bx.p : "sp_box_nil()");
+        free(bx.p);
+      }
+      buf_printf(b, "  return sp_box_str(%s(e));\n}\n",
+                 exc_has_user_msg_override(c)
+                   ? (want_message ? "sp_user_exc_message" : "sp_user_exc_to_s")
+                   : "sp_exc_message");
+    }
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -15057,154 +15209,7 @@ char *codegen_program(const NodeTable *nt) {
      it if no arm ends up calling it (#3399). */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
 
-  /* A boxed exception carries SP_BUILTIN_EXCEPTION, not its user class's
-     index, so a poly dispatch over a user exception class's own method keys
-     it through this map instead (emit_poly_dispatch_key's exc_cand): its
-     class name to that index, the arm's struct being the exception header
-     followed by the class's ivars (#5093). The name an exception carries is
-     its qualified Ruby name ("Storage::WriteError"), as class_ruby_name
-     gives it, not the class table's short name. */
-  /* A builtin exception's reopening (`class KeyError; def hint`) is an entry
-     too: a boxed exception of exactly that class keys to it by name, and one
-     of a class under it (a builtin the runtime raised, with only its
-     ancestor reopened) by the runtime's ancestry, most-derived reopening
-     first in declaration order, a base Exception reopening last. */
-  { int any_exc = 0;
-    for (int i = 0; i < c->nclasses && !any_exc; i++)
-      any_exc = class_is_exc_subclass(c, i) || class_is_exc_reopen(c, i);
-    if (any_exc) {
-      buf_puts(&b, "SP_UNUSED static int sp_exc_user_cls_id(sp_RbVal v){\n");
-      buf_puts(&b, "  const char *n = v.v.p ? ((sp_Exception *)v.v.p)->cls_name : NULL;\n  if (!n) return 0x7fffffff;\n");
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
-        const char *qn = class_ruby_name(c, i);
-        if (!qn) qn = c->classes[i].name;
-        if (!qn) continue;
-        buf_printf(&b, "  if (strcmp(n, \"%s\") == 0) return %d;\n", qn, i);
-      }
-      /* the reopening nearest the runtime class up its ancestry, so a
-         RuntimeError keys to a RuntimeError reopening ahead of a
-         StandardError one declared before it */
-      int xr[256], xn = 0;
-      for (int i = 0; i < c->nclasses && xn < 256; i++)
-        if (class_is_exc_reopen(c, i)) xr[xn++] = i;
-      if (xn > 0) {
-        buf_puts(&b, "  { ");
-        int t = emit_exc_reopen_pick_head(c, xr, xn, "n", &b);
-        buf_printf(&b, "static const int _xc%d[] = {", t);
-        for (int q = 0; q < xn; q++) buf_printf(&b, "%s%d", q ? ", " : "", xr[q]);
-        buf_printf(&b, "}; if (_xi%d >= 0) return _xc%d[_xi%d]; }\n", t, t, t);
-      }
-      buf_puts(&b, "  return 0x7fffffff;\n}\n");
-    } }
-
-  /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
-     the default message path yields the user-overridden text. Ruby's #message
-     calls #to_s, so #to_s uses a user #to_s if defined else the stored message,
-     and #message uses a user #message, else a user #to_s, else the stored
-     message. Emitted after the method prototypes it calls. Marked unused: a
-     program can define an override yet never query it, and the call sites only
-     reference these when a query is compiled. */
-  /* a reopening's #message / #to_s answering something other than a String
-     cannot stand in for the stored message the runtime reads: refused
-     rather than left unseen by #message */
-  if (any_exc_reopen(c))
-    for (int i = 0; i < c->nclasses; i++) {
-      if (!class_is_exc_reopen(c, i)) continue;
-      for (int k = 0; k < 2; k++) {
-        int mi = comp_method_in_chain(c, i, k ? "to_s" : "message", NULL);
-        if (mi < 0 || c->scopes[mi].class_id != i) continue;
-        TyKind mr = (TyKind)c->scopes[mi].ret;
-        if (mr != TY_STRING && mr != TY_UNKNOWN)
-          unsupported_feature(c, c->scopes[mi].def_node,
-                              "a builtin exception reopening's #message / #to_s that answers a non-String");
-      }
-    }
-  if (exc_has_user_msg_override(c)) {
-    for (int pass = 0; pass < 2; pass++) {
-      int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
-      buf_printf(&b, "SP_UNUSED static const char *%s(sp_Exception *e){\n",
-                 want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
-      buf_puts(&b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
-        int dcls = -1; const char *fn = NULL;
-        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
-        if (mi < 0) continue;
-        if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
-        /* a reopening's method is picked by the runtime class below */
-        if (class_is_exc_reopen(c, dcls)) continue;
-        const char *dcn = c->classes[dcls].c_name;
-        const char *cn0 = class_ruby_name(c, i);
-        if (!cn0) cn0 = c->classes[i].name;
-        if (!cn0) continue;
-        buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
-                   cn0, dcn, fn, dcn);
-        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
-          buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
-                     c->classes[i].name, dcn, fn, dcn);
-      }
-      /* a builtin exception's reopening: #message is the nearest reopening's
-         #message, else (Exception#message calls #to_s) the nearest #to_s,
-         else the stored message */
-      for (int f = want_message ? 0 : 1; f < 2; f++) {
-        const char *fn = f ? "to_s" : "message";
-        int xr0[8], xr[8], xn = 0;
-        int xn0 = exc_reopen_definers(c, fn, xr0, 8);
-        for (int q = 0; q < xn0; q++) {
-          int mi = comp_method_in_chain(c, xr0[q], fn, NULL);
-          if ((TyKind)c->scopes[mi].ret == TY_STRING) xr[xn++] = xr0[q];
-        }
-        if (xn == 0) continue;
-        buf_puts(&b, "  { ");
-        int pk = emit_exc_reopen_pick_head(c, xr, xn, "cls", &b);
-        buf_puts(&b, "\n");
-        for (int q = 0; q < xn; q++)
-          buf_printf(&b, "    if (_xi%d == %d) return sp_%s_%s(e);\n", pk, q, mc_reopen_cls(c, xr[q], fn), mc(fn));
-        buf_puts(&b, "  }\n");
-      }
-      buf_puts(&b, "  return sp_exc_message(e);\n}\n");
-    }
-  }
-  /* The boxed pair: an override answering something other than a String cannot
-     be represented by the const char * dispatchers above, so #message on an
-     exception whose class is only known at run time reported the stored message
-     (the class name) instead of what #to_s answered (#3868). */
-  if (exc_has_nonstring_msg_override(c)) {
-    for (int pass = 0; pass < 2; pass++) {
-      int want_message = pass;
-      buf_printf(&b, "SP_UNUSED static sp_RbVal %s(sp_Exception *e){\n",
-                 want_message ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v");
-      buf_puts(&b, "  if(!e)return sp_box_str((&(\"\\xff\")[1]));\n  const char *cls=e->cls_name;\n");
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
-        int dcls = -1; const char *fn = NULL;
-        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
-        if (mi < 0) continue;
-        TyKind mret = (TyKind)c->scopes[mi].ret;
-        if (mret == TY_UNKNOWN || mret == TY_VOID) continue;
-        if (class_is_exc_reopen(c, dcls)) continue;   /* picked by sp_user_exc_message */
-        const char *dcn = c->classes[dcls].c_name;
-        const char *cn0 = class_ruby_name(c, i);
-        if (!cn0) cn0 = c->classes[i].name;
-        if (!cn0) continue;
-        char callx[256];
-        snprintf(callx, sizeof callx, "sp_%s_%s((sp_%s*)e)", dcn, fn, dcn);
-        Buf bx; memset(&bx, 0, sizeof bx);
-        if (mret == TY_POLY) buf_puts(&bx, callx);
-        else emit_boxed_text(c, mret, callx, &bx);
-        buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return %s;\n", cn0, bx.p ? bx.p : "sp_box_nil()");
-        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
-          buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return %s;\n",
-                     c->classes[i].name, bx.p ? bx.p : "sp_box_nil()");
-        free(bx.p);
-      }
-      buf_printf(&b, "  return sp_box_str(%s(e));\n}\n",
-                 exc_has_user_msg_override(c)
-                   ? (want_message ? "sp_user_exc_message" : "sp_user_exc_to_s")
-                   : "sp_exc_message");
-    }
-  }
+  emit_user_exc_dispatch(c, &b);
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
