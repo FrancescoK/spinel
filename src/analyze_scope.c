@@ -627,6 +627,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
     Scope *ms = comp_scope_new(c, mname, dc);
     free(mname);
     ms->body = dbody;
+    method_body_next_to_return((NodeTable *)nt, dbody, 0);
     ms->class_id = class_id;
     ms->dm_subst_name = strdup(bv);
     ms->dm_subst_node = elems[k];
@@ -1217,6 +1218,8 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
           Scope *dm_s = comp_scope_new(c, dm_mname, id);
           int dm_new_idx = c->nscopes - 1;
           dm_s->body = nt_ref(c->nt, dm_blk, "body");
+          /* the block is a method's body from here on: its `next` is a `return` */
+          method_body_next_to_return((NodeTable *)c->nt, dm_s->body, 0);
           dm_s->class_id = dm_cls;
           dm_s->is_cmethod = dm_cmethod;
           /* the block's params are the defined method's params (e.g. the
