@@ -30046,23 +30046,8 @@ static void an_phase_method_backstops(Compiler *c) {
   propagate_bigint_cascade(c);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
-  an_phase_method_backstops(c);
-
+/* The late widening and narrowing: unresolved locals and returns to poly, ivars fed by nil-only params, the arithmetic widen, the object-array and poly-int narrowing, then the gc-root marks and the full node type cache (analyze_program's steps, in their order) */
+static void an_phase_late_widen(Compiler *c) {
   /* A non-parameter local that inference never resolved holds a value of unknown
      static type -- a block param bound to an element of a poly receiver, or a
      local fed by a dynamically-dispatched call (e.g. optcarrot's memory-map
@@ -30289,6 +30274,26 @@ void analyze_program(Compiler *c) {
   mark_empty_array_operands(c);
   for (int id = 0; id < c->nt->count; id++)
     infer_type(c, id);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
+
+  an_phase_late_widen(c);
 
   /* --int-overflow=promote: the widen above can change a proc body's return
      type (a captured int local widened to poly), so a proc's caller-side
