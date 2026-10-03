@@ -4145,7 +4145,13 @@ int iter_value_answers_recv(Compiler *c, int id) {
           comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_RANGE)) ||
         /* `str.split(sep) { |piece| }` answers the receiver too; in value
            position the block was dropped and the split array returned */
-        sp_streq(name, "split");
+        sp_streq(name, "split") ||
+        /* `range.step(n) { }` answers the range: as a block's last
+           expression the loop left the splice with no value, and the C
+           read a void expression */
+        (sp_streq(name, "step") && nt_ref(nt, id, "block") >= 0 && nt_ref(nt, id, "receiver") >= 0 &&
+         (comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_RANGE ||
+          comp_ntype(c, nt_ref(nt, id, "receiver")) == TY_FLOAT_RANGE));
 }
 
 /* A receiver the value of an iteration answers is read twice, once under the
