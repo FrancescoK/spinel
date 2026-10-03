@@ -3830,6 +3830,219 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
   return 0;
 }
 
+/* An arithmetic, comparison, equality or bit operator by its operands' kinds, and a Bignum receiver (infer_call_inner's rules, in their order) */
+static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind *out) {
+  if (recv >= 0 && argc == 1 && is_arith_op(name)) {
+    if (rt == TY_STRING) {
+      if (sp_streq(name, "%")) { *out = TY_STRING; return 1; }  /* sprintf (array or single value) */
+      if (sp_streq(name, "+") || sp_streq(name, "*")) {
+        /* `str + x` / `str * n` always yield a String; a poly operand (which
+           holds a string at runtime) is coerced via sp_poly_to_s in codegen. */
+        { *out = TY_STRING; return 1; }
+      }
+      { *out = TY_UNKNOWN; return 1; }
+    }
+    /* array + same-kind -> same kind; different-kind -> poly_array */
+    if (sp_streq(name, "+") && ty_is_array(rt) && a0 == rt) { *out = rt; return 1; }
+    if (sp_streq(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) { *out = TY_POLY_ARRAY; return 1; }
+    /* typed array +/- an empty literal [] (a0 UNKNOWN) keeps the receiver kind */
+    if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "&") ||
+         sp_streq(name, "|") || sp_streq(name, "union") || sp_streq(name, "difference") ||
+         sp_streq(name, "intersection")) && ty_is_array(rt) && a0 == TY_UNKNOWN) { *out = rt; return 1; }
+    /* array * int -> same array type (repeat); array * string -> join string */
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) { *out = rt; return 1; }
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) { *out = TY_STRING; return 1; }
+    if (ty_is_numeric(rt) && ty_is_numeric(a0)) {
+      if (rt == TY_FLOAT || a0 == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+      if (rt == TY_BIGINT || a0 == TY_BIGINT) { *out = TY_BIGINT; return 1; }
+      /* --int-overflow=promote: an int `+`, `-` or `*` whose operands are
+         not both known constants can escape the word at run time and
+         promote to a Bignum (codegen lowers it to sp_poly_add / sub / mul),
+         the `<<` and `**` rule. Promotion is otherwise decided per SLOT,
+         and a value that never passes through one -- a block parameter, an
+         element read, a size -- was typed sp_int at the expression and took
+         the raising int helper in the mode whose contract is to promote
+         (#4681). `/` and `%` cannot leave the word. */
+      if (g_promote_mode && rt == TY_INT && a0 == TY_INT &&
+          is_add_sub_mul(name)) {
+        long long pa, pb;
+        if (!(infer_const_int_node(nt, recv, &pa) && infer_const_int_node(nt, argv[0], &pb)))
+          { *out = TY_POLY; return 1; }
+        /* Two constants escape the word too when their result does: `max + 1`
+           was typed sp_int and took the raising helper (#4968). Judged in
+           intptr_t, sp_int's own type in the compiler that emits for it. */
+        intptr_t ia = (intptr_t)pa, ib = (intptr_t)pb, ir;
+        if ((long long)ia != pa || (long long)ib != pb) { *out = TY_POLY; return 1; }
+        int ovf = sp_streq(name, "+") ? __builtin_add_overflow(ia, ib, &ir)
+                : sp_streq(name, "-") ? __builtin_sub_overflow(ia, ib, &ir)
+                : __builtin_mul_overflow(ia, ib, &ir);
+        if (ovf) { *out = TY_POLY; return 1; }
+      }
+      { *out = TY_INT; return 1; }
+    }
+    /* numeric receiver <op> a coercing user object: the result is what the
+       object's own <op> returns (coerce yields a pair of that class). */
+    if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_RATIONAL || rt == TY_BIGINT) &&
+        ty_is_object(a0)) {
+      int acls = ty_object_class(a0);
+      if (comp_method_in_chain(c, acls, "coerce", NULL) >= 0) {
+        int op_mi = comp_method_in_chain(c, acls, name, NULL);
+        /* Only when the pair is of the object's own class does its operator
+           decide the type. The documented plain-number idiom never reaches
+           that method -- the pair's receiver is a Float -- so taking the
+           method's return there answered one operator from the class and
+           another from the pair. */
+        if (op_mi >= 0 && !class_has_coerce_shape(c, acls))
+          { *out = (TyKind)c->scopes[op_mi].ret; return 1; }
+        /* The standard idiom answers a pair of plain NUMBERS and defines no
+           operator of its own, so the result is whatever the pair computes --
+           known only at run time. Left UNKNOWN, the expression emitted a nil
+           and `5 + obj` answered nil instead of the coerced sum. The emittable
+           test is the one emit_numeric_coerce_call makes, so a #coerce this TU
+           cannot call keeps the type it had rather than promising a pair that
+           never gets computed. */
+        { *out = TY_POLY; return 1; }
+      }
+    }
+    /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
+       sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
+    if ((rt == TY_POLY || a0 == TY_POLY) &&
+        (is_basic_arith(name) ||
+         /* every operator codegen lowers the same way. Left out, `>>` took the
+            user return from the poly-dispatch union while the emission still
+            produced an sp_RbVal, and the two met at the assignment (#3502). */
+         sp_streq(name, "%") || sp_streq(name, "**") ||
+         sp_streq(name, "<<") || sp_streq(name, ">>") ||
+         sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+      { *out = TY_POLY; return 1; }
+    /* An Integer/Bignum arith op with a non-coercible (String/Symbol/nil/bool/
+       Array/Hash/Range) argument raises TypeError at run time; type the raising
+       expression as int so any value position (p, assignment) can emit it -- the
+       codegen raise-expr is int-typed too (#2471). */
+    if ((rt == TY_INT || rt == TY_BIGINT) &&
+        (a0 == TY_STRING || a0 == TY_SYMBOL || a0 == TY_NIL || a0 == TY_BOOL ||
+         ty_is_array(a0) || ty_is_hash(a0) || a0 == TY_RANGE))
+      { *out = TY_INT; return 1; }
+    /* The same rule on the Float side (codegen_call.c's own "coercion rule
+       on the Float side", #3645, already emits this raise as `(sp_float)0`)
+       -- missing here, this expression stayed TY_UNKNOWN, which poisoned the
+       return type of any GENERIC method whose only live branch for a given
+       call-site clone was this one (a Ruby-defined Integer#fdiv's `self.to_f
+       / other` in the branch that only Integer/Float ever actually reach:
+       the SAME expression, unreachable for an Array-typed `other` at THAT
+       clone, still has to type as something other than UNKNOWN or the whole
+       method compiled as void and every caller's `_t = fdiv(...)` failed to
+       compile with "void value not ignored", found migrating fdiv there). */
+    if (rt == TY_FLOAT &&
+        (a0 == TY_STRING || a0 == TY_SYMBOL || a0 == TY_NIL || a0 == TY_BOOL ||
+         ty_is_array(a0) || ty_is_hash(a0) || a0 == TY_RANGE))
+      { *out = TY_FLOAT; return 1; }
+    { *out = TY_UNKNOWN; return 1; }
+  }
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) { *out = TY_INT; return 1; }
+  if (recv >= 0 && argc == 1 && is_cmp_op(name)) { *out = TY_BOOL; return 1; }
+  if (argc == 1 && is_eq_op(name)) { *out = TY_BOOL; return 1; }
+
+  /* integer bitwise operators */
+  if (recv >= 0 && argc == 1 && rt == TY_INT &&
+      is_int_bit_op(name)) {
+    /* --int-overflow=promote: an int `<<` whose operands are not both known
+       constants can escape the word at run time and promote to a Bignum
+       (codegen lowers it to sp_poly_shl), so the value is boxed. A
+       const-const pair is exact -- an overflowing one answered TY_BIGINT
+       above (the infer_int_shl_overflows arm), the rest fit an int. `>>`
+       cannot overflow and keeps its int in every mode. */
+    if (g_promote_mode && sp_streq(name, "<<")) {
+      long long shb, sha;
+      if (!(infer_const_int_node(nt, recv, &shb) &&
+            infer_const_int_node(nt, argv[0], &sha)))
+        { *out = TY_POLY; return 1; }
+    }
+    { *out = TY_INT; return 1; }
+  }
+  /* bigint bitwise ops keep arbitrary precision (a `<<` widening that overflows
+     int is exactly why the receiver was promoted to bigint; and `bignum & MASK`
+     can still exceed int64, e.g. 0x9e37…c16 & ((1<<64)-1)). */
+  if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
+      is_int_bit_op(name))
+    { *out = TY_BIGINT; return 1; }
+  /* Integer#bit_length on a Bignum answers an int (the bit count fits int64). */
+  if (recv >= 0 && argc == 0 && rt == TY_BIGINT && sp_streq(name, "bit_length"))
+    { *out = TY_INT; return 1; }
+  if (recv >= 0 && rt == TY_BIGINT) {
+    if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "abs") && argc == 0) { *out = TY_BIGINT; return 1; }
+    /* coerce pairs the operand with self; clamp stays in bigint (#3129) */
+    if (sp_streq(name, "coerce") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "clamp") && argc == 2) { *out = TY_BIGINT; return 1; }
+    if ((sp_streq(name, "magnitude") || sp_streq(name, "abs2")) && argc == 0) { *out = TY_BIGINT; return 1; }  /* (#2418/#2424) */
+    /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
+    if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
+        nt_ref(nt, id, "block") < 0) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "to_s") && argc == 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "digits") && argc <= 1) { *out = TY_INT_ARRAY; return 1; }   /* face-table fallback only, see codegen_call.c */
+    /* #2318 / #2319: query + reflection on a Bignum */
+    if ((sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
+         sp_streq(name, "negative?") || sp_streq(name, "integer?")) && argc == 0) { *out = TY_BOOL; return 1; }
+    /* to_i / to_int is self (the full Bignum, not a truncated int); succ/pred
+       stay Bignum */
+    if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "succ") ||
+         sp_streq(name, "next") || sp_streq(name, "pred")) && argc == 0) { *out = TY_BIGINT; return 1; }
+    if (sp_streq(name, "class") && argc == 0) { *out = TY_CLASS; return 1; }
+    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) &&
+        (argc == 0 || argc == 1)) { *out = TY_BIGINT; return 1; }  /* #2303 */
+    /* Integer/Float/bool-returning Bignum methods that need no Rational (#2469).
+       to_r/rationalize/quo would need a bigint-backed Rational and stay
+       unsupported. */
+    if (sp_streq(name, "~") && argc == 0) { *out = TY_BIGINT; return 1; }
+    if ((sp_streq(name, "numerator") || sp_streq(name, "ord")) && argc == 0) { *out = TY_BIGINT; return 1; }
+    if ((sp_streq(name, "denominator") || sp_streq(name, "size")) && argc == 0) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "nonzero?") && argc == 0) { *out = TY_POLY; return 1; }   /* self or nil */
+    if (sp_streq(name, "fdiv") && argc == 1) { *out = TY_FLOAT; return 1; }
+    if (sp_streq(name, "pow") && argc == 1) { *out = TY_BIGINT; return 1; }
+    /* A Float operand divides in floats, as CRuby converts the Bignum to its
+       nearest double: modulo and remainder answer a Float, and div the
+       Integer floor of the Float quotient, which may or may not fit a word */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
+        argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
+    if (sp_streq(name, "div") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
+    /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
+       #[] is a single bit (0/1) (#2594) */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
+        argc == 1) { *out = TY_BIGINT; return 1; }
+    if (sp_streq(name, "pow") && argc == 2) { *out = TY_BIGINT; return 1; }
+    if (sp_streq(name, "divmod") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+    /* #[] is a single bit, a bit-slice (Range or start,len) -- all narrowed to
+       int here (a very wide slice truncates, like the int-receiver arm) (#3156) */
+    if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) { *out = TY_INT; return 1; }
+    if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
+         sp_streq(name, "ceildiv")) && argc == 1) { *out = TY_BIGINT; return 1; }
+    if (is_bits_query(name) &&
+        argc == 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "gcdlcm") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+    /* to_r/rationalize/quo on a Bignum produce a boxed big Rational (#2469) */
+    if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "quo") && argc == 1) { *out = TY_POLY; return 1; }
+  }
+  /* poly recv bitwise op / `>>`: the runtime keeps a bignum operand in bignum
+     space (a positive value past 2^63 must not truncate to a negative int), so
+     the result is boxed like the receiver was (#3371). */
+  if (recv >= 0 && argc == 1 && rt == TY_POLY &&
+      (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+    { *out = TY_POLY; return 1; }
+  /* poly recv `<<` is ambiguous (Integer#<< shift vs Array#push append); the
+     runtime sp_poly_shl dispatches on the tag and returns a boxed result either
+     way, so the static type is poly. A downstream bitwise op coerces it back to
+     int, and an append keeps its (boxed) array -- both stay consistent. */
+  if (recv >= 0 && argc == 1 && rt == TY_POLY && sp_streq(name, "<<"))
+    { *out = TY_POLY; return 1; }
+  /* boolean &/|/^ */
+  if (recv >= 0 && argc == 1 && rt == TY_BOOL &&
+      is_bit_op(name))
+    { *out = TY_BOOL; return 1; }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6723,214 +6936,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Array#intersect?(other) -> bool */
   if (recv >= 0 && argc == 1 && sp_streq(name, "intersect?") && ty_is_array(rt))
     return TY_BOOL;
-  if (recv >= 0 && argc == 1 && is_arith_op(name)) {
-    if (rt == TY_STRING) {
-      if (sp_streq(name, "%")) return TY_STRING;  /* sprintf (array or single value) */
-      if (sp_streq(name, "+") || sp_streq(name, "*")) {
-        /* `str + x` / `str * n` always yield a String; a poly operand (which
-           holds a string at runtime) is coerced via sp_poly_to_s in codegen. */
-        return TY_STRING;
-      }
-      return TY_UNKNOWN;
-    }
-    /* array + same-kind -> same kind; different-kind -> poly_array */
-    if (sp_streq(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
-    if (sp_streq(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
-    /* typed array +/- an empty literal [] (a0 UNKNOWN) keeps the receiver kind */
-    if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "&") ||
-         sp_streq(name, "|") || sp_streq(name, "union") || sp_streq(name, "difference") ||
-         sp_streq(name, "intersection")) && ty_is_array(rt) && a0 == TY_UNKNOWN) return rt;
-    /* array * int -> same array type (repeat); array * string -> join string */
-    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
-    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;
-    if (ty_is_numeric(rt) && ty_is_numeric(a0)) {
-      if (rt == TY_FLOAT || a0 == TY_FLOAT) return TY_FLOAT;
-      if (rt == TY_BIGINT || a0 == TY_BIGINT) return TY_BIGINT;
-      /* --int-overflow=promote: an int `+`, `-` or `*` whose operands are
-         not both known constants can escape the word at run time and
-         promote to a Bignum (codegen lowers it to sp_poly_add / sub / mul),
-         the `<<` and `**` rule. Promotion is otherwise decided per SLOT,
-         and a value that never passes through one -- a block parameter, an
-         element read, a size -- was typed sp_int at the expression and took
-         the raising int helper in the mode whose contract is to promote
-         (#4681). `/` and `%` cannot leave the word. */
-      if (g_promote_mode && rt == TY_INT && a0 == TY_INT &&
-          is_add_sub_mul(name)) {
-        long long pa, pb;
-        if (!(infer_const_int_node(nt, recv, &pa) && infer_const_int_node(nt, argv[0], &pb)))
-          return TY_POLY;
-        /* Two constants escape the word too when their result does: `max + 1`
-           was typed sp_int and took the raising helper (#4968). Judged in
-           intptr_t, sp_int's own type in the compiler that emits for it. */
-        intptr_t ia = (intptr_t)pa, ib = (intptr_t)pb, ir;
-        if ((long long)ia != pa || (long long)ib != pb) return TY_POLY;
-        int ovf = sp_streq(name, "+") ? __builtin_add_overflow(ia, ib, &ir)
-                : sp_streq(name, "-") ? __builtin_sub_overflow(ia, ib, &ir)
-                : __builtin_mul_overflow(ia, ib, &ir);
-        if (ovf) return TY_POLY;
-      }
-      return TY_INT;
-    }
-    /* numeric receiver <op> a coercing user object: the result is what the
-       object's own <op> returns (coerce yields a pair of that class). */
-    if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_RATIONAL || rt == TY_BIGINT) &&
-        ty_is_object(a0)) {
-      int acls = ty_object_class(a0);
-      if (comp_method_in_chain(c, acls, "coerce", NULL) >= 0) {
-        int op_mi = comp_method_in_chain(c, acls, name, NULL);
-        /* Only when the pair is of the object's own class does its operator
-           decide the type. The documented plain-number idiom never reaches
-           that method -- the pair's receiver is a Float -- so taking the
-           method's return there answered one operator from the class and
-           another from the pair. */
-        if (op_mi >= 0 && !class_has_coerce_shape(c, acls))
-          return (TyKind)c->scopes[op_mi].ret;
-        /* The standard idiom answers a pair of plain NUMBERS and defines no
-           operator of its own, so the result is whatever the pair computes --
-           known only at run time. Left UNKNOWN, the expression emitted a nil
-           and `5 + obj` answered nil instead of the coerced sum. The emittable
-           test is the one emit_numeric_coerce_call makes, so a #coerce this TU
-           cannot call keeps the type it had rather than promising a pair that
-           never gets computed. */
-        return TY_POLY;
-      }
-    }
-    /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
-       sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
-    if ((rt == TY_POLY || a0 == TY_POLY) &&
-        (is_basic_arith(name) ||
-         /* every operator codegen lowers the same way. Left out, `>>` took the
-            user return from the poly-dispatch union while the emission still
-            produced an sp_RbVal, and the two met at the assignment (#3502). */
-         sp_streq(name, "%") || sp_streq(name, "**") ||
-         sp_streq(name, "<<") || sp_streq(name, ">>") ||
-         sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
-      return TY_POLY;
-    /* An Integer/Bignum arith op with a non-coercible (String/Symbol/nil/bool/
-       Array/Hash/Range) argument raises TypeError at run time; type the raising
-       expression as int so any value position (p, assignment) can emit it -- the
-       codegen raise-expr is int-typed too (#2471). */
-    if ((rt == TY_INT || rt == TY_BIGINT) &&
-        (a0 == TY_STRING || a0 == TY_SYMBOL || a0 == TY_NIL || a0 == TY_BOOL ||
-         ty_is_array(a0) || ty_is_hash(a0) || a0 == TY_RANGE))
-      return TY_INT;
-    /* The same rule on the Float side (codegen_call.c's own "coercion rule
-       on the Float side", #3645, already emits this raise as `(sp_float)0`)
-       -- missing here, this expression stayed TY_UNKNOWN, which poisoned the
-       return type of any GENERIC method whose only live branch for a given
-       call-site clone was this one (a Ruby-defined Integer#fdiv's `self.to_f
-       / other` in the branch that only Integer/Float ever actually reach:
-       the SAME expression, unreachable for an Array-typed `other` at THAT
-       clone, still has to type as something other than UNKNOWN or the whole
-       method compiled as void and every caller's `_t = fdiv(...)` failed to
-       compile with "void value not ignored", found migrating fdiv there). */
-    if (rt == TY_FLOAT &&
-        (a0 == TY_STRING || a0 == TY_SYMBOL || a0 == TY_NIL || a0 == TY_BOOL ||
-         ty_is_array(a0) || ty_is_hash(a0) || a0 == TY_RANGE))
-      return TY_FLOAT;
-    return TY_UNKNOWN;
-  }
-  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) return TY_INT;
-  if (recv >= 0 && argc == 1 && is_cmp_op(name)) return TY_BOOL;
-  if (argc == 1 && is_eq_op(name)) return TY_BOOL;
-
-  /* integer bitwise operators */
-  if (recv >= 0 && argc == 1 && rt == TY_INT &&
-      is_int_bit_op(name)) {
-    /* --int-overflow=promote: an int `<<` whose operands are not both known
-       constants can escape the word at run time and promote to a Bignum
-       (codegen lowers it to sp_poly_shl), so the value is boxed. A
-       const-const pair is exact -- an overflowing one answered TY_BIGINT
-       above (the infer_int_shl_overflows arm), the rest fit an int. `>>`
-       cannot overflow and keeps its int in every mode. */
-    if (g_promote_mode && sp_streq(name, "<<")) {
-      long long shb, sha;
-      if (!(infer_const_int_node(nt, recv, &shb) &&
-            infer_const_int_node(nt, argv[0], &sha)))
-        return TY_POLY;
-    }
-    return TY_INT;
-  }
-  /* bigint bitwise ops keep arbitrary precision (a `<<` widening that overflows
-     int is exactly why the receiver was promoted to bigint; and `bignum & MASK`
-     can still exceed int64, e.g. 0x9e37…c16 & ((1<<64)-1)). */
-  if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      is_int_bit_op(name))
-    return TY_BIGINT;
-  /* Integer#bit_length on a Bignum answers an int (the bit count fits int64). */
-  if (recv >= 0 && argc == 0 && rt == TY_BIGINT && sp_streq(name, "bit_length"))
-    return TY_INT;
-  if (recv >= 0 && rt == TY_BIGINT) {
-    if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) return TY_BOOL;
-    if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
-    /* coerce pairs the operand with self; clamp stays in bigint (#3129) */
-    if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
-    if (sp_streq(name, "clamp") && argc == 2) return TY_BIGINT;
-    if ((sp_streq(name, "magnitude") || sp_streq(name, "abs2")) && argc == 0) return TY_BIGINT;  /* (#2418/#2424) */
-    /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
-    if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
-        nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
-    if (sp_streq(name, "digits") && argc <= 1) return TY_INT_ARRAY;   /* face-table fallback only, see codegen_call.c */
-    /* #2318 / #2319: query + reflection on a Bignum */
-    if ((sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
-         sp_streq(name, "negative?") || sp_streq(name, "integer?")) && argc == 0) return TY_BOOL;
-    /* to_i / to_int is self (the full Bignum, not a truncated int); succ/pred
-       stay Bignum */
-    if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "succ") ||
-         sp_streq(name, "next") || sp_streq(name, "pred")) && argc == 0) return TY_BIGINT;
-    if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
-    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) &&
-        (argc == 0 || argc == 1)) return TY_BIGINT;  /* #2303 */
-    /* Integer/Float/bool-returning Bignum methods that need no Rational (#2469).
-       to_r/rationalize/quo would need a bigint-backed Rational and stay
-       unsupported. */
-    if (sp_streq(name, "~") && argc == 0) return TY_BIGINT;
-    if ((sp_streq(name, "numerator") || sp_streq(name, "ord")) && argc == 0) return TY_BIGINT;
-    if ((sp_streq(name, "denominator") || sp_streq(name, "size")) && argc == 0) return TY_INT;
-    if (sp_streq(name, "nonzero?") && argc == 0) return TY_POLY;   /* self or nil */
-    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
-    if (sp_streq(name, "pow") && argc == 1) return TY_BIGINT;
-    /* A Float operand divides in floats, as CRuby converts the Bignum to its
-       nearest double: modulo and remainder answer a Float, and div the
-       Integer floor of the Float quotient, which may or may not fit a word */
-    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
-        argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
-    if (sp_streq(name, "div") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_POLY;
-    /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
-       #[] is a single bit (0/1) (#2594) */
-    if ((sp_streq(name, "modulo") || sp_streq(name, "%") || sp_streq(name, "remainder")) &&
-        argc == 1) return TY_BIGINT;
-    if (sp_streq(name, "pow") && argc == 2) return TY_BIGINT;
-    if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;
-    /* #[] is a single bit, a bit-slice (Range or start,len) -- all narrowed to
-       int here (a very wide slice truncates, like the int-receiver arm) (#3156) */
-    if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;
-    if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
-         sp_streq(name, "ceildiv")) && argc == 1) return TY_BIGINT;
-    if (is_bits_query(name) &&
-        argc == 1) return TY_BOOL;
-    if (sp_streq(name, "gcdlcm") && argc == 1) return TY_POLY_ARRAY;
-    /* to_r/rationalize/quo on a Bignum produce a boxed big Rational (#2469) */
-    if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) return TY_POLY;
-    if (sp_streq(name, "quo") && argc == 1) return TY_POLY;
-  }
-  /* poly recv bitwise op / `>>`: the runtime keeps a bignum operand in bignum
-     space (a positive value past 2^63 must not truncate to a negative int), so
-     the result is boxed like the receiver was (#3371). */
-  if (recv >= 0 && argc == 1 && rt == TY_POLY &&
-      (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
-    return TY_POLY;
-  /* poly recv `<<` is ambiguous (Integer#<< shift vs Array#push append); the
-     runtime sp_poly_shl dispatches on the tag and returns a boxed result either
-     way, so the static type is poly. A downstream bitwise op coerces it back to
-     int, and an append keeps its (boxed) array -- both stay consistent. */
-  if (recv >= 0 && argc == 1 && rt == TY_POLY && sp_streq(name, "<<"))
-    return TY_POLY;
-  /* boolean &/|/^ */
-  if (recv >= 0 && argc == 1 && rt == TY_BOOL &&
-      is_bit_op(name))
-    return TY_BOOL;
+  { TyKind r; if (infer_operator_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
 
   /* a program's own Object method answers what it returns, whatever its
      name says: activesupport's Object#acts_like? gives respond_to?'s
