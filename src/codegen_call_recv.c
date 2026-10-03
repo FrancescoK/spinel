@@ -11948,6 +11948,282 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* Element access on a boxed receiver: an index read, []= and [] with one or two arguments (emit_poly_call's arms, in their order) */
+static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  /* poly receiver: arr[start, len] = src -- 3-arg splice assign
+     Skip Fiber/Fiber.current storage receivers (handled later). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 3 &&
+      !sp_is_fiber_storage_recv(nt, recv)) {
+    int tv = ++g_tmp;
+    const char *rcvty = nt_type(nt, recv);
+    int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                   sp_streq(rcvty, "InstanceVariableReadNode"));
+    int outer, oidx;
+    TyKind rty2 = comp_ntype(c, argv[2]);
+    int tam = splice_to_ary_mi(c, rty2);
+    buf_puts(b, "({ ");
+    if (tam >= 0) {
+      /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
+      Buf call; memset(&call, 0, sizeof call);
+      TyKind cty = emit_splice_to_ary_src(c, argv[2], rty2, tam, tv, b, &call);
+      buf_printf(b, "sp_RbVal _t%d = ", tv);
+      emit_boxed_text(c, cty, call.p ? call.p : "", b);
+      buf_puts(b, "; ");
+      free(call.p);
+    }
+    else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
+    /* Store the possibly-promoted array back into the receiver so a typed->poly
+       promotion survives: assign to a local/ivar lvalue, or write to outer's slot
+       for a computed `outer[idx]` receiver; otherwise splice in place. */
+    if (recv_is_lvalue) {
+      emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+      buf_puts(b, "sp_poly_slot_splice("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    else {
+      buf_puts(b, "sp_poly_splice("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    if (tam >= 0)
+      buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty2));
+    else
+      buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+    { *out = 1; return 1; }
+  }
+  /* `x = v` through a SYNTHESIZED writer (attr_writer / accessor, a Struct
+     member) on a poly receiver, in value position: the statement form's
+     cls_id switch over the writer arms, yielding the assigned value the way
+     `[]=` below does. A name some class defines as a method instead takes
+     the user-method dispatch, which yields the value itself. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && name_is_plain_setter(name) &&
+      nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name)) {
+    char base[256];
+    int ncand = 0;
+    if (setter_base_name(name, base, sizeof base))
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_is_writer(&c->classes[k], base)) ncand++;
+    if (ncand > 0) {
+      TyKind at = comp_ntype(c, argv[0]);
+      int nil_rhs = (at == TY_NIL || at == TY_VOID);
+      TyKind at_eff = nil_rhs ? TY_POLY : at;
+      int tv = ++g_tmp, tval = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
+      else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
+      buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+      char src[32]; snprintf(src, sizeof src, "_t%d", tval);
+      char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
+      emit_boxed_writer_arms(c, base, name, objp, src, at_eff, b);
+      buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
+      buf_printf(b, " } _t%d; })", tval);
+      { *out = 1; return 1; }
+    }
+  }
+  /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch
+     Skip Fiber/Fiber.current storage receivers (handled later). */
+  /* A user class that takes `[]=` with two arguments owns the name: the call
+     goes to the class dispatch, whose builtin arm re-enters here for a real
+     Array or Hash. Taking it here stored into a boxed user object as if it
+     were a hash and never ran the class's method (#4879). */
+  int user_aset = 0;
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !g_poly_builtin_arm)
+    for (int kk = 0; kk < c->nclasses && !user_aset; kk++)
+      if (comp_poly_arm_defines_n(c, kk, "[]=", 2)) user_aset = 1;
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !user_aset &&
+      !sp_is_fiber_storage_recv(nt, recv)) {
+    /* arr[range] = rhs on a poly receiver: a splice over the range's span. */
+    if (comp_ntype(c, argv[0]) == TY_RANGE) {
+      int tv = ++g_tmp;
+      const char *rcvty = nt_type(nt, recv);
+      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                     sp_streq(rcvty, "InstanceVariableReadNode"));
+      int outer, oidx;
+      TyKind rty1 = comp_ntype(c, argv[1]);
+      int tam = splice_to_ary_mi(c, rty1);
+      buf_puts(b, "({ ");
+      if (tam >= 0) {
+        /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
+        Buf call; memset(&call, 0, sizeof call);
+        TyKind cty = emit_splice_to_ary_src(c, argv[1], rty1, tam, tv, b, &call);
+        buf_printf(b, "sp_RbVal _t%d = ", tv);
+        emit_boxed_text(c, cty, call.p ? call.p : "", b);
+        buf_puts(b, "; ");
+        free(call.p);
+      }
+      else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, "; "); }
+      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      if (recv_is_lvalue) {
+        emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+        buf_puts(b, "sp_poly_slot_splice_range("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      else {
+        buf_puts(b, "sp_poly_splice_range("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      if (tam >= 0)
+        buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty1));
+      else
+        buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+      { *out = 1; return 1; }
+    }
+    TyKind at = comp_ntype(c, argv[0]);
+    TyKind vt = comp_ntype(c, argv[1]);
+    int tv = ++g_tmp;
+    /* The value is boxed before the key runs, and a computed key allocates
+       (`x[:"m#{j}"] = v` interns its Symbol): rooted, or a collection there
+       reclaimed the value and the entry held garbage. An Integer index with
+       no effect allocates nothing, and stays a plain temp. */
+    buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
+    if (at != TY_INT || subtree_has_side_effect(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+    else buf_puts(b, "; ");
+    if (at == TY_STRING) {
+      buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    }
+    else if (at == TY_SYMBOL) {
+      buf_printf(b, "sp_poly_set_sym("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    }
+    else if (at == TY_INT) {
+      /* widen_and_set returns a *different* boxed value when a typed array is
+         promoted to a PolyArray (element-kind mismatch); otherwise it mutates in
+         place. Store the result back so promotion survives: assign to a
+         local/ivar lvalue, or write to outer's slot for a computed `outer[idx]`
+         receiver; a receiver we cannot address falls back to in-place mutation. */
+      const char *rcvty = nt_type(nt, recv);
+      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                     sp_streq(rcvty, "InstanceVariableReadNode"));
+      int outer, oidx;
+      if (recv_is_lvalue) {
+        emit_expr(c, recv, b);
+        buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+      }
+      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+        buf_puts(b, "sp_poly_slot_set("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+      }
+      else {
+        buf_puts(b, "sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+      }
+    }
+    else {
+      /* A computed `outer[idx]` receiver needs the store-back form even for a
+         boxed key: a String inner splices into a fresh buffer, and writing to
+         the inner value alone dropped the assignment (#4067). */
+      int outer_k, oidx_k;
+      if (splice_recv_index_slot(c, recv, &outer_k, &oidx_k)) {
+        buf_puts(b, "sp_poly_slot_set_key("); emit_boxed(c, outer_k, b);
+        buf_puts(b, ", "); emit_int_expr(c, oidx_k, b);
+        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      }
+      else {
+        buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      }
+    }
+    buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+    (void)vt;
+    { *out = 1; return 1; }
+  }
+  /* poly receiver: [] with symbol or string key -> runtime dispatch */
+  /* poly receiver: arr[start, len] -> sp_poly_slice (string or typed array) */
+  /* A user class of its own two-argument [] takes the per-class poly
+     dispatch, which emits its arm beside the builtin ones, as the one-argument
+     form below does: the slice read answered nil for a Grid (#5522). */
+  int has_user_aref2 = 0;
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm)
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
+          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref2 = 1; break; }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !has_user_aref2) {
+    /* The runtime dispatches on the receiver's tag: a string/array does a
+       two-arg slice, a bound Method (optcarrot's poke handlers) is called with
+       both int args. Both operands are raw integers. */
+    /* ...but only a pair of statically Integer operands CAN be a slice. Proc#[]
+       is #call, and its arguments are whatever the proc takes -- an Array here,
+       which the two-integer reading rejected before any dispatch could happen
+       (#4333). Anything else goes through the boxed dispatch; the int path is
+       the hot one (optcarrot's poke tables) and keeps its raw operands. */
+    if (!(comp_ntype(c, argv[0]) == TY_INT && comp_ntype(c, argv[1]) == TY_INT)) {
+      buf_puts(b, "sp_poly_slice_or_call("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+    buf_puts(b, "sp_poly_slice("); emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    { *out = 1; return 1; }
+  }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 1) {
+    /* `@table[i][j]` dispatch table narrowed to int (poly_double_index_int):
+       call the entry (bound method / int array) for an unboxed int result. */
+    if (comp_ntype(c, id) == TY_INT) {
+      buf_puts(b, "sp_poly_index_int("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+    TyKind at = comp_ntype(c, argv[0]);
+    /* Only use the fast single-call path when no user class defines [].
+       If any user class has its own [] method, fall through to the per-class
+       poly dispatch (line ~4640) which generates both user and builtin arms. */
+    int has_user_aref = 0;
+    /* a class's own `self.[]` counts too: a Class value in the slot is
+       served by the class-method dispatch, which re-emits this read for the
+       values that are not a Class (g_cls_tag_skip) (#5545) */
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
+          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref = 1; break; }
+    if (!has_user_aref) {
+      if (at == TY_SYMBOL) {
+        buf_puts(b, "sp_poly_get_sym("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+      if (at == TY_STRING) {
+        buf_puts(b, "sp_poly_get_str("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+      if (at == TY_INT || at == TY_POLY) {
+        /* The runtime read boxes a TYPED array's element without the sentinel
+           check the hot path cannot afford, so a nilable scalar stored in one
+           comes back as an ordinary number. Correct it here, at the sites
+           analyze marked, rather than in the read itself (#3505). */
+        int uns = nullable_int_elem_read(c, id);
+        if (uns) buf_puts(b, "sp_unsentinel(");
+        /* A receiver proved to hold only a poly array or nil reaches none of
+           the hash, string or Struct arms, so the cls_id test and the cold
+           call behind it are dead code on this read. analyze established the
+           proof for the GC root elision; this is the same fact paying twice. */
+        buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
+                    : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
+                                                  : "sp_poly_arr_get_hash(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        if (uns) buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+      /* a non-poly key (e.g. a Method): box it, then index polymorphically */
+      if (at != TY_UNKNOWN) {
+        buf_puts(b, "sp_poly_index_poly("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+    }
+  }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12988,277 +13264,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
     return 1;
   }
-  /* poly receiver: arr[start, len] = src -- 3-arg splice assign
-     Skip Fiber/Fiber.current storage receivers (handled later). */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 3 &&
-      !sp_is_fiber_storage_recv(nt, recv)) {
-    int tv = ++g_tmp;
-    const char *rcvty = nt_type(nt, recv);
-    int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
-                                   sp_streq(rcvty, "InstanceVariableReadNode"));
-    int outer, oidx;
-    TyKind rty2 = comp_ntype(c, argv[2]);
-    int tam = splice_to_ary_mi(c, rty2);
-    buf_puts(b, "({ ");
-    if (tam >= 0) {
-      /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
-      Buf call; memset(&call, 0, sizeof call);
-      TyKind cty = emit_splice_to_ary_src(c, argv[2], rty2, tam, tv, b, &call);
-      buf_printf(b, "sp_RbVal _t%d = ", tv);
-      emit_boxed_text(c, cty, call.p ? call.p : "", b);
-      buf_puts(b, "; ");
-      free(call.p);
-    }
-    else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
-    /* Store the possibly-promoted array back into the receiver so a typed->poly
-       promotion survives: assign to a local/ivar lvalue, or write to outer's slot
-       for a computed `outer[idx]` receiver; otherwise splice in place. */
-    if (recv_is_lvalue) {
-      emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-    }
-    else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
-      buf_puts(b, "sp_poly_slot_splice("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-    }
-    else {
-      buf_puts(b, "sp_poly_splice("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-    }
-    if (tam >= 0)
-      buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty2));
-    else
-      buf_printf(b, ", _t%d); _t%d; })", tv, tv);
-    return 1;
-  }
-  /* `x = v` through a SYNTHESIZED writer (attr_writer / accessor, a Struct
-     member) on a poly receiver, in value position: the statement form's
-     cls_id switch over the writer arms, yielding the assigned value the way
-     `[]=` below does. A name some class defines as a method instead takes
-     the user-method dispatch, which yields the value itself. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && name_is_plain_setter(name) &&
-      nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name)) {
-    char base[256];
-    int ncand = 0;
-    if (setter_base_name(name, base, sizeof base))
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_is_writer(&c->classes[k], base)) ncand++;
-    if (ncand > 0) {
-      TyKind at = comp_ntype(c, argv[0]);
-      int nil_rhs = (at == TY_NIL || at == TY_VOID);
-      TyKind at_eff = nil_rhs ? TY_POLY : at;
-      int tv = ++g_tmp, tval = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
-      if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
-      else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
-      buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
-      char src[32]; snprintf(src, sizeof src, "_t%d", tval);
-      char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-      emit_boxed_writer_arms(c, base, name, objp, src, at_eff, b);
-      buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-      buf_printf(b, " } _t%d; })", tval);
-      return 1;
-    }
-  }
-  /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch
-     Skip Fiber/Fiber.current storage receivers (handled later). */
-  /* A user class that takes `[]=` with two arguments owns the name: the call
-     goes to the class dispatch, whose builtin arm re-enters here for a real
-     Array or Hash. Taking it here stored into a boxed user object as if it
-     were a hash and never ran the class's method (#4879). */
-  int user_aset = 0;
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !g_poly_builtin_arm)
-    for (int kk = 0; kk < c->nclasses && !user_aset; kk++)
-      if (comp_poly_arm_defines_n(c, kk, "[]=", 2)) user_aset = 1;
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !user_aset &&
-      !sp_is_fiber_storage_recv(nt, recv)) {
-    /* arr[range] = rhs on a poly receiver: a splice over the range's span. */
-    if (comp_ntype(c, argv[0]) == TY_RANGE) {
-      int tv = ++g_tmp;
-      const char *rcvty = nt_type(nt, recv);
-      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
-                                     sp_streq(rcvty, "InstanceVariableReadNode"));
-      int outer, oidx;
-      TyKind rty1 = comp_ntype(c, argv[1]);
-      int tam = splice_to_ary_mi(c, rty1);
-      buf_puts(b, "({ ");
-      if (tam >= 0) {
-        /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
-        Buf call; memset(&call, 0, sizeof call);
-        TyKind cty = emit_splice_to_ary_src(c, argv[1], rty1, tam, tv, b, &call);
-        buf_printf(b, "sp_RbVal _t%d = ", tv);
-        emit_boxed_text(c, cty, call.p ? call.p : "", b);
-        buf_puts(b, "; ");
-        free(call.p);
-      }
-      else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, "; "); }
-      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
-      if (recv_is_lvalue) {
-        emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b);
-      }
-      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
-        buf_puts(b, "sp_poly_slot_splice_range("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b);
-      }
-      else {
-        buf_puts(b, "sp_poly_splice_range("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b);
-      }
-      if (tam >= 0)
-        buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty1));
-      else
-        buf_printf(b, ", _t%d); _t%d; })", tv, tv);
-      return 1;
-    }
-    TyKind at = comp_ntype(c, argv[0]);
-    TyKind vt = comp_ntype(c, argv[1]);
-    int tv = ++g_tmp;
-    /* The value is boxed before the key runs, and a computed key allocates
-       (`x[:"m#{j}"] = v` interns its Symbol): rooted, or a collection there
-       reclaimed the value and the entry held garbage. An Integer index with
-       no effect allocates nothing, and stays a plain temp. */
-    buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
-    if (at != TY_INT || subtree_has_side_effect(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
-    else buf_puts(b, "; ");
-    if (at == TY_STRING) {
-      buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b);
-    }
-    else if (at == TY_SYMBOL) {
-      buf_printf(b, "sp_poly_set_sym("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b);
-    }
-    else if (at == TY_INT) {
-      /* widen_and_set returns a *different* boxed value when a typed array is
-         promoted to a PolyArray (element-kind mismatch); otherwise it mutates in
-         place. Store the result back so promotion survives: assign to a
-         local/ivar lvalue, or write to outer's slot for a computed `outer[idx]`
-         receiver; a receiver we cannot address falls back to in-place mutation. */
-      const char *rcvty = nt_type(nt, recv);
-      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
-                                     sp_streq(rcvty, "InstanceVariableReadNode"));
-      int outer, oidx;
-      if (recv_is_lvalue) {
-        emit_expr(c, recv, b);
-        buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
-      }
-      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
-        buf_puts(b, "sp_poly_slot_set("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
-      }
-      else {
-        buf_puts(b, "sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
-      }
-    }
-    else {
-      /* A computed `outer[idx]` receiver needs the store-back form even for a
-         boxed key: a String inner splices into a fresh buffer, and writing to
-         the inner value alone dropped the assignment (#4067). */
-      int outer_k, oidx_k;
-      if (splice_recv_index_slot(c, recv, &outer_k, &oidx_k)) {
-        buf_puts(b, "sp_poly_slot_set_key("); emit_boxed(c, outer_k, b);
-        buf_puts(b, ", "); emit_int_expr(c, oidx_k, b);
-        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-      }
-      else {
-        buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-      }
-    }
-    buf_printf(b, ", _t%d); _t%d; })", tv, tv);
-    (void)vt;
-    return 1;
-  }
-  /* poly receiver: [] with symbol or string key -> runtime dispatch */
-  /* poly receiver: arr[start, len] -> sp_poly_slice (string or typed array) */
-  /* A user class of its own two-argument [] takes the per-class poly
-     dispatch, which emits its arm beside the builtin ones, as the one-argument
-     form below does: the slice read answered nil for a Grid (#5522). */
-  int has_user_aref2 = 0;
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !g_poly_builtin_arm)
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
-          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref2 = 1; break; }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2 && !has_user_aref2) {
-    /* The runtime dispatches on the receiver's tag: a string/array does a
-       two-arg slice, a bound Method (optcarrot's poke handlers) is called with
-       both int args. Both operands are raw integers. */
-    /* ...but only a pair of statically Integer operands CAN be a slice. Proc#[]
-       is #call, and its arguments are whatever the proc takes -- an Array here,
-       which the two-integer reading rejected before any dispatch could happen
-       (#4333). Anything else goes through the boxed dispatch; the int path is
-       the hot one (optcarrot's poke tables) and keeps its raw operands. */
-    if (!(comp_ntype(c, argv[0]) == TY_INT && comp_ntype(c, argv[1]) == TY_INT)) {
-      buf_puts(b, "sp_poly_slice_or_call("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
-      buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
-      return 1;
-    }
-    buf_puts(b, "sp_poly_slice("); emit_expr(c, recv, b); buf_puts(b, ", ");
-    emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
-    return 1;
-  }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 1) {
-    /* `@table[i][j]` dispatch table narrowed to int (poly_double_index_int):
-       call the entry (bound method / int array) for an unboxed int result. */
-    if (comp_ntype(c, id) == TY_INT) {
-      buf_puts(b, "sp_poly_index_int("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
-      return 1;
-    }
-    TyKind at = comp_ntype(c, argv[0]);
-    /* Only use the fast single-call path when no user class defines [].
-       If any user class has its own [] method, fall through to the per-class
-       poly dispatch (line ~4640) which generates both user and builtin arms. */
-    int has_user_aref = 0;
-    /* a class's own `self.[]` counts too: a Class value in the slot is
-       served by the class-method dispatch, which re-emits this read for the
-       values that are not a Class (g_cls_tag_skip) (#5545) */
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, "[]", argc) ||
-          (g_cls_tag_skip != id && comp_cmethod_in_chain(c, k, "[]", NULL) >= 0)) { has_user_aref = 1; break; }
-    if (!has_user_aref) {
-      if (at == TY_SYMBOL) {
-        buf_puts(b, "sp_poly_get_sym("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-      if (at == TY_STRING) {
-        buf_puts(b, "sp_poly_get_str("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-      if (at == TY_INT || at == TY_POLY) {
-        /* The runtime read boxes a TYPED array's element without the sentinel
-           check the hot path cannot afford, so a nilable scalar stored in one
-           comes back as an ordinary number. Correct it here, at the sites
-           analyze marked, rather than in the read itself (#3505). */
-        int uns = nullable_int_elem_read(c, id);
-        if (uns) buf_puts(b, "sp_unsentinel(");
-        /* A receiver proved to hold only a poly array or nil reaches none of
-           the hash, string or Struct arms, so the cls_id test and the cold
-           call behind it are dead code on this read. analyze established the
-           proof for the GC root elision; this is the same fact paying twice. */
-        buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
-                    : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
-                                                  : "sp_poly_arr_get_hash(");
-        emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
-        if (uns) buf_puts(b, ")");
-        return 1;
-      }
-      /* a non-poly key (e.g. a Method): box it, then index polymorphically */
-      if (at != TY_UNKNOWN) {
-        buf_puts(b, "sp_poly_index_poly("); emit_expr(c, recv, b);
-        buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
-    }
-  }
+  { int r; if (emit_poly_index_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* poly receiver: join. Stands down for a user class that defines the name --
      the arm answered the receiver's #to_s where CRuby entered the method, and
      nothing was reported (#4071). The dispatch below builds the cls_id switch
