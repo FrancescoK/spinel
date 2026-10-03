@@ -44,6 +44,9 @@ static const PolyFace ty_poly_face_tbl[] = {
      kind, so leaving it out made a boxed Array's bsearch a NoMethodError. */
   {"step", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 1, 1},
   {"bsearch", PF_ARRAY | PF_RANGE | PF_FRANGE, 0, 0, 1},
+  /* minmax is Range's own, read off the endpoints (a Float Range cannot be
+     walked), beside the Enumerable row below that walks a collection */
+  {"minmax", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, -1},
   /* The Enumerable names a boxed receiver shares with Array: its elements
      (a hash's [key, value] pairs) materialize into a poly array once. */
   {"minmax", PF_ENUM, 0, -1, -1}, {"tally", PF_ENUM, 0, -1, -1}, {"product", PF_ENUM, 0, -1, -1},

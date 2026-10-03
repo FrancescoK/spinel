@@ -7944,6 +7944,22 @@ int desugar_enum_walk_calls(Compiler *c) {
   return changed;
 }
 
+/* `rn.is_a?(Cls)` for a builtin class named `cls` */
+static int enum_is_a_named(Compiler *c, const char *rn, const char *cls) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int pr = nt_new_node(nt, "LocalVariableReadNode");
+  int cr = nt_new_node(nt, "ConstantReadNode");
+  int ia = nt_new_node(nt, "CallNode");
+  int iaa = nt_new_node(nt, "ArgumentsNode");
+  if (pr < 0 || cr < 0 || ia < 0 || iaa < 0) return -1;
+  nt_node_set_str(nt, pr, "name", rn); nt_node_set_int(nt, pr, "depth", 0);
+  nt_node_set_str(nt, cr, "name", cls);
+  nt_node_set_arr(nt, iaa, "arguments", &cr, 1);
+  nt_node_set_str(nt, ia, "name", "is_a?");
+  nt_node_set_ref(nt, ia, "receiver", pr);
+  nt_node_set_ref(nt, ia, "arguments", iaa);
+  return ia;
+}
 static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int ndef) {
   NodeTable *nt = (NodeTable *)c->nt;
   int pred = -1;
@@ -8027,6 +8043,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
                      sp_streq(name, "first") || sp_streq(name, "last") || sp_streq(name, "include?") ||
                      sp_streq(name, "member?"));
     if (range_own && nt_ref(nt, id, "block") < 0) continue;
+    /* the Range arm of a boxed receiver's minmax (range_arm below): the
+       poly dispatch answers it, off the endpoints */
+    if (nt_int(nt, id, "enum_range_own", 0)) continue;
     /* minmax's blockless form on an Array or a Hash keeps its dedicated
        C routine (sp_XArray_min/_max, called once each, no per-element
        nullable-int/GC-root bookkeeping): measured ~80% slower as a
@@ -8166,7 +8185,16 @@ int desugar_builtin_enum_calls(Compiler *c) {
     int blk = nt_ref(nt, id, "block");
     int recv_read = recv;
     int generic = id;
-    if (ndef > 0 || safe_nav) {
+    /* A boxed receiver's blockless minmax that may be a Range: Range's own
+       minmax is [min, max] off the endpoints (CRuby's range_minmax), never
+       a walk -- a Float Range cannot be walked, and an open one raises.
+       The same dispatch shape, `__r.is_a?(Range) ? __r.minmax : generic`,
+       its Range arm left to the poly dispatch (the face table's Range
+       owners). In the definition itself the test cost every copy its
+       inlining, closures and all. */
+    int range_arm = rt == TY_POLY && ndef == 0 && !safe_nav && blk < 0 && an == 0 &&
+                    sp_streq(name, "minmax");
+    if (ndef > 0 || safe_nav || range_arm) {
       char rn[64]; snprintf(rn, sizeof rn, "__enumrecv_%s", comp_node_tag(c, id));
       int w = nt_new_node(nt, "LocalVariableWriteNode");
       int own = nt_new_node(nt, "CallNode");
@@ -8195,7 +8223,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
         nt_node_set_ref(nt, nq, "receiver", nr);
         pred = nq;
       }
-      if (!safe_nav) pred = enum_is_a_chain(c, rn, defcls, ndef);
+      if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range") : enum_is_a_chain(c, rn, defcls, ndef);
       if (pred < 0) { free(chained); free(in_default); return changed; }
       /* the class's own method, on the same receiver, with the block; under
          a safe navigation the nil arm answers nil and the class arm, when
@@ -8232,7 +8260,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
       else {
         nt_node_set_str(nt, own, "name", name);
         nt_node_set_ref(nt, own, "receiver", ownr);
-        nt_node_set_int(nt, own, "enum_own", 1);   /* the class's method: a user arm */
+        /* the class's method: a user arm; a Range's, the poly dispatch's */
+        nt_node_set_int(nt, own, range_arm ? "enum_range_own" : "enum_own", 1);
         if (args >= 0) nt_node_set_ref(nt, own, "arguments", args);
         if (blk >= 0) nt_node_set_ref(nt, own, "block", blk);
         nt_node_set_arr(nt, ts, "body", &own, 1);

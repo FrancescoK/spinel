@@ -11180,6 +11180,15 @@ static void emit_face_value(Compiler *c, TyKind slot, TyKind nat, const char *va
      answer their receiver's sp_int while the pinned inference says poly */
   if (slot == nat || nat == TY_POLY || nat == TY_UNKNOWN || nat == TY_VOID) buf_puts(b, val);
   else if (slot == TY_POLY) emit_boxed_text(c, nat, val, b);
+  /* owners that answer arrays of different kinds (an Integer and a Float
+     Range's minmax) share a poly-array slot: a typed array is copied into
+     it element by element, where the plain unbox cast the Float array's
+     memory to boxed values */
+  else if (slot == TY_POLY_ARRAY && ty_is_array(nat)) {
+    buf_puts(b, "sp_poly_to_poly_array(");
+    emit_boxed_text(c, nat, val, b);
+    buf_puts(b, ")");
+  }
   else {
     Buf bx; memset(&bx, 0, sizeof bx);
     emit_boxed_text(c, nat, val, &bx);

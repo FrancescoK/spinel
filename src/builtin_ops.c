@@ -577,6 +577,8 @@ static const BuiltinOp bop_rows[] = {
   /* nil for an empty range, a raise for an open side, the members walked for an excluded end */
   { TY_STR_RANGE, "min",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_srange_min_v($r)" },
   { TY_STR_RANGE, "max",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_srange_max_v($r)" },
+  /* [min, max] off the endpoints, max first as CRuby's range_minmax evaluates them */
+  { TY_STR_RANGE, "minmax",       0,   0, BF_NONE,     TY_STR_ARRAY,   BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; SP_GC_ROOT_STR(_t$T.first); SP_GC_ROOT_STR(_t$T.last); const char *_t$t = sp_srange_max_v(_t$T); SP_GC_ROOT_STR(_t$t); const char *_t$u = sp_srange_min_v(_t$T); SP_GC_ROOT_STR(_t$u); sp_StrArray *_r$T = sp_StrArray_new(); sp_StrArray_push(_r$T, _t$u); sp_StrArray_push(_r$T, _t$t); _r$T; })" },
   { TY_STR_RANGE, "to_s",         0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_srange_to_s(_t$T); })" },
   { TY_STR_RANGE, "inspect",      0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_srange_inspect(_t$T); })" },
   { TY_STR_RANGE, "first",        0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.first; })" },
@@ -636,7 +638,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "min",          0,   0, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "sp_frange_min_v($r)", 0 },  /* the endpoint the literal wrote is typed in infer_range_call */
   { TY_FLOAT_RANGE, "min",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_minn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
   { TY_FLOAT_RANGE, "max",          1,   1, BF_NONE, TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_maxn_raise($r, $i0); sp_box_nil(); })", 0 },  /* min(n)/max(n) enumerate (#3665) */
-  { TY_FLOAT_RANGE, "minmax",       0,   0, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_float _t$u = sp_frange_min_v(_t$T); sp_float _t$t = sp_frange_max_v(_t$T); sp_FloatArray *_r$T = sp_FloatArray_new(); SP_GC_ROOT(_r$T); sp_FloatArray_push(_r$T, _t$u); sp_FloatArray_push(_r$T, _t$t); _r$T; })", 0 },  /* the endpoints (#3690) */
+  { TY_FLOAT_RANGE, "minmax",       0,   0, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_float _t$t = sp_frange_max_v(_t$T); sp_float _t$u = sp_frange_min_v(_t$T); sp_FloatArray *_r$T = sp_FloatArray_new(); SP_GC_ROOT(_r$T); sp_FloatArray_push_nilable(_r$T, _t$u); sp_FloatArray_push_nilable(_r$T, _t$t); _r$T; })", 0 },  /* the endpoints (#3690): max first, as CRuby's range_minmax evaluates them, and nil for an empty range */
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_frange_cover(_t$T, $f0); })", BOP_K(TY_INT) | BOP_K(TY_FLOAT) },
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_RbVal _a$T = $b0; sp_frange_cover_poly(_t$T, _a$T); })", BOP_K(TY_POLY) },
   { TY_FLOAT_RANGE, "cover?",       1,   1, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($e0), 0)", 0 },  /* never covers a non-number */

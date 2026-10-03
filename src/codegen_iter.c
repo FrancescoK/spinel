@@ -1643,6 +1643,11 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      `with_retries { system(cmd) }` did not build (#4802). The expression
      form is the same compound as a statement expression. */
   if (nt_ref(nt, id, "receiver") < 0 && sp_streq(nm, "system")) return 1;
+  /* a call desugar_builtin_enum_calls made of an Enumerable name (`v.minmax`
+     on a boxed v is `__enum_minmax(v)`) is spliced, and its statement form
+     ends in the definition's tail `if`, whose value is void
+     (`t { v.minmax }` did not build) */
+  if (nt_ref(nt, id, "receiver") < 0 && strncmp(nm, "__enum_", 7) == 0) return 1;
   /* `p x` / `pp x` as the tail: the statement form prints and yields
      nothing, while the call answers its argument (or the argument array),
      which a predicate iterator reads as the block's truthiness
