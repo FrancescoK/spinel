@@ -1082,6 +1082,15 @@ else {
      defines its own to_json keeps the dispatch (this arm declines then). */
   if (recv >= 0 && sp_streq(name, "to_json") && nt_ref(nt, id, "block") < 0 &&
       sp_feature_required("json") && json_to_json_is_builtin(c, recv)) {
+    /* every builtin's #to_json takes an optional state and nothing more
+       (a boxed one, whose class the arity guard cannot name, included) */
+    if (argc > 1) {
+      buf_puts(b, "({ (void)("); emit_boxed(c, recv, b); buf_puts(b, "); ");
+      for (int a = 0; a < argc; a++) { buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); "); }
+      buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0..1)\");"
+                    " (const char *)0; })", argc);
+      return 1;
+    }
     for (int a = 0; a < argc; a++) { buf_puts(b, "((void)("); emit_boxed(c, argv[a], b); buf_puts(b, "), "); }
     buf_puts(b, "sp_json_val("); emit_boxed(c, recv, b); buf_puts(b, ")");
     for (int a = 0; a < argc; a++) buf_puts(b, ")");

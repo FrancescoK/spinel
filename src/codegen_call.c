@@ -14269,6 +14269,13 @@ int class_includes_module_named(Compiler *c, int cid, const char *mod_name) {
    defines its own to_json answers for its own instances (and for a poly slot
    that may hold one), but a statically typed Hash / Array / String / number is
    not one of them -- only a reopen of that builtin could be. */
+static int json_user_to_json_any(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_chain(c, k, "to_json", NULL);
+    if (mi >= 0 && !c->scopes[mi].is_cmethod) return 1;
+  }
+  return 0;
+}
 int json_to_json_is_builtin(Compiler *c, int recv) {
   TyKind rt = comp_ntype(c, recv);
   /* A BOXED receiver goes through the generator too. It used to be declined
@@ -14282,7 +14289,13 @@ int json_to_json_is_builtin(Compiler *c, int recv) {
      sp_obj_to_json_fn, which prefers that class's own #to_json exactly as
      CRuby's json does (packages/json/sp_json.c). */
   if (rt == TY_UNKNOWN) return 0;
-  if (rt == TY_POLY) return 1;
+  /* ...unless a program class defines #to_json: then the boxed value may be
+     one of its instances, and the class dispatch calls that method with the
+     arguments as given, whatever its signature, while a builtin in the same
+     slot takes the generator through the dispatch's own default arm
+     (emit_poly_defaults_n / _0). sp_obj_to_json_fn calls only the two
+     shapes it can call without arguments, and dropped the ones given. */
+  if (rt == TY_POLY) return g_poly_builtin_arm || !json_user_to_json_any(c);
   /* A static object type goes through the generator too, unless its own class
      defines #to_json -- that dispatch has to win, and here it can, because the
      class is known. CRuby reaches the same two answers through method lookup:
