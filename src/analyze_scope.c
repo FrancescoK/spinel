@@ -6650,6 +6650,16 @@ static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
    nothing, settling the ivar back on the bare type. */
 typedef struct { int n, cap; int *cls; const char **nm; } NilWrites;
 
+/* Can an instance of class k take an ivar `instance_variable_set` on a
+   boxed receiver names: a class, not a module, a Struct or Data class
+   (whose layout follows its members; a Data one is frozen), a native
+   class, a singleton, or the Toplevel pseudo-class. */
+int poly_ivar_set_class(Compiler *c, int k) {
+  ClassInfo *pk = &c->classes[k];
+  if (pk->is_struct || pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
+  if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
+  return 1;
+}
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
   if (w->n == w->cap) {
@@ -6795,6 +6805,72 @@ static TyKind ivar_merge_with_write(TyKind slot, TyKind vt) {
       (slot == TY_POLY_ARRAY || vt == TY_POLY_ARRAY))
     return TY_POLY_ARRAY;
   return m;
+}
+
+static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  /* instance_variable_set(:@lit, v): CRuby creates the ivar on the spot,
+     so register a slot for a brand-new literal name in the receiver's
+     class layout (like an `@lit = v` write would), pinning the value's
+     type. Without this the write has no field to lower to (#3059). */
+  {
+    const char *ivsn = nt_str(nt, id, "name");
+    if (ivsn && sp_streq(ivsn, "instance_variable_set")) {
+      int sargs = nt_ref(nt, id, "arguments"); int san = 0;
+      const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &san) : NULL;
+      const char *a0ty = (san == 2 && sav) ? nt_type(nt, sav[0]) : NULL;
+      const char *sym = NULL;
+      if (a0ty && sp_streq(a0ty, "SymbolNode")) sym = nt_str(nt, sav[0], "value");
+      else if (a0ty && sp_streq(a0ty, "StringNode")) sym = nt_str(nt, sav[0], "content");
+      if (sym && sym[0] == '@') {
+        int ivrecv = nt_ref(nt, id, "receiver");
+        const char *ivrt = ivrecv >= 0 ? nt_type(nt, ivrecv) : NULL;
+        int tcid = -1;
+        if (ivrecv < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
+          Scope *s = comp_scope_of(c, id);
+          tcid = s->class_id;
+          if (tcid < 0 && c->node_cbody[id] >= 0) tcid = c->node_cbody[id];
+        }
+        else {
+          TyKind rt = comp_ntype(c, ivrecv);
+          if (ty_is_object(rt)) tcid = ty_object_class(rt);
+          /* a poly receiver may be any class that has the slot: the
+             value's type reaches each of them (the dispatch writes it) */
+          else if (rt == TY_POLY) {
+            TyKind pvt = infer_type(c, sav[1]);
+            for (int k = 0; k < c->nclasses; k++) {
+              ClassInfo *pk = &c->classes[k];
+              if (!poly_ivar_set_class(c, k)) continue;
+              int old_pn = pk->nivars;
+              int piv = comp_ivar_intern(pk, sym);
+              if (pk->nivars != old_pn) changed = 1;
+              if (piv < 0) continue;
+              if (pvt == TY_NIL) nil_write_note(writes, k, sym);
+              else if (!class_ivar_pinned(pk, sym)) {
+                TyKind pm = ivar_merge_with_write(pk->ivar_types[piv], pvt);
+                if (pm != pk->ivar_types[piv]) { pk->ivar_types[piv] = pm; changed = 1; }
+              }
+            }
+          }
+        }
+        if (tcid >= 0 && tcid < c->nclasses) {
+          ClassInfo *ci = &c->classes[tcid];
+          int old_ni = ci->nivars;
+          int iv = comp_ivar_intern(ci, sym);
+          if (ci->nivars != old_ni) changed = 1;
+          TyKind vt = infer_type(c, sav[1]);
+          if (vt == TY_NIL) nil_write_note(writes, tcid, sym);
+          else if (!class_ivar_pinned(ci, sym)) {
+            TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
+            if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+          }
+        }
+      }
+      return changed;
+    }
+  }
+  return changed;
 }
 
 int infer_ivar_types(Compiler *c) {
@@ -6977,62 +7053,9 @@ int infer_ivar_types(Compiler *c) {
       }
     }
     else if (sp_streq(ty, "CallNode")) {
-      /* instance_variable_set(:@lit, v): CRuby creates the ivar on the spot,
-         so register a slot for a brand-new literal name in the receiver's
-         class layout (like an `@lit = v` write would), pinning the value's
-         type. Without this the write has no field to lower to (#3059). */
-      {
-        const char *ivsn = nt_str(nt, id, "name");
-        if (ivsn && sp_streq(ivsn, "instance_variable_set")) {
-          int sargs = nt_ref(nt, id, "arguments"); int san = 0;
-          const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &san) : NULL;
-          const char *a0ty = (san == 2 && sav) ? nt_type(nt, sav[0]) : NULL;
-          const char *sym = NULL;
-          if (a0ty && sp_streq(a0ty, "SymbolNode")) sym = nt_str(nt, sav[0], "value");
-          else if (a0ty && sp_streq(a0ty, "StringNode")) sym = nt_str(nt, sav[0], "content");
-          if (sym && sym[0] == '@') {
-            int ivrecv = nt_ref(nt, id, "receiver");
-            const char *ivrt = ivrecv >= 0 ? nt_type(nt, ivrecv) : NULL;
-            int tcid = -1;
-            if (ivrecv < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
-              Scope *s = comp_scope_of(c, id);
-              tcid = s->class_id;
-              if (tcid < 0 && c->node_cbody[id] >= 0) tcid = c->node_cbody[id];
-            }
-            else {
-              TyKind rt = comp_ntype(c, ivrecv);
-              if (ty_is_object(rt)) tcid = ty_object_class(rt);
-              /* a poly receiver may be any class that has the slot: the
-                 value's type reaches each of them (the dispatch writes it) */
-              else if (rt == TY_POLY) {
-                TyKind pvt = infer_type(c, sav[1]);
-                for (int k = 0; k < c->nclasses; k++) {
-                  ClassInfo *pk = &c->classes[k];
-                  int piv = pk->is_struct ? -1 : comp_ivar_index(pk, sym);
-                  if (piv < 0) continue;
-                  if (pvt == TY_NIL) nil_write_note(&nilw, k, sym);
-                  else if (!class_ivar_pinned(pk, sym)) {
-                    TyKind pm = ivar_merge_with_write(pk->ivar_types[piv], pvt);
-                    if (pm != pk->ivar_types[piv]) { pk->ivar_types[piv] = pm; changed = 1; }
-                  }
-                }
-              }
-            }
-            if (tcid >= 0 && tcid < c->nclasses) {
-              ClassInfo *ci = &c->classes[tcid];
-              int old_ni = ci->nivars;
-              int iv = comp_ivar_intern(ci, sym);
-              if (ci->nivars != old_ni) changed = 1;
-              TyKind vt = infer_type(c, sav[1]);
-              if (vt == TY_NIL) nil_write_note(&nilw, tcid, sym);
-              else if (!class_ivar_pinned(ci, sym)) {
-                TyKind merged = ivar_merge_with_write(ci->ivar_types[iv], vt);
-                if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
-              }
-            }
-          }
-          continue;
-        }
+      if (sp_streq(nt_str(nt, id, "name"), "instance_variable_set")) {
+        if (infer_ivar_set_call(c, id, &nilw)) changed = 1;
+        continue;
       }
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
       const char *nm = nt_str(nt, id, "name");
