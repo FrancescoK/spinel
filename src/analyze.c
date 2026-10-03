@@ -30787,28 +30787,8 @@ static void an_phase_proc_returns(Compiler *c) {
   }
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
-  an_phase_method_backstops(c);
-
-  an_phase_late_widen(c);
-
-  an_phase_proc_returns(c);
-
-
+/* The instance_eval re-infer and the storage refinements: byref string out-params, handle params, the reader operand marks, the STRBUF promotion, the shared and aliased strings (analyze_program's steps, in their order) */
+static void an_phase_storage(Compiler *c) {
   /* Re-infer nodes inside instance_eval block bodies with the receiver's class
      context, so ivar reads get correct types in the final c->ntype cache.
      Call infer_type on each body statement: it recursively re-infers all
@@ -31060,6 +31040,31 @@ void analyze_program(Compiler *c) {
     tgt->type = TY_STRBUF;
     tgt->str_shared = 1;
   }
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
+
+  an_phase_late_widen(c);
+
+  an_phase_proc_returns(c);
+
+
+  an_phase_storage(c);
 
 
   /* Value-type object detection (Stage 1, conservative). A user class is
