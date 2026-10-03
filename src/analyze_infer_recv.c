@@ -1621,9 +1621,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      it answers exactly what chars / lines / bytes do. Without this the
      enumerator stayed untyped and reduce/to_a/sum on it all failed. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-       sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) &&
-      !an_user_defines_or_reads(c, name)) {
+      is_str_each_iter(name) && !an_user_defines_or_reads(c, name)) {
     if (sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) { *out = TY_INT_ARRAY; return 1; }
     { *out = TY_STR_ARRAY; return 1; }
   }

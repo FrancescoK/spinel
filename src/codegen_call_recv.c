@@ -12044,8 +12044,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      CRuby's Enumerator; materialize it into the array chars / lines / bytes
      answer, which is what the typed String path does too. */
   if (argc == 0 && nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name) &&
-      (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-       sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
+      is_str_each_iter(name)) {
     const char *fn = sp_streq(name, "each_char") ? "sp_str_chars"
                    : sp_streq(name, "each_line") ? "sp_str_lines"
                    : sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";

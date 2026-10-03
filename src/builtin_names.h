@@ -39,6 +39,7 @@ int is_proc_invoke(const char *n);    /* call () [] yield ===: every name that i
 int is_quantifier_or_count(const char *n);  /* all? any? none? one? count: is_quantifier's names and count */
 int is_push_unshift(const char *n);   /* << push append unshift: is_push_alias's names and unshift */
 int is_len_alias(const char *n);      /* length size */
+int is_str_each_iter(const char *n);  /* each_char each_line each_byte each_codepoint: String's element iterators */
 int is_diverging_call(const char *n); /* raise fail throw exit exit! abort: a Kernel call that never returns */
 int is_block_loop_method(const char *n); /* times each upto downto step loop each_with_index: a block run an unbounded number of times */
 

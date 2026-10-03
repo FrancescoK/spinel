@@ -17994,9 +17994,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   /* str.each_char / each_line with no block -> an Enumerator over the string's
      characters / lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-       sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
+      nt_ref(nt, id, "block") < 0 && is_str_each_iter(name)) {
     /* spill the receiver once: it feeds both the snapshot and the
        inspect-visible source stamp */
     int tsrc = ++g_tmp;
