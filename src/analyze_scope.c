@@ -6904,11 +6904,13 @@ int infer_ivar_types(Compiler *c) {
       /* `@x |= v`, `&=`, `^=` on a slot nothing has typed yet: the slot is nil
          there, and NilClass#| answers true, #& false, #^ v's truthiness -- not
          an Integer. Taking v's type made it an int slot, and `nil | 256` ORed
-         the nil sentinel's bits into a large negative number (#5470). */
+         the nil sentinel's bits into a large negative number (#5470). `<<=`
+         and `>>=` the same: nil has no shift, and the int slot shifted the
+         sentinel where CRuby raises NoMethodError. */
       if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_UNKNOWN &&
           !class_ivar_pinned(ci, nm)) {
         const char *bo = nt_str(nt, id, "binary_operator");
-        if (bo && is_bit_op(bo)) vt = TY_POLY;
+        if (bo && is_int_bit_op(bo)) vt = TY_POLY;
       }
       /* For operator-write (@b += rhs), vt is the RHS type, not the result type.
          When the slot holds a user object, the result is the method's return type. */

@@ -2003,12 +2003,25 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
                   : sp_streq(op, "**") ? "sp_float_pow"
                   : sp_streq(op, "%") ? (vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod") : NULL;
   if (!fn && !bitop && !fop) return 0;
-  /* A `<<=` by a literal count that overflows every nonzero receiver (>= 63)
-     or a negative count routes through sp_int_shl, mirroring the binary gate. */
-  if (bitop && sp_streq(op, "<<") && nt_kind(nt, v) == NK_IntegerNode) {
+  /* `<<=` and `>>=` take the binary form's helpers (emit_call_compare_arms):
+     a literal `<<`, and a literal `>>` count outside the word, go through
+     sp_int_shl / sp_int_shr, whose overflow check is the only one there is;
+     a runtime count goes through sp_int_shl_ck / sp_int_shr_ck below. A bare
+     C shift wrapped `x <<= n` to 0 at n = 70 where `x << n` raised. */
+  int is_shift = bitop && (sp_streq(op, "<<") || sp_streq(op, ">>"));
+  /* A slot that can hold nil is nil there, and nil has no << or >>: CRuby's
+     NoMethodError, where the shift read the nil sentinel as a number (the
+     arithmetic helpers test it; these shifts did not) */
+  int shk = 0;
+  if (is_shift && lhs_nil) shk = ++g_tmp;
+  if (is_shift && nt_kind(nt, v) == NK_IntegerNode) {
     long long vlit = nt_int(nt, v, "value", 0);
-    if (vlit < 0 || vlit >= 63) {
-      buf_printf(b, "%s = sp_int_shl(%s, %lldLL);\n", lval, lval, vlit);
+    if (sp_streq(op, "<<") || vlit < 0 || vlit >= 64) {
+      if (shk)
+        buf_printf(b, "%s = sp_int_%s(({ sp_int _t%d = %s; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; }), %lldLL);\n",
+                   lval, sp_streq(op, "<<") ? "shl" : "shr", shk, lval, shk, op, shk, vlit);
+      else
+        buf_printf(b, "%s = sp_int_%s(%s, %lldLL);\n", lval, sp_streq(op, "<<") ? "shl" : "shr", lval, vlit);
       return 1;
     }
   }
@@ -2073,6 +2086,16 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
     else buf_printf(b, "%s = _t%d %s %s; }", lval, k, op, rv);
   }
   else if (fn) buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
+  else if (is_shift) {
+    Buf sb; memset(&sb, 0, sizeof sb);
+    if (shk) buf_printf(&sb, "({ sp_int _t%d = %s; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; })",
+                        shk, src, shk, op, shk);
+    else buf_puts(&sb, src);
+    if (nt_kind(nt, v) != NK_IntegerNode)
+      buf_printf(b, "%s = sp_int_%s_ck(%s, (%s));", lval, sp_streq(op, "<<") ? "shl" : "shr", sb.p, rhs);
+    else buf_printf(b, "%s = (%s %s (%s));", lval, sb.p, op, rhs);
+    free(sb.p);
+  }
   else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
   else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
