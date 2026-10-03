@@ -781,6 +781,25 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
   emit_int_expr_ex(c, node, 1, b);
 }
 
+/* An Integer Range literal's endpoint: a nil that arrives at run time is the
+   absent bound `none` (INTPTR_MIN for a beginning, INTPTR_MAX for an end), as
+   the written `nil..5` / `1..nil` are. Anything else is read as before. */
+void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
+  TyKind t = comp_ntype(c, node);
+  if (t == TY_POLY) {
+    buf_puts(b, "sp_poly_range_bound("); emit_expr(c, node, b); buf_printf(b, ", (sp_int)(%s))", none);
+    return;
+  }
+  if (t == TY_INT && nullable_int_value(c, node)) {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = ", tn);
+    emit_int_expr_ex(c, node, 0, b);
+    buf_printf(b, "; _t%d == SP_INT_NIL ? (sp_int)(%s) : _t%d; })", tn, none, tn);
+    return;
+  }
+  emit_int_expr_nilable(c, node, b);
+}
+
 /* Strict, but with CRuby's rb_convert_type wording ("of nil into Integer"):
    Random.srand's seed, Dir.mkdir's mode, Random#bytes' size. */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b) {

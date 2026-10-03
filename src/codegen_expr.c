@@ -1625,9 +1625,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         (nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) ||
         lazy_endpoint_is_infinite(c, right);
     buf_puts(b, "sp_range_new(");
-    if (!left_unbounded) emit_int_expr_nilable(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless; a non-literal nil bound keeps the old looseness */
+    /* a nil that arrives at run time -- boxed, or an Integer slot's
+       sentinel -- is the absent bound too; read as a number, `lo..x` with x
+       nil was the empty `lo..0` */
+    if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
-    if (!right_unbounded) emit_int_expr_nilable(c, right, b); else buf_puts(b, "INTPTR_MAX");  /* endless; same */
+    if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
     buf_printf(b, ", %d)", excl);
     return;
   }

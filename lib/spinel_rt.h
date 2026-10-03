@@ -3405,6 +3405,16 @@ static SP_UNUSED sp_int sp_poly_cmp_ans(sp_RbVal r, sp_RbVal a, sp_RbVal b) {
 /* A method nil does not have, called on a boxed receiver that is nil:
    NoMethodError, answered as a value so it sits in an expression arm. */
 static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_box_nil(); }
+/* The bounds of `for i in lo..hi` read out of a box or an Integer slot that
+   may hold nil: a nil end is an endless range (the loop runs until a break),
+   and a nil beginning cannot be iterated (TypeError, as CRuby). */
+/* A Range literal's endpoint read out of a box: nil is the absent bound
+   (beginless or endless), as the literal `nil..5` / `1..nil` takes it. */
+static SP_UNUSED sp_int sp_poly_range_bound(sp_RbVal v, sp_int none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_for_hi_i(sp_int v) { return v == SP_INT_NIL ? (sp_int)INTPTR_MAX : v; }
+static SP_UNUSED sp_int sp_for_lo_i(sp_int v) { if (SP_UNLIKELY(v == SP_INT_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return v; }
+static SP_UNUSED sp_int sp_for_hi(sp_RbVal v) { return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MAX : sp_poly_to_i(v); }
+static SP_UNUSED sp_int sp_for_lo(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return sp_poly_to_i(v); }
 static SP_UNUSED sp_int sp_poly_recv_i(const char *m, sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_poly_to_i(v); }
 /* Time.new / Time.utc / Time.local field `i` read out of a box: a nil month
    or day is 1 and a nil hour, minute or second 0, as CRuby defaults them; a

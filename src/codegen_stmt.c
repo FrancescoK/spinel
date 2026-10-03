@@ -6711,20 +6711,33 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     int rpoly = (rty == TY_POLY || rty == TY_BIGINT);
     LocalVar *clv = vn ? scope_local(comp_scope_of(c, idx), vn) : NULL;
     int cpoly = clv && clv->type == TY_POLY;
+    /* A nil end makes an endless range and a nil beginning one that cannot
+       be iterated: an end that may be nil (boxed, or an Integer slot holding
+       its sentinel) reads through sp_for_hi, a beginning through sp_for_lo.
+       Read as a number, the nil end was 0 or INT64_MIN and the loop ran
+       zero times. */
+    const char *lconv = lpoly ? "sp_for_lo(" : (lty == TY_INT && nullable_int_value(c, lref)) ? "sp_for_lo_i(" : NULL;
+    const char *rconv = rpoly ? "sp_for_hi(" : (rty == TY_INT && nullable_int_value(c, rref)) ? "sp_for_hi_i(" : NULL;
     int thi = ++g_tmp;
     emit_indent(b, indent); buf_puts(b, "{ sp_int ");
     buf_printf(b, "_t%d = ", thi);
-    if (rpoly) buf_puts(b, "sp_poly_to_i(");
-    emit_expr(c, rref, b);
-    if (rpoly) buf_puts(b, ")");
+    if (rty == TY_NIL) buf_puts(b, "(sp_int)INTPTR_MAX");   /* `lo..nil`: endless */
+    else {
+      if (rconv) buf_puts(b, rconv);
+      emit_expr(c, rref, b);
+      if (rconv) buf_puts(b, ")");
+    }
     buf_puts(b, ";\n");
     if (cpoly) {
       int tc = ++g_tmp;
       emit_indent(b, indent + 1);
       buf_printf(b, "for (sp_int _t%d = ", tc);
-      if (lpoly) buf_puts(b, "sp_poly_to_i(");
-      emit_expr(c, lref, b);
-      if (lpoly) buf_puts(b, ")");
+      if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(SP_INT_NIL)");   /* `nil..hi` */
+      else {
+        if (lconv) buf_puts(b, lconv);
+        emit_expr(c, lref, b);
+        if (lconv) buf_puts(b, ")");
+      }
       buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
       emit_indent(b, indent + 2);
       emit_local_ref(c, idx, vn, b); buf_printf(b, " = sp_box_int(_t%d);\n", tc);
@@ -6738,9 +6751,12 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     int tc = ++g_tmp;
     emit_indent(b, indent + 1);
     buf_printf(b, "for (sp_int _t%d = ", tc);
-    if (lpoly) buf_puts(b, "sp_poly_to_i(");
-    emit_expr(c, lref, b);
-    if (lpoly) buf_puts(b, ")");
+    if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(SP_INT_NIL)");   /* `nil..hi` */
+    else {
+      if (lconv) buf_puts(b, lconv);
+      emit_expr(c, lref, b);
+      if (lconv) buf_puts(b, ")");
+    }
     buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
     if (multi) {
       char el[32]; snprintf(el, sizeof el, "_t%d", tc);
