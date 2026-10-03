@@ -17359,6 +17359,26 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b) {
   char exp[32]; int eval_recv;
   if (!arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 0;
+  /* One TyKind holds Queue and SizedQueue, and their push takes 1 and 1..2
+     (SizedQueue's non_block): the table keeps the wider range, and the
+     message is the receiver's own, read off its capacity */
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE && sp_streq(exp, "1..2") && name &&
+      (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq"))) {
+    int anode = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
+    const char *dv = default_value_from_compiler(c, comp_ntype(c, id));
+    int tq = ++g_tmp;
+    buf_printf(b, "({ sp_queue *_t%d = ", tq); emit_expr(c, recv, b); buf_puts(b, "; ");
+    for (int i = 0; i < argc; i++) { buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); "); }
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", _t%d->max > 0"
+                  " ? \"wrong number of arguments (given %d, expected 1..2)\""
+                  " : \"wrong number of arguments (given %d, expected 1)\"); %s; })",
+               tq, argc, argc, dv ? dv : "0");
+    return 1;
+  }
   emit_wrong_count(c, id, exp, eval_recv, -1, b);
   return 1;
 }
