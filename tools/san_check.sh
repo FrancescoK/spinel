@@ -77,9 +77,10 @@ list "$@" | awk '{ printf "%06d\t%s\n", NR, $0 }' | xargs -P "$JOBS" -I{} sh -c 
 xst=${PIPESTATUS[2]}
 [ "$xst" -eq 0 ] || { echo "san-check: xargs ended with status $xst, not every program was compiled" >&2; exit 2; }
 
-total=$(list "$@" | wc -l)
+# wc -l pads its count on BSD: the counts go into the last line bare
+total=$(list "$@" | wc -l | tr -d ' ')
 [ "$total" -gt 0 ] || { echo "san-check: no program to compile" >&2; exit 2; }
-bad=$(find "$LOGS" -name '*.log' | wc -l)
+bad=$(find "$LOGS" -name '*.log' | wc -l | tr -d ' ')
 if [ "$bad" -gt 0 ]; then
   # one line per program and site, "site<TAB>program<TAB>what<TAB>log": the
   # sanitizer's own file:line for undefined behaviour, the first frame in a
@@ -113,7 +114,7 @@ if [ "$bad" -gt 0 ]; then
     fi
   done
 fi
-left=$(find "$LOGS" -name '*.left' | wc -l)
+left=$(find "$LOGS" -name '*.left' | wc -l | tr -d ' ')
 if [ "$left" -eq 0 ]; then
   echo "san-check: $total programs, $bad with a report"
 else
