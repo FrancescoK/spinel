@@ -22,8 +22,23 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
 int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
+int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, TyKind rt);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
+/* An ordered, de-duplicated list of method names for the reflection folds.
+   A name is recorded once, at its first (most derived) sighting, and listed
+   only if that sighting was visible, so a subclass that makes an inherited
+   method private hides the ancestor's public one. */
+typedef struct { char **v; unsigned char *show; int n, cap; } ReflNames;
+/* The classes a `k.new(...)` switch gives an ArgumentError arm, grouped by
+   message so each message is emitted once. */
+typedef struct { char msg[256]; int *cis; int ncis; } CtorArityArm;
+typedef struct { CtorArityArm *arms; int narms; } CtorArityArms;
 void emit_bigint_operand(Compiler *c, int node, Buf *b);
 int cmp_operand_may_be_nil(Compiler *c, int id);
 int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Buf *b);
@@ -50,5 +65,80 @@ int exc_subclass_defines_cmp(Compiler *c);
 int obj_cmp_by_identity(TyKind t);
 int object_defines_cmp(Compiler *c);
 void scalar_nil_test(TyKind t, const char *v, char *out, size_t n);
+int any_class_defines(Compiler *c, const char *qm);
+int any_class_responds(Compiler *c, const char *qm);
+int class_implicit_responds(Compiler *c, int cid, const char *qm);
+int class_struct_kind(Compiler *c, int cid);
+int class_value_responds(Compiler *c, int tv, const char *qm, Buf *b);
+extern const char *const comparable_names[];
+int const_name_is_wrong(const char *s);
+int emit_io_pick(Compiler *c, int tv, const char *name, int public_only, Buf *b);
+void emit_io_pick_public(Compiler *c, const char *qm, const char *pick, Buf *b);
+void emit_io_reopen_responds(Compiler *c, int tv, const char *qm, int include_all, Buf *b);
+void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b);
+void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b);
+extern const char *const enumerable_names[];
+extern int g_rto_nil_obj;
+int method_hidden_from_reflection(Compiler *c, int cid, const char *m);
+int name_is_synth_method(Compiler *c, const char *m);
+int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);
+int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm, int argc, const int *argv);
+int respond_to_user_defined(Compiler *c, int id, int recv);
+extern const char *const respond_universal[];
+int rt_probe_answer(Compiler *c, int id, int *yes);
+extern const char *const struct_names[];
+void emit_call_body(Compiler *c, int id, Buf *b);
+void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out);
+void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl, Buf *b);
+int emit_or_take_back(Compiler *c, int id, Buf *b, int (*fn)(Compiler *, int, Buf *));
+int emit_sg_accessor(Compiler *c, int ci, const char *cn, const char *name, int argc, const int *argv, Buf *b);
+void ffi_check_buffer_bounds(Compiler *c, int id, int arg, const char *kind, int off, const char *dir);
+extern int g_setter_value_inner;
+int call_has_keyword_args(const NodeTable *nt, const int *argv, int argc);
+int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc);
+int ctor_alloc_decl(Compiler *c, int cid, Buf *b);
+void ctor_arity_add(CtorArityArms *g, int ci, const char *msg);
+void ctor_arity_emit(CtorArityArms *g, Buf *b);
+int ctor_arity_error(Compiler *c, int ci, int initm, int argc, char *msg, size_t n);
+void ctor_arm_arg(Compiler *c, Scope *is, int j, const char *val, int pd_uid, Buf *pdpre, Buf *args);
+int ctor_arm_incompat(Compiler *c, Scope *is, const ArgLayout *L, const int *argv);
+int ctor_arm_takes(Compiler *c, Scope *is, int argc);
+const char *ctor_blk_lead(const Buf *b);
+int ctor_block_dispatchable(Compiler *c, int id);
+int ctor_block_splices(Compiler *c, int id);
+void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed, Buf *b);
+int emit_class_new_call(Compiler *c, int id, Buf *b);
+void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b);
+void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pre, const char *args, Buf *b);
+void emit_ctor_arm_param(Compiler *c, Scope *is, int j, const ArgLayout *L, const int *atmp, Buf *pdpre, Buf *out);
+void emit_ctor_block_slot(Compiler *c, int id, int initm, const char *lead, Buf *b);
+int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2, Buf *b);
+void emit_exc_msg_arg(Compiler *c, int arg, Buf *b);
+int emit_exc_sub_new_arm(Compiler *c, int ci, int argc, const int *atmp, int rt2, Buf *b);
+int emit_syserr_family_new(Compiler *c, int id, const char *cn, int argc, const int *argv, Buf *b);
+int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *atmp, int hoisted, int rt2, Buf *b);
+extern int g_ctor_blk_tmp;
+int hoist_ctor_block(Compiler *c, int id, Buf *b);
+int struct_nil_fills(const ClassInfo *k);
+int cls_arm_takes_argc(Scope *s, int argc, int splat);
+int collect_class_constants(Compiler *c, int ci, int inherit, const char **out, int max, int n, int depth);
+void emit_class_id_is(Compiler *c, const char *cname, const char *expr, Buf *b);
+int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls, const char *raise, Buf *b);
+extern int g_cls_value_recv;
+int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
+int obj_member_shadows(Compiler *c, TyKind rt, const char *nm);
+void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r);
+void refl_emit_sym_array(Compiler *c, int cid, ReflNames *r, Buf *b);
+void refl_free(ReflNames *r);
+void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv, int with_modules, ReflNames *r);
+void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw);
+int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b);
+void emit_struct_kw_check(Compiler *c, ClassInfo *cls, int ht, int kwh);
+int emit_struct_kw_hash(Compiler *c, int kwh);
+void emit_struct_kw_member(Compiler *c, ClassInfo *cls, int a, int ht, Buf *b);
+int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv, int kwh, int *nunk_out, int *late_out, Buf *b);
+void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b);
+int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *box_fn, Buf *b);
+void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv_text, Buf *b);
 
 #endif
