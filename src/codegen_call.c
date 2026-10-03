@@ -1557,6 +1557,26 @@ static int cmp_operand_may_be_nil(Compiler *c, int id) {
 static void emit_float_operand_expr(Compiler *c, int node, Buf *b) {
   emit_scalar_operand(c, node, "0.0", b);
 }
+/* An FFI integer (dbl 0) or double (dbl 1) argument of kind `at`, cast to
+   the C type of `spec`. nil is no number there: a boxed nil, an Integer or
+   Float slot the marking says can hold its nil sentinel, and a nil-typed
+   value raise TypeError, as the ffi gem's NUM2INT / NUM2DBL do. */
+static void emit_ffi_num_arg(Compiler *c, int arg, TyKind at, const char *spec, int dbl, Buf *b) {
+  const char *ck = "";
+  if (at == TY_NIL) {
+    buf_puts(b, "((void)("); emit_expr(c, arg, b);
+    buf_printf(b, "), %s(), (%s)0)", dbl ? "sp_ffi_nil_dbl_raise" : "sp_ffi_nil_int_raise", ffi_c_type(spec));
+    return;
+  }
+  if (at == TY_POLY) ck = dbl ? "sp_ffi_dbl_of" : "sp_ffi_int_of";
+  else if ((at == TY_INT || at == TY_FLOAT) && cmp_operand_may_be_nil(c, arg)) {
+    if (at == TY_FLOAT) ck = dbl ? "sp_ffi_dbl_of_f" : "sp_ffi_int_of_f";
+    else ck = dbl ? "sp_ffi_dbl_of_i" : "sp_ffi_int_of_i";
+  }
+  buf_printf(b, "((%s)%s(", ffi_c_type(spec), ck);
+  emit_expr(c, arg, b);
+  buf_puts(b, "))");
+}
 /* The C test that temp `v` of an Integer or a Float kind holds that kind's
    nil sentinel, into out. */
 static void scalar_nil_test(TyKind t, const char *v, char *out, size_t n) {
@@ -14098,12 +14118,23 @@ static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
   else {
     const char *rc = ffi_c_type(k->ret_spec);
     TyKind rt = method_is_void(ts) ? TY_NIL : ts->ret;
+    /* A C integer or double return takes no nil: the ffi gem's NUM2INT /
+       NUM2DBL raise TypeError for it, where the trampoline handed C the 0
+       under a boxed nil's tag, or the slot's nil sentinel as a number. */
+    int dbl = sp_streq(k->ret_spec, "float") || sp_streq(k->ret_spec, "double");
+    int num = dbl || (!sp_streq(k->ret_spec, "ptr") && !sp_streq(k->ret_spec, "bool"));
     if (rt == TY_POLY || rt == TY_UNKNOWN) {
       if (sp_streq(k->ret_spec, "ptr"))                             buf_printf(pb, "return (%s)(%s).v.p;\n}\n", rc, call.p);
-      else if (sp_streq(k->ret_spec, "float") || sp_streq(k->ret_spec, "double")) buf_printf(pb, "return (%s)(%s).v.f;\n}\n", rc, call.p);
+      else if (dbl) buf_printf(pb, "return (%s)sp_ffi_dbl_of(%s);\n}\n", rc, call.p);
+      else if (num) buf_printf(pb, "return (%s)sp_ffi_int_of(%s);\n}\n", rc, call.p);
       else                                                          buf_printf(pb, "return (%s)(%s).v.i;\n}\n", rc, call.p);
     }
+    else if (rt == TY_NIL && num) buf_printf(pb, "%s; %s(); return (%s)0;\n}\n", call.p, dbl ? "sp_ffi_nil_dbl_raise" : "sp_ffi_nil_int_raise", rc);
     else if (rt == TY_NIL) buf_printf(pb, "%s; return (%s)0;\n}\n", call.p, rc);
+    else if (num && (rt == TY_INT || rt == TY_FLOAT) && ts->ret_nullable_int) {
+      const char *ck = rt == TY_FLOAT ? (dbl ? "sp_ffi_dbl_of_f" : "sp_ffi_int_of_f") : (dbl ? "sp_ffi_dbl_of_i" : "sp_ffi_int_of_i");
+      buf_printf(pb, "return (%s)%s(%s);\n}\n", rc, ck, call.p);
+    }
     else                   buf_printf(pb, "return (%s)(%s);\n}\n", rc, call.p);
   }
   free(call.p);
@@ -36666,11 +36697,9 @@ else {
             }
           }
           else if (sp_streq(spec, "float") || sp_streq(spec, "double")) {
-            if (at == TY_POLY) {
-              buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
-              emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.f)");
-            }
-            else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+            /* nil is no double: a boxed nil, or a slot holding its kind's nil
+               sentinel, raises TypeError as the ffi gem's NUM2DBL does */
+            emit_ffi_num_arg(c, argv[ai], at, spec, 1, &call_buf);
           }
           else if (sp_streq(spec, "int_array")) {
             /* Hand off element data, never the array struct pointer (which
@@ -36687,19 +36716,18 @@ else {
             else                           { buf_puts(&call_buf, "((const double *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
           else {
-            /* integer-like: int, uint32, size_t, long, etc. */
-            if (at == TY_POLY) {
-              buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
-              emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.i)");
+            /* integer-like: int, uint32, size_t, long, etc. A nil raises
+               TypeError, as the ffi gem's NUM2INT does. */
+            if (at != TY_BIGINT) {
+              emit_ffi_num_arg(c, argv[ai], at, spec, 0, &call_buf);
             }
-            else if (at == TY_BIGINT) {
+            else {
               /* An overflow-promoted integer (e.g. a backoff computed by
                  repeated *2) arrives as sp_Bigint*. Narrow it to the C
                  integer the FFI arg expects, not the pointer value. */
               buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")sp_bigint_to_int(");
               emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
             }
-            else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
           if (use_temps) {
             /* move the converted argument out to a temp ahead of the call */
