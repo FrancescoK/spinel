@@ -6931,6 +6931,797 @@ int scope_is_struct_synth(Compiler *c, int si) {
   return dn >= 0 && nt_str(c->nt, dn, "synth") != NULL;
 }
 
+/* A CallNode's rewrites keyed by its method name, ahead of the array-enum
+   ones: Enumerator and Hash chains, Struct and Set members, the finders, step
+   and % (desugar_enum_method_recv's rewrites, in their order) */
+static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const char *nm, int *changed) {
+  /* hash.map.with_index { } / hash.each.with_index { }: interpose to_a so
+     the pair-array enumerator chain (which the array machinery serves)
+     carries it -- h.to_a.map.with_index. Type-aware, hence here and not in
+     the one-shot pre-pass. */
+  if (nm && (sp_streq(nm, "with_index") || sp_streq(nm, "with_object"))) {
+    int wrecv = nt_ref(nt, id, "receiver");
+    if (wrecv >= 0 && nt_type(nt, wrecv) && sp_streq(nt_type(nt, wrecv), "CallNode") &&
+        nt_ref(nt, wrecv, "block") < 0) {
+      const char *wrn = nt_str(nt, wrecv, "name");
+      if (wrn && (sp_streq(wrn, "map") || sp_streq(wrn, "each") ||
+                  sp_streq(wrn, "collect"))) {
+        int hrecv = nt_ref(nt, wrecv, "receiver");
+        if (hrecv >= 0 && ty_is_hash(infer_type(c, hrecv)) &&
+            !(nt_type(nt, hrecv) && sp_streq(nt_type(nt, hrecv), "CallNode") &&
+              nt_str(nt, hrecv, "name") && sp_streq(nt_str(nt, hrecv, "name"), "to_a"))) {
+          int toa = nt_new_node(nt, "CallNode");
+          if (toa >= 0) {
+            nt_node_set_str(nt, toa, "name", "to_a");
+            nt_node_set_ref(nt, toa, "receiver", hrecv);
+            nt_node_set_ref(nt, wrecv, "receiver", toa);
+            comp_grow_node_arrays(c);
+            c->nscope[toa] = c->nscope[wrecv];
+            *changed = 1;
+          }
+        }
+      }
+    }
+  }
+  /* `x.to_h { |..| pair }` on a value only known at run time is
+     `x.map { |..| pair }.to_h`: Array#to_h, Hash#to_h and Enumerable#to_h
+     with a block all build the hash from the block's pairs. The boxed
+     dispatch has the blockless to_h and a boxed map, but no block form of
+     to_h, so the call compiled to an unconditional NoMethodError naming the
+     very class that defines it (#4838). A typed receiver keeps its own
+     emitter; a program class with its own to_h keeps it too, since the
+     boxed value may be one of those. */
+  if (nm && sp_streq(nm, "to_h") && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
+      nt_ref(nt, id, "arguments") < 0) {
+    int trecv = nt_ref(nt, id, "receiver");
+    int user_to_h = 0;
+    for (int ci = 0; ci < c->nclasses && !user_to_h; ci++)
+      if (comp_method_in_class(c, ci, "to_h") >= 0) user_to_h = 1;
+    if (trecv >= 0 && !user_to_h && infer_type(c, trecv) == TY_POLY) {
+      int mapc = nt_new_node(nt, "CallNode");
+      if (mapc >= 0) {
+        nt_node_set_str(nt, mapc, "name", "map");
+        nt_node_set_ref(nt, mapc, "receiver", trecv);
+        nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
+        nt_node_set_ref(nt, id, "receiver", mapc);
+        nt_node_set_ref(nt, id, "block", -1);
+        comp_grow_node_arrays(c);
+        c->nscope[mapc] = c->nscope[id];
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* Enumerable#each_entry on a receiver whose #each yields ONE value per
+     element is #each: same elements, same receiver as the value. That is
+     every builtin enumerable -- an Array/Range/Enumerator element, a Hash
+     pair (already packed), a Dir entry -- so rename and let the #each
+     emitters serve it. Without this the call had no emitter at all for a
+     Hash or a Range, and answered nil for an Array or a Dir (#3395).
+
+     A user Enumerable is deliberately NOT rewritten: its #each may `yield a,
+     b`, and there each_entry packs the pair where each spreads it. That path
+     keeps its own machinery.
+
+     Type-aware, hence here and not in the one-shot pre-pass; while the
+     receiver type is still unsettled g_infer_optimistic holds the rewrite
+     back rather than guessing. */
+  if (nm && sp_streq(nm, "each_entry") && nt_ref(nt, id, "block") >= 0) {
+    int erecv = nt_ref(nt, id, "receiver");
+    if (erecv >= 0) {
+      TyKind ert = infer_type(c, erecv);
+      if (ert == TY_UNKNOWN) {
+        if (!g_infer_optimistic) { /* settled and still unknown: leave it */ }
+      }
+      else if (ty_is_array(ert) || ty_is_hash(ert) || ert == TY_RANGE ||
+               ert == TY_ENUMERATOR || ert == TY_DIR) {
+        /* #each_entry answers the receiver, which #each does not do for an
+           Enumerator; record it before the name is gone (#3591). A blockless
+           `.each` receiver IS that Enumerator however its own type settled --
+           over a Range it settles as the materialized element array, and the
+           call then answered those elements (#3857). */
+        int erecv_enum = ert == TY_ENUMERATOR;
+        if (!erecv_enum && nt_kind(nt, erecv) == NK_CallNode &&
+            nt_ref(nt, erecv, "block") < 0) {
+          const char *ernm = nt_str(nt, erecv, "name");
+          if (ernm && (sp_streq(ernm, "each") || sp_streq(ernm, "each_with_index") ||
+                       sp_streq(ernm, "reverse_each")))
+            erecv_enum = 1;
+        }
+        if (erecv_enum) nt_node_set_int(nt, id, "enum_self_result", erecv);
+        nt_node_set_str(nt, id, "name", "each");
+        *changed = 1;
+        return 1;   /* `nm` was the name just replaced (freed): the arms below read it */
+      }
+    }
+  }
+  /* The block forms of each_slice / each_cons answer the receiver too, and
+     over a blockless `.each` that receiver is the Enumerator (#3857). */
+  if (nm && (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) &&
+      nt_ref(nt, id, "block") >= 0 && nt_int(nt, id, "enum_self_result", -1) < 0) {
+    int srecv = nt_ref(nt, id, "receiver");
+    if (srecv >= 0 && nt_kind(nt, srecv) == NK_CallNode && nt_ref(nt, srecv, "block") < 0) {
+      const char *srnm = nt_str(nt, srecv, "name");
+      if (srnm && sp_streq(srnm, "each")) {
+        nt_node_set_int(nt, id, "enum_self_result", srecv);
+        *changed = 1;
+      }
+    }
+  }
+  /* Enumerator::Product.new(*enums) is Enumerator.product(*enums) without
+     a block: Product.new takes none, and ignores one given */
+  if (nm && sp_streq(nm, "new")) {
+    int prv = nt_ref(nt, id, "receiver");
+    int ppar = prv >= 0 && nt_kind(nt, prv) == NK_ConstantPathNode ? nt_ref(nt, prv, "parent") : -1;
+    if (ppar >= 0 && nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Product") &&
+        nt_kind(nt, ppar) == NK_ConstantReadNode && nt_str(nt, ppar, "name") &&
+        sp_streq(nt_str(nt, ppar, "name"), "Enumerator")) {
+      nt_node_set_ref(nt, id, "receiver", ppar);
+      nt_node_set_str(nt, id, "name", "product");
+      nt_node_set_ref(nt, id, "block", -1);
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* Enumerator.product(*enums) { blk } iterates the tuples and answers nil;
+     the constructor arm builds the Enumerator, so drive it with #each
+     (#3589) */
+  if (nm && sp_streq(nm, "product") && nt_ref(nt, id, "block") >= 0) {
+    int prv = nt_ref(nt, id, "receiver");
+    if (prv >= 0 && nt_type(nt, prv) && sp_streq(nt_type(nt, prv), "ConstantReadNode") &&
+        nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Enumerator")) {
+      int pargs = nt_ref(nt, id, "arguments");
+      int inner = nt_new_node(nt, "CallNode");
+      if (inner >= 0) {
+        nt_node_set_str(nt, inner, "name", "product");
+        nt_node_set_ref(nt, inner, "receiver", prv);
+        nt_node_set_ref(nt, inner, "arguments", pargs);
+        nt_node_set_ref(nt, inner, "block", -1);
+        nt_node_set_ref(nt, id, "receiver", inner);
+        nt_node_set_str(nt, id, "name", "each");
+        nt_node_set_ref(nt, id, "arguments", -1);
+        /* the block form answers nil, not the enumerator #each hands back */
+        nt_node_set_int(nt, id, "nil_result", 1);
+        comp_grow_node_arrays(c);
+        c->nscope[inner] = c->nscope[id];
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* enum.to_set == Set.new(enum.to_a) whenever the set package's Set class
+     is in the program (an in-place rewrite; Set's initialize adds each
+     element, deduplicating).
+
+     Type-aware, hence here and not in the one-shot pre-pass: a class that
+     defines its OWN to_set has to keep it. The pre-pass could not tell --
+     it runs before class collection, so it rewrote every to_set in the
+     program and a `CookieJar#to_set` returning a Hash became a Set, with
+     the error landing on whatever the real return type supported several
+     lines later (#3378). While the receiver's type is still unresolved,
+     wait rather than guess: g_infer_optimistic says the fixpoint has more
+     to say. */
+  if (nm && sp_streq(nm, "to_set") &&
+      nt_ref(nt, id, "arguments") < 0 && comp_class_index(c, "Set") >= 0) {
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0) {
+      TyKind rt = infer_type(c, recv);
+      int decline = 0;
+      if (rt == TY_UNKNOWN && g_infer_optimistic) decline = 1;   /* not yet known */
+      /* Set#to_set is the receiver itself, which is also what keeps a
+         `to_set.to_set` chain from nesting one Set.new inside another (#3623) */
+      else if (ty_is_object(rt) && ty_object_class(rt) == comp_class_index(c, "Set") &&
+               nt_ref(nt, id, "block") < 0) {
+        nt_node_set_int(nt, id, "enum_self_result", recv);
+        nt_node_set_str(nt, id, "name", "itself");
+        nt_node_set_ref(nt, id, "arguments", -1);
+        *changed = 1;
+        return 1;
+      }
+      else if (ty_is_object(rt) &&
+               comp_method_in_chain(c, ty_object_class(rt), "to_set", NULL) >= 0)
+        decline = 1;                                             /* the class owns the name */
+      if (!decline) {
+        int cst = nt_new_node(nt, "ConstantReadNode");
+        int one = nt_new_node(nt, "ArgumentsNode");
+        /* Materialize the receiver to a flat array first: Set#initialize
+           iterates its arg via `enum.each`, and a struct/user object passed
+           as a poly value does not dispatch #each through the poly path.
+           to_a rides the struct-native / __enum_to_a machinery, and is a
+           no-op copy for array/range/hash receivers. */
+        int toa = nt_new_node(nt, "CallNode");
+        if (cst >= 0 && one >= 0 && toa >= 0) {
+          nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_ref(nt, toa, "receiver", recv);
+          nt_node_set_int(nt, toa, "to_set", 1);
+          nt_node_set_str(nt, cst, "name", "Set");
+          nt_node_set_arr(nt, one, "arguments", &toa, 1);
+          nt_node_set_str(nt, id, "name", "new");
+          nt_node_set_ref(nt, id, "receiver", cst);
+          nt_node_set_ref(nt, id, "arguments", one);
+          /* a block maps each element on the way in: Set.new's own block
+             parameter does exactly that (#3623) */
+          comp_grow_node_arrays(c);
+          c->nscope[toa] = c->nscope[id];
+          c->nscope[cst] = c->nscope[id];
+          *changed = 1;
+          return 1;
+        }
+      }
+    }
+  }
+  /* Explicit `self.` receiver inside a class-method body: self IS the
+     class there, so a call that resolves to a sibling/inherited class
+     method drops the receiver and rides the bare-call cmethod dispatch
+     (`def self.go; self.maker; end`). Writers (self.x = v) and names with
+     no matching class method (self.class, self.name, ...) keep their
+     receiver. */
+  {
+    int srecv = nt_ref(nt, id, "receiver");
+    if (nm && srecv >= 0 && nt_type(nt, srecv) &&
+        sp_streq(nt_type(nt, srecv), "SelfNode") &&
+        nm[0] && nm[strlen(nm) - 1] != '=') {
+      Scope *ssc = comp_scope_of(c, id);
+      if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
+          comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
+        nt_node_set_ref(nt, id, "receiver", -1);
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* Array#entries is #to_a; the array emitters only know to_a. */
+  if (nm && sp_streq(nm, "entries") && nt_ref(nt, id, "block") < 0) {
+    int erecv2 = nt_ref(nt, id, "receiver");
+    int ea2 = nt_ref(nt, id, "arguments");
+    int eac2 = 0;
+    if (ea2 >= 0) nt_arr(nt, ea2, "arguments", &eac2);
+    if (erecv2 >= 0 && eac2 == 0 && ty_is_array(infer_type(c, erecv2))) {
+      nt_node_set_str(nt, id, "name", "to_a");
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* poly-array sum { blk } == map { blk }.sum (the typed-array redispatch
+     serves int/float receivers natively) */
+  if (nm && sp_streq(nm, "sum") && nt_ref(nt, id, "block") >= 0) {
+    int srecv = nt_ref(nt, id, "receiver");
+    int sa = nt_ref(nt, id, "arguments");
+    int sac = 0;
+    if (sa >= 0) nt_arr(nt, sa, "arguments", &sac);
+    /* a block that breaks out of the sum answers the break value: the
+       mapped copy would break out of the map and sum what it gave (#4918) */
+    int sblk = nt_ref(nt, id, "block");
+    int sbreaks = sblk >= 0 && nt_kind(nt, sblk) == NK_BlockNode &&
+                  block_has_top_break(c, nt_ref(nt, sblk, "body"));
+    if (srecv >= 0 && sac == 0 && !sbreaks && infer_type(c, srecv) == TY_POLY_ARRAY) {
+      int mapc = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, mapc, "name", "map");
+      nt_node_set_ref(nt, mapc, "receiver", srecv);
+      nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
+      nt_node_set_str(nt, id, "name", "sum");
+      nt_node_set_ref(nt, id, "receiver", mapc);
+      nt_node_set_ref(nt, id, "block", -1);
+      comp_grow_node_arrays(c);
+      c->nscope[mapc] = c->nscope[id];
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* `arr.each_index.reverse_each { }` / `.each_with_index.reverse_each { }`:
+     the blockless inner call answers an Enumerator, and reverse_each has no
+     arm for one, so the whole chain was refused -- though `.each` on the
+     same Enumerator works and `.to_a` on it answers the right elements.
+     Interpose to_a, exactly as the Range chains below do, and the array
+     machinery serves it (#4302). */
+  if (nm && sp_streq(nm, "reverse_each")) {
+    int rr = nt_ref(nt, id, "receiver");
+    if (rr >= 0 && nt_kind(nt, rr) == NK_CallNode && nt_ref(nt, rr, "block") < 0 &&
+        infer_type(c, rr) == TY_ENUMERATOR) {
+      const char *rrn = nt_str(nt, rr, "name");
+      int rra = nt_ref(nt, rr, "arguments"); int rrac = 0;
+      if (rra >= 0) nt_arr(nt, rra, "arguments", &rrac);
+      /* `each` belongs here with the index enumerators: it reaches the
+         array machinery on its own, but then answers the array it walked
+         rather than the Enumerator, and the marked hop below is what carries
+         the receiver through (#4325). */
+      if (rrn && rrac == 0 &&
+          (sp_streq(rrn, "each_index") || sp_streq(rrn, "each_with_index") ||
+           sp_streq(rrn, "each") || sp_streq(rrn, "each_entry"))) {
+        int toa2 = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, toa2, "name", "to_a");
+        nt_node_set_ref(nt, toa2, "receiver", rr);
+        /* The block form of reverse_each answers the RECEIVER, and after this
+           hop that is the interposed array rather than the Enumerator the
+           program wrote (#4325). `enum_recv` is the marker the value emitter
+           already reads for exactly this: it yields the marked hop's own
+           receiver instead of the hop. */
+        nt_node_set_str(nt, toa2, "enum_recv", "1");
+        nt_node_set_ref(nt, id, "receiver", toa2);
+        comp_grow_node_arrays(c);
+        c->nscope[toa2] = c->nscope[id];
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* `recv.<m>(args).each { blk }` IS `recv.<m>(args) { blk }`: Enumerator#each
+     runs the method the Enumerator came from with that block, and answers
+     what THAT method answers -- the receiver for each_with_index, the memo
+     for each_with_object, the mapped array for map. Read instead as an
+     iteration over the values the Enumerator yields, it answered those values
+     (#4332), and over an each_with_index Enumerator it did not compile at all
+     (#4331). `lazy` is left alone: its block form is not its each form. */
+  if (nm && sp_streq(nm, "each") && nt_ref(nt, id, "block") >= 0 &&
+      /* ...but never a synthesized one. `Enumerator.product(a, b) { blk }` is
+         lowered to `Enumerator.product(a, b).each { blk }` above (#3589), and
+         rewriting that back left the two rules undoing each other until the
+         fixpoint gave up, with the block never run. The nil_result marker is
+         what that lowering leaves behind, and `lowered_each` the string
+         range's block-driven step (#4962). */
+      !nt_int(nt, id, "nil_result", 0) && !nt_int(nt, id, "lowered_each", 0)) {
+    int ea = nt_ref(nt, id, "arguments"); int eac = 0;
+    if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
+    int er = nt_ref(nt, id, "receiver");
+    if (eac == 0 && er >= 0 && nt_kind(nt, er) == NK_CallNode &&
+        nt_ref(nt, er, "block") < 0 && nt_ref(nt, er, "receiver") >= 0 &&
+        infer_type(c, er) == TY_ENUMERATOR) {
+      const char *ern = nt_str(nt, er, "name");
+      if (ern && !sp_streq(ern, "lazy")) {
+        /* a boxed receiver's to_enum (desugar_to_enum) builds the
+           Enumerator and takes no block: with one it is the receiver's
+           own each, which answers what each answers */
+        if (sp_streq(ern, "__poly_enum_for") || sp_streq(ern, "__to_enum_each")) ern = "each";
+        nt_node_set_str(nt, id, "name", ern);
+        nt_node_set_ref(nt, id, "receiver", nt_ref(nt, er, "receiver"));
+        int ira = nt_ref(nt, er, "arguments");
+        if (ira >= 0) nt_node_set_ref(nt, id, "arguments", ira);
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* `arr.each_with_index.reduce { }` / `.inject { }`: the blockless inner
+     call answers an Enumerator, and the fold read its elements as scalars --
+     a seedless fold assigned a [value, index] pair into an sp_int and the C
+     compiler refused it, while a fold answering the accumulator answered 0
+     (#4321). Interpose to_a, exactly as the reverse_each sibling above does;
+     the fold's answer is its own, so this hop needs no `enum_recv` marker. */
+  if (nm && (sp_streq(nm, "reduce") || sp_streq(nm, "inject")) &&
+      nt_ref(nt, id, "block") >= 0) {
+    int fr = nt_ref(nt, id, "receiver");
+    if (fr >= 0 && nt_kind(nt, fr) == NK_CallNode && nt_ref(nt, fr, "block") < 0 &&
+        infer_type(c, fr) == TY_ENUMERATOR) {
+      const char *frn = nt_str(nt, fr, "name");
+      int fra = nt_ref(nt, fr, "arguments"); int frac = 0;
+      if (fra >= 0) nt_arr(nt, fra, "arguments", &frac);
+      if (frn && frac == 0 &&
+          (sp_streq(frn, "each_index") || sp_streq(frn, "each_with_index"))) {
+        int toa3 = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, toa3, "name", "to_a");
+        nt_node_set_ref(nt, toa3, "receiver", fr);
+        nt_node_set_ref(nt, id, "receiver", toa3);
+        comp_grow_node_arrays(c);
+        c->nscope[toa3] = c->nscope[id];
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  /* Range no-block enumerator chains: interpose to_a so the array machinery
+     serves them ((1..5).each_with_index.to_a, (1..3).map.with_index { },
+     (1..3).cycle.first(7)). Blockless `each` (and each_slice/each_cons,
+     whose runtime ctors take any boxed source) keep their first-class
+     Enumerator arms. A beginless/endless literal has no array to build and
+     falls through to the loud reject. */
+  if (nm && nt_ref(nt, id, "block") < 0) {
+    static const char *const RENUM0[] = { "each_with_index", "each_index",
+                                          "map", "collect", "cycle", NULL };
+    int rargs = nt_ref(nt, id, "arguments");
+    int rac = 0;
+    if (rargs >= 0) nt_arr(nt, rargs, "arguments", &rac);
+    int hit = 0;
+    if (rac == 0) { for (int k = 0; RENUM0[k]; k++) if (sp_streq(nm, RENUM0[k])) { hit = 1; break; } }
+    if (hit) {
+      int rrecv = nt_ref(nt, id, "receiver");
+      if (rrecv >= 0 && infer_type(c, rrecv) == TY_RANGE) {
+        int rlit = an_unparen(nt, rrecv);
+        int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
+                         (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
+        if (!open_ended) {
+          int toa = nt_new_node(nt, "CallNode");
+          nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_ref(nt, toa, "receiver", rrecv);
+          nt_node_set_ref(nt, id, "receiver", toa);
+          comp_grow_node_arrays(c);
+          c->nscope[toa] = c->nscope[id];
+          *changed = 1;
+          return 1;
+        }
+      }
+    }
+  }
+  /* <stored enumerator>.with_object(memo) { }: drain to an array and ride
+     the array each_with_object machinery (covers both statement and value
+     forms, with the memo's own typing). Type-aware, hence fixpoint. */
+  if (nm && sp_streq(nm, "with_object")) {
+    int erecv = nt_ref(nt, id, "receiver");
+    int eblk = nt_ref(nt, id, "block");
+    int ea = nt_ref(nt, id, "arguments");
+    int eac = 0;
+    if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
+    if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
+      int toa = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, toa, "name", "to_a");
+      nt_node_set_ref(nt, toa, "receiver", erecv);
+      nt_node_set_str(nt, id, "name", "each_with_object");
+      nt_node_set_ref(nt, id, "receiver", toa);
+      comp_grow_node_arrays(c);
+      c->nscope[toa] = c->nscope[id];
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* Hash[k: v, ...] with a keyword-hash argument IS the hash literal */
+  if (nm && sp_streq(nm, "[]")) {
+    int krc = nt_ref(nt, id, "receiver");
+    const char *krt2 = krc >= 0 ? nt_type(nt, krc) : NULL;
+    if (krt2 && sp_streq(krt2, "ConstantReadNode") &&
+        nt_str(nt, krc, "name") && sp_streq(nt_str(nt, krc, "name"), "Hash")) {
+      int ka = nt_ref(nt, id, "arguments");
+      int kac = 0;
+      const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+      if (kac == 1 && kav && nt_type(nt, kav[0]) &&
+          sp_streq(nt_type(nt, kav[0]), "KeywordHashNode")) {
+        /* rewrite this call node into a plain HashNode with the same
+           element list */
+        int en2 = 0;
+        const int *els2 = nt_arr(nt, kav[0], "elements", &en2);
+        int hn2 = nt_new_node(nt, "HashNode");
+        nt_node_set_arr(nt, hn2, "elements", els2, en2);
+        comp_grow_node_arrays(c);
+        c->nscope[hn2] = c->nscope[id];
+        /* graft: turn the CallNode into itself... easiest is retarget via
+           receiver replacement not possible; instead rewrite in place by
+           changing this node's type is unsupported -- wrap: make the call
+           `(hash_literal).itself`-free by pointing the parent at hn2 is
+           also unavailable here, so emit-side handles it; mark via rename */
+        nt_node_set_str(nt, id, "name", "__hash_brackets_kw");
+        nt_node_set_ref(nt, id, "receiver", hn2);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        *changed = 1;
+      }
+    }
+    return 1;
+  }
+  /* Hash#store(k, v) is exactly []= (whose value form already works) */
+  if (nm && sp_streq(nm, "store")) {
+    int hrc = nt_ref(nt, id, "receiver");
+    int ha = nt_ref(nt, id, "arguments");
+    int hac = 0;
+    if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
+    if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
+        ty_is_hash(infer_type(c, hrc))) {
+      nt_node_set_str(nt, id, "name", "[]=");
+      *changed = 1;
+    }
+    return 1;
+  }
+  /* struct[member_literal] = v rewrites to the generated writer, so the
+     member's type unifies with the value like any accessor write */
+  if (nm && sp_streq(nm, "[]=")) {
+    int wrc = nt_ref(nt, id, "receiver");
+    int wa = nt_ref(nt, id, "arguments");
+    int wac = 0;
+    const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wac) : NULL;
+    TyKind wrt = wrc >= 0 ? infer_type(c, wrc) : TY_UNKNOWN;
+    if (wac == 2 && ty_is_object(wrt) && c->classes[ty_object_class(wrt)].is_struct) {
+      ClassInfo *wsc = &c->classes[ty_object_class(wrt)];
+      int wmi = struct_member_idx(c, wsc, wav[0]);
+      /* a Float literal offset, unless the class has a `[]=` of its own */
+      if (wmi < 0 && comp_method_in_chain(c, ty_object_class(wrt), "[]=", NULL) < 0)
+        wmi = struct_member_idx_float(c, wsc, wav[0]);
+      if (wmi >= 0) {
+        char wn[300]; snprintf(wn, sizeof wn, "%s=", wsc->ivars[wmi] + 1);
+        int one = nt_new_node(nt, "ArgumentsNode");
+        if (one >= 0) {
+          int varg = wav[1];
+          nt_node_set_arr(nt, one, "arguments", &varg, 1);
+          nt_node_set_str(nt, id, "name", wn);
+          nt_node_set_ref(nt, id, "arguments", one);
+          comp_grow_node_arrays(c);
+          c->nscope[one] = c->nscope[id];
+          *changed = 1;
+        }
+      }
+    }
+    return 1;
+  }
+  if (nm && (sp_streq(nm, "default=") || sp_streq(nm, "default"))) {
+    /* default access on an un-narrowed empty-hash local: give it the
+       symbol-keyed poly variant so the setter has a slot to store into
+       (`a = {}; a.default = 9; a.default`) */
+    int drc = nt_ref(nt, id, "receiver");
+    if (drc >= 0 && nt_type(nt, drc) &&
+        sp_streq(nt_type(nt, drc), "LocalVariableReadNode") &&
+        infer_type(c, drc) == TY_UNKNOWN) {
+      Scope *dsc = comp_scope_of(c, drc);
+      const char *dvn = nt_str(nt, drc, "name");
+      LocalVar *dlv = (dsc && dvn) ? scope_local(dsc, dvn) : NULL;
+      if (dlv && dlv->type == TY_UNKNOWN) {
+        dlv->type = TY_SYM_POLY_HASH;
+        *changed = 1;
+      }
+    }
+    return 1;
+  }
+  if (nm && (sp_streq(nm, "any?") || sp_streq(nm, "none?") ||
+             sp_streq(nm, "all?") || sp_streq(nm, "one?") ||
+             sp_streq(nm, "empty?"))) {
+    /* blockless predicate on an un-narrowed empty-hash local: adopt the
+       symbol-keyed poly variant so the hash fold arm serves it
+       (`b = {}; b.none?`). Every write must be an empty {} literal, so an
+       empty-ARRAY local can never be pulled into a hash type here. */
+    int qa = nt_ref(nt, id, "arguments");
+    int qac = 0;
+    if (qa >= 0) nt_arr(nt, qa, "arguments", &qac);
+    int qrc = nt_ref(nt, id, "receiver");
+    if (qac == 0 && nt_ref(nt, id, "block") < 0 && qrc >= 0 &&
+        nt_type(nt, qrc) && sp_streq(nt_type(nt, qrc), "LocalVariableReadNode") &&
+        infer_type(c, qrc) == TY_UNKNOWN) {
+      Scope *qsc = comp_scope_of(c, qrc);
+      const char *qvn = nt_str(nt, qrc, "name");
+      LocalVar *qlv = (qsc && qvn) ? scope_local(qsc, qvn) : NULL;
+      if (qlv && qlv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, qsc, qvn)) {
+        qlv->type = TY_SYM_POLY_HASH;
+        *changed = 1;
+      }
+    }
+    /* no rewrite of this node: fall through to the remaining arms */
+  }
+  if (nm && sp_streq(nm, "each_with_object")) {
+    /* an empty-hash local passed as the memo becomes a general boxed
+       key/value hash so any key type the block writes fits, matching the
+       inline each_with_object({}) memo (#2969) */
+    int ea = nt_ref(nt, id, "arguments");
+    int eac = 0; const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &eac) : NULL;
+    if (eac >= 1 && eav && nt_type(nt, eav[0]) &&
+        sp_streq(nt_type(nt, eav[0]), "LocalVariableReadNode") &&
+        infer_type(c, eav[0]) == TY_UNKNOWN) {
+      Scope *esc = comp_scope_of(c, eav[0]);
+      const char *evn = nt_str(nt, eav[0], "name");
+      LocalVar *elv = (esc && evn) ? scope_local(esc, evn) : NULL;
+      if (elv && elv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, esc, evn)) {
+        elv->type = TY_POLY_POLY_HASH;
+        *changed = 1;
+      }
+    }
+    /* fall through */
+  }
+  if (nm && sp_streq(nm, "yield")) {
+    /* Proc#yield is exactly #call */
+    int yrc = nt_ref(nt, id, "receiver");
+    if (yrc >= 0 && infer_type(c, yrc) == TY_PROC) {
+      /* the spelling the program wrote, for a NoMethodError on nil */
+      nt_node_set_str(nt, id, "written_name", "yield");
+      nt_node_set_str(nt, id, "name", "call");
+      *changed = 1;
+    }
+    return 1;
+  }
+  if (nm && (sp_streq(nm, "grapheme_clusters") || sp_streq(nm, "each_grapheme_cluster"))) {
+    /* grapheme clusters == characters over the supported text domain (no
+       combining sequences): alias to the chars/each_char machinery */
+    int grc = nt_ref(nt, id, "receiver");
+    if (grc >= 0 && infer_type(c, grc) == TY_STRING) {
+      nt_node_set_str(nt, id, "name",
+                      sp_streq(nm, "grapheme_clusters") ? "chars" : "each_char");
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* Hash#reverse_each { |k, v| }: desugar to to_a.reverse_each so the
+     existing pair-array destructure serves the two-param block (#2372). The
+     to_a hop is marked (enum_recv), so the value emitter answers the Hash
+     itself, as CRuby's reverse_each answers its receiver. */
+  if (nm && sp_streq(nm, "reverse_each") && nt_ref(nt, id, "block") >= 0) {
+    int hrc = nt_ref(nt, id, "receiver");
+    if (hrc >= 0 && ty_is_hash(infer_type(c, hrc))) {
+      int toa = nt_new_node(nt, "CallNode");
+      if (toa >= 0) {
+        nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_ref(nt, toa, "receiver", hrc);
+        nt_node_set_str(nt, toa, "enum_recv", "1");
+        nt_node_set_ref(nt, id, "receiver", toa);
+        comp_grow_node_arrays(c);
+        c->nscope[toa] = c->nscope[id];
+        *changed = 1;
+      }
+      return 1;
+    }
+  }
+  /* member? on a builtin container is Array/Hash/Range#include? (#2388);
+     entries on an array is to_a (#2390). User classes keep their own. */
+  if (nm && ((sp_streq(nm, "member?") || sp_streq(nm, "entries")) &&
+             nt_ref(nt, id, "block") < 0)) {
+    int mrc = nt_ref(nt, id, "receiver");
+    int man = 0; { int _a = nt_ref(nt, id, "arguments");
+                   if (_a >= 0) nt_arr(nt, _a, "arguments", &man); }
+    TyKind mrt = mrc >= 0 ? infer_type(c, mrc) : TY_UNKNOWN;
+    /* a not-yet-narrowed local holding an empty [] literal is still an
+       array; restrict the UNKNOWN case to plain variable/literal receivers
+       so a not-yet-typed method-call chain keeps its own entries path */
+    int mrt_open = 0;
+    if (mrt == TY_UNKNOWN && mrc >= 0 && nt_type(nt, mrc) &&
+        sp_streq(nt_type(nt, mrc), "ArrayNode")) {
+      int user_defines = 0;
+      for (int uk = 0; uk < c->nclasses; uk++)
+        if (comp_method_in_chain(c, uk, nm, NULL) >= 0) { user_defines = 1; break; }
+      mrt_open = !user_defines;
+    }
+    if (sp_streq(nm, "member?") && man == 1 &&
+        (ty_is_array(mrt) || ty_is_hash(mrt) || mrt == TY_RANGE || mrt_open)) {
+      nt_node_set_str(nt, id, "name", "include?");
+      *changed = 1;
+      return 1;
+    }
+    if (sp_streq(nm, "entries") && man == 0 && (ty_is_array(mrt) || mrt_open)) {
+      nt_node_set_str(nt, id, "name", "to_a");
+      *changed = 1;
+      return 1;
+    }
+
+  }
+  /* `a.chain(b, c)` is desugared wholesale by desugar_enumerable_chain into
+     `__enum_chain(a.to_a + b.to_a + c.to_a)` -- a real Enumerator::Chain that
+     serves every terminal, not just a `.to_a` directly on the chain call. */
+  /* find_all is a full alias of select on the builtin containers; rename
+     so the select/with_index machinery serves both (#2389) */
+  if (nm && sp_streq(nm, "find_all")) {
+    int frc = nt_ref(nt, id, "receiver");
+    TyKind frt = frc >= 0 ? infer_type(c, frc) : TY_UNKNOWN;
+    int fa_user = 0;
+    for (int uk = 0; uk < c->nclasses; uk++)
+      if (comp_method_in_chain(c, uk, "find_all", NULL) >= 0) { fa_user = 1; break; }
+    /* NOT hashes: Hash#find_all answers an array of pairs (the Enumerable
+       contract), while Hash#select answers a hash -- the existing hash
+       find_all machinery keeps that shape */
+    int frt_open = frt == TY_UNKNOWN && !fa_user && frc >= 0 && nt_type(nt, frc) &&
+                   sp_streq(nt_type(nt, frc), "ArrayNode");
+    if (ty_is_array(frt) || frt == TY_RANGE || frt_open) {
+      nt_node_set_str(nt, id, "name", "select");
+      *changed = 1;
+      return 1;
+    }
+  }
+  /* String-endpoint ranges materialize to a StrArray, which has no
+     begin/end of its own: alias them to first/last (#2411). */
+  if (nm && (sp_streq(nm, "begin") || sp_streq(nm, "end")) &&
+      nt_ref(nt, id, "block") < 0) {
+    int brc = nt_ref(nt, id, "receiver");
+    int ban = 0; { int _a = nt_ref(nt, id, "arguments");
+                   if (_a >= 0) nt_arr(nt, _a, "arguments", &ban); }
+    if (brc >= 0 && ban == 0 && infer_type(c, brc) == TY_STR_ARRAY) {
+      nt_node_set_str(nt, id, "name", sp_streq(nm, "begin") ? "first" : "last");
+      *changed = 1;
+      return 1;
+    }
+  }
+  if (nm && (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "rfind"))) {
+    int fr = nt_ref(nt, id, "receiver"), fa = nt_ref(nt, id, "arguments"), fac = 0;
+    const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
+    TyKind frt = fr >= 0 ? infer_type(c, fr) : TY_UNKNOWN;
+    if (fac == 1 && nt_kind(nt, fav[0]) == NK_NilNode &&
+        (ty_is_array(frt) || ty_is_hash(frt) || frt == TY_RANGE || frt == TY_ENUMERATOR)) {
+      nt_node_set_ref(nt, id, "arguments", -1);
+      *changed = 1;
+      return 1;
+    }
+  }
+  if (nm && sp_streq(nm, "rfind")) {
+    int rrc = nt_ref(nt, id, "receiver");
+    /* an empty `[]` literal receiver infers TY_UNKNOWN but is an array all
+       the same -- rfind on it must still desugar (to yield nil) (#2367) */
+    int rrc_empty_lit = rrc >= 0 && nt_type(nt, rrc) &&
+                        sp_streq(nt_type(nt, rrc), "ArrayNode") &&
+                        ({ int _n = 0; nt_arr(nt, rrc, "elements", &_n); _n == 0; });
+    if (rrc >= 0 && (ty_is_array(infer_type(c, rrc)) || rrc_empty_lit)) {
+      int rev = nt_ref(nt, id, "block") >= 0 ? -1 : nt_new_node(nt, "CallNode");
+      if (rev >= 0) {
+        nt_node_set_str(nt, rev, "name", "reverse");
+        nt_node_set_ref(nt, rev, "receiver", rrc);
+        nt_node_set_ref(nt, id, "receiver", rev);
+        comp_grow_node_arrays(c);
+        c->nscope[rev] = c->nscope[id];
+      }
+      else nt_node_set_int(nt, id, "rfind", 1);
+      nt_node_set_str(nt, id, "name", "find");
+      *changed = 1;
+      return 1;
+    }
+  }
+  if (nm && sp_streq(nm, "step")) {
+    /* Numeric#step keyword forms lower to the positional (limit, step):
+       step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An
+       endless step (by: only, no to:) stays a loud reject. */
+    int sargs = nt_ref(nt, id, "arguments");
+    int sac = 0;
+    const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sac) : NULL;
+    if (sac >= 1 && sac <= 2 && nt_type(nt, sav[sac - 1]) &&
+        sp_streq(nt_type(nt, sav[sac - 1]), "KeywordHashNode")) {
+      int kwh = sav[sac - 1];
+      int en = 0;
+      const int *els = nt_arr(nt, kwh, "elements", &en);
+      int to_v = -1, by_v = -1, other = 0;
+      for (int e = 0; e < en; e++) {
+        int kk = nt_ref(nt, els[e], "key");
+        const char *kn = (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode"))
+                         ? nt_str(nt, kk, "value") : NULL;
+        if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[e], "value");
+        else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[e], "value");
+        else other = 1;
+      }
+      if (sac == 2 && to_v < 0) to_v = sav[0];   /* step(limit, by: B) */
+      if (!other && to_v >= 0 && by_v >= 0) {
+        int na[2]; na[0] = to_v; na[1] = by_v;
+        nt_node_set_arr(nt, sargs, "arguments", na, 2);
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  if (nm && sp_streq(nm, "%")) {
+    /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
+    int prc = nt_ref(nt, id, "receiver");
+    int pa = nt_ref(nt, id, "arguments");
+    int pac = 0;
+    if (pa >= 0) nt_arr(nt, pa, "arguments", &pac);
+    if (prc >= 0 && pac == 1 && nt_ref(nt, id, "block") < 0 &&
+        (infer_type(c, prc) == TY_RANGE || infer_type(c, prc) == TY_FLOAT_RANGE)) {
+      nt_node_set_str(nt, id, "name", "step");
+      *changed = 1;
+    }
+    return 1;
+  }
+  /* Blockless each_pair on a Struct answers an Enumerator over the
+     [name, value] pairs, which is what the member hash's own blockless
+     #each answers; the synthesized yielding each_pair raised LocalJumpError.
+     Ahead of the Enumerable-name gate, which does not list each_pair (and
+     must not: its block form yields pairs, not members). The synthesized
+     each_with_index is the same case over the member array, whose own
+     blockless each_with_index answers the [member, index] Enumerator. */
+  int wix = nm && sp_streq(nm, "each_with_index");
+  if (nm && (sp_streq(nm, "each_pair") || wix) && nt_ref(nt, id, "block") < 0 &&
+      !(wix && nt_ref(nt, id, "arguments") >= 0)) {
+    int prv = nt_ref(nt, id, "receiver");
+    TyKind prt = prv >= 0 ? infer_type(c, prv) : TY_UNKNOWN;
+    int pcid = ty_is_object(prt) ? ty_object_class(prt) : -1;
+    /* each_with_index only over the generated iterator and the member
+       array: a Struct that defines its own each_with_index or to_a answers
+       through its own methods */
+    int okc = pcid >= 0 && pcid < c->nclasses;
+    int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
+    int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
+    int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0;
+    if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
+      int wrap = nt_new_node(nt, "CallNode");
+      if (wrap >= 0) {
+        nt_node_set_str(nt, wrap, "name", wix ? "to_a" : "to_h");
+        nt_node_set_ref(nt, wrap, "receiver", prv);
+        nt_node_set_ref(nt, wrap, "arguments", -1);
+        nt_node_set_ref(nt, wrap, "block", -1);
+        nt_node_set_ref(nt, id, "receiver", wrap);
+        if (!wix) nt_node_set_str(nt, id, "name", "each");
+        comp_grow_node_arrays(c);
+        c->nscope[wrap] = c->nscope[id];
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
 int desugar_enum_method_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -6938,790 +7729,7 @@ int desugar_enum_method_recv(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
-    /* hash.map.with_index { } / hash.each.with_index { }: interpose to_a so
-       the pair-array enumerator chain (which the array machinery serves)
-       carries it -- h.to_a.map.with_index. Type-aware, hence here and not in
-       the one-shot pre-pass. */
-    if (nm && (sp_streq(nm, "with_index") || sp_streq(nm, "with_object"))) {
-      int wrecv = nt_ref(nt, id, "receiver");
-      if (wrecv >= 0 && nt_type(nt, wrecv) && sp_streq(nt_type(nt, wrecv), "CallNode") &&
-          nt_ref(nt, wrecv, "block") < 0) {
-        const char *wrn = nt_str(nt, wrecv, "name");
-        if (wrn && (sp_streq(wrn, "map") || sp_streq(wrn, "each") ||
-                    sp_streq(wrn, "collect"))) {
-          int hrecv = nt_ref(nt, wrecv, "receiver");
-          if (hrecv >= 0 && ty_is_hash(infer_type(c, hrecv)) &&
-              !(nt_type(nt, hrecv) && sp_streq(nt_type(nt, hrecv), "CallNode") &&
-                nt_str(nt, hrecv, "name") && sp_streq(nt_str(nt, hrecv, "name"), "to_a"))) {
-            int toa = nt_new_node(nt, "CallNode");
-            if (toa >= 0) {
-              nt_node_set_str(nt, toa, "name", "to_a");
-              nt_node_set_ref(nt, toa, "receiver", hrecv);
-              nt_node_set_ref(nt, wrecv, "receiver", toa);
-              comp_grow_node_arrays(c);
-              c->nscope[toa] = c->nscope[wrecv];
-              changed = 1;
-            }
-          }
-        }
-      }
-    }
-    /* `x.to_h { |..| pair }` on a value only known at run time is
-       `x.map { |..| pair }.to_h`: Array#to_h, Hash#to_h and Enumerable#to_h
-       with a block all build the hash from the block's pairs. The boxed
-       dispatch has the blockless to_h and a boxed map, but no block form of
-       to_h, so the call compiled to an unconditional NoMethodError naming the
-       very class that defines it (#4838). A typed receiver keeps its own
-       emitter; a program class with its own to_h keeps it too, since the
-       boxed value may be one of those. */
-    if (nm && sp_streq(nm, "to_h") && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
-        nt_ref(nt, id, "arguments") < 0) {
-      int trecv = nt_ref(nt, id, "receiver");
-      int user_to_h = 0;
-      for (int ci = 0; ci < c->nclasses && !user_to_h; ci++)
-        if (comp_method_in_class(c, ci, "to_h") >= 0) user_to_h = 1;
-      if (trecv >= 0 && !user_to_h && infer_type(c, trecv) == TY_POLY) {
-        int mapc = nt_new_node(nt, "CallNode");
-        if (mapc >= 0) {
-          nt_node_set_str(nt, mapc, "name", "map");
-          nt_node_set_ref(nt, mapc, "receiver", trecv);
-          nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
-          nt_node_set_ref(nt, id, "receiver", mapc);
-          nt_node_set_ref(nt, id, "block", -1);
-          comp_grow_node_arrays(c);
-          c->nscope[mapc] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* Enumerable#each_entry on a receiver whose #each yields ONE value per
-       element is #each: same elements, same receiver as the value. That is
-       every builtin enumerable -- an Array/Range/Enumerator element, a Hash
-       pair (already packed), a Dir entry -- so rename and let the #each
-       emitters serve it. Without this the call had no emitter at all for a
-       Hash or a Range, and answered nil for an Array or a Dir (#3395).
-
-       A user Enumerable is deliberately NOT rewritten: its #each may `yield a,
-       b`, and there each_entry packs the pair where each spreads it. That path
-       keeps its own machinery.
-
-       Type-aware, hence here and not in the one-shot pre-pass; while the
-       receiver type is still unsettled g_infer_optimistic holds the rewrite
-       back rather than guessing. */
-    if (nm && sp_streq(nm, "each_entry") && nt_ref(nt, id, "block") >= 0) {
-      int erecv = nt_ref(nt, id, "receiver");
-      if (erecv >= 0) {
-        TyKind ert = infer_type(c, erecv);
-        if (ert == TY_UNKNOWN) {
-          if (!g_infer_optimistic) { /* settled and still unknown: leave it */ }
-        }
-        else if (ty_is_array(ert) || ty_is_hash(ert) || ert == TY_RANGE ||
-                 ert == TY_ENUMERATOR || ert == TY_DIR) {
-          /* #each_entry answers the receiver, which #each does not do for an
-             Enumerator; record it before the name is gone (#3591). A blockless
-             `.each` receiver IS that Enumerator however its own type settled --
-             over a Range it settles as the materialized element array, and the
-             call then answered those elements (#3857). */
-          int erecv_enum = ert == TY_ENUMERATOR;
-          if (!erecv_enum && nt_kind(nt, erecv) == NK_CallNode &&
-              nt_ref(nt, erecv, "block") < 0) {
-            const char *ernm = nt_str(nt, erecv, "name");
-            if (ernm && (sp_streq(ernm, "each") || sp_streq(ernm, "each_with_index") ||
-                         sp_streq(ernm, "reverse_each")))
-              erecv_enum = 1;
-          }
-          if (erecv_enum) nt_node_set_int(nt, id, "enum_self_result", erecv);
-          nt_node_set_str(nt, id, "name", "each");
-          changed = 1;
-          continue;   /* `nm` was the name just replaced (freed): the arms below read it */
-        }
-      }
-    }
-    /* The block forms of each_slice / each_cons answer the receiver too, and
-       over a blockless `.each` that receiver is the Enumerator (#3857). */
-    if (nm && (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) &&
-        nt_ref(nt, id, "block") >= 0 && nt_int(nt, id, "enum_self_result", -1) < 0) {
-      int srecv = nt_ref(nt, id, "receiver");
-      if (srecv >= 0 && nt_kind(nt, srecv) == NK_CallNode && nt_ref(nt, srecv, "block") < 0) {
-        const char *srnm = nt_str(nt, srecv, "name");
-        if (srnm && sp_streq(srnm, "each")) {
-          nt_node_set_int(nt, id, "enum_self_result", srecv);
-          changed = 1;
-        }
-      }
-    }
-    /* Enumerator::Product.new(*enums) is Enumerator.product(*enums) without
-       a block: Product.new takes none, and ignores one given */
-    if (nm && sp_streq(nm, "new")) {
-      int prv = nt_ref(nt, id, "receiver");
-      int ppar = prv >= 0 && nt_kind(nt, prv) == NK_ConstantPathNode ? nt_ref(nt, prv, "parent") : -1;
-      if (ppar >= 0 && nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Product") &&
-          nt_kind(nt, ppar) == NK_ConstantReadNode && nt_str(nt, ppar, "name") &&
-          sp_streq(nt_str(nt, ppar, "name"), "Enumerator")) {
-        nt_node_set_ref(nt, id, "receiver", ppar);
-        nt_node_set_str(nt, id, "name", "product");
-        nt_node_set_ref(nt, id, "block", -1);
-        changed = 1;
-        continue;
-      }
-    }
-    /* Enumerator.product(*enums) { blk } iterates the tuples and answers nil;
-       the constructor arm builds the Enumerator, so drive it with #each
-       (#3589) */
-    if (nm && sp_streq(nm, "product") && nt_ref(nt, id, "block") >= 0) {
-      int prv = nt_ref(nt, id, "receiver");
-      if (prv >= 0 && nt_type(nt, prv) && sp_streq(nt_type(nt, prv), "ConstantReadNode") &&
-          nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Enumerator")) {
-        int pargs = nt_ref(nt, id, "arguments");
-        int inner = nt_new_node(nt, "CallNode");
-        if (inner >= 0) {
-          nt_node_set_str(nt, inner, "name", "product");
-          nt_node_set_ref(nt, inner, "receiver", prv);
-          nt_node_set_ref(nt, inner, "arguments", pargs);
-          nt_node_set_ref(nt, inner, "block", -1);
-          nt_node_set_ref(nt, id, "receiver", inner);
-          nt_node_set_str(nt, id, "name", "each");
-          nt_node_set_ref(nt, id, "arguments", -1);
-          /* the block form answers nil, not the enumerator #each hands back */
-          nt_node_set_int(nt, id, "nil_result", 1);
-          comp_grow_node_arrays(c);
-          c->nscope[inner] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* enum.to_set == Set.new(enum.to_a) whenever the set package's Set class
-       is in the program (an in-place rewrite; Set's initialize adds each
-       element, deduplicating).
-
-       Type-aware, hence here and not in the one-shot pre-pass: a class that
-       defines its OWN to_set has to keep it. The pre-pass could not tell --
-       it runs before class collection, so it rewrote every to_set in the
-       program and a `CookieJar#to_set` returning a Hash became a Set, with
-       the error landing on whatever the real return type supported several
-       lines later (#3378). While the receiver's type is still unresolved,
-       wait rather than guess: g_infer_optimistic says the fixpoint has more
-       to say. */
-    if (nm && sp_streq(nm, "to_set") &&
-        nt_ref(nt, id, "arguments") < 0 && comp_class_index(c, "Set") >= 0) {
-      int recv = nt_ref(nt, id, "receiver");
-      if (recv >= 0) {
-        TyKind rt = infer_type(c, recv);
-        int decline = 0;
-        if (rt == TY_UNKNOWN && g_infer_optimistic) decline = 1;   /* not yet known */
-        /* Set#to_set is the receiver itself, which is also what keeps a
-           `to_set.to_set` chain from nesting one Set.new inside another (#3623) */
-        else if (ty_is_object(rt) && ty_object_class(rt) == comp_class_index(c, "Set") &&
-                 nt_ref(nt, id, "block") < 0) {
-          nt_node_set_int(nt, id, "enum_self_result", recv);
-          nt_node_set_str(nt, id, "name", "itself");
-          nt_node_set_ref(nt, id, "arguments", -1);
-          changed = 1;
-          continue;
-        }
-        else if (ty_is_object(rt) &&
-                 comp_method_in_chain(c, ty_object_class(rt), "to_set", NULL) >= 0)
-          decline = 1;                                             /* the class owns the name */
-        if (!decline) {
-          int cst = nt_new_node(nt, "ConstantReadNode");
-          int one = nt_new_node(nt, "ArgumentsNode");
-          /* Materialize the receiver to a flat array first: Set#initialize
-             iterates its arg via `enum.each`, and a struct/user object passed
-             as a poly value does not dispatch #each through the poly path.
-             to_a rides the struct-native / __enum_to_a machinery, and is a
-             no-op copy for array/range/hash receivers. */
-          int toa = nt_new_node(nt, "CallNode");
-          if (cst >= 0 && one >= 0 && toa >= 0) {
-            nt_node_set_str(nt, toa, "name", "to_a");
-            nt_node_set_ref(nt, toa, "receiver", recv);
-            nt_node_set_int(nt, toa, "to_set", 1);
-            nt_node_set_str(nt, cst, "name", "Set");
-            nt_node_set_arr(nt, one, "arguments", &toa, 1);
-            nt_node_set_str(nt, id, "name", "new");
-            nt_node_set_ref(nt, id, "receiver", cst);
-            nt_node_set_ref(nt, id, "arguments", one);
-            /* a block maps each element on the way in: Set.new's own block
-               parameter does exactly that (#3623) */
-            comp_grow_node_arrays(c);
-            c->nscope[toa] = c->nscope[id];
-            c->nscope[cst] = c->nscope[id];
-            changed = 1;
-            continue;
-          }
-        }
-      }
-    }
-    /* Explicit `self.` receiver inside a class-method body: self IS the
-       class there, so a call that resolves to a sibling/inherited class
-       method drops the receiver and rides the bare-call cmethod dispatch
-       (`def self.go; self.maker; end`). Writers (self.x = v) and names with
-       no matching class method (self.class, self.name, ...) keep their
-       receiver. */
-    {
-      int srecv = nt_ref(nt, id, "receiver");
-      if (nm && srecv >= 0 && nt_type(nt, srecv) &&
-          sp_streq(nt_type(nt, srecv), "SelfNode") &&
-          nm[0] && nm[strlen(nm) - 1] != '=') {
-        Scope *ssc = comp_scope_of(c, id);
-        if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
-            comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
-          nt_node_set_ref(nt, id, "receiver", -1);
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* Array#entries is #to_a; the array emitters only know to_a. */
-    if (nm && sp_streq(nm, "entries") && nt_ref(nt, id, "block") < 0) {
-      int erecv2 = nt_ref(nt, id, "receiver");
-      int ea2 = nt_ref(nt, id, "arguments");
-      int eac2 = 0;
-      if (ea2 >= 0) nt_arr(nt, ea2, "arguments", &eac2);
-      if (erecv2 >= 0 && eac2 == 0 && ty_is_array(infer_type(c, erecv2))) {
-        nt_node_set_str(nt, id, "name", "to_a");
-        changed = 1;
-        continue;
-      }
-    }
-    /* poly-array sum { blk } == map { blk }.sum (the typed-array redispatch
-       serves int/float receivers natively) */
-    if (nm && sp_streq(nm, "sum") && nt_ref(nt, id, "block") >= 0) {
-      int srecv = nt_ref(nt, id, "receiver");
-      int sa = nt_ref(nt, id, "arguments");
-      int sac = 0;
-      if (sa >= 0) nt_arr(nt, sa, "arguments", &sac);
-      /* a block that breaks out of the sum answers the break value: the
-         mapped copy would break out of the map and sum what it gave (#4918) */
-      int sblk = nt_ref(nt, id, "block");
-      int sbreaks = sblk >= 0 && nt_kind(nt, sblk) == NK_BlockNode &&
-                    block_has_top_break(c, nt_ref(nt, sblk, "body"));
-      if (srecv >= 0 && sac == 0 && !sbreaks && infer_type(c, srecv) == TY_POLY_ARRAY) {
-        int mapc = nt_new_node(nt, "CallNode");
-        nt_node_set_str(nt, mapc, "name", "map");
-        nt_node_set_ref(nt, mapc, "receiver", srecv);
-        nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
-        nt_node_set_str(nt, id, "name", "sum");
-        nt_node_set_ref(nt, id, "receiver", mapc);
-        nt_node_set_ref(nt, id, "block", -1);
-        comp_grow_node_arrays(c);
-        c->nscope[mapc] = c->nscope[id];
-        changed = 1;
-        continue;
-      }
-    }
-    /* `arr.each_index.reverse_each { }` / `.each_with_index.reverse_each { }`:
-       the blockless inner call answers an Enumerator, and reverse_each has no
-       arm for one, so the whole chain was refused -- though `.each` on the
-       same Enumerator works and `.to_a` on it answers the right elements.
-       Interpose to_a, exactly as the Range chains below do, and the array
-       machinery serves it (#4302). */
-    if (nm && sp_streq(nm, "reverse_each")) {
-      int rr = nt_ref(nt, id, "receiver");
-      if (rr >= 0 && nt_kind(nt, rr) == NK_CallNode && nt_ref(nt, rr, "block") < 0 &&
-          infer_type(c, rr) == TY_ENUMERATOR) {
-        const char *rrn = nt_str(nt, rr, "name");
-        int rra = nt_ref(nt, rr, "arguments"); int rrac = 0;
-        if (rra >= 0) nt_arr(nt, rra, "arguments", &rrac);
-        /* `each` belongs here with the index enumerators: it reaches the
-           array machinery on its own, but then answers the array it walked
-           rather than the Enumerator, and the marked hop below is what carries
-           the receiver through (#4325). */
-        if (rrn && rrac == 0 &&
-            (sp_streq(rrn, "each_index") || sp_streq(rrn, "each_with_index") ||
-             sp_streq(rrn, "each") || sp_streq(rrn, "each_entry"))) {
-          int toa2 = nt_new_node(nt, "CallNode");
-          nt_node_set_str(nt, toa2, "name", "to_a");
-          nt_node_set_ref(nt, toa2, "receiver", rr);
-          /* The block form of reverse_each answers the RECEIVER, and after this
-             hop that is the interposed array rather than the Enumerator the
-             program wrote (#4325). `enum_recv` is the marker the value emitter
-             already reads for exactly this: it yields the marked hop's own
-             receiver instead of the hop. */
-          nt_node_set_str(nt, toa2, "enum_recv", "1");
-          nt_node_set_ref(nt, id, "receiver", toa2);
-          comp_grow_node_arrays(c);
-          c->nscope[toa2] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* `recv.<m>(args).each { blk }` IS `recv.<m>(args) { blk }`: Enumerator#each
-       runs the method the Enumerator came from with that block, and answers
-       what THAT method answers -- the receiver for each_with_index, the memo
-       for each_with_object, the mapped array for map. Read instead as an
-       iteration over the values the Enumerator yields, it answered those values
-       (#4332), and over an each_with_index Enumerator it did not compile at all
-       (#4331). `lazy` is left alone: its block form is not its each form. */
-    if (nm && sp_streq(nm, "each") && nt_ref(nt, id, "block") >= 0 &&
-        /* ...but never a synthesized one. `Enumerator.product(a, b) { blk }` is
-           lowered to `Enumerator.product(a, b).each { blk }` above (#3589), and
-           rewriting that back left the two rules undoing each other until the
-           fixpoint gave up, with the block never run. The nil_result marker is
-           what that lowering leaves behind, and `lowered_each` the string
-           range's block-driven step (#4962). */
-        !nt_int(nt, id, "nil_result", 0) && !nt_int(nt, id, "lowered_each", 0)) {
-      int ea = nt_ref(nt, id, "arguments"); int eac = 0;
-      if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
-      int er = nt_ref(nt, id, "receiver");
-      if (eac == 0 && er >= 0 && nt_kind(nt, er) == NK_CallNode &&
-          nt_ref(nt, er, "block") < 0 && nt_ref(nt, er, "receiver") >= 0 &&
-          infer_type(c, er) == TY_ENUMERATOR) {
-        const char *ern = nt_str(nt, er, "name");
-        if (ern && !sp_streq(ern, "lazy")) {
-          /* a boxed receiver's to_enum (desugar_to_enum) builds the
-             Enumerator and takes no block: with one it is the receiver's
-             own each, which answers what each answers */
-          if (sp_streq(ern, "__poly_enum_for") || sp_streq(ern, "__to_enum_each")) ern = "each";
-          nt_node_set_str(nt, id, "name", ern);
-          nt_node_set_ref(nt, id, "receiver", nt_ref(nt, er, "receiver"));
-          int ira = nt_ref(nt, er, "arguments");
-          if (ira >= 0) nt_node_set_ref(nt, id, "arguments", ira);
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* `arr.each_with_index.reduce { }` / `.inject { }`: the blockless inner
-       call answers an Enumerator, and the fold read its elements as scalars --
-       a seedless fold assigned a [value, index] pair into an sp_int and the C
-       compiler refused it, while a fold answering the accumulator answered 0
-       (#4321). Interpose to_a, exactly as the reverse_each sibling above does;
-       the fold's answer is its own, so this hop needs no `enum_recv` marker. */
-    if (nm && (sp_streq(nm, "reduce") || sp_streq(nm, "inject")) &&
-        nt_ref(nt, id, "block") >= 0) {
-      int fr = nt_ref(nt, id, "receiver");
-      if (fr >= 0 && nt_kind(nt, fr) == NK_CallNode && nt_ref(nt, fr, "block") < 0 &&
-          infer_type(c, fr) == TY_ENUMERATOR) {
-        const char *frn = nt_str(nt, fr, "name");
-        int fra = nt_ref(nt, fr, "arguments"); int frac = 0;
-        if (fra >= 0) nt_arr(nt, fra, "arguments", &frac);
-        if (frn && frac == 0 &&
-            (sp_streq(frn, "each_index") || sp_streq(frn, "each_with_index"))) {
-          int toa3 = nt_new_node(nt, "CallNode");
-          nt_node_set_str(nt, toa3, "name", "to_a");
-          nt_node_set_ref(nt, toa3, "receiver", fr);
-          nt_node_set_ref(nt, id, "receiver", toa3);
-          comp_grow_node_arrays(c);
-          c->nscope[toa3] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    /* Range no-block enumerator chains: interpose to_a so the array machinery
-       serves them ((1..5).each_with_index.to_a, (1..3).map.with_index { },
-       (1..3).cycle.first(7)). Blockless `each` (and each_slice/each_cons,
-       whose runtime ctors take any boxed source) keep their first-class
-       Enumerator arms. A beginless/endless literal has no array to build and
-       falls through to the loud reject. */
-    if (nm && nt_ref(nt, id, "block") < 0) {
-      static const char *const RENUM0[] = { "each_with_index", "each_index",
-                                            "map", "collect", "cycle", NULL };
-      int rargs = nt_ref(nt, id, "arguments");
-      int rac = 0;
-      if (rargs >= 0) nt_arr(nt, rargs, "arguments", &rac);
-      int hit = 0;
-      if (rac == 0) { for (int k = 0; RENUM0[k]; k++) if (sp_streq(nm, RENUM0[k])) { hit = 1; break; } }
-      if (hit) {
-        int rrecv = nt_ref(nt, id, "receiver");
-        if (rrecv >= 0 && infer_type(c, rrecv) == TY_RANGE) {
-          int rlit = an_unparen(nt, rrecv);
-          int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
-                           (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
-          if (!open_ended) {
-            int toa = nt_new_node(nt, "CallNode");
-            nt_node_set_str(nt, toa, "name", "to_a");
-            nt_node_set_ref(nt, toa, "receiver", rrecv);
-            nt_node_set_ref(nt, id, "receiver", toa);
-            comp_grow_node_arrays(c);
-            c->nscope[toa] = c->nscope[id];
-            changed = 1;
-            continue;
-          }
-        }
-      }
-    }
-    /* <stored enumerator>.with_object(memo) { }: drain to an array and ride
-       the array each_with_object machinery (covers both statement and value
-       forms, with the memo's own typing). Type-aware, hence fixpoint. */
-    if (nm && sp_streq(nm, "with_object")) {
-      int erecv = nt_ref(nt, id, "receiver");
-      int eblk = nt_ref(nt, id, "block");
-      int ea = nt_ref(nt, id, "arguments");
-      int eac = 0;
-      if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
-      if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
-        int toa = nt_new_node(nt, "CallNode");
-        nt_node_set_str(nt, toa, "name", "to_a");
-        nt_node_set_ref(nt, toa, "receiver", erecv);
-        nt_node_set_str(nt, id, "name", "each_with_object");
-        nt_node_set_ref(nt, id, "receiver", toa);
-        comp_grow_node_arrays(c);
-        c->nscope[toa] = c->nscope[id];
-        changed = 1;
-        continue;
-      }
-    }
-    /* Hash[k: v, ...] with a keyword-hash argument IS the hash literal */
-    if (nm && sp_streq(nm, "[]")) {
-      int krc = nt_ref(nt, id, "receiver");
-      const char *krt2 = krc >= 0 ? nt_type(nt, krc) : NULL;
-      if (krt2 && sp_streq(krt2, "ConstantReadNode") &&
-          nt_str(nt, krc, "name") && sp_streq(nt_str(nt, krc, "name"), "Hash")) {
-        int ka = nt_ref(nt, id, "arguments");
-        int kac = 0;
-        const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
-        if (kac == 1 && kav && nt_type(nt, kav[0]) &&
-            sp_streq(nt_type(nt, kav[0]), "KeywordHashNode")) {
-          /* rewrite this call node into a plain HashNode with the same
-             element list */
-          int en2 = 0;
-          const int *els2 = nt_arr(nt, kav[0], "elements", &en2);
-          int hn2 = nt_new_node(nt, "HashNode");
-          nt_node_set_arr(nt, hn2, "elements", els2, en2);
-          comp_grow_node_arrays(c);
-          c->nscope[hn2] = c->nscope[id];
-          /* graft: turn the CallNode into itself... easiest is retarget via
-             receiver replacement not possible; instead rewrite in place by
-             changing this node's type is unsupported -- wrap: make the call
-             `(hash_literal).itself`-free by pointing the parent at hn2 is
-             also unavailable here, so emit-side handles it; mark via rename */
-          nt_node_set_str(nt, id, "name", "__hash_brackets_kw");
-          nt_node_set_ref(nt, id, "receiver", hn2);
-          nt_node_set_ref(nt, id, "arguments", -1);
-          changed = 1;
-        }
-      }
-      continue;
-    }
-    /* Hash#store(k, v) is exactly []= (whose value form already works) */
-    if (nm && sp_streq(nm, "store")) {
-      int hrc = nt_ref(nt, id, "receiver");
-      int ha = nt_ref(nt, id, "arguments");
-      int hac = 0;
-      if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
-      if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
-          ty_is_hash(infer_type(c, hrc))) {
-        nt_node_set_str(nt, id, "name", "[]=");
-        changed = 1;
-      }
-      continue;
-    }
-    /* struct[member_literal] = v rewrites to the generated writer, so the
-       member's type unifies with the value like any accessor write */
-    if (nm && sp_streq(nm, "[]=")) {
-      int wrc = nt_ref(nt, id, "receiver");
-      int wa = nt_ref(nt, id, "arguments");
-      int wac = 0;
-      const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wac) : NULL;
-      TyKind wrt = wrc >= 0 ? infer_type(c, wrc) : TY_UNKNOWN;
-      if (wac == 2 && ty_is_object(wrt) && c->classes[ty_object_class(wrt)].is_struct) {
-        ClassInfo *wsc = &c->classes[ty_object_class(wrt)];
-        int wmi = struct_member_idx(c, wsc, wav[0]);
-        /* a Float literal offset, unless the class has a `[]=` of its own */
-        if (wmi < 0 && comp_method_in_chain(c, ty_object_class(wrt), "[]=", NULL) < 0)
-          wmi = struct_member_idx_float(c, wsc, wav[0]);
-        if (wmi >= 0) {
-          char wn[300]; snprintf(wn, sizeof wn, "%s=", wsc->ivars[wmi] + 1);
-          int one = nt_new_node(nt, "ArgumentsNode");
-          if (one >= 0) {
-            int varg = wav[1];
-            nt_node_set_arr(nt, one, "arguments", &varg, 1);
-            nt_node_set_str(nt, id, "name", wn);
-            nt_node_set_ref(nt, id, "arguments", one);
-            comp_grow_node_arrays(c);
-            c->nscope[one] = c->nscope[id];
-            changed = 1;
-          }
-        }
-      }
-      continue;
-    }
-    if (nm && (sp_streq(nm, "default=") || sp_streq(nm, "default"))) {
-      /* default access on an un-narrowed empty-hash local: give it the
-         symbol-keyed poly variant so the setter has a slot to store into
-         (`a = {}; a.default = 9; a.default`) */
-      int drc = nt_ref(nt, id, "receiver");
-      if (drc >= 0 && nt_type(nt, drc) &&
-          sp_streq(nt_type(nt, drc), "LocalVariableReadNode") &&
-          infer_type(c, drc) == TY_UNKNOWN) {
-        Scope *dsc = comp_scope_of(c, drc);
-        const char *dvn = nt_str(nt, drc, "name");
-        LocalVar *dlv = (dsc && dvn) ? scope_local(dsc, dvn) : NULL;
-        if (dlv && dlv->type == TY_UNKNOWN) {
-          dlv->type = TY_SYM_POLY_HASH;
-          changed = 1;
-        }
-      }
-      continue;
-    }
-    if (nm && (sp_streq(nm, "any?") || sp_streq(nm, "none?") ||
-               sp_streq(nm, "all?") || sp_streq(nm, "one?") ||
-               sp_streq(nm, "empty?"))) {
-      /* blockless predicate on an un-narrowed empty-hash local: adopt the
-         symbol-keyed poly variant so the hash fold arm serves it
-         (`b = {}; b.none?`). Every write must be an empty {} literal, so an
-         empty-ARRAY local can never be pulled into a hash type here. */
-      int qa = nt_ref(nt, id, "arguments");
-      int qac = 0;
-      if (qa >= 0) nt_arr(nt, qa, "arguments", &qac);
-      int qrc = nt_ref(nt, id, "receiver");
-      if (qac == 0 && nt_ref(nt, id, "block") < 0 && qrc >= 0 &&
-          nt_type(nt, qrc) && sp_streq(nt_type(nt, qrc), "LocalVariableReadNode") &&
-          infer_type(c, qrc) == TY_UNKNOWN) {
-        Scope *qsc = comp_scope_of(c, qrc);
-        const char *qvn = nt_str(nt, qrc, "name");
-        LocalVar *qlv = (qsc && qvn) ? scope_local(qsc, qvn) : NULL;
-        if (qlv && qlv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, qsc, qvn)) {
-          qlv->type = TY_SYM_POLY_HASH;
-          changed = 1;
-        }
-      }
-      /* no rewrite of this node: fall through to the remaining arms */
-    }
-    if (nm && sp_streq(nm, "each_with_object")) {
-      /* an empty-hash local passed as the memo becomes a general boxed
-         key/value hash so any key type the block writes fits, matching the
-         inline each_with_object({}) memo (#2969) */
-      int ea = nt_ref(nt, id, "arguments");
-      int eac = 0; const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &eac) : NULL;
-      if (eac >= 1 && eav && nt_type(nt, eav[0]) &&
-          sp_streq(nt_type(nt, eav[0]), "LocalVariableReadNode") &&
-          infer_type(c, eav[0]) == TY_UNKNOWN) {
-        Scope *esc = comp_scope_of(c, eav[0]);
-        const char *evn = nt_str(nt, eav[0], "name");
-        LocalVar *elv = (esc && evn) ? scope_local(esc, evn) : NULL;
-        if (elv && elv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, esc, evn)) {
-          elv->type = TY_POLY_POLY_HASH;
-          changed = 1;
-        }
-      }
-      /* fall through */
-    }
-    if (nm && sp_streq(nm, "yield")) {
-      /* Proc#yield is exactly #call */
-      int yrc = nt_ref(nt, id, "receiver");
-      if (yrc >= 0 && infer_type(c, yrc) == TY_PROC) {
-        /* the spelling the program wrote, for a NoMethodError on nil */
-        nt_node_set_str(nt, id, "written_name", "yield");
-        nt_node_set_str(nt, id, "name", "call");
-        changed = 1;
-      }
-      continue;
-    }
-    if (nm && (sp_streq(nm, "grapheme_clusters") || sp_streq(nm, "each_grapheme_cluster"))) {
-      /* grapheme clusters == characters over the supported text domain (no
-         combining sequences): alias to the chars/each_char machinery */
-      int grc = nt_ref(nt, id, "receiver");
-      if (grc >= 0 && infer_type(c, grc) == TY_STRING) {
-        nt_node_set_str(nt, id, "name",
-                        sp_streq(nm, "grapheme_clusters") ? "chars" : "each_char");
-        changed = 1;
-        continue;
-      }
-    }
-    /* Hash#reverse_each { |k, v| }: desugar to to_a.reverse_each so the
-       existing pair-array destructure serves the two-param block (#2372). The
-       to_a hop is marked (enum_recv), so the value emitter answers the Hash
-       itself, as CRuby's reverse_each answers its receiver. */
-    if (nm && sp_streq(nm, "reverse_each") && nt_ref(nt, id, "block") >= 0) {
-      int hrc = nt_ref(nt, id, "receiver");
-      if (hrc >= 0 && ty_is_hash(infer_type(c, hrc))) {
-        int toa = nt_new_node(nt, "CallNode");
-        if (toa >= 0) {
-          nt_node_set_str(nt, toa, "name", "to_a");
-          nt_node_set_ref(nt, toa, "receiver", hrc);
-          nt_node_set_str(nt, toa, "enum_recv", "1");
-          nt_node_set_ref(nt, id, "receiver", toa);
-          comp_grow_node_arrays(c);
-          c->nscope[toa] = c->nscope[id];
-          changed = 1;
-        }
-        continue;
-      }
-    }
-    /* member? on a builtin container is Array/Hash/Range#include? (#2388);
-       entries on an array is to_a (#2390). User classes keep their own. */
-    if (nm && ((sp_streq(nm, "member?") || sp_streq(nm, "entries")) &&
-               nt_ref(nt, id, "block") < 0)) {
-      int mrc = nt_ref(nt, id, "receiver");
-      int man = 0; { int _a = nt_ref(nt, id, "arguments");
-                     if (_a >= 0) nt_arr(nt, _a, "arguments", &man); }
-      TyKind mrt = mrc >= 0 ? infer_type(c, mrc) : TY_UNKNOWN;
-      /* a not-yet-narrowed local holding an empty [] literal is still an
-         array; restrict the UNKNOWN case to plain variable/literal receivers
-         so a not-yet-typed method-call chain keeps its own entries path */
-      int mrt_open = 0;
-      if (mrt == TY_UNKNOWN && mrc >= 0 && nt_type(nt, mrc) &&
-          sp_streq(nt_type(nt, mrc), "ArrayNode")) {
-        int user_defines = 0;
-        for (int uk = 0; uk < c->nclasses; uk++)
-          if (comp_method_in_chain(c, uk, nm, NULL) >= 0) { user_defines = 1; break; }
-        mrt_open = !user_defines;
-      }
-      if (sp_streq(nm, "member?") && man == 1 &&
-          (ty_is_array(mrt) || ty_is_hash(mrt) || mrt == TY_RANGE || mrt_open)) {
-        nt_node_set_str(nt, id, "name", "include?");
-        changed = 1;
-        continue;
-      }
-      if (sp_streq(nm, "entries") && man == 0 && (ty_is_array(mrt) || mrt_open)) {
-        nt_node_set_str(nt, id, "name", "to_a");
-        changed = 1;
-        continue;
-      }
-
-    }
-    /* `a.chain(b, c)` is desugared wholesale by desugar_enumerable_chain into
-       `__enum_chain(a.to_a + b.to_a + c.to_a)` -- a real Enumerator::Chain that
-       serves every terminal, not just a `.to_a` directly on the chain call. */
-    /* find_all is a full alias of select on the builtin containers; rename
-       so the select/with_index machinery serves both (#2389) */
-    if (nm && sp_streq(nm, "find_all")) {
-      int frc = nt_ref(nt, id, "receiver");
-      TyKind frt = frc >= 0 ? infer_type(c, frc) : TY_UNKNOWN;
-      int fa_user = 0;
-      for (int uk = 0; uk < c->nclasses; uk++)
-        if (comp_method_in_chain(c, uk, "find_all", NULL) >= 0) { fa_user = 1; break; }
-      /* NOT hashes: Hash#find_all answers an array of pairs (the Enumerable
-         contract), while Hash#select answers a hash -- the existing hash
-         find_all machinery keeps that shape */
-      int frt_open = frt == TY_UNKNOWN && !fa_user && frc >= 0 && nt_type(nt, frc) &&
-                     sp_streq(nt_type(nt, frc), "ArrayNode");
-      if (ty_is_array(frt) || frt == TY_RANGE || frt_open) {
-        nt_node_set_str(nt, id, "name", "select");
-        changed = 1;
-        continue;
-      }
-    }
-    /* String-endpoint ranges materialize to a StrArray, which has no
-       begin/end of its own: alias them to first/last (#2411). */
-    if (nm && (sp_streq(nm, "begin") || sp_streq(nm, "end")) &&
-        nt_ref(nt, id, "block") < 0) {
-      int brc = nt_ref(nt, id, "receiver");
-      int ban = 0; { int _a = nt_ref(nt, id, "arguments");
-                     if (_a >= 0) nt_arr(nt, _a, "arguments", &ban); }
-      if (brc >= 0 && ban == 0 && infer_type(c, brc) == TY_STR_ARRAY) {
-        nt_node_set_str(nt, id, "name", sp_streq(nm, "begin") ? "first" : "last");
-        changed = 1;
-        continue;
-      }
-    }
-    if (nm && (sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "rfind"))) {
-      int fr = nt_ref(nt, id, "receiver"), fa = nt_ref(nt, id, "arguments"), fac = 0;
-      const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
-      TyKind frt = fr >= 0 ? infer_type(c, fr) : TY_UNKNOWN;
-      if (fac == 1 && nt_kind(nt, fav[0]) == NK_NilNode &&
-          (ty_is_array(frt) || ty_is_hash(frt) || frt == TY_RANGE || frt == TY_ENUMERATOR)) {
-        nt_node_set_ref(nt, id, "arguments", -1);
-        changed = 1;
-        continue;
-      }
-    }
-    if (nm && sp_streq(nm, "rfind")) {
-      int rrc = nt_ref(nt, id, "receiver");
-      /* an empty `[]` literal receiver infers TY_UNKNOWN but is an array all
-         the same -- rfind on it must still desugar (to yield nil) (#2367) */
-      int rrc_empty_lit = rrc >= 0 && nt_type(nt, rrc) &&
-                          sp_streq(nt_type(nt, rrc), "ArrayNode") &&
-                          ({ int _n = 0; nt_arr(nt, rrc, "elements", &_n); _n == 0; });
-      if (rrc >= 0 && (ty_is_array(infer_type(c, rrc)) || rrc_empty_lit)) {
-        int rev = nt_ref(nt, id, "block") >= 0 ? -1 : nt_new_node(nt, "CallNode");
-        if (rev >= 0) {
-          nt_node_set_str(nt, rev, "name", "reverse");
-          nt_node_set_ref(nt, rev, "receiver", rrc);
-          nt_node_set_ref(nt, id, "receiver", rev);
-          comp_grow_node_arrays(c);
-          c->nscope[rev] = c->nscope[id];
-        }
-        else nt_node_set_int(nt, id, "rfind", 1);
-        nt_node_set_str(nt, id, "name", "find");
-        changed = 1;
-        continue;
-      }
-    }
-    if (nm && sp_streq(nm, "step")) {
-      /* Numeric#step keyword forms lower to the positional (limit, step):
-         step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An
-         endless step (by: only, no to:) stays a loud reject. */
-      int sargs = nt_ref(nt, id, "arguments");
-      int sac = 0;
-      const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sac) : NULL;
-      if (sac >= 1 && sac <= 2 && nt_type(nt, sav[sac - 1]) &&
-          sp_streq(nt_type(nt, sav[sac - 1]), "KeywordHashNode")) {
-        int kwh = sav[sac - 1];
-        int en = 0;
-        const int *els = nt_arr(nt, kwh, "elements", &en);
-        int to_v = -1, by_v = -1, other = 0;
-        for (int e = 0; e < en; e++) {
-          int kk = nt_ref(nt, els[e], "key");
-          const char *kn = (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode"))
-                           ? nt_str(nt, kk, "value") : NULL;
-          if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[e], "value");
-          else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[e], "value");
-          else other = 1;
-        }
-        if (sac == 2 && to_v < 0) to_v = sav[0];   /* step(limit, by: B) */
-        if (!other && to_v >= 0 && by_v >= 0) {
-          int na[2]; na[0] = to_v; na[1] = by_v;
-          nt_node_set_arr(nt, sargs, "arguments", na, 2);
-          changed = 1;
-          continue;
-        }
-      }
-    }
-    if (nm && sp_streq(nm, "%")) {
-      /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
-      int prc = nt_ref(nt, id, "receiver");
-      int pa = nt_ref(nt, id, "arguments");
-      int pac = 0;
-      if (pa >= 0) nt_arr(nt, pa, "arguments", &pac);
-      if (prc >= 0 && pac == 1 && nt_ref(nt, id, "block") < 0 &&
-          (infer_type(c, prc) == TY_RANGE || infer_type(c, prc) == TY_FLOAT_RANGE)) {
-        nt_node_set_str(nt, id, "name", "step");
-        changed = 1;
-      }
-      continue;
-    }
-    /* Blockless each_pair on a Struct answers an Enumerator over the
-       [name, value] pairs, which is what the member hash's own blockless
-       #each answers; the synthesized yielding each_pair raised LocalJumpError.
-       Ahead of the Enumerable-name gate, which does not list each_pair (and
-       must not: its block form yields pairs, not members). The synthesized
-       each_with_index is the same case over the member array, whose own
-       blockless each_with_index answers the [member, index] Enumerator. */
-    int wix = nm && sp_streq(nm, "each_with_index");
-    if (nm && (sp_streq(nm, "each_pair") || wix) && nt_ref(nt, id, "block") < 0 &&
-        !(wix && nt_ref(nt, id, "arguments") >= 0)) {
-      int prv = nt_ref(nt, id, "receiver");
-      TyKind prt = prv >= 0 ? infer_type(c, prv) : TY_UNKNOWN;
-      int pcid = ty_is_object(prt) ? ty_object_class(prt) : -1;
-      /* each_with_index only over the generated iterator and the member
-         array: a Struct that defines its own each_with_index or to_a answers
-         through its own methods */
-      int okc = pcid >= 0 && pcid < c->nclasses;
-      int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
-      int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
-      int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0;
-      if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
-        int wrap = nt_new_node(nt, "CallNode");
-        if (wrap >= 0) {
-          nt_node_set_str(nt, wrap, "name", wix ? "to_a" : "to_h");
-          nt_node_set_ref(nt, wrap, "receiver", prv);
-          nt_node_set_ref(nt, wrap, "arguments", -1);
-          nt_node_set_ref(nt, wrap, "block", -1);
-          nt_node_set_ref(nt, id, "receiver", wrap);
-          if (!wix) nt_node_set_str(nt, id, "name", "each");
-          comp_grow_node_arrays(c);
-          c->nscope[wrap] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
-      }
-    }
+    if (desugar_enum_named_call(c, id, nt, nm, &changed)) continue;
     if (!nm || !is_array_enum_method(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) {
