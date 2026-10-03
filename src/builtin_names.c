@@ -131,6 +131,11 @@ int is_int_bit_op(const char *n) {
   return sp_streq(n, "&") || sp_streq(n, "|") || sp_streq(n, "^") || sp_streq(n, "<<") || sp_streq(n, ">>");
 }
 
+int is_diverging_call(const char *n) {
+  return sp_streq(n, "raise") || sp_streq(n, "fail") || sp_streq(n, "throw") ||
+         sp_streq(n, "exit") || sp_streq(n, "exit!") || sp_streq(n, "abort");
+}
+
 int is_block_loop_method(const char *n) {
   return sp_streq(n, "times") || sp_streq(n, "each") ||
          sp_streq(n, "upto") || sp_streq(n, "downto") ||

@@ -14033,9 +14033,7 @@ int infer_return_types(Compiler *c) {
            of its callers. Same rule the branch arms got for raise. */
         else if (lk == NK_CallNode && nt_ref(nt, last, "receiver") < 0) {
           const char *lnm = nt_str(nt, last, "name");
-          if (lnm && (sp_streq(lnm, "raise") || sp_streq(lnm, "fail") ||
-                      sp_streq(lnm, "throw") || sp_streq(lnm, "exit") ||
-                      sp_streq(lnm, "abort") || sp_streq(lnm, "exit!")))
+          if (lnm && is_diverging_call(lnm))
             tail_unreachable = 1;
         }
       }

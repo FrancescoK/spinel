@@ -11066,8 +11066,7 @@ static int isa_node_diverges(Compiler *c, int node) {
   if (sp_streq(ty, "CallNode")) {
     const char *cn = nt_str(nt, node, "name");
     if (cn && nt_ref(nt, node, "receiver") < 0 &&
-        (sp_streq(cn, "raise") || sp_streq(cn, "fail") || sp_streq(cn, "throw") ||
-         sp_streq(cn, "exit") || sp_streq(cn, "exit!") || sp_streq(cn, "abort")))
+        is_diverging_call(cn))
       return 1;
   }
   if (sp_streq(ty, "StatementsNode")) {

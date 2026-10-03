@@ -7246,8 +7246,7 @@ static int stmts_diverge(Compiler *c, int st) {
   int last = b[n - 1];
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
-  return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail") || sp_streq(nm, "throw") ||
-                sp_streq(nm, "exit") || sp_streq(nm, "abort") || sp_streq(nm, "exit!"));
+  return nm && is_diverging_call(nm);
 }
 /* Whether call `w`, named `wn`, can run a method the program defines: a
    receiverless call (or one on self) when some user method has the name; a
