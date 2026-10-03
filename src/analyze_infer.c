@@ -5651,6 +5651,102 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
   return 0;
 }
 
+/* A nil receiver, and an array conversion at the end of a chain: cycle.first or take, chunk_while or slice_when .to_a, to_a over an enumerator (infer_call_inner's rules, in their order) */
+static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
+  if (recv >= 0 && rt == TY_NIL) {
+    if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+        sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?") ||
+        sp_streq(name, "!~")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "=~")) { *out = TY_NIL; return 1; }
+    if (sp_streq(name, "rationalize")) { *out = TY_RATIONAL; return 1; }
+    if (sp_streq(name, "tap")) { *out = TY_POLY; return 1; }  /* the (boxed) nil receiver */
+    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
+        nt_ref(nt, id, "block") < 0) { *out = TY_ENUMERATOR; return 1; }
+    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int blk9 = nt_ref(nt, id, "block");
+      int bd9 = nt_ref(nt, blk9, "body");
+      int bn9 = 0; const int *bb9 = bd9 >= 0 ? nt_arr(nt, bd9, "body", &bn9) : NULL;
+      if (bn9 >= 1) {
+        TyKind bt9 = then_block_value_ty(c, bd9, infer_type(c, bb9[bn9 - 1]));
+        { *out = bt9 == TY_NIL ? TY_POLY : bt9; return 1; }
+      }
+    }
+    if (sp_streq(name, "to_c")) { *out = TY_COMPLEX; return 1; }
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+        sp_streq(name, "instance_of?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int")) { *out = TY_INT; return 1; }
+    if (sp_streq(name, "to_f")) { *out = TY_FLOAT; return 1; }
+    if (sp_streq(name, "to_r")) { *out = TY_RATIONAL; return 1; }
+    if (sp_streq(name, "to_a")) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "to_h")) { *out = TY_SYM_POLY_HASH; return 1; }
+    if (sp_streq(name, "respond_to?")) { *out = TY_BOOL; return 1; }
+  }
+
+  /* <array>.cycle.first(n) / .take(n) -> same array kind (bounded consumer of the
+     infinite cycle; the unbounded forms stay a loud reject). */
+  if (recv >= 0 && (sp_streq(name, "first") || sp_streq(name, "take")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "cycle") &&
+      nt_ref(nt, recv, "block") < 0) {
+    int cargs = nt_ref(nt, recv, "arguments");
+    int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
+    int pr = nt_ref(nt, recv, "receiver");
+    if (cac == 0 && pr >= 0) { TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) { *out = rt2; return 1; } }
+  }
+
+  /* int_array.chunk_while/slice_when/chunk { |...| } .to_a -> a poly array (runs / pairs) */
+  if (recv >= 0 && sp_streq(name, "to_a") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "chunk_while") ||
+       sp_streq(nt_str(nt, recv, "name"), "slice_when") ||
+       sp_streq(nt_str(nt, recv, "name"), "chunk") ||
+       sp_streq(nt_str(nt, recv, "name"), "slice_before") ||
+       sp_streq(nt_str(nt, recv, "name"), "slice_after")) &&
+      nt_ref(nt, recv, "block") >= 0 &&
+      (nt_ref(nt, recv, "arguments") < 0 ||
+       (!sp_streq(nt_str(nt, recv, "name"), "slice_before") &&
+        !sp_streq(nt_str(nt, recv, "name"), "slice_after")))) {
+    int pr = nt_ref(nt, recv, "receiver");
+    if (pr >= 0) {
+      TyKind prt = infer_type(c, pr);
+      if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY || prt == TY_STR_ARRAY ||
+          prt == TY_FLOAT_ARRAY ||
+          /* a boxed receiver walks whatever sp_poly_arr_recv renders -- a
+             hash's [key, value] pairs, an array's elements (#3451) */
+          prt == TY_POLY ||
+          (prt == TY_UNKNOWN && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "ArrayNode")) ||
+          (prt == TY_RANGE && range_enum_redispatch(c, recv)))
+        { *out = TY_POLY_ARRAY; return 1; }
+      /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
+         first-class emitter iterates the hash directly); gated to the named
+         two-param block shape the emitter serves. */
+      if (ty_is_hash(prt) && sp_streq(nt_str(nt, recv, "name"), "chunk") &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 0) &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 1))
+        { *out = TY_POLY_ARRAY; return 1; }
+    }
+  }
+
+  /* chunk_while/slice_when/chunk { } standing on its own (no .to_a terminal,
+     which the arm above claims first): a first-class Enumerator over the
+     eagerly materialized runs */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      (sp_streq(name, "chunk_while") || sp_streq(name, "slice_when") ||
+       sp_streq(name, "chunk") ||
+       ((sp_streq(name, "slice_before") || sp_streq(name, "slice_after")) &&
+        nt_ref(nt, id, "arguments") < 0))) {
+    TyKind crt = infer_type(c, recv);
+    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY ||
+        (crt == TY_RANGE && range_enum_redispatch(c, id))) {
+      if (!an_chunk_family_to_a(c, id)) { *out = TY_ENUMERATOR; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6420,97 +6516,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_FLOAT) && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?"))) return TY_BOOL;
   if (recv >= 0 && rt == TY_FLOAT && argc == 1 && sp_streq(name, "===")) return TY_BOOL;  /* (#2400) */
-  if (recv >= 0 && rt == TY_NIL) {
-    if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-        sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?") ||
-        sp_streq(name, "!~")) return TY_BOOL;
-    if (sp_streq(name, "=~")) return TY_NIL;
-    if (sp_streq(name, "rationalize")) return TY_RATIONAL;
-    if (sp_streq(name, "tap")) return TY_POLY;  /* the (boxed) nil receiver */
-    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
-        nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
-    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
-        nt_ref(nt, id, "block") >= 0) {
-      int blk9 = nt_ref(nt, id, "block");
-      int bd9 = nt_ref(nt, blk9, "body");
-      int bn9 = 0; const int *bb9 = bd9 >= 0 ? nt_arr(nt, bd9, "body", &bn9) : NULL;
-      if (bn9 >= 1) {
-        TyKind bt9 = then_block_value_ty(c, bd9, infer_type(c, bb9[bn9 - 1]));
-        return bt9 == TY_NIL ? TY_POLY : bt9;
-      }
-    }
-    if (sp_streq(name, "to_c")) return TY_COMPLEX;
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
-    if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
-        sp_streq(name, "instance_of?")) return TY_BOOL;
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int")) return TY_INT;
-    if (sp_streq(name, "to_f")) return TY_FLOAT;
-    if (sp_streq(name, "to_r")) return TY_RATIONAL;
-    if (sp_streq(name, "to_a")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "to_h")) return TY_SYM_POLY_HASH;
-    if (sp_streq(name, "respond_to?")) return TY_BOOL;
-  }
-
-  /* <array>.cycle.first(n) / .take(n) -> same array kind (bounded consumer of the
-     infinite cycle; the unbounded forms stay a loud reject). */
-  if (recv >= 0 && (sp_streq(name, "first") || sp_streq(name, "take")) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "cycle") &&
-      nt_ref(nt, recv, "block") < 0) {
-    int cargs = nt_ref(nt, recv, "arguments");
-    int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
-    int pr = nt_ref(nt, recv, "receiver");
-    if (cac == 0 && pr >= 0) { TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) return rt2; }
-  }
-
-  /* int_array.chunk_while/slice_when/chunk { |...| } .to_a -> a poly array (runs / pairs) */
-  if (recv >= 0 && sp_streq(name, "to_a") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") &&
-      (sp_streq(nt_str(nt, recv, "name"), "chunk_while") ||
-       sp_streq(nt_str(nt, recv, "name"), "slice_when") ||
-       sp_streq(nt_str(nt, recv, "name"), "chunk") ||
-       sp_streq(nt_str(nt, recv, "name"), "slice_before") ||
-       sp_streq(nt_str(nt, recv, "name"), "slice_after")) &&
-      nt_ref(nt, recv, "block") >= 0 &&
-      (nt_ref(nt, recv, "arguments") < 0 ||
-       (!sp_streq(nt_str(nt, recv, "name"), "slice_before") &&
-        !sp_streq(nt_str(nt, recv, "name"), "slice_after")))) {
-    int pr = nt_ref(nt, recv, "receiver");
-    if (pr >= 0) {
-      TyKind prt = infer_type(c, pr);
-      if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY || prt == TY_STR_ARRAY ||
-          prt == TY_FLOAT_ARRAY ||
-          /* a boxed receiver walks whatever sp_poly_arr_recv renders -- a
-             hash's [key, value] pairs, an array's elements (#3451) */
-          prt == TY_POLY ||
-          (prt == TY_UNKNOWN && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "ArrayNode")) ||
-          (prt == TY_RANGE && range_enum_redispatch(c, recv)))
-        return TY_POLY_ARRAY;
-      /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
-         first-class emitter iterates the hash directly); gated to the named
-         two-param block shape the emitter serves. */
-      if (ty_is_hash(prt) && sp_streq(nt_str(nt, recv, "name"), "chunk") &&
-          block_param_name(c, nt_ref(nt, recv, "block"), 0) &&
-          block_param_name(c, nt_ref(nt, recv, "block"), 1))
-        return TY_POLY_ARRAY;
-    }
-  }
-
-  /* chunk_while/slice_when/chunk { } standing on its own (no .to_a terminal,
-     which the arm above claims first): a first-class Enumerator over the
-     eagerly materialized runs */
-  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
-      (sp_streq(name, "chunk_while") || sp_streq(name, "slice_when") ||
-       sp_streq(name, "chunk") ||
-       ((sp_streq(name, "slice_before") || sp_streq(name, "slice_after")) &&
-        nt_ref(nt, id, "arguments") < 0))) {
-    TyKind crt = infer_type(c, recv);
-    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY ||
-        (crt == TY_RANGE && range_enum_redispatch(c, id))) {
-      if (!an_chunk_family_to_a(c, id)) return TY_ENUMERATOR;
-    }
-  }
+  { TyKind r; if (infer_nil_chain_call(c, id, nt, name, recv, rt, &r)) return r; }
 
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
      usage to fold an element type from; treat it as an empty poly array so
