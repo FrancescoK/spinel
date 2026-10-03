@@ -28,6 +28,9 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, TyKind rt);
+int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
+int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -140,5 +143,12 @@ int emit_struct_new_early(Compiler *c, int ci, int argc, const int *argv, int kw
 void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b);
 int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *box_fn, Buf *b);
 void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv_text, Buf *b);
+int emit_str_format_untyped_array(Compiler *c, int recv, int a0n, int fck, Buf *b);
+void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b);
+int parse_named_format(const char *fmt, Buf *rew, const char **names, int *name_len, int maxn);
+int re_lit_enc_opts(Compiler *c, int recv, int rre);
+void emit_re_opts_flags(Compiler *c, int argc, const int *argv, Buf *out);
+int emit_try_convert_boxed(Compiler *c, const char *cname, int arg, Buf *b);
+int re_src_has_backref(const char *s);
 
 #endif
