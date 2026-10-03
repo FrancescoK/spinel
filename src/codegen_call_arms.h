@@ -39,6 +39,9 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
 int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
 int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -176,5 +179,6 @@ int raise_plain_arg(const NodeTable *nt, int node);
 void emit_kconv_call(Compiler *c, int id, const int *av, int ac, int raise, Buf *b);
 void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta);
 void emit_fiber_storage_key(Compiler *c, int key, Buf *b);
+int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr);
 
 #endif
