@@ -7538,6 +7538,200 @@ static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
   return sret;
 }
 
+/* A ConstantPathNode (A::B) (infer_uncached's arms, in their order) */
+static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKind nk, TyKind *out) {
+  if (!(nk == NK_ConstantPathNode)) return 0;
+  /* M::CONST -> resolve by the final path component (constants register
+     under their unqualified name) */
+  const char *nm = nt_str(nt, id, "name");
+  /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
+     plain-constant table, or a same-leaf plain constant in another module
+     silently claims the reference (and its type). */
+  {
+    int fpar = nt_ref(nt, id, "parent");
+    const char *fpty = fpar >= 0 ? nt_type(nt, fpar) : NULL;
+    /* the qualifying module is the parent's LEAF name, so a nested path
+       (Outer::CSql::TEXT) qualifies by CSql -- the same unqualified name
+       the ffi decl registered under */
+    const char *fpnm = (fpty && (sp_streq(fpty, "ConstantReadNode") ||
+                                 sp_streq(fpty, "ConstantPathNode")))
+                       ? nt_str(nt, fpar, "name") : NULL;
+    if (fpnm && nm)
+      for (int fci = 0; fci < c->n_ffi_consts; fci++)
+        if (sp_streq(c->ffi_consts[fci].mod, fpnm) &&
+            sp_streq(c->ffi_consts[fci].name, nm))
+          { *out = TY_INT; return 1; }
+  }
+  /* `klass::CONST` on a class VALUE: the constant is whichever the runtime
+     class owns, so the type is the one they agree on -- not the leaf-named
+     constant's, which is a different constant entirely (#4257). Same
+     candidate search the emitter makes. */
+  {
+    int dpar = nt_ref(nt, id, "parent");
+    const char *dpty = dpar >= 0 ? nt_type(nt, dpar) : NULL;
+    int dyn = dpar >= 0 && !(dpty && (sp_streq(dpty, "ConstantReadNode") ||
+                                      sp_streq(dpty, "ConstantPathNode")));
+    /* ...and a constant that HOLDS a class rather than naming one is a
+       dynamic receiver too (#4259) */
+    if (!dyn && dpar >= 0 && dpty && sp_streq(dpty, "ConstantReadNode")) {
+      const char *pn = nt_str(nt, dpar, "name");
+      if (pn && comp_class_index(c, pn) < 0 && !is_builtin_class_name(pn) &&
+          comp_const(c, pn)) dyn = 1;
+    }
+    TyKind prt = dyn ? infer_type(c, dpar) : TY_UNKNOWN;
+    if (nm && dyn && (prt == TY_CLASS || prt == TY_POLY)) {
+      TyKind ct = TY_UNKNOWN; int nc = 0, uniform = 1;
+      for (int k = 0; k < c->nclasses; k++) {
+        const char *kn = c->classes[k].c_name;
+        if (!kn) continue;
+        char tail[512];
+        snprintf(tail, sizeof tail, "%s__%s", kn, nm);
+        size_t tl = strlen(tail);
+        for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
+          const char *cn2 = c->consts[ci2].name;
+          size_t l2 = strlen(cn2);
+          if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
+          if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
+          if (nc == 0) ct = c->consts[ci2].type;
+          else if (c->consts[ci2].type != ct) uniform = 0;
+          nc++;
+          break;
+        }
+      }
+      if (nc > 0 && uniform && ct != TY_UNKNOWN) { *out = ct; return 1; }
+    }
+  }
+  LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+  /* Same guard the bare ConstantReadNode carries: a registered constant
+     whose type never settled (Block = Struct.new(:kind), which registers
+     the name before the anonymous class exists) must not shadow the
+     class-table fallback below. Without it `Probe::Block` read as a value
+     is TY_UNKNOWN, the slot is sp_RbVal, and boxing an unknown kind takes
+     the nil tail -- so the class id is emitted and then discarded by a
+     comma expression. The bare form was already guarded; only the
+     qualified path was not (#4271). */
+  if (lv && lv->type != TY_UNKNOWN) { *out = lv->type; return 1; }
+  /* A top-level scoped constant `::Name` (no parent) names the same thing as
+     the bare constant `Name`; resolve it as a class when it is one so is_a?,
+     case/when, etc. treat `::Integer` exactly like `Integer` (#2683). */
+  if (nm && nt_ref(nt, id, "parent") < 0 &&
+      (comp_class_index(c, nm) >= 0 || is_builtin_class_name(nm) ||
+       is_builtin_exception_name(nm)))
+    { *out = TY_CLASS; return 1; }
+  if (nm && sp_streq(nm, "ARGV")) { *out = TY_STR_ARRAY; return 1; }
+  if (nm && sp_streq(nm, "ARGF")) { *out = TY_ARGF; return 1; }
+  /* well-known module constants */
+  int par_id = nt_ref(nt, id, "parent");
+  /* a ::-scoped BUILTIN class (Math::DomainError, Process::Status) is a
+     first-class Class value like its bare siblings (#2840) */
+  {
+    int qpar = par_id;
+    const char *qpty = qpar >= 0 ? nt_type(nt, qpar) : NULL;
+    const char *qpnm = (qpty && (sp_streq(qpty, "ConstantReadNode") ||
+                                 sp_streq(qpty, "ConstantPathNode")))
+                       ? nt_str(nt, qpar, "name") : NULL;
+    if (qpnm && nm) {
+      char qbuf[160];
+      snprintf(qbuf, sizeof qbuf, "%s::%s", qpnm, nm);
+      /* id-backed (Math::DomainError) or name-backed: the Errno:: family
+         is open, so any Errno::X is an exception Class value */
+      if (builtin_class_id(qbuf) != 0 || is_builtin_exception_name(qbuf)) { *out = TY_CLASS; return 1; }
+    }
+    /* Errno::ENOENT::Errno: the number of the class, read at run time
+       since the numbers differ by platform (#4560) */
+    if (nm && sp_streq(nm, "Errno") && qpnm && qpty && sp_streq(qpty, "ConstantPathNode")) {
+      int gp = nt_ref(nt, qpar, "parent");
+      const char *gpty = gp >= 0 ? nt_type(nt, gp) : NULL;
+      const char *gpnm = gpty && sp_streq(gpty, "ConstantReadNode") ? nt_str(nt, gp, "name") : NULL;
+      char eq[160];
+      snprintf(eq, sizeof eq, "Errno::%s", qpnm);
+      if (gpnm && sp_streq(gpnm, "Errno") && is_builtin_exception_name(eq)) { *out = TY_INT; return 1; }
+    }
+  }
+  const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
+  /* the qualifying module is the parent's leaf name, so a nested / root
+     path (`::Float::MAX`) qualifies by `Float` too -- match codegen's
+     par_nmc, which already accepts a ConstantPathNode parent here */
+  const char *par_nm = (par_ty && (sp_streq(par_ty, "ConstantReadNode") ||
+                                   sp_streq(par_ty, "ConstantPathNode")))
+                       ? nt_str(nt, par_id, "name") : NULL;
+  if (par_nm && sp_streq(par_nm, "Float")) {
+    if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
+               sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN"))) { *out = TY_FLOAT; return 1; }
+    /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
+    if (nm && (sp_streq(nm, "DIG") || sp_streq(nm, "MANT_DIG") || sp_streq(nm, "RADIX") ||
+               sp_streq(nm, "MAX_EXP") || sp_streq(nm, "MIN_EXP") ||
+               sp_streq(nm, "MAX_10_EXP") || sp_streq(nm, "MIN_10_EXP"))) { *out = TY_INT; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "Math")) {
+    if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) { *out = TY_FLOAT; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "Regexp")) {
+    if (nm && (sp_streq(nm, "IGNORECASE") || sp_streq(nm, "EXTENDED") ||
+               sp_streq(nm, "MULTILINE") || sp_streq(nm, "FIXEDENCODING") ||
+               sp_streq(nm, "NOENCODING"))) { *out = TY_INT; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "Encoding") && nm) {
+    /* every ALL_CAPS Encoding constant is a boxed Encoding value: the two
+       the runtime transcodes and every other name it only carries (see the
+       codegen arm) */
+    int caps = 1;
+    for (const char *q = nm; *q; q++)
+      if (!((*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { caps = 0; break; }
+    if (caps && *nm) { *out = TY_POLY; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "File")) {
+    if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
+               sp_streq(nm, "ALT_SEPARATOR") || sp_streq(nm, "NULL"))) { *out = TY_STRING; return 1; }
+    if (nm && (sp_streq(nm, "RDONLY") || sp_streq(nm, "WRONLY") || sp_streq(nm, "RDWR") ||
+               sp_streq(nm, "CREAT") || sp_streq(nm, "EXCL") || sp_streq(nm, "TRUNC") ||
+               sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY") ||
+               sp_streq(nm, "LOCK_SH") || sp_streq(nm, "LOCK_EX") || sp_streq(nm, "LOCK_UN") ||
+               sp_streq(nm, "LOCK_NB")))
+      { *out = TY_INT; return 1; }   /* the open(2)/flock(2) flag constants (#2788, #2808) */
+  }
+  if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
+    /* IO#seek whence constants (File inherits them from IO) */
+    if (nm && (sp_streq(nm, "SEEK_SET") || sp_streq(nm, "SEEK_CUR") ||
+               sp_streq(nm, "SEEK_END"))) { *out = TY_INT; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "Process")) {
+    /* clock ids (codegen emits their integer values) */
+    if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME") ||
+               sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID") || sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID") ||
+               sp_streq(nm, "PRIO_PROCESS") || sp_streq(nm, "PRIO_PGRP") || sp_streq(nm, "PRIO_USER")))
+      { *out = TY_INT; return 1; }
+  }
+  if (par_nm && sp_streq(par_nm, "Integer")) {
+    if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) { *out = TY_UNKNOWN; return 1; } /* raises NameError */
+  }
+  /* Socket::<CONST> is an Integer flag; the runtime resolves its value, so
+     an unknown name raises NameError there rather than typing here. */
+  if (par_nm && sp_streq(par_nm, "Socket") && sp_feature_required("socket") && nm)
+    { *out = TY_INT; return 1; }
+  if (nm && comp_class_index(c, nm) >= 0) { *out = TY_CLASS; return 1; }
+  if (nm && is_builtin_class_name(nm)) { *out = TY_CLASS; return 1; }
+  /* a builtin class named by its path (Enumerator::Chain), a Class value
+     carried by that name */
+  if (par_nm && nm) {
+    char qn[256]; snprintf(qn, sizeof qn, "%s::%s", par_nm, nm);
+    if (is_builtin_class_name(qn) || is_builtin_module_name(qn)) { *out = TY_CLASS; return 1; }
+  }
+  /* an exception class with no cls_id of its own (SystemCallError,
+     LoadError) is still a first-class Class value, carried by name */
+  if (nm && is_builtin_exception_name(nm)) { *out = TY_CLASS; return 1; }
+  /* FFI const: Module::NAME -> int */
+  if (par_nm && nm) {
+    for (int fci = 0; fci < c->n_ffi_consts; fci++) {
+      if (sp_streq(c->ffi_consts[fci].mod, par_nm) &&
+          sp_streq(c->ffi_consts[fci].name, nm))
+        { *out = TY_INT; return 1; }
+    }
+  }
+  { *out = TY_UNKNOWN; return 1; }
+  return 0;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -7856,196 +8050,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_DefinedNode) return TY_STRING;  /* a label string, or nil (NULL) */
   if (nk == NK_NumberedReferenceReadNode) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
   if (nk == NK_BackReferenceReadNode) return TY_STRING;  /* $&/$`/$'/$~/$+: nullable string */
-  if (nk == NK_ConstantPathNode) {
-    /* M::CONST -> resolve by the final path component (constants register
-       under their unqualified name) */
-    const char *nm = nt_str(nt, id, "name");
-    /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
-       plain-constant table, or a same-leaf plain constant in another module
-       silently claims the reference (and its type). */
-    {
-      int fpar = nt_ref(nt, id, "parent");
-      const char *fpty = fpar >= 0 ? nt_type(nt, fpar) : NULL;
-      /* the qualifying module is the parent's LEAF name, so a nested path
-         (Outer::CSql::TEXT) qualifies by CSql -- the same unqualified name
-         the ffi decl registered under */
-      const char *fpnm = (fpty && (sp_streq(fpty, "ConstantReadNode") ||
-                                   sp_streq(fpty, "ConstantPathNode")))
-                         ? nt_str(nt, fpar, "name") : NULL;
-      if (fpnm && nm)
-        for (int fci = 0; fci < c->n_ffi_consts; fci++)
-          if (sp_streq(c->ffi_consts[fci].mod, fpnm) &&
-              sp_streq(c->ffi_consts[fci].name, nm))
-            return TY_INT;
-    }
-    /* `klass::CONST` on a class VALUE: the constant is whichever the runtime
-       class owns, so the type is the one they agree on -- not the leaf-named
-       constant's, which is a different constant entirely (#4257). Same
-       candidate search the emitter makes. */
-    {
-      int dpar = nt_ref(nt, id, "parent");
-      const char *dpty = dpar >= 0 ? nt_type(nt, dpar) : NULL;
-      int dyn = dpar >= 0 && !(dpty && (sp_streq(dpty, "ConstantReadNode") ||
-                                        sp_streq(dpty, "ConstantPathNode")));
-      /* ...and a constant that HOLDS a class rather than naming one is a
-         dynamic receiver too (#4259) */
-      if (!dyn && dpar >= 0 && dpty && sp_streq(dpty, "ConstantReadNode")) {
-        const char *pn = nt_str(nt, dpar, "name");
-        if (pn && comp_class_index(c, pn) < 0 && !is_builtin_class_name(pn) &&
-            comp_const(c, pn)) dyn = 1;
-      }
-      TyKind prt = dyn ? infer_type(c, dpar) : TY_UNKNOWN;
-      if (nm && dyn && (prt == TY_CLASS || prt == TY_POLY)) {
-        TyKind ct = TY_UNKNOWN; int nc = 0, uniform = 1;
-        for (int k = 0; k < c->nclasses; k++) {
-          const char *kn = c->classes[k].c_name;
-          if (!kn) continue;
-          char tail[512];
-          snprintf(tail, sizeof tail, "%s__%s", kn, nm);
-          size_t tl = strlen(tail);
-          for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
-            const char *cn2 = c->consts[ci2].name;
-            size_t l2 = strlen(cn2);
-            if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
-            if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
-            if (nc == 0) ct = c->consts[ci2].type;
-            else if (c->consts[ci2].type != ct) uniform = 0;
-            nc++;
-            break;
-          }
-        }
-        if (nc > 0 && uniform && ct != TY_UNKNOWN) return ct;
-      }
-    }
-    LocalVar *lv = nm ? comp_const(c, nm) : NULL;
-    /* Same guard the bare ConstantReadNode carries: a registered constant
-       whose type never settled (Block = Struct.new(:kind), which registers
-       the name before the anonymous class exists) must not shadow the
-       class-table fallback below. Without it `Probe::Block` read as a value
-       is TY_UNKNOWN, the slot is sp_RbVal, and boxing an unknown kind takes
-       the nil tail -- so the class id is emitted and then discarded by a
-       comma expression. The bare form was already guarded; only the
-       qualified path was not (#4271). */
-    if (lv && lv->type != TY_UNKNOWN) return lv->type;
-    /* A top-level scoped constant `::Name` (no parent) names the same thing as
-       the bare constant `Name`; resolve it as a class when it is one so is_a?,
-       case/when, etc. treat `::Integer` exactly like `Integer` (#2683). */
-    if (nm && nt_ref(nt, id, "parent") < 0 &&
-        (comp_class_index(c, nm) >= 0 || is_builtin_class_name(nm) ||
-         is_builtin_exception_name(nm)))
-      return TY_CLASS;
-    if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
-    if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
-    /* well-known module constants */
-    int par_id = nt_ref(nt, id, "parent");
-    /* a ::-scoped BUILTIN class (Math::DomainError, Process::Status) is a
-       first-class Class value like its bare siblings (#2840) */
-    {
-      int qpar = par_id;
-      const char *qpty = qpar >= 0 ? nt_type(nt, qpar) : NULL;
-      const char *qpnm = (qpty && (sp_streq(qpty, "ConstantReadNode") ||
-                                   sp_streq(qpty, "ConstantPathNode")))
-                         ? nt_str(nt, qpar, "name") : NULL;
-      if (qpnm && nm) {
-        char qbuf[160];
-        snprintf(qbuf, sizeof qbuf, "%s::%s", qpnm, nm);
-        /* id-backed (Math::DomainError) or name-backed: the Errno:: family
-           is open, so any Errno::X is an exception Class value */
-        if (builtin_class_id(qbuf) != 0 || is_builtin_exception_name(qbuf)) return TY_CLASS;
-      }
-      /* Errno::ENOENT::Errno: the number of the class, read at run time
-         since the numbers differ by platform (#4560) */
-      if (nm && sp_streq(nm, "Errno") && qpnm && qpty && sp_streq(qpty, "ConstantPathNode")) {
-        int gp = nt_ref(nt, qpar, "parent");
-        const char *gpty = gp >= 0 ? nt_type(nt, gp) : NULL;
-        const char *gpnm = gpty && sp_streq(gpty, "ConstantReadNode") ? nt_str(nt, gp, "name") : NULL;
-        char eq[160];
-        snprintf(eq, sizeof eq, "Errno::%s", qpnm);
-        if (gpnm && sp_streq(gpnm, "Errno") && is_builtin_exception_name(eq)) return TY_INT;
-      }
-    }
-    const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
-    /* the qualifying module is the parent's leaf name, so a nested / root
-       path (`::Float::MAX`) qualifies by `Float` too -- match codegen's
-       par_nmc, which already accepts a ConstantPathNode parent here */
-    const char *par_nm = (par_ty && (sp_streq(par_ty, "ConstantReadNode") ||
-                                     sp_streq(par_ty, "ConstantPathNode")))
-                         ? nt_str(nt, par_id, "name") : NULL;
-    if (par_nm && sp_streq(par_nm, "Float")) {
-      if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
-                 sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN"))) return TY_FLOAT;
-      /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
-      if (nm && (sp_streq(nm, "DIG") || sp_streq(nm, "MANT_DIG") || sp_streq(nm, "RADIX") ||
-                 sp_streq(nm, "MAX_EXP") || sp_streq(nm, "MIN_EXP") ||
-                 sp_streq(nm, "MAX_10_EXP") || sp_streq(nm, "MIN_10_EXP"))) return TY_INT;
-    }
-    if (par_nm && sp_streq(par_nm, "Math")) {
-      if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) return TY_FLOAT;
-    }
-    if (par_nm && sp_streq(par_nm, "Regexp")) {
-      if (nm && (sp_streq(nm, "IGNORECASE") || sp_streq(nm, "EXTENDED") ||
-                 sp_streq(nm, "MULTILINE") || sp_streq(nm, "FIXEDENCODING") ||
-                 sp_streq(nm, "NOENCODING"))) return TY_INT;
-    }
-    if (par_nm && sp_streq(par_nm, "Encoding") && nm) {
-      /* every ALL_CAPS Encoding constant is a boxed Encoding value: the two
-         the runtime transcodes and every other name it only carries (see the
-         codegen arm) */
-      int caps = 1;
-      for (const char *q = nm; *q; q++)
-        if (!((*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_')) { caps = 0; break; }
-      if (caps && *nm) return TY_POLY;
-    }
-    if (par_nm && sp_streq(par_nm, "File")) {
-      if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
-                 sp_streq(nm, "ALT_SEPARATOR") || sp_streq(nm, "NULL"))) return TY_STRING;
-      if (nm && (sp_streq(nm, "RDONLY") || sp_streq(nm, "WRONLY") || sp_streq(nm, "RDWR") ||
-                 sp_streq(nm, "CREAT") || sp_streq(nm, "EXCL") || sp_streq(nm, "TRUNC") ||
-                 sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY") ||
-                 sp_streq(nm, "LOCK_SH") || sp_streq(nm, "LOCK_EX") || sp_streq(nm, "LOCK_UN") ||
-                 sp_streq(nm, "LOCK_NB")))
-        return TY_INT;   /* the open(2)/flock(2) flag constants (#2788, #2808) */
-    }
-    if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
-      /* IO#seek whence constants (File inherits them from IO) */
-      if (nm && (sp_streq(nm, "SEEK_SET") || sp_streq(nm, "SEEK_CUR") ||
-                 sp_streq(nm, "SEEK_END"))) return TY_INT;
-    }
-    if (par_nm && sp_streq(par_nm, "Process")) {
-      /* clock ids (codegen emits their integer values) */
-      if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME") ||
-                 sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID") || sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID") ||
-                 sp_streq(nm, "PRIO_PROCESS") || sp_streq(nm, "PRIO_PGRP") || sp_streq(nm, "PRIO_USER")))
-        return TY_INT;
-    }
-    if (par_nm && sp_streq(par_nm, "Integer")) {
-      if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) return TY_UNKNOWN; /* raises NameError */
-    }
-    /* Socket::<CONST> is an Integer flag; the runtime resolves its value, so
-       an unknown name raises NameError there rather than typing here. */
-    if (par_nm && sp_streq(par_nm, "Socket") && sp_feature_required("socket") && nm)
-      return TY_INT;
-    if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
-    if (nm && is_builtin_class_name(nm)) return TY_CLASS;
-    /* a builtin class named by its path (Enumerator::Chain), a Class value
-       carried by that name */
-    if (par_nm && nm) {
-      char qn[256]; snprintf(qn, sizeof qn, "%s::%s", par_nm, nm);
-      if (is_builtin_class_name(qn) || is_builtin_module_name(qn)) return TY_CLASS;
-    }
-    /* an exception class with no cls_id of its own (SystemCallError,
-       LoadError) is still a first-class Class value, carried by name */
-    if (nm && is_builtin_exception_name(nm)) return TY_CLASS;
-    /* FFI const: Module::NAME -> int */
-    if (par_nm && nm) {
-      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
-        if (sp_streq(c->ffi_consts[fci].mod, par_nm) &&
-            sp_streq(c->ffi_consts[fci].name, nm))
-          return TY_INT;
-      }
-    }
-    return TY_UNKNOWN;
-  }
+  { TyKind r; if (infer_constant_path(c, id, nt, nk, &r)) return r; }
   if (nk == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     int self_cls = s->class_id;
