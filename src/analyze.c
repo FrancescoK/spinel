@@ -29474,19 +29474,8 @@ static void an_phase_post_fixpoint(Compiler *c) {
   propagate_bigint_cascade(c);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
+/* Procs: the forced #each lowering, the proc captures, the referenced module sources, the dropped case arms, the lifted block procs and their scopes (analyze_program's steps, in their order) */
+static void an_phase_procs(Compiler *c) {
   /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
      actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
      drives `#each` with a collector block; the real (lowered) function form
@@ -29690,6 +29679,22 @@ void analyze_program(Compiler *c) {
       }
     }
   }
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
 
   /* Backstop step 1: a method reached only via method(:sym) is invoked through
      the bound Method ABI, which passes sp_int args -- default its untyped
