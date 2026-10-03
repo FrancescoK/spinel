@@ -22647,6 +22647,33 @@ static int nullable_int_call_name(const char *nm) {
     "<=>", NULL };
   return str_in(nm, N);
 }
+/* Calls whose Integer or Float answer is a boxed value unboxed into the
+   slot, and which can answer nil: the unbox makes that nil the sentinel, so
+   the value is a nullable one. `r&.m` is nil when r is; `p x` hands back x
+   (and a bare `p`, nil); a `catch` answers what a `throw` carried, nil by
+   default; a Proc's call answers its body's value, which arrives boxed. */
+static int nn_call_unboxes_nil(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm) return 0;
+  const char *op = nt_str(nt, v, "call_operator");
+  if (op && sp_streq(op, "&.")) return 1;
+  int rcv = nt_ref(nt, v, "receiver");
+  if (rcv < 0) {
+    if (comp_self_call_mi(c, v, nm) >= 0) return 0;   /* the program's own p or catch */
+    if (sp_streq(nm, "catch")) return 1;
+    if (sp_streq(nm, "p") && nt_ref(nt, v, "block") < 0) {
+      int ca = nt_ref(nt, v, "arguments"); int an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      return an == 0 || (an == 1 && nullable_int_value(c, av[0]));
+    }
+    return 0;
+  }
+  if ((sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "yield") || sp_streq(nm, "[]") ||
+       sp_streq(nm, "===")) && infer_type(c, rcv) == TY_PROC) return 1;
+  return 0;
+}
+
 /* A scalar slot on a class the fixpoint could not pin to a receiver still
    dispatches at runtime: codegen emits a cls_id switch over every class that
    defines the name. Ask whether ANY of those targets can answer the sentinel.
@@ -24734,6 +24761,7 @@ int nullable_int_value(Compiler *c, int v) {
   if (nt_kind(nt, v) == NK_CallNode) {
     if (nn_index_inbounds(v)) return 0;
     if (nullable_int_call_name(nt_str(nt, v, "name"))) return 1;
+    if (nn_call_unboxes_nil(c, v)) return 1;
     /* a missed element read is the sentinel in an int slot; only boxing is
        affected, typed reads keep their inline arms */
     if (elem_miss_call(c, v)) return 1;
