@@ -4883,16 +4883,22 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = ", ts2); emit_int_expr(c, sargv[0], b); buf_puts(b, ";\n");
       emit_indent(b, indent);
-      /* a zero step never advances; a negative one simply enumerates nothing */
+      /* a zero step never advances; a negative one walks DOWN from the
+         begin to the end, as CRuby 4.0 does ((5..1).step(-1) is 5,4,3,2,1;
+         (1..5).step(-1) nothing), and forever from an endless range */
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts2);
       emit_indent(b, indent);
       buf_printf(b, "if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"ArgumentError\","
                     " \"#step for non-numeric beginless ranges is meaningless\");\n", tr);
       emit_indent(b, indent);
       buf_printf(b, "sp_int _t%d = _t%d.last - (_t%d.excl ? 1 : 0);\n", tl2, tr, tr);
+      int td2 = ++g_tmp;
       emit_indent(b, indent);
-      buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 && _t%d <= _t%d; _t%d += _t%d) {\n",
-                 tv2, tr, ts2, tv2, tl2, tv2, ts2);
+      buf_printf(b, "sp_int _t%d = _t%d.last == INTPTR_MAX ? INTPTR_MIN : _t%d.last + (_t%d.excl ? 1 : 0);\n",
+                 td2, tr, tr, tr);
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+                 tv2, tr, ts2, tv2, tl2, tv2, td2, tv2, ts2);
       if (p0) {
         char elem[32]; snprintf(elem, sizeof elem, "_t%d", tv2);
         emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, elem, b, indent + 1);
@@ -4918,7 +4924,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "sp_float _t%d = sp_frange_step_count(_t%d, _t%d);\n", tn2, tr, ts2);
       emit_indent(b, indent);
       buf_printf(b, "for (sp_int _t%d = 0; (sp_float)_t%d < _t%d; _t%d++) {\n", ti2, ti2, tn2, ti2);
-      char elem[96]; snprintf(elem, sizeof elem, "sp_float_step_at(_t%d.first, _t%d.last, _t%d, _t%d)", tr, tr, ts2, ti2);
+      char elem[96]; snprintf(elem, sizeof elem, "sp_frange_step_at(_t%d, _t%d, _t%d)", tr, ts2, ti2);
       if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, elem, b, indent + 1);
       { int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
         emit_iter_bind_rest(c, block, rs_np, TY_FLOAT, elem, b, indent + 1); }

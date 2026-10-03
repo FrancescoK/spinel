@@ -3498,7 +3498,16 @@ static SP_UNUSED sp_float sp_frange_step_count(sp_FloatRange r, sp_float unit) {
   if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("ArgumentError", "#step iteration for beginless ranges is meaningless");
   if (unit == 0.0) sp_raise_cls("ArgumentError", "step can't be 0");
   if (isnan(r.first) || isnan(r.last)) sp_raise_cls("ArgumentError", "bad value for range");
+  /* an endless range walked DOWN never meets its end: CRuby yields
+     begin, begin + unit, ... forever */
+  if (unit < 0 && r.last == HUGE_VAL) return HUGE_VAL;
   return sp_float_step_size(r.first, r.last, unit, r.excl);
+}
+/* The i-th step's value: ruby_float_step's, which clamps to the end; an
+   endless range walked down has no end to clamp to */
+static SP_UNUSED sp_float sp_frange_step_at(sp_FloatRange r, sp_float unit, sp_int i) {
+  if (unit < 0 && r.last == HUGE_VAL) return (sp_float)i * unit + r.first;
+  return sp_float_step_at(r.first, r.last, unit, i);
 }
 /* Range#size / #count of an Integer range whose shape only the run time
    knows: a beginless one has no size (CRuby's TypeError), and either open
