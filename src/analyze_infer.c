@@ -4640,6 +4640,243 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* A method the program defines on the receiver (a class method, a Struct's member, a reopened builtin's method) and instance-variable reflection (infer_call_inner's rules, in their order) */
+static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
+     method_call_ret, not the raw scope ret: a tail-yield class method carries
+     THIS call site's block value (the instance/implicit-self arms already
+     route through it; the raw ret is the first site's type and a diverging
+     second site miscompiled through it). */
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    int sci = self_class_static_ci(c, recv);
+    if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
+      int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) {
+        int mi = comp_cmethod_in_chain(c, ci, name, NULL);
+        if (mi >= 0) { *out = an_user_call(c, id, mi, UC_CMETH, ci); return 1; }
+      }
+      int rmi = class_reopen_cmethod(c, recv, name);
+      if (rmi >= 0) { *out = an_user_call(c, id, rmi, UC_CMETH, c->scopes[rmi].class_id); return 1; }
+    }
+    /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
+    if (rty && sp_streq(rty, "CallNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
+      int robj = nt_ref(nt, recv, "receiver");
+      TyKind rrt = robj >= 0 ? infer_type(c, robj) : TY_UNKNOWN;
+      if (ty_is_object(rrt)) {
+        int cid = ty_object_class(rrt);
+        int mi = comp_cmethod_in_chain(c, cid, name, NULL);
+        if (mi >= 0) {
+          TyKind r = (TyKind)c->scopes[mi].ret;
+          for (int k = 0; k < c->nclasses; k++) {
+            int _desc = 0;
+            for (int _p = c->classes[k].parent; _p >= 0; _p = c->classes[_p].parent)
+              if (_p == cid) { _desc = 1; break; }
+            if (!_desc) continue;
+            int kmi = comp_cmethod_in_class(c, k, name);
+            if (kmi >= 0) r = ty_unify(r, (TyKind)c->scopes[kmi].ret);
+          }
+          { *out = r; return 1; }
+        }
+        TyKind sgt;
+        if (!class_has_subclass(c, cid) && sg_accessor_type(c, cid, name, &sgt)) { *out = sgt; return 1; }
+      }
+    }
+  }
+
+  /* Struct instance methods */
+  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct &&
+      /* a method written in the Struct.new / Data.define block overrides the
+         generated one of that name, so its own return type is the answer
+         (#3794), and so does a member accessor: Struct.new(:members) reads
+         the member, not the member names -- mirrors the same guard in the
+         emitter */
+      comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_NONE) {
+    ClassInfo *sc = &c->classes[ty_object_class(rt)];
+    if (sp_streq(name, "with") && sc->is_data) { *out = rt; return 1; }  /* copy-update returns the same type */
+    if (sp_streq(name, "to_a") || sp_streq(name, "values") ||
+        sp_streq(name, "deconstruct") || sp_streq(name, "members")) { *out = TY_POLY_ARRAY; return 1; }
+    if (sp_streq(name, "to_h")) {
+      int block = nt_ref(nt, id, "block");
+      if (block >= 0) {
+        /* to_h { |k,v| [nk, nv] }: hash type from the block's pair */
+        int bbody = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+        int last = bn > 0 ? bb[bn - 1] : -1;
+        if (last >= 0 && nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
+          int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
+          if (en == 2) {
+            TyKind kt = infer_type(c, els[0]), vt = infer_type(c, els[1]);
+            if (kt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
+            if (kt == TY_STRING && vt == TY_STRING) { *out = TY_STR_STR_HASH; return 1; }
+            if (kt == TY_STRING) { *out = TY_STR_POLY_HASH; return 1; }
+            TyKind h = ty_hash_of(kt, vt);
+            /* the key is not a String here, so the string-keyed fallback would
+               have put whatever the block answers into a const char * slot
+               (#3602) */
+            { *out = h != TY_UNKNOWN ? h : TY_POLY_POLY_HASH; return 1; }
+          }
+        }
+      }
+      { *out = TY_SYM_POLY_HASH; return 1; }
+    }
+    if (is_len_alias(name) && argc == 0) {
+      /* a member of that name wins: its generated reader is the method */
+      char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
+      if (comp_ivar_index(sc, szn) < 0) { *out = TY_INT; return 1; }
+    }
+    if (sp_streq(name, "values_at")) { *out = TY_POLY_ARRAY; return 1; }   /* no keys selects nothing */
+    if (sp_streq(name, "hash") && argc == 0) {
+      /* a member of that name wins, like size/length above (#4190) */
+      char hn2[272]; snprintf(hn2, sizeof hn2, "@%s", name);
+      if (comp_ivar_index(sc, hn2) < 0) { *out = TY_INT; return 1; }
+    }
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) { *out = TY_SYM_POLY_HASH; return 1; }
+    if (sp_streq(name, "dig") && argc >= 1) {
+      int mi = struct_member_idx(c, sc, argv[0]);
+      if (mi >= 0) {
+        TyKind mt = sc->ivar_types[mi];
+        if (argc == 1) { *out = mt; return 1; }
+        /* nested struct members: walk the remaining literal keys */
+        {
+          ClassInfo *cur = sc; int cmi = mi; int di = 1;
+          while (di < argc) {
+            TyKind mt2 = cur->ivar_types[cmi];
+            if (!ty_is_object(mt2) || !c->classes[ty_object_class(mt2)].is_struct) break;
+            ClassInfo *nx = &c->classes[ty_object_class(mt2)];
+            int nmi = struct_member_idx(c, nx, argv[di]);
+            if (nmi < 0) break;
+            cur = nx; cmi = nmi; di++;
+          }
+          if (di == argc && di > 1) { *out = cur->ivar_types[cmi]; return 1; }
+        }
+        /* dig(member, key, ...): index into the member's container */
+        if (ty_is_hash(mt) && argc == 2) { *out = ty_hash_val(mt); return 1; }
+        if (ty_is_array(mt) && argc == 2) { *out = ty_array_elem(mt); return 1; }
+        { *out = TY_POLY; return 1; }
+      }
+      /* a key no literal member matches resolves at run time (#3849) */
+      { *out = TY_POLY; return 1; }
+    }
+    if (sp_streq(name, "[]") && argc == 1) {
+      /* struct[:sym] or struct[int]: return specific member type if known */
+      int mi = struct_member_idx(c, sc, argv[0]);
+      if (mi >= 0) { *out = sc->ivar_types[mi]; return 1; }
+      /* integer index: try to resolve literal */
+      const char *kty = nt_type(nt, argv[0]);
+      if (kty && sp_streq(kty, "IntegerNode")) {
+        long long idx = (long long)nt_int(nt, argv[0], "value", 0);
+        if (idx < 0) idx += (long long)sc->nmembers;
+        if (idx >= 0 && idx < sc->nmembers) { *out = sc->ivar_types[(int)idx]; return 1; }
+      }
+      { *out = TY_POLY; return 1; }
+    }
+    if (sp_streq(name, "[]=") && argc == 2) { *out = sc->nmembers > 0 ? sc->ivar_types[0] : TY_POLY; return 1; }
+  }
+
+  /* built-in class reopening: look up user-defined methods on scalar built-in
+     types -- not for an alias that captured the builtin (builtin_only) */
+  if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
+    const char *oc_cn = NULL;
+    switch (rt) {
+    case TY_STRING: oc_cn = "String"; break;
+    case TY_INT:    oc_cn = "Integer"; break;
+    case TY_FLOAT:  oc_cn = "Float"; break;
+    case TY_SYMBOL: oc_cn = "Symbol"; break;
+    case TY_BOOL:   oc_cn = "TrueClass"; break;
+    case TY_RANGE:  oc_cn = "Range"; break;
+    case TY_TIME:   oc_cn = "Time"; break;
+    case TY_THREAD: oc_cn = "Thread"; break;
+    case TY_FIBER:  oc_cn = "Fiber"; break;
+    case TY_IO:     oc_cn = "File"; break;
+    case TY_CLASS:  oc_cn = "Class"; break;
+    default: break;
+    }
+    if (oc_cn) {
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
+      if (oc_ci >= 0) {
+        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
+        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = TY_POLY; return 1; }
+        if (oc_mi >= 0) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
+      }
+    }
+    /* ...and a nil receiver's NilClass reopen, an Integer or Float
+       receiver's Numeric reopen, ahead of Object's: the emitter's reopened-
+       builtin dispatch calls them for a name the receiver's own class does
+       not define, as CRuby's ancestry does. Answered by Object's method, the
+       call was typed from a method it never ran (`3.kind_tag` a String slot
+       around Numeric's Float). A name the builtin surface knows stays the
+       builtin's, where the emitter's earlier arms keep it. */
+    if (rt == TY_NIL || rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
+      const char *own = rt == TY_NIL ? "NilClass" : rt == TY_FLOAT ? "Float" : "Integer";
+      const char *anc = rt == TY_NIL ? "NilClass" : "Numeric";
+      if (!builtin_method_known(own, name) && !builtin_object_method_known(name)) {
+        int aci = comp_class_index(c, anc);
+        int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
+        if (ami >= 0 && c->scopes[ami].class_id == aci)
+          { *out = an_user_call(c, id, ami, UC_REOPEN, aci); return 1; }
+      }
+    }
+  }
+
+  /* instance_variable_get(:@x) on a POLY receiver: unify @x's declared type
+     across every instantiated class that has the slot (all the same concrete
+     type -> that type; mixed or none -> poly). Without this the call fell
+     through to an unrelated rule and inferred a bogus type, so the whole
+     chain was silently dropped. Codegen dispatches on cls_id per class. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
+      const char *sym = sp_streq(a0ty, "SymbolNode")
+                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+      if (sym && sym[0] == '@') {
+        TyKind uni = TY_UNKNOWN;
+        for (int ci = 0; ci < c->nclasses; ci++) {
+          if (!c->classes[ci].instantiated) continue;
+          int iv = comp_ivar_index(&c->classes[ci], sym);
+          if (iv < 0) continue;
+          TyKind t = c->classes[ci].ivar_types[iv];
+          if (uni == TY_UNKNOWN) uni = t;
+          else if (uni != t) { uni = TY_POLY; break; }
+        }
+        /* a bare Object can hold any value there (sp_Object_ivar_get) */
+        if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
+        { *out = uni == TY_UNKNOWN ? TY_POLY : uni; return 1; }
+      }
+      { *out = TY_POLY; return 1; }
+    }
+  }
+  /* instance_variable_defined? and instance_variables on a POLY receiver:
+     answered per class, a bare Object from its own table */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_BOOL; return 1; }
+  }
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
+      nt_ref(nt, id, "block") < 0)
+    { *out = TY_POLY_ARRAY; return 1; }
+
+  /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
+     codegen twin stores it per class) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_POLY; return 1; }
+  }
+
+  /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && rt == TY_ENUMERATOR)
+    { *out = TY_BOOL; return 1; }
+
+  /* frozen? on an immutable value type: constantly-true bool */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?") &&
+      (rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL || rt == TY_BOOL ||
+       rt == TY_NIL || rt == TY_RANGE || rt == TY_COMPLEX || rt == TY_RATIONAL ||
+       rt == TY_BIGINT))
+    { *out = TY_BOOL; return 1; }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6162,238 +6399,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_handle_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
-  /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
-     method_call_ret, not the raw scope ret: a tail-yield class method carries
-     THIS call site's block value (the instance/implicit-self arms already
-     route through it; the raw ret is the first site's type and a diverging
-     second site miscompiled through it). */
-  if (recv >= 0) {
-    const char *rty = nt_type(nt, recv);
-    int sci = self_class_static_ci(c, recv);
-    if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
-      int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
-      if (ci >= 0) {
-        int mi = comp_cmethod_in_chain(c, ci, name, NULL);
-        if (mi >= 0) return an_user_call(c, id, mi, UC_CMETH, ci);
-      }
-      int rmi = class_reopen_cmethod(c, recv, name);
-      if (rmi >= 0) return an_user_call(c, id, rmi, UC_CMETH, c->scopes[rmi].class_id);
-    }
-    /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
-    if (rty && sp_streq(rty, "CallNode") &&
-        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
-      int robj = nt_ref(nt, recv, "receiver");
-      TyKind rrt = robj >= 0 ? infer_type(c, robj) : TY_UNKNOWN;
-      if (ty_is_object(rrt)) {
-        int cid = ty_object_class(rrt);
-        int mi = comp_cmethod_in_chain(c, cid, name, NULL);
-        if (mi >= 0) {
-          TyKind r = (TyKind)c->scopes[mi].ret;
-          for (int k = 0; k < c->nclasses; k++) {
-            int _desc = 0;
-            for (int _p = c->classes[k].parent; _p >= 0; _p = c->classes[_p].parent)
-              if (_p == cid) { _desc = 1; break; }
-            if (!_desc) continue;
-            int kmi = comp_cmethod_in_class(c, k, name);
-            if (kmi >= 0) r = ty_unify(r, (TyKind)c->scopes[kmi].ret);
-          }
-          return r;
-        }
-        TyKind sgt;
-        if (!class_has_subclass(c, cid) && sg_accessor_type(c, cid, name, &sgt)) return sgt;
-      }
-    }
-  }
-
-  /* Struct instance methods */
-  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct &&
-      /* a method written in the Struct.new / Data.define block overrides the
-         generated one of that name, so its own return type is the answer
-         (#3794), and so does a member accessor: Struct.new(:members) reads
-         the member, not the member names -- mirrors the same guard in the
-         emitter */
-      comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_NONE) {
-    ClassInfo *sc = &c->classes[ty_object_class(rt)];
-    if (sp_streq(name, "with") && sc->is_data) return rt;  /* copy-update returns the same type */
-    if (sp_streq(name, "to_a") || sp_streq(name, "values") ||
-        sp_streq(name, "deconstruct") || sp_streq(name, "members")) return TY_POLY_ARRAY;
-    if (sp_streq(name, "to_h")) {
-      int block = nt_ref(nt, id, "block");
-      if (block >= 0) {
-        /* to_h { |k,v| [nk, nv] }: hash type from the block's pair */
-        int bbody = nt_ref(nt, block, "body");
-        int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-        int last = bn > 0 ? bb[bn - 1] : -1;
-        if (last >= 0 && nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
-          int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
-          if (en == 2) {
-            TyKind kt = infer_type(c, els[0]), vt = infer_type(c, els[1]);
-            if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
-            if (kt == TY_STRING && vt == TY_STRING) return TY_STR_STR_HASH;
-            if (kt == TY_STRING) return TY_STR_POLY_HASH;
-            TyKind h = ty_hash_of(kt, vt);
-            /* the key is not a String here, so the string-keyed fallback would
-               have put whatever the block answers into a const char * slot
-               (#3602) */
-            return h != TY_UNKNOWN ? h : TY_POLY_POLY_HASH;
-          }
-        }
-      }
-      return TY_SYM_POLY_HASH;
-    }
-    if (is_len_alias(name) && argc == 0) {
-      /* a member of that name wins: its generated reader is the method */
-      char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
-      if (comp_ivar_index(sc, szn) < 0) return TY_INT;
-    }
-    if (sp_streq(name, "values_at")) return TY_POLY_ARRAY;   /* no keys selects nothing */
-    if (sp_streq(name, "hash") && argc == 0) {
-      /* a member of that name wins, like size/length above (#4190) */
-      char hn2[272]; snprintf(hn2, sizeof hn2, "@%s", name);
-      if (comp_ivar_index(sc, hn2) < 0) return TY_INT;
-    }
-    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_SYM_POLY_HASH;
-    if (sp_streq(name, "dig") && argc >= 1) {
-      int mi = struct_member_idx(c, sc, argv[0]);
-      if (mi >= 0) {
-        TyKind mt = sc->ivar_types[mi];
-        if (argc == 1) return mt;
-        /* nested struct members: walk the remaining literal keys */
-        {
-          ClassInfo *cur = sc; int cmi = mi; int di = 1;
-          while (di < argc) {
-            TyKind mt2 = cur->ivar_types[cmi];
-            if (!ty_is_object(mt2) || !c->classes[ty_object_class(mt2)].is_struct) break;
-            ClassInfo *nx = &c->classes[ty_object_class(mt2)];
-            int nmi = struct_member_idx(c, nx, argv[di]);
-            if (nmi < 0) break;
-            cur = nx; cmi = nmi; di++;
-          }
-          if (di == argc && di > 1) return cur->ivar_types[cmi];
-        }
-        /* dig(member, key, ...): index into the member's container */
-        if (ty_is_hash(mt) && argc == 2) return ty_hash_val(mt);
-        if (ty_is_array(mt) && argc == 2) return ty_array_elem(mt);
-        return TY_POLY;
-      }
-      /* a key no literal member matches resolves at run time (#3849) */
-      return TY_POLY;
-    }
-    if (sp_streq(name, "[]") && argc == 1) {
-      /* struct[:sym] or struct[int]: return specific member type if known */
-      int mi = struct_member_idx(c, sc, argv[0]);
-      if (mi >= 0) return sc->ivar_types[mi];
-      /* integer index: try to resolve literal */
-      const char *kty = nt_type(nt, argv[0]);
-      if (kty && sp_streq(kty, "IntegerNode")) {
-        long long idx = (long long)nt_int(nt, argv[0], "value", 0);
-        if (idx < 0) idx += (long long)sc->nmembers;
-        if (idx >= 0 && idx < sc->nmembers) return sc->ivar_types[(int)idx];
-      }
-      return TY_POLY;
-    }
-    if (sp_streq(name, "[]=") && argc == 2) return sc->nmembers > 0 ? sc->ivar_types[0] : TY_POLY;
-  }
-
-  /* built-in class reopening: look up user-defined methods on scalar built-in
-     types -- not for an alias that captured the builtin (builtin_only) */
-  if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
-    const char *oc_cn = NULL;
-    switch (rt) {
-    case TY_STRING: oc_cn = "String"; break;
-    case TY_INT:    oc_cn = "Integer"; break;
-    case TY_FLOAT:  oc_cn = "Float"; break;
-    case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_BOOL:   oc_cn = "TrueClass"; break;
-    case TY_RANGE:  oc_cn = "Range"; break;
-    case TY_TIME:   oc_cn = "Time"; break;
-    case TY_THREAD: oc_cn = "Thread"; break;
-    case TY_FIBER:  oc_cn = "Fiber"; break;
-    case TY_IO:     oc_cn = "File"; break;
-    case TY_CLASS:  oc_cn = "Class"; break;
-    default: break;
-    }
-    if (oc_cn) {
-      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
-      if (oc_ci >= 0) {
-        int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
-        if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) return TY_POLY;
-        if (oc_mi >= 0) return an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci);
-      }
-    }
-    /* ...and a nil receiver's NilClass reopen, an Integer or Float
-       receiver's Numeric reopen, ahead of Object's: the emitter's reopened-
-       builtin dispatch calls them for a name the receiver's own class does
-       not define, as CRuby's ancestry does. Answered by Object's method, the
-       call was typed from a method it never ran (`3.kind_tag` a String slot
-       around Numeric's Float). A name the builtin surface knows stays the
-       builtin's, where the emitter's earlier arms keep it. */
-    if (rt == TY_NIL || rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      const char *own = rt == TY_NIL ? "NilClass" : rt == TY_FLOAT ? "Float" : "Integer";
-      const char *anc = rt == TY_NIL ? "NilClass" : "Numeric";
-      if (!builtin_method_known(own, name) && !builtin_object_method_known(name)) {
-        int aci = comp_class_index(c, anc);
-        int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
-        if (ami >= 0 && c->scopes[ami].class_id == aci)
-          return an_user_call(c, id, ami, UC_REOPEN, aci);
-      }
-    }
-  }
-
-  /* instance_variable_get(:@x) on a POLY receiver: unify @x's declared type
-     across every instantiated class that has the slot (all the same concrete
-     type -> that type; mixed or none -> poly). Without this the call fell
-     through to an unrelated rule and inferred a bogus type, so the whole
-     chain was silently dropped. Codegen dispatches on cls_id per class. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
-      const char *sym = sp_streq(a0ty, "SymbolNode")
-                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-      if (sym && sym[0] == '@') {
-        TyKind uni = TY_UNKNOWN;
-        for (int ci = 0; ci < c->nclasses; ci++) {
-          if (!c->classes[ci].instantiated) continue;
-          int iv = comp_ivar_index(&c->classes[ci], sym);
-          if (iv < 0) continue;
-          TyKind t = c->classes[ci].ivar_types[iv];
-          if (uni == TY_UNKNOWN) uni = t;
-          else if (uni != t) { uni = TY_POLY; break; }
-        }
-        /* a bare Object can hold any value there (sp_Object_ivar_get) */
-        if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
-        return uni == TY_UNKNOWN ? TY_POLY : uni;
-      }
-      return TY_POLY;
-    }
-  }
-  /* instance_variable_defined? and instance_variables on a POLY receiver:
-     answered per class, a bare Object from its own table */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) return TY_BOOL;
-  }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0)
-    return TY_POLY_ARRAY;
-
-  /* instance_variable_set(:@x, v) on a POLY receiver answers v, boxed (the
-     codegen twin stores it per class) */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") && argc == 2) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) return TY_POLY;
-  }
-
-  /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && rt == TY_ENUMERATOR)
-    return TY_BOOL;
-
-  /* frozen? on an immutable value type: constantly-true bool */
-  if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?") &&
-      (rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL || rt == TY_BOOL ||
-       rt == TY_NIL || rt == TY_RANGE || rt == TY_COMPLEX || rt == TY_RATIONAL ||
-       rt == TY_BIGINT))
-    return TY_BOOL;
+  { TyKind r; if (infer_user_method_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   /* Object receivers: the user-object face of infer_call (analyze_infer_recv.c). */
