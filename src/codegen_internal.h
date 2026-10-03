@@ -995,6 +995,10 @@ int enum_builtin_node(Compiler *c, int node);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
+/* A builtin type that certainly has no #to_ary, and its class name for the
+   "no implicit conversion of X into Array" TypeError (codegen_call_recv.c). */
+int conv_to_ary_impossible(TyKind t);
+const char *conv_builtin_class_name(TyKind t);
 void ty_traits_render(const char *cell, const char *expr, Buf *b);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);
