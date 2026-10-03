@@ -3188,6 +3188,28 @@ int enum_builtin_node(Compiler *c, int node) {
   Scope *s = node >= 0 ? comp_scope_of(c, node) : NULL;
   return s && s->name && !strncmp(s->name, "__enum_", 7);
 }
+/* The name a walk over a value that is no collection reports. Inside one of
+   builtins/enumerable.rb's definitions (`v.minmax` is `__enum_minmax(v)`),
+   the walk of its own receiver is that method's: CRuby says
+   "undefined method 'minmax' for an instance of Integer", where the walk
+   named `each`. Anything else keeps its own name. */
+const char *enum_walk_name(Compiler *c, int id, int recv, const char *name) {
+  Scope *s = id >= 0 ? comp_scope_of(c, id) : NULL;
+  if (!s || !s->name || strncmp(s->name, "__enum_", 7) != 0) return name;
+  if (recv >= 0) {
+    NodeKind rk = nt_kind(c->nt, recv);
+    const char *rn = rk == NK_LocalVariableReadNode ? nt_str(c->nt, recv, "name") : NULL;
+    if (rk != NK_SelfNode && !(rn && sp_streq(rn, "__self"))) return name;
+  }
+  static char buf[4][96];
+  static int k;
+  char *o = buf[k++ & 3];
+  snprintf(o, 96, "%s", s->name + 7);
+  /* a clone's name carries `__<n>` (`__enum_any?__12`) */
+  char *cut = strstr(o + 1, "__");
+  if (cut) *cut = 0;
+  return o[0] ? o : name;
+}
 /* The C type of class `cid`'s instances. A `native_struct` carries the name
    its declaration gave -- which need not be derived from the Ruby class name
    (`native_struct "Store", "sp_X509_Store"`) -- and every other class is the

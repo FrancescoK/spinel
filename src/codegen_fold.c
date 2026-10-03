@@ -4843,9 +4843,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     /* nil is no collection: the length read below gave it a zero-trip loop
        and `nil.map { }` answered [] (#4485) */
     emit_indent(g_pre, g_indent);
-    emit_poly_iter_obj_reject(c, trecv2, name, g_pre);
+    emit_poly_iter_obj_reject_as(c, trecv2, name, enum_walk_name(c, id, recv, name), g_pre);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_poly_iter_check(_t%d, \"%s\");\n", trecv2, name);
+    buf_printf(g_pre, "sp_poly_iter_check(_t%d, \"%s\");\n", trecv2, enum_walk_name(c, id, recv, name));
     const char *restn2 = block_rest_name(c, block);
     int has_rest2 = restn2 && *restn2;
     int np2 = 0; while (block_param_name(c, block, np2)) np2++;
@@ -5752,7 +5752,7 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     emit_poly_iter_obj_normalize(c, trecv, g_pre);
     emit_indent(g_pre, g_indent);
-    emit_poly_iter_obj_reject(c, trecv, name, g_pre);
+    emit_poly_iter_obj_reject_as(c, trecv, name, enum_walk_name(c, id, recv, name), g_pre);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tlen, trecv);
     emit_indent(g_pre, g_indent);

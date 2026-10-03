@@ -5756,8 +5756,11 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
        freshly-built collection held only by this temp. */
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
     emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
-    emit_indent(b, indent); emit_poly_iter_obj_reject(c, ta, name, b);
-    emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
+    /* inside an Enumerable definition the walk of its own receiver reports
+       the method called (enum_walk_name) */
+    const char *wn = enum_walk_name(c, id, recv, name);
+    emit_indent(b, indent); emit_poly_iter_obj_reject_as(c, ta, name, wn, b);
+    emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, wn);
     /* `each { |x| }` over an Enumerator yielding several values in a step
        binds x the first of them; the builtins/ walks (`each { |x| yield x }`)
        hand the step on whole */

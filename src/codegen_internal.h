@@ -992,6 +992,7 @@ const char *typed_elem_box_fn(TyKind t);
 const char *nil_store_sfx(Compiler *c, const char *k, int node);
 #define NIL_STORE_BOXED (-2)   /* nil_store_sfx's node for a boxed element */
 int enum_builtin_node(Compiler *c, int node);
+const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
@@ -1773,6 +1774,7 @@ int method_is_void(Scope *s);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b);
 void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b);
+void emit_poly_iter_obj_reject_as(Compiler *c, int tv, const char *name, const char *shown, Buf *b);
 void emit_method_signature(Compiler *c, Scope *s, Buf *b);
 void emit_method(Compiler *c, Scope *s, Buf *b);
 int is_nested_block(const char *ty);

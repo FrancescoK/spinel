@@ -1,0 +1,36 @@
+minmax: [1, 3]
+tally: {3 => 1, 1 => 1, 2 => 1}
+each_with_object: [3, 1, 2]
+filter_map: [3, 1, 2]
+minmax_by: [1, 3]
+partition: [[3, 1, 2], []]
+minmax: undefined method 'minmax' for an instance of Integer
+tally: undefined method 'tally' for an instance of Integer
+each_with_object: undefined method 'each_with_object' for an instance of Integer
+filter_map: undefined method 'filter_map' for an instance of Integer
+minmax_by: undefined method 'minmax_by' for an instance of Integer
+partition: undefined method 'partition' for an instance of Integer
+minmax: undefined method 'minmax' for nil
+tally: undefined method 'tally' for nil
+each_with_object: undefined method 'each_with_object' for nil
+filter_map: undefined method 'filter_map' for nil
+minmax_by: undefined method 'minmax_by' for nil
+partition: undefined method 'partition' for nil
+minmax: undefined method 'minmax' for an instance of Symbol
+tally: undefined method 'tally' for an instance of Symbol
+each_with_object: undefined method 'each_with_object' for an instance of Symbol
+filter_map: undefined method 'filter_map' for an instance of Symbol
+minmax_by: undefined method 'minmax_by' for an instance of Symbol
+partition: undefined method 'partition' for an instance of Symbol
+minmax: undefined method 'minmax' for an instance of Float
+tally: undefined method 'tally' for an instance of Float
+each_with_object: undefined method 'each_with_object' for an instance of Float
+filter_map: undefined method 'filter_map' for an instance of Float
+minmax_by: undefined method 'minmax_by' for an instance of Float
+partition: undefined method 'partition' for an instance of Float
+minmax: undefined method 'minmax' for an instance of Nope
+tally: undefined method 'tally' for an instance of Nope
+each_with_object: undefined method 'each_with_object' for an instance of Nope
+filter_map: undefined method 'filter_map' for an instance of Nope
+minmax_by: undefined method 'minmax_by' for an instance of Nope
+partition: undefined method 'partition' for an instance of Nope

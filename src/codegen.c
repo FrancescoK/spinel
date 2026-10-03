@@ -2439,6 +2439,11 @@ static void emit_iter_recv(Compiler *c, int k, int mi, int tv, Buf *b) {
    itself: CRuby raises NoMethodError, where the walk read it as an empty
    container and the block never ran. */
 void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b) {
+  emit_poly_iter_obj_reject_as(c, tv, name, name, b);
+}
+/* ... the same, its NoMethodError naming `shown` (the method a builtin
+   definition's walk serves, enum_walk_name) */
+void emit_poly_iter_obj_reject_as(Compiler *c, int tv, const char *name, const char *shown, Buf *b) {
   Buf arms; memset(&arms, 0, sizeof arms);
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
@@ -2453,7 +2458,7 @@ void emit_poly_iter_obj_reject(Compiler *c, int tv, const char *name, Buf *b) {
   }
   if (arms.p && arms.p[0])
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {%s sp_raise_poly_nomethod(\"%s\", _t%d); default: break; }\n",
-               tv, tv, arms.p, name, tv);
+               tv, tv, arms.p, shown, tv);
   free(arms.p);
 }
 
