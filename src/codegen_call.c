@@ -16216,14 +16216,6 @@ static int io_builtin_name(const char *m) {
   return 0;
 }
 
-/* Class/module-method positional arity, probed from ruby 4.0.6 the same
-   way as the instance table above (tools/gen_builtin_arity_spec.rb): the
-   constructors and module functions whose emitters index argv[]
-   unconditionally (File.open with no arguments was a compile-time
-   SIGSEGV), the surface of the constants a program names bare -- GC,
-   Fiber, Thread, a class Struct.new or Data.define answered, keyed
-   StructClass and DataClass -- and the Kernel functions a bare call
-   reaches. */
 /* A builtin's instance methods of cls, up to cap -- the Method#arity
    table's and the argument-count table's rows, which cover different
    classes (IO's are only in the second): the names a send on a receiver of
@@ -16237,6 +16229,14 @@ int builtin_method_names(const char *cls, const char **out, int cap) {
   return n;
 }
 
+/* Class/module-method positional arity, probed from ruby 4.0.6 the same
+   way as the instance table above (tools/gen_builtin_arity_spec.rb): the
+   constructors and module functions whose emitters index argv[]
+   unconditionally (File.open with no arguments was a compile-time
+   SIGSEGV), the surface of the constants a program names bare -- GC,
+   Fiber, Thread, a class Struct.new or Data.define answered, keyed
+   StructClass and DataClass -- and the Kernel functions a bare call
+   reaches. */
 static const SpAritySpec
 sp_builtin_cmeth_arity_spec_tbl[] = {
   {"File","open",1,3,"1..3","1..3",1,3,"1..3","1..3"},
