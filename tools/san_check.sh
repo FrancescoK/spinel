@@ -26,7 +26,8 @@ SP=$ROOT/build/spinel-san
 [ -x "$SP" ] || { echo "san-check: build build/spinel-san first (make san-check)" >&2; exit 2; }
 VERBOSE=0
 [ "${1-}" = "-v" ] && { VERBOSE=1; shift; }
-JOBS=${SAN_CHECK_JOBS:-$(nproc)}
+# the Makefile's NPROC chain: nproc is GNU, macOS answers through sysctl
+JOBS=${SAN_CHECK_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
 LOGS=$(mktemp -d "${TMPDIR:-/tmp}/spinel-san-check.XXXXXX")
 trap 'rm -rf "$LOGS"' EXIT
 # The instrumented frames are several times the plain ones, and codegen
@@ -49,6 +50,9 @@ list "$@" | xargs -P "$JOBS" -I{} sh -c '
   rm -f "$3/$key.c"
   grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" || rm -f "$3/$key.log"
 ' _ {} "$SP" "$LOGS"
+# the command above answers 0 for every program, so anything else is xargs
+# itself not running them: no log then means no compile, not no report
+[ "${PIPESTATUS[1]}" -eq 0 ] || { echo "san-check: xargs failed, the corpus was not compiled" >&2; exit 2; }
 
 total=$(list "$@" | wc -l)
 bad=$(find "$LOGS" -name '*.log' | wc -l)
