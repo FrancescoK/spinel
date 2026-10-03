@@ -1839,7 +1839,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
           }
           break;
         }
-        case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
+        case SP_BUILTIN_RANGE: puts(sp_range_str(*(sp_Range *)v.v.p)); break;
         case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
         case SP_BUILTIN_STR_RANGE: puts(sp_srange_to_s(*(sp_StrRange *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
@@ -2033,7 +2033,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         /* Array#to_s is Array#inspect; a boxed PolyArray element had no arm
            and fell through to "" (#3007) */
         case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
-        case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
+        case SP_BUILTIN_RANGE: return sp_range_str(*(sp_Range *)v.v.p);
         case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
         case SP_BUILTIN_STR_RANGE: return sp_srange_to_s(*(sp_StrRange *)v.v.p);
         case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);

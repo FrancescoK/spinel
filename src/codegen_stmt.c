@@ -148,7 +148,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     /* puts of a Range renders its to_s ("first..last"), then a newline. */
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
-    buf_printf(b, "; sp_puts_line(sp_Range_inspect(&_t%d)); }\n", tv);
+    buf_printf(b, "; sp_puts_line(sp_range_str(_t%d)); }\n", tv);
   }
   else if (t == TY_FLOAT_RANGE) {
     int tv = ++g_tmp;
@@ -325,7 +325,7 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     /* print of a Range renders its to_s ("first..last"), no newline. */
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
-    buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); }\n", tv);
+    buf_printf(b, "; fputs(sp_range_str(_t%d), stdout); }\n", tv);
   }
   else if (t == TY_FLOAT_RANGE) {
     int tv = ++g_tmp;

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sp_time.h"   /* sp_time_inspect_v / sp_time_to_s_v */
+#include "sp_range.h"  /* sp_range_inspect */
 
 /* Format a non-negative Complex-component magnitude the way MRI does: infinite
    and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a
@@ -79,11 +80,10 @@ const char *sp_rational_to_s(sp_Rational r) {
   return o;
 }
 
-const char *sp_Range_inspect(sp_Range *r) {SP_GC_ROOT(r);
-  /* "first..last" / "first...last" form. Buffer sized for two int64s + dots. */
-  char *buf = sp_str_alloc_raw(48);
-  snprintf(buf, 48, r->excl ? "%lld...%lld" : "%lld..%lld", (long long)r->first, (long long)r->last);
-  return buf;
+/* A boxed Range renders as the typed one does: an open side is left out
+   ("..3", "1.."), where the sentinel printed as -9223372036854775808. */
+const char *sp_Range_inspect(sp_Range *r) {
+  return sp_range_inspect(*r);
 }
 
 /* A boxed Time renders as an unboxed one does (lib/sp_time.c): its own
