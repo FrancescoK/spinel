@@ -31,6 +31,10 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
 int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
 int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -150,5 +154,12 @@ int re_lit_enc_opts(Compiler *c, int recv, int rre);
 void emit_re_opts_flags(Compiler *c, int argc, const int *argv, Buf *out);
 int emit_try_convert_boxed(Compiler *c, const char *cname, int arg, Buf *b);
 int re_src_has_backref(const char *s);
+int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b);
+void emit_time_in_zone(Compiler *c, int ts, int zone, Buf *b);
+void emit_utime_arg_ns(Compiler *c, int node, const char *sv, const char *nv, Buf *b);
+int emit_clock_id(Compiler *c, int node, Buf *b);
+void emit_math_arg(Compiler *c, int node, Buf *out);
+int json_to_json_is_builtin(Compiler *c, int recv);
+int node_is_stringio(Compiler *c, int node);
 
 #endif
