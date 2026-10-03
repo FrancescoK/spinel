@@ -35,6 +35,10 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
 int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
+int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
+int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 /* An ordered, de-duplicated list of method names for the reflection folds.
@@ -161,5 +165,16 @@ int emit_clock_id(Compiler *c, int node, Buf *b);
 void emit_math_arg(Compiler *c, int node, Buf *out);
 int json_to_json_is_builtin(Compiler *c, int recv);
 int node_is_stringio(Compiler *c, int node);
+void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b);
+const char *exc_gated_acc_fn(const char *name);
+int hoist_exc_recv(Compiler *c, int recv);
+int ctor_init_takes_block(Compiler *c, int initm);
+void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg_node, Buf *b);
+void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b);
+int exc_reopen_initialize(Compiler *c, int ci);
+int raise_plain_arg(const NodeTable *nt, int node);
+void emit_kconv_call(Compiler *c, int id, const int *av, int ac, int raise, Buf *b);
+void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta);
+void emit_fiber_storage_key(Compiler *c, int key, Buf *b);
 
 #endif
