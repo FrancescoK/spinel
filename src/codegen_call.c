@@ -12569,7 +12569,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
 static void emit_splice_bounds(Compiler *c, int ta, int tg,
                                int start_node, int len_node, int range_node, Buf *b) {
   if (range_node >= 0) {
-    buf_printf(b, "sp_Range _t%d = ", tg); emit_expr(c, range_node, b);
+    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tg); emit_expr(c, range_node, b); buf_puts(b, ")");
     buf_printf(b, "; sp_int _al%d = _t%d->len;", tg, ta);
     /* frozen precedes any range validation (CRuby's modify-check order),
        and a range beginning before -len is a RangeError, not IndexError */

@@ -29,6 +29,16 @@ sp_Range sp_range_new_fend(sp_int f, sp_float e, sp_int x);
    (bsearch, step, rand, a clamp to the end): say so for such a Range. */
 void sp_range_fend_unsupported(const char *m);
 static inline void sp_range_int_only(sp_Range r, const char *m){if(r.fe)sp_range_fend_unsupported(m);}
+/* A Range used as an index span (Array#[], String#[], fill, byteslice, ...):
+   CRuby converts each end with to_int, so a Float end truncates toward zero
+   and keeps its exclusivity -- a[1...2.5] is a[1...2], a[0..-2.5] a[0..-2] --
+   where the walk bounds floor it and fold the exclusivity in. */
+static inline sp_Range sp_range_ix(sp_Range r){
+  if(!r.fe)return r;
+  sp_float t=r.fend!=r.fend?0.0:r.fend>9.2e18?9.2e18:r.fend<-9.2e18?-9.2e18:r.fend;
+  sp_Range x=sp_range_new(r.first,(sp_int)t,r.fe==2);
+  return x;
+}
 /* The end as a number for comparisons, and whether it was excluded as written. */
 static inline sp_float sp_range_end_num(sp_Range r){return r.fe?r.fend:(sp_float)r.last;}
 static inline sp_bool sp_range_excl_end(sp_Range r){return r.fe?r.fe==2:r.excl!=0;}

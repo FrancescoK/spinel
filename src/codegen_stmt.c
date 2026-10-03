@@ -13568,7 +13568,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       int ti = ++g_tmp;
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent);
-      buf_printf(b, "{ sp_Range _t%d = ", ti); emit_expr(c, argv[0], b);
+      buf_printf(b, "{ sp_Range _t%d = sp_range_ix(", ti); emit_expr(c, argv[0], b); buf_puts(b, ")");
       buf_printf(b, "; sp_int _len%d = (sp_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_puts(b, ");");
       /* a beginless bound is 0 and an endless one is the last index, rather
          than the SP_INT_NIL sentinel a negative-index fixup would fold into a
@@ -13893,7 +13893,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         emit_indent(b, indent);
         if (comp_ntype(c, argv[0]) == TY_RANGE) {
           int tr2 = ++g_tmp;
-          buf_printf(b, "{ sp_Range _t%d = ", tr2); emit_expr(c, argv[0], b);
+          buf_printf(b, "{ sp_Range _t%d = sp_range_ix(", tr2); emit_expr(c, argv[0], b); buf_puts(b, ")");
           buf_printf(b, "; sp_int _t%d = (sp_int)sp_str_length(", tn2); emit_expr(c, recv, b);
           /* a beginless Range (first INTPTR_MIN) starts at 0, and an endless
              one (last INTPTR_MAX) runs to the end: `last + 1` overflowed */

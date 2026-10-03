@@ -161,7 +161,7 @@ int emit_op_array_slice_bang_range(Compiler *c, const BopCtx *x, Buf *b) {
   int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tn = ++g_tmp;
   if (x->rt == TY_POLY_ARRAY) {
     buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-    buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; sp_int _t%d = _t%d.first == INTPTR_MIN ? 0"
                   " : (_t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first);",
                tf, tr, tr, tr, ta, ta, tr);
@@ -176,7 +176,7 @@ int emit_op_array_slice_bang_range(Compiler *c, const BopCtx *x, Buf *b) {
   }
   const char *k = array_kind(x->rt);
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-  buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+  buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[0], b); buf_puts(b, ")");
   buf_printf(b, "; sp_int _t%d = _t%d.first == INTPTR_MIN ? 0"
                 " : (_t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first);",
              tf, tr, tr, tr, ta, ta, tr);

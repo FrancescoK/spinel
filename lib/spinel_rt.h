@@ -6571,6 +6571,7 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
    runtime length, then splice. A begin index below -length raises RangeError
    (CRuby uses RangeError here, not the (start,len) form's IndexError). */
 static sp_RbVal sp_poly_splice_range(sp_RbVal recv, sp_Range r, sp_RbVal src) {
+  r = sp_range_ix(r);   /* an index span: each end through to_int */
   /* a string receiver measures the range against its CHARACTER length, which
      sp_poly_arr_len answers 0 for (#3940) */
   if (recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv)) {
@@ -6620,6 +6621,7 @@ static sp_int sp_range_first_from(sp_Range r) {
   return r.first == INTPTR_MIN ? 0 : r.first;
 }
 static sp_RbVal sp_poly_arr_range(sp_RbVal recv, sp_Range r) {
+  r = sp_range_ix(r);   /* an index span: each end through to_int */
   sp_int alen = sp_poly_arr_len(recv);
   sp_int first = r.first;
   if (first == INTPTR_MIN) first = 0;          /* beginless */
@@ -9946,7 +9948,7 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   /* a Range index on a poly STRING is a substring (String#[Range]); without
      this a Range fell through as i=0 and returned char 0 (#3175). */
   if (idx.tag == SP_TAG_OBJ && idx.cls_id == SP_BUILTIN_RANGE && recv.tag == SP_TAG_STR) {
-    sp_Range *rg = (sp_Range *)idx.v.p;
+    sp_Range rgx = sp_range_ix(*(sp_Range *)idx.v.p), *rg = &rgx;
     return sp_box_str(sp_str_sub_range_r(recv.v.s ? recv.v.s : sp_str_empty,
                                          sp_range_first_from(*rg), rg->last, (int)rg->excl));
   }
@@ -9957,7 +9959,7 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      two-argument `:symbol[0, 3]`. Out of range is nil, exactly as it is for
      the String the symbol names, which is what sp_box_str answers. */
   if (idx.tag == SP_TAG_OBJ && idx.cls_id == SP_BUILTIN_RANGE && recv.tag == SP_TAG_SYM) {
-    sp_Range *rg = (sp_Range *)idx.v.p;
+    sp_Range rgx = sp_range_ix(*(sp_Range *)idx.v.p), *rg = &rgx;
     return sp_box_str(sp_str_sub_range_r(sp_sym_to_s((sp_sym)recv.v.i),
                                          sp_range_first_from(*rg), rg->last, (int)rg->excl));
   }
@@ -9973,7 +9975,7 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      `b[..3]` was 1 where it should raise and `b[0..3]` was a wrong number. */
   if (idx.tag == SP_TAG_OBJ && idx.cls_id == SP_BUILTIN_RANGE && idx.v.p &&
       (recv.tag == SP_TAG_INT || recv.tag == SP_TAG_BIGINT)) {
-    sp_Range rg = *(sp_Range *)idx.v.p;
+    sp_Range rg = sp_range_ix(*(sp_Range *)idx.v.p);
     if (rg.first == INTPTR_MIN)
       sp_raise_cls("ArgumentError",
                    "The beginless range for Integer#[] results in infinity");

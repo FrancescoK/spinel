@@ -911,7 +911,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
        handed the sp_Range to the element read */
     int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tl = ++g_tmp, tn = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-    buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; sp_int _t%d = sp_PolyArray_length(_t%d);", tn, ta);
     buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 :"
                   " (_t%d.first < 0 ? _t%d.first + _t%d : _t%d.first);",
@@ -1633,7 +1633,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tl = ++g_tmp, tn = ++g_tmp;
     /* rooted across the range, whose bounds may allocate */
     buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-    buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tn, k, ta);
     buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 :"
                   " (_t%d.first < 0 ? _t%d.first + _t%d : _t%d.first);",
@@ -2586,7 +2586,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
              way Array#[] resolves it: read raw, an endless range ran to
              INTPTR_MAX and pushed until the process died (#3847) */
           int trng = ++g_tmp, ti = ++g_tmp, tlen = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
-          buf_printf(b, "{ sp_Range _t%d = ", trng); emit_expr(c, argv[a], b);
+          buf_printf(b, "{ sp_Range _t%d = sp_range_ix(", trng); emit_expr(c, argv[a], b); buf_puts(b, ")");
           buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tlen, an, tr);
           buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0"
                         " : (_t%d.first < 0 ? _t%d.first + _t%d : _t%d.first);",
@@ -2736,7 +2736,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         emit_indent(g_pre, g_indent);
         /* rendered first: emit_expr may want g_pre lines of its own (#4065) */
         { Buf rgb2; memset(&rgb2, 0, sizeof rgb2); emit_expr(c, argv[0], &rgb2);
-          buf_printf(g_pre, "sp_Range _t%d = %s;\n", tr, rgb2.p ? rgb2.p : "(sp_Range){0}");
+          buf_printf(g_pre, "sp_Range _t%d = sp_range_ix(%s);\n", tr, rgb2.p ? rgb2.p : "(sp_Range){0}");
           free(rgb2.p); }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;\n",
@@ -2835,7 +2835,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
         /* fill(val, range): use range as index span */
         int tr = ++g_tmp, te = ++g_tmp;
-        buf_printf(b, " sp_Range _t%d = ", tr); emit_expr(c, argv[1], b);
+        buf_printf(b, " sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[1], b); buf_puts(b, ")");
         buf_printf(b, "; sp_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;",
                    ts, tr, ts, ts, tn, ts, ts);
         /* a negative end counts from the end, an endless one runs to the
@@ -3604,7 +3604,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
                  tn2, to, tb2, tl2);
       if (comp_ntype(c, argv[0]) == TY_RANGE) {
         int trg = ++g_tmp;
-        buf_printf(b, " sp_Range _t%d = ", trg); emit_expr(c, argv[0], b);
+        buf_printf(b, " sp_Range _t%d = sp_range_ix(", trg); emit_expr(c, argv[0], b); buf_puts(b, ")");
         /* a beginless Range (first is INTPTR_MIN) starts at the beginning */
         buf_printf(b, "; _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
                    tb2, trg, trg, trg, tn2, trg);
@@ -3702,8 +3702,8 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     { char srefBR[1024];
       if (strbuf_slot_ref(c, recv, srefBR, sizeof srefBR)) {
         int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = ", tm2, srefBR, tr3);
-        emit_expr(c, argv[0], b);
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = sp_range_ix(", tm2, srefBR, tr3);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
         buf_printf(b, "; const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d),"
                       " _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ",
                    tn3, tm2, tr3, tr3, tr3, tr3);
@@ -3714,7 +3714,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     int lvw9 = str_mut_var_recv(c, recv);
     int tr9 = ++g_tmp, tn9 = ++g_tmp;
     buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
-    buf_printf(b, "sp_Range _t%d = ", tr9); emit_expr(c, argv[0], b);
+    buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr9); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; const char *_t%d = sp_str_bytesplice(", tn9);
     emit_expr(c, recv, b);
     buf_printf(b, ", _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ", tr9, tr9, tr9, tr9);
@@ -6276,7 +6276,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
     /* a Range VALUE (variable / expression): slice through the runtime
        bounds (the literal form keeps its specialized arm below) */
     int trg2 = ++g_tmp;
-    buf_printf(b, "({ sp_Range _t%d = ", trg2); emit_expr(c, argv[0], b);
+    buf_printf(b, "({ sp_Range _t%d = sp_range_ix(", trg2); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; sp_str_sub_range_r(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })",
                r, trg2, trg2, trg2);
   }
@@ -7135,7 +7135,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
        endless range keeps everything above lo; a beginless range raises
        like CRuby (the field below bit 0 is infinite) */
     int trb = ++g_tmp;
-    buf_printf(b, "({ sp_Range _t%d = ", trb); emit_expr(c, argv[0], b);
+    buf_printf(b, "({ sp_Range _t%d = sp_range_ix(", trb); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; sp_int _lo%d = _t%d.first == INTPTR_MIN"
                   " ? (sp_raise_cls(\"ArgumentError\","
                   " \"The beginless range for Integer#[] results in infinity\"), 0)"
@@ -10001,7 +10001,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
          (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")))) {
       /* md[range]: the groups over that index range (#2532) */
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_Range _t%d = ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "({ sp_Range _t%d = sp_range_ix(", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
       buf_printf(b, "; sp_MatchData_aref_range(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })", r, t, t, t);
     }
     else if (sp_streq(name, "[]") && argc == 1) {
@@ -10114,9 +10114,10 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
              loop to INTPTR_MAX, and a negative begin read the groups from the
              end through sp_MatchData_aref's own negative index. */
           int rk = ++g_tmp, rj = ++g_tmp, rlo = ++g_tmp, rhi = ++g_tmp, rn = ++g_tmp;
-          buf_printf(b, " sp_Range _t%d = ", rk);
+          buf_printf(b, " sp_Range _t%d = sp_range_ix(", rk);
           if (hold) buf_printf(b, "_t%d", held[i]);
           else emit_expr(c, argv[i], b);
+          buf_puts(b, ")");
           buf_printf(b, "; sp_int _t%d = sp_MatchData_length(_t%d);", rn, mt);
           buf_printf(b, " sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first;", rlo, rk, rk);
           buf_printf(b, " if (_t%d < 0) { if (_t%d < -_t%d) sp_raise_cls(\"RangeError\","
@@ -13288,7 +13289,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
          the raise ran (#4308). Same endpoint resolution the String receiver
          uses. */
       int trp = ++g_tmp;
-      buf_printf(b, "({ sp_Range _t%d = ", trp); emit_expr(c, argv[0], b);
+      buf_printf(b, "({ sp_Range _t%d = sp_range_ix(", trp); emit_expr(c, argv[0], b); buf_puts(b, ")");
       buf_puts(b, "; sp_box_nullable_str(sp_str_byteslice_range(sp_poly_recv_s(");
       emit_expr(c, recv, b);
       buf_printf(b, ", \"byteslice\"), _t%d.first, _t%d.last, _t%d.excl,"
