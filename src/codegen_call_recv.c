@@ -6575,6 +6575,244 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
   return 1;
 }
 
+/* A String receiver's pattern methods: a nil / true / false pattern's
+   TypeError, sub / gsub with a regexp literal, an interpolated regexp, a
+   Regexp value or a poly pattern, split by a regexp, and scan
+   (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
+static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, const char *r) {
+  /* a nil / true / false PATTERN in the regexp-expected family is CRuby's
+     TypeError ("wrong argument type nil (expected Regexp)") -- it used to
+     fall past every pattern-typed arm into NoMethodError, or silently
+     skip the substitution */
+  if ((sp_streq(name, "sub") || sp_streq(name, "sub!") ||
+            sp_streq(name, "gsub") || sp_streq(name, "gsub!") ||
+            sp_streq(name, "match") || sp_streq(name, "match?") ||
+            sp_streq(name, "scan")) && argc >= 1 &&
+           (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[0]) == TY_BOOL)) {
+    TyKind prty = comp_ntype(c, id);
+    int prb = ++g_tmp;
+    buf_printf(b, "({ (void)(%s); ", r);
+    /* every argument evaluates in order before the raise, as a real
+       dispatch would */
+    if (comp_ntype(c, argv[0]) == TY_NIL) {
+      buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); ");
+    }
+    else {
+      buf_printf(b, "int _t%d = (", prb); emit_expr(c, argv[0], b); buf_puts(b, "); ");
+    }
+    for (int pa = 1; pa < argc; pa++) {
+      buf_puts(b, "(void)("); emit_expr(c, argv[pa], b); buf_puts(b, "); ");
+    }
+    if (comp_ntype(c, argv[0]) == TY_NIL)
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"wrong argument type nil (expected Regexp)\");");
+    else
+      buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
+                    " ? \"wrong argument type true (expected Regexp)\""
+                    " : \"wrong argument type false (expected Regexp)\");", prb);
+    buf_printf(b, " %s; })", raise_tail_value_c(c, prty));
+  }
+  /* string methods taking a regex-literal argument route to the engine */
+  else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+    buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
+    if (comp_ntype(c, argv[1]) == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    else emit_str_expr(c, argv[1], b);
+    buf_puts(b, ")");
+  }
+  else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+           nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
+    Buf rp; memset(&rp, 0, sizeof rp);
+    emit_regex_pat_to_buf(c, argv[0], &rp);
+    buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
+    emit_str_expr(c, argv[1], b); buf_puts(b, ")");
+    free(rp.p);
+  }
+  else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+           comp_ntype(c, argv[0]) == TY_REGEX) {
+    /* pattern held in a regex-typed value (e.g. a local bound to an
+       interpolated /.../); dispatch to the compiled-pattern overload
+       rather than the string-pattern one. */
+    const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+    buf_printf(b, "sp_re_%s%s(", name, suf);
+    emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
+    if (comp_ntype(c, argv[1]) == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    else emit_str_expr(c, argv[1], b);
+    buf_puts(b, ")");
+  }
+  else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+           comp_ntype(c, argv[0]) == TY_POLY && comp_ntype(c, argv[1]) != TY_STR_STR_HASH) {
+    /* a pattern that is a Regexp or a String only at runtime (an inflection
+       rule read out of a [pattern, replacement] pair): the runtime picks
+       the engine by its tag. The string-pattern path coerced the Regexp. */
+    buf_puts(b, "sp_poly_pat_gsub("); emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %s, ", r); emit_str_expr(c, argv[1], b);
+    buf_printf(b, ", %d)", sp_streq(name, "sub") ? 1 : 0);
+  }
+  else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "split") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+    emit_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "split") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX) {
+    buf_puts(b, "sp_re_split("); emit_expr(c, argv[0], b);
+    buf_printf(b, ", %s)", r);
+  }
+  else if (sp_streq(name, "split") && argc == 2 && comp_ntype(c, argv[0]) == TY_REGEX) {
+    buf_puts(b, "sp_re_split_limit("); emit_expr(c, argv[0], b);
+    buf_printf(b, ", %s, ", r); emit_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "scan") && argc == 1 &&
+           (re_lit_index(c, argv[0]) >= 0 || comp_ntype(c, argv[0]) == TY_STRING ||
+            comp_ntype(c, argv[0]) == TY_REGEX || comp_ntype(c, argv[0]) == TY_POLY) &&
+           nt_ref(nt, id, "block") >= 0) {
+    /* value-form scan { }: iterate in the prelude; the value is the
+       receiver string (CRuby returns self from the block form). With
+       capture groups the rows come from sp_re_scan_poly: one param
+       binds the group row itself, several destructure it (a group that
+       did not participate binds nil). */
+    int blk = nt_ref(nt, id, "block");
+    int re_idx = re_lit_index(c, argv[0]);
+    int has_cap = re_idx >= 0 && an_re_has_captures(re_lit_src(c, argv[0]));
+    int np = 0; while (block_param_name(c, blk, np)) np++;
+    int body = nt_ref(nt, blk, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
+    emit_indent(g_pre, g_indent);
+    if (has_cap)
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                 tm, re_idx, tr, tm);
+    else if (re_idx >= 0)
+      buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                 tm, re_idx, tr, tm);
+    /* pattern only known at run time (an inline `Regexp.new(s)`, a local
+       holding one): the value already IS the mrb_regexp_pattern*. has_cap
+       is 0 for such a pattern, so the block param stays a whole-match
+       String -- the same shape a local bound to a capturing literal
+       already yields here (#3389). */
+    else if (comp_ntype(c, argv[0]) == TY_REGEX) {
+      /* render the pattern to a scratch buffer: `Regexp.new(s)` roots its
+         own argument, and those decls go to g_pre, which must receive them
+         as whole statements rather than spliced into this initializer */
+      Buf eb; memset(&eb, 0, sizeof eb);
+      emit_expr(c, argv[0], &eb);
+      buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(%s, _t%d); SP_GC_ROOT(_t%d);\n",
+                 tm, eb.p ? eb.p : "NULL", tr, tm);
+      free(eb.p);
+    }
+    else if (comp_ntype(c, argv[0]) == TY_POLY) {
+      /* the pattern arrives boxed (read out of a table): a Regexp or a
+         String, told apart at run time (sp_scan_boxed) */
+      Buf pb2; memset(&pb2, 0, sizeof pb2);
+      emit_boxed(c, argv[0], &pb2);
+      buf_printf(g_pre, "sp_StrArray *_t%d = sp_scan_boxed(_t%d, %s); SP_GC_ROOT(_t%d);\n",
+                 tm, tr, pb2.p ? pb2.p : "sp_box_nil()", tm);
+      free(pb2.p);
+    }
+    /* a String pattern the body walks the subject with (below) is held
+       in a temp, read by every turn */
+    else if (subtree_reads_match_globals(c, body)) {
+      Buf sb; memset(&sb, 0, sizeof sb);
+      emit_expr(c, argv[0], &sb);
+      tpat = ++g_tmp;
+      buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n",
+                 tpat, sb.p ? sb.p : "NULL", tpat);
+      free(sb.p);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                 tm, tr, tpat, tm);
+    }
+    else {
+      buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, ", tm, tr);
+      emit_expr(c, argv[0], g_pre);
+      buf_printf(g_pre, "); SP_GC_ROOT(_t%d);\n", tm);
+    }
+    /* the rows are pre-computed, so the match registers hold the last
+       match; walk the subject again per iteration when the body reads $~
+       or a capture global (#3601). The walk reads the subject after the
+       body has run, so it is rooted. */
+    int sc_pos = ((re_idx >= 0 || tpat >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
+    if (sc_pos >= 0) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
+    }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
+    if (sc_pos >= 0 && tpat >= 0) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
+    }
+    else if (sc_pos >= 0) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
+                        " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;\n",
+                 re_idx, tr, sc_pos, sc_pos);
+    }
+    if (has_cap && np >= 2) {
+      int trow = ++g_tmp;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
+      for (int pj = 0; pj < np; pj++) {
+        const char *pn = rename_local(block_param_name(c, blk, pj));
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "lv_%s = (_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL;\n",
+                   pn, trow, trow, pj, trow, pj, trow, pj);
+      }
+    }
+    else if (block_param_name(c, blk, 0)) {
+      const char *p0r = rename_local(block_param_name(c, blk, 0));
+      emit_indent(g_pre, g_indent + 1);
+      if (has_cap)
+        buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
+      else
+        buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
+    }
+    int svind = g_indent; g_indent++;
+    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    g_indent = svind;
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    buf_printf(b, "_t%d", tr);
+  }
+  else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+           !an_re_has_captures(re_lit_src(c, argv[0]))) {
+    buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+           an_re_has_captures(re_lit_src(c, argv[0]))) {
+    buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+  }
+  else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+    buf_printf(b, "sp_str_scan(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  /* scan against a regex VALUE the arms above could not resolve to a
+     precompiled literal (an interpolated pattern, a local holding one, an
+     inline `Regexp.new(s)`): the value already IS the
+     mrb_regexp_pattern*. Without this arm the call fell through to the
+     unresolved-call gate and raised NoMethodError on the String (#3389).
+     The result shape follows the type analyze settled on, so the two stay
+     in step: an unresolvable pattern is typed poly_array and
+     sp_re_scan_poly decides per match whether the row is the whole match
+     or its captures. */
+  else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX &&
+           nt_ref(nt, id, "block") < 0) {
+    buf_printf(b, "%s(", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
+    emit_expr(c, argv[0], b); buf_printf(b, ", %s)", r);
+  }
+  /* the same, for a pattern that arrives BOXED (read out of a table): a
+     Regexp or a String, told apart at run time (sp_scan_boxed) */
+  else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY &&
+           nt_ref(nt, id, "block") < 0) {
+    buf_printf(b, "%s(%s, ", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_scan_boxed_poly" : "sp_scan_boxed", r);
+    emit_boxed(c, argv[0], b);
+    buf_puts(b, ")");
+  }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -6677,235 +6915,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "upto") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "sp_StrArray_from_string_range(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ", 0)");
     }
-    /* a nil / true / false PATTERN in the regexp-expected family is CRuby's
-       TypeError ("wrong argument type nil (expected Regexp)") -- it used to
-       fall past every pattern-typed arm into NoMethodError, or silently
-       skip the substitution */
-    else if ((sp_streq(name, "sub") || sp_streq(name, "sub!") ||
-              sp_streq(name, "gsub") || sp_streq(name, "gsub!") ||
-              sp_streq(name, "match") || sp_streq(name, "match?") ||
-              sp_streq(name, "scan")) && argc >= 1 &&
-             (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[0]) == TY_BOOL)) {
-      TyKind prty = comp_ntype(c, id);
-      int prb = ++g_tmp;
-      buf_printf(b, "({ (void)(%s); ", r);
-      /* every argument evaluates in order before the raise, as a real
-         dispatch would */
-      if (comp_ntype(c, argv[0]) == TY_NIL) {
-        buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); ");
-      }
-      else {
-        buf_printf(b, "int _t%d = (", prb); emit_expr(c, argv[0], b); buf_puts(b, "); ");
-      }
-      for (int pa = 1; pa < argc; pa++) {
-        buf_puts(b, "(void)("); emit_expr(c, argv[pa], b); buf_puts(b, "); ");
-      }
-      if (comp_ntype(c, argv[0]) == TY_NIL)
-        buf_puts(b, "sp_raise_cls(\"TypeError\", \"wrong argument type nil (expected Regexp)\");");
-      else
-        buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
-                      " ? \"wrong argument type true (expected Regexp)\""
-                      " : \"wrong argument type false (expected Regexp)\");", prb);
-      buf_printf(b, " %s; })", raise_tail_value_c(c, prty));
-    }
-    /* string methods taking a regex-literal argument route to the engine */
-    else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-      const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
-      buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
-      if (comp_ntype(c, argv[1]) == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
-      else emit_str_expr(c, argv[1], b);
-      buf_puts(b, ")");
-    }
-    else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
-             nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
-      Buf rp; memset(&rp, 0, sizeof rp);
-      emit_regex_pat_to_buf(c, argv[0], &rp);
-      buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
-      emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-      free(rp.p);
-    }
-    else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
-             comp_ntype(c, argv[0]) == TY_REGEX) {
-      /* pattern held in a regex-typed value (e.g. a local bound to an
-         interpolated /.../); dispatch to the compiled-pattern overload
-         rather than the string-pattern one. */
-      const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
-      buf_printf(b, "sp_re_%s%s(", name, suf);
-      emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
-      if (comp_ntype(c, argv[1]) == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
-      else emit_str_expr(c, argv[1], b);
-      buf_puts(b, ")");
-    }
-    else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
-             comp_ntype(c, argv[0]) == TY_POLY && comp_ntype(c, argv[1]) != TY_STR_STR_HASH) {
-      /* a pattern that is a Regexp or a String only at runtime (an inflection
-         rule read out of a [pattern, replacement] pair): the runtime picks
-         the engine by its tag. The string-pattern path coerced the Regexp. */
-      buf_puts(b, "sp_poly_pat_gsub("); emit_boxed(c, argv[0], b);
-      buf_printf(b, ", %s, ", r); emit_str_expr(c, argv[1], b);
-      buf_printf(b, ", %d)", sp_streq(name, "sub") ? 1 : 0);
-    }
-    else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "split") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
-      emit_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "split") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX) {
-      buf_puts(b, "sp_re_split("); emit_expr(c, argv[0], b);
-      buf_printf(b, ", %s)", r);
-    }
-    else if (sp_streq(name, "split") && argc == 2 && comp_ntype(c, argv[0]) == TY_REGEX) {
-      buf_puts(b, "sp_re_split_limit("); emit_expr(c, argv[0], b);
-      buf_printf(b, ", %s, ", r); emit_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "scan") && argc == 1 &&
-             (re_lit_index(c, argv[0]) >= 0 || comp_ntype(c, argv[0]) == TY_STRING ||
-              comp_ntype(c, argv[0]) == TY_REGEX || comp_ntype(c, argv[0]) == TY_POLY) &&
-             nt_ref(nt, id, "block") >= 0) {
-      /* value-form scan { }: iterate in the prelude; the value is the
-         receiver string (CRuby returns self from the block form). With
-         capture groups the rows come from sp_re_scan_poly: one param
-         binds the group row itself, several destructure it (a group that
-         did not participate binds nil). */
-      int blk = nt_ref(nt, id, "block");
-      int re_idx = re_lit_index(c, argv[0]);
-      int has_cap = re_idx >= 0 && an_re_has_captures(re_lit_src(c, argv[0]));
-      int np = 0; while (block_param_name(c, blk, np)) np++;
-      int body = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
-      emit_indent(g_pre, g_indent);
-      if (has_cap)
-        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                   tm, re_idx, tr, tm);
-      else if (re_idx >= 0)
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                   tm, re_idx, tr, tm);
-      /* pattern only known at run time (an inline `Regexp.new(s)`, a local
-         holding one): the value already IS the mrb_regexp_pattern*. has_cap
-         is 0 for such a pattern, so the block param stays a whole-match
-         String -- the same shape a local bound to a capturing literal
-         already yields here (#3389). */
-      else if (comp_ntype(c, argv[0]) == TY_REGEX) {
-        /* render the pattern to a scratch buffer: `Regexp.new(s)` roots its
-           own argument, and those decls go to g_pre, which must receive them
-           as whole statements rather than spliced into this initializer */
-        Buf eb; memset(&eb, 0, sizeof eb);
-        emit_expr(c, argv[0], &eb);
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(%s, _t%d); SP_GC_ROOT(_t%d);\n",
-                   tm, eb.p ? eb.p : "NULL", tr, tm);
-        free(eb.p);
-      }
-      else if (comp_ntype(c, argv[0]) == TY_POLY) {
-        /* the pattern arrives boxed (read out of a table): a Regexp or a
-           String, told apart at run time (sp_scan_boxed) */
-        Buf pb2; memset(&pb2, 0, sizeof pb2);
-        emit_boxed(c, argv[0], &pb2);
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_scan_boxed(_t%d, %s); SP_GC_ROOT(_t%d);\n",
-                   tm, tr, pb2.p ? pb2.p : "sp_box_nil()", tm);
-        free(pb2.p);
-      }
-      /* a String pattern the body walks the subject with (below) is held
-         in a temp, read by every turn */
-      else if (subtree_reads_match_globals(c, body)) {
-        Buf sb; memset(&sb, 0, sizeof sb);
-        emit_expr(c, argv[0], &sb);
-        tpat = ++g_tmp;
-        buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n",
-                   tpat, sb.p ? sb.p : "NULL", tpat);
-        free(sb.p);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                   tm, tr, tpat, tm);
-      }
-      else {
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_str_scan(_t%d, ", tm, tr);
-        emit_expr(c, argv[0], g_pre);
-        buf_printf(g_pre, "); SP_GC_ROOT(_t%d);\n", tm);
-      }
-      /* the rows are pre-computed, so the match registers hold the last
-         match; walk the subject again per iteration when the body reads $~
-         or a capture global (#3601). The walk reads the subject after the
-         body has run, so it is rooted. */
-      int sc_pos = ((re_idx >= 0 || tpat >= 0) && subtree_reads_match_globals(c, body)) ? ++g_tmp : -1;
-      if (sc_pos >= 0) {
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = 0; SP_GC_ROOT_STR(_t%d);\n", sc_pos, tr);
-      }
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
-      if (sc_pos >= 0 && tpat >= 0) {
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "_t%d = sp_str_scan_at(_t%d, _t%d, _t%d);\n", sc_pos, tr, tpat, sc_pos);
-      }
-      else if (sc_pos >= 0) {
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
-                          " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;\n",
-                   re_idx, tr, sc_pos, sc_pos);
-      }
-      if (has_cap && np >= 2) {
-        int trow = ++g_tmp;
-        emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
-        for (int pj = 0; pj < np; pj++) {
-          const char *pn = rename_local(block_param_name(c, blk, pj));
-          emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "lv_%s = (_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL;\n",
-                     pn, trow, trow, pj, trow, pj, trow, pj);
-        }
-      }
-      else if (block_param_name(c, blk, 0)) {
-        const char *p0r = rename_local(block_param_name(c, blk, 0));
-        emit_indent(g_pre, g_indent + 1);
-        if (has_cap)
-          buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
-        else
-          buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
-      }
-      int svind = g_indent; g_indent++;
-      for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
-      g_indent = svind;
-      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-      buf_printf(b, "_t%d", tr);
-    }
-    else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
-             !an_re_has_captures(re_lit_src(c, argv[0]))) {
-      buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
-             an_re_has_captures(re_lit_src(c, argv[0]))) {
-      buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-    }
-    else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
-      buf_printf(b, "sp_str_scan(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    /* scan against a regex VALUE the arms above could not resolve to a
-       precompiled literal (an interpolated pattern, a local holding one, an
-       inline `Regexp.new(s)`): the value already IS the
-       mrb_regexp_pattern*. Without this arm the call fell through to the
-       unresolved-call gate and raised NoMethodError on the String (#3389).
-       The result shape follows the type analyze settled on, so the two stay
-       in step: an unresolvable pattern is typed poly_array and
-       sp_re_scan_poly decides per match whether the row is the whole match
-       or its captures. */
-    else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX &&
-             nt_ref(nt, id, "block") < 0) {
-      buf_printf(b, "%s(", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
-      emit_expr(c, argv[0], b); buf_printf(b, ", %s)", r);
-    }
-    /* the same, for a pattern that arrives BOXED (read out of a table): a
-       Regexp or a String, told apart at run time (sp_scan_boxed) */
-    else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY &&
-             nt_ref(nt, id, "block") < 0) {
-      buf_printf(b, "%s(%s, ", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_scan_boxed_poly" : "sp_scan_boxed", r);
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, ")");
-    }
+    else if (str_arms_pattern(c, id, b, nt, name, argc, argv, r)) ;
     /* the receiver is a spinel string, so its own byte length is what the
        symbol's name is -- a NUL in it is a byte of the name (#nul) */
     /* the arms that read only the receiver text and the arguments:
