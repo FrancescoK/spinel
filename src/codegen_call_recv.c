@@ -4915,7 +4915,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             if (kt == TY_STRING) buf_printf(b, "sp_poly_to_s(sp_PolyArray_get(_t%d, _t%d));", ts, ti);
             /* a poly-keyed table takes the element boxed, as it is (#7051) */
             else if (kt == TY_POLY) buf_printf(b, "sp_PolyArray_get(_t%d, _t%d);", ts, ti);
-            else buf_printf(b, "(%s)sp_poly_to_i(sp_PolyArray_get(_t%d, _t%d));", c_type_name(kt), ts, ti);
+            else buf_printf(b, "(%s)%s(sp_PolyArray_get(_t%d, _t%d));", c_type_name(kt), kt == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_i", ts, ti);
           }
           else if (hash_key_misses(c, argv[a], kt) &&
                    !(hash_nil_key_stored(c, argv[a], kt) && !(is_fetch && nt_ref(nt, id, "block") >= 0))) {
@@ -5585,7 +5585,7 @@ else {
               int tsk = ++g_tmp;
               if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_RbVal _t%d = %s;", tsk, el);
               else if (skt == TY_SYMBOL) buf_printf(b, " sp_sym _t%d = (sp_sym)sp_poly_to_i(%s);", tsk, el);
-              else if (skt == TY_INT) buf_printf(b, " sp_int _t%d = sp_poly_to_i(%s);", tsk, el);
+              else if (skt == TY_INT) buf_printf(b, " sp_int _t%d = sp_poly_to_i_or_nil(%s);", tsk, el);
               else buf_printf(b, " const char *_t%d = sp_poly_to_s(%s);", tsk, el);
               buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }",
                          hn, th, tsk, hn, tr, tsk, hn, th, tsk);
@@ -5643,7 +5643,7 @@ else {
               if (rt == TY_POLY_POLY_HASH) buf_puts(b, el);
               else if (kt2 == TY_SYMBOL) buf_printf(b, "(sp_sym)sp_poly_to_i(%s)", el);
               else if (kt2 == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", el);
-              else buf_printf(b, "sp_poly_to_i(%s)", el);
+              else buf_printf(b, "%s(%s)", kt2 == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_i", el);
             }
             buf_puts(b, ");");
             continue;
@@ -6811,7 +6811,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         int offv = struct_kwarg_value(c, argv[1], "offset");
         int one = sp_streq(name, "unpack1");
         TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
-        if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(");
+        if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(");
         else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(sp_PolyArray_get(");
         else if (one)                    buf_puts(b, "sp_PolyArray_get(");
         buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_str_expr(c, argv[0], b);
@@ -6824,7 +6824,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
            (int, or float? -- the _opt keeps a padded nil from short input
            as float-nil instead of 0.0). */
         TyKind u1t = comp_ntype(c, id);
-        if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+        if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i_or_nil(sp_PolyArray_get(sp_str_unpack(%s, ", r);
         else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f_opt(sp_PolyArray_get(sp_str_unpack(%s, ", r);
         else                      buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
         emit_str_expr(c, argv[0], b);
@@ -8683,10 +8683,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
                sp_<T>* slot (a C type error). */
             const char *mtn = c_type_name(mt);
             if (mt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
-            else if (mt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, val, b); buf_puts(b, ")"); }
             else if (mt == TY_SYMBOL) { buf_puts(b, "(sp_sym)sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
             else if (mt == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, val, b); buf_puts(b, ")"); }
-            else if (mt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, val, b); buf_puts(b, ")"); }
             else if (ty_is_object(mt) || (mtn && mtn[0] && mtn[strlen(mtn) - 1] == '*')) {
               Buf ub = expr_buf(c, val);
               emit_unbox_text(c, mt, ub.p ? ub.p : "", b); free(ub.p);
@@ -12931,7 +12931,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 1 &&
       !user_defines_or_reads(c, name)) {
     TyKind u1t = comp_ntype(c, id);
-    if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(");
+    if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(");
     else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(");
     buf_puts(b, "sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(");
     emit_expr(c, recv, b); buf_puts(b, "), ");

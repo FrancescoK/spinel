@@ -3490,7 +3490,8 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = sp_SymPolyHash_has_key((sp_SymPolyHash *)_t%d.v.p, _t%d) ? ", tr, tv, atmp[0]);
     if (ret == TY_POLY) buf_puts(b, getx);
     else if (trt == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getx);
-    else if (trt == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getx);
+    else if (trt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", getx);
+    else if (trt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", getx);
     else buf_printf(b, "sp_poly_to_i(%s)", getx);
     buf_puts(b, " : ");
     if (is_fetch) emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? atmp_ty[1] : TY_UNKNOWN, argv[0], ret, trt, b);

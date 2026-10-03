@@ -3974,8 +3974,8 @@ else {
     }
     /* an unresolved (TY_UNKNOWN) left emits a poly fallback (sp_box_nil); coerce
        it to the unified scalar result so the temp's declared type matches. */
-    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
     /* a bool-unified chain with an unresolved left (a poly dispatch whose
        node type stayed unknown, e.g. alias-to-reader through a poly element):
        take its truthiness, mirroring the int/float coercions (#3276) */

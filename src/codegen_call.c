@@ -49,8 +49,8 @@ const int *call_args(const NodeTable *nt, int id, int *argc) {
    only known at run time -- an Integer that grew into a Bignum reads back as a
    pointer through a bare `.v.i` -- so convert rather than reinterpret. */
 void emit_unbox_poly_ret(Compiler *c, TyKind slot, const char *expr, Buf *b) {
-  if (slot == TY_INT)   { buf_printf(b, "sp_poly_to_i(%s)", expr); return; }
-  if (slot == TY_FLOAT) { buf_printf(b, "sp_poly_to_f(%s)", expr); return; }
+  if (slot == TY_INT)   { buf_printf(b, "sp_poly_to_i_or_nil(%s)", expr); return; }   /* nil is the slot's sentinel */
+  if (slot == TY_FLOAT) { buf_printf(b, "sp_poly_to_f_or_nil(%s)", expr); return; }
   emit_unbox_text(c, slot, expr, b);
 }
 
