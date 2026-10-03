@@ -28384,13 +28384,8 @@ static void an_phase_block_inline(Compiler *c) {
   free(blk_fwd_callee);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
+/* Ahead of the fixpoint: intern the symbol literals and Proc#parameters names, apply the --rbs seeds, freeze the method-lookup index, compute the reachable and instantiated classes (analyze_program's steps, in their order) */
+static void an_phase_pre_fixpoint(Compiler *c) {
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
@@ -28500,6 +28495,16 @@ void analyze_program(Compiler *c) {
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
   compute_reachable(c);
   compute_instantiated(c, 1);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
 
   g_fixpoint_rounds = 0;
   /* Two rounds. The proc-form clones are made between them: knowing which
