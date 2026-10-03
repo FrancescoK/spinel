@@ -1925,17 +1925,36 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
   return 0;
 }
 
+/* The helper the binary `x << n` / `x >> n` takes for this count (the
+   emit_call_compare_arms rule): a literal `<<`, and a literal `>>` count
+   outside the word, go through sp_int_shl / sp_int_shr; a runtime count
+   through sp_int_shl_ck / sp_int_shr_ck; NULL for a small literal `>>`, which
+   keeps the plain C shift. v is the count's node, or -1 (a runtime count). */
+const char *int_shift_fn(Compiler *c, const char *op, int v) {
+  int shl = sp_streq(op, "<<");
+  if (v >= 0 && nt_kind(c->nt, v) == NK_IntegerNode) {
+    long long n = nt_int(c->nt, v, "value", 0);
+    if (shl || n < 0 || n >= 64) return shl ? "sp_int_shl" : "sp_int_shr";
+    return NULL;
+  }
+  return shl ? "sp_int_shl_ck" : "sp_int_shr_ck";
+}
+
 /* The new value of an Integer or Float slot that is not a C lvalue (an array
    or hash element, a native attribute) under `slot OP= rhs`, through the
    helpers the binary form uses: the raw C operator skipped the overflow check
    on `+ - *`, truncated `/` and `%` toward zero where Ruby floors, and had no
-   `**` at all. Answers 0, emitting nothing, for a boxed rhs or any other
-   element type or operator. */
-static int iow_scalar_fold(TyKind et, const char *op, TyKind vt, const char *slot,
-                           const char *rhs, Buf *b) {
+   `**` at all. A shift takes the binary form's helpers as emit_scalar_op_assign
+   does (v is the rhs node, or -1): a raw `<<` wrapped where `x << n` raised.
+   Answers 0, emitting nothing, for a boxed rhs or any other element type or
+   operator. */
+static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, int v,
+                           const char *slot, const char *rhs, Buf *b) {
   const char *fn = NULL;
   if (vt == TY_POLY) return 0;
-  if (et == TY_INT) fn = int_arith_fn(op);
+  if (et == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>")))
+    fn = int_shift_fn(c, op, v);
+  else if (et == TY_INT) fn = int_arith_fn(op);
   else if (et == TY_FLOAT && sp_streq(op, "%")) fn = vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod";
   else if (et == TY_FLOAT && sp_streq(op, "**")) fn = "sp_float_pow";
   if (!fn) return 0;
@@ -11191,13 +11210,18 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     TyKind rhst = val >= 0 ? comp_ntype(c, val) : TY_UNKNOWN;
     /* the dynamic operator for a boxed (poly) slot, and the bitwise set the
        boxed slot handles via unbox-op-rebox (both mirror the ivar op-assign
-       poly arms above). */
+       poly arms above). The shifts take the dynamic operator too, as a boxed
+       local's `x <<= n` does (emit_poly_op_assign): it promotes past the word
+       and shifts the other way for a negative count, where unbox-op-rebox
+       wrapped (`obj.v <<= 70` was 64, `obj.v <<= -1` was 0). */
     const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
                     : op && sp_streq(op, "-") ? "sp_poly_sub"
                     : op && sp_streq(op, "*") ? "sp_poly_mul"
                     : op && sp_streq(op, "/") ? "sp_poly_div"
                     : op && sp_streq(op, "%") ? "sp_poly_mod"
-                    : op && sp_streq(op, "**") ? "sp_poly_pow" : NULL;
+                    : op && sp_streq(op, "**") ? "sp_poly_pow"
+                    : op && sp_streq(op, "<<") ? "sp_poly_shl"
+                    : op && sp_streq(op, ">>") ? "sp_poly_shr" : NULL;
     int bitop = op && is_int_bit_op(op);
     int rdcls = -1;
     /* Ruby desugars `recv.attr op= v` into a reader call AND a writer call;
@@ -11333,7 +11357,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
           Buf rb; memset(&rb, 0, sizeof rb);
           emit_expr(c, val, &rb);
           buf_printf(b, "%s(_t%d, ", nwm->csym, trecv);
-          if (!iow_scalar_fold(nint ? TY_INT : TY_FLOAT, op, rhst, slot, rb.p ? rb.p : "", b))
+          if (!iow_scalar_fold(c, nint ? TY_INT : TY_FLOAT, op, rhst, val, slot, rb.p ? rb.p : "", b))
             buf_printf(b, "%s %s (%s)", slot, op, rb.p ? rb.p : "");
           buf_puts(b, ");\n");
           free(rb.p);
@@ -14610,7 +14634,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* a poly-valued slot folds via the dynamic operator on boxed operands */
     if (vt == TY_STRING && sp_streq(op, "+")) buf_printf(b, "sp_str_concat(%s, %s)", slot, rhs);
     else if (pf) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
-    else if (iow_scalar_fold(vt, op, comp_ntype(c, v), slot, rhs, b)) { }
+    else if (iow_scalar_fold(c, vt, op, comp_ntype(c, v), v, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_puts(b, "; ");
@@ -14706,9 +14730,9 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
         if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
         buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
       }
-      if (!iow_scalar_fold(et, op, vt, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
+      if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
       buf_printf(b, "; } else sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
-      if (!iow_scalar_fold(et, op, vt, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
+      if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
       free(rhs);
       buf_printf(b, ")%s; }\n", hc_mark());
       return;
@@ -14716,6 +14740,11 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
     if (rt == TY_POLY_ARRAY) buf_printf(b, "%s(%s, %s)", pf, slot, rhs);
     else if (rt == TY_STR_ARRAY) buf_printf(b, "sp_str_repeat(%s, %s)", slot, rhs);
+    /* an Integer slot shifted by a boxed count: the range-checked helper on
+       the unboxed count, as a runtime count always is (the poly fold below
+       answered a Bignum the slot then truncated: `a[0] <<= n` was 0) */
+    else if (vt == TY_POLY && rt == TY_INT_ARRAY && (sp_streq(op, "<<") || sp_streq(op, ">>")))
+      buf_printf(b, "%s(%s, %s%s))", int_shift_fn(c, op, -1), slot, op_assign_int_conv(TY_INT, op), rhs);
     else if (vt == TY_POLY && pf) {
       /* typed int/float slot, poly RHS: box the slot, fold via the dynamic
          operator, unbox back to the slot type -- exactly what the plain
@@ -14726,7 +14755,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
     else if (vt == TY_POLY) buf_printf(b, "%s %s %s%s)", slot, op, op_assign_int_conv(TY_INT, op), rhs);
-    else if (iow_scalar_fold(ty_array_elem(rt), op, vt, slot, rhs, b)) { }
+    else if (iow_scalar_fold(c, ty_array_elem(rt), op, vt, v, slot, rhs, b)) { }
     else buf_printf(b, "%s %s (%s)", slot, op, rhs);
     free(rhs);
     buf_printf(b, ")%s; }\n", hc_mark());
