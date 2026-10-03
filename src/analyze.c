@@ -28497,15 +28497,8 @@ static void an_phase_pre_fixpoint(Compiler *c) {
   compute_instantiated(c, 1);
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
+/* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
+static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
   /* Two rounds. The proc-form clones are made between them: knowing which
      methods a poly dispatch will name needs settled receiver types, and the
@@ -28923,6 +28916,18 @@ void analyze_program(Compiler *c) {
     }
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
   }
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
 
   /* Backstop: a constant bound to an EMPTY array literal has no element type to
      read off the literal, and nothing else in the program need ever narrow it
