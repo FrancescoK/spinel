@@ -652,7 +652,7 @@ int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   }
   /* every element named a method, so the shared body is a method's: its
      `next` is a `return`. Not before, where a later element may still bail. */
-  method_body_next_to_return((NodeTable *)nt, dbody, dcn, c->classes[class_id].name);
+  method_body_next_to_return((NodeTable *)nt, dbody);
   return 1;
 }
 
@@ -1221,7 +1221,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
           int dm_new_idx = c->nscopes - 1;
           dm_s->body = nt_ref(c->nt, dm_blk, "body");
           /* the block is a method's body from here on: its `next` is a `return` */
-          method_body_next_to_return((NodeTable *)c->nt, dm_s->body, dm_cn, dm_cls >= 0 ? c->classes[dm_cls].name : NULL);
+          method_body_next_to_return((NodeTable *)c->nt, dm_s->body);
           dm_s->class_id = dm_cls;
           dm_s->is_cmethod = dm_cmethod;
           /* the block's params are the defined method's params (e.g. the

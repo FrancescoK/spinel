@@ -1,8 +1,10 @@
-# A class with a define_method of its own: that method takes the block as a
-# block and may call it, so a `next` in the block stays a `next`. Where the
+# A program with a define_method of its own: that method takes the block as
+# a block and may call it, so a `next` in the block stays a `next`. Where the
 # block becomes a method's body the `next` is retyped as a `return`
 # (test/next_in_run_once_block.rb); done here, the `return` was the enclosing
-# method's and `run` did not build.
+# method's and `run` did not build. The check is the whole program's, since
+# which class a call reaches cannot be read off the class it is written in:
+# see Late, Away and Object below.
 class Reg
   def define_method(n, &b) = [n, b.call]
 
@@ -23,28 +25,33 @@ r = Reg.new
 p r.run, Reg.run, Reg::X
 p r.define_method(:d) { next 5 if ARGV.length == 0; 6 }
 
-# A class that is not Reg, above it or below it cannot reach Reg's
-# define_method: there the block is the method's body, as in any program.
-class Plain
-  def base = 3
-  define_method(:m) { |x| next 1 if x > 0; base }
-  [:p, :q].each { |v| define_method("u_#{v}") { |x| next v if x > 0; :no } }
-  define_method(:k) { |x, y: 1| next y if x > 0; base }
-  class << self
-    define_method(:cm) { |x| next "pos" if x > 0; "neg" }
+# the define_method is written under another name for the class
+class Late
+  def run
+    v = define_method(:h) { next 11 if ARGV.length == 0; 12 }
+    [v, :late]
   end
 end
-pl = Plain.new
-p pl.m(5), pl.m(-1), pl.u_p(1), pl.u_q(-1), pl.k(1, y: 7), pl.k(-1), Plain.cm(1), Plain.cm(-1)
-
-# Reg has no define_singleton_method of its own, so that one's block is a
-# method's body for Reg too
-Reg.define_singleton_method(:s) { |x| next 10 if x > 0; 20 }
-pl.define_singleton_method(:t) { |x| next 10 if x > 0; base }
-p Reg.s(1), Reg.s(-1), pl.t(1), pl.t(-1)
-
-# a class below Reg reaches Reg's
-class Sub < Reg
-  Y = define_method(:e) { next 5 if ARGV.length == 0; 6 }
+L = Late
+class L
+  def define_method(n, &b) = [n, b.call]
 end
-p Sub::Y
+p Late.new.run
+
+# the block is run on a Reg from a class that is not Reg
+class Away
+  def go(o)
+    v = o.instance_eval { define_method(:f) { next 7 if ARGV.length == 0; 8 } }
+    [v, :away]
+  end
+end
+p Away.new.go(r)
+
+# the call is in a method of Object's, run on a Reg
+class Object
+  def helper
+    v = define_method(:g) { next 9 if ARGV.length == 0; 10 }
+    [v, :helper]
+  end
+end
+p r.helper
