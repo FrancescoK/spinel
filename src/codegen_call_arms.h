@@ -20,6 +20,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
 int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable *nt);
 int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
 
 /* ---- codegen_call.c's helpers the arms call ---- */
 void emit_bigint_operand(Compiler *c, int node, Buf *b);
@@ -40,5 +42,13 @@ TyKind ie_splice_value_ty(Compiler *c, int node);
 int basicobject_own_method(const char *n);
 void emit_poly_cmp_ordered(Compiler *c, const char *fn, int recv, int arg, Buf *b);
 void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b);
+int bigint_cmp_operand_ok(TyKind t);
+Buf emit_cmp_self(Compiler *c, int recv, TyKind rt);
+int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b);
+int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_shift, Buf *b);
+int exc_subclass_defines_cmp(Compiler *c);
+int obj_cmp_by_identity(TyKind t);
+int object_defines_cmp(Compiler *c);
+void scalar_nil_test(TyKind t, const char *v, char *out, size_t n);
 
 #endif
