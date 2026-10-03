@@ -2646,10 +2646,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           }
           else if (argc == 3) {
             int tl = ++g_tmp;
-            buf_printf(b, " sp_int _t%d = ", tl); emit_int_expr_nilable(c, argv[2], b);
+            /* a length that is nil at run time -- boxed, or an Integer slot's
+               sentinel -- is "to the end" as the literal one is; read as a
+               number it was 0 or negative, and nothing was filled */
+            buf_printf(b, " sp_int _t%d = ", tl);
+            if (comp_ntype(c, argv[2]) == TY_POLY) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, argv[2], b); buf_puts(b, ")"); }
+            else emit_int_expr_nilable(c, argv[2], b);
             /* end = start+len; negative len = no-op (empty range) */
-            buf_printf(b, "; if (_t%d < 0) _t%d = 0; _t%d = _t%d + _t%d;",
-                       tl, tl, tn, ts, tl);
+            buf_printf(b, "; if (_t%d != SP_INT_NIL) { if (_t%d < 0) _t%d = 0; _t%d = _t%d + _t%d; }",
+                       tl, tl, tl, tn, ts, tl);
           }
           buf_printf(b, " for (sp_int _t%d = _t%d; _t%d < _t%d; _t%d++)"
                         " sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })",
