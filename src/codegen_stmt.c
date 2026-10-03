@@ -1434,6 +1434,55 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     }
   }
 }
+/* Does storing node v into an Integer slot that can also hold nil need the
+   -2^63 check (sp_int_slot_ck)? The slot's nil is the word INT64_MIN, so a
+   real -2^63 stored there reads back as nil. Only a value that cannot itself
+   be nil can be told apart (a nilable one may be the slot's own nil), and a
+   literal is known: -2^63 written out is a Bignum, never an sp_int. */
+static int program_names_big_int(Compiler *c) {
+  if (c->big_int_src) return c->big_int_src == 2;
+  const NodeTable *nt = c->nt;
+  int yes = 0;
+  for (int id = 0; id < nt->count && !yes; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_IntegerNode) {
+      long long n = nt_int(nt, id, "value", 0);
+      if (nt_str(nt, id, "bigval") || n >= (1LL << 62) || n <= -(1LL << 62)) yes = 1;
+    }
+    else if (k == NK_CallNode) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !(sp_streq(nm, "**") || sp_streq(nm, "<<"))) continue;
+      int an = nt_ref(nt, id, "arguments"), argc = 0;
+      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &argc) : NULL;
+      if (argc == 1 && nt_kind(nt, av[0]) == NK_IntegerNode && nt_int(nt, av[0], "value", 0) >= 62) yes = 1;
+    }
+    else if (k == NK_StringNode) {
+      const char *s = nt_str(nt, id, "content");
+      int run = 0;
+      for (; s && *s; s++) {
+        run = (*s >= '0' && *s <= '9') ? run + 1 : 0;
+        if (run >= 19) { yes = 1; break; }
+      }
+    }
+  }
+  c->big_int_src = yes ? 2 : 1;
+  return yes;
+}
+int int_slot_store_needs_ck(Compiler *c, int v, TyKind slot_ty, int slot_nullable) {
+  if (!slot_nullable || slot_ty != TY_INT || v < 0) return 0;
+  if (!program_names_big_int(c)) return 0;
+  if (comp_ntype(c, v) != TY_INT || nullable_int_value(c, v)) return 0;
+  /* a chained write (`a = b = 7`) stores what its bottom stores */
+  int bot = v;
+  for (int d = 0; d < 64 && bot >= 0; d++) {
+    const char *ty = nt_type(c->nt, bot);
+    if (!ty || !(sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "InstanceVariableWriteNode") ||
+                 sp_streq(ty, "ClassVariableWriteNode") || sp_streq(ty, "GlobalVariableWriteNode"))) break;
+    bot = nt_ref(c->nt, bot, "value");
+  }
+  if (bot >= 0 && nt_kind(c->nt, bot) == NK_IntegerNode) return 0;
+  return 1;
+}
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -1677,6 +1726,11 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
        coerce the sp_RbVal token to the slot type (`k = yield rec` where the
        yield is unresolvable, into an sp_int k). A non-token RHS emits raw. */
     emit_unresolved_coerced(c, v, lv->type, b);
+  }
+  else if (lv && int_slot_store_needs_ck(c, v, lv->type, lv->nullable_int)) {
+    buf_puts(b, "sp_int_slot_ck(");
+    emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
+    buf_puts(b, ")");
   }
   else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
   else emit_expr(c, v, b);
@@ -10750,7 +10804,11 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     TyKind ivt = TY_INT;
-    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) ivt = c->classes[sc].ivar_types[iv]; }
+    int iv_nullable = 0;
+    if (sc >= 0) {
+      int iv = comp_ivar_index(&c->classes[sc], nm);
+      if (iv >= 0) { ivt = c->classes[sc].ivar_types[iv]; iv_nullable = c->classes[sc].ivar_nullable_int[iv]; }
+    }
     int ven = 0;
     int v_empty_array = vty && sp_streq(vty, "ArrayNode") && (nt_arr(nt, v, "elements", &ven), ven == 0);
     int v_empty_hash = 0;
@@ -10875,6 +10933,11 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
          (`@settings = TypedStore.write(...)` where write is unresolved):
          coerce the token to the slot type, keeping the raise. */
       emit_unresolved_coerced(c, v, ivt, b);
+    }
+    else if (int_slot_store_needs_ck(c, v, ivt, iv_nullable)) {
+      buf_puts(b, "sp_int_slot_ck(");
+      emit_coerce(c, v, ivt, CO_HOLD, "an instance variable write", b);
+      buf_puts(b, ")");
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
@@ -14307,6 +14370,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
+    else if (et == TY_INT && nullable_int_elem_array(c, recv) && int_slot_store_needs_ck(c, argv[1], TY_INT, 1)) {
+      /* an int array that holds nil elements: -2^63 would read back as nil */
+      buf_puts(b, "sp_int_slot_ck(");
+      emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
+      buf_puts(b, ")");
+    }
     else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;

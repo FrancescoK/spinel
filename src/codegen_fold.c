@@ -6821,6 +6821,14 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
            token (`html_escape(obj.details)` on an unknown receiver): emit_str_expr
            passes a real string through and coerces the token to the slot. */
         else if (pt == TY_STRING) emit_str_expr(c, provided, out);
+        else if (pt == TY_INT && m && idx >= 0 && idx < m->nparams && m->pnames[idx] &&
+                 scope_local(m, m->pnames[idx]) && scope_local(m, m->pnames[idx])->nullable_int &&
+                 int_slot_store_needs_ck(c, provided, TY_INT, 1)) {
+          /* a parameter that can also be nil: -2^63 would arrive as nil */
+          buf_puts(out, "sp_int_slot_ck(");
+          emit_coerce(c, provided, pt, CO_HOLD, "a method argument", out);
+          buf_puts(out, ")");
+        }
         else {
           emit_obj_upcast_prefix(c, pt, at, out);
           emit_coerce(c, provided, pt, CO_HOLD, "a method argument", out);

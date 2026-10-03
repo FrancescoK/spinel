@@ -1569,6 +1569,11 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     /* poly RHS into a scalar/string slot: the same unbox the statement form
        applies (emit_poly_rhs_coerced) */
     else if (lv && emit_poly_rhs_coerced(c, lv->type, v, b)) { }
+    else if (lv && int_slot_store_needs_ck(c, v, lv->type, lv->nullable_int)) {
+      buf_puts(b, "sp_int_slot_ck(");
+      emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
+      buf_puts(b, ")");
+    }
     else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
     else emit_expr(c, v, b);
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
@@ -1604,9 +1609,10 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        a later write had made a poly array */
     if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
+    int ivnull2 = 0;
     if (ivcls2 >= 0) {
       int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
-      if (iv2 >= 0) ivt2 = c->classes[ivcls2].ivar_types[iv2];
+      if (iv2 >= 0) { ivt2 = c->classes[ivcls2].ivar_types[iv2]; ivnull2 = c->classes[ivcls2].ivar_nullable_int[iv2]; }
     }
     const char *vty2 = nt_type(nt, v);
     int ven2 = 0;
@@ -1702,6 +1708,11 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       emit_unbox_text(c, ivt2, _ck.p ? _ck.p : "sp_box_nil()", b);
       free(_ck.p);
       free(_rb.p);
+    }
+    else if (int_slot_store_needs_ck(c, v, ivt2, ivnull2)) {
+      buf_puts(b, "sp_int_slot_ck(");
+      emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
+      buf_puts(b, ")");
     }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */

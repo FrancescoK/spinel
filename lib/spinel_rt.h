@@ -201,6 +201,16 @@ sp_RbVal sp_raise_nomethod(const char *msg);
 SP_NORETURN SP_COLD void sp_raise_nil_int_op(sp_int a, sp_int b, const char *op);
 #define SP_INT_NIL_CK(a, b, op) \
   if (SP_UNLIKELY((a) == SP_INT_NIL || (b) == SP_INT_NIL)) sp_raise_nil_int_op((a), (b), op)
+/* A value that is a real Integer headed for a slot that can also hold nil
+   (a local or ivar assigned nil somewhere, a boxed slot): -2^63 is the nil
+   sentinel's word, so storing it would read back as nil. RangeError instead,
+   in every overflow mode; the slot cannot hold it. Emitted only where the
+   value cannot itself be nil and is not a literal. */
+SP_NORETURN SP_COLD void sp_raise_int_min_slot(void);
+static inline sp_int sp_int_slot_ck(sp_int v) {
+  if (SP_UNLIKELY(v == SP_INT_NIL)) sp_raise_int_min_slot();
+  return v;
+}
 /* The same sentinel reaching a STRICT Integer argument slot -- an index, a
    count, a width. A compile-time nil is refused at the emitter (`s[nil]` is
    the TypeError), but the nil that arrives through an `Integer?` slot is an

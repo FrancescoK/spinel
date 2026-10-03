@@ -861,6 +861,12 @@ typedef struct {
   int *bi_base_cnt;
   char **bi_base_key;
   int bi_base_cap;
+  /* (codegen, lazily) whether the program names a magnitude that can reach
+     2^62 (a literal, a `**` or `<<` count, a long digit string): 0 unknown,
+     1 no, 2 yes. -2^63, which an Integer slot that can hold nil reads as
+     nil, is reachable only from such a program in practice, so the check on
+     a store into one (int_slot_store_needs_ck) is emitted only for it. */
+  int big_int_src;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

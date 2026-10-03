@@ -1768,6 +1768,11 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else if (et == TY_INT && nullable_int_elem_array(c, recv) && int_slot_store_needs_ck(c, argv[1], TY_INT, 1)) {
+          buf_puts(b, "sp_int_slot_ck(");
+          emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
+          buf_puts(b, ")");
+        }
         else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
       }
       buf_printf(b, "; sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })", k, nil_store_sfx(c, k, argv[1]), t, ti, tv, tv);

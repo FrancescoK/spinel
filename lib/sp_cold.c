@@ -4626,6 +4626,12 @@ SP_NORETURN void sp_raise_nil_to_int(int of_wording) {
                                        : "no implicit conversion from nil to integer");
 }
 
+/* A real -2^63 headed for a slot that can also hold nil: the slot's nil is
+   that very word (SP_INT_NIL), so the store would read back as nil. */
+SP_NORETURN void sp_raise_int_min_slot(void) {
+  sp_raise_cls("RangeError", "integer -9223372036854775808 collides with the nil of a nullable Integer slot");
+}
+
 SP_NORETURN void sp_raise_nil_float_op(int left_nil, const char *op) {SP_GC_ROOT_STR(op);
   if (left_nil)
     sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for nil", op));
