@@ -27575,7 +27575,7 @@ static void poly_ivar_set_reference(Compiler *c, int id, int recv) {
   }
   else if (rt == TY_POLY) {
     for (int q = 0; q < c->nclasses; q++)
-      if (poly_ivar_set_class(c, q))
+      if (poly_ivar_set_class(c, q) && poly_ivar_set_reaches(c, id, q))
         c->classes[q].is_value_type = 0;
   }
 }

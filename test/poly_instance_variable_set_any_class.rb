@@ -24,3 +24,18 @@ p y.v
 D = Data.define(:a)
 z = [D.new(a: 1), 2][0]
 p(begin; z.instance_variable_set(:@q, 3); rescue FrozenError => e; e.class; end)
+
+# only the classes the receiver can hold gain the slot: one it never holds
+# keeps its layout, its instance_variables and instance_variable_defined?
+class U; def initialize = (@u = 1); end
+u = U.new
+p u.instance_variables, u.instance_variable_defined?(:@a), u.instance_variable_defined?(:@w)
+puts u.inspect.sub(/0x\h+/, "0x")
+
+# a receiver whose classes are not bounded here (a parameter) reaches any
+def put_q(o) = o.instance_variable_set(:@q, 1)
+class Q; end
+put_q([Q.new, 1][0])
+qs = [Q.new, K.new]
+qs.each { |o| put_q(o) }
+p qs.map { |o| o.instance_variable_get(:@q) }
