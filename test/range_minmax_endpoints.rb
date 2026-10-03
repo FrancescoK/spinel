@@ -1,3 +1,4 @@
+# spinel: int64 -- assumes a 64-bit Integer (values or arithmetic past 2^31); not run on a 32-bit target
 # An Integer Range's minmax without a block is [min, max] read off its
 # endpoints, never a walk: a literal or a local Range was routed through
 # to_a, which built every member first -- a range of 10**15 members could
