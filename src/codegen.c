@@ -215,6 +215,9 @@ int emit_boxed_text_form(Compiler *c, TyKind t) {
      structs boxed behind a heap copy, so they unbox by dereferencing; the
      cast turned a pointer straight into a struct (#3186, #3619).
    - Class is a by-value struct, read by sp_unbox_class (#2797).
+   - Integer goes through sp_poly_as_int_or_nil: a boxed nil becomes the
+     slot's SP_INT_NIL, never the 0 lying under the nil tag. Integer nil
+     always uses the sentinel, whichever path unboxes it.
    - The Int, Float and String arrays, the nested tables and the poly-valued
      hashes are distinct C structs, so a boxed value of another kind is
      converted by its sp_poly_as_* entry, which hands back the pointer when
@@ -259,7 +262,8 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
    all, so a slot that must hold nil is never given those types (see
    parse_seed_type). Use this wherever a poly whose nil-ness is not already
    ruled out is narrowed to a concrete slot; emit_unbox_text stays the
-   unguarded form for the many sites that have. */
+   unguarded form for the many sites that have, except for Integer, whose
+   unbox is the guarded one on every path. */
 void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   /* a builtin kind's ty_traits row's unbox_nil (types.c): the guarded
      sp_poly_as_int_or_nil / sp_poly_as_float_or_nil, the unbox otherwise */
