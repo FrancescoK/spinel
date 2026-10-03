@@ -2115,6 +2115,380 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
   return 0;
 }
 
+/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
+static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "ConstantReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (cv && cv->type != TY_UNKNOWN) {
+      if (cv->init_guarded) {
+        /* a read during the const's own Class.new init raises NameError */
+        buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
+                      " \"uninitialized constant %s\"), cst_%s) : cst_%s)", nm, nm, nm, nm);
+      }
+      else buf_printf(b, "cst_%s", nm);
+      return 1;
+    }
+    /* `include Math` exposes the module's bare constants (#2600) */
+    if (c->has_include_math && nm && !comp_const(c, nm)) {
+      if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return 1; }
+      if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return 1; }
+    }
+    if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) {
+      /* The `ruby -v` shape -- engine, version, release and revision,
+         platform -- so a harness that records RUBY_DESCRIPTION can tell two spinel builds
+         apart. The platform comes from the runtime header at C compile
+         time, the same way RUBY_PLATFORM does, so a cross-build names its
+         target rather than the host. */
+      char lit[256];
+      snprintf(lit, sizeof lit, "\"%s [\" SP_RUBY_ARCH \"-\" SP_RUBY_OS \"]\"",
+               g_ruby_description ? g_ruby_description : "spinel " SP_RUBY_VERSION);
+      emit_engine_const_str("sp_str_ruby_description", lit, b);
+      return 1;
+    }
+    if (nm && sp_streq(nm, "RUBY_VERSION"))     { emit_engine_const_str("sp_str_ruby_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { emit_engine_const_str("sp_str_ruby_engine", "\"spinel\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str("sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str("sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str("sp_str_ruby_release_date", "\"2026-09-15\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"229531a6cfbf07e3caef30dbac24a2a3f3fed482\"", b); return 1; }
+    if (nm && sp_streq(nm, "RUBY_PATCHLEVEL"))  { buf_puts(b, "((sp_int)0)"); return 1; }
+    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str("sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return 1; }
+    if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
+    if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }
+    if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return 1; }
+    if (nm && sp_streq(nm, "STDERR")) { buf_puts(b, "sp_io_stderr()"); return 1; }
+    if (nm && sp_streq(nm, "STDIN"))  { buf_puts(b, "sp_io_stdin()"); return 1; }
+    /* `OpenStruct` as a class value, matching what an OpenStruct's #class
+       returns (name-keyed, cls_id -1); require "ostruct" gated (#3155). */
+    if (nm && sp_streq(nm, "OpenStruct") && sp_feature_required("ostruct")) {
+      buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"OpenStruct\")})");
+      return 1;
+    }
+    if (nm) {
+      int _cidx = comp_class_index(c, nm);
+      if (_cidx >= 0) {
+        buf_printf(b, "((sp_Class){%d})", _cidx);  /* user class as value: TY_CLASS unboxed */
+      }
+      else {
+        int _bcid = builtin_class_id(nm);
+        if (_bcid != 0)
+          buf_printf(b, "((sp_Class){%d})", _bcid);  /* builtin class as value */
+        else if (is_builtin_exception_name(nm) || is_builtin_class_name(nm) ||
+                 is_builtin_module_name(nm)) {
+          /* a builtin class, module or exception class with no cls_id of its
+             own (SystemCallError, LoadError, Process, GC, Method, Random): a
+             name-backed Class value, like OpenStruct above -- sp_class_eq and
+             the boxed form both compare by name, and an instance's #class
+             answers the same (`Random.new.class`) */
+          buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", nm);
+        }
+        else {
+          /* A constant defined NOWHERE in the program: spinel is closed-world
+             and `const_set` only stores into a constant the program already
+             defines, so no definition can arrive later. Say so at build time --
+             a dropped `require` otherwise reads as an engine bug, since the
+             build succeeds and the first request crashes (#3976). It stays a
+             warning, not an error: referencing a missing constant to test the
+             NameError is legal Ruby, and ruby/spec does exactly that. */
+          if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, nm);
+          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
+        }
+      }
+    }
+    else unsupported(c, id, "constant read");
+    return 1;
+  }
+  if (sp_streq(ty, "ConstantPathNode")) {
+    /* M::CONST -> the flat constant named by the final path component */
+    const char *nm = nt_str(nt, id, "name");
+    int par_idc = nt_ref(nt, id, "parent");
+    const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
+    /* the parent's LEAF name also qualifies through a nested path
+       (Outer::CSql::TEXT) -- the ffi decl registers under its module's
+       unqualified name */
+    const char *par_nmc = (par_tyc && (sp_streq(par_tyc, "ConstantReadNode") ||
+                                       sp_streq(par_tyc, "ConstantPathNode")))
+                          ? nt_str(nt, par_idc, "name") : NULL;
+    /* A constant naming a CLASS is a written path (Probe::Block::CODE). A
+       constant HOLDING one (BLOCK = Probe::Block; BLOCK::CODE) is a receiver
+       whose class only the value knows, so it takes the run-time read below --
+       treating it as a path looked the leaf up and answered a top-level
+       constant of that name (#4259). */
+    if (par_nmc && par_tyc && sp_streq(par_tyc, "ConstantReadNode") &&
+        comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
+        comp_const(c, par_nmc))
+      par_nmc = NULL;
+    /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
+       plain-constant table, or a same-leaf plain constant in another module
+       silently claims the reference (and its type). */
+    if (par_nmc && nm) {
+      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
+        if (sp_streq(c->ffi_consts[fci].mod, par_nmc) &&
+            sp_streq(c->ffi_consts[fci].name, nm)) {
+          buf_printf(b, "((sp_int)%d)", c->ffi_consts[fci].val);
+          return 1;
+        }
+      }
+    }
+    /* a ::-scoped BUILTIN class is a first-class Class value (#2840) */
+    if (par_nmc && nm) {
+      char qbuf[160];
+      snprintf(qbuf, sizeof qbuf, "%s::%s", par_nmc, nm);
+      int qid = builtin_class_id(qbuf);
+      if (qid != 0) {
+        buf_printf(b, "((sp_Class){(sp_int)%d, SPL(\"%s\")})", qid, qbuf);
+        return 1;
+      }
+      /* the Errno:: family (and its id-less siblings) is a name-backed
+         Class value; raised exceptions carry this same qualified name */
+      if (is_builtin_exception_name(qbuf)) {
+        buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", qbuf);
+        return 1;
+      }
+    }
+    /* Errno::ENOENT::Errno: the class's number, from the runtime table
+       (the numbers differ by platform) (#4560) */
+    if (nm && sp_streq(nm, "Errno") && par_idc >= 0) {
+      char pq[160];
+      const char *pqn = isa_const_qualname(nt, par_idc, pq, sizeof pq);
+      if (pqn && !strncmp(pqn, "Errno::", 7) && is_builtin_exception_name(pqn)) {
+        buf_printf(b, "sp_errno_num(\"%s\")", pqn);
+        return 1;
+      }
+    }
+    /* `klass::CODE` where the receiver is a VALUE rather than a written path:
+       which constant it names is a run-time question, and answering it with
+       the leaf-named one made two different receivers answer the same thing --
+       the top-level CODE for both Probe::Block and Probe::Region (#4257). The
+       constants themselves are already stored per owner (cst_Probe__Block__CODE
+       and cst_Probe__Region__CODE both exist), so switch on the class the
+       value carries and read the one that class owns. */
+    { TyKind prt = par_idc >= 0 ? comp_ntype(c, par_idc) : TY_UNKNOWN;
+    if (nm && par_idc >= 0 && !par_nmc && (prt == TY_CLASS || prt == TY_POLY)) {
+      /* A constant is stored under its OWNER's qualified spelling
+         (Probe__Block__CODE) while the class's c_name is its leaf (Block), so
+         the owner is found by asking each class whether a constant keyed
+         "<...>__<c_name>__<nm>" or "<c_name>__<nm>" exists. */
+      int ccls[64]; const char *ckey[64]; int nc = 0;
+      TyKind ct = TY_UNKNOWN; int uniform = 1;
+      for (int k = 0; k < c->nclasses && nc < 64; k++) {
+        const char *kn = c->classes[k].c_name;
+        if (!kn) continue;
+        char tail[512];
+        snprintf(tail, sizeof tail, "%s__%s", kn, nm);
+        size_t tl = strlen(tail);
+        const char *found = NULL; TyKind ft = TY_UNKNOWN;
+        for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
+          const char *cn2 = c->consts[ci2].name;
+          size_t l2 = strlen(cn2);
+          if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
+          /* either the whole key, or a component edge before it */
+          if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
+          found = cn2; ft = c->consts[ci2].type; break;
+        }
+        if (!found) continue;
+        if (nc == 0) ct = ft;
+        else if (ft != ct) uniform = 0;
+        ccls[nc] = k; ckey[nc] = found; nc++;
+      }
+      if (nc > 0 && uniform && ct != TY_UNKNOWN) {
+        int tk = ++g_tmp, tr = ++g_tmp;
+        buf_printf(b, "({ sp_Class _t%d = ", tk);
+        /* a poly slot carries the class boxed; unwrap it to the same key */
+        if (prt == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par_idc, b); buf_puts(b, ")"); }
+        else emit_expr(c, par_idc, b);
+        buf_puts(b, "; ");
+        emit_ctype(c, ct, b);
+        buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr, default_value_from_compiler(c, ct), tk);
+        for (int i = 0; i < nc; i++)
+          buf_printf(b, " case %d: _t%d = cst_%s; break;", ccls[i], tr, ckey[i]);
+        /* A class with no such constant is CRuby's NameError, not the
+           leaf-named constant of some unrelated scope. */
+        buf_printf(b, " default: sp_raise_cls(\"NameError\", sp_sprintf("
+                      "\"uninitialized constant %%s::%s\", sp_class_to_s(_t%d))); break;",
+                   nm, tk);
+        buf_printf(b, " } _t%d; })", tr);
+        return 1;
+      }
+    } }
+    LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
+    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return 1; }
+    if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
+    if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }
+    /* well-known module constants */
+    if (par_nmc && sp_streq(par_nmc, "Float") && nm) {
+      if (sp_streq(nm, "MAX"))      { buf_puts(b, "DBL_MAX"); return 1; }
+      if (sp_streq(nm, "MIN"))      { buf_puts(b, "DBL_MIN"); return 1; }
+      if (sp_streq(nm, "EPSILON"))  { buf_puts(b, "DBL_EPSILON"); return 1; }
+      if (sp_streq(nm, "INFINITY")) { buf_puts(b, "(1.0/0.0)"); return 1; }
+      if (sp_streq(nm, "NAN"))      { buf_puts(b, "(0.0/0.0)"); return 1; }
+      /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
+      if (sp_streq(nm, "DIG"))       { buf_printf(b, "((sp_int)DBL_DIG)"); return 1; }
+      if (sp_streq(nm, "MANT_DIG"))  { buf_printf(b, "((sp_int)DBL_MANT_DIG)"); return 1; }
+      if (sp_streq(nm, "RADIX"))     { buf_printf(b, "((sp_int)FLT_RADIX)"); return 1; }
+      if (sp_streq(nm, "MAX_EXP"))    { buf_printf(b, "((sp_int)DBL_MAX_EXP)"); return 1; }
+      if (sp_streq(nm, "MIN_EXP"))    { buf_printf(b, "((sp_int)DBL_MIN_EXP)"); return 1; }
+      if (sp_streq(nm, "MAX_10_EXP")) { buf_printf(b, "((sp_int)DBL_MAX_10_EXP)"); return 1; }
+      if (sp_streq(nm, "MIN_10_EXP")) { buf_printf(b, "((sp_int)DBL_MIN_10_EXP)"); return 1; }
+    }
+    if (par_nmc && sp_streq(par_nmc, "Math") && nm) {
+      if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return 1; }
+      if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return 1; }
+    }
+    /* Regexp option constants: CRuby's public bits (IGNORECASE=1, EXTENDED=2,
+       MULTILINE=4) the same integers Regexp.new's option arg accepts, and the
+       encoding bits Regexp#options reports (FIXEDENCODING=16, NOENCODING=32). */
+    if (par_nmc && sp_streq(par_nmc, "Regexp") && nm) {
+      if (sp_streq(nm, "IGNORECASE")) { buf_puts(b, "((sp_int)1)"); return 1; }
+      if (sp_streq(nm, "EXTENDED"))   { buf_puts(b, "((sp_int)2)"); return 1; }
+      if (sp_streq(nm, "MULTILINE"))  { buf_puts(b, "((sp_int)4)"); return 1; }
+      if (sp_streq(nm, "FIXEDENCODING")) { buf_puts(b, "((sp_int)16)"); return 1; }
+      if (sp_streq(nm, "NOENCODING"))    { buf_puts(b, "((sp_int)32)"); return 1; }
+    }
+    /* well-known Encoding constants -> the matching boxed encoding value.
+       Spinel has one internal representation (UTF-8 / ASCII-8BIT), so the
+       many aliases map onto those two; enough for the pervasive
+       `str.encoding == Encoding::UTF_8` comparison. */
+    if (par_nmc && sp_streq(par_nmc, "Encoding") && nm) {
+      if (sp_streq(nm, "UTF_8") || sp_streq(nm, "UTF8")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_utf8())"); return 1;
+      }
+      if (sp_streq(nm, "US_ASCII") || sp_streq(nm, "ASCII") || sp_streq(nm, "ANSI_X3_4_1968")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_us_ascii())"); return 1;
+      }
+      if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_binary())"); return 1;
+      }
+      /* Every other Encoding constant is a named Encoding value the runtime
+         does not transcode to or from (String#encode leaves the bytes alone
+         for it). It used to be an undefined constant, which never showed
+         while `encode` ignored its argument; the CRuby name is the constant's
+         with `_` as `-`, except the handful CRuby spells otherwise. */
+      { static const char *const ENC[][2] = {
+          {"SHIFT_JIS","Shift_JIS"}, {"SJIS","Shift_JIS"}, {"WINDOWS_31J","Windows-31J"},
+          {"CP932","Windows-31J"}, {"EUC_JP","EUC-JP"}, {"EUCJP","EUC-JP"}, {"UTF_16","UTF-16"},
+          {"UTF_16BE","UTF-16BE"}, {"UTF_16LE","UTF-16LE"}, {"UTF_32","UTF-32"},
+          {"UTF_32BE","UTF-32BE"}, {"UTF_32LE","UTF-32LE"}, {"ISO_8859_1","ISO-8859-1"},
+          {"ISO8859_1","ISO-8859-1"}, {"WINDOWS_1252","Windows-1252"}, {"CP1252","Windows-1252"},
+          {"UTF_7","UTF-7"}, {"BIG5","Big5"}, {"GBK","GBK"}, {"GB18030","GB18030"},
+          {"EUC_KR","EUC-KR"}, {"KOI8_R","KOI8-R"}, {NULL,NULL} };
+        const char *ename = NULL;
+        for (int k = 0; ENC[k][0]; k++) if (sp_streq(nm, ENC[k][0])) { ename = ENC[k][1]; break; }
+        char dashed[96];
+        if (!ename) {
+          int ok = 1; size_t i = 0;
+          for (; nm[i] && i + 1 < sizeof dashed; i++) {
+            char ch = nm[i];
+            if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) { ok = 0; break; }
+            dashed[i] = ch == '_' ? '-' : ch;
+          }
+          dashed[i] = 0;
+          if (ok && i > 0) ename = dashed;
+        }
+        if (ename) {
+          buf_puts(b, "sp_box_encoding((sp_Encoding){");
+          emit_str_literal(b, ename);   /* marker-framed, like every literal */
+          buf_puts(b, "})");
+          return 1;
+        }
+      }
+    }
+    if (par_nmc && sp_streq(par_nmc, "File") && nm) {
+      /* Emit marker-framed literals (\xff prefix at [-1]) like every other
+         spinel string, so sp_str_byte_len/sp_str_concat can read the length
+         marker without an out-of-bounds [-1] over-read on a bare literal. */
+      if (sp_streq(nm, "SEPARATOR"))      { buf_puts(b, "(&(\"\\xff\" \"/\")[1])"); return 1; }
+      if (sp_streq(nm, "PATH_SEPARATOR")) { buf_puts(b, "(&(\"\\xff\" \":\")[1])"); return 1; }
+      if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "((const char *)0)"); return 1; }  /* nil off Windows (#2781) */
+      /* the null device, the name Process.spawn/File.open take to discard a
+         stream. Windows is not a target, so it is /dev/null (#4284). */
+      if (sp_streq(nm, "NULL"))           { buf_puts(b, "(&(\"\\xff\" \"/dev/null\")[1])"); return 1; }
+      /* the open(2) flag constants, via the C macros (#2788) */
+      if (sp_streq(nm, "RDONLY"))   { buf_puts(b, "((sp_int)O_RDONLY)"); return 1; }
+      if (sp_streq(nm, "WRONLY"))   { buf_puts(b, "((sp_int)O_WRONLY)"); return 1; }
+      if (sp_streq(nm, "RDWR"))     { buf_puts(b, "((sp_int)O_RDWR)"); return 1; }
+      if (sp_streq(nm, "CREAT"))    { buf_puts(b, "((sp_int)O_CREAT)"); return 1; }
+      if (sp_streq(nm, "EXCL"))     { buf_puts(b, "((sp_int)O_EXCL)"); return 1; }
+      if (sp_streq(nm, "TRUNC"))    { buf_puts(b, "((sp_int)O_TRUNC)"); return 1; }
+      if (sp_streq(nm, "APPEND"))   { buf_puts(b, "((sp_int)O_APPEND)"); return 1; }
+      if (sp_streq(nm, "NONBLOCK")) { buf_puts(b, "((sp_int)O_NONBLOCK)"); return 1; }
+      if (sp_streq(nm, "BINARY"))   { buf_puts(b, "((sp_int)0)"); return 1; }
+      /* the flock(2) operation constants (#2808) */
+      if (sp_streq(nm, "LOCK_SH")) { buf_puts(b, "((sp_int)LOCK_SH)"); return 1; }
+      if (sp_streq(nm, "LOCK_EX")) { buf_puts(b, "((sp_int)LOCK_EX)"); return 1; }
+      if (sp_streq(nm, "LOCK_UN")) { buf_puts(b, "((sp_int)LOCK_UN)"); return 1; }
+      if (sp_streq(nm, "LOCK_NB")) { buf_puts(b, "((sp_int)LOCK_NB)"); return 1; }
+    }
+    if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
+      /* IO#seek whence constants (File inherits them from IO); the Ruby
+         values 0/1/2 are what sp_File_seek expects. */
+      if (sp_streq(nm, "SEEK_SET")) { buf_puts(b, "((sp_int)0)"); return 1; }
+      if (sp_streq(nm, "SEEK_CUR")) { buf_puts(b, "((sp_int)1)"); return 1; }
+      if (sp_streq(nm, "SEEK_END")) { buf_puts(b, "((sp_int)2)"); return 1; }
+    }
+    if (par_nmc && sp_streq(par_nmc, "Process") && nm) {
+      if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((sp_int)CLOCK_MONOTONIC)"); return 1; }
+      if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((sp_int)CLOCK_REALTIME)"); return 1; }
+      /* the CPU-time clocks are POSIX and present on Linux and macOS; emit the
+         C macro so the value is the platform's own clock id, as CRuby's is. */
+      if (sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID")) { buf_puts(b, "((sp_int)CLOCK_PROCESS_CPUTIME_ID)"); return 1; }
+      if (sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID"))  { buf_puts(b, "((sp_int)CLOCK_THREAD_CPUTIME_ID)"); return 1; }
+      /* getpriority/setpriority `which` selectors (#3046) */
+      if (sp_streq(nm, "PRIO_PROCESS")) { buf_puts(b, "((sp_int)PRIO_PROCESS)"); return 1; }
+      if (sp_streq(nm, "PRIO_PGRP"))    { buf_puts(b, "((sp_int)PRIO_PGRP)"); return 1; }
+      if (sp_streq(nm, "PRIO_USER"))    { buf_puts(b, "((sp_int)PRIO_USER)"); return 1; }
+    }
+    if (par_nmc && sp_streq(par_nmc, "Integer") && nm &&
+        (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) {
+      /* Integer::MAX/MIN do not exist in Ruby -- raise NameError at runtime */
+      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant Integer::%s\"), 0)", nm);
+      return 1;
+    }
+    /* Socket::<CONST>: the value is platform-dependent, so the runtime (where
+       the system headers are in scope) resolves it by name. */
+    if (par_nmc && nm && sp_streq(par_nmc, "Socket") && sp_feature_required("socket")) {
+      buf_printf(b, "({ sp_int _sc = sp_sock_const(\"%s\");"
+                    " if (_sc < 0) sp_raise_cls(\"NameError\","
+                    " \"uninitialized constant Socket::%s\"); _sc; })", nm, nm);
+      return 1;
+    }
+    /* class/module constant as value */
+    if (nm) {
+      int _cpidx = comp_class_index(c, nm);
+      if (_cpidx >= 0) { buf_printf(b, "((sp_Class){%d})", _cpidx); return 1; }
+      int _bcpid = builtin_class_id(nm);
+      if (_bcpid != 0) { buf_printf(b, "((sp_Class){%d})", _bcpid); return 1; }
+    }
+    /* A qualified constant defined nowhere: the same build-time answer as the
+       bare form above (#3976). */
+    {
+      char fullname[512];
+      /* CRuby qualifies the name by a NAMED module (`M::Missing`) but not by
+         Object, whose constants are the top-level ones (#3976). The written
+         path is what goes in the message; see const_path_written. */
+      const_path_written(nt, id, fullname, sizeof fullname);
+      if (!fullname[0]) {
+        if (par_nmc && nm && !sp_streq(par_nmc, "Object"))
+          snprintf(fullname, sizeof fullname, "%s::%s", par_nmc, nm);
+        else if (nm) snprintf(fullname, sizeof fullname, "%s", nm);
+        else snprintf(fullname, sizeof fullname, "?");
+      }
+      /* a builtin class with no cls_id that only a path names
+         (Enumerator::Chain): the name-backed value the bare form above
+         gives Random or Process */
+      if (is_builtin_class_name(fullname) || is_builtin_module_name(fullname)) {
+        buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", fullname);
+        return 1;
+      }
+      if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, fullname);
+      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
+    }
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -2761,375 +3135,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
   }
   if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "ConstantReadNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (cv && cv->type != TY_UNKNOWN) {
-      if (cv->init_guarded) {
-        /* a read during the const's own Class.new init raises NameError */
-        buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
-                      " \"uninitialized constant %s\"), cst_%s) : cst_%s)", nm, nm, nm, nm);
-      }
-      else buf_printf(b, "cst_%s", nm);
-      return;
-    }
-    /* `include Math` exposes the module's bare constants (#2600) */
-    if (c->has_include_math && nm && !comp_const(c, nm)) {
-      if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }
-      if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
-    }
-    if (nm && sp_streq(nm, "RUBY_DESCRIPTION")) {
-      /* The `ruby -v` shape -- engine, version, release and revision,
-         platform -- so a harness that records RUBY_DESCRIPTION can tell two spinel builds
-         apart. The platform comes from the runtime header at C compile
-         time, the same way RUBY_PLATFORM does, so a cross-build names its
-         target rather than the host. */
-      char lit[256];
-      snprintf(lit, sizeof lit, "\"%s [\" SP_RUBY_ARCH \"-\" SP_RUBY_OS \"]\"",
-               g_ruby_description ? g_ruby_description : "spinel " SP_RUBY_VERSION);
-      emit_engine_const_str("sp_str_ruby_description", lit, b);
-      return;
-    }
-    if (nm && sp_streq(nm, "RUBY_VERSION"))     { emit_engine_const_str("sp_str_ruby_version", "\"" SP_RUBY_VERSION "\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE"))      { emit_engine_const_str("sp_str_ruby_engine", "\"spinel\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_ENGINE_VERSION")) { emit_engine_const_str("sp_str_ruby_engine_version", "\"" SP_RUBY_VERSION "\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_PLATFORM"))    { emit_engine_const_str("sp_str_ruby_platform", "SP_RUBY_ARCH \"-\" SP_RUBY_OS", b); return; }
-    if (nm && sp_streq(nm, "RUBY_RELEASE_DATE")) { emit_engine_const_str("sp_str_ruby_release_date", "\"2026-09-15\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_REVISION"))    { emit_engine_const_str("sp_str_ruby_revision", "\"229531a6cfbf07e3caef30dbac24a2a3f3fed482\"", b); return; }
-    if (nm && sp_streq(nm, "RUBY_PATCHLEVEL"))  { buf_puts(b, "((sp_int)0)"); return; }
-    if (nm && sp_streq(nm, "RUBY_COPYRIGHT"))   { emit_engine_const_str("sp_str_ruby_copyright", "\"ruby - Copyright (C) 1993-2026 Yukihiro Matsumoto\"", b); return; }
-    if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
-    if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
-    if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return; }
-    if (nm && sp_streq(nm, "STDERR")) { buf_puts(b, "sp_io_stderr()"); return; }
-    if (nm && sp_streq(nm, "STDIN"))  { buf_puts(b, "sp_io_stdin()"); return; }
-    /* `OpenStruct` as a class value, matching what an OpenStruct's #class
-       returns (name-keyed, cls_id -1); require "ostruct" gated (#3155). */
-    if (nm && sp_streq(nm, "OpenStruct") && sp_feature_required("ostruct")) {
-      buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"OpenStruct\")})");
-      return;
-    }
-    if (nm) {
-      int _cidx = comp_class_index(c, nm);
-      if (_cidx >= 0) {
-        buf_printf(b, "((sp_Class){%d})", _cidx);  /* user class as value: TY_CLASS unboxed */
-      }
-      else {
-        int _bcid = builtin_class_id(nm);
-        if (_bcid != 0)
-          buf_printf(b, "((sp_Class){%d})", _bcid);  /* builtin class as value */
-        else if (is_builtin_exception_name(nm) || is_builtin_class_name(nm) ||
-                 is_builtin_module_name(nm)) {
-          /* a builtin class, module or exception class with no cls_id of its
-             own (SystemCallError, LoadError, Process, GC, Method, Random): a
-             name-backed Class value, like OpenStruct above -- sp_class_eq and
-             the boxed form both compare by name, and an instance's #class
-             answers the same (`Random.new.class`) */
-          buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", nm);
-        }
-        else {
-          /* A constant defined NOWHERE in the program: spinel is closed-world
-             and `const_set` only stores into a constant the program already
-             defines, so no definition can arrive later. Say so at build time --
-             a dropped `require` otherwise reads as an engine bug, since the
-             build succeeds and the first request crashes (#3976). It stays a
-             warning, not an error: referencing a missing constant to test the
-             NameError is legal Ruby, and ruby/spec does exactly that. */
-          if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, nm);
-          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
-        }
-      }
-    }
-    else unsupported(c, id, "constant read");
-    return;
-  }
-  if (sp_streq(ty, "ConstantPathNode")) {
-    /* M::CONST -> the flat constant named by the final path component */
-    const char *nm = nt_str(nt, id, "name");
-    int par_idc = nt_ref(nt, id, "parent");
-    const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
-    /* the parent's LEAF name also qualifies through a nested path
-       (Outer::CSql::TEXT) -- the ffi decl registers under its module's
-       unqualified name */
-    const char *par_nmc = (par_tyc && (sp_streq(par_tyc, "ConstantReadNode") ||
-                                       sp_streq(par_tyc, "ConstantPathNode")))
-                          ? nt_str(nt, par_idc, "name") : NULL;
-    /* A constant naming a CLASS is a written path (Probe::Block::CODE). A
-       constant HOLDING one (BLOCK = Probe::Block; BLOCK::CODE) is a receiver
-       whose class only the value knows, so it takes the run-time read below --
-       treating it as a path looked the leaf up and answered a top-level
-       constant of that name (#4259). */
-    if (par_nmc && par_tyc && sp_streq(par_tyc, "ConstantReadNode") &&
-        comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
-        comp_const(c, par_nmc))
-      par_nmc = NULL;
-    /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
-       plain-constant table, or a same-leaf plain constant in another module
-       silently claims the reference (and its type). */
-    if (par_nmc && nm) {
-      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
-        if (sp_streq(c->ffi_consts[fci].mod, par_nmc) &&
-            sp_streq(c->ffi_consts[fci].name, nm)) {
-          buf_printf(b, "((sp_int)%d)", c->ffi_consts[fci].val);
-          return;
-        }
-      }
-    }
-    /* a ::-scoped BUILTIN class is a first-class Class value (#2840) */
-    if (par_nmc && nm) {
-      char qbuf[160];
-      snprintf(qbuf, sizeof qbuf, "%s::%s", par_nmc, nm);
-      int qid = builtin_class_id(qbuf);
-      if (qid != 0) {
-        buf_printf(b, "((sp_Class){(sp_int)%d, SPL(\"%s\")})", qid, qbuf);
-        return;
-      }
-      /* the Errno:: family (and its id-less siblings) is a name-backed
-         Class value; raised exceptions carry this same qualified name */
-      if (is_builtin_exception_name(qbuf)) {
-        buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", qbuf);
-        return;
-      }
-    }
-    /* Errno::ENOENT::Errno: the class's number, from the runtime table
-       (the numbers differ by platform) (#4560) */
-    if (nm && sp_streq(nm, "Errno") && par_idc >= 0) {
-      char pq[160];
-      const char *pqn = isa_const_qualname(nt, par_idc, pq, sizeof pq);
-      if (pqn && !strncmp(pqn, "Errno::", 7) && is_builtin_exception_name(pqn)) {
-        buf_printf(b, "sp_errno_num(\"%s\")", pqn);
-        return;
-      }
-    }
-    /* `klass::CODE` where the receiver is a VALUE rather than a written path:
-       which constant it names is a run-time question, and answering it with
-       the leaf-named one made two different receivers answer the same thing --
-       the top-level CODE for both Probe::Block and Probe::Region (#4257). The
-       constants themselves are already stored per owner (cst_Probe__Block__CODE
-       and cst_Probe__Region__CODE both exist), so switch on the class the
-       value carries and read the one that class owns. */
-    { TyKind prt = par_idc >= 0 ? comp_ntype(c, par_idc) : TY_UNKNOWN;
-    if (nm && par_idc >= 0 && !par_nmc && (prt == TY_CLASS || prt == TY_POLY)) {
-      /* A constant is stored under its OWNER's qualified spelling
-         (Probe__Block__CODE) while the class's c_name is its leaf (Block), so
-         the owner is found by asking each class whether a constant keyed
-         "<...>__<c_name>__<nm>" or "<c_name>__<nm>" exists. */
-      int ccls[64]; const char *ckey[64]; int nc = 0;
-      TyKind ct = TY_UNKNOWN; int uniform = 1;
-      for (int k = 0; k < c->nclasses && nc < 64; k++) {
-        const char *kn = c->classes[k].c_name;
-        if (!kn) continue;
-        char tail[512];
-        snprintf(tail, sizeof tail, "%s__%s", kn, nm);
-        size_t tl = strlen(tail);
-        const char *found = NULL; TyKind ft = TY_UNKNOWN;
-        for (int ci2 = 0; ci2 < c->nconsts; ci2++) {
-          const char *cn2 = c->consts[ci2].name;
-          size_t l2 = strlen(cn2);
-          if (l2 < tl || strcmp(cn2 + l2 - tl, tail) != 0) continue;
-          /* either the whole key, or a component edge before it */
-          if (l2 > tl && strncmp(cn2 + l2 - tl - 2, "__", 2) != 0) continue;
-          found = cn2; ft = c->consts[ci2].type; break;
-        }
-        if (!found) continue;
-        if (nc == 0) ct = ft;
-        else if (ft != ct) uniform = 0;
-        ccls[nc] = k; ckey[nc] = found; nc++;
-      }
-      if (nc > 0 && uniform && ct != TY_UNKNOWN) {
-        int tk = ++g_tmp, tr = ++g_tmp;
-        buf_printf(b, "({ sp_Class _t%d = ", tk);
-        /* a poly slot carries the class boxed; unwrap it to the same key */
-        if (prt == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par_idc, b); buf_puts(b, ")"); }
-        else emit_expr(c, par_idc, b);
-        buf_puts(b, "; ");
-        emit_ctype(c, ct, b);
-        buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr, default_value_from_compiler(c, ct), tk);
-        for (int i = 0; i < nc; i++)
-          buf_printf(b, " case %d: _t%d = cst_%s; break;", ccls[i], tr, ckey[i]);
-        /* A class with no such constant is CRuby's NameError, not the
-           leaf-named constant of some unrelated scope. */
-        buf_printf(b, " default: sp_raise_cls(\"NameError\", sp_sprintf("
-                      "\"uninitialized constant %%s::%s\", sp_class_to_s(_t%d))); break;",
-                   nm, tk);
-        buf_printf(b, " } _t%d; })", tr);
-        return;
-      }
-    } }
-    LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
-    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return; }
-    if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
-    if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
-    /* well-known module constants */
-    if (par_nmc && sp_streq(par_nmc, "Float") && nm) {
-      if (sp_streq(nm, "MAX"))      { buf_puts(b, "DBL_MAX"); return; }
-      if (sp_streq(nm, "MIN"))      { buf_puts(b, "DBL_MIN"); return; }
-      if (sp_streq(nm, "EPSILON"))  { buf_puts(b, "DBL_EPSILON"); return; }
-      if (sp_streq(nm, "INFINITY")) { buf_puts(b, "(1.0/0.0)"); return; }
-      if (sp_streq(nm, "NAN"))      { buf_puts(b, "(0.0/0.0)"); return; }
-      /* DIG/MANT_DIG/RADIX and the exponent limits are Integer constants */
-      if (sp_streq(nm, "DIG"))       { buf_printf(b, "((sp_int)DBL_DIG)"); return; }
-      if (sp_streq(nm, "MANT_DIG"))  { buf_printf(b, "((sp_int)DBL_MANT_DIG)"); return; }
-      if (sp_streq(nm, "RADIX"))     { buf_printf(b, "((sp_int)FLT_RADIX)"); return; }
-      if (sp_streq(nm, "MAX_EXP"))    { buf_printf(b, "((sp_int)DBL_MAX_EXP)"); return; }
-      if (sp_streq(nm, "MIN_EXP"))    { buf_printf(b, "((sp_int)DBL_MIN_EXP)"); return; }
-      if (sp_streq(nm, "MAX_10_EXP")) { buf_printf(b, "((sp_int)DBL_MAX_10_EXP)"); return; }
-      if (sp_streq(nm, "MIN_10_EXP")) { buf_printf(b, "((sp_int)DBL_MIN_10_EXP)"); return; }
-    }
-    if (par_nmc && sp_streq(par_nmc, "Math") && nm) {
-      if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }
-      if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
-    }
-    /* Regexp option constants: CRuby's public bits (IGNORECASE=1, EXTENDED=2,
-       MULTILINE=4) the same integers Regexp.new's option arg accepts, and the
-       encoding bits Regexp#options reports (FIXEDENCODING=16, NOENCODING=32). */
-    if (par_nmc && sp_streq(par_nmc, "Regexp") && nm) {
-      if (sp_streq(nm, "IGNORECASE")) { buf_puts(b, "((sp_int)1)"); return; }
-      if (sp_streq(nm, "EXTENDED"))   { buf_puts(b, "((sp_int)2)"); return; }
-      if (sp_streq(nm, "MULTILINE"))  { buf_puts(b, "((sp_int)4)"); return; }
-      if (sp_streq(nm, "FIXEDENCODING")) { buf_puts(b, "((sp_int)16)"); return; }
-      if (sp_streq(nm, "NOENCODING"))    { buf_puts(b, "((sp_int)32)"); return; }
-    }
-    /* well-known Encoding constants -> the matching boxed encoding value.
-       Spinel has one internal representation (UTF-8 / ASCII-8BIT), so the
-       many aliases map onto those two; enough for the pervasive
-       `str.encoding == Encoding::UTF_8` comparison. */
-    if (par_nmc && sp_streq(par_nmc, "Encoding") && nm) {
-      if (sp_streq(nm, "UTF_8") || sp_streq(nm, "UTF8")) {
-        buf_puts(b, "sp_box_encoding(sp_encoding_utf8())"); return;
-      }
-      if (sp_streq(nm, "US_ASCII") || sp_streq(nm, "ASCII") || sp_streq(nm, "ANSI_X3_4_1968")) {
-        buf_puts(b, "sp_box_encoding(sp_encoding_us_ascii())"); return;
-      }
-      if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) {
-        buf_puts(b, "sp_box_encoding(sp_encoding_binary())"); return;
-      }
-      /* Every other Encoding constant is a named Encoding value the runtime
-         does not transcode to or from (String#encode leaves the bytes alone
-         for it). It used to be an undefined constant, which never showed
-         while `encode` ignored its argument; the CRuby name is the constant's
-         with `_` as `-`, except the handful CRuby spells otherwise. */
-      { static const char *const ENC[][2] = {
-          {"SHIFT_JIS","Shift_JIS"}, {"SJIS","Shift_JIS"}, {"WINDOWS_31J","Windows-31J"},
-          {"CP932","Windows-31J"}, {"EUC_JP","EUC-JP"}, {"EUCJP","EUC-JP"}, {"UTF_16","UTF-16"},
-          {"UTF_16BE","UTF-16BE"}, {"UTF_16LE","UTF-16LE"}, {"UTF_32","UTF-32"},
-          {"UTF_32BE","UTF-32BE"}, {"UTF_32LE","UTF-32LE"}, {"ISO_8859_1","ISO-8859-1"},
-          {"ISO8859_1","ISO-8859-1"}, {"WINDOWS_1252","Windows-1252"}, {"CP1252","Windows-1252"},
-          {"UTF_7","UTF-7"}, {"BIG5","Big5"}, {"GBK","GBK"}, {"GB18030","GB18030"},
-          {"EUC_KR","EUC-KR"}, {"KOI8_R","KOI8-R"}, {NULL,NULL} };
-        const char *ename = NULL;
-        for (int k = 0; ENC[k][0]; k++) if (sp_streq(nm, ENC[k][0])) { ename = ENC[k][1]; break; }
-        char dashed[96];
-        if (!ename) {
-          int ok = 1; size_t i = 0;
-          for (; nm[i] && i + 1 < sizeof dashed; i++) {
-            char ch = nm[i];
-            if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_')) { ok = 0; break; }
-            dashed[i] = ch == '_' ? '-' : ch;
-          }
-          dashed[i] = 0;
-          if (ok && i > 0) ename = dashed;
-        }
-        if (ename) {
-          buf_puts(b, "sp_box_encoding((sp_Encoding){");
-          emit_str_literal(b, ename);   /* marker-framed, like every literal */
-          buf_puts(b, "})");
-          return;
-        }
-      }
-    }
-    if (par_nmc && sp_streq(par_nmc, "File") && nm) {
-      /* Emit marker-framed literals (\xff prefix at [-1]) like every other
-         spinel string, so sp_str_byte_len/sp_str_concat can read the length
-         marker without an out-of-bounds [-1] over-read on a bare literal. */
-      if (sp_streq(nm, "SEPARATOR"))      { buf_puts(b, "(&(\"\\xff\" \"/\")[1])"); return; }
-      if (sp_streq(nm, "PATH_SEPARATOR")) { buf_puts(b, "(&(\"\\xff\" \":\")[1])"); return; }
-      if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "((const char *)0)"); return; }  /* nil off Windows (#2781) */
-      /* the null device, the name Process.spawn/File.open take to discard a
-         stream. Windows is not a target, so it is /dev/null (#4284). */
-      if (sp_streq(nm, "NULL"))           { buf_puts(b, "(&(\"\\xff\" \"/dev/null\")[1])"); return; }
-      /* the open(2) flag constants, via the C macros (#2788) */
-      if (sp_streq(nm, "RDONLY"))   { buf_puts(b, "((sp_int)O_RDONLY)"); return; }
-      if (sp_streq(nm, "WRONLY"))   { buf_puts(b, "((sp_int)O_WRONLY)"); return; }
-      if (sp_streq(nm, "RDWR"))     { buf_puts(b, "((sp_int)O_RDWR)"); return; }
-      if (sp_streq(nm, "CREAT"))    { buf_puts(b, "((sp_int)O_CREAT)"); return; }
-      if (sp_streq(nm, "EXCL"))     { buf_puts(b, "((sp_int)O_EXCL)"); return; }
-      if (sp_streq(nm, "TRUNC"))    { buf_puts(b, "((sp_int)O_TRUNC)"); return; }
-      if (sp_streq(nm, "APPEND"))   { buf_puts(b, "((sp_int)O_APPEND)"); return; }
-      if (sp_streq(nm, "NONBLOCK")) { buf_puts(b, "((sp_int)O_NONBLOCK)"); return; }
-      if (sp_streq(nm, "BINARY"))   { buf_puts(b, "((sp_int)0)"); return; }
-      /* the flock(2) operation constants (#2808) */
-      if (sp_streq(nm, "LOCK_SH")) { buf_puts(b, "((sp_int)LOCK_SH)"); return; }
-      if (sp_streq(nm, "LOCK_EX")) { buf_puts(b, "((sp_int)LOCK_EX)"); return; }
-      if (sp_streq(nm, "LOCK_UN")) { buf_puts(b, "((sp_int)LOCK_UN)"); return; }
-      if (sp_streq(nm, "LOCK_NB")) { buf_puts(b, "((sp_int)LOCK_NB)"); return; }
-    }
-    if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
-      /* IO#seek whence constants (File inherits them from IO); the Ruby
-         values 0/1/2 are what sp_File_seek expects. */
-      if (sp_streq(nm, "SEEK_SET")) { buf_puts(b, "((sp_int)0)"); return; }
-      if (sp_streq(nm, "SEEK_CUR")) { buf_puts(b, "((sp_int)1)"); return; }
-      if (sp_streq(nm, "SEEK_END")) { buf_puts(b, "((sp_int)2)"); return; }
-    }
-    if (par_nmc && sp_streq(par_nmc, "Process") && nm) {
-      if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((sp_int)CLOCK_MONOTONIC)"); return; }
-      if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((sp_int)CLOCK_REALTIME)"); return; }
-      /* the CPU-time clocks are POSIX and present on Linux and macOS; emit the
-         C macro so the value is the platform's own clock id, as CRuby's is. */
-      if (sp_streq(nm, "CLOCK_PROCESS_CPUTIME_ID")) { buf_puts(b, "((sp_int)CLOCK_PROCESS_CPUTIME_ID)"); return; }
-      if (sp_streq(nm, "CLOCK_THREAD_CPUTIME_ID"))  { buf_puts(b, "((sp_int)CLOCK_THREAD_CPUTIME_ID)"); return; }
-      /* getpriority/setpriority `which` selectors (#3046) */
-      if (sp_streq(nm, "PRIO_PROCESS")) { buf_puts(b, "((sp_int)PRIO_PROCESS)"); return; }
-      if (sp_streq(nm, "PRIO_PGRP"))    { buf_puts(b, "((sp_int)PRIO_PGRP)"); return; }
-      if (sp_streq(nm, "PRIO_USER"))    { buf_puts(b, "((sp_int)PRIO_USER)"); return; }
-    }
-    if (par_nmc && sp_streq(par_nmc, "Integer") && nm &&
-        (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) {
-      /* Integer::MAX/MIN do not exist in Ruby -- raise NameError at runtime */
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant Integer::%s\"), 0)", nm);
-      return;
-    }
-    /* Socket::<CONST>: the value is platform-dependent, so the runtime (where
-       the system headers are in scope) resolves it by name. */
-    if (par_nmc && nm && sp_streq(par_nmc, "Socket") && sp_feature_required("socket")) {
-      buf_printf(b, "({ sp_int _sc = sp_sock_const(\"%s\");"
-                    " if (_sc < 0) sp_raise_cls(\"NameError\","
-                    " \"uninitialized constant Socket::%s\"); _sc; })", nm, nm);
-      return;
-    }
-    /* class/module constant as value */
-    if (nm) {
-      int _cpidx = comp_class_index(c, nm);
-      if (_cpidx >= 0) { buf_printf(b, "((sp_Class){%d})", _cpidx); return; }
-      int _bcpid = builtin_class_id(nm);
-      if (_bcpid != 0) { buf_printf(b, "((sp_Class){%d})", _bcpid); return; }
-    }
-    /* A qualified constant defined nowhere: the same build-time answer as the
-       bare form above (#3976). */
-    {
-      char fullname[512];
-      /* CRuby qualifies the name by a NAMED module (`M::Missing`) but not by
-         Object, whose constants are the top-level ones (#3976). The written
-         path is what goes in the message; see const_path_written. */
-      const_path_written(nt, id, fullname, sizeof fullname);
-      if (!fullname[0]) {
-        if (par_nmc && nm && !sp_streq(par_nmc, "Object"))
-          snprintf(fullname, sizeof fullname, "%s::%s", par_nmc, nm);
-        else if (nm) snprintf(fullname, sizeof fullname, "%s", nm);
-        else snprintf(fullname, sizeof fullname, "?");
-      }
-      /* a builtin class with no cls_id that only a path names
-         (Enumerator::Chain): the name-backed value the bare form above
-         gives Random or Process */
-      if (is_builtin_class_name(fullname) || is_builtin_module_name(fullname)) {
-        buf_printf(b, "((sp_Class){(sp_int)-1, SPL(\"%s\")})", fullname);
-        return;
-      }
-      if (!const_ref_is_rescued(c, id)) warn_undefined_constant(c, id, fullname);
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
-    }
-    return;
-  }
+  if (emit_constant_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "DefinedNode")) {
     /* defined? examines its argument recursively without evaluating: any
        unresolvable constant anywhere in the subtree makes the whole answer
