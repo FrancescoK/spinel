@@ -14463,6 +14463,196 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
   }  /* if (g_needs_class_machinery) */
 }
 
+/* FFI extern declarations and buffer storage, with the link and cflag markers the driver reads (codegen_program's steps, in their order) */
+static void emit_ffi_decls(Compiler *c, Buf *b) {
+  /* FFI extern declarations and buffer storage */
+  {
+    Compiler *cf = c;
+    /* Link/cflag markers: the spinel driver greps these out of the
+       generated C and appends them to the cc command line. One marker
+       per ';'-separated token, matching the legacy emitter's format. */
+    for (int li = 0; li < cf->n_ffi_libs; li++) {
+      for (const char *s = cf->ffi_libs[li].names; ; ) {
+        const char *semi = strchr(s, ';');
+        int len = semi ? (int)(semi - s) : (int)strlen(s);
+        if (len > 0) buf_printf(b, "/* SPINEL_LINK: -l%.*s */\n", len, s);
+        if (!semi) break;
+        s = semi + 1;
+      }
+    }
+    for (int ci = 0; ci < cf->n_ffi_cflags; ci++) {
+      for (const char *s = cf->ffi_cflags[ci].val; ; ) {
+        const char *semi = strchr(s, ';');
+        int len = semi ? (int)(semi - s) : (int)strlen(s);
+        if (len > 0) buf_printf(b, "/* SPINEL_CFLAGS: %.*s */\n", len, s);
+        if (!semi) break;
+        s = semi + 1;
+      }
+    }
+    int any_binstr = 0, any_extern = 0;
+    for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
+      const char *ret = cf->ffi_funcs[fi].ret;
+      if (sp_streq(ret, "binstr")) any_binstr = 1;
+      /* A function taking a callback (qsort, bsearch, lfind) is declared like
+         any other: the private name cannot conflict with a header's own
+         declaration, and one no included header declares (lfind lives in
+         <search.h>) was otherwise called with no prototype at all -- an
+         implicit int, truncating a :ptr result. The callback parameter takes
+         the trampoline's own pointer type (ffi_cb_arg_ctype). */
+      int na = cf->ffi_funcs[fi].nargs;
+      /* Declared under a private name bound to the symbol by an asm label
+         (ffi_extern_name). __USER_LABEL_PREFIX__ is the target's symbol prefix
+         (`_` on Mach-O, empty on ELF and wasm). The label names the raw
+         symbol, not whatever a header redirects the name to (fopen64,
+         __isoc99_sscanf, a fortify __*_chk): the spec describes the raw
+         symbol's ABI, the one dlsym finds for the ffi gem.
+         A variadic function (trailing :varargs) is declared the same way, with
+         its fixed args and `...`: the private name cannot conflict with a
+         header's fortified declaration (printf under gcc + glibc
+         _FORTIFY_SOURCE), and calling it is no call through an incompatible
+         function type (gcc warns casting fprintf's FILE * to void *). With no
+         fixed arg there is no prototype to write (`(...)` needs C23), so the
+         call site casts the header-declared symbol instead. */
+      int is_va = na > 0 && sp_streq(cf->ffi_funcs[fi].args[na - 1], "varargs");
+      int fixed = is_va ? na - 1 : na;
+      if (is_va && fixed == 0) continue;
+      if (!any_extern) {
+        buf_puts(b, "#define SP_FFI_STR_(x) #x\n#define SP_FFI_STR(x) SP_FFI_STR_(x)\n"
+                     "#ifdef __USER_LABEL_PREFIX__\n"
+                     "#define SP_FFI_SYM(s) SP_FFI_STR(__USER_LABEL_PREFIX__) s\n"
+                     "#else\n#define SP_FFI_SYM(s) s\n#endif\n");
+        any_extern = 1;
+      }
+      buf_puts(b, "extern ");
+      buf_puts(b, ffi_c_type(ret));
+      buf_puts(b, " ");
+      ffi_extern_name(cf, fi, b);
+      buf_puts(b, "(");
+      for (int ai = 0; ai < fixed; ai++) {
+        if (ai) buf_puts(b, ", ");
+        int cbi = ffi_find_callback(cf, cf->ffi_funcs[fi].mod, cf->ffi_funcs[fi].args[ai]);
+        if (cbi < 0) { buf_puts(b, ffi_c_type(cf->ffi_funcs[fi].args[ai])); continue; }
+        FfiCallback *k = &cf->ffi_callbacks[cbi];
+        buf_printf(b, "%s (*)(", ffi_c_type(k->ret_spec));
+        for (int ki = 0; ki < k->nargs; ki++)
+          buf_printf(b, "%s%s", ki ? ", " : "", ffi_cb_arg_ctype(k->arg_specs[ki]));
+        buf_puts(b, k->nargs ? ")" : "void)");
+      }
+      if (is_va) buf_puts(b, ", ...");
+      if (na == 0) buf_puts(b, "void");
+      buf_printf(b, ") __asm__(SP_FFI_SYM(\"%s\"));\n",
+                 cf->ffi_funcs[fi].csym ? cf->ffi_funcs[fi].csym : cf->ffi_funcs[fi].name);
+    }
+    /* Byte count for the :binstr return mode (defined in sp_alloc.c). */
+    /* sp_alloc.h already declares it, and declares it SP_TLS in the threaded
+       build -- re-declaring it here without the storage class is a conflict,
+       so name it the same way. */
+    if (any_binstr) buf_puts(b, "extern SP_TLS int sp_ffi_bin_len;\n");
+
+    /* native_func externs (Path B): prototype each bound C symbol so the
+       generated TU needs no package header. Deduped by symbol (generate and
+       dump may share one). Type specs are the spinel type language. */
+    for (int nvi = 0; nvi < cf->n_native_funcs; nvi++) {
+      const char *csym = cf->native_funcs[nvi].csym;
+      int seen = 0;
+      for (int pj = 0; pj < nvi; pj++)
+        if (sp_streq(cf->native_funcs[pj].csym, csym)) { seen = 1; break; }
+      if (seen) continue;
+      buf_puts(b, "extern ");
+      buf_puts(b, native_c_type(cf->native_funcs[nvi].ret));
+      buf_puts(b, " "); buf_puts(b, csym); buf_puts(b, "(");
+      for (int ai = 0; ai < cf->native_funcs[nvi].nargs; ai++) {
+        if (ai) buf_puts(b, ", ");
+        buf_puts(b, native_c_type(cf->native_funcs[nvi].args[ai]));
+      }
+      if (cf->native_funcs[nvi].nargs == 0) buf_puts(b, "void");
+      buf_puts(b, ");\n");
+    }
+    /* forward-declare each native class's package struct (incomplete: the TU
+       holds only pointers) so the method externs below can name it. */
+    for (int nci = 0; nci < cf->nclasses; nci++)
+      if (cf->classes[nci].is_native_class && cf->classes[nci].c_struct) {
+        buf_printf(b, "typedef struct %s_s %s;\n", cf->classes[nci].c_struct, cf->classes[nci].c_struct);
+        /* A native_struct's C name need not be sp_<class> (IO::Buffer is
+           class "Buffer" over sp_IOBuffer), but the self-parameter and cast
+           emitters spell instances sp_<c_name>; alias that spelling to the
+           declared struct so both name the same type. */
+        char sp_name[160];
+        snprintf(sp_name, sizeof sp_name, "sp_%s", cf->classes[nci].c_name ? cf->classes[nci].c_name : "");
+        if (!sp_streq(sp_name, cf->classes[nci].c_struct))
+          buf_printf(b, "typedef %s %s;\n", cf->classes[nci].c_struct, sp_name);
+      }
+    /* native_method/native_new externs: prototype each C-backed method so the
+       generated TU needs no package header. A constructor returns the struct
+       pointer and takes cls_id first (the compiler stamps the assigned id); an
+       instance method takes the receiver pointer first. Deduped by symbol. */
+    for (int mi = 0; mi < cf->n_native_methods; mi++) {
+      NativeMethod *m = &cf->native_methods[mi];
+      int seen = 0;
+      for (int pj = 0; pj < mi; pj++)
+        if (sp_streq(cf->native_methods[pj].csym, m->csym)) { seen = 1; break; }
+      if (seen) continue;
+      const char *cstruct = cf->classes[m->class_id].c_struct;
+      buf_puts(b, "extern ");
+      if (m->kind == 1) buf_printf(b, "%s *%s(sp_int", cstruct, m->csym);   /* ctor: cls_id first */
+      else if (sp_streq(m->ret, "self")) buf_printf(b, "%s *%s(%s *", cstruct, m->csym, cstruct);
+      else { buf_printf(b, "%s %s(%s *", native_c_type(m->ret), m->csym, cstruct); }
+      for (int ai = 0; ai < m->nargs; ai++) { buf_puts(b, ", "); buf_puts(b, native_c_type(m->args[ai])); }
+      if (m->rest) buf_puts(b, ", sp_int, sp_RbVal *");
+      buf_puts(b, ");\n");
+    }
+    /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */
+    if (cf->n_ffi_funcs > 0 && ffi_iobuffer_class(cf) >= 0) {
+      buf_puts(b, "extern void *sp_IOBuffer_ffi_base(sp_IOBuffer *, sp_int);\n"
+                   "extern void *sp_IOBuffer_ffi_ptr(sp_RbVal, sp_int, sp_int);\n"
+                   "extern sp_int sp_IOBuffer_ffi_hold(sp_IOBuffer *);\n"
+                   "extern void sp_IOBuffer_ffi_release(sp_IOBuffer *, sp_int);\n"
+                   "extern sp_int sp_IOBuffer_ffi_hold_v(sp_RbVal, sp_int);\n"
+                   "extern void sp_IOBuffer_ffi_release_v(sp_RbVal, sp_int, sp_int);\n");
+      /* which class ids are user classes, whose instances have no C address:
+         a boxed pointer argument holding one is refused at run time */
+      buf_printf(b, "static const unsigned char sp_ffi_user_cls[%d] SP_UNUSED = {", cf->nclasses > 0 ? cf->nclasses : 1);
+      for (int k = 0; k < cf->nclasses; k++)
+        buf_printf(b, "%s%d", k ? "," : "", (!cf->classes[k].is_native_class && !is_builtin_reopen(cf->classes[k].name)) ? 1 : 0);
+      if (cf->nclasses == 0) buf_puts(b, "0");
+      buf_puts(b, "};\n");
+    }
+    /* native_obj link markers: the spinel driver links each object only when
+       its module's require-gate feature is enabled (i.e. the require appears). */
+    for (int noi = 0; noi < cf->n_native_objs; noi++) {
+      const char *feat = cf->native_objs[noi].feat;
+      if (!feat || !feat[0] || sp_feature_enabled(feat))
+        buf_printf(b, "/* SPINEL_LINK_OBJ: %s */\n", cf->native_objs[noi].path);
+    }
+    for (int bi = 0; bi < cf->n_ffi_bufs; bi++) {
+      buf_printf(b, "static char sp_ffi_buf_%s_%s[%d];\n",
+                 cf->ffi_bufs[bi].mod, cf->ffi_bufs[bi].name, cf->ffi_bufs[bi].size);
+    }
+    /* ffi_struct typedefs: the C compiler owns the layout (offsets/padding),
+       so the generated accessors use plain member access, not manual offsets. */
+    for (int si = 0; si < cf->n_ffi_structs; si++) {
+      buf_puts(b, "typedef struct { ");
+      for (int f = 0; f < cf->ffi_structs[si].nfields; f++)
+        buf_printf(b, "%s %s; ", ffi_c_type(cf->ffi_structs[si].fields[f].spec),
+                   cf->ffi_structs[si].fields[f].name);
+      buf_printf(b, "} sp_ffi_struct_%s_%s;\n",
+                 cf->ffi_structs[si].mod, cf->ffi_structs[si].name);
+    }
+    /* Inline C fragments are deliberately emitted after Spinel's generated FFI
+       declarations and storage, but before any generated function bodies. This
+       lets a single Ruby source carry a small adapter while normal ffi_func
+       declarations retain their usual type checking and call lowering. */
+    for (int si = 0; si < cf->n_ffi_sources; si++) {
+      buf_printf(b, "\n/* ffi_source: %s */\n", cf->ffi_sources[si].mod);
+      buf_puts(b, cf->ffi_sources[si].val);
+      if (cf->ffi_sources[si].val[0] &&
+          cf->ffi_sources[si].val[strlen(cf->ffi_sources[si].val) - 1] != '\n')
+        buf_puts(b, "\n");
+      buf_puts(b, "/* end ffi_source */\n");
+    }
+  }
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -14560,192 +14750,7 @@ char *codegen_program(const NodeTable *nt) {
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
   buf_puts(&b, "#include \"spinel_rt.h\"\n");
-  /* FFI extern declarations and buffer storage */
-  {
-    Compiler *cf = c;
-    /* Link/cflag markers: the spinel driver greps these out of the
-       generated C and appends them to the cc command line. One marker
-       per ';'-separated token, matching the legacy emitter's format. */
-    for (int li = 0; li < cf->n_ffi_libs; li++) {
-      for (const char *s = cf->ffi_libs[li].names; ; ) {
-        const char *semi = strchr(s, ';');
-        int len = semi ? (int)(semi - s) : (int)strlen(s);
-        if (len > 0) buf_printf(&b, "/* SPINEL_LINK: -l%.*s */\n", len, s);
-        if (!semi) break;
-        s = semi + 1;
-      }
-    }
-    for (int ci = 0; ci < cf->n_ffi_cflags; ci++) {
-      for (const char *s = cf->ffi_cflags[ci].val; ; ) {
-        const char *semi = strchr(s, ';');
-        int len = semi ? (int)(semi - s) : (int)strlen(s);
-        if (len > 0) buf_printf(&b, "/* SPINEL_CFLAGS: %.*s */\n", len, s);
-        if (!semi) break;
-        s = semi + 1;
-      }
-    }
-    int any_binstr = 0, any_extern = 0;
-    for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
-      const char *ret = cf->ffi_funcs[fi].ret;
-      if (sp_streq(ret, "binstr")) any_binstr = 1;
-      /* A function taking a callback (qsort, bsearch, lfind) is declared like
-         any other: the private name cannot conflict with a header's own
-         declaration, and one no included header declares (lfind lives in
-         <search.h>) was otherwise called with no prototype at all -- an
-         implicit int, truncating a :ptr result. The callback parameter takes
-         the trampoline's own pointer type (ffi_cb_arg_ctype). */
-      int na = cf->ffi_funcs[fi].nargs;
-      /* Declared under a private name bound to the symbol by an asm label
-         (ffi_extern_name). __USER_LABEL_PREFIX__ is the target's symbol prefix
-         (`_` on Mach-O, empty on ELF and wasm). The label names the raw
-         symbol, not whatever a header redirects the name to (fopen64,
-         __isoc99_sscanf, a fortify __*_chk): the spec describes the raw
-         symbol's ABI, the one dlsym finds for the ffi gem.
-         A variadic function (trailing :varargs) is declared the same way, with
-         its fixed args and `...`: the private name cannot conflict with a
-         header's fortified declaration (printf under gcc + glibc
-         _FORTIFY_SOURCE), and calling it is no call through an incompatible
-         function type (gcc warns casting fprintf's FILE * to void *). With no
-         fixed arg there is no prototype to write (`(...)` needs C23), so the
-         call site casts the header-declared symbol instead. */
-      int is_va = na > 0 && sp_streq(cf->ffi_funcs[fi].args[na - 1], "varargs");
-      int fixed = is_va ? na - 1 : na;
-      if (is_va && fixed == 0) continue;
-      if (!any_extern) {
-        buf_puts(&b, "#define SP_FFI_STR_(x) #x\n#define SP_FFI_STR(x) SP_FFI_STR_(x)\n"
-                     "#ifdef __USER_LABEL_PREFIX__\n"
-                     "#define SP_FFI_SYM(s) SP_FFI_STR(__USER_LABEL_PREFIX__) s\n"
-                     "#else\n#define SP_FFI_SYM(s) s\n#endif\n");
-        any_extern = 1;
-      }
-      buf_puts(&b, "extern ");
-      buf_puts(&b, ffi_c_type(ret));
-      buf_puts(&b, " ");
-      ffi_extern_name(cf, fi, &b);
-      buf_puts(&b, "(");
-      for (int ai = 0; ai < fixed; ai++) {
-        if (ai) buf_puts(&b, ", ");
-        int cbi = ffi_find_callback(cf, cf->ffi_funcs[fi].mod, cf->ffi_funcs[fi].args[ai]);
-        if (cbi < 0) { buf_puts(&b, ffi_c_type(cf->ffi_funcs[fi].args[ai])); continue; }
-        FfiCallback *k = &cf->ffi_callbacks[cbi];
-        buf_printf(&b, "%s (*)(", ffi_c_type(k->ret_spec));
-        for (int ki = 0; ki < k->nargs; ki++)
-          buf_printf(&b, "%s%s", ki ? ", " : "", ffi_cb_arg_ctype(k->arg_specs[ki]));
-        buf_puts(&b, k->nargs ? ")" : "void)");
-      }
-      if (is_va) buf_puts(&b, ", ...");
-      if (na == 0) buf_puts(&b, "void");
-      buf_printf(&b, ") __asm__(SP_FFI_SYM(\"%s\"));\n",
-                 cf->ffi_funcs[fi].csym ? cf->ffi_funcs[fi].csym : cf->ffi_funcs[fi].name);
-    }
-    /* Byte count for the :binstr return mode (defined in sp_alloc.c). */
-    /* sp_alloc.h already declares it, and declares it SP_TLS in the threaded
-       build -- re-declaring it here without the storage class is a conflict,
-       so name it the same way. */
-    if (any_binstr) buf_puts(&b, "extern SP_TLS int sp_ffi_bin_len;\n");
-
-    /* native_func externs (Path B): prototype each bound C symbol so the
-       generated TU needs no package header. Deduped by symbol (generate and
-       dump may share one). Type specs are the spinel type language. */
-    for (int nvi = 0; nvi < cf->n_native_funcs; nvi++) {
-      const char *csym = cf->native_funcs[nvi].csym;
-      int seen = 0;
-      for (int pj = 0; pj < nvi; pj++)
-        if (sp_streq(cf->native_funcs[pj].csym, csym)) { seen = 1; break; }
-      if (seen) continue;
-      buf_puts(&b, "extern ");
-      buf_puts(&b, native_c_type(cf->native_funcs[nvi].ret));
-      buf_puts(&b, " "); buf_puts(&b, csym); buf_puts(&b, "(");
-      for (int ai = 0; ai < cf->native_funcs[nvi].nargs; ai++) {
-        if (ai) buf_puts(&b, ", ");
-        buf_puts(&b, native_c_type(cf->native_funcs[nvi].args[ai]));
-      }
-      if (cf->native_funcs[nvi].nargs == 0) buf_puts(&b, "void");
-      buf_puts(&b, ");\n");
-    }
-    /* forward-declare each native class's package struct (incomplete: the TU
-       holds only pointers) so the method externs below can name it. */
-    for (int nci = 0; nci < cf->nclasses; nci++)
-      if (cf->classes[nci].is_native_class && cf->classes[nci].c_struct) {
-        buf_printf(&b, "typedef struct %s_s %s;\n", cf->classes[nci].c_struct, cf->classes[nci].c_struct);
-        /* A native_struct's C name need not be sp_<class> (IO::Buffer is
-           class "Buffer" over sp_IOBuffer), but the self-parameter and cast
-           emitters spell instances sp_<c_name>; alias that spelling to the
-           declared struct so both name the same type. */
-        char sp_name[160];
-        snprintf(sp_name, sizeof sp_name, "sp_%s", cf->classes[nci].c_name ? cf->classes[nci].c_name : "");
-        if (!sp_streq(sp_name, cf->classes[nci].c_struct))
-          buf_printf(&b, "typedef %s %s;\n", cf->classes[nci].c_struct, sp_name);
-      }
-    /* native_method/native_new externs: prototype each C-backed method so the
-       generated TU needs no package header. A constructor returns the struct
-       pointer and takes cls_id first (the compiler stamps the assigned id); an
-       instance method takes the receiver pointer first. Deduped by symbol. */
-    for (int mi = 0; mi < cf->n_native_methods; mi++) {
-      NativeMethod *m = &cf->native_methods[mi];
-      int seen = 0;
-      for (int pj = 0; pj < mi; pj++)
-        if (sp_streq(cf->native_methods[pj].csym, m->csym)) { seen = 1; break; }
-      if (seen) continue;
-      const char *cstruct = cf->classes[m->class_id].c_struct;
-      buf_puts(&b, "extern ");
-      if (m->kind == 1) buf_printf(&b, "%s *%s(sp_int", cstruct, m->csym);   /* ctor: cls_id first */
-      else if (sp_streq(m->ret, "self")) buf_printf(&b, "%s *%s(%s *", cstruct, m->csym, cstruct);
-      else { buf_printf(&b, "%s %s(%s *", native_c_type(m->ret), m->csym, cstruct); }
-      for (int ai = 0; ai < m->nargs; ai++) { buf_puts(&b, ", "); buf_puts(&b, native_c_type(m->args[ai])); }
-      if (m->rest) buf_puts(&b, ", sp_int, sp_RbVal *");
-      buf_puts(&b, ");\n");
-    }
-    /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */
-    if (cf->n_ffi_funcs > 0 && ffi_iobuffer_class(cf) >= 0) {
-      buf_puts(&b, "extern void *sp_IOBuffer_ffi_base(sp_IOBuffer *, sp_int);\n"
-                   "extern void *sp_IOBuffer_ffi_ptr(sp_RbVal, sp_int, sp_int);\n"
-                   "extern sp_int sp_IOBuffer_ffi_hold(sp_IOBuffer *);\n"
-                   "extern void sp_IOBuffer_ffi_release(sp_IOBuffer *, sp_int);\n"
-                   "extern sp_int sp_IOBuffer_ffi_hold_v(sp_RbVal, sp_int);\n"
-                   "extern void sp_IOBuffer_ffi_release_v(sp_RbVal, sp_int, sp_int);\n");
-      /* which class ids are user classes, whose instances have no C address:
-         a boxed pointer argument holding one is refused at run time */
-      buf_printf(&b, "static const unsigned char sp_ffi_user_cls[%d] SP_UNUSED = {", cf->nclasses > 0 ? cf->nclasses : 1);
-      for (int k = 0; k < cf->nclasses; k++)
-        buf_printf(&b, "%s%d", k ? "," : "", (!cf->classes[k].is_native_class && !is_builtin_reopen(cf->classes[k].name)) ? 1 : 0);
-      if (cf->nclasses == 0) buf_puts(&b, "0");
-      buf_puts(&b, "};\n");
-    }
-    /* native_obj link markers: the spinel driver links each object only when
-       its module's require-gate feature is enabled (i.e. the require appears). */
-    for (int noi = 0; noi < cf->n_native_objs; noi++) {
-      const char *feat = cf->native_objs[noi].feat;
-      if (!feat || !feat[0] || sp_feature_enabled(feat))
-        buf_printf(&b, "/* SPINEL_LINK_OBJ: %s */\n", cf->native_objs[noi].path);
-    }
-    for (int bi = 0; bi < cf->n_ffi_bufs; bi++) {
-      buf_printf(&b, "static char sp_ffi_buf_%s_%s[%d];\n",
-                 cf->ffi_bufs[bi].mod, cf->ffi_bufs[bi].name, cf->ffi_bufs[bi].size);
-    }
-    /* ffi_struct typedefs: the C compiler owns the layout (offsets/padding),
-       so the generated accessors use plain member access, not manual offsets. */
-    for (int si = 0; si < cf->n_ffi_structs; si++) {
-      buf_puts(&b, "typedef struct { ");
-      for (int f = 0; f < cf->ffi_structs[si].nfields; f++)
-        buf_printf(&b, "%s %s; ", ffi_c_type(cf->ffi_structs[si].fields[f].spec),
-                   cf->ffi_structs[si].fields[f].name);
-      buf_printf(&b, "} sp_ffi_struct_%s_%s;\n",
-                 cf->ffi_structs[si].mod, cf->ffi_structs[si].name);
-    }
-    /* Inline C fragments are deliberately emitted after Spinel's generated FFI
-       declarations and storage, but before any generated function bodies. This
-       lets a single Ruby source carry a small adapter while normal ffi_func
-       declarations retain their usual type checking and call lowering. */
-    for (int si = 0; si < cf->n_ffi_sources; si++) {
-      buf_printf(&b, "\n/* ffi_source: %s */\n", cf->ffi_sources[si].mod);
-      buf_puts(&b, cf->ffi_sources[si].val);
-      if (cf->ffi_sources[si].val[0] &&
-          cf->ffi_sources[si].val[strlen(cf->ffi_sources[si].val) - 1] != '\n')
-        buf_puts(&b, "\n");
-      buf_puts(&b, "/* end ffi_source */\n");
-    }
-  }
+  emit_ffi_decls(c, &b);
   if (g_emit_sym_rt) {
     int ns = c->nsymbols;
     if (ns > 0) {
