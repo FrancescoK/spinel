@@ -1967,3 +1967,51 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   }
   return 0;
 }
+
+/* Kernel#display (to_s with no newline, answering nil), and instance_variable_defined? on a statically typed object, answered from its layout */
+int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
+  /* Kernel#display prints to_s with no newline, returns nil */
+  if (recv >= 0 && sp_streq(name, "display") && argc == 0 &&
+      /* a generated READER of the name owns it, as in CRuby (#4190) */
+      !(ty_is_object(comp_ntype(c, recv)) &&
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
+    /* Struct#to_s IS inspect in CRuby ("#<struct Point x=1, y=2>"); the
+       boxed sp_poly_to_s default would print the bare-object form */
+    TyKind drt2 = comp_ntype(c, recv);
+    if (ty_is_object(drt2) && c->classes[ty_object_class(drt2)].is_struct &&
+        comp_method_in_chain(c, ty_object_class(drt2), "to_s", NULL) < 0 &&
+        comp_method_in_chain(c, ty_object_class(drt2), "inspect", NULL) < 0) {
+      buf_printf(b, "((void)fputs(sp_%s_inspect(",
+                 c->classes[ty_object_class(drt2)].c_name);
+      emit_expr(c, recv, b);
+      buf_puts(b, "), stdout))");
+      return 1;
+    }
+    buf_puts(b, "((void)fputs(sp_poly_to_s(");
+    emit_boxed(c, recv, b);
+    buf_puts(b, "), stdout))");
+    return 1;
+  }
+  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
+     the layout answers at compile time */
+  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      ty_is_object(rt) && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    int dcid = ty_object_class(rt);
+    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
+    /* one nothing has set yet is not defined (ivar_set_kind) */
+    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
+      int tro = ++g_tmp;
+      char ex[160], tb[256];
+      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
+      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
+      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
+      return 1;
+    }
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
+    return 1;
+  }
+  return 0;
+}

@@ -962,3 +962,26 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
   if (emit_or_take_back(c, id, b, emit_scalar_call)) return 1;
   return 0;
 }
+
+/* Symbol#encoding (US-ASCII when the name is pure ASCII, UTF-8 otherwise), and equal? / eql? between two Symbols */
+int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, int argc, const int *argv, TyKind rt) {
+  /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
+  if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", te);
+    emit_expr(c, recv, b);
+    buf_printf(b, "); int _a%d = 1; for (const char *_p%d = _t%d; *_p%d; _p%d++)"
+                  " if ((unsigned char)*_p%d >= 0x80) { _a%d = 0; break; }"
+                  " sp_box_encoding(_a%d ? sp_encoding_us_ascii() : sp_encoding_utf8()); })",
+               te, te, te, te, te, te, te, te);
+    return 1;
+  }
+  if (recv >= 0 && rt == TY_SYMBOL && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      comp_ntype(c, argv[0]) == TY_SYMBOL) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, argv[0], b); buf_puts(b, "))");
+    return 1;
+  }
+  return 0;
+}

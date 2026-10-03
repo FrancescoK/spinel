@@ -25355,67 +25355,8 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
 
   if (emit_call_compare_arms(c, id, b, nt, name, recv, argc, argv, rt)) return;
   if (rt == TY_TMS && emit_builtin_op(c, id, recv, rt, name, b)) return;
-  /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
-  if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
-    int te = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", te);
-    emit_expr(c, recv, b);
-    buf_printf(b, "); int _a%d = 1; for (const char *_p%d = _t%d; *_p%d; _p%d++)"
-                  " if ((unsigned char)*_p%d >= 0x80) { _a%d = 0; break; }"
-                  " sp_box_encoding(_a%d ? sp_encoding_us_ascii() : sp_encoding_utf8()); })",
-               te, te, te, te, te, te, te, te);
-    return;
-  }
-  if (recv >= 0 && rt == TY_SYMBOL && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
-      comp_ntype(c, argv[0]) == TY_SYMBOL) {
-    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
-    emit_expr(c, argv[0], b); buf_puts(b, "))");
-    return;
-  }
-  /* Kernel#display prints to_s with no newline, returns nil */
-  if (recv >= 0 && sp_streq(name, "display") && argc == 0 &&
-      /* a generated READER of the name owns it, as in CRuby (#4190) */
-      !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
-    /* Struct#to_s IS inspect in CRuby ("#<struct Point x=1, y=2>"); the
-       boxed sp_poly_to_s default would print the bare-object form */
-    TyKind drt2 = comp_ntype(c, recv);
-    if (ty_is_object(drt2) && c->classes[ty_object_class(drt2)].is_struct &&
-        comp_method_in_chain(c, ty_object_class(drt2), "to_s", NULL) < 0 &&
-        comp_method_in_chain(c, ty_object_class(drt2), "inspect", NULL) < 0) {
-      buf_printf(b, "((void)fputs(sp_%s_inspect(",
-                 c->classes[ty_object_class(drt2)].c_name);
-      emit_expr(c, recv, b);
-      buf_puts(b, "), stdout))");
-      return;
-    }
-    buf_puts(b, "((void)fputs(sp_poly_to_s(");
-    emit_boxed(c, recv, b);
-    buf_puts(b, "), stdout))");
-    return;
-  }
-  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
-     the layout answers at compile time */
-  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
-      ty_is_object(rt) && nt_type(nt, argv[0]) &&
-      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
-    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
-                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-    int dcid = ty_object_class(rt);
-    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
-    /* one nothing has set yet is not defined (ivar_set_kind) */
-    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
-      int tro = ++g_tmp;
-      char ex[160], tb[256];
-      snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
-      buf_printf(b, "({ sp_%s *_t%d = ", c->classes[dcid].c_name, tro); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
-      return;
-    }
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
-    return;
-  }
+  if (emit_call_symbol_misc_arms(c, b, name, recv, argc, argv, rt)) return;
+  if (emit_call_display_ivar_arms(c, b, nt, name, recv, argc, argv, rt)) return;
 
   if (emit_or_take_back(c, id, b, emit_poly_call)) return;
 
