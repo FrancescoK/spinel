@@ -47,6 +47,10 @@ list() {
   [ -f build/optcarrot-single.rb ] && echo build/optcarrot-single.rb
 }
 
+# wc -l pads its count on BSD: the counts go into the last line bare
+total=$(list "$@" | wc -l | tr -d ' ')
+[ "$total" -gt 0 ] || { echo "san-check: no program to compile" >&2; exit 2; }
+
 # one log per program: a program the compiler refuses is not a finding, a
 # sanitizer's report is, whatever the exit status. A compiler killed by a
 # signal with no report is neither: it did not compile the program, and
@@ -57,34 +61,42 @@ list() {
 # one message alone). The files are named by the program's place in the
 # list, not by its path: test/a_b.rb and test/a/b.rb, or one program named
 # twice, would share a name made from the path, and the later compile
-# would take the earlier one's report with it
-TAB=$(printf '\t')
-list "$@" | awk '{ printf "%06d\t%s\n", NR, $0 }' | xargs -P "$JOBS" -I{} sh -c '
-  key=${1%%"$4"*}
-  f=${1#*"$4"}
-  "$2" -c --no-line-map "$f" -o "$3/$key.c" > "$3/$key.log" 2>&1
+# would take the earlier one's report with it. The number and the path
+# travel as one NUL-ended item: BSD xargs ends an argument at a blank
+# unless -0 is given, and joins a line's pieces again with one space
+i=0
+list "$@" | while IFS= read -r f; do
+  i=$((i + 1))
+  printf '%06d:%s\0' "$i" "$f"
+done | xargs -0 -n 1 -P "$JOBS" sh -c '
+  key=${3%%:*}
+  f=${3#*:}
+  "$1" -c --no-line-map "$f" -o "$2/$key.c" > "$2/$key.log" 2>&1
   st=$?
-  rm -f "$3/$key.c"
-  grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" && exit 0
+  : > "$2/$key.ran"
+  rm -f "$2/$key.c"
+  grep -q "runtime error:\|ERROR: AddressSanitizer" "$2/$key.log" && exit 0
   kind=left
   [ "$st" -le 128 ] || kind=died
-  [ "$st" -eq 0 ] || { echo "$st $f"; cat "$3/$key.log"; } > "$3/$key.$kind"
-  rm -f "$3/$key.log"
-' _ {} "$SP" "$LOGS" "$TAB"
+  [ "$st" -eq 0 ] || { echo "$st $f"; cat "$2/$key.log"; } > "$2/$key.$kind"
+  rm -f "$2/$key.log"
+' _ "$SP" "$LOGS"
 # the command above answers 0 for every program, so anything else is xargs
 # not starting, or one of its commands killed: no log then means no
 # compile, not no report
 xst=${PIPESTATUS[2]}
 [ "$xst" -eq 0 ] || { echo "san-check: xargs ended with status $xst, not every program was compiled" >&2; exit 2; }
+# and every program leaves a mark when its compile has been tried: a
+# dispatch that ran fewer than the list holds has checked less than it says
+ran=$(find "$LOGS" -name '*.ran' | wc -l | tr -d ' ')
+[ "$ran" -eq "$total" ] || { echo "san-check: $ran of $total programs were run" >&2; exit 2; }
 
-# wc -l pads its count on BSD: the counts go into the last line bare
-total=$(list "$@" | wc -l | tr -d ' ')
-[ "$total" -gt 0 ] || { echo "san-check: no program to compile" >&2; exit 2; }
 bad=$(find "$LOGS" -name '*.log' | wc -l | tr -d ' ')
 if [ "$bad" -gt 0 ]; then
   # one line per program and site, "site<TAB>program<TAB>what<TAB>log": the
   # sanitizer's own file:line for undefined behaviour, the first frame in a
   # .c file for a memory error (the frames above it are inlined helpers)
+  TAB=$(printf '\t')
   i=0
   list "$@" | while IFS= read -r f; do
     i=$((i + 1))
