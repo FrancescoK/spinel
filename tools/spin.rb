@@ -1281,6 +1281,8 @@ end
 
 # --- staleness (newest input mtime vs output mtime) --------------------------
 
+# Return the newest source/configuration mtime, excluding generated, vendored,
+# and hidden directories from the recursive project scan.
 def newest_mtime(dir, newest)
   Dir.children(dir).each do |e|
     next if e.start_with?(".")   # .git and friends
@@ -1296,6 +1298,8 @@ def newest_mtime(dir, newest)
   newest
 end
 
+# Resolve the compiler and available runtime archives in driver search order.
+# These are shared prerequisites for cached outputs and external build systems.
 def toolchain_deps
   sb = spinel_bin
   found = which(sb)
@@ -1313,6 +1317,8 @@ def toolchain_deps
   deps
 end
 
+# Return the newest project, dependency, compiler, or runtime archive mtime
+# so build and test caches invalidate after runtime-only toolchain updates.
 def inputs_mtime(prj)
   newest = newest_mtime(prj.root, 0)
   prj.dep_paths.each { |d| newest = newest_mtime(d, newest) }
