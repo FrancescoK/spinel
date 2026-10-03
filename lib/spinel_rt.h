@@ -14334,7 +14334,9 @@ static sp_PolyArray *sp_poly_to_a_arr_as(sp_RbVal v, const char *m, int nil_ok) 
    empty (nil, a user object with no #each) */
 static sp_RbVal sp_poly_enum_chk(sp_RbVal v, const char *m) {
   sp_poly_iter_check(v, m);
-  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) (void)sp_poly_to_a_arr_as(v, m, 0);
+  /* a user object's elements are read once, by walking its #each, and handed
+     on as the Array they are, so that walk is not run again by the caller */
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) return sp_box_poly_array(sp_poly_to_a_arr_as(v, m, 0));
   return v;
 }
 /* Enumerable#entries on a boxed receiver: an Array's elements, a Hash's
