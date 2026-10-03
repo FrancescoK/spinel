@@ -130,3 +130,10 @@ int is_add_sub_mul(const char *n) {
 int is_int_bit_op(const char *n) {
   return sp_streq(n, "&") || sp_streq(n, "|") || sp_streq(n, "^") || sp_streq(n, "<<") || sp_streq(n, ">>");
 }
+
+int is_block_loop_method(const char *n) {
+  return sp_streq(n, "times") || sp_streq(n, "each") ||
+         sp_streq(n, "upto") || sp_streq(n, "downto") ||
+         sp_streq(n, "step") || sp_streq(n, "loop") ||
+         sp_streq(n, "each_with_index");
+}

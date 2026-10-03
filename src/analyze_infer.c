@@ -908,9 +908,7 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   if (ok != NK_BlockNode) return 0;
   int bc = parent[owner];
   const char *bn = bc >= 0 && nt_kind(nt, bc) == NK_CallNode ? nt_str(nt, bc, "name") : NULL;
-  return bn && (sp_streq(bn, "each") || sp_streq(bn, "times") || sp_streq(bn, "upto") ||
-                sp_streq(bn, "downto") || sp_streq(bn, "each_with_index") || sp_streq(bn, "step") ||
-                sp_streq(bn, "loop"));
+  return bn && is_block_loop_method(bn);
 }
 
 static int an_elems_int_rows(Compiler *c, int arr, int *saw) {

@@ -14584,16 +14584,6 @@ static void bi_scan_loop_body(Compiler *c, int body) {
   bi_scan_loop_node(c, body, pairs, np);
 }
 
-/* An iteration method whose block runs an unbounded number of times, so an
-   accumulator multiplied inside it can grow without bound. Only consulted in
-   promote mode (the wrap-pinned optcarrot must not pay a block-loop bigint
-   widening, which is why the default path stays `while`-only). */
-static int bi_is_block_loop_method(const char *name) {
-  return sp_streq(name, "times") || sp_streq(name, "each") ||
-         sp_streq(name, "upto") || sp_streq(name, "downto") ||
-         sp_streq(name, "step") || sp_streq(name, "loop") ||
-         sp_streq(name, "each_with_index");
-}
 
 void infer_bigint_loop_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -14606,11 +14596,14 @@ void infer_bigint_loop_locals(Compiler *c) {
     }
     /* Promote mode additionally treats block-iteration loops as growth sites:
        `n.times { f = f * x }`, `(a..b).each { ... }`, etc. The block body is a
-       BlockNode -> statements; reuse the same self-referential-multiply scan. */
+       BlockNode -> statements; reuse the same self-referential-multiply scan.
+       Only in promote mode: the wrap-pinned optcarrot must not pay a
+       block-loop bigint widening, which is why the default path stays
+       `while`-only. */
     if (g_promote_mode && sp_streq(ty, "CallNode")) {
       const char *mname = nt_str(nt, id, "name");
       int block = nt_ref(nt, id, "block");
-      if (mname && bi_is_block_loop_method(mname) && block >= 0 &&
+      if (mname && is_block_loop_method(mname) && block >= 0 &&
           nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode"))
         bi_scan_loop_body(c, nt_ref(nt, block, "body"));
     }
