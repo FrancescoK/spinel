@@ -13210,10 +13210,13 @@ int infer_block_params(Compiler *c) {
   }
 
   /* Proc/lambda call-site param inference: `f.call(:a)` propagates arg types
-     to the proc's params (e.g. `t` gets TY_SYMBOL instead of the default TY_INT). */
+     to the proc's params (e.g. `t` gets TY_SYMBOL instead of the default TY_INT).
+     Proc#yield and Proc#=== are calls too: left out, `pr === "four"` handed
+     a String to the Integer default and `t.size` answered 8 (the Method arm
+     in infer_param_types fixed the same for Method#===). */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cname = nt_str(nt, id, "name");
-    if (!cname || !is_call_alias(cname)) continue;
+    if (!cname || !(is_call_alias(cname) || sp_streq(cname, "yield") || sp_streq(cname, "==="))) continue;
     if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_PROC) continue;
