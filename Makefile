@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test traits-check-test bop-arity-check-test re-lit-test reject-test cli-opts-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -3238,6 +3238,14 @@ gate-props:
 # counts for its class and name (the arity table, codegen_call.c).
 bop-arity-check-test: $(SPINEL)
 	@$(SPINEL) --check-bop-arity
+
+# The arity tables in codegen_call.c against the CRuby they were generated
+# from: regenerates them in memory and fails on any drift. It probes for
+# about 90 s, so it stays out of the gate; run it with the reference Ruby,
+# `make arity-spec-check ARITY_RUBY=~/.rbenv/versions/4.0.4/bin/ruby`.
+ARITY_RUBY ?= ruby
+arity-spec-check:
+	@$(ARITY_RUBY) tools/gen_builtin_arity_spec.rb --check
 
 traits-check-test: $(SPINEL)
 	@$(SPINEL) --check-traits -c test/box_random_argf.rb -o /dev/null && \

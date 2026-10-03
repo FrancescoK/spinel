@@ -1593,9 +1593,10 @@ static int name_is_comparable_module_method(const char *m) {
   return 0;
 }
 
-/* Builtin Method#arity: (class, method) -> CRuby's arity, dumped from ruby
-   4.0.4 over each class's OWN public instance methods (#2700). A miss falls
-   through to the pre-existing path. */
+/* Builtin Method#arity: (class, method) -> CRuby's arity, read from
+   ruby 4.0.4 by tools/gen_builtin_arity_spec.rb over each class's OWN public
+   instance methods (#2700). A miss falls through to the pre-existing
+   path. */
 static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_tbl[] = {
   {"String","%",1},{"String","*",1},{"String","+",1},{"String","+@",0},
   {"String","-@",0},{"String","<<",1},{"String","<=>",1},{"String","==",1},
@@ -1739,9 +1740,9 @@ static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_
      have no receiver class to key on, so the wrapper binds them under
      "Kernel" and Method#arity reads the real CRuby value instead of the
      synthesized wrapper's one-parameter shape (#4395). */
-  {"Kernel","String",1},{"Kernel","Integer",-2},{"Kernel","Float",-2},
-  {"Kernel","Array",1},{"Kernel","Rational",-1},{"Kernel","Complex",-1},
-  {"Kernel","puts",-1},{"Kernel","print",-1},{"Kernel","p",-1},{"Kernel","pp",-1},
+  {"Kernel","String",1},{"Kernel","Integer",-2},{"Kernel","Float",-2},{"Kernel","Array",1},
+  {"Kernel","Rational",-1},{"Kernel","Complex",-1},{"Kernel","puts",-1},{"Kernel","print",-1},
+  {"Kernel","p",-1},{"Kernel","pp",-1},
   {NULL, NULL, 0}
 };
 /* Exported probes for the analyze-side method() desugar (#2752): whether the
@@ -14376,7 +14377,7 @@ typedef struct { const char *cls; const char *m; int min; int max;
    or in a reopened builtin, a singleton def or accessor on the constant, a
    module's own method behind `extend self`. */
 /* Positional-arity spec for the builtin instance surface, probed from
-   ruby 4.0.6 by tools/gen_builtin_arity_spec.rb (see there for the
+   ruby 4.0.4 by tools/gen_builtin_arity_spec.rb (see there for the
    technique; rerun it with --write to regenerate both tables). max -1 =
    no upper bound; a NULL exp = that side is never violated. The first
    quartet describes the bare call, the blk_ quartet the block-carrying
@@ -15739,12 +15740,13 @@ sp_builtin_arity_spec_tbl[] = {
   {"Thread","to_s",0,0,NULL,"0",0,0,NULL,"0"},
   {"Thread","value",0,0,NULL,"0",0,0,NULL,"0"},
   {"Thread","wakeup",0,0,NULL,"0",0,0,NULL,"0"},
+  {"Queue","<<",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","clear",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","close",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","closed?",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","deq",0,1,NULL,"0..1",0,1,NULL,"0..1"},
-  {"Queue","enq",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","empty?",0,0,NULL,"0",0,0,NULL,"0"},
+  {"Queue","enq",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","length",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","marshal_dump",0,0,NULL,"0",0,0,NULL,"0"},
   {"Queue","num_waiting",0,0,NULL,"0",0,0,NULL,"0"},
@@ -15752,7 +15754,6 @@ sp_builtin_arity_spec_tbl[] = {
   {"Queue","push",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"Queue","shift",0,1,NULL,"0..1",0,1,NULL,"0..1"},
   {"Queue","size",0,0,NULL,"0",0,0,NULL,"0"},
-  {"Queue","<<",1,2,"1..2","1..2",1,2,"1..2","1..2"},
   {"ConditionVariable","broadcast",0,0,NULL,"0",0,0,NULL,"0"},
   {"ConditionVariable","marshal_dump",0,0,NULL,"0",0,0,NULL,"0"},
   {"ConditionVariable","signal",0,0,NULL,"0",0,0,NULL,"0"},
@@ -16229,7 +16230,7 @@ int builtin_method_names(const char *cls, const char **out, int cap) {
   return n;
 }
 
-/* Class/module-method positional arity, probed from ruby 4.0.6 the same
+/* Class/module-method positional arity, probed from ruby 4.0.4 the same
    way as the instance table above (tools/gen_builtin_arity_spec.rb): the
    constructors and module functions whose emitters index argv[]
    unconditionally (File.open with no arguments was a compile-time

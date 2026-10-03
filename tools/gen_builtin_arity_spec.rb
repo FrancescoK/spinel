@@ -1,12 +1,19 @@
 #!/usr/bin/env ruby
 
-# Generate the positional-arity spec tables in src/codegen_call.c
-# (sp_builtin_arity_spec_tbl and sp_builtin_cmeth_arity_spec_tbl) by probing
-# the local CRuby:
+# Generate the builtin arity tables in src/codegen_call.c from the local
+# CRuby: the Method#arity table (sp_builtin_arity_tbl), read off
+# Method#arity, and the positional-arity spec tables
+# (sp_builtin_arity_spec_tbl and sp_builtin_cmeth_arity_spec_tbl), probed:
 #
-#   ruby tools/gen_builtin_arity_spec.rb            # print both tables
+#   ruby tools/gen_builtin_arity_spec.rb            # print the tables
 #   ruby tools/gen_builtin_arity_spec.rb --write    # splice them into
 #                                                   # src/codegen_call.c
+#   ruby tools/gen_builtin_arity_spec.rb --check    # fail when the source
+#                                                   # differs (make arity-spec-check)
+#
+# The builtin-op rows' argc_min/argc_max (builtin_ops.c) are checked against
+# the instance spec table, and the Method#arity table against it too, by
+# `spinel --check-bop-arity` (make bop-arity-check-test, in the gate).
 #
 # Probing technique, per (class, method):
 #
@@ -48,6 +55,7 @@ require "strscan"
 require "pathname"
 
 Warning[:deprecated] = false  # probing deprecated arg shapes is the point
+$VERBOSE = nil                # and unused blocks, superseded defaults
 
 ROOT = File.expand_path("..", __dir__)
 SOURCE = File.join(ROOT, "src/codegen_call.c")
@@ -119,7 +127,9 @@ INSTANCE_METHOD_SKIP = %w[
 # each segfault CRuby 4.0.6 itself when probed; both stay off the surface.
 # A class's own reader of its in-memory stream is safe to probe, though the
 # names are skipped everywhere else (Kernel#gets reads stdin).
-PROBE_ANYWAY = { "StringIO" => %w[gets readline] }
+PROBE_ANYWAY = { "StringIO" => %w[gets readline], "Mutex" => %w[sleep] }
+# (Mutex#sleep on the unlocked probe mutex raises ThreadError before it
+# waits, for every count it accepts.)
 
 # Class/module methods: the constructors and module functions whose emitters
 # index argv[] unconditionally (File.open with no arguments crashed the
@@ -296,9 +306,27 @@ INSTANCE_RECEIVERS.each do |cls, thunk|
   end
   FORWARDING.fetch(cls, []).each { |m| inst << [cls, m, *NO_SPEC, *NO_SPEC] }
 end
-# one TyKind stands for Queue and SizedQueue both: keep the rows they agree on
-sized = inst.select { |r| r[0] == "SizedQueue" }.map { |r| r[1..] }
-inst.reject! { |r| r[0] == "SizedQueue" || (r[0] == "Queue" && !sized.include?(r[1..])) }
+# one TyKind stands for Queue and SizedQueue both: keep the rows they agree
+# on, and where SizedQueue's counts take in Queue's (push's non_block flag:
+# 1 against 1..2), SizedQueue's row, which fires only for a count neither
+# class takes
+def spec_covers(wide, narrow)
+  [0, 4].all? do |o|
+    wmin, wmax, nmin, nmax = wide[o], wide[o + 1], narrow[o], narrow[o + 1]
+    next wmin < 0 if nmin < 0
+    wmin >= 0 && wmin <= nmin && (wmax < 0 || (nmax >= 0 && nmax <= wmax))
+  end
+end
+sized = inst.select { |r| r[0] == "SizedQueue" }.to_h { |r| [r[1], r[2..]] }
+inst.reject! { |r| r[0] == "SizedQueue" }
+inst.map! do |r|
+  next r unless r[0] == "Queue"
+  s = sized[r[1]]
+  next nil unless s
+  next r if s == r[2..]
+  spec_covers(s, r[2..]) ? ["Queue", r[1], *s] : nil
+end
+inst.compact!
 
 inst_hdr = <<~C
   /* Positional-arity spec for the builtin instance surface, probed from
@@ -340,25 +368,82 @@ cm_out = render_table("sp_builtin_cmeth_arity_spec_tbl", cm_hdr, cm)
 Dir.chdir("/")   # leave the probe dir so it can be removed
 FileUtils.remove_entry(PROBE_DIR) rescue nil
 
-if ARGV.include?("--write")
-  wrote = []
-  { "instance" => [/\/\* Positional-arity spec for the builtin instance surface.*?\nsp_builtin_arity_spec_tbl\[\] = \{.*?\n\};\n/m, inst_out, inst.length],
-    "class-method" => [/\/\* Class\/module-method positional arity.*?\nsp_builtin_cmeth_arity_spec_tbl\[\] = \{.*?\n\};\n/m, cm_out, cm.length],
-  }.each do |label, (pat, replacement, count)|
-    old = src[pat]
-    if old
-      src = src.sub(old, replacement)
-      wrote << "#{count} #{label}"
-    else
-      warn "note: no existing #{label} spec table in #{SOURCE}; skipped"
-    end
+# Method#arity of each class's OWN public instance methods, read straight off
+# CRuby rather than probed (a C method that counts its own arguments reads
+# -1 here; the spec tables above hold what it accepts), plus the Kernel
+# functions the receiverless `method(:name)` wrapper binds under "Kernel".
+ARITY_CLASSES = %w[String Integer Float Array Hash Symbol Range Time]
+ARITY_KERNEL = %w[String Integer Float Array Rational Complex puts print p pp]
+def arity_rows(entries)
+  out = +""
+  entries.each_slice(4) { |s| out << "  " << s.map { |c, m, a| %Q[{"#{c}","#{m}",#{a}}] }.join(",") << ",\n" }
+  out
+end
+# read in a fresh interpreter with no gems: the libraries this probe loads
+# add methods of their own (csv's String#parse_csv, time's Time#httpdate)
+require "rbconfig"
+arity_src = <<~RUBY
+  #{ARITY_CLASSES.inspect}.each do |cls|
+    k = Object.const_get(cls)
+    k.public_instance_methods(false).sort.each { |m| puts [cls, m, k.instance_method(m).arity].join("\\t") }
   end
-  abort "no spec tables found in #{SOURCE}" if wrote.empty?
-  File.write(SOURCE, src)
-  warn "wrote #{wrote.join(" + ")} entries into #{SOURCE}"
+  #{ARITY_KERNEL.inspect}.each { |m| puts ["Kernel", m, Kernel.instance_method(m).arity].join("\\t") }
+RUBY
+arity_all = IO.popen([RbConfig.ruby, "--disable-gems", "-e", arity_src], &:read)
+                .lines.map { |l| c, m, a = l.chomp.split("\t"); [c, m, a.to_i] }
+abort "Method#arity dump failed" unless $?.success? && !arity_all.empty?
+kernel_arity, arity = arity_all.partition { |r| r[0] == "Kernel" }
+arity_hdr = <<~C
+  /* Builtin Method#arity: (class, method) -> CRuby's arity, read from
+     #{ver} by tools/gen_builtin_arity_spec.rb over each class's OWN public
+     instance methods (#2700). A miss falls through to the pre-existing
+     path. */
+  static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_tbl[] = {
+C
+arity_kernel_hdr = <<~C
+  /* Kernel conversion/printing functions reachable only through the
+     receiverless `method(:name)` wrapper (the KFN0 set in analyze.c). They
+     have no receiver class to key on, so the wrapper binds them under
+     "Kernel" and Method#arity reads the real CRuby value instead of the
+     synthesized wrapper's one-parameter shape (#4395). */
+C
+arity_out = arity_hdr + arity_rows(arity) + arity_kernel_hdr.gsub(/^/, "  ") +
+            arity_rows(kernel_arity) + "  {NULL, NULL, 0}\n};\n"
+
+TABLES = {
+  "Method#arity" => [/\/\* Builtin Method#arity: .*?\n\};\n/m, arity_out, arity.length + kernel_arity.length],
+  "instance" => [/\/\* Positional-arity spec for the builtin instance surface.*?\nsp_builtin_arity_spec_tbl\[\] = \{.*?\n\};\n/m, inst_out, inst.length],
+  "class-method" => [/\/\* Class\/module-method positional arity.*?\nsp_builtin_cmeth_arity_spec_tbl\[\] = \{.*?\n\};\n/m, cm_out, cm.length],
+}
+
+if ARGV.include?("--write") || ARGV.include?("--check")
+  out = src.dup
+  done = []
+  TABLES.each do |label, (pat, replacement, count)|
+    abort "no #{label} table in #{SOURCE}" unless out[pat]
+    out = out.sub(pat) { replacement }
+    done << "#{count} #{label}"
+  end
+  if ARGV.include?("--check")
+    if out == src
+      warn "arity tables match #{ver}: #{done.join(" + ")} entries"
+      exit 0
+    end
+    require "tempfile"
+    Tempfile.create("arity") do |f|
+      f.write(out)
+      f.flush
+      system("diff", "-u", "--label", "src/codegen_call.c", "--label", "regenerated", SOURCE, f.path)
+    end
+    abort "arity tables drifted from #{ver}: rerun tools/gen_builtin_arity_spec.rb --write"
+  end
+  File.write(SOURCE, out)
+  warn "wrote #{done.join(" + ")} entries into #{SOURCE}"
 else
+  puts arity_out
+  puts
   puts inst_out
   puts
   puts cm_out
-  warn "#{inst.length} instance + #{cm.length} class-method entries"
+  warn "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
 end
