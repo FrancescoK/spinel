@@ -6143,6 +6143,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
                ts, t, te, t, t, ts);
+    /* a beginless Range held in a variable or built at run time cannot be
+       enumerated from nil, as the literal `(..3).each` above refuses; it
+       walked up from INTPTR_MIN, whose first value read back as nil */
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d.first == INTPTR_MIN && _t%d > 0) sp_range_nil_begin_raise();\n", t, ts);
     if (clv && clv->type == TY_POLY) {
       int tc = ++g_tmp;
       emit_indent(b, indent);
