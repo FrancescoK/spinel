@@ -21,8 +21,9 @@
 # Leaks are not reported: the compiler frees little before it exits.
 #
 # Exit status: 0 no report, 1 some program reported, 2 infrastructure error
-# (the compiler is not built, xargs did not run, or the compiler was killed
-# by a signal on some program without a report).
+# (the compiler is not built, there is no program, xargs did not run them
+# all, or the compiler ended on some program with a status above 128, a
+# signal's, and no report).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
@@ -66,10 +67,13 @@ list "$@" | xargs -P "$JOBS" -I{} sh -c '
   rm -f "$3/$key.log"
 ' _ {} "$SP" "$LOGS"
 # the command above answers 0 for every program, so anything else is xargs
-# itself not running them: no log then means no compile, not no report
-[ "${PIPESTATUS[1]}" -eq 0 ] || { echo "san-check: xargs failed, the corpus was not compiled" >&2; exit 2; }
+# not starting, or one of its commands killed: no log then means no
+# compile, not no report
+xst=${PIPESTATUS[1]}
+[ "$xst" -eq 0 ] || { echo "san-check: xargs ended with status $xst, not every program was compiled" >&2; exit 2; }
 
 total=$(list "$@" | wc -l)
+[ "$total" -gt 0 ] || { echo "san-check: no program to compile" >&2; exit 2; }
 bad=$(find "$LOGS" -name '*.log' | wc -l)
 if [ "$bad" -gt 0 ]; then
   # one line per program and site, "site<TAB>program<TAB>what": the
