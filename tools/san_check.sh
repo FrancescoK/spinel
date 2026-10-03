@@ -16,6 +16,8 @@
 # One line a site: the sanitizer's file:line for undefined behaviour, the
 # first frame in a .c file for a memory error, with the number of programs
 # that reach it and the first of them. -v adds that program's report.
+# A program the compiler leaves without C and without a report (a refusal, a
+# syntax error) is no finding; the last line counts them and -v names them.
 # Leaks are not reported: the compiler frees little before it exits.
 #
 # Exit status: 0 no report, 1 some program reported, 2 infrastructure error
@@ -47,14 +49,20 @@ list() {
 # one log per program: a program the compiler refuses is not a finding, a
 # sanitizer's report is, whatever the exit status. A compiler killed by a
 # signal with no report is neither: it did not compile the program, and
-# what it left is kept as .died (the status and the program, then its output)
+# what it left is kept as .died (the status and the program, then its
+# output). Any other failing status with no report is kept the same way as
+# .left: the summary counts those, since no text tells a refusal from a
+# failure to parse or to write (a refusal may end with its count or with
+# one message alone)
 list "$@" | xargs -P "$JOBS" -I{} sh -c '
   key=$(printf %s "$1" | tr / _)
   "$2" -c --no-line-map "$1" -o "$3/$key.c" > "$3/$key.log" 2>&1
   st=$?
   rm -f "$3/$key.c"
   grep -q "runtime error:\|ERROR: AddressSanitizer" "$3/$key.log" && exit 0
-  [ "$st" -le 128 ] || { echo "$st $1"; cat "$3/$key.log"; } > "$3/$key.died"
+  kind=left
+  [ "$st" -le 128 ] || kind=died
+  [ "$st" -eq 0 ] || { echo "$st $1"; cat "$3/$key.log"; } > "$3/$key.$kind"
   rm -f "$3/$key.log"
 ' _ {} "$SP" "$LOGS"
 # the command above answers 0 for every program, so anything else is xargs
@@ -95,7 +103,20 @@ if [ "$bad" -gt 0 ]; then
     fi
   done
 fi
-echo "san-check: $total programs, $bad with a report"
+left=$(find "$LOGS" -name '*.left' | wc -l)
+if [ "$left" -eq 0 ]; then
+  echo "san-check: $total programs, $bad with a report"
+else
+  hint=" (no report; -v names them)"
+  [ "$VERBOSE" -eq 1 ] && hint=
+  echo "san-check: $total programs, $bad with a report, $left not compiled$hint"
+  if [ "$VERBOSE" -eq 1 ]; then
+    for d in "$LOGS"/*.left; do
+      read -r st f < "$d"
+      echo "san-check: $f: not compiled, status $st: $(sed 1d "$d" | tail -n 1)"
+    done
+  fi
+fi
 died=0
 for d in "$LOGS"/*.died; do
   [ -f "$d" ] || continue
