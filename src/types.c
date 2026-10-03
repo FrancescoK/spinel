@@ -37,6 +37,13 @@ static const PolyFace ty_poly_face_tbl[] = {
      emitters do (an Integer or a Float array), boxed since the two arms
      disagree, so `.to_a` / `.map` read it as the Enumerator's answer (#4779) */
   {"step", PF_INT | PF_FLOAT, 1, 2, 0},
+  /* A Range of each kind owns step and bsearch with a block: unboxed to its
+     own by-value struct, the typed emitter walks it. The blockless forms
+     answer an Enumerator (an ArithmeticSequence) no typed emitter builds.
+     An Array owns bsearch too: a row for the name decides every receiver
+     kind, so leaving it out made a boxed Array's bsearch a NoMethodError. */
+  {"step", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 1, 1},
+  {"bsearch", PF_ARRAY | PF_RANGE | PF_FRANGE, 0, 0, 1},
   /* The Enumerable names a boxed receiver shares with Array: its elements
      (a hash's [key, value] pairs) materialize into a poly array once. */
   {"minmax", PF_ENUM, 0, -1, -1}, {"tally", PF_ENUM, 0, -1, -1}, {"product", PF_ENUM, 0, -1, -1},

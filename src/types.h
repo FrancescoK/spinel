@@ -64,14 +64,17 @@ enum {
   PF_HASH   = 1 << 3,  /* TY_POLY_POLY_HASH */
   PF_INT    = 1 << 4,  /* TY_INT */
   PF_FLOAT  = 1 << 5,  /* TY_FLOAT: an owner beside Integer for the names both have (step) */
-  PF_OWNERS = 0x3f,
-  PF_MUT      = 1 << 8,  /* mutates the receiver: the result is written back through the box */
-  PF_STR_BANG = 1 << 9,  /* String value-form bang: re-enter the plain name, nil when unchanged */
-  PF_STR_SELF = 1 << 10, /* ... but a bang that answers self (succ!/next!): never nil */
-  PF_ARGS_OWN = 1 << 11, /* the arguments must be of the owner's own kind (concat) */
-  PF_VAL_SELF = 1 << 12, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
-  PF_SAME_OK  = 1 << 14, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
-  PF_LAST     = 1 << 13  /* answers only once no poly-receiver emitter of its own has claimed the name */
+  PF_RANGE  = 1 << 6,  /* TY_RANGE: an Integer Range (step / bsearch with a block) */
+  PF_FRANGE = 1 << 7,  /* TY_FLOAT_RANGE */
+  PF_SRANGE = 1 << 8,  /* TY_STR_RANGE */
+  PF_OWNERS = 0x1ff,
+  PF_MUT      = 1 << 9,  /* mutates the receiver: the result is written back through the box */
+  PF_STR_BANG = 1 << 10, /* String value-form bang: re-enter the plain name, nil when unchanged */
+  PF_STR_SELF = 1 << 11, /* ... but a bang that answers self (succ!/next!): never nil */
+  PF_ARGS_OWN = 1 << 12, /* the arguments must be of the owner's own kind (concat) */
+  PF_VAL_SELF = 1 << 13, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
+  PF_SAME_OK  = 1 << 15, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
+  PF_LAST     = 1 << 14  /* answers only once no poly-receiver emitter of its own has claimed the name */
 };
 typedef struct {
   const char *name;
@@ -182,6 +185,9 @@ static inline TyKind ty_poly_face_kind(unsigned owner) {
     case PF_HASH:   return TY_POLY_POLY_HASH;
     case PF_INT:    return TY_INT;
     case PF_FLOAT:  return TY_FLOAT;
+    case PF_RANGE:  return TY_RANGE;
+    case PF_FRANGE: return TY_FLOAT_RANGE;
+    case PF_SRANGE: return TY_STR_RANGE;
   }
   return TY_UNKNOWN;
 }

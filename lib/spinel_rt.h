@@ -5849,6 +5849,26 @@ static sp_float sp_poly_float_recv(sp_RbVal v, const char *m) {
   sp_raise_nomethod(sp_nomethod_msg(m, v));
   return 0.0;
 }
+/* The Range owners' coercions (step / bsearch with a block): a boxed Range
+   of the owner's kind is its heap copy, read by value; anything else raises
+   the NoMethodError the call would have raised. */
+static SP_UNUSED sp_Range sp_poly_range_recv(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p) return *(sp_Range *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
+  return sp_range_new(0, 0, 0);
+}
+static SP_UNUSED sp_FloatRange sp_poly_frange_recv(sp_RbVal v, const char *m) {
+  sp_FloatRange r = {0};
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return *(sp_FloatRange *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
+  return r;
+}
+static SP_UNUSED sp_StrRange sp_poly_srange_recv(sp_RbVal v, const char *m) {
+  sp_StrRange r = {0};
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE && v.v.p) return *(sp_StrRange *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
+  return r;
+}
 static sp_int sp_poly_int_recv(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_INT) return v.v.i;
   /* a Bignum has the method, but this loop counts in an sp_int: say what

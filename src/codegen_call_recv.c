@@ -11039,6 +11039,17 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     case PF_FLOAT:
       buf_printf(g_pre, "sp_float _t%d = sp_poly_float_recv(%s, \"%s\");\n", t, rs, name);
       break;
+    /* a Range of the owner's kind, read by value out of its box */
+    case PF_RANGE:
+      buf_printf(g_pre, "sp_Range _t%d = sp_poly_range_recv(%s, \"%s\");\n", t, rs, name);
+      break;
+    case PF_FRANGE:
+      buf_printf(g_pre, "sp_FloatRange _t%d = sp_poly_frange_recv(%s, \"%s\");\n", t, rs, name);
+      break;
+    case PF_SRANGE:
+      buf_printf(g_pre, "sp_StrRange _t%d = sp_poly_srange_recv(%s, \"%s\"); SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);\n",
+                 t, rs, name, t, t);
+      break;
     /* A mutator's coercion checks the original for frozenness first: the
        typed emitter would otherwise work on the copy, running a block over
        every element, and only the write-back would raise. */
@@ -11067,7 +11078,8 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
      a `break v` in the block makes the pinned inference say poly for the
      union, which emit_face_value reads as "already boxed" and hands the raw
      sp_int / sp_float to the poly slot (#4774). The value is the receiver. */
-  if (nat == TY_POLY && has_blk && (kind == PF_INT || kind == PF_FLOAT) &&
+  if (nat == TY_POLY && has_blk &&
+      (kind == PF_INT || kind == PF_FLOAT || kind == PF_RANGE || kind == PF_FRANGE || kind == PF_SRANGE) &&
       (sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
        sp_streq(name, "step")))
     nat = as;
@@ -11254,6 +11266,9 @@ static void emit_face_kind_test(unsigned kind, int t, Buf *b) {
     case PF_STRING: buf_printf(b, "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))", t, t); break;
     case PF_INT:    buf_printf(b, "(_t%d.tag == SP_TAG_INT)", t); break;
     case PF_FLOAT:  buf_printf(b, "(_t%d.tag == SP_TAG_FLT)", t); break;
+    case PF_RANGE:  buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)", t, t); break;
+    case PF_FRANGE: buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE)", t, t); break;
+    case PF_SRANGE: buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE)", t, t); break;
     case PF_ARRAY:  buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id))", t, t); break;
     case PF_HASH:   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id))", t, t); break;
     case PF_ENUM:   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id)))", t, t, t); break;

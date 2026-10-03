@@ -888,7 +888,12 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name || !sp_streq(name, "bsearch")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  /* the parameter is bound through emit_iter_param_assign: it is poly when
+     the block is shared with other arms (a boxed receiver's face switch),
+     and the probe is boxed into it */
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
+  char pv[24];
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
@@ -950,7 +955,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "int64_t _t%d = (_t%d >> 1) + (_t%d >> 1) + (_t%d & _t%d & 1);\n", kmid, klo, khi, klo, khi);
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "double _t%d = sp_key2f(_t%d);\n", fx, kmid);
-      if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, fx); }
+      if (p0) { snprintf(pv, sizeof pv, "_t%d", fx); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, pv, g_pre, g_indent + 1); }
       IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
       int save = g_indent; g_indent++;
       Buf cb; memset(&cb, 0, sizeof cb);
@@ -1006,7 +1011,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "for (_t%d = 0; _t%d < 100; _t%d++) {\n", fi, fi, fi);
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "double _t%d = _t%d + (_t%d - _t%d) / 2.0;\n", fmid, flo, fhi, flo);
-      if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, fmid); }
+      if (p0) { snprintf(pv, sizeof pv, "_t%d", fmid); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, pv, g_pre, g_indent + 1); }
       IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
       int save = g_indent; g_indent++;
       Buf cb; memset(&cb, 0, sizeof cb);
@@ -1083,7 +1088,7 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   char right[128], left[128];
   snprintf(right, sizeof right, "{ if (_t%d == _t%d) break; _t%d = _t%d + 1; }", tmid, thi, tlo, tmid);
   snprintf(left, sizeof left, "{ if (_t%d == _t%d) break; _t%d = _t%d - 1; }", tmid, tlo, thi, tmid);
-  if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tmid); }
+  if (p0) { snprintf(pv, sizeof pv, "_t%d", tmid); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, pv, g_pre, g_indent + 1); }
   IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
   int save = g_indent; g_indent++;
   Buf cb; memset(&cb, 0, sizeof cb); emit_iter_step_tail(c, &st, &cb); g_indent = save;
