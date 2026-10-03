@@ -12967,6 +12967,60 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
   return changed;
 }
 
+/* A Proc expression `recv` invoked at `site` with these arguments
+   (pr.call(a), pr === a, `case a when pr`): type the parameters of the proc
+   literal it is -- the literal itself, or the one a local, constant or ivar
+   of that name was assigned. Answers whether a parameter type changed. */
+static int cs_type_proc_site(Compiler *c, int site, int recv, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  const char *rty = nt_type(nt, recv);
+  if (!rty) return 0;
+  /* The receiver is itself a proc/lambda literal -- e.g. a desugared inline
+     `&->(x){...}` clone, whose params no var write would let us find -- so type
+     its own params directly from the call args. */
+  if (sp_streq(rty, "LambdaNode") || is_proc_create(c, recv))
+    return cs_type_params_site(c, recv, argv, argc);
+  /* A proc reached through a name: type the literal that name was assigned.
+     A LOCAL was the only name looked at, so the identical lambda written to a
+     constant or an instance variable kept the no-evidence int default and
+     answered Integer for whatever it was really called with (#3942). A
+     constant is program-wide, so its write is matched by name alone; a local
+     and an ivar are matched within their scope and class. */
+  const char *varname = nt_str(nt, recv, "name");
+  if (!varname) return 0;
+  int want_kind;
+  if (sp_streq(rty, "LocalVariableReadNode")) want_kind = 0;
+  else if (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")) want_kind = 1;
+  else if (sp_streq(rty, "InstanceVariableReadNode")) want_kind = 2;
+  else return 0;
+  Scope *call_scope = comp_scope_of(c, site);
+  int call_cls = call_scope ? call_scope->class_id : -1;
+  /* the writes of that name, through the kind index (every match is
+     taken, so the kinds' order does not matter) */
+  static const NodeKind wk_local[] = { NK_LocalVariableWriteNode };
+  static const NodeKind wk_const[] = { NK_ConstantWriteNode, NK_ConstantPathWriteNode };
+  static const NodeKind wk_ivar[] = { NK_InstanceVariableWriteNode };
+  const NodeKind *wks = want_kind == 0 ? wk_local : want_kind == 1 ? wk_const : wk_ivar;
+  int nwk = want_kind == 1 ? 2 : 1;
+  for (int wki = 0; wki < nwk; wki++)
+  NT_FOREACH_KIND(nt, wks[wki], w) {
+    if (want_kind == 0) {
+      if (comp_scope_of(c, w) != call_scope) continue;
+    }
+    else if (want_kind == 2) {
+      Scope *ws = comp_scope_of(c, w);
+      if (!ws || ws->class_id != call_cls) continue;
+    }
+    const char *wname = nt_str(nt, w, "name");
+    if (!wname || !sp_streq(wname, varname)) continue;
+    int val = nt_ref(nt, w, "value");
+    if (val < 0 || !is_proc_create(c, val)) continue;
+    if (cs_type_params_site(c, val, argv, argc)) changed = 1;
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   nn_inference_round(c);
   const NodeTable *nt = c->nt;
@@ -13220,55 +13274,24 @@ int infer_block_params(Compiler *c) {
     if (nt_int(nt, id, "rt_probe", 0)) continue;  /* analysis-only respond_to? probe */
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_PROC) continue;
-    const char *rty = nt_type(nt, recv);
-    if (!rty) continue;
     int call_args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *argv = NULL;
     if (call_args >= 0) argv = nt_arr(nt, call_args, "arguments", &argc);
     if (argc == 0) continue;
-    /* The receiver is itself a proc/lambda literal -- e.g. a desugared inline
-       `&->(x){...}` clone, whose params no var write would let us find -- so type
-       its own params directly from the call args. */
-    if (sp_streq(rty, "LambdaNode") || is_proc_create(c, recv)) {
-      if (cs_type_params_site(c, recv, argv, argc)) changed = 1;
-      continue;
-    }
-    /* A proc reached through a name: type the literal that name was assigned.
-       A LOCAL was the only name looked at, so the identical lambda written to a
-       constant or an instance variable kept the no-evidence int default and
-       answered Integer for whatever it was really called with (#3942). A
-       constant is program-wide, so its write is matched by name alone; a local
-       and an ivar are matched within their scope and class. */
-    const char *varname = nt_str(nt, recv, "name");
-    if (!varname) continue;
-    int want_kind;
-    if (sp_streq(rty, "LocalVariableReadNode")) want_kind = 0;
-    else if (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")) want_kind = 1;
-    else if (sp_streq(rty, "InstanceVariableReadNode")) want_kind = 2;
-    else continue;
-    Scope *call_scope = comp_scope_of(c, id);
-    int call_cls = call_scope ? call_scope->class_id : -1;
-    /* the writes of that name, through the kind index (every match is
-       taken, so the kinds' order does not matter) */
-    static const NodeKind wk_local[] = { NK_LocalVariableWriteNode };
-    static const NodeKind wk_const[] = { NK_ConstantWriteNode, NK_ConstantPathWriteNode };
-    static const NodeKind wk_ivar[] = { NK_InstanceVariableWriteNode };
-    const NodeKind *wks = want_kind == 0 ? wk_local : want_kind == 1 ? wk_const : wk_ivar;
-    int nwk = want_kind == 1 ? 2 : 1;
-    for (int wki = 0; wki < nwk; wki++)
-    NT_FOREACH_KIND(nt, wks[wki], w) {
-      if (want_kind == 0) {
-        if (comp_scope_of(c, w) != call_scope) continue;
-      }
-      else if (want_kind == 2) {
-        Scope *ws = comp_scope_of(c, w);
-        if (!ws || ws->class_id != call_cls) continue;
-      }
-      const char *wname = nt_str(nt, w, "name");
-      if (!wname || !sp_streq(wname, varname)) continue;
-      int val = nt_ref(nt, w, "value");
-      if (val < 0 || !is_proc_create(c, val)) continue;
-      if (cs_type_params_site(c, val, argv, argc)) changed = 1;
+    if (cs_type_proc_site(c, id, recv, argv, argc)) changed = 1;
+  }
+  /* `case v when pr` is `pr === v`: a Proc condition's parameter takes the
+     case subject's type. Left out, `case "seven" when ->(s) { s.length }`
+     ran the lambda on its Integer default and raised NoMethodError. */
+  NT_FOREACH_KIND(nt, NK_CaseNode, id) {
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0) continue;
+    int nw = 0; const int *whens = nt_arr(nt, id, "conditions", &nw);
+    for (int k = 0; k < nw; k++) {
+      int wc = 0; const int *wconds = nt_arr(nt, whens[k], "conditions", &wc);
+      for (int j = 0; j < wc; j++)
+        if (infer_type(c, wconds[j]) == TY_PROC && cs_type_proc_site(c, wconds[j], wconds[j], &pred, 1))
+          changed = 1;
     }
   }
 
