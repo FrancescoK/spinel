@@ -6730,13 +6730,14 @@ static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
    call whose name is not known at compile time registers nothing, and a
    `return` left in its block would be read as the enclosing method's. A
    program with a method of its own by either name is left alone: that one
-   may run the block as a block. The program is searched for one only when
-   the body owns a `next`. */
+   may run the block as a block. A `def` makes one, and so does an `alias`
+   or an `alias_method`, which names it by a Symbol or a String, so a Symbol
+   or String literal spelling either name anywhere in the program counts as
+   one. The program is searched only when the body owns a `next`. */
 int method_body_next_to_return(NodeTable *nt, int id) {
   if (!owned_next_walk(nt, id, 0, 0)) return 0;
   for (int d = 0; d < nt->count; d++) {
-    if (nt_kind(nt, d) != NK_DefNode) continue;
-    const char *dn = nt_str(nt, d, "name");
+    const char *dn = nt_kind(nt, d) == NK_DefNode ? nt_str(nt, d, "name") : sym_or_str_literal(nt, d);
     if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
   }
   return owned_next_walk(nt, id, 0, 1);
