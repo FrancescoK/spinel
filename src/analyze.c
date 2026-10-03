@@ -28918,17 +28918,8 @@ static void an_phase_infer_fixpoint(Compiler *c) {
   }
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
+/* After the fixpoint: the backstops for slots left without a type (empty literals, nullable params, unknown ivars and hashes), the nil-guard and is_a? narrowing, the return-type re-run, the param and hash-shape reconciliation, the bigint loop variables (analyze_program's steps, in their order) */
+static void an_phase_post_fixpoint(Compiler *c) {
   /* Backstop: a constant bound to an EMPTY array literal has no element type to
      read off the literal, and nothing else in the program need ever narrow it
      (`DISPATCH = []` filled only through `DISPATCH[op] = args`, whose value type
@@ -29481,6 +29472,20 @@ void analyze_program(Compiler *c) {
   /* Promote loop-multiplication variables to bigint */
   detect_bigint_loop_vars(c);
   propagate_bigint_cascade(c);
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
 
   /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
      actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
