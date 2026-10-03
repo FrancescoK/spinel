@@ -7558,6 +7558,40 @@ int infer_param_types(Compiler *c) {
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
 
+    /* `Mod.fn(..., method(:m), ...)` where Mod declares `ffi_func fn` and the
+       spec at that position is an ffi_callback: C calls m with the callback's
+       declared argument types, as a call site would, so they seed m's
+       parameters. A method reached only through the callback otherwise kept
+       Integer parameters, and the trampoline cast a double argument to
+       sp_int (1.5 arrived as 1). Number, String and boolean specs only; a
+       pointer stays as the trampoline has always passed it. */
+    if (recv >= 0 && name && c->n_ffi_funcs > 0 && c->n_ffi_callbacks > 0) {
+      const char *rk = nt_type(nt, recv);
+      const char *rcmod = rk && (sp_streq(rk, "ConstantReadNode") || sp_streq(rk, "ConstantPathNode"))
+                          ? nt_str(nt, recv, "name") : NULL;
+      int fi = -1;
+      for (int k = 0; rcmod && k < c->n_ffi_funcs; k++)
+        if (sp_streq(c->ffi_funcs[k].mod, rcmod) && sp_streq(c->ffi_funcs[k].name, name)) { fi = k; break; }
+      if (fi >= 0) {
+        int fargs = nt_ref(nt, id, "arguments");
+        int fan = 0; const int *fav = fargs >= 0 ? nt_arr(nt, fargs, "arguments", &fan) : NULL;
+        for (int ai = 0; ai < fan && ai < c->ffi_funcs[fi].nargs; ai++) {
+          int cbi = ffi_find_callback(c, rcmod, c->ffi_funcs[fi].args[ai]);
+          if (cbi < 0 || !is_method_obj_call(c, fav[ai])) continue;
+          int tmi = method_obj_target_mi(c, fav[ai]);
+          if (tmi < 0) continue;
+          Scope *ts = &c->scopes[tmi];
+          const FfiCallback *cb = &c->ffi_callbacks[cbi];
+          for (int k = 0; k < cb->nargs && k < ts->nparams; k++) {
+            TyKind st = ffi_spec_to_ty(cb->arg_specs[k]);
+            if (st != TY_INT && st != TY_FLOAT && st != TY_STRING && st != TY_BOOL) continue;
+            LocalVar *pl = ts->pnames[k] ? scope_local(ts, ts->pnames[k]) : NULL;
+            if (pl && !pl->rbs_seeded) changed |= lv_widen(pl, st);
+          }
+        }
+      }
+    }
+
     /* `raise Cls, arg` constructs `Cls.new(arg)` for a user exception
        subclass, so seed Cls#initialize's first param from arg's type --
        without this the param stays TY_UNKNOWN and the constructor gets

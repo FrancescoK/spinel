@@ -10,7 +10,6 @@ nil
 TypeError: no implicit conversion to float from nil
 5.0
 2.5
-2.0
 7
 TypeError: no implicit conversion from nil to integer
 1.5

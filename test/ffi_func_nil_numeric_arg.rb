@@ -2,8 +2,7 @@
 # or double is a TypeError, as the ffi gem's NUM2INT / NUM2DBL raise. A
 # boxed nil passed the 0 under its tag, a nullable Integer or Float slot
 # passed its nil sentinel as a number, and a callback answering nil handed
-# C the sentinel, which came back as nil. dpos is called once from Ruby so
-# its parameter is a Float.
+# C the sentinel, which came back as nil.
 module N
   ffi_source <<~'C'
     long sp_probe_twice(long x) { return 2 * x; }
@@ -45,7 +44,6 @@ try { p N.sp_probe_half(show(5.0)) }
 def lpos(x) = x > 0 ? x : nil
 def dpos(x) = x > 0 ? x : nil
 def lnil(x) = nil
-p dpos(2.0)
 try { p N.sp_probe_apply(method(:lpos), 7) }
 try { p N.sp_probe_apply(method(:lpos), -7) }
 try { p N.sp_probe_fapply(method(:dpos), 1.5) }
