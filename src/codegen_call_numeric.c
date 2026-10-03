@@ -350,7 +350,9 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          receiver Range arm but over bigint ops (#3156). The slice may not fit
          sp_int for a very wide range; that truncates, like the int arm. */
       int tr = ++g_tmp, ts = ++g_tmp;
-      buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+      /* an index span: each end through to_int (sp_range_ix), so an end
+         written as a Float truncates and keeps its exclusivity */
+      buf_printf(b, "({ sp_Range _t%d = sp_range_ix(", tr); emit_expr(c, argv[0], b); buf_puts(b, ")");
       buf_printf(b, "; sp_int _lo%d = _t%d.first == INTPTR_MIN"
                     " ? (sp_raise_cls(\"ArgumentError\","
                     " \"The beginless range for Integer#[] results in infinity\"), 0)"
