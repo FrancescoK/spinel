@@ -5969,14 +5969,11 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
       ((argc == 1 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) ||
        /* each_entry answers the receiver too, and the value emitter yields it:
           left on the pair array's type the two disagreed and the C compiler
-          was handed a hash where an array was declared (#3895) */
-       (argc == 0 && (sp_streq(name, "each_entry") ||
-                      /* each_entry is renamed to each before this point */
-                      sp_streq(name, "each") ||
-                      /* reverse_each over an Enumerator or a Hash reaches the
-                         array machinery through the same marked hop, and answers
-                         that receiver, not the array it walked (#4325) */
-                      sp_streq(name, "reverse_each")))) &&
+          was handed a hash where an array was declared (#3895). It is
+          renamed to each before this point. reverse_each over an Enumerator
+          or a Hash reaches the array machinery through the same marked hop,
+          and answers that receiver, not the array it walked (#4325). */
+       (argc == 0 && is_each_walk(name))) &&
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_recv")) {
     int orecv = nt_ref(nt, recv, "receiver");
     if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }
