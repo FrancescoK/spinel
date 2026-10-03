@@ -6190,6 +6190,75 @@ static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const cha
   return 0;
 }
 
+/* A query on a class constant (a Struct class's members and keyword_init?, Math.sqrt, the try_converts) and the container-read pre-arms (infer_call_inner's rules, in their order) */
+static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
+  /* <StructClass>.members at the class level: symbol array */
+  if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
+    const char *mrty = nt_type(nt, recv);
+    int mci = -1;
+    if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
+      mci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
+                      (sp_streq(mrty, "CallNode") && is_struct_call(c, recv))))
+      mci = class_var_static_ci(c, recv);
+    if (mci >= 0 && c->classes[mci].is_struct &&
+        comp_cmethod_in_chain(c, mci, "members", NULL) < 0) { *out = TY_POLY_ARRAY; return 1; }
+  }
+  if (recv >= 0 && sp_streq(name, "keyword_init?") && argc == 0) {
+    const char *krty = nt_type(nt, recv);
+    int kci = -1;
+    if (krty && (sp_streq(krty, "ConstantReadNode") || sp_streq(krty, "ConstantPathNode")))
+      kci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (krty && sp_streq(krty, "LocalVariableReadNode"))
+      kci = class_var_static_ci(c, recv);
+    if (kci >= 0 && c->classes[kci].is_struct &&
+        comp_cmethod_in_chain(c, kci, "keyword_init?", NULL) < 0) { *out = TY_POLY; return 1; }  /* nil/true/false */
+  }
+  /* Integer.sqrt(Bignum) -> Bignum (#2420) */
+  if (recv >= 0 && sp_streq(name, "sqrt") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
+      infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }
+  /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
+  if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) { *out = infer_type(c, recv); return 1; }
+  /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash"))
+    { *out = TY_STR_POLY_HASH; return 1; }
+  /* Array/Integer/String/IO.try_convert(x) -> the value or nil (poly)
+     (#2325, #2585) */
+  if (recv >= 0 && name && sp_streq(name, "try_convert") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "Array") || sp_streq(nt_str(nt, recv, "name"), "Integer") ||
+       sp_streq(nt_str(nt, recv, "name"), "String") || sp_streq(nt_str(nt, recv, "name"), "IO")))
+    { *out = TY_POLY; return 1; }
+  if (recv >= 0 && name && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
+    if (sp_streq(name, "try_convert")) { *out = TY_POLY; return 1; }
+  }
+  /* container-read builtin pre-arms (#3234). The name/argc gates run
+     FIRST: the infer_type(recv) probe recurses through the receiver's
+     own call chain, and paying it for EVERY one-arg call re-infers each
+     chain suffix once more per level -- exponential on deep chains (a
+     Rails-scale tree went 23s -> >10min under it). Gated this way only
+     the arm names below ever pay the probe. */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "cover?") || sp_streq(name, "gcdlcm") ||
+       sp_streq(name, "sum") || sp_streq(name, "inject") ||
+       sp_streq(name, "reduce")) &&
+      infer_type(c, recv) == TY_POLY) {
+    if (sp_streq(name, "cover?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "gcdlcm")) { *out = TY_POLY_ARRAY; return 1; }   /* a Bignum pair stays boxed (#4665) */
+    if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) { *out = TY_POLY; return 1; }
+    if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+        nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_SYMBOL) { *out = TY_POLY; return 1; }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6904,70 +6973,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_block_kernel_call(c, id, nt, name, recv, rt, &r)) return r; }
 
-  /* <StructClass>.members at the class level: symbol array */
-  if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
-    const char *mrty = nt_type(nt, recv);
-    int mci = -1;
-    if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
-      mci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (mrty && (sp_streq(mrty, "LocalVariableReadNode") ||
-                      (sp_streq(mrty, "CallNode") && is_struct_call(c, recv))))
-      mci = class_var_static_ci(c, recv);
-    if (mci >= 0 && c->classes[mci].is_struct &&
-        comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
-  }
-  if (recv >= 0 && sp_streq(name, "keyword_init?") && argc == 0) {
-    const char *krty = nt_type(nt, recv);
-    int kci = -1;
-    if (krty && (sp_streq(krty, "ConstantReadNode") || sp_streq(krty, "ConstantPathNode")))
-      kci = comp_class_index(c, nt_str(nt, recv, "name"));
-    else if (krty && sp_streq(krty, "LocalVariableReadNode"))
-      kci = class_var_static_ci(c, recv);
-    if (kci >= 0 && c->classes[kci].is_struct &&
-        comp_cmethod_in_chain(c, kci, "keyword_init?", NULL) < 0) return TY_POLY;  /* nil/true/false */
-  }
-  /* Integer.sqrt(Bignum) -> Bignum (#2420) */
-  if (recv >= 0 && sp_streq(name, "sqrt") && argc == 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
-      infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;
-  /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
-  if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) return infer_type(c, recv);
-  /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
-  if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash"))
-    return TY_STR_POLY_HASH;
-  /* Array/Integer/String/IO.try_convert(x) -> the value or nil (poly)
-     (#2325, #2585) */
-  if (recv >= 0 && name && sp_streq(name, "try_convert") && argc == 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") &&
-      (sp_streq(nt_str(nt, recv, "name"), "Array") || sp_streq(nt_str(nt, recv, "name"), "Integer") ||
-       sp_streq(nt_str(nt, recv, "name"), "String") || sp_streq(nt_str(nt, recv, "name"), "IO")))
-    return TY_POLY;
-  if (recv >= 0 && name && argc == 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
-    if (sp_streq(name, "try_convert")) return TY_POLY;
-  }
-  /* container-read builtin pre-arms (#3234). The name/argc gates run
-     FIRST: the infer_type(recv) probe recurses through the receiver's
-     own call chain, and paying it for EVERY one-arg call re-infers each
-     chain suffix once more per level -- exponential on deep chains (a
-     Rails-scale tree went 23s -> >10min under it). Gated this way only
-     the arm names below ever pay the probe. */
-  if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "cover?") || sp_streq(name, "gcdlcm") ||
-       sp_streq(name, "sum") || sp_streq(name, "inject") ||
-       sp_streq(name, "reduce")) &&
-      infer_type(c, recv) == TY_POLY) {
-    if (sp_streq(name, "cover?")) return TY_BOOL;
-    if (sp_streq(name, "gcdlcm")) return TY_POLY_ARRAY;   /* a Bignum pair stays boxed (#4665) */
-    if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) return TY_POLY;
-    if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
-        nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_SYMBOL) return TY_POLY;
-  }
+  { TyKind r; if (infer_constant_query_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
   { TyKind r; if (infer_method_proc_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
      (NULL-encoded nil when the hash has none) */
