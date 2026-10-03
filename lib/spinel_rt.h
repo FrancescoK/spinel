@@ -11400,7 +11400,9 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
   if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v))
     return sp_box_int(sp_str_sum_bits(sp_poly_strbuf_deref(v).v.s, 16));
   sp_poly_coll_chk(v, "sum");
-  if (v.tag != SP_TAG_OBJ) return sp_box_int(0);
+  /* a Symbol (or any other value that is no collection) has no sum: it
+     answered 0 */
+  if (v.tag != SP_TAG_OBJ) { sp_raise_poly_nomethod("sum", v); return sp_box_nil(); }
   switch (v.cls_id) {
     /* a nil element (the sentinel) raises CRuby's TypeError, as the typed sum
        does for a marked array */
@@ -11430,8 +11432,10 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
       return sp_PolyArray_sum_poly(sp_poly_to_poly_array(v));
     default: {
       if (sp_poly_is_hash_kind(v.cls_id)) return sp_PolyArray_sum_poly(sp_enum_items_from(v));
-      sp_PolyArray *ue = sp_poly_user_elems(v);
-      return ue ? sp_PolyArray_sum_poly(ue) : sp_box_int(0);
+      /* a Struct sums its members, a class including Enumerable its
+         elements, and an object that is neither is sum's NoMethodError,
+         where it answered 0 */
+      return sp_PolyArray_sum_poly(sp_poly_to_a_arr_as(v, "sum", 0));
     }
   }
 }
@@ -11621,6 +11625,10 @@ static sp_int sp_poly_count(sp_RbVal v) {
     sp_raise_cls("ArgumentError", "wrong number of arguments (given 0, expected 1+)");
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_range_count(*(sp_Range *)v.v.p);
+  /* a Symbol has a length but no count, and a user object counts its
+     elements or is count's NoMethodError (it answered its length, or 0) */
+  if (v.tag == SP_TAG_SYM) { sp_raise_poly_nomethod("count", v); return 0; }
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) return sp_poly_to_a_arr_as(v, "count", 0)->len;
   return sp_poly_length(sp_poly_span_subject(v));
 }
 static sp_RbVal sp_poly_arr_rotate(sp_RbVal v, sp_int n) {
@@ -11797,6 +11805,9 @@ static sp_RbVal sp_poly_first(sp_RbVal v) {
   if (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p) return sp_enum_first_boxed(v);
   { sp_PolyArray *ue = sp_poly_user_elems(v);
     if (ue) return ue->len > 0 ? ue->data[0] : sp_box_nil(); }
+  /* any other object (a Struct, one with no #each) answers through its
+     members or is first's NoMethodError, where it answered nil */
+  if (v.cls_id >= 0) { sp_PolyArray *a = sp_poly_to_a_arr_as(v, "first", 0); return a->len > 0 ? a->data[0] : sp_box_nil(); }
   return sp_poly_arr_get(v, 0);
 }
 static sp_RbVal sp_poly_last(sp_RbVal v) {
