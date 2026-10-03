@@ -410,3 +410,15 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
   return 0;
 }
+
+/* the concurrency handles (Fiber, Thread, Queue, Mutex, ConditionVariable): their builtin-op rows (builtin_ops.c) */
+int emit_call_handle_op_arms(Compiler *c, int id, Buf *b, const char *name, int recv) {
+  /* the concurrency handles: builtin-op rows (builtin_ops.c). nil? and
+     itself sat above the Proc arms, which no handle reaches. */
+  if (recv >= 0) {
+    TyKind hrt = comp_ntype(c, recv);
+    if ((hrt == TY_FIBER || hrt == TY_THREAD || hrt == TY_QUEUE || hrt == TY_MUTEX ||
+         hrt == TY_CONDVAR) && emit_builtin_op(c, id, recv, hrt, name, b)) return 1;
+  }
+  return 0;
+}

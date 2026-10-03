@@ -1840,3 +1840,54 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (emit_or_take_back(c, id, b, emit_array_call)) return 1;
   return 0;
 }
+
+/* methods on an array literal whose type never settled (an empty [] or an argument-less Array.new), answered against an empty poly array */
+int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt) {
+  /* an empty array literal as a receiver: its node type is unknown (element
+     type is usage-folded, but a bare literal has no usage). Handle the common
+     methods directly against an empty (poly) array. */
+  if (recv >= 0 && rt == TY_UNKNOWN) {
+    const char *rty = nt_type(nt, recv);
+    int empty_recv = 0;
+    if (rty && sp_streq(rty, "ArrayNode")) {
+      int en = 0; nt_arr(nt, recv, "elements", &en);
+      empty_recv = (en == 0);
+    }
+    /* an argument-less `Array.new` is the same empty array, and carries the
+       same unknown element type (#3613) */
+    else if (rty && sp_streq(rty, "CallNode") && nt_str(nt, recv, "name") &&
+             sp_streq(nt_str(nt, recv, "name"), "new") && nt_ref(nt, recv, "block") < 0) {
+      int arn = nt_ref(nt, recv, "receiver");
+      int aa = nt_ref(nt, recv, "arguments");
+      int aac = 0; if (aa >= 0) nt_arr(nt, aa, "arguments", &aac);
+      if (aac == 0 && arn >= 0 && nt_type(nt, arn) &&
+          sp_streq(nt_type(nt, arn), "ConstantReadNode") &&
+          nt_str(nt, arn, "name") && sp_streq(nt_str(nt, arn, "name"), "Array"))
+        empty_recv = 1;
+    }
+    {
+      if (empty_recv) {
+        if (is_count_alias(name) && argc == 0) { buf_puts(b, "0"); return 1; }
+        if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return 1; }
+        if (sp_streq(name, "frozen?") && argc == 0) { buf_puts(b, "0"); return 1; }
+        if (sp_streq(name, "class") && argc == 0) { buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Array\")})"); return 1; }
+        /* first/last type poly (boxed nil, printable as nil); the rest keep
+           the historical int-nil sentinel pending their own nil arms */
+        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
+        if ((sp_streq(name, "min") || sp_streq(name, "max") ||
+             sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return 1; }
+        if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }  /* #2322 */
+        if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return 1; }
+        if ((sp_streq(name, "join") || sp_streq(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return 1; }
+        if ((sp_streq(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return 1; }
+        if ((sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq") ||
+             sp_streq(name, "sort") || sp_streq(name, "reverse") || sp_streq(name, "dup") ||
+             sp_streq(name, "clone") || sp_streq(name, "to_a") || sp_streq(name, "to_ary") ||
+             sp_streq(name, "deconstruct") || sp_streq(name, "entries")) && argc <= 1) {
+          buf_puts(b, "sp_PolyArray_new()"); return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
