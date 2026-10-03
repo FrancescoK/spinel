@@ -5437,6 +5437,12 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
        nil is no number, and read as one it was covered by every
        range that holds 0 (or, from a sentinel, a beginless one). */
     if (pt == TY_POLY) buf_printf(b, "; _t%d.tag != SP_TAG_NIL && sp_range_cover_poly(&_t%d, _t%d); })", t, tr, t);
+    /* a Rational or a Bignum subject compares against the bounds; it was
+       handed to the Integer membership and did not build */
+    else if (pt == TY_RATIONAL || pt == TY_BIGINT) {
+      char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
+      buf_printf(b, "; sp_range_cover_poly(&_t%d, ", tr); emit_boxed_text(c, pt, sref, b); buf_puts(b, "); })");
+    }
     else buf_printf(b, "; sp_range_%s(&_t%d, _t%d); })", pt == TY_FLOAT ? "cover_f" : "include", tr, t);
   }
   else if (comp_ntype(c, cond) == TY_FLOAT_RANGE) {
@@ -5444,6 +5450,11 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
     int tr = ++g_tmp;
     buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, cond, b);
     if (pt == TY_POLY) buf_printf(b, "; sp_frange_cover_poly(_t%d, _t%d); })", tr, t);
+    /* ...and against a Float range (a Rational is no double) */
+    else if (pt == TY_RATIONAL || pt == TY_BIGINT) {
+      char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
+      buf_printf(b, "; sp_frange_cover_poly(_t%d, ", tr); emit_boxed_text(c, pt, sref, b); buf_puts(b, "); })");
+    }
     else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
   }
   else if (comp_ntype(c, cond) == TY_CLASS) {

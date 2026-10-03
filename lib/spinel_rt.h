@@ -15349,14 +15349,13 @@ static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
     return e.tag == SP_TAG_STR && e.v.s && sp_re_match_p(pat.v.p, e.v.s);
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_RANGE) {
-    sp_Range *r = (sp_Range *)pat.v.p;
-    if (e.tag == SP_TAG_INT) return sp_range_include(r, e.v.i);
-    if (e.tag == SP_TAG_FLT) return sp_range_cover_f(r, e.v.f);
-    return 0;
+    /* a Rational or a Bignum compares against the bounds too (it answered
+       false), through the same reader as cover? */
+    return sp_range_cover_poly((sp_Range *)pat.v.p, e);
   }
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_FLOAT_RANGE) {
-    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_FLT) return 0;
-    return sp_frange_cover(*(sp_FloatRange *)pat.v.p, sp_poly_to_f(e));
+    /* a Rational, a Bignum or a real Complex compares too (it answered false) */
+    return sp_frange_cover_poly(*(sp_FloatRange *)pat.v.p, e);
   }
   /* ("a".."e") === "c": a string range covers by string comparison (#3963) */
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_STR_RANGE) {

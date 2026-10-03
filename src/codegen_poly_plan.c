@@ -3307,6 +3307,17 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_f((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       break;
+    case TY_RATIONAL: case TY_BIGINT: {
+      /* a Rational or a Bignum compares against a numeric Range's bounds
+         (an end written as a Float as written), where the call fell to the
+         default arm and answered false */
+      char tn6[24]; snprintf(tn6, sizeof tn6, "_t%d", atmp[0]);
+      Buf ab6; memset(&ab6, 0, sizeof ab6); emit_boxed_text(c, at, tn6, &ab6);
+      buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, %s)%s; break;", tr, ibo, tv, ab6.p ? ab6.p : "sp_box_nil()", ibc);
+      buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, %s)%s; break;", tr, ibo, tv, ab6.p ? ab6.p : "sp_box_nil()", ibc);
+      free(ab6.p);
+      break;
+    }
     case TY_STRING:
       buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = %ssp_StrIntHash_has_key((sp_StrIntHash *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);

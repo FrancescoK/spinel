@@ -10771,7 +10771,14 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           int arg_is_float = at0 == TY_FLOAT;
           int arg_is_poly = at0 == TY_POLY;
           if (value_obj_compares(c, argv[0])) unsupported_feature(c, id, "Range#include? of a user object defining <=>");
-          if (value_kind_misses(c, argv[0], TY_INT)) {
+          /* a Rational or a Bignum compares against the bounds (an end
+             written as a Float as written): it answered false */
+          if (at0 == TY_RATIONAL || at0 == TY_BIGINT) {
+            buf_printf(b, "sp_range_cover_poly(&_t%d, ", t);
+            emit_boxed(c, argv[0], b);
+            buf_puts(b, ")");
+          }
+          else if (value_kind_misses(c, argv[0], TY_INT)) {
             /* an Integer compares with nothing of this class: not covered */
             buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b); buf_puts(b, "); 0; })");
           }
