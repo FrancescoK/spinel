@@ -26152,6 +26152,9 @@ static int splat_builtin_arity(const char *name) {
     { "fetch", 1 }, { "store", 2 }, { "insert", 2 },
     { "delete", 1 }, { "sub", 2 }, { "sub!", 2 }, { "gsub", 2 },
     { "gsub!", 2 }, { "[]", 1 }, { "[]=", 2 },
+    /* the predicate and search families: each takes its argument as a scalar
+       in C, so an unexpanded array reached the slot as a pointer and the
+       call answered from a comparison against garbage */
     { "key?", 1 }, { "has_key?", 1 }, { "include?", 1 }, { "member?", 1 },
     { "value?", 1 }, { "has_value?", 1 }, { "index", 1 }, { "rindex", 1 },
     { "count", 1 }, { "split", 1 }, { "join", 1 },
@@ -26540,22 +26543,11 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
        builtins take the array correctly as it stands -- `puts(*a)`,
        `format(*args)`, `Struct.new(*syms)` all rely on that, and expanding
        them types each element separately or loses the compile-time member
-       names. */
-    static const char *fixed_arity_builtins[] = {
-      "fetch", "store", "insert", "slice", "fill", "delete",
-      "sub", "sub!", "gsub", "gsub!", "[]", "[]=",
-      /* the predicate and search families: each takes its argument as a scalar
-         in C, so an unexpanded array reached the slot as a pointer and the
-         call answered from a comparison against garbage */
-      "key?", "has_key?", "include?", "member?", "value?", "has_value?",
-      "index", "rindex", "count", "split", "join",
-      "start_with?", "end_with?", "tr", "tr_s", NULL
-    };
+       names. They are splat_builtin_arity's names, and slice and fill, which
+       expand only where the length is static. */
     const char *cnm = nt_str(nt, id, "name");
     if (!cnm) continue;
-    int listed = 0;
-    for (int j = 0; fixed_arity_builtins[j]; j++)
-      if (sp_streq(cnm, fixed_arity_builtins[j])) { listed = 1; break; }
+    int listed = splat_builtin_arity(cnm) >= 0 || sp_streq(cnm, "slice") || sp_streq(cnm, "fill");
     if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL)) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
