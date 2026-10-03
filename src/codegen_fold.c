@@ -4086,7 +4086,16 @@ else {
   Buf cb; memset(&cb, 0, sizeof cb); emit_iter_step_tail(c, &st, &cb);
   emit_indent(g_pre, g_indent);
   /* take from the left on a tie, so equal elements keep their order */
-  buf_printf(g_pre, "sp_int _t%d = %s%s);\n", tc, cmp_o, cb.p ? cb.p : "0"); free(cb.p);
+  if (cmp_ty == TY_POLY) {
+    /* a nil answer is the ArgumentError CRuby raises for the pair */
+    char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", ta); snprintf(eb, sizeof eb, "_t%d", tb);
+    Buf ba; memset(&ba, 0, sizeof ba); emit_boxed_text(c, et, ea, &ba);
+    Buf bb2; memset(&bb2, 0, sizeof bb2); emit_boxed_text(c, et, eb, &bb2);
+    buf_printf(g_pre, "sp_int _t%d = sp_poly_cmp_ans(%s, %s, %s);\n", tc, cb.p ? cb.p : "sp_box_nil()", ba.p ? ba.p : "sp_box_nil()", bb2.p ? bb2.p : "sp_box_nil()");
+    free(ba.p); free(bb2.p);
+  }
+  else buf_printf(g_pre, "sp_int _t%d = %s%s);\n", tc, cmp_o, cb.p ? cb.p : "0");
+  free(cb.p);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if (_t%d > 0) { _t%d[_t%d++] = _t%d; _t%d++; }\nelse { _t%d[_t%d++] = _t%d; _t%d++; }\n",
              tc, tbuf, to, tb, tj, tbuf, to, ta, ti);
@@ -4243,7 +4252,18 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   IterStep st; emit_iter_step_open(c, block, 0, g_indent, &st);
   Buf cm; memset(&cm, 0, sizeof cm); emit_iter_step_tail(c, &st, &cm);
   g_indent--;
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (%s%s) %c 0) _t%d = _t%d;\n", cmp_o, cm.p ? cm.p : "0", is_min ? '<' : '>', tacc, te); free(cm.p);
+  emit_indent(g_pre, g_indent);
+  if (cmp_ty == TY_POLY) {
+    /* a nil answer is the ArgumentError CRuby raises for the pair */
+    char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", te); snprintf(eb, sizeof eb, "_t%d", tacc);
+    Buf ba; memset(&ba, 0, sizeof ba); emit_boxed_text(c, et, ea, &ba);
+    Buf bb2; memset(&bb2, 0, sizeof bb2); emit_boxed_text(c, et, eb, &bb2);
+    buf_printf(g_pre, "if (sp_poly_cmp_ans(%s, %s, %s) %c 0) _t%d = _t%d;\n", cm.p ? cm.p : "sp_box_nil()",
+               ba.p ? ba.p : "sp_box_nil()", bb2.p ? bb2.p : "sp_box_nil()", is_min ? '<' : '>', tacc, te);
+    free(ba.p); free(bb2.p);
+  }
+  else buf_printf(g_pre, "if (%s%s) %c 0) _t%d = _t%d;\n", cmp_o, cm.p ? cm.p : "0", is_min ? '<' : '>', tacc, te);
+  free(cm.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (lv_p0) lv_p0->type = saved_p0;
   if (lv_p1) lv_p1->type = saved_p1;
