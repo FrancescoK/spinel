@@ -1,0 +1,15 @@
+3
+3
+"wrong number of arguments (given 0, expected 1)"
+"wrong number of arguments (given 3, expected 1)"
+"wrong number of arguments (given 2, expected 1)"
+"wrong number of arguments (given 0, expected 1)"
+"wrong number of arguments (given 0, expected 1..2)"
+"wrong number of arguments (given 3, expected 1..2)"
+4
+"wrong number of arguments (given 0, expected 1..2)"
+[true, true]
+[1, 2, 3]
+3
+"undefined method 'push' for an instance of String"
+"undefined method 'push' for an instance of String"

@@ -3195,19 +3195,20 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
        builtin with a push, and sp_poly_shl owns it. */
     buf_printf(b, " default: if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE))"
                   " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", tv, tv, name, tv);
-    /* SizedQueue#push(obj, non_block): on a Queue two arguments are
-       always that pair, so the second is the flag, never an element */
-    int q_flag = sp_streq(name, "push") && argc == 2 && splat_a < 0;
+    /* push with other than one argument on a queue: SizedQueue#push(obj,
+       non_block) is one push with a flag, and a count the queue does not
+       take is its ArgumentError, named by its own range */
+    int q_flag = sp_streq(name, "push") && argc != 1 && splat_a < 0;
     if (q_flag) {
-      char tn[32], tf[32];
-      snprintf(tn, sizeof tn, "_t%d", atmp[0]); snprintf(tf, sizeof tf, "_t%d", atmp[1]);
-      Buf ab; memset(&ab, 0, sizeof ab);
-      Buf fb; memset(&fb, 0, sizeof fb);
-      if (atmp_ty[0] == TY_POLY) buf_puts(&ab, tn); else emit_boxed_text(c, atmp_ty[0], tn, &ab);
-      if (atmp_ty[1] == TY_POLY) buf_puts(&fb, tf); else emit_boxed_text(c, atmp_ty[1], tf, &fb);
-      buf_printf(b, " sp_poly_queue_push_flag(_t%d, \"push\", %s, sp_poly_truthy(%s));",
-                 tv, ab.p ? ab.p : "sp_box_nil()", fb.p ? fb.p : "sp_box_nil()");
-      free(ab.p); free(fb.p);
+      int tq = ++g_tmp;
+      buf_printf(b, " { sp_RbVal _t%d[%d] = {", tq, argc > 0 ? argc : 1);
+      for (int a = 0; a < argc; a++) {
+        char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+        buf_puts(b, a ? ", " : " ");
+        if (atmp_ty[a] == TY_POLY) buf_puts(b, tn); else emit_boxed_text(c, atmp_ty[a], tn, b);
+      }
+      if (argc == 0) buf_puts(b, " sp_box_nil()");
+      buf_printf(b, " }; sp_poly_queue_push_n(_t%d, %d, _t%d); }", tv, argc, tq);
     }
     for (int a = 0; a < argc && !q_flag; a++) {
       if (nt_kind(nt, argv[a]) == NK_SplatNode) {

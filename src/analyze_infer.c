@@ -5544,7 +5544,7 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
      right answer when a user class owns the name -- it is the union of that
      return and the builtin one, which is what every other name on this surface
      already widens to. */
-  if (recv >= 0 && rt == TY_POLY && argc >= 1 &&
+  if (recv >= 0 && rt == TY_POLY && (argc >= 1 || sp_streq(name, "push")) &&
       (sp_streq(name, "push") || sp_streq(name, "append") ||
        sp_streq(name, "unshift") || sp_streq(name, "prepend")))
     { *out = TY_POLY; return 1; }

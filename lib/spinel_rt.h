@@ -11903,6 +11903,23 @@ static sp_RbVal sp_poly_queue_push_flag(sp_RbVal v, const char *name, sp_RbVal x
   if (nb) sp_Queue_push_nb(q, x); else sp_Queue_push(q, x);
   return v;
 }
+/* push / << / enq on a boxed value that is a queue at run time, with the
+   arguments as given: a Queue takes one, a SizedQueue one or two (obj,
+   non_block), and a count past that names the receiver's own range.
+   Answers 0, doing nothing, when v is not a queue. */
+static int sp_poly_queue_push_n(sp_RbVal v, int argc, const sp_RbVal *args) SP_UNUSED;
+static int sp_poly_queue_push_n(sp_RbVal v, int argc, const sp_RbVal *args) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p)) return 0;
+  sp_queue *q = (sp_queue *)v.v.p;
+  int sized = sp_Queue_max(q) > 0;
+  if (argc == 1) sp_Queue_push(q, args[0]);
+  else if (argc == 2 && sized) {
+    if (sp_poly_truthy(args[1])) sp_Queue_push_nb(q, args[0]); else sp_Queue_push(q, args[0]);
+  }
+  else sp_raise_cls("ArgumentError", sp_sprintf("wrong number of arguments (given %d, expected %s)",
+                                                argc, sized ? "1..2" : "1"));
+  return 1;
+}
 /* a boxed sleep timeout as seconds: CRuby's TypeError for anything that is
    not a number (nil, meaning none, is the caller's to check first) */
 static double sp_poly_time_interval(sp_RbVal v) {

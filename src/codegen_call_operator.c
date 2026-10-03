@@ -1105,6 +1105,18 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  /* poly `push` with no argument in expression position: an array answers
+     itself, a queue its ArgumentError (sp_poly_queue_push_n), anything else
+     NoMethodError -- the dispatch with arguments covers the other counts */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "push") && argc == 0 &&
+      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, "push")) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+    buf_printf(b, "; if (!sp_poly_queue_push_n(_t%d, 0, (sp_RbVal[]){sp_box_nil()}) &&"
+                  " !(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                  " sp_raise_nomethod(sp_nomethod_msg(\"push\", _t%d)); _t%d; })", t, t, t, t, t);
+    return 1;
+  }
   /* unary bitwise complement: ~int -> (~x); ~poly -> coerce to int first */
   if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY)) {
     if (rt == TY_POLY) { buf_puts(b, "(~sp_poly_recv_i(\"~\", "); emit_expr(c, recv, b); buf_puts(b, "))"); }
