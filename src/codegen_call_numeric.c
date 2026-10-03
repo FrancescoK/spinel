@@ -201,8 +201,18 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* round/ceil/floor: no precision -> self; a precision arg rounds to
        10^(-ndigits) (a positive precision is a no-op on an integer) (#2303) */
-    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) && argc == 0) {
+    if (is_round_family(name) && argc == 0) {
       buf_printf(b, "(%s)", r); free(rs.p); return 1;
+    }
+    /* truncate(n) rounds toward zero: a negative Bignum's ceil, any other's
+       floor. It had no arm and was refused. */
+    if (sp_streq(name, "truncate") && argc == 1) {
+      int tt = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_bigint_round_prec(_t%d, ({ sp_int _rnd = ",
+                 tt, r, tt, tt);
+      emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_int_round_check_ndigits(_rnd); _rnd; }), sp_bigint_sign(_t%d) < 0 ? 2 : 1); })", tt);
+      free(rs.p); return 1;
     }
     if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) && argc == 1) {
       int mode = sp_streq(name, "floor") ? 1 : sp_streq(name, "ceil") ? 2 : 0;

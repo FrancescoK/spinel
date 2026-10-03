@@ -3990,7 +3990,7 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "succ") ||
          sp_streq(name, "next") || sp_streq(name, "pred")) && argc == 0) { *out = TY_BIGINT; return 1; }
     if (sp_streq(name, "class") && argc == 0) { *out = TY_CLASS; return 1; }
-    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) &&
+    if (is_round_family(name) &&
         (argc == 0 || argc == 1)) { *out = TY_BIGINT; return 1; }  /* #2303 */
     /* Integer/Float/bool-returning Bignum methods that need no Rational (#2469).
        to_r/rationalize/quo would need a bigint-backed Rational and stay
