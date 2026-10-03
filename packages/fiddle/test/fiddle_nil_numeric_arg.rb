@@ -10,7 +10,7 @@ begin
 rescue TypeError => e
   puts "TypeError: #{e.message}"
 end
-fabs = Fiddle::Function.new(Fiddle.dlopen("libm.so.6")["fabs"], [Fiddle::TYPE_DOUBLE], Fiddle::TYPE_DOUBLE)
+fabs = Fiddle::Function.new(Fiddle.dlopen(nil)["fabs"], [Fiddle::TYPE_DOUBLE], Fiddle::TYPE_DOUBLE)
 p fabs.call(-2.5)
 begin
   p fabs.call(nil)

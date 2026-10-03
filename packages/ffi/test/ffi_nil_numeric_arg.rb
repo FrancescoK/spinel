@@ -11,7 +11,7 @@ module LibM
 end
 module LibMath
   extend FFI::Library
-  ffi_lib "libm.so.6"
+  ffi_lib FFI::Library::CURRENT_PROCESS
   attach_function :fabs, [:double], :double
   attach_function :fabsf, [:float], :float
 end
