@@ -55,7 +55,8 @@ require "strscan"
 require "pathname"
 
 Warning[:deprecated] = false  # probing deprecated arg shapes is the point
-$VERBOSE = nil                # and unused blocks, superseded defaults
+$VERBOSE = nil                # and unused blocks, superseded defaults (warn is
+                              # silent from here: report with $stderr.puts)
 
 ROOT = File.expand_path("..", __dir__)
 SOURCE = File.join(ROOT, "src/codegen_call.c")
@@ -426,7 +427,7 @@ if ARGV.include?("--write") || ARGV.include?("--check")
   end
   if ARGV.include?("--check")
     if out == src
-      warn "arity tables match #{ver}: #{done.join(" + ")} entries"
+      $stderr.puts "arity tables match #{ver}: #{done.join(" + ")} entries"
       exit 0
     end
     require "tempfile"
@@ -438,12 +439,12 @@ if ARGV.include?("--write") || ARGV.include?("--check")
     abort "arity tables drifted from #{ver}: rerun tools/gen_builtin_arity_spec.rb --write"
   end
   File.write(SOURCE, out)
-  warn "wrote #{done.join(" + ")} entries into #{SOURCE}"
+  $stderr.puts "wrote #{done.join(" + ")} entries into #{SOURCE}"
 else
   puts arity_out
   puts
   puts inst_out
   puts
   puts cm_out
-  warn "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
+  $stderr.puts "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
 end
