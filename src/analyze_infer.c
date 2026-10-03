@@ -1849,6 +1849,20 @@ static TyKind kconv_integer_kind(Compiler *c, int arg, int noraise) {
   return TY_INT;
 }
 
+/* What Kernel#Hash answers for the argument `arg`, called bare or on a
+   receiver that takes it as Kernel's. */
+static TyKind kconv_hash_kind(Compiler *c, int arg) {
+  TyKind at = infer_type(c, arg);
+  if (ty_is_hash(at)) return at;                 /* Hash(hash) -> the hash */
+  /* an object answers through its own #to_hash (#3721) */
+  if (ty_is_object(at)) {
+    int hci2 = ty_object_class(at), hmi = comp_method_in_chain(c, hci2, "to_hash", NULL);
+    if (hmi >= 0) return (TyKind)c->scopes[hmi].ret;
+  }
+  if (at == TY_POLY) return TY_POLY;             /* nil-or-hash decided at runtime */
+  return TY_POLY_POLY_HASH;                      /* Hash(nil) / Hash([]) -> {} */
+}
+
 static int an_reopen_method(Compiler *c, const char *cls, const char *name) {
   int oc_ci = comp_class_index(c, cls);
   return oc_ci >= 0 ? comp_method_in_chain(c, oc_ci, name, NULL) : -1;
@@ -4522,7 +4536,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   if (recv >= 0 && (kw_argc == 1 || kw_argc == 2) && name[0] >= 'A' && name[0] <= 'Z' &&
       (sp_streq(name, "Integer") || sp_streq(name, "Float") ||
        sp_streq(name, "String") || sp_streq(name, "Rational") ||
-       sp_streq(name, "Complex") || sp_streq(name, "Array"))) {
+       sp_streq(name, "Complex") || sp_streq(name, "Array") ||
+       sp_streq(name, "Hash"))) {
     TyKind krt = infer_type(c, recv);
     int kdisp = (ty_is_object(krt) &&
                  comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0) ||
@@ -4540,6 +4555,9 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
         if (sp_streq(name, "String"))   { *out = TY_STRING; return 1; }
         if (sp_streq(name, "Rational")) { *out = TY_RATIONAL; return 1; }
         if (sp_streq(name, "Complex"))  { *out = TY_COMPLEX; return 1; }
+        /* the emitter takes Hash on such a receiver as Kernel's too
+           (codegen_call_kernel.c); left untyped, its value read as nil */
+        if (sp_streq(name, "Hash"))     { *out = kconv_hash_kind(c, argv[0]); return 1; }
         if (sp_streq(name, "Array")) {
           TyKind kat = infer_type(c, argv[0]);
           if (ty_is_array(kat)) { *out = kat; return 1; }
@@ -4584,17 +4602,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (at == TY_RANGE)  { *out = TY_INT_ARRAY; return 1; }    /* Array(range) enumerates */
       { *out = TY_POLY_ARRAY; return 1; }
     }
-    if (sp_streq(name, "Hash") && argc == 1) {
-      TyKind at = infer_type(c, argv[0]);
-      if (ty_is_hash(at)) { *out = at; return 1; }              /* Hash(hash) -> the hash */
-      /* an object answers through its own #to_hash (#3721) */
-      if (ty_is_object(at)) {
-        int hci2 = ty_object_class(at), hmi = comp_method_in_chain(c, hci2, "to_hash", NULL);
-        if (hmi >= 0) { *out = (TyKind)c->scopes[hmi].ret; return 1; }
-      }
-      if (at == TY_POLY) { *out = TY_POLY; return 1; }          /* nil-or-hash decided at runtime */
-      { *out = TY_POLY_POLY_HASH; return 1; }                   /* Hash(nil) / Hash([]) -> {} */
-    }
+    if (sp_streq(name, "Hash") && argc == 1) { *out = kconv_hash_kind(c, argv[0]); return 1; }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "system") && argc >= 1) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "trap") && argc >= 1) { *out = TY_POLY; return 1; }  /* the previous handler: a command string or a Proc */
