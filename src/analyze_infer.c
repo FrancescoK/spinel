@@ -5494,6 +5494,163 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
   return 0;
 }
 
+/* A runtime value receiver, typed or boxed: Fiber, Thread, Queue, Mutex, a native object's protocol, Process::Tms and Status, OpenStruct, Enumerator (infer_call_inner's rules, in their order) */
+static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* Fiber: builtin-op rows (builtin_ops.c) */
+  if (recv >= 0 && rt == TY_FIBER) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+
+  /* Object's identity protocol on the native kinds: typed from the same
+     decision the codegen arm (emit_native_object_protocol) emits from, so the
+     two cannot drift. A user exception subclass's own definition wins, as it
+     does in the arm. */
+  if (recv >= 0 && nt_ref(c->nt, id, "block") < 0 &&
+      ty_object_protocol_answers(rt, argc == 1 ? infer_type(c, argv[0]) : TY_UNKNOWN, name, argc) &&
+      !(rt == TY_EXCEPTION && exc_subclass_defines(c, name))) {
+    if (sp_streq(name, "freeze")) { *out = rt; return 1; }
+    if (sp_streq(name, "to_s")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "<=>")) { *out = TY_POLY; return 1; }   /* 0 or nil, boxed */
+    { *out = TY_BOOL; return 1; }
+  }
+
+  /* Thread, Queue, Mutex and ConditionVariable: builtin-op rows
+     (builtin_ops.c), the universal queries (#3124) among them. Queue's,
+     Mutex's and ConditionVariable's rules sat below the TY_POLY rules
+     that follow, which no handle reaches. */
+  if (recv >= 0 && (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX ||
+                    rt == TY_CONDVAR)) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+
+  /* Array#push / #append / #unshift / #prepend answer the RECEIVER, and on a
+     boxed receiver that is the poly value itself. Leaving the call untyped made
+     the poly dispatch declare an sp_int result temp whose push arm (which only
+     assigns for a poly result) never wrote it, so the answer was the temp's
+     zero seed: `->(acc) { acc.push(1) }` answered nil (#4320). Poly is also the
+     right answer when a user class owns the name -- it is the union of that
+     return and the builtin one, which is what every other name on this surface
+     already widens to. */
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 &&
+      (sp_streq(name, "push") || sp_streq(name, "append") ||
+       sp_streq(name, "unshift") || sp_streq(name, "prepend")))
+    { *out = TY_POLY; return 1; }
+
+  /* Array#pop(n) / #shift(n) on a boxed array answer an Array of the removed
+     elements (#3613) -- unless a program class also answers the name, when
+     the dispatch writes that class's result into the same slot, and only a
+     boxed one holds both (#4831; the push rule above for the same reason). */
+  /* ...but pop(true) / shift(false) is Queue#pop(non_block): an Array's
+     pop(true) is a TypeError, so only a Queue answers it, with one value */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      (sp_streq(name, "pop") || sp_streq(name, "shift")) &&
+      (infer_type(c, argv[0]) == TY_BOOL || infer_type(c, argv[0]) == TY_POLY))
+    { *out = TY_POLY; return 1; }   /* a boxed argument: a Queue's flag or an Array's count */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      (sp_streq(name, "pop") || sp_streq(name, "shift"))) {
+    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+      c->poly_builtin_ty[id] = TY_POLY_ARRAY;   /* the dispatch's builtin default */
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_poly_arm_defines_n(c, k, name, argc)) { *out = TY_POLY; return 1; }
+    { *out = TY_POLY_ARRAY; return 1; }
+  }
+
+  /* String#to_i(base) is the only builtin to_i that takes an argument, and
+     the poly emitter answers it as an sp_int (the String arm, else
+     ArgumentError). A program class's zero-arity to_i does not reach that
+     call, so its return must not widen this one: widened, the consumer
+     boxed a value the emitter had produced unboxed -- `buf << s.to_i(16)`
+     passed an intptr_t where an sp_RbVal was expected. Poly only when a
+     program class does answer a one-argument to_i. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
+    /* what a String answers, for the dispatch's String arm when a class's
+       own to_i makes the call poly (emit_poly_str_prearm) */
+    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+      c->poly_builtin_ty[id] = TY_INT;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (c->classes[k].is_native_class) {
+        if (comp_poly_arm_defines_n(c, k, name, argc)) { *out = TY_POLY; return 1; }
+        continue;
+      }
+      int mi = comp_method_in_chain(c, k, name, NULL);
+      if (mi >= 0 && (c->scopes[mi].nparams >= 1 || c->scopes[mi].rest_idx >= 0))
+        { *out = TY_POLY; return 1; }
+    }
+    { *out = TY_INT; return 1; }
+  }
+
+  /* Process::Tms: builtin-op rows (builtin_ops.c), looked up where its
+     rule sat, so the rules above still claim first */
+  if (recv >= 0 && rt == TY_TMS) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+  /* Process::Status readers: builtin-op rows (builtin_ops.c) */
+  if (recv >= 0 && rt == TY_PROCESS_STATUS) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+  /* The same names on a BOXED status -- which is how one normally arrives,
+     since waitpid2 answers an Array and its second element is read out of a
+     poly container. emit_poly_builtin_method already emits the unboxed scalar
+     for exactly these seven, and a Process::Tms's four times (behind a runtime
+     cls_id check), so without the
+     matching rule here the two sides disagreed: `"exit #{st.exitstatus}"`
+     asked sp_poly_to_s for a poly the emitter had produced as an sp_int. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      !an_user_defines_or_reads(c, name)) {
+    int blk = nt_ref(nt, id, "block") >= 0;
+    const BuiltinOp *op = bop_find_boxed(TY_PROCESS_STATUS, name, argc, blk);
+    /* and a boxed Process::Tms's four CPU times, as on a typed one */
+    if (!op) op = bop_find_boxed(TY_TMS, name, argc, blk);
+    if (op) { *out = op->result; return 1; }
+  }
+  /* OpenStruct: dynamic members. A member read (any name, arg-less, no
+     writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
+     assigned value; the rest is a small fixed surface (#3135). */
+  if (recv >= 0 && rt == TY_OPENSTRUCT) {
+    if (sp_streq(name, "to_h") && argc == 0) { *out = TY_SYM_POLY_HASH; return 1; }
+    if (sp_streq(name, "respond_to?")) { *out = TY_BOOL; return 1; }
+    if (is_kind_query(name)) { *out = TY_BOOL; return 1; }
+    if ((sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=")) && argc == 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "class") && argc == 0) { *out = TY_CLASS; return 1; }
+    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) { *out = TY_STRING; return 1; }
+    if ((sp_streq(name, "[]=") || sp_streq(name, "[]")) ) { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "dig")) { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "each_pair") || sp_streq(name, "freeze") ||
+        sp_streq(name, "itself")) { *out = TY_OPENSTRUCT; return 1; }
+    /* any other arg-less name (or a `name=` writer) is a dynamic member */
+    { *out = TY_POLY; return 1; }
+  }
+  /* TY_ENUMERATOR instance methods */
+  if (recv >= 0 && rt == TY_ENUMERATOR) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) { *out = TY_ENUMERATOR; return 1; }  /* #2481 */
+    /* Stored-enumerator block form returns the underlying each return (the
+       boxed source). Immediate chains (arr.each.with_index { } and the
+       map/select shapes) keep their own typed arms below -- skip a blockless
+       iter-shaped CallNode receiver over an array. */
+    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") >= 0) {
+      int wchain = 0;
+      if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+          nt_ref(nt, recv, "block") < 0) {
+        const char *wnm = nt_str(nt, recv, "name");
+        int wrcv = nt_ref(nt, recv, "receiver");
+        if (wnm && wrcv >= 0 &&
+            (sp_streq(wnm, "each") || ty_iter_shape(wnm) != TY_ITER_NONE) &&
+            ty_is_array(infer_type(c, wrcv)))
+          wchain = 1;
+      }
+      if (!wchain) { *out = TY_POLY; return 1; }
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6704,158 +6861,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_builtin_cmethod_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
-  /* Fiber: builtin-op rows (builtin_ops.c) */
-  if (recv >= 0 && rt == TY_FIBER) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-
-  /* Object's identity protocol on the native kinds: typed from the same
-     decision the codegen arm (emit_native_object_protocol) emits from, so the
-     two cannot drift. A user exception subclass's own definition wins, as it
-     does in the arm. */
-  if (recv >= 0 && nt_ref(c->nt, id, "block") < 0 &&
-      ty_object_protocol_answers(rt, argc == 1 ? infer_type(c, argv[0]) : TY_UNKNOWN, name, argc) &&
-      !(rt == TY_EXCEPTION && exc_subclass_defines(c, name))) {
-    if (sp_streq(name, "freeze")) return rt;
-    if (sp_streq(name, "to_s")) return TY_STRING;
-    if (sp_streq(name, "<=>")) return TY_POLY;   /* 0 or nil, boxed */
-    return TY_BOOL;
-  }
-
-  /* Thread, Queue, Mutex and ConditionVariable: builtin-op rows
-     (builtin_ops.c), the universal queries (#3124) among them. Queue's,
-     Mutex's and ConditionVariable's rules sat below the TY_POLY rules
-     that follow, which no handle reaches. */
-  if (recv >= 0 && (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX ||
-                    rt == TY_CONDVAR)) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-
-  /* Array#push / #append / #unshift / #prepend answer the RECEIVER, and on a
-     boxed receiver that is the poly value itself. Leaving the call untyped made
-     the poly dispatch declare an sp_int result temp whose push arm (which only
-     assigns for a poly result) never wrote it, so the answer was the temp's
-     zero seed: `->(acc) { acc.push(1) }` answered nil (#4320). Poly is also the
-     right answer when a user class owns the name -- it is the union of that
-     return and the builtin one, which is what every other name on this surface
-     already widens to. */
-  if (recv >= 0 && rt == TY_POLY && argc >= 1 &&
-      (sp_streq(name, "push") || sp_streq(name, "append") ||
-       sp_streq(name, "unshift") || sp_streq(name, "prepend")))
-    return TY_POLY;
-
-  /* Array#pop(n) / #shift(n) on a boxed array answer an Array of the removed
-     elements (#3613) -- unless a program class also answers the name, when
-     the dispatch writes that class's result into the same slot, and only a
-     boxed one holds both (#4831; the push rule above for the same reason). */
-  /* ...but pop(true) / shift(false) is Queue#pop(non_block): an Array's
-     pop(true) is a TypeError, so only a Queue answers it, with one value */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (sp_streq(name, "pop") || sp_streq(name, "shift")) &&
-      (infer_type(c, argv[0]) == TY_BOOL || infer_type(c, argv[0]) == TY_POLY))
-    return TY_POLY;   /* a boxed argument: a Queue's flag or an Array's count */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (sp_streq(name, "pop") || sp_streq(name, "shift"))) {
-    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
-      c->poly_builtin_ty[id] = TY_POLY_ARRAY;   /* the dispatch's builtin default */
-    for (int k = 0; k < c->nclasses; k++)
-      if (comp_poly_arm_defines_n(c, k, name, argc)) return TY_POLY;
-    return TY_POLY_ARRAY;
-  }
-
-  /* String#to_i(base) is the only builtin to_i that takes an argument, and
-     the poly emitter answers it as an sp_int (the String arm, else
-     ArgumentError). A program class's zero-arity to_i does not reach that
-     call, so its return must not widen this one: widened, the consumer
-     boxed a value the emitter had produced unboxed -- `buf << s.to_i(16)`
-     passed an intptr_t where an sp_RbVal was expected. Poly only when a
-     program class does answer a one-argument to_i. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
-    /* what a String answers, for the dispatch's String arm when a class's
-       own to_i makes the call poly (emit_poly_str_prearm) */
-    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
-      c->poly_builtin_ty[id] = TY_INT;
-    for (int k = 0; k < c->nclasses; k++) {
-      if (c->classes[k].is_native_class) {
-        if (comp_poly_arm_defines_n(c, k, name, argc)) return TY_POLY;
-        continue;
-      }
-      int mi = comp_method_in_chain(c, k, name, NULL);
-      if (mi >= 0 && (c->scopes[mi].nparams >= 1 || c->scopes[mi].rest_idx >= 0))
-        return TY_POLY;
-    }
-    return TY_INT;
-  }
-
-  /* Process::Tms: builtin-op rows (builtin_ops.c), looked up where its
-     rule sat, so the rules above still claim first */
-  if (recv >= 0 && rt == TY_TMS) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-  /* Process::Status readers: builtin-op rows (builtin_ops.c) */
-  if (recv >= 0 && rt == TY_PROCESS_STATUS) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-  /* The same names on a BOXED status -- which is how one normally arrives,
-     since waitpid2 answers an Array and its second element is read out of a
-     poly container. emit_poly_builtin_method already emits the unboxed scalar
-     for exactly these seven, and a Process::Tms's four times (behind a runtime
-     cls_id check), so without the
-     matching rule here the two sides disagreed: `"exit #{st.exitstatus}"`
-     asked sp_poly_to_s for a poly the emitter had produced as an sp_int. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      !an_user_defines_or_reads(c, name)) {
-    int blk = nt_ref(nt, id, "block") >= 0;
-    const BuiltinOp *op = bop_find_boxed(TY_PROCESS_STATUS, name, argc, blk);
-    /* and a boxed Process::Tms's four CPU times, as on a typed one */
-    if (!op) op = bop_find_boxed(TY_TMS, name, argc, blk);
-    if (op) return op->result;
-  }
-  /* OpenStruct: dynamic members. A member read (any name, arg-less, no
-     writer) or `[sym]` returns a boxed value; a writer / `[]=` returns the
-     assigned value; the rest is a small fixed surface (#3135). */
-  if (recv >= 0 && rt == TY_OPENSTRUCT) {
-    if (sp_streq(name, "to_h") && argc == 0) return TY_SYM_POLY_HASH;
-    if (sp_streq(name, "respond_to?")) return TY_BOOL;
-    if (is_kind_query(name)) return TY_BOOL;
-    if ((sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!=")) && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
-    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
-    if ((sp_streq(name, "[]=") || sp_streq(name, "[]")) ) return TY_POLY;
-    if (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) return TY_BOOL;
-    if (sp_streq(name, "dig")) return TY_POLY;
-    if (sp_streq(name, "each_pair") || sp_streq(name, "freeze") ||
-        sp_streq(name, "itself")) return TY_OPENSTRUCT;
-    /* any other arg-less name (or a `name=` writer) is a dynamic member */
-    return TY_POLY;
-  }
-  /* TY_ENUMERATOR instance methods */
-  if (recv >= 0 && rt == TY_ENUMERATOR) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-    if (sp_streq(name, "+") && argc == 1 && infer_type(c, argv[0]) == TY_ENUMERATOR) return TY_ENUMERATOR;  /* #2481 */
-    /* Stored-enumerator block form returns the underlying each return (the
-       boxed source). Immediate chains (arr.each.with_index { } and the
-       map/select shapes) keep their own typed arms below -- skip a blockless
-       iter-shaped CallNode receiver over an array. */
-    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") >= 0) {
-      int wchain = 0;
-      if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-          nt_ref(nt, recv, "block") < 0) {
-        const char *wnm = nt_str(nt, recv, "name");
-        int wrcv = nt_ref(nt, recv, "receiver");
-        if (wnm && wrcv >= 0 &&
-            (sp_streq(wnm, "each") || ty_iter_shape(wnm) != TY_ITER_NONE) &&
-            ty_is_array(infer_type(c, wrcv)))
-          wchain = 1;
-      }
-      if (!wchain) return TY_POLY;
-    }
-  }
+  { TyKind r; if (infer_runtime_value_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   /* Kernel#p returns its argument (one arg; several return the array), so it
      composes as an expression: x = p(y), f(p(y)). Statement-position p keeps
