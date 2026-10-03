@@ -111,6 +111,17 @@ b.define_singleton_method(:doubled) { next 0 if ARGV.length == 0; base * 2 }
 b.define_singleton_method(:tripled) { |n| next :big if n > 1; base * 3 }
 p b.doubled, b.tripled(1), b.tripled(2)
 
+# the names an each over literals writes are methods too
+class Unrolled
+  [:a, :b].each { |v| define_method("m_#{v}") { |n| next "#{v} big" if n > 1; v.to_s } }
+  [1, 2].each { |v| define_method("n_#{v}") { next v * 10 if ARGV.length == 0; v } }
+  %w[x y].each do |v|
+    define_method("s_#{v}") { |n| if n > 1 then next v * n end; v }
+  end
+end
+ur = Unrolled.new
+p ur.m_a(1), ur.m_a(2), ur.m_b(2), ur.n_1, ur.n_2, ur.s_x(2), ur.s_y(1), ur.s_y(3)
+
 # a Struct's to_h: the next hands in the pair for that member
 Pair = Struct.new(:x, :y)
 s = Pair.new(1, 20)

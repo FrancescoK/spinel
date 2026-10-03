@@ -6702,6 +6702,22 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
 }
 
 
+/* The `next`s the block whose body is `id` owns: not the ones a loop or an
+   inner block, lambda or def takes. With `retype` each becomes a `return`. */
+static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
+  if (id < 0 || id >= nt->count || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int found = 0;
+  if (k == NK_NextNode) { if (retype) nt_node_set_type(nt, id, "ReturnNode"); found = 1; }
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++) found |= owned_next_walk(nt, nd->r[i].ref, depth + 1, retype);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) found |= owned_next_walk(nt, nd->a[i].ids[j], depth + 1, retype);
+  return found;
+}
+
 /* A define_method or define_singleton_method block that is registered as a
    method is that method's body, compiled as a C function with no loop for a
    `continue` to name, and a `next` it owns ends the call with its value,
@@ -6709,23 +6725,21 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
 
      define_method(:m) { next v if c; w }  ->  define_method(:m) { return v if c; w }
 
-   `id` is such a body. The `next`s of a loop or of an inner block, lambda or
-   def stay theirs. Called only where the block becomes a method (walk_scope,
-   collect_dm_each_unroll, desugar_define_method_keywords): a call whose name
-   is not known at compile time registers nothing, and a `return` left in its
-   block would be read as the enclosing method's. */
-int method_body_next_to_return(NodeTable *nt, int id, int depth) {
-  if (id < 0 || id >= nt->count || depth > 200) return 0;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
-      k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
-  int changed = 0;
-  if (k == NK_NextNode) { nt_node_set_type(nt, id, "ReturnNode"); changed = 1; }
-  const SpNode *nd = &nt->nodes[id];
-  for (int i = 0; i < nd->nr; i++) changed |= method_body_next_to_return(nt, nd->r[i].ref, depth + 1);
-  for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++) changed |= method_body_next_to_return(nt, nd->a[i].ids[j], depth + 1);
-  return changed;
+   `id` is such a body. Called only where the block becomes a method
+   (walk_scope, collect_dm_each_unroll, desugar_define_method_keywords): a
+   call whose name is not known at compile time registers nothing, and a
+   `return` left in its block would be read as the enclosing method's. A
+   program with a method of its own by either name is left alone: that one
+   may run the block as a block. The program is searched for one only when
+   the body owns a `next`. */
+int method_body_next_to_return(NodeTable *nt, int id) {
+  if (!owned_next_walk(nt, id, 0, 0)) return 0;
+  for (int d = 0; d < nt->count; d++) {
+    if (nt_kind(nt, d) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, d, "name");
+    if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
+  }
+  return owned_next_walk(nt, id, 0, 1);
 }
 
 /* `define_method(:m, <proc>)` / `define_method(:m, &<proc>)` in a class,
@@ -6907,7 +6921,7 @@ int desugar_define_method_keywords(Compiler *c) {
       nt_node_set_ref(nt, def, "parameters", pn);
       nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
       nt_node_set_ref(nt, def, "receiver", dself);
-      method_body_next_to_return(nt, nt_ref(nt, def, "body"), 0);
+      method_body_next_to_return(nt, nt_ref(nt, def, "body"));
       if (id != bv[i]) {
         /* `private define_method(...)` -> `private def ...` */
         nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);
