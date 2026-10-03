@@ -574,8 +574,9 @@ static const BuiltinOp bop_rows[] = {
      #size counts INTEGER elements, so it is nil here, as in CRuby. */
   { TY_STR_RANGE, "begin",        0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.first; })" },
   { TY_STR_RANGE, "end",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.last; })" },
-  { TY_STR_RANGE, "min",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.first; })" },
-  { TY_STR_RANGE, "max",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.last; })" },
+  /* nil for an empty range, a raise for an open side, the members walked for an excluded end */
+  { TY_STR_RANGE, "min",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_srange_min_v($r)" },
+  { TY_STR_RANGE, "max",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_srange_max_v($r)" },
   { TY_STR_RANGE, "to_s",         0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_srange_to_s(_t$T); })" },
   { TY_STR_RANGE, "inspect",      0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_srange_inspect(_t$T); })" },
   { TY_STR_RANGE, "first",        0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; _t$T.first; })" },

@@ -3435,13 +3435,23 @@ static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_int_bound_raise(const char *
 static SP_UNUSED sp_float sp_frange_begin_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("begin"); return r.first; }
 static SP_UNUSED sp_float sp_frange_end_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) return sp_float_nil(); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("end"); return r.last; }
 static SP_UNUSED sp_float sp_frange_first_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the first element of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("first"); return r.first; }
-static SP_UNUSED sp_float sp_frange_min_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range"); if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("min"); return r.first; }
+/* #min / #max of an empty range (the begin past the end, or at it with the
+   end excluded) are nil, as CRuby's range_min / range_max answer before
+   looking further; an open side is never empty */
+static SP_UNUSED sp_float sp_frange_min_v(sp_FloatRange r) {
+  if (r.omitted & SP_FRANGE_NO_BEGIN) sp_raise_cls("RangeError", "cannot get the minimum of beginless range");
+  if (r.omitted & SP_FRANGE_RT_INT_BEGIN) sp_frange_int_bound_raise("min");
+  if (!(r.omitted & SP_FRANGE_NO_END) && (r.first > r.last || (r.first == r.last && r.excl))) return sp_float_nil();
+  return r.first;
+}
 static SP_UNUSED sp_float sp_frange_last_v(sp_FloatRange r) { if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the last element of endless range"); if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("last"); return r.last; }
 static SP_UNUSED sp_float sp_frange_max_v(sp_FloatRange r) {
   if (r.omitted & SP_FRANGE_NO_END) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
   if (r.omitted & SP_FRANGE_RT_INT_END) sp_frange_int_bound_raise("max");
-  /* an exclusive end CRuby checks first: a Float one has no greatest member */
+  if (!(r.omitted & SP_FRANGE_NO_BEGIN) && r.first > r.last) return sp_float_nil();
+  /* an exclusive end CRuby checks next: a Float one has no greatest member */
   if (r.excl && !(r.omitted & SP_FRANGE_INT_END)) sp_raise_cls("TypeError", "cannot exclude non Integer end value");
+  if (r.excl && !(r.omitted & SP_FRANGE_NO_BEGIN) && r.first == r.last) return sp_float_nil();
   return sp_frange_max(r);
 }
 static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_iter_raise(sp_FloatRange r, int to_a);
@@ -3523,6 +3533,7 @@ static SP_UNUSED sp_int sp_range_count_open(sp_Range r, int is_size) {
 /* A boxed Float Range's readers, as the typed ones answer: an Integer end
    (the literal 1.5..5) reads back as one, an open side raises or is nil. */
 static SP_UNUSED sp_RbVal sp_frange_box_bound(sp_FloatRange r, sp_float x, int int_bit) {
+  if (sp_float_is_nil(x)) return sp_box_nil();   /* an empty range's #max */
   return (r.omitted & int_bit) ? sp_box_int((sp_int)x) : sp_box_float(x);
 }
 static SP_UNUSED sp_RbVal sp_frange_poly_max(sp_FloatRange r) { return sp_frange_box_bound(r, sp_frange_max_v(r), SP_FRANGE_INT_END); }
@@ -11485,7 +11496,7 @@ static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx) {
   return sp_box_poly_array(out);
 }
 static sp_RbVal sp_poly_min(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return sp_box_float(sp_frange_min_v((*(sp_FloatRange *)v.v.p)));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return sp_box_float_or_nil(sp_frange_min_v((*(sp_FloatRange *)v.v.p)));
   /* An Integer or Float array's nil is its sentinel: the check raises CRuby's
      ArgumentError once one meets a number, and an all-nil array answers nil,
      as the typed min and max do for a marked array. */
@@ -11507,10 +11518,10 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
        own arm in emit_poly_builtin_method, which `min` never gets to because
        the enumerable fast path claims the name first (#4192). */
     case SP_BUILTIN_TIME:       return sp_box_int(sp_time_min(*(sp_Time *)v.v.p));
-    /* a boxed int Range enumerates like the typed path; empty answers nil */
-    case SP_BUILTIN_RANGE: { sp_IntArray *ia = sp_range_to_ia(*(sp_Range *)v.v.p);
-                             SP_GC_ROOT(ia);
-                             return ia->len ? sp_box_int(sp_IntArray_min(ia)) : sp_box_nil(); }
+    /* a boxed Range answers off its endpoints as the typed one does: empty is
+       nil, an open side raises, and nothing is materialized */
+    case SP_BUILTIN_RANGE: return sp_box_int_or_nil(sp_range_min_v(*(sp_Range *)v.v.p));
+    case SP_BUILTIN_STR_RANGE: { const char *m = v.v.p ? sp_srange_min_v(*(sp_StrRange *)v.v.p) : NULL; return m ? sp_box_str(m) : sp_box_nil(); }
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
                return ue ? sp_PolyArray_min(ue) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
   }
@@ -11526,9 +11537,8 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
     case SP_BUILTIN_STR_ARRAY:  { const char *m = sp_StrArray_max((sp_StrArray *)v.v.p); return m ? sp_box_str(m) : sp_box_nil(); }
     case SP_BUILTIN_SYM_ARRAY: case SP_BUILTIN_PTR_ARRAY: return sp_PolyArray_max(sp_poly_to_poly_array(v));
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_max((sp_PolyArray *)v.v.p);
-    case SP_BUILTIN_RANGE: { sp_IntArray *ia = sp_range_to_ia(*(sp_Range *)v.v.p);
-                             SP_GC_ROOT(ia);
-                             return ia->len ? sp_box_int(sp_IntArray_max(ia)) : sp_box_nil(); }
+    case SP_BUILTIN_RANGE: return sp_box_int_or_nil(sp_range_max_v(*(sp_Range *)v.v.p));
+    case SP_BUILTIN_STR_RANGE: { const char *m = v.v.p ? sp_srange_max_v(*(sp_StrRange *)v.v.p) : NULL; return m ? sp_box_str(m) : sp_box_nil(); }
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
                return ue ? sp_PolyArray_max(ue) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
   }
