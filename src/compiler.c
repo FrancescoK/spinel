@@ -2262,7 +2262,10 @@ int container_elem_read_p(const NodeTable *nt, int id) {
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
   if (sp_streq(nm, "[]") || sp_streq(nm, "fetch") || sp_streq(nm, "dig")) return 1;
-  if (sp_streq(nm, "first") || sp_streq(nm, "last")) {
+  /* sample and min / max answer one of the elements too, in their
+     zero-argument form (with a count they answer a new Array) */
+  if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample") ||
+      sp_streq(nm, "min") || sp_streq(nm, "max")) {
     int a = nt_ref(nt, id, "arguments");
     int n = 0;
     if (a >= 0) nt_arr(nt, a, "arguments", &n);
