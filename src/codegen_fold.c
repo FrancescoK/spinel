@@ -1418,7 +1418,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc != 1) return 0;
   int reidx = re_lit_index(c, argv[0]);
-  int strpat = 0, dynre = 0;
+  int strpat = 0, dynre = 0, polypat = 0;
   if (reidx < 0) {
     /* a Regexp VALUE (a parameter, a reader, a local): the compiled pattern
        itself at C level, hoisted once and scanned with like a literal's.
@@ -1429,6 +1429,10 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     /* a plain-String pattern: the same scan loop, matching by strstr (an
        empty needle degenerates to the zero-width branch, like CRuby) */
     else if (comp_ntype(c, argv[0]) == TY_STRING) strpat = 1;
+    /* a pattern that is a Regexp or a String only at run time (an element
+       of a mixed array, a splat read back out of one): both scans, the tag
+       picking one, as sp_poly_pat_gsub does for the replacement form */
+    else if (comp_ntype(c, argv[0]) == TY_POLY) polypat = 1;
     else return 0;
   }
   const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
@@ -1460,7 +1464,28 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d);\n", tslen, ts);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
   int tnd = 0, tnl = 0, tre = 0;
-  if (dynre) {
+  if (polypat) {
+    int tp = ++g_tmp;
+    tre = ++g_tmp; tnd = ++g_tmp; tnl = ++g_tmp;
+    Buf pb; memset(&pb, 0, sizeof pb); emit_boxed(c, argv[0], &pb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tp, pb.p ? pb.p : "sp_box_nil()");
+    free(pb.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX ? (mrb_regexp_pattern *)_t%d.v.p : NULL;\n",
+               tre, tp, tp, tp);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = _t%d || !(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? NULL : sp_poly_recv_s(_t%d, \"%s\");\n",
+               tnd, tre, tp, tp, tp, name);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (!_t%d && !_t%d) sp_raise_cls(\"TypeError\", sp_sprintf(\"wrong argument type %%s (expected Regexp)\", sp_poly_class_name(_t%d)));\n",
+               tre, tnd, tp);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT_STR(_t%d);\n", tnd);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_int _t%d = _t%d ? (sp_int)sp_str_byte_len(_t%d) : 0;\n", tnl, tnd, tnd);
+  }
+  else if (dynre) {
     tre = ++g_tmp;
     Buf pb; memset(&pb, 0, sizeof pb); emit_expr(c, argv[0], &pb);
     emit_indent(g_pre, g_indent);
@@ -1486,7 +1511,12 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   const char *re_next = g_reads_match_regs ? "sp_re_match_next" : "sp_re_match_at";
   if (g_reads_match_regs) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_re_clear_last_match();\n"); }
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d <= _t%d) {\n", tpos, tslen);
-  if (strpat) {
+  if (polypat) {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_int _t%d = _t%d ? %s(_t%d, _t%d, _t%d) : ({ const char *_h = strstr(_t%d + _t%d, _t%d); _h ? (sp_int)(_h - (_t%d + _t%d)) : (sp_int)-1; });\n",
+               tm, tre, re_next, tre, ts, tpos, ts, tpos, tnd, ts, tpos);
+  }
+  else if (strpat) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_int _t%d = ({ const char *_h = strstr(_t%d + _t%d, _t%d); _h ? (sp_int)(_h - (_t%d + _t%d)) : (sp_int)-1; });\n",
                tm, ts, tpos, tnd, ts, tpos);
@@ -1499,7 +1529,17 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   }
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d < 0) { sp_String_append_bin(_t%d, _t%d + _t%d); break; }\n", tm, tout, ts, tpos);
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_re_sub_matched = 1;\n");   /* the bang forms' nil contract */
-  if (strpat) {
+  if (polypat) {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_int _t%d = _t%d ? sp_re_caps[0] - _t%d : _t%d;\n", tms, tre, tpos, tm);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_int _t%d = _t%d ? sp_re_caps[1] - _t%d : _t%d + _t%d;\n", tme, tre, tpos, tm, tnl);
+    if (g_reads_match_regs) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (!_t%d) sp_re_set_lit_match(_t%d, _t%d + _t%d, _t%d + _t%d);\n", tre, ts, tpos, tms, tpos, tme);
+    }
+  }
+  else if (strpat) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d;\n", tms, tm);
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_int _t%d = _t%d + _t%d;\n", tme, tm, tnl);
     if (g_reads_match_regs) {

@@ -26206,7 +26206,7 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
      refuse with the arity error (emit_int_expr_ex). */
   static const struct { const char *name; int lo, hi, variadic; } tab[] = {
     { "fetch", 1, 2, 0 }, { "store", 2, 2, 0 }, { "delete", 1, 8, 1 }, { "insert", 1, 8, 1 },
-    { "sub", 2, 2, 0 }, { "sub!", 2, 2, 0 }, { "gsub", 2, 2, 0 }, { "gsub!", 2, 2, 0 },
+    { "sub", 2, 2, 0 }, { "sub!", 2, 2, 0 }, { "gsub", 1, 2, 0 }, { "gsub!", 1, 2, 0 },
     { "[]", 1, 2, 0 }, { "[]=", 2, 3, 0 },
     { "key?", 1, 1, 0 }, { "has_key?", 1, 1, 0 }, { "include?", 1, 1, 0 },
     { "member?", 1, 1, 0 }, { "value?", 1, 1, 0 }, { "has_value?", 1, 1, 0 },
@@ -26265,7 +26265,14 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   const char *cnm = nt_str(nt, id, "name");
   int lo, hi, variadic;
   if (!cnm || !splat_builtin_range(cnm, &lo, &hi, &variadic)) return 0;
-  if (nt_ref(nt, id, "block") >= 0) return 0;
+  /* A block goes on one arm only. The substitutions take it at one
+     argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
+     beside a replacement, as CRuby does, so their two-argument arm is the
+     blockless call. Any other name keeps its splat. */
+  int blk = nt_ref(nt, id, "block");
+  int subst = sp_streq(cnm, "sub") || sp_streq(cnm, "sub!") || sp_streq(cnm, "gsub") || sp_streq(cnm, "gsub!");
+  if (blk >= 0 && !subst) return 0;
+  if (blk >= 0) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
   const char *cop = nt_str(nt, id, "call_operator");
@@ -26472,13 +26479,31 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, cl, "vis_enforce", "1");
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
-    nt_node_set_ref(nt, cl, "block", -1);
+    nt_node_set_ref(nt, cl, "block", blk >= 0 && m == 1 ? blk : -1);
     int an = -1;
     if (m > 0) {
       an = nt_new_node(nt, "ArgumentsNode");
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
+    /* gsub!(pattern) with no block answers an Enumerator whose each edits
+       the receiver, which spinel does not build: say so at the one count
+       that needs it rather than raising CRuby's ArgumentError for a call
+       CRuby takes */
+    if (blk < 0 && m == 1 && sp_streq(cnm, "gsub!")) {
+      int ncn = nt_new_node(nt, "ConstantReadNode");
+      nt_node_set_str(nt, ncn, "name", "NotImplementedError");
+      int nmn = nt_new_node(nt, "StringNode");
+      nt_node_set_str(nt, nmn, "content", "spinel: gsub! with a pattern alone and no block (an Enumerator) is not supported");
+      int na[2] = { ncn, nmn };
+      int nargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, nargs, "arguments", na, 2);
+      cl = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, cl, "name", "raise");
+      nt_node_set_ref(nt, cl, "receiver", -1);
+      nt_node_set_ref(nt, cl, "arguments", nargs);
+      nt_node_set_ref(nt, cl, "block", -1);
+    }
     int ard = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ard, "name", anm);
     nt_node_set_int(nt, ard, "depth", adepth);

@@ -3692,9 +3692,13 @@ static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, cons
       if (infer_type(c, argv[0]) == TY_POLY) { *out = TY_POLY_ARRAY; return 1; }
       { *out = TY_STR_ARRAY; return 1; }
     }
+    /* blockless gsub(pattern): an Enumerator of matches, for a literal or a
+       pattern held in a value (a Regexp, a String, or either one boxed) */
     if (sp_streq(name, "gsub") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
-      { *out = TY_ENUMERATOR; return 1; }  /* blockless gsub(/re/): an Enumerator of matches */
+        ((nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode")) ||
+         infer_type(c, argv[0]) == TY_REGEX || infer_type(c, argv[0]) == TY_STRING ||
+         infer_type(c, argv[0]) == TY_POLY))
+      { *out = TY_ENUMERATOR; return 1; }
     if (sp_streq(name, "gsub")) { *out = TY_STRING; return 1; }
   }
   return 0;

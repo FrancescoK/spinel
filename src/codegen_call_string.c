@@ -127,17 +127,27 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   }
   /* str.gsub(/re/) with no block/replacement -> an Enumerator over the
      matches (the same items scan yields). */
+  /* The same for a pattern held in a value: a Regexp, a String, or either
+     one boxed (a splat's element read back out of a mixed array), scanned
+     by the helper scan takes for it. */
   if (recv >= 0 && rt == TY_STRING && argc == 1 && sp_streq(name, "gsub") &&
-      nt_ref(nt, id, "block") < 0 && re_lit_index(c, argv[0]) >= 0) {
+      nt_ref(nt, id, "block") < 0) {
     int gre = re_lit_index(c, argv[0]);
+    TyKind pt = comp_ntype(c, argv[0]);
+    if (gre < 0 && pt != TY_REGEX && pt != TY_STRING && pt != TY_POLY) goto no_gsub_enum;
     int tsg = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsg);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); "
-                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(sp_re_scan(sp_re_pat_%d, _t%d))), "
-                  "sp_box_str(_t%d), SPL(\"gsub\")); })", tsg, gre, tsg, tsg);
+                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(", tsg);
+    if (gre >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", gre, tsg);
+    else if (pt == TY_REGEX) { buf_puts(b, "sp_re_scan("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d)", tsg); }
+    else if (pt == TY_STRING) { buf_printf(b, "sp_str_scan(_t%d, ", tsg); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else { buf_printf(b, "sp_scan_boxed(_t%d, ", tsg); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+    buf_printf(b, ")), sp_box_str(_t%d), SPL(\"gsub\")); })", tsg);
     return 1;
   }
+no_gsub_enum:
   /* Object receivers (incl. native-bound classes like StringScanner) dispatch
      their own match?/match methods; only string-ish receivers belong here. */
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && rt != TY_NIL && !ty_is_object(rt) &&
