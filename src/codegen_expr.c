@@ -2689,6 +2689,283 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   return 0;
 }
 
+/* An Array or Hash literal ([...], {...}, a keyword hash) (emit_expr_node's arms, in their order) */
+static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (sp_streq(ty, "ArrayNode")) {
+    int n = 0;
+    const int *els = nt_arr(nt, id, "elements", &n);
+    TyKind at = comp_ntype(c, id);
+    /* an empty `[]` literal carries no element type of its own; it is
+       emitted via the target's type in emit_assign. If we reach here for
+       an empty literal, use g_ret_type context (e.g. tail position in a
+       poly_array-returning method) before falling back to int array. */
+    if (n == 0 && at == TY_UNKNOWN && ty_is_array(g_ret_type)) at = g_ret_type;
+    const char *k = array_kind(at);
+    if (n == 0 && !k && at != TY_POLY_ARRAY) { buf_puts(b, "sp_IntArray_new()"); return 1; }
+    /* poly (mixed-element) array: build an sp_PolyArray of boxed elements */
+    if (at == TY_POLY_ARRAY) {
+      int t = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", t);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+      for (int j = 0; j < n; j++) {
+        const char *ety = nt_type(nt, els[j]);
+        if (ety && sp_streq(ety, "SplatNode")) {
+          /* [*arr] or [*range] -- expand into poly */
+          int inner = nt_ref(nt, els[j], "expression");
+          if (is_empty_array_lit(nt, inner)) continue;
+          TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+          Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
+          const char *ep = el.p ? el.p : "NULL";
+          emit_indent(g_pre, g_indent);
+          if (it == TY_RANGE || it == TY_STR_RANGE) {
+            /* check if it's a string range (bounds are TY_STRING) */
+            int rn = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
+            int rlo = rn >= 0 ? nt_ref(nt, rn, "left") : -1;
+            int rhi = rn >= 0 ? nt_ref(nt, rn, "right") : -1;
+            int rexcl = rn >= 0 ? (int)(nt_int(nt, rn, "flags", 0) & 4) : 0;
+            if (rlo >= 0 && comp_ntype(c, rlo) == TY_STRING) {
+              Buf lo_b; memset(&lo_b, 0, sizeof lo_b); emit_expr(c, rlo, &lo_b);
+              Buf hi_b; memset(&hi_b, 0, sizeof hi_b); emit_expr(c, rhi, &hi_b);
+              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n",
+                         lo_b.p ? lo_b.p : "NULL", hi_b.p ? hi_b.p : "NULL", rexcl, t);
+              free(lo_b.p); free(hi_b.p);
+            }
+            else {
+              buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, t);
+            }
+          }
+          else if (it == TY_INT_ARRAY) {
+            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
+            buf_printf(g_pre, "{ sp_IntArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_sa->start+_si])); }\n",
+                       ep, nf.p, t, typed_elem_box_fn(it));
+            free(nf.p);
+          }
+          else if (it == TY_STR_ARRAY)
+            buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
+          else if (it == TY_FLOAT_ARRAY) {
+            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
+            buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_si])); }\n",
+                       ep, nf.p, t, typed_elem_box_fn(it));
+            free(nf.p);
+          }
+          else if (it == TY_POLY_ARRAY)
+            buf_printf(g_pre, "{ sp_PolyArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
+          else if (it == TY_POLY)
+            /* `*poly`: whether it holds an array is only known at runtime, so
+               splice one level if it is an array, drop nil, else push as-is
+               (CRuby splat semantics). */
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_sv.cls_id)) _sv = sp_box_poly_array(sp_poly_to_a_arr(_sv)); if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
+          else if (it == TY_NIL)
+            /* a statically-nil splat contributes nothing (`[*nil]` == []) */
+            buf_printf(g_pre, ";\n");
+          /* a nullable Integer or Float holding its sentinel is that nil */
+          else if ((it == TY_INT || it == TY_FLOAT) && call_returns_nullable_int(c, inner)) {
+            Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx);
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag != SP_TAG_NIL) sp_PolyArray_push(_t%d, _sv); }\n",
+                       bx.p ? bx.p : "sp_box_nil()", t);
+            free(bx.p);
+          }
+          else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+          free(el.p);
+        }
+else {
+          Buf el; memset(&el, 0, sizeof el);
+          emit_boxed(c, els[j], &el);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
+          buf_puts(g_pre, el.p ? el.p : "");
+          buf_puts(g_pre, ");\n");
+          free(el.p);
+        }
+      }
+      buf_printf(b, "_t%d", t);
+      return 1;
+    }
+    if (!k) unsupported(c, id, "array literal (element type)");
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, t, k);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+    for (int j = 0; j < n; j++) {
+      const char *ety = nt_type(nt, els[j]);
+      if (ety && sp_streq(ety, "SplatNode")) {
+        /* [*range] or [*arr] inside a typed array literal */
+        int inner = nt_ref(nt, els[j], "expression");
+        if (is_empty_array_lit(nt, inner)) continue;
+        TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+        Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
+        const char *ep = el.p ? el.p : "NULL";
+        emit_indent(g_pre, g_indent);
+        if (it == TY_RANGE || it == TY_STR_RANGE) {
+          int rn2 = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
+          int rlo2 = rn2 >= 0 ? nt_ref(nt, rn2, "left") : -1;
+          int rexcl2 = rn2 >= 0 ? (int)(nt_int(nt, rn2, "flags", 0) & 4) : 0;
+          if (rlo2 >= 0 && comp_ntype(c, rlo2) == TY_STRING) {
+            int rhi2 = nt_ref(nt, rn2, "right");
+            Buf lo2; memset(&lo2, 0, sizeof lo2); emit_expr(c, rlo2, &lo2);
+            Buf hi2; memset(&hi2, 0, sizeof hi2); emit_expr(c, rhi2, &hi2);
+            buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n",
+                       lo2.p ? lo2.p : "NULL", hi2.p ? hi2.p : "NULL", rexcl2, k, t);
+            free(lo2.p); free(hi2.p);
+          }
+          else {
+            buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_%sArray_push(_t%d, _si); }\n", ep, k, t);
+          }
+        }
+        else if (it == TY_INT_ARRAY && sp_streq(k, "Int"))
+          buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); sp_IntArray_nil_from(_t%d, _sa); }\n", ep, k, t, t);
+        else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
+          buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
+        else if (it == TY_FLOAT_ARRAY && sp_streq(k, "Float"))
+          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); sp_FloatArray_nil_from(_t%d, _sa); }\n", ep, t, t);
+        else if (it == TY_NIL)
+          /* a statically-nil splat contributes nothing (`[*nil]` == []) */
+          buf_printf(g_pre, ";\n");
+        /* nor does a nullable Integer or Float holding its sentinel */
+        else if (((it == TY_INT && sp_streq(k, "Int")) || (it == TY_FLOAT && sp_streq(k, "Float"))) &&
+                 call_returns_nullable_int(c, inner)) {
+          Buf nz; memset(&nz, 0, sizeof nz);
+          emit_slot_truthy(it, "_sv", &nz);
+          buf_printf(g_pre, "{ %s _sv = %s; if %s sp_%sArray_push(_t%d, _sv); }\n",
+                     it == TY_INT ? "sp_int" : "sp_float", ep, nz.p, k, t);
+          free(nz.p);
+        }
+        else {
+          /* Mismatched or unknown element type: emit_expr fallback */
+          buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, nil_store_sfx(c, k, inner), t, ep);
+        }
+        free(el.p);
+      }
+else {
+        Buf el; memset(&el, 0, sizeof el);
+        /* element preludes flow to g_pre first; an untyped element (a raise
+           token, a void call) is coerced to the element type */
+        if (comp_ntype(c, els[j]) == TY_UNKNOWN) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
+        else emit_coerce(c, els[j], ty_array_elem(at), CO_HOLD, "an Array literal's element", &el);
+        emit_indent(g_pre, g_indent);
+        /* an element that can be nil sets the literal's may_nil */
+        buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, els[j]), t);
+        buf_puts(g_pre, el.p ? el.p : "");
+        buf_puts(g_pre, ");\n");
+        free(el.p);
+      }
+    }
+    buf_printf(b, "_t%d", t);
+    return 1;
+  }
+  if (sp_streq(ty, "HashNode") || sp_streq(ty, "KeywordHashNode")) {
+    TyKind ht = comp_ntype(c, id);
+    const char *hn = ty_hash_cname(ht);
+    if (!hn) {
+      /* Empty `{}` with unknown type: fall back to StrPolyHash */
+      int ne2 = 0; nt_arr(nt, id, "elements", &ne2);
+      if (ne2 == 0) hn = "StrPoly";
+      else unsupported(c, id, "hash literal (key/value type)");
+    }
+    int n = 0;
+    const int *els = nt_arr(nt, id, "elements", &n);
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new();\n", hn, t, hn);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+    int sym_poly = (ht == TY_SYM_POLY_HASH || ht == TY_STR_POLY_HASH);
+    int poly_poly = (ht == TY_POLY_POLY_HASH);
+    for (int j = 0; j < n; j++) {
+      const char *ety = nt_type(nt, els[j]);
+      if (kwh_elem_dropped(nt, id, j)) { emit_dropped_value(c, nt_ref(nt, els[j], "value"), g_pre); continue; }
+      if (ety && sp_streq(ety, "AssocSplatNode")) {
+        /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
+           the splat is emitted before the explicit assocs, so a following key
+           overrides the merged one (Ruby's last-wins). Only a same-variant
+           source merges directly; a differently-typed spread is rejected loudly
+           rather than emitting a layout-mismatching update. */
+        int src = nt_ref(nt, els[j], "value");
+        TyKind sh = src >= 0 ? comp_ntype(c, src) : TY_UNKNOWN;
+        const char *shn = ty_hash_cname(sh);
+        int nsrc = -1;
+        if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
+        /* `**{}` adds nothing */
+        if (nsrc == 0) continue;
+        if (src >= 0 && (sh == TY_NIL || kw_splat_checked_boxed(c, src) || kw_splat_raises(c, src))) {
+          /* `**nil`, `**true`, `**1`, which inference takes for a spread of
+             nothing: the operand runs where it stands and converts, raising
+             CRuby's TypeError unless it is nil -- or it already has, ahead of
+             the call's keywords (emit_ds_hash_materialize), and reads as
+             nothing here */
+          int ran = nt_kind(nt, src) == NK_NilNode;
+          for (int i = 0; i < g_n_argov && !ran; i++) ran = g_argov_node[i] == src;
+          if (!ran) {
+            Buf sb; memset(&sb, 0, sizeof sb); emit_kw_splat_operand_inline(c, src, &sb);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "%s\n", sb.p ? sb.p : "");
+            free(sb.p);
+          }
+          continue;
+        }
+        if (shn && sp_streq(shn, hn)) {
+          /* same-variant source: a direct typed merge. */
+          Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_%sHash_update(_t%d, %s);\n", hn, t, sb.p ? sb.p : "");
+          free(sb.p);
+        }
+        else if ((sh == TY_POLY || shn) && poly_poly) {
+          /* a poly spread source, or a hash of another variant, into a
+             poly-poly literal: its boxed (key,value) pairs set at run time
+             (any hash variant). nil spreads nothing, and anything else
+             converts through its #to_hash or raises CRuby's TypeError
+             (sp_kw_merge_any): the walk alone took a user object or an
+             Integer for no pairs at all. */
+          int st = ++g_tmp;
+          Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
+          free(sb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
+        }
+        else {
+          unsupported(c, id, "hash double-splat of an unmergeable source"); return 1;
+        }
+        continue;
+      }
+      int key = nt_ref(nt, els[j], "key");
+      int val = nt_ref(nt, els[j], "value");
+      Buf kb; memset(&kb, 0, sizeof kb);
+      if (poly_poly) emit_boxed(c, key, &kb);
+      else if (ty_is_hash(ht)) emit_coerce(c, key, ty_hash_key(ht), CO_HOLD, "a Hash literal's key", &kb);
+      else emit_expr(c, key, &kb);
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (sym_poly || poly_poly) emit_boxed(c, val, &vb);
+      else if (ty_is_hash(ht)) emit_coerce(c, val, ty_hash_val(ht), CO_HOLD, "a Hash literal's value", &vb);
+      else emit_expr(c, val, &vb);
+      emit_indent(g_pre, g_indent);
+      /* A pair's key and value are the set's sibling arguments, as a store's
+         are: a key that can allocate goes into a rooted temp ahead of the
+         value's build, as the store arm's does. */
+      int tk = -1;
+      if (ty_is_hash(ht) && subtree_may_allocate(nt, key)) {
+        TyKind kt = ty_hash_key(ht);
+        tk = ++g_tmp;
+        buf_printf(g_pre, "{ %s _t%d = %s; ", c_type_name(kt), tk, kb.p ? kb.p : "");
+        if (needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, g_pre); buf_puts(g_pre, " "); }
+      }
+      buf_printf(g_pre, "sp_%sHash_set(_t%d, ", hn, t);
+      if (tk >= 0) buf_printf(g_pre, "_t%d", tk); else buf_puts(g_pre, kb.p ? kb.p : "");
+      buf_puts(g_pre, ", "); buf_puts(g_pre, vb.p ? vb.p : "");
+      buf_puts(g_pre, tk >= 0 ? "); }\n" : ");\n");
+      free(kb.p); free(vb.p);
+    }
+    buf_printf(b, "_t%d", t);
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3410,278 +3687,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     return;
   }
-  if (sp_streq(ty, "ArrayNode")) {
-    int n = 0;
-    const int *els = nt_arr(nt, id, "elements", &n);
-    TyKind at = comp_ntype(c, id);
-    /* an empty `[]` literal carries no element type of its own; it is
-       emitted via the target's type in emit_assign. If we reach here for
-       an empty literal, use g_ret_type context (e.g. tail position in a
-       poly_array-returning method) before falling back to int array. */
-    if (n == 0 && at == TY_UNKNOWN && ty_is_array(g_ret_type)) at = g_ret_type;
-    const char *k = array_kind(at);
-    if (n == 0 && !k && at != TY_POLY_ARRAY) { buf_puts(b, "sp_IntArray_new()"); return; }
-    /* poly (mixed-element) array: build an sp_PolyArray of boxed elements */
-    if (at == TY_POLY_ARRAY) {
-      int t = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", t);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-      for (int j = 0; j < n; j++) {
-        const char *ety = nt_type(nt, els[j]);
-        if (ety && sp_streq(ety, "SplatNode")) {
-          /* [*arr] or [*range] -- expand into poly */
-          int inner = nt_ref(nt, els[j], "expression");
-          if (is_empty_array_lit(nt, inner)) continue;
-          TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
-          Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
-          const char *ep = el.p ? el.p : "NULL";
-          emit_indent(g_pre, g_indent);
-          if (it == TY_RANGE || it == TY_STR_RANGE) {
-            /* check if it's a string range (bounds are TY_STRING) */
-            int rn = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
-            int rlo = rn >= 0 ? nt_ref(nt, rn, "left") : -1;
-            int rhi = rn >= 0 ? nt_ref(nt, rn, "right") : -1;
-            int rexcl = rn >= 0 ? (int)(nt_int(nt, rn, "flags", 0) & 4) : 0;
-            if (rlo >= 0 && comp_ntype(c, rlo) == TY_STRING) {
-              Buf lo_b; memset(&lo_b, 0, sizeof lo_b); emit_expr(c, rlo, &lo_b);
-              Buf hi_b; memset(&hi_b, 0, sizeof hi_b); emit_expr(c, rhi, &hi_b);
-              buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n",
-                         lo_b.p ? lo_b.p : "NULL", hi_b.p ? hi_b.p : "NULL", rexcl, t);
-              free(lo_b.p); free(hi_b.p);
-            }
-            else {
-              buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, t);
-            }
-          }
-          else if (it == TY_INT_ARRAY) {
-            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
-            buf_printf(g_pre, "{ sp_IntArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_sa->start+_si])); }\n",
-                       ep, nf.p, t, typed_elem_box_fn(it));
-            free(nf.p);
-          }
-          else if (it == TY_STR_ARRAY)
-            buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
-          else if (it == TY_FLOAT_ARRAY) {
-            Buf nf; memset(&nf, 0, sizeof nf); emit_may_nil_text(c, inner, it, "_sa", &nf);
-            buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; int _snf = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, %s(_snf, _sa->data[_si])); }\n",
-                       ep, nf.p, t, typed_elem_box_fn(it));
-            free(nf.p);
-          }
-          else if (it == TY_POLY_ARRAY)
-            buf_printf(g_pre, "{ sp_PolyArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
-          else if (it == TY_POLY)
-            /* `*poly`: whether it holds an array is only known at runtime, so
-               splice one level if it is an array, drop nil, else push as-is
-               (CRuby splat semantics). */
-            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_sv.cls_id)) _sv = sp_box_poly_array(sp_poly_to_a_arr(_sv)); if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
-          else if (it == TY_NIL)
-            /* a statically-nil splat contributes nothing (`[*nil]` == []) */
-            buf_printf(g_pre, ";\n");
-          /* a nullable Integer or Float holding its sentinel is that nil */
-          else if ((it == TY_INT || it == TY_FLOAT) && call_returns_nullable_int(c, inner)) {
-            Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx);
-            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (_sv.tag != SP_TAG_NIL) sp_PolyArray_push(_t%d, _sv); }\n",
-                       bx.p ? bx.p : "sp_box_nil()", t);
-            free(bx.p);
-          }
-          else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
-          free(el.p);
-        }
-else {
-          Buf el; memset(&el, 0, sizeof el);
-          emit_boxed(c, els[j], &el);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
-          buf_puts(g_pre, el.p ? el.p : "");
-          buf_puts(g_pre, ");\n");
-          free(el.p);
-        }
-      }
-      buf_printf(b, "_t%d", t);
-      return;
-    }
-    if (!k) unsupported(c, id, "array literal (element type)");
-    int t = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, t, k);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-    for (int j = 0; j < n; j++) {
-      const char *ety = nt_type(nt, els[j]);
-      if (ety && sp_streq(ety, "SplatNode")) {
-        /* [*range] or [*arr] inside a typed array literal */
-        int inner = nt_ref(nt, els[j], "expression");
-        if (is_empty_array_lit(nt, inner)) continue;
-        TyKind it = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
-        Buf el; memset(&el, 0, sizeof el); emit_expr(c, inner, &el);
-        const char *ep = el.p ? el.p : "NULL";
-        emit_indent(g_pre, g_indent);
-        if (it == TY_RANGE || it == TY_STR_RANGE) {
-          int rn2 = nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "RangeNode") ? inner : -1;
-          int rlo2 = rn2 >= 0 ? nt_ref(nt, rn2, "left") : -1;
-          int rexcl2 = rn2 >= 0 ? (int)(nt_int(nt, rn2, "flags", 0) & 4) : 0;
-          if (rlo2 >= 0 && comp_ntype(c, rlo2) == TY_STRING) {
-            int rhi2 = nt_ref(nt, rn2, "right");
-            Buf lo2; memset(&lo2, 0, sizeof lo2); emit_expr(c, rlo2, &lo2);
-            Buf hi2; memset(&hi2, 0, sizeof hi2); emit_expr(c, rhi2, &hi2);
-            buf_printf(g_pre, "{ sp_StrArray *_sa = sp_StrArray_from_string_range(%s, %s, %d); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n",
-                       lo2.p ? lo2.p : "NULL", hi2.p ? hi2.p : "NULL", rexcl2, k, t);
-            free(lo2.p); free(hi2.p);
-          }
-          else {
-            buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_%sArray_push(_t%d, _si); }\n", ep, k, t);
-          }
-        }
-        else if (it == TY_INT_ARRAY && sp_streq(k, "Int"))
-          buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); sp_IntArray_nil_from(_t%d, _sa); }\n", ep, k, t, t);
-        else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
-          buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
-        else if (it == TY_FLOAT_ARRAY && sp_streq(k, "Float"))
-          buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_FloatArray_push(_t%d, _sa->data[_si]); sp_FloatArray_nil_from(_t%d, _sa); }\n", ep, t, t);
-        else if (it == TY_NIL)
-          /* a statically-nil splat contributes nothing (`[*nil]` == []) */
-          buf_printf(g_pre, ";\n");
-        /* nor does a nullable Integer or Float holding its sentinel */
-        else if (((it == TY_INT && sp_streq(k, "Int")) || (it == TY_FLOAT && sp_streq(k, "Float"))) &&
-                 call_returns_nullable_int(c, inner)) {
-          Buf nz; memset(&nz, 0, sizeof nz);
-          emit_slot_truthy(it, "_sv", &nz);
-          buf_printf(g_pre, "{ %s _sv = %s; if %s sp_%sArray_push(_t%d, _sv); }\n",
-                     it == TY_INT ? "sp_int" : "sp_float", ep, nz.p, k, t);
-          free(nz.p);
-        }
-        else {
-          /* Mismatched or unknown element type: emit_expr fallback */
-          buf_printf(g_pre, "sp_%sArray_push%s(_t%d, %s);\n", k, nil_store_sfx(c, k, inner), t, ep);
-        }
-        free(el.p);
-      }
-else {
-        Buf el; memset(&el, 0, sizeof el);
-        /* element preludes flow to g_pre first; an untyped element (a raise
-           token, a void call) is coerced to the element type */
-        if (comp_ntype(c, els[j]) == TY_UNKNOWN) emit_unresolved_coerced(c, els[j], ty_array_elem(at), &el);
-        else emit_coerce(c, els[j], ty_array_elem(at), CO_HOLD, "an Array literal's element", &el);
-        emit_indent(g_pre, g_indent);
-        /* an element that can be nil sets the literal's may_nil */
-        buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, els[j]), t);
-        buf_puts(g_pre, el.p ? el.p : "");
-        buf_puts(g_pre, ");\n");
-        free(el.p);
-      }
-    }
-    buf_printf(b, "_t%d", t);
-    return;
-  }
-  if (sp_streq(ty, "HashNode") || sp_streq(ty, "KeywordHashNode")) {
-    TyKind ht = comp_ntype(c, id);
-    const char *hn = ty_hash_cname(ht);
-    if (!hn) {
-      /* Empty `{}` with unknown type: fall back to StrPolyHash */
-      int ne2 = 0; nt_arr(nt, id, "elements", &ne2);
-      if (ne2 == 0) hn = "StrPoly";
-      else unsupported(c, id, "hash literal (key/value type)");
-    }
-    int n = 0;
-    const int *els = nt_arr(nt, id, "elements", &n);
-    int t = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new();\n", hn, t, hn);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-    int sym_poly = (ht == TY_SYM_POLY_HASH || ht == TY_STR_POLY_HASH);
-    int poly_poly = (ht == TY_POLY_POLY_HASH);
-    for (int j = 0; j < n; j++) {
-      const char *ety = nt_type(nt, els[j]);
-      if (kwh_elem_dropped(nt, id, j)) { emit_dropped_value(c, nt_ref(nt, els[j], "value"), g_pre); continue; }
-      if (ety && sp_streq(ety, "AssocSplatNode")) {
-        /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
-           the splat is emitted before the explicit assocs, so a following key
-           overrides the merged one (Ruby's last-wins). Only a same-variant
-           source merges directly; a differently-typed spread is rejected loudly
-           rather than emitting a layout-mismatching update. */
-        int src = nt_ref(nt, els[j], "value");
-        TyKind sh = src >= 0 ? comp_ntype(c, src) : TY_UNKNOWN;
-        const char *shn = ty_hash_cname(sh);
-        int nsrc = -1;
-        if (sh == TY_UNKNOWN && src >= 0 && nt_kind(nt, src) == NK_HashNode) nt_arr(nt, src, "elements", &nsrc);
-        /* `**{}` adds nothing */
-        if (nsrc == 0) continue;
-        if (src >= 0 && (sh == TY_NIL || kw_splat_checked_boxed(c, src) || kw_splat_raises(c, src))) {
-          /* `**nil`, `**true`, `**1`, which inference takes for a spread of
-             nothing: the operand runs where it stands and converts, raising
-             CRuby's TypeError unless it is nil -- or it already has, ahead of
-             the call's keywords (emit_ds_hash_materialize), and reads as
-             nothing here */
-          int ran = nt_kind(nt, src) == NK_NilNode;
-          for (int i = 0; i < g_n_argov && !ran; i++) ran = g_argov_node[i] == src;
-          if (!ran) {
-            Buf sb; memset(&sb, 0, sizeof sb); emit_kw_splat_operand_inline(c, src, &sb);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "%s\n", sb.p ? sb.p : "");
-            free(sb.p);
-          }
-          continue;
-        }
-        if (shn && sp_streq(shn, hn)) {
-          /* same-variant source: a direct typed merge. */
-          Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_%sHash_update(_t%d, %s);\n", hn, t, sb.p ? sb.p : "");
-          free(sb.p);
-        }
-        else if ((sh == TY_POLY || shn) && poly_poly) {
-          /* a poly spread source, or a hash of another variant, into a
-             poly-poly literal: its boxed (key,value) pairs set at run time
-             (any hash variant). nil spreads nothing, and anything else
-             converts through its #to_hash or raises CRuby's TypeError
-             (sp_kw_merge_any): the walk alone took a user object or an
-             Integer for no pairs at all. */
-          int st = ++g_tmp;
-          Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
-          free(sb.p);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
-        }
-        else {
-          unsupported(c, id, "hash double-splat of an unmergeable source"); return;
-        }
-        continue;
-      }
-      int key = nt_ref(nt, els[j], "key");
-      int val = nt_ref(nt, els[j], "value");
-      Buf kb; memset(&kb, 0, sizeof kb);
-      if (poly_poly) emit_boxed(c, key, &kb);
-      else if (ty_is_hash(ht)) emit_coerce(c, key, ty_hash_key(ht), CO_HOLD, "a Hash literal's key", &kb);
-      else emit_expr(c, key, &kb);
-      Buf vb; memset(&vb, 0, sizeof vb);
-      if (sym_poly || poly_poly) emit_boxed(c, val, &vb);
-      else if (ty_is_hash(ht)) emit_coerce(c, val, ty_hash_val(ht), CO_HOLD, "a Hash literal's value", &vb);
-      else emit_expr(c, val, &vb);
-      emit_indent(g_pre, g_indent);
-      /* A pair's key and value are the set's sibling arguments, as a store's
-         are: a key that can allocate goes into a rooted temp ahead of the
-         value's build, as the store arm's does. */
-      int tk = -1;
-      if (ty_is_hash(ht) && subtree_may_allocate(nt, key)) {
-        TyKind kt = ty_hash_key(ht);
-        tk = ++g_tmp;
-        buf_printf(g_pre, "{ %s _t%d = %s; ", c_type_name(kt), tk, kb.p ? kb.p : "");
-        if (needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, g_pre); buf_puts(g_pre, " "); }
-      }
-      buf_printf(g_pre, "sp_%sHash_set(_t%d, ", hn, t);
-      if (tk >= 0) buf_printf(g_pre, "_t%d", tk); else buf_puts(g_pre, kb.p ? kb.p : "");
-      buf_puts(g_pre, ", "); buf_puts(g_pre, vb.p ? vb.p : "");
-      buf_puts(g_pre, tk >= 0 ? "); }\n" : ");\n");
-      free(kb.p); free(vb.p);
-    }
-    buf_printf(b, "_t%d", t);
-    return;
-  }
+  if (emit_array_hash_literal_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
     /* if/unless as a value: a ternary when both branches are single
        value-expressions. Arm emission (boxing / empty-literal typing) lives
