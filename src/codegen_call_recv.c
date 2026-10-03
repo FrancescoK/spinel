@@ -11460,6 +11460,494 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* A zero-argument call on a boxed receiver (emit_poly_call's arms, in their order) */
+static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  if (!(recv >= 0 && rt == TY_POLY && argc == 0)) return 0;
+  /* Skip when a user class defines nil? so its method wins the dispatch --
+     the same reason the to_a arm below gives. A Null Object answering true
+     was folded to the tag test and its guard silently never fired. */
+  if (sp_streq(name, "nil?") && !user_defines_or_reads(c, name)) {
+    buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+  }
+  /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
+     pairs, anything else CRuby's NoMethodError. Skip when a user class
+     defines to_a so its method wins the dispatch. */
+  /* to_a / deconstruct on a poly value: for a Struct/Data both are the
+     member values in order (sp_poly_to_a_arr derives them from the to_h
+     hook); for an array/hash it is the elements/pairs. */
+  if ((sp_streq(name, "to_a") || sp_streq(name, "deconstruct")) && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
+      /* to_a itself also answers a Time's fields (sp_poly_to_a_call) */
+      buf_puts(b, sp_streq(name, "to_a") ? "sp_poly_to_a_call(" : "sp_poly_to_a_arr(");
+      emit_expr(c, recv, b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  /* entries on a poly value the inference typed an Array: the elements,
+     as a new Array, and nil's NoMethodError (sp_poly_entries). A user
+     class with a method or a reader of the name wins the dispatch. */
+  if (sp_streq(name, "entries") && nt_ref(nt, id, "block") < 0 &&
+      comp_ntype(c, id) == TY_POLY_ARRAY) {
+    if (!poly_name_user_claimed(c, name, argc, 1)) {
+      buf_puts(b, "sp_poly_entries("); emit_expr(c, recv, b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  /* Struct#members on a Struct/Data read out of a container. A class with
+     a reader of the name (an attr_reader, a member named `members`) takes
+     the dispatch instead, whose default still answers a Struct's names;
+     answered here, `room.members` read out of a Hash was the names. */
+  if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (!poly_name_user_claimed(c, "members", argc, 1)) {
+      /* a Class read out of the slot answers the class-side members list
+         through the generated sp_cls_members, when the program has it;
+         anything else answers through the instance helper */
+      if (g_gen_cls_answers) {
+        int tm = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tm);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_CLASS ? sp_cls_members(_t%d)"
+                      " : sp_poly_struct_members(_t%d); })", tm, tm, tm);
+        { *out = 1; return 1; }
+      }
+      buf_puts(b, "sp_poly_struct_members("); emit_expr(c, recv, b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
+     stayed poly). Skip when a user class defines keys/values so its method wins. */
+  if (sp_streq(name, "keys") || sp_streq(name, "values")) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
+      buf_printf(b, "sp_poly_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+    }
+  }
+  if (sp_streq(name, "count")) {
+    /* count / count(v) / count { |x| } on a boxed array (skip when any
+       user class defines count -- same rule as length below) */
+    int has_user_cnt = poly_name_user_claimed(c, "count", argc, 1);
+    int cblk = nt_ref(nt, id, "block");
+    if (!has_user_cnt && argc == 0 && cblk >= 0) {
+      int cbody = nt_ref(nt, cblk, "body");
+      int cbn = 0; const int *cbb = cbody >= 0 ? nt_arr(nt, cbody, "body", &cbn) : NULL;
+      const char *cp0 = block_param_name(c, cblk, 0);
+      const char *cp0r = cp0 ? rename_local(cp0) : NULL;
+      if (cbn >= 1) {
+        int tr = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+        free(rb.p);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_int _t%d = 0;\n", tc);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++) {\n", ti, ti, tr, ti);
+        {
+          /* sp_poly_each_elem, not a raw index: a boxed Hash renders each
+             entry as its [key, value] pair, which a two-parameter block
+             autosplats the way every sibling element loop does (#3448). */
+          char csrc[64]; snprintf(csrc, sizeof csrc, "sp_poly_each_elem(_t%d, _t%d)", tr, ti);
+          if (!emit_iter_autosplat(c, cblk, TY_POLY_ARRAY, csrc, g_indent + 1) && cp0r) {
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "lv_%s = %s;\n", cp0r, csrc);
+          }
+        }
+        int svind = g_indent; g_indent++;
+        for (int j = 0; j < cbn - 1; j++) emit_stmt(c, cbb[j], g_pre, g_indent);
+        /* Render the condition into its own buffer first: anything it has to
+           hoist (a rooted argument temp) is a STATEMENT, and appending it to
+           g_pre after "if (" was written put the declaration in the middle of
+           the expression. */
+        { Buf ccv; memset(&ccv, 0, sizeof ccv);
+          emit_boxed(c, cbb[cbn - 1], &ccv);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (sp_poly_truthy(%s)) _t%d++;\n",
+                     ccv.p ? ccv.p : "sp_box_nil()", tc);
+          free(ccv.p); }
+        g_indent = svind;
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", tc);
+        { *out = 1; return 1; }
+      }
+    }
+    if (!has_user_cnt && argc == 0 && cblk < 0) {
+      buf_puts(b, "sp_poly_count("); emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {
+    /* has_user_len must also consult comp_reader_in_chain: a user class's
+       `.size`/`.length` is very often an attr_reader/attr_accessor -- or a
+       Struct member, which registers the same way -- rather than a `def`
+       method. comp_method_in_chain alone missed those, so this branch took
+       the built-in-only sp_poly_length() path and silently returned 0 for
+       any object whose class exposes the name only as a reader (e.g. a
+       `Struct.new(:offset, :size, :name)` entry answering `.size`). */
+    /* The question is about the name being CALLED. Asking about `length`
+       for an `empty?` call sent every program that defines `length`
+       anywhere down the dispatch path, where nothing answers `empty?` --
+       so the call became an unconditional raise whatever the receiver was
+       (#3805). Defining `length` does not define `empty?` in Ruby either. */
+    int has_user_len = poly_name_user_claimed(c, name, argc, 1);
+    if (!has_user_len) {
+      if (sp_streq(name, "empty?")) {
+        /* A user object has no #empty? of its own here, and sp_poly_length
+           answers 0 for one, which would make every such object empty.
+           Raise instead, as Ruby does. */
+        buf_puts(b, "({ sp_RbVal _ep = "); emit_boxed(c, recv, b);
+        /* nil, a number and a boolean have none either, and read as empty
+           through the same 0 (#4485) */
+        buf_puts(b, "; sp_poly_coll_chk(_ep, \"empty?\");"
+                    " sp_poly_is_user_obj(_ep) ? (sp_raise_poly_nomethod(\"empty?\", _ep), 0)"
+                    " : (sp_poly_length(_ep) == 0); })");
+      }
+      else if (sp_streq(name, "size")) {
+        /* Integer#size is the byte width of the machine representation, not
+           a length; sp_poly_length has no arm for it and answered 0. */
+        buf_puts(b, "sp_poly_size("); emit_boxed(c, recv, b); buf_puts(b, ")");
+      }
+      else {
+        /* nil / a number / a user object has no #length: answering 0 turned a
+           NoMethodError into a silent zero (#3974) */
+        buf_puts(b, "sp_poly_length_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
+      }
+      { *out = 1; return 1; }
+    }
+  }
+  if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
+    int has_user_method = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_poly_arm_defines_n(c, k, name, argc)) { has_user_method = 1; break; }
+    if (!has_user_method) {
+      buf_printf(b, "%s(", sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect");
+      emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+    }
+  }
+  /* Same guard as #to_s above: a user class defining the conversion wins
+     through poly dispatch. sp_poly_to_i answers 0 for an object, so a
+     wrapper's `value.to_i` silently read zero. */
+  /* `to_int` is the same method by its other name (#2317): a boxed
+     Rational answered NoMethodError for it while answering to_i fine. */
+  if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "to_f")) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
+      /* sp_poly_to_i_meth / sp_poly_to_f_meth: this is the METHOD, named by
+         the program, so an object without it is NoMethodError rather than
+         the conversion protocol's TypeError, and nil.to_f is 0.0 */
+      buf_printf(b, "%s(", !sp_streq(name, "to_f")
+                            ? (comp_ntype(c, id) == TY_POLY ? "sp_poly_to_i_meth_v" : "sp_poly_to_i_meth")
+                            : "sp_poly_to_f_meth");
+      emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+    }
+  }
+  /* Complex#real / #imaginary on a poly value (a Complex read out of a
+     container). A user class defining the same name wins via poly dispatch. */
+  if ((sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
+       sp_streq(name, "conjugate") || sp_streq(name, "conj")) && argc == 0) {
+    if (!poly_name_user_claimed(c, name, argc, 1)) {
+      const char *pfn = sp_streq(name, "real") ? "sp_poly_real"
+                      : (sp_streq(name, "imaginary") || sp_streq(name, "imag")) ? "sp_poly_imaginary"
+                      : "sp_poly_conjugate";
+      buf_printf(b, "%s(", pfn);
+      emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+    }
+  }
+  /* Numeric#arg / #angle / #phase and #rect / #rectangular on a poly value,
+     answered as the typed arms answer them. A user method, reader or class
+     method of the same name wins via poly dispatch. */
+  if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
+       sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
+    int has_user = 0;
+    if (!g_poly_builtin_arm)
+    for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+      if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+          (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
+          comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user) {
+      buf_printf(b, "%s(", sp_streq(name, "rect") || sp_streq(name, "rectangular") ? "sp_poly_rect" : "sp_poly_arg");
+      emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); { *out = 1; return 1; }
+    }
+  }
+  /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
+     CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch.
+     `intern` answers as `to_sym` does on both, and stands aside, as the
+     arm did not exist for it before, wherever the dispatch reads the name
+     some other way: a user reader (an attr_reader, a Struct member) or an
+     OpenStruct member when ostruct is loaded (#3197). */
+  int intern_read = sp_streq(name, "intern") && (sp_feature_required("ostruct") || user_defines_or_reads(c, name));
+  if (sp_streq(name, "to_sym") || (sp_streq(name, "intern") && !intern_read)) {
+    if (!poly_name_user_claimed(c, name, argc, 0)) {
+      int t = ++g_tmp;
+      /* The arm yields a raw sp_sym. When the call's own slot is poly (a
+         case-result carrier, a boxed argument) it must be boxed HERE -- the
+         generic boxed-value emitter passes a poly-typed node through
+         untouched, so a raw scalar would land in an sp_RbVal slot (#3331). */
+      int box_sym = comp_ntype(c, id) == TY_POLY;
+      if (box_sym) buf_puts(b, "sp_box_sym(");
+      /* Root the boxed receiver: sp_sym_intern reads through the String's
+         data pointer and allocates, so a GC mid-intern could otherwise free
+         an unrooted temporary String out from under it. */
+      /* a shared-string handle is a String: deref it into the immediate
+         form the arm reads, or to_sym raised for it (#4279) */
+      buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", t); emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_STR ? sp_sym_intern_n(_t%d.v.s, sp_str_byte_len(_t%d.v.s))"
+                    " : (_t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i"
+                    " : (sp_raise_poly_nomethod(\"%s\", _t%d), (sp_sym)0)); })",
+                 t, t, t, t, t, t, name, t);
+      if (box_sym) buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
+  }
+  /* Numeric queries / rounding: dispatch on the runtime tag (a non-numeric
+     tag raises CRuby's NoMethodError). A user method or attr reader with
+     the same name wins -- the poly method dispatch handles it instead. */
+  {
+    const char *pfn =
+      sp_streq(name, "nan?")      ? "sp_poly_nan_p" :
+      sp_streq(name, "next_float") ? "sp_poly_next_float" :
+      sp_streq(name, "prev_float") ? "sp_poly_prev_float" :
+      sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
+      sp_streq(name, "infinite?") ? "sp_poly_infinite" :
+      sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
+      sp_streq(name, "nonzero?")  ? "sp_poly_nonzero" :
+      sp_streq(name, "positive?") ? "sp_poly_positive_p" :
+      sp_streq(name, "negative?") ? "sp_poly_negative_p" :
+      sp_streq(name, "real?")     ? "sp_poly_real_p" :
+      sp_streq(name, "integer?")  ? "sp_poly_integer_p" :
+      sp_streq(name, "abs") || sp_streq(name, "magnitude") ? "sp_poly_abs" :
+      sp_streq(name, "abs2")      ? "sp_poly_abs2" :
+      sp_streq(name, "floor")     ? "sp_poly_floor" :
+      sp_streq(name, "ceil")      ? "sp_poly_ceil" :
+      sp_streq(name, "round")     ? "sp_poly_round" :
+      sp_streq(name, "truncate")  ? "sp_poly_truncate" :
+      sp_streq(name, "bytesize")  ? "sp_poly_bytesize" :
+      sp_streq(name, "ord")       ? "sp_poly_ord" :
+      sp_streq(name, "bit_length") ? "sp_poly_bit_length" :
+      sp_streq(name, "numerator")   ? "sp_poly_numerator" :
+      sp_streq(name, "denominator") ? "sp_poly_denominator" :
+      sp_streq(name, "begin")       ? "sp_poly_range_begin_v" :
+      sp_streq(name, "end")         ? "sp_poly_range_end_v" :
+      sp_streq(name, "exclude_end?") ? "sp_poly_range_exclude_end_p" : NULL;
+    if (pfn) {
+      int nf = sp_streq(name, "next_float") || sp_streq(name, "prev_float");
+      int has_user = 0, has_cm = 0;
+      if (!g_poly_builtin_arm)
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++) {
+        if (comp_poly_arm_defines_n(c, kk, name, argc) ||
+            (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
+        if (nf && comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_cm = 1;
+      }
+      /* A class method of next_float / prev_float is a boxed Class's: the
+         class-tag dispatch (#3215) takes that receiver, and its not-a-Class
+         arm comes back here (g_cls_tag_skip) for the Float helper. A call
+         typed Float takes that dispatch through a poly slot. */
+      if (!has_user && has_cm && g_cls_tag_skip != id) {
+        TyKind rty = comp_ntype(c, id);
+        if (rty != TY_FLOAT) { *out = 0; return 1; }
+        Buf pb2; memset(&pb2, 0, sizeof pb2);
+        int v = view_push(c, id, TY_POLY);
+        emit_expr(c, id, &pb2);
+        view_pop(c, v);
+        emit_unbox_text(c, TY_FLOAT, pb2.p ? pb2.p : "sp_box_nil()", b);
+        free(pb2.p);
+        { *out = 1; return 1; }
+      }
+      if (!has_user) {
+        int boxf = nf && comp_ntype(c, id) == TY_POLY;
+        buf_printf(b, "%s%s(", boxf ? "sp_box_float(" : "", pfn); emit_expr(c, recv, b);
+        buf_puts(b, boxf ? "))" : ")");
+        { *out = 1; return 1; }
+      }
+    }
+  }
+  /* These stringify the receiver and apply a String method to the result, so
+     a user class owning the name must win: a Struct member, Data field or
+     attr_reader called `upcase` otherwise answers the UPCASED #inspect of
+     the object holding it (#3380). The `bytes` / `chars` arms below have
+     carried this guard since #2909 / #3364; this is the same list of names
+     that return a String rather than an array, which is why it was missed.
+     Declining falls through to the general poly dispatch, which reads the
+     member -- and still serves a genuine String receiver in the same
+     program. */
+  int str_conv_owned = user_defines_or_reads(c, name);
+  if (!str_conv_owned) {
+  if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) {
+    /* per kind, not per string: an Integer counts up and an Enumerator pulls
+       its next value, where the string succ answered "" for both (#3843) */
+    buf_puts(b, "sp_poly_succ_m("); emit_expr(c, recv, b);
+    buf_printf(b, ", %d)", sp_streq(name, "next") ? 1 : 0);
+    { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_upcase, \"upcase\")"); { *out = 1; return 1; } }
+  if (sp_streq(name, "downcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_downcase, \"downcase\")"); { *out = 1; return 1; } }
+  if (sp_streq(name, "capitalize"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_capitalize, \"capitalize\")"); { *out = 1; return 1; } }
+  if (sp_streq(name, "swapcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_swapcase, \"swapcase\")"); { *out = 1; return 1; } }
+  if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"strip\")))"); { *out = 1; return 1; } }
+  /* `strip` had an arm and its one-sided siblings did not, which is the
+     shape of most of what follows: a String reaching the dispatch through a
+     poly slot answered NoMethodError naming String, for a method String
+     has. Each of these already works on a concrete receiver and the runtime
+     function is the one that arm calls. */
+  if (sp_streq(name, "lstrip"))     { buf_puts(b, "sp_box_str(sp_str_lstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"lstrip\")))"); { *out = 1; return 1; } }
+  if (sp_streq(name, "rstrip"))     { buf_puts(b, "sp_box_str(sp_str_rstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"rstrip\")))"); { *out = 1; return 1; } }
+  /* to_str is the implicit-conversion protocol, so a poly slot holding a
+     String has to answer it: sp_poly_recv_s raises for anything else, which
+     is what a non-String must do here. */
+  if (sp_streq(name, "to_str") && argc == 0) {
+    buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"to_str\"))"); { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "ascii_only?") && argc == 0) {
+    buf_puts(b, "sp_box_bool(sp_str_ascii_only(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"ascii_only?\")))"); { *out = 1; return 1; }
+  }
+  /* the boxed Encoding a String hands out (cgi's escapeHTML guard) */
+  if ((sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?")) && argc == 0) {
+    buf_printf(b, "sp_box_bool(sp_poly_enc_pred("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "valid_encoding?") && argc == 0) {
+    buf_puts(b, "sp_box_bool(sp_str_valid_encoding(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"valid_encoding?\")))"); { *out = 1; return 1; }
+  }
+  /* encode is a no-op on the concrete arm -- every string here is UTF-8 --
+     so the poly one only has to unbox and re-box, and raise for a
+     non-String the way the others do. */
+  if (sp_streq(name, "encode") && argc == 0) {
+    buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"encode\"))"); { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "b") && argc == 0) {   /* a binary copy, as the String arm answers (#4441) */
+    buf_puts(b, "sp_box_str(sp_str_b(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"b\")))"); { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "scrub") && argc == 0) {
+    buf_puts(b, "sp_box_str(sp_str_scrub(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"scrub\"), 0))"); { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_poly_reverse("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
+  /* `encoding` on a boxed String: the concrete arm has answered it since
+     #723, and the poly dispatch had no entry -- so a String read out of a
+     poly array raised NoMethodError naming its own class. */
+  if (sp_streq(name, "encoding") && argc == 0) {
+    buf_puts(b, "sp_box_encoding(sp_str_is_binary(sp_poly_recv_s(");
+    emit_expr(c, recv, b);
+    buf_puts(b, ", \"encoding\")) ? sp_encoding_binary() : sp_encoding_utf8())");
+    { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"chomp\")))"); { *out = 1; return 1; } }
+  if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"chop\")))"); { *out = 1; return 1; } }
+  /* The one-String-argument transforms, which the table above covers only for
+     the zero-argument shapes. A String arriving through a poly slot -- a
+     Fiber#resume value, a container read -- had no arm for these and raised
+     NoMethodError naming String, which is what it was (#3436). */
+  if ((sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) && argc == 1) {
+    buf_printf(b, "sp_box_str(sp_str_%s(sp_poly_recv_s(", name); emit_expr(c, recv, b);
+    buf_printf(b, ", \"%s\"), ", name); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+    { *out = 1; return 1; }
+  }
+  }
+  /* no argument only: chr(Encoding::X) is resolved by emit_unresolved_call,
+     and a byte chr here would drop the encoding */
+  if (sp_streq(name, "chr") && argc == 0 && !str_conv_owned) {
+    /* dispatch on the runtime tag: (48 + n).chr through a widened int
+       must be Integer#chr -- stringifying first turned 61.chr into
+       "61".chr == "6", corrupting percent-encoding digits (#3328) */
+    int tvC = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
+    /* nil has no chr (NoMethodError); read as a String it answered "" */
+    buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str(sp_int_chr(_t%d.v.i))"
+                  " : _t%d.tag == SP_TAG_NIL ? sp_poly_nil_no_method(\"chr\", _t%d)"
+                  " : sp_box_str(sp_str_chr(sp_poly_to_s(_t%d))); })", tvC, tvC, tvC, tvC, tvC);
+    { *out = 1; return 1; }
+  }
+  /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
+     the inference rule). A String that widened to poly (a binary lump slice)
+     reaches here; without this arm .bytes hit the generic poly method
+     dispatch and raised "undefined method 'bytes' for poly". */
+  if ((sp_streq(name, "bytes") || sp_streq(name, "codepoints")) && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    /* Skip when a user class owns the name -- the runtime value may be one of
+       those, and stringifying it would answer the bytes of its #inspect. A
+       Struct member or attr_reader called `bytes` hit exactly that (#3364);
+       the `chars` arm below has carried this guard since #2909. */
+    if (!user_defines_or_reads(c, name)) {
+      buf_printf(b, "sp_str_%s(sp_poly_recv_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
+      emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); { *out = 1; return 1; }
+    }
+  }
+  /* poly.chars -> TY_STR_ARRAY: a String read out of a container or
+     destructured from a pair (`|a, b|`) reaches here poly-typed (#2909). */
+  if (sp_streq(name, "chars") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (!user_defines_or_reads(c, "chars")) {
+      buf_puts(b, "sp_str_chars(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"chars\"))"); { *out = 1; return 1; }
+    }
+  }
+  /* poly.each_char { }: walk the same char array #chars answers. A String
+     receiver has its own emitter that does not materialize one; a poly
+     receiver only learns it is a String at run time, so it pays the array
+     and yields out of it. Answers the receiver's string, as String#each_char
+     answers self (#3402). */
+  if (sp_streq(name, "each_char") && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
+      !user_defines_or_reads(c, "each_char") && !user_defines_or_reads(c, "chars")) {
+    int eblk = nt_ref(nt, id, "block");
+    const char *ebp = block_param_name(c, eblk, 0);
+    const char *ebpn = ebp ? rename_local(ebp) : NULL;
+    int ebody = nt_ref(nt, eblk, "body");
+    int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
+    int ts = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
+    buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
+    buf_printf(b, " sp_StrArray *_t%d = sp_str_chars(_t%d); SP_GC_ROOT(_t%d);", ta, ts, ta);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
+    if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
+    for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
+    buf_printf(b, " } _t%d; })", ts);
+    { *out = 1; return 1; }
+  }
+  /* poly.each_byte { } / .each_codepoint { }: the same shape as each_char
+     above, over the integer array #bytes / #codepoints answers. */
+  if ((sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
+      nt_ref(nt, id, "block") >= 0 && !user_defines_or_reads(c, name)) {
+    int eblk = nt_ref(nt, id, "block");
+    const char *ebp = block_param_name(c, eblk, 0);
+    const char *ebpn = ebp ? rename_local(ebp) : NULL;
+    int ebody = nt_ref(nt, eblk, "body");
+    int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
+    const char *fn = sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
+    int ts = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
+    buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
+    buf_printf(b, " sp_IntArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);", ta, fn, ts, ta);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
+    if (ebpn) {
+      Scope *ebs = comp_scope_of(c, eblk);
+      LocalVar *eblv = ebs ? scope_local(ebs, ebpn) : NULL;
+      if (eblv && eblv->type == TY_POLY)
+        buf_printf(b, " sp_RbVal lv_%s = sp_box_int(sp_IntArray_get(_t%d, _t%d));", ebpn, ta, ti);
+      else
+        buf_printf(b, " sp_int lv_%s = sp_IntArray_get(_t%d, _t%d);", ebpn, ta, ti);
+    }
+    for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
+    buf_printf(b, " } _t%d; })", ts);
+    { *out = 1; return 1; }
+  }
+  /* poly.lines -> TY_STR_ARRAY, the same shape as #chars above (#3403) */
+  if (sp_streq(name, "lines") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (!user_defines_or_reads(c, "lines")) {
+      buf_puts(b, "sp_str_lines(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"lines\"))"); { *out = 1; return 1; }
+    }
+  }
+  /* A blockless each_char / each_line / each_byte / each_codepoint is
+     CRuby's Enumerator; materialize it into the array chars / lines / bytes
+     answer, which is what the typed String path does too. */
+  if (argc == 0 && nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name) &&
+      (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
+       sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
+    const char *fn = sp_streq(name, "each_char") ? "sp_str_chars"
+                   : sp_streq(name, "each_line") ? "sp_str_lines"
+                   : sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
+    buf_printf(b, "%s(sp_poly_recv_s(", fn); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name);
+    { *out = 1; return 1; }
+  }
+  if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12301,490 +12789,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, " } _t%d; })", ts);
     return 1;
   }
-  if (recv >= 0 && rt == TY_POLY && argc == 0) {
-    /* Skip when a user class defines nil? so its method wins the dispatch --
-       the same reason the to_a arm below gives. A Null Object answering true
-       was folded to the tag test and its guard silently never fired. */
-    if (sp_streq(name, "nil?") && !user_defines_or_reads(c, name)) {
-      buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-    }
-    /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
-       pairs, anything else CRuby's NoMethodError. Skip when a user class
-       defines to_a so its method wins the dispatch. */
-    /* to_a / deconstruct on a poly value: for a Struct/Data both are the
-       member values in order (sp_poly_to_a_arr derives them from the to_h
-       hook); for an array/hash it is the elements/pairs. */
-    if ((sp_streq(name, "to_a") || sp_streq(name, "deconstruct")) && argc == 0 &&
-        nt_ref(nt, id, "block") < 0) {
-      if (!poly_name_user_claimed(c, name, argc, 0)) {
-        /* to_a itself also answers a Time's fields (sp_poly_to_a_call) */
-        buf_puts(b, sp_streq(name, "to_a") ? "sp_poly_to_a_call(" : "sp_poly_to_a_arr(");
-        emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-    }
-    /* entries on a poly value the inference typed an Array: the elements,
-       as a new Array, and nil's NoMethodError (sp_poly_entries). A user
-       class with a method or a reader of the name wins the dispatch. */
-    if (sp_streq(name, "entries") && nt_ref(nt, id, "block") < 0 &&
-        comp_ntype(c, id) == TY_POLY_ARRAY) {
-      if (!poly_name_user_claimed(c, name, argc, 1)) {
-        buf_puts(b, "sp_poly_entries("); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-    }
-    /* Struct#members on a Struct/Data read out of a container. A class with
-       a reader of the name (an attr_reader, a member named `members`) takes
-       the dispatch instead, whose default still answers a Struct's names;
-       answered here, `room.members` read out of a Hash was the names. */
-    if (sp_streq(name, "members") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      if (!poly_name_user_claimed(c, "members", argc, 1)) {
-        /* a Class read out of the slot answers the class-side members list
-           through the generated sp_cls_members, when the program has it;
-           anything else answers through the instance helper */
-        if (g_gen_cls_answers) {
-          int tm = ++g_tmp;
-          buf_printf(b, "({ sp_RbVal _t%d = ", tm);
-          emit_expr(c, recv, b);
-          buf_printf(b, "; _t%d.tag == SP_TAG_CLASS ? sp_cls_members(_t%d)"
-                        " : sp_poly_struct_members(_t%d); })", tm, tm, tm);
-          return 1;
-        }
-        buf_puts(b, "sp_poly_struct_members("); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
-      }
-    }
-    /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
-       stayed poly). Skip when a user class defines keys/values so its method wins. */
-    if (sp_streq(name, "keys") || sp_streq(name, "values")) {
-      if (!poly_name_user_claimed(c, name, argc, 0)) {
-        buf_printf(b, "sp_poly_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-      }
-    }
-    if (sp_streq(name, "count")) {
-      /* count / count(v) / count { |x| } on a boxed array (skip when any
-         user class defines count -- same rule as length below) */
-      int has_user_cnt = poly_name_user_claimed(c, "count", argc, 1);
-      int cblk = nt_ref(nt, id, "block");
-      if (!has_user_cnt && argc == 0 && cblk >= 0) {
-        int cbody = nt_ref(nt, cblk, "body");
-        int cbn = 0; const int *cbb = cbody >= 0 ? nt_arr(nt, cbody, "body", &cbn) : NULL;
-        const char *cp0 = block_param_name(c, cblk, 0);
-        const char *cp0r = cp0 ? rename_local(cp0) : NULL;
-        if (cbn >= 1) {
-          int tr = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
-          free(rb.p);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_int _t%d = 0;\n", tc);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++) {\n", ti, ti, tr, ti);
-          {
-            /* sp_poly_each_elem, not a raw index: a boxed Hash renders each
-               entry as its [key, value] pair, which a two-parameter block
-               autosplats the way every sibling element loop does (#3448). */
-            char csrc[64]; snprintf(csrc, sizeof csrc, "sp_poly_each_elem(_t%d, _t%d)", tr, ti);
-            if (!emit_iter_autosplat(c, cblk, TY_POLY_ARRAY, csrc, g_indent + 1) && cp0r) {
-              emit_indent(g_pre, g_indent + 1);
-              buf_printf(g_pre, "lv_%s = %s;\n", cp0r, csrc);
-            }
-          }
-          int svind = g_indent; g_indent++;
-          for (int j = 0; j < cbn - 1; j++) emit_stmt(c, cbb[j], g_pre, g_indent);
-          /* Render the condition into its own buffer first: anything it has to
-             hoist (a rooted argument temp) is a STATEMENT, and appending it to
-             g_pre after "if (" was written put the declaration in the middle of
-             the expression. */
-          { Buf ccv; memset(&ccv, 0, sizeof ccv);
-            emit_boxed(c, cbb[cbn - 1], &ccv);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "if (sp_poly_truthy(%s)) _t%d++;\n",
-                       ccv.p ? ccv.p : "sp_box_nil()", tc);
-            free(ccv.p); }
-          g_indent = svind;
-          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-          buf_printf(b, "_t%d", tc);
-          return 1;
-        }
-      }
-      if (!has_user_cnt && argc == 0 && cblk < 0) {
-        buf_puts(b, "sp_poly_count("); emit_expr(c, recv, b);
-        buf_puts(b, ")");
-        return 1;
-      }
-    }
-    if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {
-      /* has_user_len must also consult comp_reader_in_chain: a user class's
-         `.size`/`.length` is very often an attr_reader/attr_accessor -- or a
-         Struct member, which registers the same way -- rather than a `def`
-         method. comp_method_in_chain alone missed those, so this branch took
-         the built-in-only sp_poly_length() path and silently returned 0 for
-         any object whose class exposes the name only as a reader (e.g. a
-         `Struct.new(:offset, :size, :name)` entry answering `.size`). */
-      /* The question is about the name being CALLED. Asking about `length`
-         for an `empty?` call sent every program that defines `length`
-         anywhere down the dispatch path, where nothing answers `empty?` --
-         so the call became an unconditional raise whatever the receiver was
-         (#3805). Defining `length` does not define `empty?` in Ruby either. */
-      int has_user_len = poly_name_user_claimed(c, name, argc, 1);
-      if (!has_user_len) {
-        if (sp_streq(name, "empty?")) {
-          /* A user object has no #empty? of its own here, and sp_poly_length
-             answers 0 for one, which would make every such object empty.
-             Raise instead, as Ruby does. */
-          buf_puts(b, "({ sp_RbVal _ep = "); emit_boxed(c, recv, b);
-          /* nil, a number and a boolean have none either, and read as empty
-             through the same 0 (#4485) */
-          buf_puts(b, "; sp_poly_coll_chk(_ep, \"empty?\");"
-                      " sp_poly_is_user_obj(_ep) ? (sp_raise_poly_nomethod(\"empty?\", _ep), 0)"
-                      " : (sp_poly_length(_ep) == 0); })");
-        }
-        else if (sp_streq(name, "size")) {
-          /* Integer#size is the byte width of the machine representation, not
-             a length; sp_poly_length has no arm for it and answered 0. */
-          buf_puts(b, "sp_poly_size("); emit_boxed(c, recv, b); buf_puts(b, ")");
-        }
-        else {
-          /* nil / a number / a user object has no #length: answering 0 turned a
-             NoMethodError into a silent zero (#3974) */
-          buf_puts(b, "sp_poly_length_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
-        }
-        return 1;
-      }
-    }
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
-      int has_user_method = 0;
-      for (int k = 0; k < c->nclasses; k++)
-        if (comp_poly_arm_defines_n(c, k, name, argc)) { has_user_method = 1; break; }
-      if (!has_user_method) {
-        buf_printf(b, "%s(", sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect");
-        emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-      }
-    }
-    /* Same guard as #to_s above: a user class defining the conversion wins
-       through poly dispatch. sp_poly_to_i answers 0 for an object, so a
-       wrapper's `value.to_i` silently read zero. */
-    /* `to_int` is the same method by its other name (#2317): a boxed
-       Rational answered NoMethodError for it while answering to_i fine. */
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "to_f")) {
-      if (!poly_name_user_claimed(c, name, argc, 0)) {
-        /* sp_poly_to_i_meth / sp_poly_to_f_meth: this is the METHOD, named by
-           the program, so an object without it is NoMethodError rather than
-           the conversion protocol's TypeError, and nil.to_f is 0.0 */
-        buf_printf(b, "%s(", !sp_streq(name, "to_f")
-                              ? (comp_ntype(c, id) == TY_POLY ? "sp_poly_to_i_meth_v" : "sp_poly_to_i_meth")
-                              : "sp_poly_to_f_meth");
-        emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-      }
-    }
-    /* Complex#real / #imaginary on a poly value (a Complex read out of a
-       container). A user class defining the same name wins via poly dispatch. */
-    if ((sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
-         sp_streq(name, "conjugate") || sp_streq(name, "conj")) && argc == 0) {
-      if (!poly_name_user_claimed(c, name, argc, 1)) {
-        const char *pfn = sp_streq(name, "real") ? "sp_poly_real"
-                        : (sp_streq(name, "imaginary") || sp_streq(name, "imag")) ? "sp_poly_imaginary"
-                        : "sp_poly_conjugate";
-        buf_printf(b, "%s(", pfn);
-        emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
-      }
-    }
-    /* Numeric#arg / #angle / #phase and #rect / #rectangular on a poly value,
-       answered as the typed arms answer them. A user method, reader or class
-       method of the same name wins via poly dispatch. */
-    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
-         sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
-      int has_user = 0;
-      if (!g_poly_builtin_arm)
-      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
-        if (comp_poly_arm_defines_n(c, kk, name, argc) ||
-            (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
-            comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
-      if (!has_user) {
-        buf_printf(b, "%s(", sp_streq(name, "rect") || sp_streq(name, "rectangular") ? "sp_poly_rect" : "sp_poly_arg");
-        emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); return 1;
-      }
-    }
-    /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
-       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch.
-       `intern` answers as `to_sym` does on both, and stands aside, as the
-       arm did not exist for it before, wherever the dispatch reads the name
-       some other way: a user reader (an attr_reader, a Struct member) or an
-       OpenStruct member when ostruct is loaded (#3197). */
-    int intern_read = sp_streq(name, "intern") && (sp_feature_required("ostruct") || user_defines_or_reads(c, name));
-    if (sp_streq(name, "to_sym") || (sp_streq(name, "intern") && !intern_read)) {
-      if (!poly_name_user_claimed(c, name, argc, 0)) {
-        int t = ++g_tmp;
-        /* The arm yields a raw sp_sym. When the call's own slot is poly (a
-           case-result carrier, a boxed argument) it must be boxed HERE -- the
-           generic boxed-value emitter passes a poly-typed node through
-           untouched, so a raw scalar would land in an sp_RbVal slot (#3331). */
-        int box_sym = comp_ntype(c, id) == TY_POLY;
-        if (box_sym) buf_puts(b, "sp_box_sym(");
-        /* Root the boxed receiver: sp_sym_intern reads through the String's
-           data pointer and allocates, so a GC mid-intern could otherwise free
-           an unrooted temporary String out from under it. */
-        /* a shared-string handle is a String: deref it into the immediate
-           form the arm reads, or to_sym raised for it (#4279) */
-        buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", t); emit_expr(c, recv, b);
-        buf_puts(b, ")");
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_STR ? sp_sym_intern_n(_t%d.v.s, sp_str_byte_len(_t%d.v.s))"
-                      " : (_t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i"
-                      " : (sp_raise_poly_nomethod(\"%s\", _t%d), (sp_sym)0)); })",
-                   t, t, t, t, t, t, name, t);
-        if (box_sym) buf_puts(b, ")");
-        return 1;
-      }
-    }
-    /* Numeric queries / rounding: dispatch on the runtime tag (a non-numeric
-       tag raises CRuby's NoMethodError). A user method or attr reader with
-       the same name wins -- the poly method dispatch handles it instead. */
-    {
-      const char *pfn =
-        sp_streq(name, "nan?")      ? "sp_poly_nan_p" :
-        sp_streq(name, "next_float") ? "sp_poly_next_float" :
-        sp_streq(name, "prev_float") ? "sp_poly_prev_float" :
-        sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
-        sp_streq(name, "infinite?") ? "sp_poly_infinite" :
-        sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
-        sp_streq(name, "nonzero?")  ? "sp_poly_nonzero" :
-        sp_streq(name, "positive?") ? "sp_poly_positive_p" :
-        sp_streq(name, "negative?") ? "sp_poly_negative_p" :
-        sp_streq(name, "real?")     ? "sp_poly_real_p" :
-        sp_streq(name, "integer?")  ? "sp_poly_integer_p" :
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") ? "sp_poly_abs" :
-        sp_streq(name, "abs2")      ? "sp_poly_abs2" :
-        sp_streq(name, "floor")     ? "sp_poly_floor" :
-        sp_streq(name, "ceil")      ? "sp_poly_ceil" :
-        sp_streq(name, "round")     ? "sp_poly_round" :
-        sp_streq(name, "truncate")  ? "sp_poly_truncate" :
-        sp_streq(name, "bytesize")  ? "sp_poly_bytesize" :
-        sp_streq(name, "ord")       ? "sp_poly_ord" :
-        sp_streq(name, "bit_length") ? "sp_poly_bit_length" :
-        sp_streq(name, "numerator")   ? "sp_poly_numerator" :
-        sp_streq(name, "denominator") ? "sp_poly_denominator" :
-        sp_streq(name, "begin")       ? "sp_poly_range_begin_v" :
-        sp_streq(name, "end")         ? "sp_poly_range_end_v" :
-        sp_streq(name, "exclude_end?") ? "sp_poly_range_exclude_end_p" : NULL;
-      if (pfn) {
-        int nf = sp_streq(name, "next_float") || sp_streq(name, "prev_float");
-        int has_user = 0, has_cm = 0;
-        if (!g_poly_builtin_arm)
-        for (int kk = 0; kk < c->nclasses && !has_user; kk++) {
-          if (comp_poly_arm_defines_n(c, kk, name, argc) ||
-              (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL))) has_user = 1;
-          if (nf && comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_cm = 1;
-        }
-        /* A class method of next_float / prev_float is a boxed Class's: the
-           class-tag dispatch (#3215) takes that receiver, and its not-a-Class
-           arm comes back here (g_cls_tag_skip) for the Float helper. A call
-           typed Float takes that dispatch through a poly slot. */
-        if (!has_user && has_cm && g_cls_tag_skip != id) {
-          TyKind rty = comp_ntype(c, id);
-          if (rty != TY_FLOAT) return 0;
-          Buf pb2; memset(&pb2, 0, sizeof pb2);
-          int v = view_push(c, id, TY_POLY);
-          emit_expr(c, id, &pb2);
-          view_pop(c, v);
-          emit_unbox_text(c, TY_FLOAT, pb2.p ? pb2.p : "sp_box_nil()", b);
-          free(pb2.p);
-          return 1;
-        }
-        if (!has_user) {
-          int boxf = nf && comp_ntype(c, id) == TY_POLY;
-          buf_printf(b, "%s%s(", boxf ? "sp_box_float(" : "", pfn); emit_expr(c, recv, b);
-          buf_puts(b, boxf ? "))" : ")");
-          return 1;
-        }
-      }
-    }
-    /* These stringify the receiver and apply a String method to the result, so
-       a user class owning the name must win: a Struct member, Data field or
-       attr_reader called `upcase` otherwise answers the UPCASED #inspect of
-       the object holding it (#3380). The `bytes` / `chars` arms below have
-       carried this guard since #2909 / #3364; this is the same list of names
-       that return a String rather than an array, which is why it was missed.
-       Declining falls through to the general poly dispatch, which reads the
-       member -- and still serves a genuine String receiver in the same
-       program. */
-    int str_conv_owned = user_defines_or_reads(c, name);
-    if (!str_conv_owned) {
-    if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) {
-      /* per kind, not per string: an Integer counts up and an Enumerator pulls
-         its next value, where the string succ answered "" for both (#3843) */
-      buf_puts(b, "sp_poly_succ_m("); emit_expr(c, recv, b);
-      buf_printf(b, ", %d)", sp_streq(name, "next") ? 1 : 0);
-      return 1;
-    }
-    if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_upcase, \"upcase\")"); return 1; }
-    if (sp_streq(name, "downcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_downcase, \"downcase\")"); return 1; }
-    if (sp_streq(name, "capitalize"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_capitalize, \"capitalize\")"); return 1; }
-    if (sp_streq(name, "swapcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_swapcase, \"swapcase\")"); return 1; }
-    if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"strip\")))"); return 1; }
-    /* `strip` had an arm and its one-sided siblings did not, which is the
-       shape of most of what follows: a String reaching the dispatch through a
-       poly slot answered NoMethodError naming String, for a method String
-       has. Each of these already works on a concrete receiver and the runtime
-       function is the one that arm calls. */
-    if (sp_streq(name, "lstrip"))     { buf_puts(b, "sp_box_str(sp_str_lstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"lstrip\")))"); return 1; }
-    if (sp_streq(name, "rstrip"))     { buf_puts(b, "sp_box_str(sp_str_rstrip(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"rstrip\")))"); return 1; }
-    /* to_str is the implicit-conversion protocol, so a poly slot holding a
-       String has to answer it: sp_poly_recv_s raises for anything else, which
-       is what a non-String must do here. */
-    if (sp_streq(name, "to_str") && argc == 0) {
-      buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"to_str\"))"); return 1;
-    }
-    if (sp_streq(name, "ascii_only?") && argc == 0) {
-      buf_puts(b, "sp_box_bool(sp_str_ascii_only(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"ascii_only?\")))"); return 1;
-    }
-    /* the boxed Encoding a String hands out (cgi's escapeHTML guard) */
-    if ((sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?")) && argc == 0) {
-      buf_printf(b, "sp_box_bool(sp_poly_enc_pred("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); return 1;
-    }
-    if (sp_streq(name, "valid_encoding?") && argc == 0) {
-      buf_puts(b, "sp_box_bool(sp_str_valid_encoding(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"valid_encoding?\")))"); return 1;
-    }
-    /* encode is a no-op on the concrete arm -- every string here is UTF-8 --
-       so the poly one only has to unbox and re-box, and raise for a
-       non-String the way the others do. */
-    if (sp_streq(name, "encode") && argc == 0) {
-      buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"encode\"))"); return 1;
-    }
-    if (sp_streq(name, "b") && argc == 0) {   /* a binary copy, as the String arm answers (#4441) */
-      buf_puts(b, "sp_box_str(sp_str_b(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"b\")))"); return 1;
-    }
-    if (sp_streq(name, "scrub") && argc == 0) {
-      buf_puts(b, "sp_box_str(sp_str_scrub(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"scrub\"), 0))"); return 1;
-    }
-    if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_poly_reverse("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-    /* `encoding` on a boxed String: the concrete arm has answered it since
-       #723, and the poly dispatch had no entry -- so a String read out of a
-       poly array raised NoMethodError naming its own class. */
-    if (sp_streq(name, "encoding") && argc == 0) {
-      buf_puts(b, "sp_box_encoding(sp_str_is_binary(sp_poly_recv_s(");
-      emit_expr(c, recv, b);
-      buf_puts(b, ", \"encoding\")) ? sp_encoding_binary() : sp_encoding_utf8())");
-      return 1;
-    }
-    if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"chomp\")))"); return 1; }
-    if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"chop\")))"); return 1; }
-    /* The one-String-argument transforms, which the table above covers only for
-       the zero-argument shapes. A String arriving through a poly slot -- a
-       Fiber#resume value, a container read -- had no arm for these and raised
-       NoMethodError naming String, which is what it was (#3436). */
-    if ((sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) && argc == 1) {
-      buf_printf(b, "sp_box_str(sp_str_%s(sp_poly_recv_s(", name); emit_expr(c, recv, b);
-      buf_printf(b, ", \"%s\"), ", name); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
-      return 1;
-    }
-    }
-    /* no argument only: chr(Encoding::X) is resolved by emit_unresolved_call,
-       and a byte chr here would drop the encoding */
-    if (sp_streq(name, "chr") && argc == 0 && !str_conv_owned) {
-      /* dispatch on the runtime tag: (48 + n).chr through a widened int
-         must be Integer#chr -- stringifying first turned 61.chr into
-         "61".chr == "6", corrupting percent-encoding digits (#3328) */
-      int tvC = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
-      /* nil has no chr (NoMethodError); read as a String it answered "" */
-      buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str(sp_int_chr(_t%d.v.i))"
-                    " : _t%d.tag == SP_TAG_NIL ? sp_poly_nil_no_method(\"chr\", _t%d)"
-                    " : sp_box_str(sp_str_chr(sp_poly_to_s(_t%d))); })", tvC, tvC, tvC, tvC, tvC);
-      return 1;
-    }
-    /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
-       the inference rule). A String that widened to poly (a binary lump slice)
-       reaches here; without this arm .bytes hit the generic poly method
-       dispatch and raised "undefined method 'bytes' for poly". */
-    if ((sp_streq(name, "bytes") || sp_streq(name, "codepoints")) && argc == 0 &&
-        nt_ref(nt, id, "block") < 0) {
-      /* Skip when a user class owns the name -- the runtime value may be one of
-         those, and stringifying it would answer the bytes of its #inspect. A
-         Struct member or attr_reader called `bytes` hit exactly that (#3364);
-         the `chars` arm below has carried this guard since #2909. */
-      if (!user_defines_or_reads(c, name)) {
-        buf_printf(b, "sp_str_%s(sp_poly_recv_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
-        emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); return 1;
-      }
-    }
-    /* poly.chars -> TY_STR_ARRAY: a String read out of a container or
-       destructured from a pair (`|a, b|`) reaches here poly-typed (#2909). */
-    if (sp_streq(name, "chars") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      if (!user_defines_or_reads(c, "chars")) {
-        buf_puts(b, "sp_str_chars(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"chars\"))"); return 1;
-      }
-    }
-    /* poly.each_char { }: walk the same char array #chars answers. A String
-       receiver has its own emitter that does not materialize one; a poly
-       receiver only learns it is a String at run time, so it pays the array
-       and yields out of it. Answers the receiver's string, as String#each_char
-       answers self (#3402). */
-    if (sp_streq(name, "each_char") && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
-        !user_defines_or_reads(c, "each_char") && !user_defines_or_reads(c, "chars")) {
-      int eblk = nt_ref(nt, id, "block");
-      const char *ebp = block_param_name(c, eblk, 0);
-      const char *ebpn = ebp ? rename_local(ebp) : NULL;
-      int ebody = nt_ref(nt, eblk, "body");
-      int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
-      int ts = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
-      buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
-      buf_printf(b, " sp_StrArray *_t%d = sp_str_chars(_t%d); SP_GC_ROOT(_t%d);", ta, ts, ta);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
-      if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
-      for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
-      buf_printf(b, " } _t%d; })", ts);
-      return 1;
-    }
-    /* poly.each_byte { } / .each_codepoint { }: the same shape as each_char
-       above, over the integer array #bytes / #codepoints answers. */
-    if ((sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
-        nt_ref(nt, id, "block") >= 0 && !user_defines_or_reads(c, name)) {
-      int eblk = nt_ref(nt, id, "block");
-      const char *ebp = block_param_name(c, eblk, 0);
-      const char *ebpn = ebp ? rename_local(ebp) : NULL;
-      int ebody = nt_ref(nt, eblk, "body");
-      int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
-      const char *fn = sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
-      int ts = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
-      buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
-      buf_printf(b, " sp_IntArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);", ta, fn, ts, ta);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
-      if (ebpn) {
-        Scope *ebs = comp_scope_of(c, eblk);
-        LocalVar *eblv = ebs ? scope_local(ebs, ebpn) : NULL;
-        if (eblv && eblv->type == TY_POLY)
-          buf_printf(b, " sp_RbVal lv_%s = sp_box_int(sp_IntArray_get(_t%d, _t%d));", ebpn, ta, ti);
-        else
-          buf_printf(b, " sp_int lv_%s = sp_IntArray_get(_t%d, _t%d);", ebpn, ta, ti);
-      }
-      for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
-      buf_printf(b, " } _t%d; })", ts);
-      return 1;
-    }
-    /* poly.lines -> TY_STR_ARRAY, the same shape as #chars above (#3403) */
-    if (sp_streq(name, "lines") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      if (!user_defines_or_reads(c, "lines")) {
-        buf_puts(b, "sp_str_lines(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"lines\"))"); return 1;
-      }
-    }
-    /* A blockless each_char / each_line / each_byte / each_codepoint is
-       CRuby's Enumerator; materialize it into the array chars / lines / bytes
-       answer, which is what the typed String path does too. */
-    if (argc == 0 && nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name) &&
-        (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-         sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
-      const char *fn = sp_streq(name, "each_char") ? "sp_str_chars"
-                     : sp_streq(name, "each_line") ? "sp_str_lines"
-                     : sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
-      buf_printf(b, "%s(sp_poly_recv_s(", fn); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name);
-      return 1;
-    }
-    if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-  }
+  { int r; if (emit_poly_call0_arms(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* blockless cycle(n) on a poly value: the Enumerator over its items
      repeated n times that the typed arms build (sp_poly_cycle_n), the
      receiver held across the count, and a count the compiler types anything
