@@ -2489,6 +2489,206 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   return 0;
 }
 
+/* A defined?(...) expression (emit_expr_node's arms, in their order) */
+static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "DefinedNode"))) return 0;
+  /* defined? examines its argument recursively without evaluating: any
+     unresolvable constant anywhere in the subtree makes the whole answer
+     nil (CRuby re-checks each reference). */
+  /* compile-time defined? -> a label string, or nil (NULL) when undefined */
+  int v = nt_ref(nt, id, "value");
+  const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
+  const char *res = NULL;
+  if (vt) {
+    if (sp_streq(vt, "LocalVariableReadNode")) res = "local-variable";
+    else if (sp_streq(vt, "InstanceVariableReadNode")) {
+      /* Return "instance-variable" only when the ivar is known to be assigned. */
+      const char *inm = nt_str(nt, v, "name");
+      for (int kk = 0; kk < nt->count && !res; kk++) {
+        const char *kt = nt_type(nt, kk);
+        if (kt && sp_streq(kt, "InstanceVariableWriteNode") &&
+            inm && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), inm))
+          res = "instance-variable";
+      }
+      /* in an instance method, a slot nothing has set yet is not defined
+         (ivar_set_kind): asked of self at run time */
+      Scope *ds = comp_scope_of(c, v);
+      int dcid = ds && !ds->is_cmethod && ds->class_id >= 0 && g_ie_class_id < 0 ? ds->class_id : -1;
+      if (res && dcid >= 0 && comp_ivar_index(&c->classes[dcid], inm) >= 0 &&
+          ivar_set_kind(c, dcid, inm) == 1) {
+        char ex[200], tb[300];
+        snprintf(ex, sizeof ex, "%s%siv_%s", g_self, g_self_deref, iv_c(inm + 1));
+        buf_printf(b, "(%s ? SPL(\"instance-variable\") : NULL)", ivar_set_test(c, dcid, inm, ex, tb, sizeof tb));
+        return 1;
+      }
+    }
+    else if (sp_streq(vt, "ClassVariableReadNode")) {
+      /* set or not is a run-time question: the cvar's __set flag */
+      const char *cnm = nt_str(nt, v, "name");
+      Scope *cs = comp_scope_of(c, v);
+      int cid = cs && cs->class_id >= 0 ? cs->class_id : g_class_body_id;
+      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid >= 0 && cnm) cid = comp_cvar_owner(c, cid, cnm);
+      if (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0) cid = -1;
+      if (cid >= 0 && cnm)
+        buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
+                   c->classes[cid].name, cnm + 2);
+      else buf_puts(b, "NULL");
+      return 1;
+    }
+    else if (sp_streq(vt, "SelfNode")) res = "self";
+    else if (sp_streq(vt, "NilNode")) res = "nil";
+    else if (sp_streq(vt, "TrueNode")) res = "true";
+    else if (sp_streq(vt, "FalseNode")) res = "false";
+    else if (sp_streq(vt, "IntegerNode") || sp_streq(vt, "FloatNode") ||
+             sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode")) res = "expression";
+    else if (sp_streq(vt, "GlobalVariableReadNode")) {
+      const char *gn = nt_str(nt, v, "name");
+      /* runtime-provided special globals exist regardless of writes */
+      if (gn && gn[0] == '$' && gn[1] && (!gn[2] || sp_streq(gn + 1, "stdin") ||
+          sp_streq(gn + 1, "stdout") || sp_streq(gn + 1, "stderr") ||
+          sp_streq(gn + 1, "PROGRAM_NAME"))) {
+        const char sg = gn[1];
+        if (!gn[2] && (sg == '!' || sg == '~' || sg == '0' || sg == '$' ||
+                       sg == '?' || sg == ';' || sg == ',' || sg == '/' ||
+                       sg == '\\' || sg == '*' || sg == '&' ||
+                       sg == '\'' || sg == '`' || sg == '+'))
+          res = "global-variable";
+        else if (gn[2]) res = "global-variable";
+      }
+      for (int kk = 0; kk < nt->count && !res; kk++) {
+        const char *kt = nt_type(nt, kk);
+        if (kt && (sp_streq(kt, "GlobalVariableWriteNode") || sp_streq(kt, "GlobalVariableOperatorWriteNode")) &&
+            gn && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), gn))
+          res = "global-variable";
+      }
+    }
+    else if (sp_streq(vt, "ConstantReadNode")) {
+      const char *cn = nt_str(nt, v, "name");
+      if (cn) {
+        if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) res = "constant";
+        if (!res && comp_is_wellknown_const(cn)) res = "constant";
+        /* exception classes are constants too (#2767) */
+        if (!res && (is_builtin_exception_name(cn) || is_builtin_class_name(cn)))
+          res = "constant";
+      }
+    }
+    else if (sp_streq(vt, "ConstantPathNode")) {
+      /* a fully-resolved qualified path answers "constant"; any unresolved
+         segment leaves nil (the segment walk lives in the guard helpers) */
+      if (comp_defined_guard_true(c, id)) res = "constant";
+    }
+    /* `sym.to_proc` was lowered to a lambda before this point (the
+       "stp_arity" mark): it is still the Symbol's method, not an iterator */
+    else if (sp_streq(vt, "CallNode") && nt_int(nt, v, "stp_arity", 0))
+      res = "method";
+    /* an iterator is an expression, whatever it calls */
+    else if (sp_streq(vt, "CallNode") && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
+      res = "expression";
+    /* see desugar_defined_method_call; a guard known nil at compile time
+       leaves the receiver unevaluated. A respond_to? left untyped (an IO
+       handle's, which spinel refuses to answer) keeps the answer nil. */
+    else if (sp_streq(vt, "CallNode") && nt_ref(nt, id, "method_cond") >= 0 &&
+             comp_ntype(c, nt_ref(nt, id, "method_cond")) == TY_BOOL) {
+      int ng = 0; const int *gs = nt_arr(nt, id, "method_guards", &ng);
+      Buf g; memset(&g, 0, sizeof g);
+      for (int gi = 0; gi < ng; gi++) {
+        Buf gb; memset(&gb, 0, sizeof gb);
+        emit_expr(c, gs[gi], &gb);
+        if (sp_streq(gb.p, "NULL")) { free(gb.p); free(g.p); buf_puts(b, "NULL"); return 1; }
+        buf_printf(&g, "(%s) && ", gb.p);
+        free(gb.p);
+      }
+      buf_printf(b, "(%s(", g.p ? g.p : "");
+      emit_cond(c, nt_ref(nt, id, "method_cond"), b);
+      buf_puts(b, ") ? SPL(\"method\") : NULL)");
+      free(g.p);
+      return 1;
+    }
+    else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
+      const char *cn = nt_str(nt, v, "name");
+      if (cn && comp_method_index(c, cn) >= 0) res = "method";
+      /* an implicit-self call inside a class resolves through the
+         enclosing class's method chain (readers included) */
+      else if (cn && comp_scope_of(c, id) && comp_scope_of(c, id)->class_id >= 0 &&
+               (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
+                comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
+        res = "method";
+      /* builtin kernel functions the compiler always resolves */
+      else if (cn) {
+        static const char *const kfns[] = {
+          "puts", "print", "p", "pp", "require", "require_relative", "raise",
+          "loop", "lambda", "proc", "rand", "srand", "gets", "sleep", "exit",
+          "format", "sprintf", "printf", "at_exit", "catch", "throw", NULL };
+        for (int bi = 0; kfns[bi]; bi++)
+          if (sp_streq(cn, kfns[bi])) { res = "method"; break; }
+      }
+    }
+    /* An assignment of any kind (local/ivar/gvar/cvar/constant/index/attr,
+       plain or operator) answers "assignment" without evaluating. */
+    else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
+      res = "assignment";
+    /* A composite expression answers "expression" even when its OPERANDS
+       are undefined -- defined? never evaluates its argument. */
+    else if (sp_streq(vt, "AndNode") || sp_streq(vt, "OrNode") ||
+             sp_streq(vt, "NotNode") || sp_streq(vt, "RangeNode") ||
+             sp_streq(vt, "HashNode") || sp_streq(vt, "KeywordHashNode") ||
+             sp_streq(vt, "InterpolatedStringNode") ||
+             sp_streq(vt, "RegularExpressionNode") ||
+             sp_streq(vt, "LambdaNode") || sp_streq(vt, "IfNode") ||
+             sp_streq(vt, "UnlessNode") || sp_streq(vt, "CaseNode") ||
+             sp_streq(vt, "DefinedNode") || sp_streq(vt, "BeginNode") ||
+             sp_streq(vt, "ParenthesesNode") ||
+             sp_streq(vt, "InterpolatedRegularExpressionNode") ||
+             sp_streq(vt, "SourceFileNode") || sp_streq(vt, "SourceLineNode") ||
+             sp_streq(vt, "SourceEncodingNode") || sp_streq(vt, "ForNode") ||
+             sp_streq(vt, "WhileNode") || sp_streq(vt, "UntilNode"))
+      res = "expression";
+  }
+  /* a CONTAINER literal builds its elements, so an unresolvable constant
+     anywhere inside nils the answer; short-circuiting forms (&&/||) do
+     not examine their operands (CRuby). */
+  if (res && v >= 0 && vt &&
+      (sp_streq(vt, "ArrayNode") || sp_streq(vt, "HashNode") ||
+       sp_streq(vt, "KeywordHashNode")) &&
+      subtree_has_unresolved_const(c, v)) res = NULL;
+  /* dynamic cases: the answer depends on runtime state, so emit a
+     conditional instead of a compile-time label. */
+  if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
+    /* $& / $~ / $` / $' / $+ are defined only after a successful match;
+       the backing slot is NULL before one. */
+    buf_puts(b, "(sp_re_match_str ? SPL(\"global-variable\") : NULL)");
+    return 1;
+  }
+  if (!res && vt && sp_streq(vt, "NumberedReferenceReadNode")) {
+    int refn = (int)nt_int(nt, v, "number", 0);
+    if (refn >= 1 && refn <= 9) {
+      /* value reads use sp_re_captures[n] directly ($N = captures[N]) */
+      buf_printf(b, "(sp_re_captures[%d] ? SPL(\"global-variable\") : NULL)", refn);
+      return 1;
+    }
+  }
+  /* defined?(yield) answers "yield" only when the current method actually
+     received a block, else nil -- the same runtime question as block_given?.
+     An inlined yielding scope statically has a block; a lowered scope tests
+     its runtime __yblk__ parameter; any other scope has no block. */
+  if (!res && vt && sp_streq(vt, "YieldNode")) {
+    if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return 1; }
+    if (g_current_scope_is_lowered) {
+      buf_puts(b, "(");
+      emit_yblk_ref(b);
+      buf_puts(b, " != NULL ? SPL(\"yield\") : NULL)");
+      return 1;
+    }
+    buf_puts(b, "NULL");
+    return 1;
+  }
+  if (res) buf_printf(b, "SPL(\"%s\")", res);
+  else buf_puts(b, "NULL");
+  return 1;
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3136,202 +3336,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   }
   if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
   if (emit_constant_expr(c, id, b, nt, ty)) return;
-  if (sp_streq(ty, "DefinedNode")) {
-    /* defined? examines its argument recursively without evaluating: any
-       unresolvable constant anywhere in the subtree makes the whole answer
-       nil (CRuby re-checks each reference). */
-    /* compile-time defined? -> a label string, or nil (NULL) when undefined */
-    int v = nt_ref(nt, id, "value");
-    const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
-    const char *res = NULL;
-    if (vt) {
-      if (sp_streq(vt, "LocalVariableReadNode")) res = "local-variable";
-      else if (sp_streq(vt, "InstanceVariableReadNode")) {
-        /* Return "instance-variable" only when the ivar is known to be assigned. */
-        const char *inm = nt_str(nt, v, "name");
-        for (int kk = 0; kk < nt->count && !res; kk++) {
-          const char *kt = nt_type(nt, kk);
-          if (kt && sp_streq(kt, "InstanceVariableWriteNode") &&
-              inm && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), inm))
-            res = "instance-variable";
-        }
-        /* in an instance method, a slot nothing has set yet is not defined
-           (ivar_set_kind): asked of self at run time */
-        Scope *ds = comp_scope_of(c, v);
-        int dcid = ds && !ds->is_cmethod && ds->class_id >= 0 && g_ie_class_id < 0 ? ds->class_id : -1;
-        if (res && dcid >= 0 && comp_ivar_index(&c->classes[dcid], inm) >= 0 &&
-            ivar_set_kind(c, dcid, inm) == 1) {
-          char ex[200], tb[300];
-          snprintf(ex, sizeof ex, "%s%siv_%s", g_self, g_self_deref, iv_c(inm + 1));
-          buf_printf(b, "(%s ? SPL(\"instance-variable\") : NULL)", ivar_set_test(c, dcid, inm, ex, tb, sizeof tb));
-          return;
-        }
-      }
-      else if (sp_streq(vt, "ClassVariableReadNode")) {
-        /* set or not is a run-time question: the cvar's __set flag */
-        const char *cnm = nt_str(nt, v, "name");
-        Scope *cs = comp_scope_of(c, v);
-        int cid = cs && cs->class_id >= 0 ? cs->class_id : g_class_body_id;
-        if (cid < 0) cid = comp_class_index(c, "Toplevel");
-        if (cid >= 0 && cnm) cid = comp_cvar_owner(c, cid, cnm);
-        if (cid >= 0 && cnm && comp_cvar_index(&c->classes[cid], cnm) < 0) cid = -1;
-        if (cid >= 0 && cnm)
-          buf_printf(b, "(cvar_%s_%s__set ? SPL(\"class variable\") : NULL)",
-                     c->classes[cid].name, cnm + 2);
-        else buf_puts(b, "NULL");
-        return;
-      }
-      else if (sp_streq(vt, "SelfNode")) res = "self";
-      else if (sp_streq(vt, "NilNode")) res = "nil";
-      else if (sp_streq(vt, "TrueNode")) res = "true";
-      else if (sp_streq(vt, "FalseNode")) res = "false";
-      else if (sp_streq(vt, "IntegerNode") || sp_streq(vt, "FloatNode") ||
-               sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode")) res = "expression";
-      else if (sp_streq(vt, "GlobalVariableReadNode")) {
-        const char *gn = nt_str(nt, v, "name");
-        /* runtime-provided special globals exist regardless of writes */
-        if (gn && gn[0] == '$' && gn[1] && (!gn[2] || sp_streq(gn + 1, "stdin") ||
-            sp_streq(gn + 1, "stdout") || sp_streq(gn + 1, "stderr") ||
-            sp_streq(gn + 1, "PROGRAM_NAME"))) {
-          const char sg = gn[1];
-          if (!gn[2] && (sg == '!' || sg == '~' || sg == '0' || sg == '$' ||
-                         sg == '?' || sg == ';' || sg == ',' || sg == '/' ||
-                         sg == '\\' || sg == '*' || sg == '&' ||
-                         sg == '\'' || sg == '`' || sg == '+'))
-            res = "global-variable";
-          else if (gn[2]) res = "global-variable";
-        }
-        for (int kk = 0; kk < nt->count && !res; kk++) {
-          const char *kt = nt_type(nt, kk);
-          if (kt && (sp_streq(kt, "GlobalVariableWriteNode") || sp_streq(kt, "GlobalVariableOperatorWriteNode")) &&
-              gn && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), gn))
-            res = "global-variable";
-        }
-      }
-      else if (sp_streq(vt, "ConstantReadNode")) {
-        const char *cn = nt_str(nt, v, "name");
-        if (cn) {
-          if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) res = "constant";
-          if (!res && comp_is_wellknown_const(cn)) res = "constant";
-          /* exception classes are constants too (#2767) */
-          if (!res && (is_builtin_exception_name(cn) || is_builtin_class_name(cn)))
-            res = "constant";
-        }
-      }
-      else if (sp_streq(vt, "ConstantPathNode")) {
-        /* a fully-resolved qualified path answers "constant"; any unresolved
-           segment leaves nil (the segment walk lives in the guard helpers) */
-        if (comp_defined_guard_true(c, id)) res = "constant";
-      }
-      /* `sym.to_proc` was lowered to a lambda before this point (the
-         "stp_arity" mark): it is still the Symbol's method, not an iterator */
-      else if (sp_streq(vt, "CallNode") && nt_int(nt, v, "stp_arity", 0))
-        res = "method";
-      /* an iterator is an expression, whatever it calls */
-      else if (sp_streq(vt, "CallNode") && nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode)
-        res = "expression";
-      /* see desugar_defined_method_call; a guard known nil at compile time
-         leaves the receiver unevaluated. A respond_to? left untyped (an IO
-         handle's, which spinel refuses to answer) keeps the answer nil. */
-      else if (sp_streq(vt, "CallNode") && nt_ref(nt, id, "method_cond") >= 0 &&
-               comp_ntype(c, nt_ref(nt, id, "method_cond")) == TY_BOOL) {
-        int ng = 0; const int *gs = nt_arr(nt, id, "method_guards", &ng);
-        Buf g; memset(&g, 0, sizeof g);
-        for (int gi = 0; gi < ng; gi++) {
-          Buf gb; memset(&gb, 0, sizeof gb);
-          emit_expr(c, gs[gi], &gb);
-          if (sp_streq(gb.p, "NULL")) { free(gb.p); free(g.p); buf_puts(b, "NULL"); return; }
-          buf_printf(&g, "(%s) && ", gb.p);
-          free(gb.p);
-        }
-        buf_printf(b, "(%s(", g.p ? g.p : "");
-        emit_cond(c, nt_ref(nt, id, "method_cond"), b);
-        buf_puts(b, ") ? SPL(\"method\") : NULL)");
-        free(g.p);
-        return;
-      }
-      else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
-        const char *cn = nt_str(nt, v, "name");
-        if (cn && comp_method_index(c, cn) >= 0) res = "method";
-        /* an implicit-self call inside a class resolves through the
-           enclosing class's method chain (readers included) */
-        else if (cn && comp_scope_of(c, id) && comp_scope_of(c, id)->class_id >= 0 &&
-                 (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
-                  comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
-          res = "method";
-        /* builtin kernel functions the compiler always resolves */
-        else if (cn) {
-          static const char *const kfns[] = {
-            "puts", "print", "p", "pp", "require", "require_relative", "raise",
-            "loop", "lambda", "proc", "rand", "srand", "gets", "sleep", "exit",
-            "format", "sprintf", "printf", "at_exit", "catch", "throw", NULL };
-          for (int bi = 0; kfns[bi]; bi++)
-            if (sp_streq(cn, kfns[bi])) { res = "method"; break; }
-        }
-      }
-      /* An assignment of any kind (local/ivar/gvar/cvar/constant/index/attr,
-         plain or operator) answers "assignment" without evaluating. */
-      else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
-        res = "assignment";
-      /* A composite expression answers "expression" even when its OPERANDS
-         are undefined -- defined? never evaluates its argument. */
-      else if (sp_streq(vt, "AndNode") || sp_streq(vt, "OrNode") ||
-               sp_streq(vt, "NotNode") || sp_streq(vt, "RangeNode") ||
-               sp_streq(vt, "HashNode") || sp_streq(vt, "KeywordHashNode") ||
-               sp_streq(vt, "InterpolatedStringNode") ||
-               sp_streq(vt, "RegularExpressionNode") ||
-               sp_streq(vt, "LambdaNode") || sp_streq(vt, "IfNode") ||
-               sp_streq(vt, "UnlessNode") || sp_streq(vt, "CaseNode") ||
-               sp_streq(vt, "DefinedNode") || sp_streq(vt, "BeginNode") ||
-               sp_streq(vt, "ParenthesesNode") ||
-               sp_streq(vt, "InterpolatedRegularExpressionNode") ||
-               sp_streq(vt, "SourceFileNode") || sp_streq(vt, "SourceLineNode") ||
-               sp_streq(vt, "SourceEncodingNode") || sp_streq(vt, "ForNode") ||
-               sp_streq(vt, "WhileNode") || sp_streq(vt, "UntilNode"))
-        res = "expression";
-    }
-    /* a CONTAINER literal builds its elements, so an unresolvable constant
-       anywhere inside nils the answer; short-circuiting forms (&&/||) do
-       not examine their operands (CRuby). */
-    if (res && v >= 0 && vt &&
-        (sp_streq(vt, "ArrayNode") || sp_streq(vt, "HashNode") ||
-         sp_streq(vt, "KeywordHashNode")) &&
-        subtree_has_unresolved_const(c, v)) res = NULL;
-    /* dynamic cases: the answer depends on runtime state, so emit a
-       conditional instead of a compile-time label. */
-    if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
-      /* $& / $~ / $` / $' / $+ are defined only after a successful match;
-         the backing slot is NULL before one. */
-      buf_puts(b, "(sp_re_match_str ? SPL(\"global-variable\") : NULL)");
-      return;
-    }
-    if (!res && vt && sp_streq(vt, "NumberedReferenceReadNode")) {
-      int refn = (int)nt_int(nt, v, "number", 0);
-      if (refn >= 1 && refn <= 9) {
-        /* value reads use sp_re_captures[n] directly ($N = captures[N]) */
-        buf_printf(b, "(sp_re_captures[%d] ? SPL(\"global-variable\") : NULL)", refn);
-        return;
-      }
-    }
-    /* defined?(yield) answers "yield" only when the current method actually
-       received a block, else nil -- the same runtime question as block_given?.
-       An inlined yielding scope statically has a block; a lowered scope tests
-       its runtime __yblk__ parameter; any other scope has no block. */
-    if (!res && vt && sp_streq(vt, "YieldNode")) {
-      if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return; }
-      if (g_current_scope_is_lowered) {
-        buf_puts(b, "(");
-        emit_yblk_ref(b);
-        buf_puts(b, " != NULL ? SPL(\"yield\") : NULL)");
-        return;
-      }
-      buf_puts(b, "NULL");
-      return;
-    }
-    if (res) buf_printf(b, "SPL(\"%s\")", res);
-    else buf_puts(b, "NULL");
-    return;
-  }
+  if (emit_defined_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
     int n = 0;
