@@ -3547,6 +3547,160 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
   return 0;
 }
 
+/* A Range literal in value position (a..b, a...b, endless and beginless) (emit_expr_node's arms, in their order) */
+static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+  if (!(sp_streq(ty, "RangeNode"))) return 0;
+  int left = nt_ref(nt, id, "left");
+  int right = nt_ref(nt, id, "right");
+  int excl = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
+  /* (:a..:e): a poly array of boxed symbols, walked by name succession
+     (interning through the generated TU's own table) */
+  if (left >= 0 && right >= 0 &&
+      nt_type(nt, left) && sp_streq(nt_type(nt, left), "SymbolNode") &&
+      nt_type(nt, right) && sp_streq(nt_type(nt, right), "SymbolNode")) {
+    int ta = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " const char *_t%d = sp_sym_to_s(", ta, ta, ts);
+    emit_expr(c, left, b);
+    buf_printf(b, "); const char *_t%d = sp_sym_to_s(", te);
+    emit_expr(c, right, b);
+    buf_printf(b, "); for (;;) {"
+                  " if (%d && sp_str_eq(_t%d, _t%d)) break;"
+                  " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(_t%d)));"
+                  " if (!%d && sp_str_eq(_t%d, _t%d)) break;"
+                  " _t%d = sp_str_succ(_t%d);"
+                  " if (sp_str_length(_t%d) > sp_str_length(_t%d)) break; }"
+                  " _t%d; })",
+               excl, ts, te,
+               ta, ts,
+               excl, ts, te,
+               ts, ts,
+               ts, te,
+               ta);
+    return 1;
+  }
+  /* (1.0..3.0): the distinct float range, endpoints kept as sp_float.
+     A missing bound uses -/+HUGE_VAL as the beginless/endless sentinel. */
+  if (comp_ntype(c, id) == TY_FLOAT_RANGE) {
+    /* A bound written as absent and one written as Float::INFINITY are the
+       same value; record which it was so #inspect can tell them apart. */
+    /* A bound written as nil is the absent one, and a boxed bound is
+       decided at run time: nil leaves that side open, an Integer renders
+       as one (sp_poly_frange_bound and the run-time bits below). */
+    int lnil = left < 0 || comp_ntype(c, left) == TY_NIL;
+    int rnil = right < 0 || comp_ntype(c, right) == TY_NIL;
+    int lpoly = !lnil && comp_ntype(c, left) == TY_POLY;
+    int rpoly = !rnil && comp_ntype(c, right) == TY_POLY;
+    int om = (lnil ? 1 : 0) | (rnil ? 2 : 0);
+    /* Each endpoint renders as the user wrote it, so record which one was an
+       Integer: a mixed literal (1.5..5) inspects as "1.5..5" (#3896). */
+    if (!lnil && comp_ntype(c, left) == TY_INT) om |= 4;
+    if (!rnil && comp_ntype(c, right) == TY_INT) om |= 8;
+    int tl = lpoly ? ++g_tmp : 0, tr = rpoly ? ++g_tmp : 0;
+    if (lpoly || rpoly) {
+      buf_puts(b, "({ ");
+      if (lpoly) { buf_printf(b, "sp_RbVal _t%d = ", tl); emit_expr(c, left, b); buf_puts(b, "; "); }
+      if (rpoly) { buf_printf(b, "sp_RbVal _t%d = ", tr); emit_expr(c, right, b); buf_puts(b, "; "); }
+    }
+    buf_printf(b, "sp_frange_new%s(", (om || lpoly || rpoly) ? "_o" : "");
+    if (lpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, -HUGE_VAL)", tl);
+    else if (left >= 0 && lnil) { buf_puts(b, "((void)("); emit_expr(c, left, b); buf_puts(b, "), -HUGE_VAL)"); }
+    else if (left >= 0) emit_float_expr(c, left, b);
+    else buf_puts(b, "(-HUGE_VAL)");
+    buf_puts(b, ", ");
+    if (rpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, HUGE_VAL)", tr);
+    else if (right >= 0 && rnil) { buf_puts(b, "((void)("); emit_expr(c, right, b); buf_puts(b, "), HUGE_VAL)"); }
+    else if (right >= 0) emit_float_expr(c, right, b);
+    else buf_puts(b, "HUGE_VAL");
+    buf_printf(b, ", %d", excl);
+    if (om || lpoly || rpoly) {
+      buf_printf(b, ", %d", om);
+      if (lpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 1, 4)", tl);
+      if (rpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 2, 8)", tr);
+    }
+    buf_puts(b, ")");
+    if (lpoly || rpoly) buf_puts(b, "; })");
+    return 1;
+  }
+  /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
+  if (comp_ntype(c, id) == TY_STR_RANGE) {
+    buf_puts(b, "sp_srange_new(");
+    if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "NULL");
+    buf_puts(b, ", ");
+    if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "NULL");
+    buf_printf(b, ", %d)", excl);
+    return 1;
+  }
+  /* sp_Range holds sp_int bounds, so a Range OBJECT over user objects has
+     nowhere to live; emit_int_expr below would hand a pointer to an sp_int
+     parameter and the C compiler would reject it. Comparable#clamp with such
+     a range still works INLINE (`x.clamp(lo..hi)`, and the one-sided forms):
+     there the bounds are folded straight into the comparison and no Range is
+     ever built. Only materializing one is out. #2558 */
+  {
+    TyKind lt = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
+    TyKind rt2 = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
+    /* sp_Range's bounds are sp_int, so a Bignum bound has nowhere to live;
+       emit_int_expr below would hand a pointer to an sp_int parameter and
+       the C compiler would reject it with a warning-shaped diagnostic far
+       from the cause. Name the limitation instead. (#3058) */
+    if (lt == TY_BIGINT || rt2 == TY_BIGINT) {
+      unsupported_feature(c, id,
+        "a Range with a Bignum bound cannot be built: a Range is an unboxed "
+        "value with sp_int bounds, so it has nowhere to hold one. Comparing "
+        "against the bounds directly (`x >= lo && x < hi`) needs no Range and "
+        "does work (see docs/limitations.md)");
+      return 1;
+    }
+    if (ty_is_object(lt) || ty_is_object(rt2)) {
+      const char *ocn = NULL;
+      int oci = ty_is_object(lt) ? ty_object_class(lt) : ty_object_class(rt2);
+      if (oci >= 0 && oci < c->nclasses) ocn = class_ruby_name(c, oci);
+      static char rbuf[400];
+      snprintf(rbuf, sizeof rbuf,
+               "a Range of %s objects cannot be built: a Range is an unboxed value "
+               "with sp_int bounds, so it has nowhere to hold them. Passing the "
+               "bounds directly (`x.clamp(lo..hi)`, `x.clamp(lo, hi)`, or a one-sided "
+               "`lo..` / `..hi`) needs no Range and does work (see docs/limitations.md)",
+               ocn ? ocn : "user");
+      unsupported_feature(c, id, rbuf);
+    }
+  }
+  /* An explicitly written `nil` bound is the same range as the omitted one
+     (`nil..5` == `..5`), and an infinite Float bound cannot be converted to
+     sp_int at all -- passing the emitted (1.0/0.0) through the sp_int
+     parameter is UB, which is where the arbitrary integer came from. Both
+     spellings take the unbounded sentinel (#3670). */
+  int left_unbounded = left < 0 ||
+      (nt_type(nt, left) && sp_streq(nt_type(nt, left), "NilNode")) ||
+      lazy_endpoint_is_infinite(c, left);
+  /* `-Float::INFINITY` is the negation call around the constant */
+  if (!left_unbounded && left >= 0 && nt_kind(nt, left) == NK_CallNode &&
+      nt_str(nt, left, "name") && sp_streq(nt_str(nt, left, "name"), "-@") &&
+      lazy_endpoint_is_infinite(c, nt_ref(nt, left, "receiver")))
+    left_unbounded = 1;
+  int right_unbounded = right < 0 ||
+      (nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) ||
+      lazy_endpoint_is_infinite(c, right);
+  buf_puts(b, "sp_range_new(");
+  /* a nil that arrives at run time -- boxed, or an Integer slot's
+     sentinel -- is the absent bound too; read as a number, `lo..x` with x
+     nil was the empty `lo..0` */
+  /* A boxed begin before a Float end keeps the integer representation,
+     which holds the end truncated: a beginless (x nil) such range would
+     answer for `..2` where CRuby has `..2.5`. Say so at run time. */
+  if (!left_unbounded && !right_unbounded && comp_ntype(c, left) == TY_POLY &&
+      comp_ntype(c, right) == TY_FLOAT) {
+    buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
+  }
+  else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
+  buf_puts(b, ", ");
+  if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
+  buf_printf(b, ", %d)", excl);
+  return 1;
+  return 0;
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3681,156 +3835,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d; })", t);
     return;
   }
-  if (sp_streq(ty, "RangeNode")) {
-    int left = nt_ref(nt, id, "left");
-    int right = nt_ref(nt, id, "right");
-    int excl = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
-    /* (:a..:e): a poly array of boxed symbols, walked by name succession
-       (interning through the generated TU's own table) */
-    if (left >= 0 && right >= 0 &&
-        nt_type(nt, left) && sp_streq(nt_type(nt, left), "SymbolNode") &&
-        nt_type(nt, right) && sp_streq(nt_type(nt, right), "SymbolNode")) {
-      int ta = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                    " const char *_t%d = sp_sym_to_s(", ta, ta, ts);
-      emit_expr(c, left, b);
-      buf_printf(b, "); const char *_t%d = sp_sym_to_s(", te);
-      emit_expr(c, right, b);
-      buf_printf(b, "); for (;;) {"
-                    " if (%d && sp_str_eq(_t%d, _t%d)) break;"
-                    " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(_t%d)));"
-                    " if (!%d && sp_str_eq(_t%d, _t%d)) break;"
-                    " _t%d = sp_str_succ(_t%d);"
-                    " if (sp_str_length(_t%d) > sp_str_length(_t%d)) break; }"
-                    " _t%d; })",
-                 excl, ts, te,
-                 ta, ts,
-                 excl, ts, te,
-                 ts, ts,
-                 ts, te,
-                 ta);
-      return;
-    }
-    /* (1.0..3.0): the distinct float range, endpoints kept as sp_float.
-       A missing bound uses -/+HUGE_VAL as the beginless/endless sentinel. */
-    if (comp_ntype(c, id) == TY_FLOAT_RANGE) {
-      /* A bound written as absent and one written as Float::INFINITY are the
-         same value; record which it was so #inspect can tell them apart. */
-      /* A bound written as nil is the absent one, and a boxed bound is
-         decided at run time: nil leaves that side open, an Integer renders
-         as one (sp_poly_frange_bound and the run-time bits below). */
-      int lnil = left < 0 || comp_ntype(c, left) == TY_NIL;
-      int rnil = right < 0 || comp_ntype(c, right) == TY_NIL;
-      int lpoly = !lnil && comp_ntype(c, left) == TY_POLY;
-      int rpoly = !rnil && comp_ntype(c, right) == TY_POLY;
-      int om = (lnil ? 1 : 0) | (rnil ? 2 : 0);
-      /* Each endpoint renders as the user wrote it, so record which one was an
-         Integer: a mixed literal (1.5..5) inspects as "1.5..5" (#3896). */
-      if (!lnil && comp_ntype(c, left) == TY_INT) om |= 4;
-      if (!rnil && comp_ntype(c, right) == TY_INT) om |= 8;
-      int tl = lpoly ? ++g_tmp : 0, tr = rpoly ? ++g_tmp : 0;
-      if (lpoly || rpoly) {
-        buf_puts(b, "({ ");
-        if (lpoly) { buf_printf(b, "sp_RbVal _t%d = ", tl); emit_expr(c, left, b); buf_puts(b, "; "); }
-        if (rpoly) { buf_printf(b, "sp_RbVal _t%d = ", tr); emit_expr(c, right, b); buf_puts(b, "; "); }
-      }
-      buf_printf(b, "sp_frange_new%s(", (om || lpoly || rpoly) ? "_o" : "");
-      if (lpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, -HUGE_VAL)", tl);
-      else if (left >= 0 && lnil) { buf_puts(b, "((void)("); emit_expr(c, left, b); buf_puts(b, "), -HUGE_VAL)"); }
-      else if (left >= 0) emit_float_expr(c, left, b);
-      else buf_puts(b, "(-HUGE_VAL)");
-      buf_puts(b, ", ");
-      if (rpoly) buf_printf(b, "sp_poly_frange_bound(_t%d, HUGE_VAL)", tr);
-      else if (right >= 0 && rnil) { buf_puts(b, "((void)("); emit_expr(c, right, b); buf_puts(b, "), HUGE_VAL)"); }
-      else if (right >= 0) emit_float_expr(c, right, b);
-      else buf_puts(b, "HUGE_VAL");
-      buf_printf(b, ", %d", excl);
-      if (om || lpoly || rpoly) {
-        buf_printf(b, ", %d", om);
-        if (lpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 1, 4)", tl);
-        if (rpoly) buf_printf(b, " | sp_poly_frange_bits(_t%d, 2, 8)", tr);
-      }
-      buf_puts(b, ")");
-      if (lpoly || rpoly) buf_puts(b, "; })");
-      return;
-    }
-    /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
-    if (comp_ntype(c, id) == TY_STR_RANGE) {
-      buf_puts(b, "sp_srange_new(");
-      if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "NULL");
-      buf_puts(b, ", ");
-      if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "NULL");
-      buf_printf(b, ", %d)", excl);
-      return;
-    }
-    /* sp_Range holds sp_int bounds, so a Range OBJECT over user objects has
-       nowhere to live; emit_int_expr below would hand a pointer to an sp_int
-       parameter and the C compiler would reject it. Comparable#clamp with such
-       a range still works INLINE (`x.clamp(lo..hi)`, and the one-sided forms):
-       there the bounds are folded straight into the comparison and no Range is
-       ever built. Only materializing one is out. #2558 */
-    {
-      TyKind lt = left >= 0 ? comp_ntype(c, left) : TY_UNKNOWN;
-      TyKind rt2 = right >= 0 ? comp_ntype(c, right) : TY_UNKNOWN;
-      /* sp_Range's bounds are sp_int, so a Bignum bound has nowhere to live;
-         emit_int_expr below would hand a pointer to an sp_int parameter and
-         the C compiler would reject it with a warning-shaped diagnostic far
-         from the cause. Name the limitation instead. (#3058) */
-      if (lt == TY_BIGINT || rt2 == TY_BIGINT) {
-        unsupported_feature(c, id,
-          "a Range with a Bignum bound cannot be built: a Range is an unboxed "
-          "value with sp_int bounds, so it has nowhere to hold one. Comparing "
-          "against the bounds directly (`x >= lo && x < hi`) needs no Range and "
-          "does work (see docs/limitations.md)");
-        return;
-      }
-      if (ty_is_object(lt) || ty_is_object(rt2)) {
-        const char *ocn = NULL;
-        int oci = ty_is_object(lt) ? ty_object_class(lt) : ty_object_class(rt2);
-        if (oci >= 0 && oci < c->nclasses) ocn = class_ruby_name(c, oci);
-        static char rbuf[400];
-        snprintf(rbuf, sizeof rbuf,
-                 "a Range of %s objects cannot be built: a Range is an unboxed value "
-                 "with sp_int bounds, so it has nowhere to hold them. Passing the "
-                 "bounds directly (`x.clamp(lo..hi)`, `x.clamp(lo, hi)`, or a one-sided "
-                 "`lo..` / `..hi`) needs no Range and does work (see docs/limitations.md)",
-                 ocn ? ocn : "user");
-        unsupported_feature(c, id, rbuf);
-      }
-    }
-    /* An explicitly written `nil` bound is the same range as the omitted one
-       (`nil..5` == `..5`), and an infinite Float bound cannot be converted to
-       sp_int at all -- passing the emitted (1.0/0.0) through the sp_int
-       parameter is UB, which is where the arbitrary integer came from. Both
-       spellings take the unbounded sentinel (#3670). */
-    int left_unbounded = left < 0 ||
-        (nt_type(nt, left) && sp_streq(nt_type(nt, left), "NilNode")) ||
-        lazy_endpoint_is_infinite(c, left);
-    /* `-Float::INFINITY` is the negation call around the constant */
-    if (!left_unbounded && left >= 0 && nt_kind(nt, left) == NK_CallNode &&
-        nt_str(nt, left, "name") && sp_streq(nt_str(nt, left, "name"), "-@") &&
-        lazy_endpoint_is_infinite(c, nt_ref(nt, left, "receiver")))
-      left_unbounded = 1;
-    int right_unbounded = right < 0 ||
-        (nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) ||
-        lazy_endpoint_is_infinite(c, right);
-    buf_puts(b, "sp_range_new(");
-    /* a nil that arrives at run time -- boxed, or an Integer slot's
-       sentinel -- is the absent bound too; read as a number, `lo..x` with x
-       nil was the empty `lo..0` */
-    /* A boxed begin before a Float end keeps the integer representation,
-       which holds the end truncated: a beginless (x nil) such range would
-       answer for `..2` where CRuby has `..2.5`. Say so at run time. */
-    if (!left_unbounded && !right_unbounded && comp_ntype(c, left) == TY_POLY &&
-        comp_ntype(c, right) == TY_FLOAT) {
-      buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
-    }
-    else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
-    buf_puts(b, ", ");
-    if (!right_unbounded) emit_range_endpoint(c, right, "INTPTR_MAX", b); else buf_puts(b, "INTPTR_MAX");  /* endless */
-    buf_printf(b, ", %d)", excl);
-    return;
-  }
+  if (emit_range_expr(c, id, b, nt, ty)) return;
   if (emit_local_ivar_write_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) {
     /* A loop in value position evaluates to nil, unless a valued `break`
