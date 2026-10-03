@@ -5285,6 +5285,818 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
   return -1;
 }
 
+/* emit_iteration_stmt_body's Enumerator#with_index, each over a poly array
+   or an Enumerator, and the each / each_entry / reverse_each walk over a
+   container (answers 1 emitted, 0 declined, -1 to go on) */
+static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
+  /* <stored enumerator>.with_index(off) { |x, i| }: drain the enumerator once
+     and drive the block with the offset index alongside each element. (The
+     immediate chain forms -- arr.each.with_index { } -- are matched earlier by
+     the chain emitters; this is the stored-value case. with_object desugars to
+     to_a.each_with_object in analyze.) */
+  if (rt == TY_ENUMERATOR && sp_streq(name, "with_index")) {
+    int wargs = nt_ref(nt, id, "arguments");
+    int wargc = 0;
+    const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+    if (wargc <= 1) {
+      const char *p1_orig = block_param_name(c, block, 1);
+      const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
+      int ta = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s); SP_GC_ROOT(_t%d);\n",
+                 ta, rb.p ? rb.p : "", ta);
+      free(rb.p);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_int _t%d = ", toff);
+      if (wargc == 1 && wargv) emit_int_expr(c, wargv[0], b);
+      else buf_puts(b, "0");
+      buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+      if (p0) {
+        Scope *bs0 = comp_scope_of(c, block);
+        LocalVar *b0 = p0_orig ? scope_local(bs0, p0_orig) : NULL;
+        TyKind p0t = (b0 && b0->type != TY_UNKNOWN) ? b0->type : TY_POLY;
+        char vb0[48];
+        snprintf(vb0, sizeof vb0, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ", p0);
+        if (p0t == TY_POLY) buf_puts(b, vb0);
+        /* an element that is nil binds a nullable parameter's own nil, where
+           `.v.i` read the 0 under the tag */
+        else if (b0->nullable_int) emit_unbox_nilable_text(c, p0t, vb0, b);
+        else emit_unbox_text(c, p0t, vb0, b);
+        buf_puts(b, ";\n");
+      }
+      if (p1) {
+        Scope *bs1 = comp_scope_of(c, block);
+        LocalVar *b1 = p1_orig ? scope_local(bs1, p1_orig) : NULL;
+        TyKind p1t = (b1 && b1->type != TY_UNKNOWN) ? b1->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        if (p1t == TY_POLY)
+          buf_printf(b, "lv_%s = sp_box_int(_t%d + _t%d);\n", p1, ti, toff);
+        else
+          buf_printf(b, "lv_%s = _t%d + _t%d;\n", p1, ti, toff);
+      }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+  }
+
+  /* array.each { |x| ... } */
+  /* Also drives a materialized or generator Enumerator: `enum.each { }` drains
+     it to a poly array once (a generator runs its fiber to completion -- an
+     infinite generator loops here, matching Ruby's eager Enumerator#each) and
+     reuses the poly-array param binding below. */
+  if (sp_streq(name, "each") && (rt == TY_POLY_ARRAY || rt == TY_ENUMERATOR)) {
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    int ta = ++g_tmp;
+    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
+    Scope *cs_pa = p0 ? comp_scope_of(c, id) : NULL;
+    LocalVar *outer_pa = (p0 && cs_pa) ? scope_local(cs_pa, p0) : NULL;
+    int ts_pa = 0;
+    if (outer_pa) ts_pa = emit_shadow_save(c, outer_pa->type, p0, b, indent);
+    emit_indent(b, indent);
+    if (rt == TY_ENUMERATOR)
+      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s);\n", ta, rb.p ? rb.p : "");
+    else
+      buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : "");
+    free(rb.p);
+    /* Root the receiver: a freshly-built array referenced only by this temp
+       is otherwise freed if the loop body triggers GC mid-iteration, leaving
+       the next element fetch dangling. */
+    emit_indent(b, indent);
+    buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", t, t, ta, t);
+    if (p0) {
+      /* Destructuring: 2+ params over poly_array where params are scalar-typed */
+      const char *orig_p0n = block_param_name(c, block, 0);
+      Scope *blk_sp = comp_scope_of(c, block);
+      LocalVar *bp0p = orig_p0n ? scope_local(blk_sp, orig_p0n) : NULL;
+      TyKind bp0_tp = bp0p ? bp0p->type : TY_UNKNOWN;
+      int npp = 0; while (block_param_name(c, block, npp)) npp++;
+      int did_destruct = 0;
+      /* An Enumerator's items are boxed PolyArray pairs (each_with_index etc.),
+         never a typed inner array, so reading them as an sp_<K>Array would
+         misinterpret the memory (#2622). Route those through the poly auto-splat
+         below, which unboxes each sub-element. */
+      if (npp >= 2 && bp0_tp != TY_POLY && bp0_tp != TY_UNKNOWN && rt != TY_ENUMERATOR) {
+        const char *inner_kk = array_kind(ty_array_of(bp0_tp));
+        if (inner_kk) {
+          int tsub = ++g_tmp;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n",
+                     inner_kk, tsub, inner_kk, ta, t);
+          for (int pj = 0; pj < npp; pj++) {
+            const char *pnj = block_param_name(c, block, pj);
+            if (!pnj) continue;
+            emit_indent(b, indent + 1);
+            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
+                       rename_local(pnj), inner_kk, tsub, pj);
+          }
+          did_destruct = 1;
+        }
+      }
+      /* Poly-param auto-splat: a 2+ param block whose params weren't proven to
+         be a typed inner array (so they're poly/unknown). Ruby auto-splats each
+         element ONLY when it is itself an Array -- destructure item k into param
+         k (missing item -> nil); a non-array element binds param 0, rest nil. */
+      if (!did_destruct && npp >= 2) {
+        int telem = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, ta, t);
+        emit_poly_auto_splat(c, block, telem, b, indent);
+        did_destruct = 1;
+      }
+      if (!did_destruct) {
+        /* an unregistered parameter has no C declaration (see
+           emit_iter_param_assign): binding it would name a variable that does
+           not exist (#3853) */
+        Scope *bsc = comp_scope_of(c, block);
+        LocalVar *plv = bsc ? scope_local(bsc, block_param_name(c, block, 0)) : NULL;
+        if (plv && plv->type != TY_UNKNOWN) {
+          /* A parameter typed from an earlier, narrower answer of the
+             receiver (a String array, before the method returning it widened
+             to a boxed one) takes the element unboxed, as the destructuring
+             binding above does (#5521). */
+          char src[64]; snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, t);
+          emit_indent(b, indent + 1);
+          emit_block_param_from_boxed(c, p0, plv->type, src, b);
+        }
+      }
+    }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
+    return 1;
+  }
+  if (is_each_walk(name) &&
+      (ty_is_array(rt) || ty_is_obj_array(rt))) {   /* an object array walks as sp_PtrArray (#4846) */
+    const char *k = array_iter_kind(rt);
+    if (!k) return 0;
+    int rev = sp_streq(name, "reverse_each");
+    int t = ++g_tmp, tn = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, recv, &rb);
+    hoist_loop_recv(c, rt, &rb, b, indent);
+    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
+    TyKind et = p0 ? ty_array_elem(rt) : TY_UNKNOWN;
+    Scope *cs = p0 ? comp_scope_of(c, id) : NULL;
+    LocalVar *outer = (p0 && cs) ? scope_local(cs, p0) : NULL;
+    int box_to_poly = outer && outer->type == TY_POLY && et != TY_POLY;
+    /* the parameter's own slot can be boxed while the receiver stays a typed
+       array (a widened slot, #4188): the element binds boxed into it, the
+       way the shadowed outer's would (the take_while of a Ruby definition
+       whose block parameter widened assigned a const char * to it) */
+    int to_strbuf = outer && outer->type == TY_STRBUF && et == TY_STRING;
+    if (!box_to_poly && p0 && et != TY_POLY) {
+      Scope *bsc = comp_scope_of(c, block);
+      LocalVar *blv = bsc ? scope_local(bsc, p0_orig ? p0_orig : p0) : NULL;
+      if (blv && blv->type == TY_POLY) box_to_poly = 1;
+      /* a slot a mutating callee made a String buffer takes a String
+         element as one, as a plain assignment to it does (#6038) */
+      if (blv && blv->type == TY_STRBUF && et == TY_STRING) to_strbuf = 1;
+    }
+    int ts = 0;
+    if (outer) {
+      /* Block params shadow outer variables in Ruby; save and restore */
+      ts = emit_shadow_save(c, outer->type, p0, b, indent);
+    }
+    if (rev) { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_%sArray_length(%s);\n", tn, k, rb.p); }
+    emit_indent(b, indent);
+    if (rev) buf_printf(b, "for (sp_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", t, tn, t, t);
+    else {
+      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
+      buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
+    }
+    if (p0) {
+      /* Destructuring: 2+ params over poly_array where params are scalar-typed
+         (e.g. `[[1,2],[3,4]].each { |a,b| }` or numbered `{ _1; _2 }`).
+         The poly element is an inner typed array; unbox and destructure. */
+      Scope *blk_s = comp_scope_of(c, block);
+      /* Use original (unrenameD) name for scope lookup; p0 is already renamed */
+      const char *orig_p0_name = block_param_name(c, block, 0);
+      LocalVar *bp0 = orig_p0_name ? scope_local(blk_s, orig_p0_name) : NULL;
+      TyKind bp0_type = bp0 ? bp0->type : TY_UNKNOWN;
+      int np = 0; while (block_param_name(c, block, np)) np++;
+      if (np >= 2 && sp_streq(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
+        /* Get the inner array kind from the first param's element type */
+        const char *inner_k = array_kind(ty_array_of(bp0_type));
+        if (inner_k) {
+          int tsub = ++g_tmp;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(", inner_k, tsub, inner_k);
+          buf_puts(b, rb.p); buf_printf(b, ", _t%d).v.p;\n", t);
+          for (int pj = 0; pj < np; pj++) {
+            const char *pname2 = block_param_name(c, block, pj);
+            if (!pname2) continue;
+            emit_indent(b, indent + 1);
+            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
+                       rename_local(pname2), inner_k, tsub, pj);
+          }
+          goto each_body;
+        }
+      }
+      /* Poly-typed params over poly elements auto-splat, which is what `each`
+         already does through its own lowering: without it
+         `each_with_index.to_a.reverse_each { |x, i| }` bound the whole
+         [value, index] pair to x and left i nil (#4326). The helper writes
+         through g_pre, so point it at this statement buffer. */
+      if (np >= 2 && sp_streq(k, "Poly")) {
+        char es_as[600];
+        snprintf(es_as, sizeof es_as, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        Buf *sv_pre = g_pre; g_pre = b;
+        int did = emit_iter_autosplat(c, block, rt, es_as, indent + 1);
+        g_pre = sv_pre;
+        if (did) goto each_body;
+      }
+      emit_indent(b, indent + 1);
+      if (box_to_poly) {
+        /* A nested row is a pointer, not one of the scalar boxes. The same
+           helper each_with_index uses covers that and the scalars. */
+        Buf src; memset(&src, 0, sizeof src);
+        buf_printf(&src, "sp_%sArray_get(", k);
+        buf_puts(&src, rb.p ? rb.p : "NULL");
+        buf_printf(&src, ", _t%d)", t);
+        buf_printf(b, "lv_%s = ", p0);
+        emit_boxed_text(c, et, src.p ? src.p : "", b);
+        free(src.p);
+        buf_puts(b, ";\n");
+      }
+      else if (to_strbuf) {
+        buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(", p0);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d));\n", t);
+      }
+      else {
+        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      }
+    }
+    /* a `*rest` param (splat-only wraps the element; alongside requireds it
+       binds empty for scalar elements) */
+    { char rs_es[560]; snprintf(rs_es, sizeof rs_es, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      TyKind rs_et = ty_array_elem(rt);
+      if (emit_iter_bind_rest(c, block, rs_np, rs_et, rs_es, b, indent + 1) < 0) {
+        unsupported(c, id, "block splat parameter alongside required params over a poly element");
+        return 1;
+      } }
+    each_body:
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
+    free(rb.p);
+    return 1;
+  }
+  return -1;
+}
+
+/* emit_iteration_stmt_body's Array#each_with_index, zip with a block, and
+   each / each_pair on a poly value dispatched at run time (answers 1
+   emitted, 0 declined, -1 to go on) */
+static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0, TyKind rt) {
+  /* array.each_with_index { |x, i| ... } */
+  if (sp_streq(name, "each_with_index") && (ty_is_array(rt) || ty_is_obj_array(rt))) {
+    const char *k = array_iter_kind(rt);
+    if (!k) return 0;
+    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    hoist_loop_recv(c, rt, &rb, b, indent);
+    Scope *cs_ewi = comp_scope_of(c, id);
+    LocalVar *clv_ewi_p1 = (p1 && cs_ewi) ? scope_local(cs_ewi, p1) : NULL;
+    LocalVar *clv_ewi_p0 = (p0 && cs_ewi) ? scope_local(cs_ewi, p0) : NULL;
+    TyKind ewi_et = ty_array_elem(rt);
+    int p0_box_poly = clv_ewi_p0 && clv_ewi_p0->type == TY_POLY && ewi_et != TY_POLY;
+    int p1_box_poly = clv_ewi_p1 && clv_ewi_p1->type == TY_POLY;
+    /* Save outer variables before loop */
+    int ts_p0 = 0, ts_p1 = 0;
+    if (p0 && clv_ewi_p0) ts_p0 = emit_shadow_save(c, clv_ewi_p0->type, p0, b, indent);
+    if (p1 && clv_ewi_p1) ts_p1 = emit_shadow_save(c, clv_ewi_p1->type, p1, b, indent);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
+    buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
+    /* an unused parameter is pruned by liveness and has no declaration, so
+       binding it would name an undeclared C variable (#3853) */
+    { Scope *ewsc = comp_scope_of(c, block);
+      const char *p0o = block_param_name(c, block, 0);
+      if (p0 && (!ewsc || !p0o || !scope_local(ewsc, p0o))) p0 = NULL;
+      const char *p1o = block_param_name(c, block, 1);
+      if (p1 && (!ewsc || !p1o || !scope_local(ewsc, p1o))) p1 = NULL; }
+    if (p0) {
+      emit_indent(b, indent + 1);
+      if (p0_box_poly) {
+        char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        buf_printf(b, "lv_%s = ", p0); emit_boxed_text(c, ewi_et, src, b); buf_puts(b, ";\n");
+      }
+      else {
+        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      }
+    }
+    if (p1) {
+      emit_indent(b, indent + 1);
+      if (p1_box_poly) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p1, t);
+      else buf_printf(b, "lv_%s = _t%d;\n", p1, t);
+    }
+    /* splat-only block packs BOTH yielded values: [element, index] */
+    if (!p0 && !p1 && block_rest_name(c, block) && *block_rest_name(c, block)) {
+      const char *rr = rename_local(block_rest_name(c, block));
+      emit_indent(b, indent + 1);
+      /* assign the prologue-declared, slot-rooted rest local (see
+         emit_iter_bind_rest) rather than shadow-declaring a fresh one */
+      buf_printf(b, "lv_%s = sp_PolyArray_new();\n", rr);
+      char rsrc[512]; snprintf(rsrc, sizeof rsrc, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_PolyArray_push(lv_%s, ", rr);
+      emit_boxed_text(c, ewi_et, rsrc, b);
+      buf_puts(b, ");\n");
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_PolyArray_push(lv_%s, sp_box_int(_t%d));\n", rr, t);
+    }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    /* Restore outer variables */
+    if (p0 && ts_p0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_p0); }
+    if (p1 && ts_p1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1, ts_p1); }
+    free(rb.p);
+    return 1;
+  }
+
+  /* array.zip(other) { |a, b| ... } -- block form, returns nil */
+  if (sp_streq(name, "zip") && (ty_is_array(rt) || rt == TY_POLY) && block >= 0) {
+    int zargs_n = nt_ref(nt, id, "arguments");
+    int zargc = 0; const int *zargv = zargs_n >= 0 ? nt_arr(nt, zargs_n, "arguments", &zargc) : NULL;
+    /* The receiver, too, can be an array only at run time (a row read out of a
+       poly table): walk it through the boxed accessors. Without this the call
+       fell to the runtime dispatch, which has no zip arm at all. */
+    int recv_poly = !ty_is_array(rt);
+    const char *k = recv_poly ? "Poly" : array_iter_kind(rt);
+    if (k && zargc == 1 && zargv) {
+      TyKind a0t = comp_ntype(c, zargv[0]);
+      const char *k2 = ty_is_array(a0t) ? array_iter_kind(a0t) : NULL;
+      /* The other operand may be an array only at run time (a poly element of
+         a table of rows). Read it through the boxed accessor rather than
+         handing an sp_RbVal to the typed one. */
+      int arg_poly = (k2 == NULL);
+      if (!k2) k2 = k;
+      TyKind et = recv_poly ? TY_POLY : ty_array_elem(rt);
+      TyKind et2 = ty_is_array(a0t) ? ty_array_elem(a0t) : (arg_poly ? TY_POLY : et);
+      const char *p1n = block_param_name(c, block, 1); if (p1n) p1n = rename_local(p1n);
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      if (recv_poly) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+      Buf ob; memset(&ob, 0, sizeof ob);
+      if (arg_poly) emit_boxed(c, zargv[0], &ob); else emit_expr(c, zargv[0], &ob);
+      if (recv_poly) {
+        int trz = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trz, rb.p ? rb.p : "sp_box_nil()", trz);
+        free(rb.p); memset(&rb, 0, sizeof rb);
+        buf_printf(&rb, "_t%d", trz);
+      }
+      else hoist_loop_recv(c, rt, &rb, b, indent);
+      if (ty_is_array(a0t)) hoist_loop_recv(c, a0t, &ob, b, indent);
+      Scope *zs = comp_scope_of(c, id);
+      LocalVar *zlv0 = (p0 && zs) ? scope_local(zs, p0) : NULL;
+      LocalVar *zlv1 = (p1n && zs) ? scope_local(zs, p1n) : NULL;
+      int zs0 = 0, zs1 = 0;
+      if (p0 && zlv0) zs0 = emit_shadow_save(c, zlv0->type, p0, b, indent);
+      if (p1n && zlv1) zs1 = emit_shadow_save(c, zlv1->type, p1n, b, indent);
+      emit_indent(b, indent);
+      if (recv_poly)
+        buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(%s); _t%d++) {\n",
+                   t, t, rb.p ? rb.p : "sp_box_nil()", t);
+      else
+        buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) {\n",
+                   t, t, k, rb.p ? rb.p : "NULL", t);
+      if (p0 && zlv0 && !p1n) {
+        /* SOLO param: the boxed [e1, e2] tuple (two params auto-splat it) */
+        int tpz = ++g_tmp;
+        char s1[512], s2[512];
+        if (recv_poly) snprintf(s1, sizeof s1, "sp_poly_arr_get(%s, _t%d)", rb.p ? rb.p : "sp_box_nil()", t);
+        else snprintf(s1, sizeof s1, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        if (arg_poly) snprintf(s2, sizeof s2, "sp_poly_arr_get(%s, _t%d)", ob.p ? ob.p : "sp_box_nil()", t);
+        else snprintf(s2, sizeof s2, "sp_%sArray_get(%s, _t%d)", k2, ob.p ? ob.p : "NULL", t);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpz, tpz);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, et, s1, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
+        memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, et2, s2, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
+        buf_printf(b, "sp_box_poly_array(_t%d); });\n", tpz);
+      }
+      else if (p0 && zlv0) {
+        char src[512];
+        if (recv_poly) snprintf(src, sizeof src, "sp_poly_arr_get(%s, _t%d)", rb.p ? rb.p : "sp_box_nil()", t);
+        else snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p0);
+        emit_zip_block_param(c, zlv0->type, et, src, b);
+        buf_puts(b, ";\n");
+      }
+      if (p1n && zlv1 && ob.p) {
+        char src2[512];
+        if (arg_poly) snprintf(src2, sizeof src2, "sp_poly_arr_get(%s, _t%d)", ob.p, t);
+        else snprintf(src2, sizeof src2, "sp_%sArray_get(%s, _t%d)", k2, ob.p, t);
+        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p1n);
+        emit_zip_block_param(c, zlv1->type, et2, src2, b);
+        buf_puts(b, ";\n");
+      }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      if (p0 && zs0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, zs0); }
+      if (p1n && zs1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1n, zs1); }
+      free(rb.p); free(ob.p);
+      return 1;
+    }
+  }
+
+  /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
+  if ((sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+       sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
+       sp_streq(name, "each_with_index") ||
+       /* each_entry yields what each yields for every builtin enumerable, so
+          the boxed receiver iterates the same way (#3395, #3987), and
+          reverse_each walks the same elements from the other end */
+       sp_streq(name, "each_entry") || sp_streq(name, "reverse_each")) &&
+      rt == TY_POLY && block >= 0) {
+    /* each/each_pair walk the elements (sp_poly_each_elem renders a hash
+       entry as a boxed [k, v] pair); each_value/each_key bind one half of
+       that pair (the receiver is a hash when these names dispatch);
+       each_with_index binds the whole element plus the loop index (no splat). */
+    int pv_half = sp_streq(name, "each_value") ? 1 :
+                  sp_streq(name, "each_key") ? 0 : -1;
+    int is_ewi = sp_streq(name, "each_with_index");
+    int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    /* The gate read the cached node type (poly); a cloned-body local can have
+       settled to a TYPED container since (a per-includer module-method clone
+       whose param pinned later, #2008). Re-infer and box the concrete kind --
+       a raw typed pointer must never initialize the sp_RbVal receiver. */
+    TyKind fresh_rt = infer_type(c, recv);
+    if (fresh_rt != TY_POLY && (ty_is_hash(fresh_rt) || ty_is_array(fresh_rt))) {
+      Buf bx; memset(&bx, 0, sizeof bx);
+      emit_boxed_text(c, fresh_rt, rb.p ? rb.p : "", &bx);
+      free(rb.p); rb = bx;
+    }
+    emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
+    /* Root the boxed receiver so a GC fired by the loop body doesn't free a
+       freshly-built collection held only by this temp. */
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
+    emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
+    emit_indent(b, indent); emit_poly_iter_obj_reject(c, ta, name, b);
+    emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
+    /* `each { |x| }` over an Enumerator yielding several values in a step
+       binds x the first of them; the builtins/ walks (`each { |x| yield x }`)
+       hand the step on whole */
+    int tpair = 0;
+    int gather = block_binds_gathered(c, block);
+    {
+      Scope *ss = comp_scope_of(c, id);
+      const char *sn = ss ? ss->name : NULL;
+      const char *rest = block_rest_name(c, block);
+      if (sp_streq(name, "each") &&
+          ((p0 && !block_param_name(c, block, 1) && !(rest && *rest)) || block_lone_rest(c, block) || gather) &&
+          !(sn && strncmp(sn, "__enum", 6) == 0)) {
+        tpair = ++g_tmp;
+        emit_indent(b, indent); buf_printf(b, "int _t%d = sp_poly_yields_pair(_t%d);\n", tpair, ta);
+      }
+    }
+    /* an Enumerator (or a String Range) has no element read of its own: walk
+       the items it yields, so a Ruby-defined Enumerable method (find, count,
+       each_with_object, ...) over a boxed one saw no elements. A generator
+       is walked one item ahead, so a block that breaks out stops an endless
+       one; reverse_each needs them all first. */
+    emit_indent(b, indent);
+    buf_printf(b, "_t%d = %s(_t%d);\n", ta,
+               sp_streq(name, "reverse_each") ? "sp_poly_iter_subject" : "sp_poly_iter_walk", ta);
+    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
+    emit_indent(b, indent);
+    if (sp_streq(name, "reverse_each"))
+      buf_printf(b, "for (sp_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", ti, tn, ti, ti);
+    else
+      /* the length is read again every turn, as the typed loops read theirs:
+         a block that shrinks the receiver (`a.clear`, `a.pop`) stops the
+         walk where the array now ends, where the hoisted count walked on
+         past it and yielded nils, and one that grows it is followed (every
+         Ruby-defined Enumerable method iterates through this loop on a
+         boxed receiver) */
+      buf_printf(b, "for (sp_int _t%d = 0; (void)_t%d, _t%d < sp_poly_arr_len_ex(_t%d); _t%d++) {\n", ti, tn, ti, ta, ti);
+    /* multi-param: auto-splat each poly element into params. Ruby splats only
+       when the element is itself an Array (sp_poly_each_elem already renders a
+       hash pair as a 2-element array, so |k, v| over a hash still splats); a
+       non-array element binds param 0 with the rest nil. */
+    int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
+    if (is_ewi) {
+      /* each_with_index { |v, i| }: bind param 0 to the WHOLE element (never
+         splatting a nested array, unlike `each`) and param 1 to the loop index;
+         any further params bind to nil each iteration. Every binding is gated on
+         the param actually being a declared local -- an UNUSED block param is
+         pruned by liveness (scope_local returns NULL and no `lv_<name>` is
+         declared), so emitting an assignment to it would reference an undeclared
+         C identifier. This mirrors the `each` sibling, which binds only live
+         params. */
+      Scope *ews = comp_scope_of(c, block);
+      const char *e0_orig = block_param_name(c, block, 0);
+      LocalVar *e0lv = (e0_orig && ews) ? scope_local(ews, e0_orig) : NULL;
+      if (e0lv) {
+        TyKind e0t = e0lv->type != TY_UNKNOWN ? e0lv->type : TY_POLY;
+        char esrc[64]; snprintf(esrc, sizeof esrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+        emit_indent(b, indent + 1);
+        emit_block_param_from_boxed(c, rename_local(e0_orig), e0t, esrc, b);
+      }
+      const char *i1_orig = block_param_name(c, block, 1);
+      LocalVar *i1lv = (i1_orig && ews) ? scope_local(ews, i1_orig) : NULL;
+      if (i1lv) {
+        TyKind i1t = i1lv->type != TY_UNKNOWN ? i1lv->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        if (i1t == TY_POLY) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", rename_local(i1_orig), ti);
+        else buf_printf(b, "lv_%s = _t%d;\n", rename_local(i1_orig), ti);
+      }
+      for (int pj = 2; pj < npp_poly; pj++) {
+        const char *pnj = block_param_name(c, block, pj);
+        LocalVar *pjlv = (pnj && ews) ? scope_local(ews, pnj) : NULL;
+        if (!pjlv) continue;
+        TyKind pjt = pjlv->type != TY_UNKNOWN ? pjlv->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ", rename_local(pnj));
+        emit_block_param_nil(c, pjt, b);
+        buf_puts(b, ";\n");
+      }
+    }
+    else if (npp_poly >= 2 && !gather) {
+      int telem = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
+      emit_poly_auto_splat(c, block, telem, b, indent);
+    }
+    else if (pv_half < 0 && block_lone_rest(c, block)) {
+      /* `each { |*r| }`: the element, a Hash entry's [k, v] pair included,
+         is the one value the rest array holds; an Enumerator that yields
+         several values per step gives them all */
+      if (tpair) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_yielded_args(_t%d, sp_poly_each_elem(_t%d, _t%d));\n",
+                   rename_local(block_rest_name(c, block)), tpair, ta, ti);
+      }
+      else {
+        char rsrc[64]; snprintf(rsrc, sizeof rsrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+        emit_iter_bind_rest(c, block, 0, TY_POLY, rsrc, b, indent + 1);
+      }
+    }
+    else if (gather) {
+      /* any other shape binds the step's values by the proc distribution:
+         the element (a Hash entry's [k, v] pair), the half of the pair
+         each_value / each_key yield, or every value an Enumerator's step
+         yielded */
+      char elem[96]; snprintf(elem, sizeof elem, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+      if (pv_half >= 0) {
+        int tel = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_RbVal _t%d = %s;\n", tel, elem);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) _t%d = sp_poly_arr_get(_t%d, %d);\n",
+                   tel, tel, tel, tel, pv_half);
+        snprintf(elem, sizeof elem, "_t%d", tel);
+      }
+      char vals[160];
+      if (tpair) snprintf(vals, sizeof vals, "sp_yielded_args(_t%d, %s)", tpair, elem);
+      else snprintf(vals, sizeof vals, "sp_yielded_args(0, %s)", elem);
+      emit_boxed_step_binds(c, block, vals, b, indent + 1, 0);
+    }
+    else if (p0 && pv_half >= 0) {
+      /* each_value / each_key: the element is a [k, v] pair; bind one half
+         (a non-pair element binds itself, mirroring the splat fallback) */
+      Scope *pvs = comp_scope_of(c, block);
+      LocalVar *pvl = pvs ? scope_local(pvs, block_param_name(c, block, 0)) : NULL;
+      TyKind pvt = (pvl && pvl->type != TY_UNKNOWN) ? pvl->type : TY_POLY;
+      int tel = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", tel, ta, ti);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) _t%d = sp_poly_arr_get(_t%d, %d);\n",
+                 tel, tel, tel, tel, pv_half);
+      emit_indent(b, indent + 1);
+      {
+        char src[32]; snprintf(src, sizeof src, "_t%d", tel);
+        emit_block_param_from_boxed(c, p0, pvt, src, b);
+      }
+    }
+    else if (p0) {
+      /* Coerce the boxed element to the block param's declared type: a param
+         inferred as a concrete scalar (String from a would-be str_array whose
+         producer actually diverged, #3147) must not take a raw sp_RbVal into a
+         const char* slot. emit_block_param_from_boxed inserts the conversion. */
+      Scope *e0s = comp_scope_of(c, block);
+      LocalVar *e0lv = e0s ? scope_local(e0s, block_param_name(c, block, 0)) : NULL;
+      TyKind e0t = (e0lv && e0lv->type != TY_UNKNOWN) ? e0lv->type : TY_POLY;
+      char src[96];
+      if (tpair) snprintf(src, sizeof src, "sp_yielded_first(_t%d, sp_poly_each_elem(_t%d, _t%d))", tpair, ta, ti);
+      else snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+      emit_indent(b, indent + 1);
+      emit_block_param_from_boxed(c, p0, e0t, src, b);
+    }
+    /* a paramless block (`each { ... }`) binds nothing; the loop still runs the
+       body once per element for its side effect. */
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+  return -1;
+}
+
+/* emit_iteration_stmt_body's Hash iterators: each / each_pair, each_value /
+   each_key, and the in-place select! family (answers 1 emitted, 0 declined,
+   -1 to go on) */
+static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char *name, int recv, int body, const char *p0, TyKind rt) {
+  /* hash.each / each_pair { |k, v| ... } */
+  if ((sp_streq(name, "each") || sp_streq(name, "each_pair")) && ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    if (!hn) return 0;
+    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
+    int t = ++g_tmp;
+    /* Hoist the receiver into one temp instead of splicing its text into the
+       loop bound and every key/val access. When the receiver is an inlined
+       block-method statement-expression (e.g. a Ruby-defined `group_by` that
+       lowers to `({ ...produce hash... })`), re-emitting it per access both
+       truncates into invalid C and re-runs its side effects. The temp is a
+       root, as each_key's and each_value's hoist below already is: the loop
+       reads its `len` as the bound on every turn and its `order` on every
+       yield, and a receiver that is itself a temporary -- the hash a method
+       call returned -- has no other holder while the block allocates. */
+    int th = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_%sHash *_t%d = ", hn, th);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d);\n", th);
+    Buf rb; memset(&rb, 0, sizeof rb);
+    buf_printf(&rb, "_t%d", th);
+    /* Mutating the key set during #each: CRuby refuses a new key outright, and
+       supports deleting the current one -- which slides the next entry into
+       this slot, so the index must not advance past it (#3569). */
+    int tn0 = ++g_tmp, tk0 = ++g_tmp;
+    int key_is_int = (ty_hash_key(rt) == TY_SYMBOL || ty_hash_key(rt) == TY_INT);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_int _t%d = %s->len;\n", tn0, rb.p);
+    if (key_is_int) {
+      emit_indent(b, indent);
+      buf_printf(b, "sp_int _t%d = 0;\n", tk0);
+    }
+    emit_indent(b, indent);
+    /* The advance is the loop's own third clause, not a statement at the end of
+       the body: `next` in the block is a C `continue`, which runs the third
+       clause and skips whatever the body ends with -- as a trailing statement
+       it was skipped and the same entry ran forever (#3782). */
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < %s->len; ", t, t, rb.p);
+    buf_printf(b, "({ if (%s->len > _t%d) sp_raise_cls(\"RuntimeError\","
+                  " \"can't add a new key into hash during iteration\"); ", rb.p, tn0);
+    if (key_is_int)
+      buf_printf(b, "if (_t%d < %s->len && (sp_int)%s->order[_t%d] == _t%d) _t%d++;"
+                    " else _t%d = %s->len; })) {\n",
+                 t, rb.p, rb.p, t, tk0, t, tn0, rb.p);
+    else buf_printf(b, "_t%d++; })) {\n", t);
+    if (key_is_int) {
+      emit_indent(b, indent + 1);
+      buf_printf(b, "_t%d = (sp_int)%s->order[_t%d];\n", tk0, rb.p, t);
+    }
+    if (p0 && !p1) {
+      /* a SOLO block param receives the boxed [k, v] PAIR (CRuby yields the
+         pair as one argument; two params auto-splat it below) */
+      int tpp = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpp, tpp);
+      if (rt == TY_POLY_POLY_HASH) {
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s->keys[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s->vals[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
+      }
+      else {
+        char kx[256], vx[288];
+        snprintf(kx, sizeof kx, "%s->order[_t%d]", rb.p, t);
+        snprintf(vx, sizeof vx, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, ty_hash_key(rt), kx, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
+        memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, ty_hash_val(rt), vx, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
+      }
+      buf_printf(b, "sp_box_poly_array(_t%d); })", tpp);
+      buf_puts(b, ";\n");
+    }
+    else if (p0) {
+      /* The param may be poly (a name shared across hashes of differing element
+         types); box a concrete key into the poly slot. */
+      const char *raw0 = block_param_name(c, block, 0);
+      LocalVar *pv0 = raw0 ? scope_local(comp_scope_of(c, block), raw0) : NULL;
+      TyKind want0 = ty_hash_key(rt);
+      int box0 = pv0 && pv0->type == TY_POLY && want0 != TY_POLY;
+      char src0[256];
+      if (rt == TY_POLY_POLY_HASH)
+        snprintf(src0, sizeof src0, "%s->keys[%s->order[_t%d]]", rb.p, rb.p, t);
+      else
+        snprintf(src0, sizeof src0, "%s->order[_t%d]", rb.p, t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ", p0);
+      if (box0) emit_boxed_text(c, want0, src0, b); else buf_puts(b, src0);
+      buf_puts(b, ";\n");
+    }
+    if (p1) {
+      const char *raw1 = block_param_name(c, block, 1);
+      LocalVar *pv1 = raw1 ? scope_local(comp_scope_of(c, block), raw1) : NULL;
+      TyKind want1 = ty_hash_val(rt);
+      int box1 = pv1 && pv1->type == TY_POLY && want1 != TY_POLY;
+      char src1[256];
+      if (rt == TY_POLY_POLY_HASH)
+        snprintf(src1, sizeof src1, "%s->vals[%s->order[_t%d]]", rb.p, rb.p, t);
+      else
+        snprintf(src1, sizeof src1, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ", p1);
+      if (box1) emit_boxed_text(c, want1, src1, b); else buf_puts(b, src1);
+      buf_puts(b, ";\n");
+    }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    free(rb.p);
+    return 1;
+  }
+
+  /* hash.each_value { |v| ... } / each_key { |k| ... } -- single param */
+  if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    if (!hn) return 0;
+    int is_val = sp_streq(name, "each_value");
+    int t = ++g_tmp, th2 = ++g_tmp;
+    /* Evaluate the receiver ONCE into a rooted temp: a call receiver (the ENV
+       snapshot) re-evaluated per access built a fresh unrooted hash each time
+       and the GC swept the earlier ones mid-loop (#2842). */
+    {
+      Buf hb0; memset(&hb0, 0, sizeof hb0);
+      emit_expr(c, recv, &hb0);
+      emit_indent(b, indent);
+      buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d);\n",
+                 c_type_name(rt), th2, hb0.p ? hb0.p : "NULL", th2);
+      free(hb0.p);
+    }
+    Buf rb; memset(&rb, 0, sizeof rb);
+    buf_printf(&rb, "_t%d", th2);
+    emit_indent(b, indent);
+    buf_printf(b, "for (sp_int _t%d = 0; _t%d < ", t, t);
+    buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
+    if (p0) {
+      /* The param may be poly (shared name across hashes of differing
+         element types); box a concrete element into the poly slot. */
+      const char *raw = block_param_name(c, block, 0);
+      LocalVar *pv = raw ? scope_local(comp_scope_of(c, block), raw) : NULL;
+      TyKind want = is_val ? ty_hash_val(rt) : ty_hash_key(rt);
+      int box = pv && pv->type == TY_POLY && want != TY_POLY;
+      /* the other way: a one-class hash binds its boxed values unboxed into
+         the class-typed parameter (#4846) */
+      int unbox = is_val && pv && ty_is_object(pv->type) && want == TY_POLY;
+      char src[256];
+      if (rt == TY_POLY_POLY_HASH) {
+        /* PolyPolyHash: ->order[i] is an index; keys/vals hold sp_RbVal */
+        if (is_val)
+          snprintf(src, sizeof src, "%s->vals[%s->order[_t%d]]", rb.p, rb.p, t);
+        else
+          snprintf(src, sizeof src, "%s->keys[%s->order[_t%d]]", rb.p, rb.p, t);
+      }
+      else if (is_val)
+        snprintf(src, sizeof src, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
+      else
+        snprintf(src, sizeof src, "%s->order[_t%d]", rb.p, t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ", p0);
+      if (box) emit_boxed_text(c, want, src, b);
+      else if (unbox) emit_unbox_text(c, pv->type, src, b);
+      else buf_puts(b, src);
+      buf_puts(b, ";\n");
+    }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    free(rb.p);
+    return 1;
+  }
+
+  /* hash.delete_if / reject! / select! / filter! / keep_if { |k, v| cond }
+     as a statement: the loop alone, its value unread (the expression form
+     lives in emit_hash_call) */
+  if (is_select_bang(name) && ty_is_hash(rt) && block >= 0) {
+    Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
+    int tr2, to2, tw2;
+    int ok = emit_hash_filter_loop(c, recv, block, rt, name, rb2.p ? rb2.p : "NULL", b, indent, &tr2, &to2, &tw2);
+    free(rb2.p);
+    if (ok) return 1;
+  }
+  return -1;
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -5744,799 +6556,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* hash.each / each_pair { |k, v| ... } */
-  if ((sp_streq(name, "each") || sp_streq(name, "each_pair")) && ty_is_hash(rt)) {
-    const char *hn = ty_hash_cname(rt);
-    if (!hn) return 0;
-    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
-    int t = ++g_tmp;
-    /* Hoist the receiver into one temp instead of splicing its text into the
-       loop bound and every key/val access. When the receiver is an inlined
-       block-method statement-expression (e.g. a Ruby-defined `group_by` that
-       lowers to `({ ...produce hash... })`), re-emitting it per access both
-       truncates into invalid C and re-runs its side effects. The temp is a
-       root, as each_key's and each_value's hoist below already is: the loop
-       reads its `len` as the bound on every turn and its `order` on every
-       yield, and a receiver that is itself a temporary -- the hash a method
-       call returned -- has no other holder while the block allocates. */
-    int th = ++g_tmp;
-    emit_indent(b, indent);
-    buf_printf(b, "sp_%sHash *_t%d = ", hn, th);
-    emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d);\n", th);
-    Buf rb; memset(&rb, 0, sizeof rb);
-    buf_printf(&rb, "_t%d", th);
-    /* Mutating the key set during #each: CRuby refuses a new key outright, and
-       supports deleting the current one -- which slides the next entry into
-       this slot, so the index must not advance past it (#3569). */
-    int tn0 = ++g_tmp, tk0 = ++g_tmp;
-    int key_is_int = (ty_hash_key(rt) == TY_SYMBOL || ty_hash_key(rt) == TY_INT);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_int _t%d = %s->len;\n", tn0, rb.p);
-    if (key_is_int) {
-      emit_indent(b, indent);
-      buf_printf(b, "sp_int _t%d = 0;\n", tk0);
-    }
-    emit_indent(b, indent);
-    /* The advance is the loop's own third clause, not a statement at the end of
-       the body: `next` in the block is a C `continue`, which runs the third
-       clause and skips whatever the body ends with -- as a trailing statement
-       it was skipped and the same entry ran forever (#3782). */
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < %s->len; ", t, t, rb.p);
-    buf_printf(b, "({ if (%s->len > _t%d) sp_raise_cls(\"RuntimeError\","
-                  " \"can't add a new key into hash during iteration\"); ", rb.p, tn0);
-    if (key_is_int)
-      buf_printf(b, "if (_t%d < %s->len && (sp_int)%s->order[_t%d] == _t%d) _t%d++;"
-                    " else _t%d = %s->len; })) {\n",
-                 t, rb.p, rb.p, t, tk0, t, tn0, rb.p);
-    else buf_printf(b, "_t%d++; })) {\n", t);
-    if (key_is_int) {
-      emit_indent(b, indent + 1);
-      buf_printf(b, "_t%d = (sp_int)%s->order[_t%d];\n", tk0, rb.p, t);
-    }
-    if (p0 && !p1) {
-      /* a SOLO block param receives the boxed [k, v] PAIR (CRuby yields the
-         pair as one argument; two params auto-splat it below) */
-      int tpp = ++g_tmp;
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpp, tpp);
-      if (rt == TY_POLY_POLY_HASH) {
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s->keys[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s->vals[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
-      }
-      else {
-        char kx[256], vx[288];
-        snprintf(kx, sizeof kx, "%s->order[_t%d]", rb.p, t);
-        snprintf(vx, sizeof vx, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
-        Buf bx; memset(&bx, 0, sizeof bx);
-        emit_boxed_text(c, ty_hash_key(rt), kx, &bx);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
-        memset(&bx, 0, sizeof bx);
-        emit_boxed_text(c, ty_hash_val(rt), vx, &bx);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
-      }
-      buf_printf(b, "sp_box_poly_array(_t%d); })", tpp);
-      buf_puts(b, ";\n");
-    }
-    else if (p0) {
-      /* The param may be poly (a name shared across hashes of differing element
-         types); box a concrete key into the poly slot. */
-      const char *raw0 = block_param_name(c, block, 0);
-      LocalVar *pv0 = raw0 ? scope_local(comp_scope_of(c, block), raw0) : NULL;
-      TyKind want0 = ty_hash_key(rt);
-      int box0 = pv0 && pv0->type == TY_POLY && want0 != TY_POLY;
-      char src0[256];
-      if (rt == TY_POLY_POLY_HASH)
-        snprintf(src0, sizeof src0, "%s->keys[%s->order[_t%d]]", rb.p, rb.p, t);
-      else
-        snprintf(src0, sizeof src0, "%s->order[_t%d]", rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p0);
-      if (box0) emit_boxed_text(c, want0, src0, b); else buf_puts(b, src0);
-      buf_puts(b, ";\n");
-    }
-    if (p1) {
-      const char *raw1 = block_param_name(c, block, 1);
-      LocalVar *pv1 = raw1 ? scope_local(comp_scope_of(c, block), raw1) : NULL;
-      TyKind want1 = ty_hash_val(rt);
-      int box1 = pv1 && pv1->type == TY_POLY && want1 != TY_POLY;
-      char src1[256];
-      if (rt == TY_POLY_POLY_HASH)
-        snprintf(src1, sizeof src1, "%s->vals[%s->order[_t%d]]", rb.p, rb.p, t);
-      else
-        snprintf(src1, sizeof src1, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p1);
-      if (box1) emit_boxed_text(c, want1, src1, b); else buf_puts(b, src1);
-      buf_puts(b, ";\n");
-    }
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    free(rb.p);
-    return 1;
-  }
+  { int rv = iter_hash_arms(c, b, indent, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }
 
-  /* hash.each_value { |v| ... } / each_key { |k| ... } -- single param */
-  if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
-    const char *hn = ty_hash_cname(rt);
-    if (!hn) return 0;
-    int is_val = sp_streq(name, "each_value");
-    int t = ++g_tmp, th2 = ++g_tmp;
-    /* Evaluate the receiver ONCE into a rooted temp: a call receiver (the ENV
-       snapshot) re-evaluated per access built a fresh unrooted hash each time
-       and the GC swept the earlier ones mid-loop (#2842). */
-    {
-      Buf hb0; memset(&hb0, 0, sizeof hb0);
-      emit_expr(c, recv, &hb0);
-      emit_indent(b, indent);
-      buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d);\n",
-                 c_type_name(rt), th2, hb0.p ? hb0.p : "NULL", th2);
-      free(hb0.p);
-    }
-    Buf rb; memset(&rb, 0, sizeof rb);
-    buf_printf(&rb, "_t%d", th2);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < ", t, t);
-    buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
-    if (p0) {
-      /* The param may be poly (shared name across hashes of differing
-         element types); box a concrete element into the poly slot. */
-      const char *raw = block_param_name(c, block, 0);
-      LocalVar *pv = raw ? scope_local(comp_scope_of(c, block), raw) : NULL;
-      TyKind want = is_val ? ty_hash_val(rt) : ty_hash_key(rt);
-      int box = pv && pv->type == TY_POLY && want != TY_POLY;
-      /* the other way: a one-class hash binds its boxed values unboxed into
-         the class-typed parameter (#4846) */
-      int unbox = is_val && pv && ty_is_object(pv->type) && want == TY_POLY;
-      char src[256];
-      if (rt == TY_POLY_POLY_HASH) {
-        /* PolyPolyHash: ->order[i] is an index; keys/vals hold sp_RbVal */
-        if (is_val)
-          snprintf(src, sizeof src, "%s->vals[%s->order[_t%d]]", rb.p, rb.p, t);
-        else
-          snprintf(src, sizeof src, "%s->keys[%s->order[_t%d]]", rb.p, rb.p, t);
-      }
-      else if (is_val)
-        snprintf(src, sizeof src, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
-      else
-        snprintf(src, sizeof src, "%s->order[_t%d]", rb.p, t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p0);
-      if (box) emit_boxed_text(c, want, src, b);
-      else if (unbox) emit_unbox_text(c, pv->type, src, b);
-      else buf_puts(b, src);
-      buf_puts(b, ";\n");
-    }
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    free(rb.p);
-    return 1;
-  }
+  { int rv = iter_ewi_zip_poly_arms(c, id, b, indent, nt, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }
 
-  /* hash.delete_if / reject! / select! / filter! / keep_if { |k, v| cond }
-     as a statement: the loop alone, its value unread (the expression form
-     lives in emit_hash_call) */
-  if (is_select_bang(name) && ty_is_hash(rt) && block >= 0) {
-    Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
-    int tr2, to2, tw2;
-    int ok = emit_hash_filter_loop(c, recv, block, rt, name, rb2.p ? rb2.p : "NULL", b, indent, &tr2, &to2, &tw2);
-    free(rb2.p);
-    if (ok) return 1;
-  }
-
-  /* array.each_with_index { |x, i| ... } */
-  if (sp_streq(name, "each_with_index") && (ty_is_array(rt) || ty_is_obj_array(rt))) {
-    const char *k = array_iter_kind(rt);
-    if (!k) return 0;
-    const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
-    int t = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    hoist_loop_recv(c, rt, &rb, b, indent);
-    Scope *cs_ewi = comp_scope_of(c, id);
-    LocalVar *clv_ewi_p1 = (p1 && cs_ewi) ? scope_local(cs_ewi, p1) : NULL;
-    LocalVar *clv_ewi_p0 = (p0 && cs_ewi) ? scope_local(cs_ewi, p0) : NULL;
-    TyKind ewi_et = ty_array_elem(rt);
-    int p0_box_poly = clv_ewi_p0 && clv_ewi_p0->type == TY_POLY && ewi_et != TY_POLY;
-    int p1_box_poly = clv_ewi_p1 && clv_ewi_p1->type == TY_POLY;
-    /* Save outer variables before loop */
-    int ts_p0 = 0, ts_p1 = 0;
-    if (p0 && clv_ewi_p0) ts_p0 = emit_shadow_save(c, clv_ewi_p0->type, p0, b, indent);
-    if (p1 && clv_ewi_p1) ts_p1 = emit_shadow_save(c, clv_ewi_p1->type, p1, b, indent);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
-    buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
-    /* an unused parameter is pruned by liveness and has no declaration, so
-       binding it would name an undeclared C variable (#3853) */
-    { Scope *ewsc = comp_scope_of(c, block);
-      const char *p0o = block_param_name(c, block, 0);
-      if (p0 && (!ewsc || !p0o || !scope_local(ewsc, p0o))) p0 = NULL;
-      const char *p1o = block_param_name(c, block, 1);
-      if (p1 && (!ewsc || !p1o || !scope_local(ewsc, p1o))) p1 = NULL; }
-    if (p0) {
-      emit_indent(b, indent + 1);
-      if (p0_box_poly) {
-        char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        buf_printf(b, "lv_%s = ", p0); emit_boxed_text(c, ewi_et, src, b); buf_puts(b, ";\n");
-      }
-      else {
-        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
-      }
-    }
-    if (p1) {
-      emit_indent(b, indent + 1);
-      if (p1_box_poly) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p1, t);
-      else buf_printf(b, "lv_%s = _t%d;\n", p1, t);
-    }
-    /* splat-only block packs BOTH yielded values: [element, index] */
-    if (!p0 && !p1 && block_rest_name(c, block) && *block_rest_name(c, block)) {
-      const char *rr = rename_local(block_rest_name(c, block));
-      emit_indent(b, indent + 1);
-      /* assign the prologue-declared, slot-rooted rest local (see
-         emit_iter_bind_rest) rather than shadow-declaring a fresh one */
-      buf_printf(b, "lv_%s = sp_PolyArray_new();\n", rr);
-      char rsrc[512]; snprintf(rsrc, sizeof rsrc, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "sp_PolyArray_push(lv_%s, ", rr);
-      emit_boxed_text(c, ewi_et, rsrc, b);
-      buf_puts(b, ");\n");
-      emit_indent(b, indent + 1);
-      buf_printf(b, "sp_PolyArray_push(lv_%s, sp_box_int(_t%d));\n", rr, t);
-    }
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    /* Restore outer variables */
-    if (p0 && ts_p0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_p0); }
-    if (p1 && ts_p1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1, ts_p1); }
-    free(rb.p);
-    return 1;
-  }
-
-  /* array.zip(other) { |a, b| ... } -- block form, returns nil */
-  if (sp_streq(name, "zip") && (ty_is_array(rt) || rt == TY_POLY) && block >= 0) {
-    int zargs_n = nt_ref(nt, id, "arguments");
-    int zargc = 0; const int *zargv = zargs_n >= 0 ? nt_arr(nt, zargs_n, "arguments", &zargc) : NULL;
-    /* The receiver, too, can be an array only at run time (a row read out of a
-       poly table): walk it through the boxed accessors. Without this the call
-       fell to the runtime dispatch, which has no zip arm at all. */
-    int recv_poly = !ty_is_array(rt);
-    const char *k = recv_poly ? "Poly" : array_iter_kind(rt);
-    if (k && zargc == 1 && zargv) {
-      TyKind a0t = comp_ntype(c, zargv[0]);
-      const char *k2 = ty_is_array(a0t) ? array_iter_kind(a0t) : NULL;
-      /* The other operand may be an array only at run time (a poly element of
-         a table of rows). Read it through the boxed accessor rather than
-         handing an sp_RbVal to the typed one. */
-      int arg_poly = (k2 == NULL);
-      if (!k2) k2 = k;
-      TyKind et = recv_poly ? TY_POLY : ty_array_elem(rt);
-      TyKind et2 = ty_is_array(a0t) ? ty_array_elem(a0t) : (arg_poly ? TY_POLY : et);
-      const char *p1n = block_param_name(c, block, 1); if (p1n) p1n = rename_local(p1n);
-      int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb);
-      if (recv_poly) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
-      Buf ob; memset(&ob, 0, sizeof ob);
-      if (arg_poly) emit_boxed(c, zargv[0], &ob); else emit_expr(c, zargv[0], &ob);
-      if (recv_poly) {
-        int trz = ++g_tmp;
-        emit_indent(b, indent);
-        buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trz, rb.p ? rb.p : "sp_box_nil()", trz);
-        free(rb.p); memset(&rb, 0, sizeof rb);
-        buf_printf(&rb, "_t%d", trz);
-      }
-      else hoist_loop_recv(c, rt, &rb, b, indent);
-      if (ty_is_array(a0t)) hoist_loop_recv(c, a0t, &ob, b, indent);
-      Scope *zs = comp_scope_of(c, id);
-      LocalVar *zlv0 = (p0 && zs) ? scope_local(zs, p0) : NULL;
-      LocalVar *zlv1 = (p1n && zs) ? scope_local(zs, p1n) : NULL;
-      int zs0 = 0, zs1 = 0;
-      if (p0 && zlv0) zs0 = emit_shadow_save(c, zlv0->type, p0, b, indent);
-      if (p1n && zlv1) zs1 = emit_shadow_save(c, zlv1->type, p1n, b, indent);
-      emit_indent(b, indent);
-      if (recv_poly)
-        buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(%s); _t%d++) {\n",
-                   t, t, rb.p ? rb.p : "sp_box_nil()", t);
-      else
-        buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) {\n",
-                   t, t, k, rb.p ? rb.p : "NULL", t);
-      if (p0 && zlv0 && !p1n) {
-        /* SOLO param: the boxed [e1, e2] tuple (two params auto-splat it) */
-        int tpz = ++g_tmp;
-        char s1[512], s2[512];
-        if (recv_poly) snprintf(s1, sizeof s1, "sp_poly_arr_get(%s, _t%d)", rb.p ? rb.p : "sp_box_nil()", t);
-        else snprintf(s1, sizeof s1, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        if (arg_poly) snprintf(s2, sizeof s2, "sp_poly_arr_get(%s, _t%d)", ob.p ? ob.p : "sp_box_nil()", t);
-        else snprintf(s2, sizeof s2, "sp_%sArray_get(%s, _t%d)", k2, ob.p ? ob.p : "NULL", t);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpz, tpz);
-        Buf bx; memset(&bx, 0, sizeof bx);
-        emit_boxed_text(c, et, s1, &bx);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
-        memset(&bx, 0, sizeof bx);
-        emit_boxed_text(c, et2, s2, &bx);
-        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
-        buf_printf(b, "sp_box_poly_array(_t%d); });\n", tpz);
-      }
-      else if (p0 && zlv0) {
-        char src[512];
-        if (recv_poly) snprintf(src, sizeof src, "sp_poly_arr_get(%s, _t%d)", rb.p ? rb.p : "sp_box_nil()", t);
-        else snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p0);
-        emit_zip_block_param(c, zlv0->type, et, src, b);
-        buf_puts(b, ";\n");
-      }
-      if (p1n && zlv1 && ob.p) {
-        char src2[512];
-        if (arg_poly) snprintf(src2, sizeof src2, "sp_poly_arr_get(%s, _t%d)", ob.p, t);
-        else snprintf(src2, sizeof src2, "sp_%sArray_get(%s, _t%d)", k2, ob.p, t);
-        emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p1n);
-        emit_zip_block_param(c, zlv1->type, et2, src2, b);
-        buf_puts(b, ";\n");
-      }
-      emit_loop_body(c, body, b, indent + 1);
-      emit_indent(b, indent); buf_puts(b, "}\n");
-      if (p0 && zs0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, zs0); }
-      if (p1n && zs1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1n, zs1); }
-      free(rb.p); free(ob.p);
-      return 1;
-    }
-  }
-
-  /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
-  if ((sp_streq(name, "each") || sp_streq(name, "each_pair") ||
-       sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
-       sp_streq(name, "each_with_index") ||
-       /* each_entry yields what each yields for every builtin enumerable, so
-          the boxed receiver iterates the same way (#3395, #3987), and
-          reverse_each walks the same elements from the other end */
-       sp_streq(name, "each_entry") || sp_streq(name, "reverse_each")) &&
-      rt == TY_POLY && block >= 0) {
-    /* each/each_pair walk the elements (sp_poly_each_elem renders a hash
-       entry as a boxed [k, v] pair); each_value/each_key bind one half of
-       that pair (the receiver is a hash when these names dispatch);
-       each_with_index binds the whole element plus the loop index (no splat). */
-    int pv_half = sp_streq(name, "each_value") ? 1 :
-                  sp_streq(name, "each_key") ? 0 : -1;
-    int is_ewi = sp_streq(name, "each_with_index");
-    int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    /* The gate read the cached node type (poly); a cloned-body local can have
-       settled to a TYPED container since (a per-includer module-method clone
-       whose param pinned later, #2008). Re-infer and box the concrete kind --
-       a raw typed pointer must never initialize the sp_RbVal receiver. */
-    TyKind fresh_rt = infer_type(c, recv);
-    if (fresh_rt != TY_POLY && (ty_is_hash(fresh_rt) || ty_is_array(fresh_rt))) {
-      Buf bx; memset(&bx, 0, sizeof bx);
-      emit_boxed_text(c, fresh_rt, rb.p ? rb.p : "", &bx);
-      free(rb.p); rb = bx;
-    }
-    emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
-    /* Root the boxed receiver so a GC fired by the loop body doesn't free a
-       freshly-built collection held only by this temp. */
-    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
-    emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
-    emit_indent(b, indent); emit_poly_iter_obj_reject(c, ta, name, b);
-    emit_indent(b, indent); buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\");\n", ta, name);
-    /* `each { |x| }` over an Enumerator yielding several values in a step
-       binds x the first of them; the builtins/ walks (`each { |x| yield x }`)
-       hand the step on whole */
-    int tpair = 0;
-    int gather = block_binds_gathered(c, block);
-    {
-      Scope *ss = comp_scope_of(c, id);
-      const char *sn = ss ? ss->name : NULL;
-      const char *rest = block_rest_name(c, block);
-      if (sp_streq(name, "each") &&
-          ((p0 && !block_param_name(c, block, 1) && !(rest && *rest)) || block_lone_rest(c, block) || gather) &&
-          !(sn && strncmp(sn, "__enum", 6) == 0)) {
-        tpair = ++g_tmp;
-        emit_indent(b, indent); buf_printf(b, "int _t%d = sp_poly_yields_pair(_t%d);\n", tpair, ta);
-      }
-    }
-    /* an Enumerator (or a String Range) has no element read of its own: walk
-       the items it yields, so a Ruby-defined Enumerable method (find, count,
-       each_with_object, ...) over a boxed one saw no elements. A generator
-       is walked one item ahead, so a block that breaks out stops an endless
-       one; reverse_each needs them all first. */
-    emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s(_t%d);\n", ta,
-               sp_streq(name, "reverse_each") ? "sp_poly_iter_subject" : "sp_poly_iter_walk", ta);
-    emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
-    emit_indent(b, indent);
-    if (sp_streq(name, "reverse_each"))
-      buf_printf(b, "for (sp_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", ti, tn, ti, ti);
-    else
-      /* the length is read again every turn, as the typed loops read theirs:
-         a block that shrinks the receiver (`a.clear`, `a.pop`) stops the
-         walk where the array now ends, where the hoisted count walked on
-         past it and yielded nils, and one that grows it is followed (every
-         Ruby-defined Enumerable method iterates through this loop on a
-         boxed receiver) */
-      buf_printf(b, "for (sp_int _t%d = 0; (void)_t%d, _t%d < sp_poly_arr_len_ex(_t%d); _t%d++) {\n", ti, tn, ti, ta, ti);
-    /* multi-param: auto-splat each poly element into params. Ruby splats only
-       when the element is itself an Array (sp_poly_each_elem already renders a
-       hash pair as a 2-element array, so |k, v| over a hash still splats); a
-       non-array element binds param 0 with the rest nil. */
-    int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
-    if (is_ewi) {
-      /* each_with_index { |v, i| }: bind param 0 to the WHOLE element (never
-         splatting a nested array, unlike `each`) and param 1 to the loop index;
-         any further params bind to nil each iteration. Every binding is gated on
-         the param actually being a declared local -- an UNUSED block param is
-         pruned by liveness (scope_local returns NULL and no `lv_<name>` is
-         declared), so emitting an assignment to it would reference an undeclared
-         C identifier. This mirrors the `each` sibling, which binds only live
-         params. */
-      Scope *ews = comp_scope_of(c, block);
-      const char *e0_orig = block_param_name(c, block, 0);
-      LocalVar *e0lv = (e0_orig && ews) ? scope_local(ews, e0_orig) : NULL;
-      if (e0lv) {
-        TyKind e0t = e0lv->type != TY_UNKNOWN ? e0lv->type : TY_POLY;
-        char esrc[64]; snprintf(esrc, sizeof esrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
-        emit_indent(b, indent + 1);
-        emit_block_param_from_boxed(c, rename_local(e0_orig), e0t, esrc, b);
-      }
-      const char *i1_orig = block_param_name(c, block, 1);
-      LocalVar *i1lv = (i1_orig && ews) ? scope_local(ews, i1_orig) : NULL;
-      if (i1lv) {
-        TyKind i1t = i1lv->type != TY_UNKNOWN ? i1lv->type : TY_POLY;
-        emit_indent(b, indent + 1);
-        if (i1t == TY_POLY) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", rename_local(i1_orig), ti);
-        else buf_printf(b, "lv_%s = _t%d;\n", rename_local(i1_orig), ti);
-      }
-      for (int pj = 2; pj < npp_poly; pj++) {
-        const char *pnj = block_param_name(c, block, pj);
-        LocalVar *pjlv = (pnj && ews) ? scope_local(ews, pnj) : NULL;
-        if (!pjlv) continue;
-        TyKind pjt = pjlv->type != TY_UNKNOWN ? pjlv->type : TY_POLY;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = ", rename_local(pnj));
-        emit_block_param_nil(c, pjt, b);
-        buf_puts(b, ";\n");
-      }
-    }
-    else if (npp_poly >= 2 && !gather) {
-      int telem = ++g_tmp;
-      emit_indent(b, indent + 1);
-      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
-      emit_poly_auto_splat(c, block, telem, b, indent);
-    }
-    else if (pv_half < 0 && block_lone_rest(c, block)) {
-      /* `each { |*r| }`: the element, a Hash entry's [k, v] pair included,
-         is the one value the rest array holds; an Enumerator that yields
-         several values per step gives them all */
-      if (tpair) {
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = sp_yielded_args(_t%d, sp_poly_each_elem(_t%d, _t%d));\n",
-                   rename_local(block_rest_name(c, block)), tpair, ta, ti);
-      }
-      else {
-        char rsrc[64]; snprintf(rsrc, sizeof rsrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
-        emit_iter_bind_rest(c, block, 0, TY_POLY, rsrc, b, indent + 1);
-      }
-    }
-    else if (gather) {
-      /* any other shape binds the step's values by the proc distribution:
-         the element (a Hash entry's [k, v] pair), the half of the pair
-         each_value / each_key yield, or every value an Enumerator's step
-         yielded */
-      char elem[96]; snprintf(elem, sizeof elem, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
-      if (pv_half >= 0) {
-        int tel = ++g_tmp;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "sp_RbVal _t%d = %s;\n", tel, elem);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) _t%d = sp_poly_arr_get(_t%d, %d);\n",
-                   tel, tel, tel, tel, pv_half);
-        snprintf(elem, sizeof elem, "_t%d", tel);
-      }
-      char vals[160];
-      if (tpair) snprintf(vals, sizeof vals, "sp_yielded_args(_t%d, %s)", tpair, elem);
-      else snprintf(vals, sizeof vals, "sp_yielded_args(0, %s)", elem);
-      emit_boxed_step_binds(c, block, vals, b, indent + 1, 0);
-    }
-    else if (p0 && pv_half >= 0) {
-      /* each_value / each_key: the element is a [k, v] pair; bind one half
-         (a non-pair element binds itself, mirroring the splat fallback) */
-      Scope *pvs = comp_scope_of(c, block);
-      LocalVar *pvl = pvs ? scope_local(pvs, block_param_name(c, block, 0)) : NULL;
-      TyKind pvt = (pvl && pvl->type != TY_UNKNOWN) ? pvl->type : TY_POLY;
-      int tel = ++g_tmp;
-      emit_indent(b, indent + 1);
-      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", tel, ta, ti);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) _t%d = sp_poly_arr_get(_t%d, %d);\n",
-                 tel, tel, tel, tel, pv_half);
-      emit_indent(b, indent + 1);
-      {
-        char src[32]; snprintf(src, sizeof src, "_t%d", tel);
-        emit_block_param_from_boxed(c, p0, pvt, src, b);
-      }
-    }
-    else if (p0) {
-      /* Coerce the boxed element to the block param's declared type: a param
-         inferred as a concrete scalar (String from a would-be str_array whose
-         producer actually diverged, #3147) must not take a raw sp_RbVal into a
-         const char* slot. emit_block_param_from_boxed inserts the conversion. */
-      Scope *e0s = comp_scope_of(c, block);
-      LocalVar *e0lv = e0s ? scope_local(e0s, block_param_name(c, block, 0)) : NULL;
-      TyKind e0t = (e0lv && e0lv->type != TY_UNKNOWN) ? e0lv->type : TY_POLY;
-      char src[96];
-      if (tpair) snprintf(src, sizeof src, "sp_yielded_first(_t%d, sp_poly_each_elem(_t%d, _t%d))", tpair, ta, ti);
-      else snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
-      emit_indent(b, indent + 1);
-      emit_block_param_from_boxed(c, p0, e0t, src, b);
-    }
-    /* a paramless block (`each { ... }`) binds nothing; the loop still runs the
-       body once per element for its side effect. */
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    return 1;
-  }
-
-  /* <stored enumerator>.with_index(off) { |x, i| }: drain the enumerator once
-     and drive the block with the offset index alongside each element. (The
-     immediate chain forms -- arr.each.with_index { } -- are matched earlier by
-     the chain emitters; this is the stored-value case. with_object desugars to
-     to_a.each_with_object in analyze.) */
-  if (rt == TY_ENUMERATOR && sp_streq(name, "with_index")) {
-    int wargs = nt_ref(nt, id, "arguments");
-    int wargc = 0;
-    const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
-    if (wargc <= 1) {
-      const char *p1_orig = block_param_name(c, block, 1);
-      const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
-      int ta = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_indent(b, indent);
-      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s); SP_GC_ROOT(_t%d);\n",
-                 ta, rb.p ? rb.p : "", ta);
-      free(rb.p);
-      emit_indent(b, indent);
-      buf_printf(b, "sp_int _t%d = ", toff);
-      if (wargc == 1 && wargv) emit_int_expr(c, wargv[0], b);
-      else buf_puts(b, "0");
-      buf_puts(b, ";\n");
-      emit_indent(b, indent);
-      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
-      if (p0) {
-        Scope *bs0 = comp_scope_of(c, block);
-        LocalVar *b0 = p0_orig ? scope_local(bs0, p0_orig) : NULL;
-        TyKind p0t = (b0 && b0->type != TY_UNKNOWN) ? b0->type : TY_POLY;
-        char vb0[48];
-        snprintf(vb0, sizeof vb0, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = ", p0);
-        if (p0t == TY_POLY) buf_puts(b, vb0);
-        /* an element that is nil binds a nullable parameter's own nil, where
-           `.v.i` read the 0 under the tag */
-        else if (b0->nullable_int) emit_unbox_nilable_text(c, p0t, vb0, b);
-        else emit_unbox_text(c, p0t, vb0, b);
-        buf_puts(b, ";\n");
-      }
-      if (p1) {
-        Scope *bs1 = comp_scope_of(c, block);
-        LocalVar *b1 = p1_orig ? scope_local(bs1, p1_orig) : NULL;
-        TyKind p1t = (b1 && b1->type != TY_UNKNOWN) ? b1->type : TY_POLY;
-        emit_indent(b, indent + 1);
-        if (p1t == TY_POLY)
-          buf_printf(b, "lv_%s = sp_box_int(_t%d + _t%d);\n", p1, ti, toff);
-        else
-          buf_printf(b, "lv_%s = _t%d + _t%d;\n", p1, ti, toff);
-      }
-      emit_loop_body(c, body, b, indent + 1);
-      emit_indent(b, indent); buf_puts(b, "}\n");
-      return 1;
-    }
-  }
-
-  /* array.each { |x| ... } */
-  /* Also drives a materialized or generator Enumerator: `enum.each { }` drains
-     it to a poly array once (a generator runs its fiber to completion -- an
-     infinite generator loops here, matching Ruby's eager Enumerator#each) and
-     reuses the poly-array param binding below. */
-  if (sp_streq(name, "each") && (rt == TY_POLY_ARRAY || rt == TY_ENUMERATOR)) {
-    int t = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    int ta = ++g_tmp;
-    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
-    Scope *cs_pa = p0 ? comp_scope_of(c, id) : NULL;
-    LocalVar *outer_pa = (p0 && cs_pa) ? scope_local(cs_pa, p0) : NULL;
-    int ts_pa = 0;
-    if (outer_pa) ts_pa = emit_shadow_save(c, outer_pa->type, p0, b, indent);
-    emit_indent(b, indent);
-    if (rt == TY_ENUMERATOR)
-      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s);\n", ta, rb.p ? rb.p : "");
-    else
-      buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : "");
-    free(rb.p);
-    /* Root the receiver: a freshly-built array referenced only by this temp
-       is otherwise freed if the loop body triggers GC mid-iteration, leaving
-       the next element fetch dangling. */
-    emit_indent(b, indent);
-    buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", t, t, ta, t);
-    if (p0) {
-      /* Destructuring: 2+ params over poly_array where params are scalar-typed */
-      const char *orig_p0n = block_param_name(c, block, 0);
-      Scope *blk_sp = comp_scope_of(c, block);
-      LocalVar *bp0p = orig_p0n ? scope_local(blk_sp, orig_p0n) : NULL;
-      TyKind bp0_tp = bp0p ? bp0p->type : TY_UNKNOWN;
-      int npp = 0; while (block_param_name(c, block, npp)) npp++;
-      int did_destruct = 0;
-      /* An Enumerator's items are boxed PolyArray pairs (each_with_index etc.),
-         never a typed inner array, so reading them as an sp_<K>Array would
-         misinterpret the memory (#2622). Route those through the poly auto-splat
-         below, which unboxes each sub-element. */
-      if (npp >= 2 && bp0_tp != TY_POLY && bp0_tp != TY_UNKNOWN && rt != TY_ENUMERATOR) {
-        const char *inner_kk = array_kind(ty_array_of(bp0_tp));
-        if (inner_kk) {
-          int tsub = ++g_tmp;
-          emit_indent(b, indent + 1);
-          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n",
-                     inner_kk, tsub, inner_kk, ta, t);
-          for (int pj = 0; pj < npp; pj++) {
-            const char *pnj = block_param_name(c, block, pj);
-            if (!pnj) continue;
-            emit_indent(b, indent + 1);
-            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
-                       rename_local(pnj), inner_kk, tsub, pj);
-          }
-          did_destruct = 1;
-        }
-      }
-      /* Poly-param auto-splat: a 2+ param block whose params weren't proven to
-         be a typed inner array (so they're poly/unknown). Ruby auto-splats each
-         element ONLY when it is itself an Array -- destructure item k into param
-         k (missing item -> nil); a non-array element binds param 0, rest nil. */
-      if (!did_destruct && npp >= 2) {
-        int telem = ++g_tmp;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, ta, t);
-        emit_poly_auto_splat(c, block, telem, b, indent);
-        did_destruct = 1;
-      }
-      if (!did_destruct) {
-        /* an unregistered parameter has no C declaration (see
-           emit_iter_param_assign): binding it would name a variable that does
-           not exist (#3853) */
-        Scope *bsc = comp_scope_of(c, block);
-        LocalVar *plv = bsc ? scope_local(bsc, block_param_name(c, block, 0)) : NULL;
-        if (plv && plv->type != TY_UNKNOWN) {
-          /* A parameter typed from an earlier, narrower answer of the
-             receiver (a String array, before the method returning it widened
-             to a boxed one) takes the element unboxed, as the destructuring
-             binding above does (#5521). */
-          char src[64]; snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", ta, t);
-          emit_indent(b, indent + 1);
-          emit_block_param_from_boxed(c, p0, plv->type, src, b);
-        }
-      }
-    }
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
-    return 1;
-  }
-  if (is_each_walk(name) &&
-      (ty_is_array(rt) || ty_is_obj_array(rt))) {   /* an object array walks as sp_PtrArray (#4846) */
-    const char *k = array_iter_kind(rt);
-    if (!k) return 0;
-    int rev = sp_streq(name, "reverse_each");
-    int t = ++g_tmp, tn = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_expr(c, recv, &rb);
-    hoist_loop_recv(c, rt, &rb, b, indent);
-    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
-    TyKind et = p0 ? ty_array_elem(rt) : TY_UNKNOWN;
-    Scope *cs = p0 ? comp_scope_of(c, id) : NULL;
-    LocalVar *outer = (p0 && cs) ? scope_local(cs, p0) : NULL;
-    int box_to_poly = outer && outer->type == TY_POLY && et != TY_POLY;
-    /* the parameter's own slot can be boxed while the receiver stays a typed
-       array (a widened slot, #4188): the element binds boxed into it, the
-       way the shadowed outer's would (the take_while of a Ruby definition
-       whose block parameter widened assigned a const char * to it) */
-    int to_strbuf = outer && outer->type == TY_STRBUF && et == TY_STRING;
-    if (!box_to_poly && p0 && et != TY_POLY) {
-      Scope *bsc = comp_scope_of(c, block);
-      LocalVar *blv = bsc ? scope_local(bsc, p0_orig ? p0_orig : p0) : NULL;
-      if (blv && blv->type == TY_POLY) box_to_poly = 1;
-      /* a slot a mutating callee made a String buffer takes a String
-         element as one, as a plain assignment to it does (#6038) */
-      if (blv && blv->type == TY_STRBUF && et == TY_STRING) to_strbuf = 1;
-    }
-    int ts = 0;
-    if (outer) {
-      /* Block params shadow outer variables in Ruby; save and restore */
-      ts = emit_shadow_save(c, outer->type, p0, b, indent);
-    }
-    if (rev) { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = sp_%sArray_length(%s);\n", tn, k, rb.p); }
-    emit_indent(b, indent);
-    if (rev) buf_printf(b, "for (sp_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", t, tn, t, t);
-    else {
-      buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
-      buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
-    }
-    if (p0) {
-      /* Destructuring: 2+ params over poly_array where params are scalar-typed
-         (e.g. `[[1,2],[3,4]].each { |a,b| }` or numbered `{ _1; _2 }`).
-         The poly element is an inner typed array; unbox and destructure. */
-      Scope *blk_s = comp_scope_of(c, block);
-      /* Use original (unrenameD) name for scope lookup; p0 is already renamed */
-      const char *orig_p0_name = block_param_name(c, block, 0);
-      LocalVar *bp0 = orig_p0_name ? scope_local(blk_s, orig_p0_name) : NULL;
-      TyKind bp0_type = bp0 ? bp0->type : TY_UNKNOWN;
-      int np = 0; while (block_param_name(c, block, np)) np++;
-      if (np >= 2 && sp_streq(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
-        /* Get the inner array kind from the first param's element type */
-        const char *inner_k = array_kind(ty_array_of(bp0_type));
-        if (inner_k) {
-          int tsub = ++g_tmp;
-          emit_indent(b, indent + 1);
-          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(", inner_k, tsub, inner_k);
-          buf_puts(b, rb.p); buf_printf(b, ", _t%d).v.p;\n", t);
-          for (int pj = 0; pj < np; pj++) {
-            const char *pname2 = block_param_name(c, block, pj);
-            if (!pname2) continue;
-            emit_indent(b, indent + 1);
-            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
-                       rename_local(pname2), inner_k, tsub, pj);
-          }
-          goto each_body;
-        }
-      }
-      /* Poly-typed params over poly elements auto-splat, which is what `each`
-         already does through its own lowering: without it
-         `each_with_index.to_a.reverse_each { |x, i| }` bound the whole
-         [value, index] pair to x and left i nil (#4326). The helper writes
-         through g_pre, so point it at this statement buffer. */
-      if (np >= 2 && sp_streq(k, "Poly")) {
-        char es_as[600];
-        snprintf(es_as, sizeof es_as, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-        Buf *sv_pre = g_pre; g_pre = b;
-        int did = emit_iter_autosplat(c, block, rt, es_as, indent + 1);
-        g_pre = sv_pre;
-        if (did) goto each_body;
-      }
-      emit_indent(b, indent + 1);
-      if (box_to_poly) {
-        /* A nested row is a pointer, not one of the scalar boxes. The same
-           helper each_with_index uses covers that and the scalars. */
-        Buf src; memset(&src, 0, sizeof src);
-        buf_printf(&src, "sp_%sArray_get(", k);
-        buf_puts(&src, rb.p ? rb.p : "NULL");
-        buf_printf(&src, ", _t%d)", t);
-        buf_printf(b, "lv_%s = ", p0);
-        emit_boxed_text(c, et, src.p ? src.p : "", b);
-        free(src.p);
-        buf_puts(b, ";\n");
-      }
-      else if (to_strbuf) {
-        buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(", p0);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d));\n", t);
-      }
-      else {
-        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
-      }
-    }
-    /* a `*rest` param (splat-only wraps the element; alongside requireds it
-       binds empty for scalar elements) */
-    { char rs_es[560]; snprintf(rs_es, sizeof rs_es, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
-      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
-      TyKind rs_et = ty_array_elem(rt);
-      if (emit_iter_bind_rest(c, block, rs_np, rs_et, rs_es, b, indent + 1) < 0) {
-        unsupported(c, id, "block splat parameter alongside required params over a poly element");
-        return 1;
-      } }
-    each_body:
-    emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent); buf_puts(b, "}\n");
-    if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
-    free(rb.p);
-    return 1;
-  }
+  { int rv = iter_enum_poly_walk_arms(c, id, b, indent, nt, block, name, recv, body, p0_orig, p0, rt); if (rv >= 0) return rv; }
 
   { int rv = iter_combination_cons_arms(c, id, b, indent, nt, block, name, recv, body, p0, rt); if (rv >= 0) return rv; }
 
