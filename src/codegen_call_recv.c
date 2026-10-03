@@ -6813,6 +6813,229 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   return 1;
 }
 
+/* An Integer receiver's clamp, digits, allbits? / anybits? / nobits?,
+   ceildiv, pow, coerce, eql? and equal? (emit_scalar_recv_arms's Integer
+   chain; answers 1 when a branch was taken) */
+static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r) {
+  /* a nil bound is an open side: clamp one-sided (or return the receiver),
+     boxed so the chosen operand keeps its class (#2588) */
+  if (sp_streq(name, "clamp") && argc == 2 &&
+           (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
+    buf_printf(b, "sp_num_clamp_open(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+  }
+  /* A Float (or runtime-typed poly) bound makes the applied bound or the
+     in-range receiver decide the result class at runtime, so box the
+     operands and return whichever is chosen unchanged via sp_num_clamp. */
+  else if (sp_streq(name, "clamp") && argc == 2 &&
+           (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
+            comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY ||
+            comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+    /* a Rational bound (like a Float bound) makes the applied bound decide
+       the result class at runtime; box the operands and let sp_num_clamp
+       return whichever is chosen unchanged (#3232) */
+    buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+  }
+  /* clamp(lo, hi) with a Bignum bound: an sp_int receiver is inside any
+     Bignum bound on that side, so only the sp_int side can bind (#3006) */
+  else if (sp_streq(name, "clamp") && argc == 2 &&
+           (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
+    int tlo = comp_ntype(c, argv[0]) == TY_BIGINT, thi = comp_ntype(c, argv[1]) == TY_BIGINT;
+    buf_puts(b, "({ ");
+    if (tlo) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
+    if (thi) { buf_puts(b, "(void)("); emit_expr(c, argv[1], b); buf_puts(b, "); "); }
+    if (tlo && thi) buf_printf(b, "(sp_int)(%s); })", r);
+    else if (tlo) {
+      /* a Bignum LOW bound is above every sp_int receiver... unless it is
+         negative, in which case the receiver already exceeds it */
+      int tb2 = ++g_tmp;
+      buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) > 0"
+                    " ? sp_bigint_to_int(_t%d) : (sp_int)(%s); })", tb2, r, tb2, r);
+    }
+    else {
+      int tb2 = ++g_tmp;
+      buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[1], b);
+      buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) < 0"
+                    " ? sp_bigint_to_int(_t%d) : sp_int_clamp_ck(%s, ", tb2, r, tb2, r);
+      emit_expr(c, argv[0], b);
+      buf_printf(b, ", %s); })", r);
+    }
+  }
+  else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+    /* int.clamp(float_range): the clamped-to bound is the Float endpoint (a
+       boxed result); an in-range Int receiver stays Int. */
+    int tv3 = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); sp_FloatRange _fr%d = ", tv3, r, tv3); emit_expr(c, argv[0], b);
+    buf_printf(b, "; ((double)_t%d < _fr%d.first) ? sp_box_float(_fr%d.first)"
+                  " : ((double)_t%d > _fr%d.last) ? sp_box_float(_fr%d.last)"
+                  " : sp_box_int(_t%d); })", tv3, tv3, tv3, tv3, tv3, tv3, tv3);
+  }
+  else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
+           nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+           ((nt_ref(nt, argv[0], "left") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
+            (nt_ref(nt, argv[0], "right") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT))) {
+    /* float bounds cannot ride sp_Range's int fields: compare as doubles,
+       the clamped-to bound is the Float endpoint itself */
+    int lo3 = nt_ref(nt, argv[0], "left"), hi3 = nt_ref(nt, argv[0], "right");
+    int tv3 = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s);", tv3, r);
+    buf_printf(b, " double _lo%d = ", tv3);
+    if (lo3 >= 0) emit_float_expr(c, lo3, b); else buf_puts(b, "-HUGE_VAL");
+    buf_printf(b, "; double _hi%d = ", tv3);
+    if (hi3 >= 0) emit_float_expr(c, hi3, b); else buf_puts(b, "HUGE_VAL");
+    buf_printf(b, "; ((double)_t%d < _lo%d) ? sp_box_float(_lo%d)"
+                  " : ((double)_t%d > _hi%d) ? sp_box_float(_hi%d)"
+                  " : sp_box_int(_t%d); })",
+               tv3, tv3, tv3, tv3, tv3, tv3, tv3);
+  }
+  else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+    /* the helper raises on an exclusive range with a real end (CRuby) */
+    buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  /* digits is migrated to builtins/integer.rb for every STATIC concrete
+     call site (desugar_builtin_scalar_calls rewrites it to
+     __int_digits__N before codegen ever sees a plain "digits" name
+     here) -- these arms are dead for that case by construction, kept
+     only as the poly "face table"'s own re-entry target (below,
+     "unbox to the kind that owns the name, retype, re-enter"): a
+     run-time-typed value whose actual class turns out to be Integer,
+     reached only when some OTHER class in the program also defines a
+     method literally named digits (the migration's own poly receiver
+     deliberately stays on sp_poly_int_digits / this face table rather
+     than an is_a? split, measured too costly; see
+     desugar_builtin_scalar_calls's own comment). */
+  else if (sp_streq(name, "digits") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+    int tdb = ++g_tmp;
+    buf_printf(b, "({ (void)("); emit_expr(c, argv[0], b);
+    buf_printf(b, "); if ((%s) < 0) sp_raise_cls(\"Math::DomainError\", \"out of domain\");", r);
+    buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", tdb, tdb);
+    buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
+  }
+  else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (is_bits_query(name) &&
+           argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+    /* A Bignum mask exceeds int64, so an int receiver can never cover all
+       its bits (allbits? is always false); anybits?/nobits? test the
+       receiver against the mask's low 64 bits -- the only ones an int
+       receiver can share (#2470). */
+    if (sp_streq(name, "allbits?")) {
+      buf_printf(b, "((void)(%s), (void)(", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+    }
+    else {
+      buf_printf(b, "(((%s) & sp_bigint_to_int(", r); emit_expr(c, argv[0], b);
+      buf_printf(b, ")) %s 0)", sp_streq(name, "anybits?") ? "!=" : "==");
+    }
+  }
+  else if (sp_streq(name, "allbits?") && argc == 1) { int t = ++g_tmp; buf_printf(b, "({ sp_int _t%d = ", t); emit_int_expr(c, argv[0], b); buf_printf(b, "; (((%s) & _t%d) == _t%d); })", r, t, t); }
+  else if (sp_streq(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
+  else if (sp_streq(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
+  else if (sp_streq(name, "ceildiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    buf_printf(b, "((sp_int)ceil((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");  /* (#2425) */
+  }
+  else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  /* pow(exp, mod) with a Bignum modulus: the result is bounded by the
+     modulus but the intermediates are not, so run it in bigint (#3006) */
+  else if (sp_streq(name, "pow") && argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT) {
+    buf_printf(b, "sp_bigint_powmod(sp_bigint_new_int(%s), ", r);
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+  /* pow with a literal negative exponent is the exact Rational
+     1 / base**|exp| (matching **'s CRuby behavior) */
+  else if (sp_streq(name, "pow") && argc == 1 &&
+           nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+           nt_int(nt, argv[0], "value", 0) < 0) {
+    long long pe9 = -(long long)nt_int(nt, argv[0], "value", 0);
+    buf_printf(b, "sp_rational_new(1, sp_int_pow(%s, %lldLL))", r, pe9);
+  }
+  /* pow with a Float exponent is real exponentiation -> Float (#2604) */
+  else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+    buf_printf(b, "pow((double)(%s), ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "coerce") && argc == 1) {
+    TyKind a0 = comp_ntype(c, argv[0]);
+    if (a0 == TY_BIGINT) {
+      /* [big_arg, receiver promoted to Bignum] -- a poly pair (#2419) */
+      int ta = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = ", ta); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(_t%d));"
+                    " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_new_int(%s))); _t%d; })",
+                 o, o, o, ta, o, r, o);
+    }
+    else if (a0 == TY_FLOAT) {
+      int ta = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ sp_float _t%d = ", ta); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                    " sp_FloatArray_push(_t%d, _t%d);"
+                    " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, ta, o, r, o);
+    }
+    /* coerce against a Rational computes in floats: [Float(other), Float(self)] (#2606) */
+    else if (a0 == TY_RATIONAL) {
+      int ta = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ sp_float _t%d = sp_rational_to_f(", ta); emit_expr(c, argv[0], b);
+      buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
+                    " sp_FloatArray_push(_t%d, _t%d);"
+                    " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, ta, o, r, o);
+    }
+    /* an Integer can't coerce with a Complex -> RangeError (#2606) */
+    else if (a0 == TY_COMPLEX) {
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b);
+      buf_puts(b, "), (sp_raise_cls(\"RangeError\", \"can't convert Complex into Integer\"), (sp_FloatArray *)0))");
+    }
+    /* Only a NUMBER coerces to an Integer pair. Everything else is
+       `[Float(other), Float(self)]`, which is where CRuby's messages come
+       from -- and the argument went into the sp_int slot as itself before,
+       so a String stopped the C build and a nil answered a coerced 0
+       (#4011). */
+    else if (a0 != TY_INT && a0 != TY_POLY && a0 != TY_UNKNOWN) {
+      int o = ++g_tmp;
+      buf_printf(b, "({ sp_float _tc%d = sp_poly_Float(", o); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
+                    " sp_FloatArray_push(_t%d, _tc%d);"
+                    " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, o, o, r, o);
+    }
+    else if (a0 == TY_POLY) {
+      /* the tag decides at run time, through the same helper the boxed
+         receiver path uses */
+      int o = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = sp_poly_coerce(sp_box_int(%s), ", o, r);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); sp_poly_to_poly_array(_t%d); })", o);
+    }
+    else {
+      int ta = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ sp_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new();"
+                    " sp_IntArray_push(_t%d, _t%d);"
+                    " sp_IntArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
+    }
+  }
+  /* Integer#eql?/equal?(x): value-equal only when x is itself Integer-typed
+     (no numeric coercion -- 1.eql?(1.0) is false). For a fixnum receiver
+     equal? is value identity, so it behaves the same as eql?. A Float or
+     any other concrete arg is never equal; a poly arg checks its tag. */
+  else if ((sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
+    /* a receiver holding its nil sentinel is nil, which is eql? and
+       equal? to nil alone: ask the boxed pair, as nil where it is one */
+    if (call_returns_nullable_int(c, recv)) {
+      buf_printf(b, "%s(sp_box_int_or_nil(%s), ", sp_streq(name, "eql?") ? "sp_poly_eql" : "sp_poly_equal", r);
+      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    }
+    else if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+    else if (a0 == TY_POLY) {
+      int te = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_INT && _t%d.v.i == (%s); })", te, te, r);
+    }
+    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+  }
+  else return 0;
+  return 1;
+}
+
 /* A String, Integer or Float receiver, evaluated once into rs and spliced into each arm (emit_scalar_call_arms's arms, in their order) */
 static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, int *out) {
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -7158,221 +7381,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
                     " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
     }
-    /* a nil bound is an open side: clamp one-sided (or return the receiver),
-       boxed so the chosen operand keeps its class (#2588) */
-    else if (sp_streq(name, "clamp") && argc == 2 &&
-             (comp_ntype(c, argv[0]) == TY_NIL || comp_ntype(c, argv[1]) == TY_NIL)) {
-      buf_printf(b, "sp_num_clamp_open(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
-    }
-    /* A Float (or runtime-typed poly) bound makes the applied bound or the
-       in-range receiver decide the result class at runtime, so box the
-       operands and return whichever is chosen unchanged via sp_num_clamp. */
-    else if (sp_streq(name, "clamp") && argc == 2 &&
-             (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
-              comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY ||
-              comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
-      /* a Rational bound (like a Float bound) makes the applied bound decide
-         the result class at runtime; box the operands and let sp_num_clamp
-         return whichever is chosen unchanged (#3232) */
-      buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
-    }
-    /* clamp(lo, hi) with a Bignum bound: an sp_int receiver is inside any
-       Bignum bound on that side, so only the sp_int side can bind (#3006) */
-    else if (sp_streq(name, "clamp") && argc == 2 &&
-             (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
-      int tlo = comp_ntype(c, argv[0]) == TY_BIGINT, thi = comp_ntype(c, argv[1]) == TY_BIGINT;
-      buf_puts(b, "({ ");
-      if (tlo) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
-      if (thi) { buf_puts(b, "(void)("); emit_expr(c, argv[1], b); buf_puts(b, "); "); }
-      if (tlo && thi) buf_printf(b, "(sp_int)(%s); })", r);
-      else if (tlo) {
-        /* a Bignum LOW bound is above every sp_int receiver... unless it is
-           negative, in which case the receiver already exceeds it */
-        int tb2 = ++g_tmp;
-        buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) > 0"
-                      " ? sp_bigint_to_int(_t%d) : (sp_int)(%s); })", tb2, r, tb2, r);
-      }
-      else {
-        int tb2 = ++g_tmp;
-        buf_printf(b, "sp_Bigint *_t%d = ", tb2); emit_expr(c, argv[1], b);
-        buf_printf(b, "; sp_bigint_cmp(_t%d, sp_bigint_new_int(%s)) < 0"
-                      " ? sp_bigint_to_int(_t%d) : sp_int_clamp_ck(%s, ", tb2, r, tb2, r);
-        emit_expr(c, argv[0], b);
-        buf_printf(b, ", %s); })", r);
-      }
-    }
-    else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
-      /* int.clamp(float_range): the clamped-to bound is the Float endpoint (a
-         boxed result); an in-range Int receiver stays Int. */
-      int tv3 = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = (%s); sp_FloatRange _fr%d = ", tv3, r, tv3); emit_expr(c, argv[0], b);
-      buf_printf(b, "; ((double)_t%d < _fr%d.first) ? sp_box_float(_fr%d.first)"
-                    " : ((double)_t%d > _fr%d.last) ? sp_box_float(_fr%d.last)"
-                    " : sp_box_int(_t%d); })", tv3, tv3, tv3, tv3, tv3, tv3, tv3);
-    }
-    else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
-             nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
-             ((nt_ref(nt, argv[0], "left") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
-              (nt_ref(nt, argv[0], "right") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT))) {
-      /* float bounds cannot ride sp_Range's int fields: compare as doubles,
-         the clamped-to bound is the Float endpoint itself */
-      int lo3 = nt_ref(nt, argv[0], "left"), hi3 = nt_ref(nt, argv[0], "right");
-      int tv3 = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = (%s);", tv3, r);
-      buf_printf(b, " double _lo%d = ", tv3);
-      if (lo3 >= 0) emit_float_expr(c, lo3, b); else buf_puts(b, "-HUGE_VAL");
-      buf_printf(b, "; double _hi%d = ", tv3);
-      if (hi3 >= 0) emit_float_expr(c, hi3, b); else buf_puts(b, "HUGE_VAL");
-      buf_printf(b, "; ((double)_t%d < _lo%d) ? sp_box_float(_lo%d)"
-                    " : ((double)_t%d > _hi%d) ? sp_box_float(_hi%d)"
-                    " : sp_box_int(_t%d); })",
-                 tv3, tv3, tv3, tv3, tv3, tv3, tv3);
-    }
-    else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-      /* the helper raises on an exclusive range with a real end (CRuby) */
-      buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    /* digits is migrated to builtins/integer.rb for every STATIC concrete
-       call site (desugar_builtin_scalar_calls rewrites it to
-       __int_digits__N before codegen ever sees a plain "digits" name
-       here) -- these arms are dead for that case by construction, kept
-       only as the poly "face table"'s own re-entry target (below,
-       "unbox to the kind that owns the name, retype, re-enter"): a
-       run-time-typed value whose actual class turns out to be Integer,
-       reached only when some OTHER class in the program also defines a
-       method literally named digits (the migration's own poly receiver
-       deliberately stays on sp_poly_int_digits / this face table rather
-       than an is_a? split, measured too costly; see
-       desugar_builtin_scalar_calls's own comment). */
-    else if (sp_streq(name, "digits") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
-      int tdb = ++g_tmp;
-      buf_printf(b, "({ (void)("); emit_expr(c, argv[0], b);
-      buf_printf(b, "); if ((%s) < 0) sp_raise_cls(\"Math::DomainError\", \"out of domain\");", r);
-      buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", tdb, tdb);
-      buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
-    }
-    else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (is_bits_query(name) &&
-             argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
-      /* A Bignum mask exceeds int64, so an int receiver can never cover all
-         its bits (allbits? is always false); anybits?/nobits? test the
-         receiver against the mask's low 64 bits -- the only ones an int
-         receiver can share (#2470). */
-      if (sp_streq(name, "allbits?")) {
-        buf_printf(b, "((void)(%s), (void)(", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-      }
-      else {
-        buf_printf(b, "(((%s) & sp_bigint_to_int(", r); emit_expr(c, argv[0], b);
-        buf_printf(b, ")) %s 0)", sp_streq(name, "anybits?") ? "!=" : "==");
-      }
-    }
-    else if (sp_streq(name, "allbits?") && argc == 1) { int t = ++g_tmp; buf_printf(b, "({ sp_int _t%d = ", t); emit_int_expr(c, argv[0], b); buf_printf(b, "; (((%s) & _t%d) == _t%d); })", r, t, t); }
-    else if (sp_streq(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
-    else if (sp_streq(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
-    else if (sp_streq(name, "ceildiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      buf_printf(b, "((sp_int)ceil((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");  /* (#2425) */
-    }
-    else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    /* pow(exp, mod) with a Bignum modulus: the result is bounded by the
-       modulus but the intermediates are not, so run it in bigint (#3006) */
-    else if (sp_streq(name, "pow") && argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT) {
-      buf_printf(b, "sp_bigint_powmod(sp_bigint_new_int(%s), ", r);
-      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
-    /* pow with a literal negative exponent is the exact Rational
-       1 / base**|exp| (matching **'s CRuby behavior) */
-    else if (sp_streq(name, "pow") && argc == 1 &&
-             nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
-             nt_int(nt, argv[0], "value", 0) < 0) {
-      long long pe9 = -(long long)nt_int(nt, argv[0], "value", 0);
-      buf_printf(b, "sp_rational_new(1, sp_int_pow(%s, %lldLL))", r, pe9);
-    }
-    /* pow with a Float exponent is real exponentiation -> Float (#2604) */
-    else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-      buf_printf(b, "pow((double)(%s), ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "coerce") && argc == 1) {
-      TyKind a0 = comp_ntype(c, argv[0]);
-      if (a0 == TY_BIGINT) {
-        /* [big_arg, receiver promoted to Bignum] -- a poly pair (#2419) */
-        int ta = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ sp_Bigint *_t%d = ", ta); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, sp_box_bigint(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_new_int(%s))); _t%d; })",
-                   o, o, o, ta, o, r, o);
-      }
-      else if (a0 == TY_FLOAT) {
-        int ta = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ sp_float _t%d = ", ta); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                      " sp_FloatArray_push(_t%d, _t%d);"
-                      " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, ta, o, r, o);
-      }
-      /* coerce against a Rational computes in floats: [Float(other), Float(self)] (#2606) */
-      else if (a0 == TY_RATIONAL) {
-        int ta = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ sp_float _t%d = sp_rational_to_f(", ta); emit_expr(c, argv[0], b);
-        buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
-                      " sp_FloatArray_push(_t%d, _t%d);"
-                      " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, ta, o, r, o);
-      }
-      /* an Integer can't coerce with a Complex -> RangeError (#2606) */
-      else if (a0 == TY_COMPLEX) {
-        buf_puts(b, "((void)("); emit_expr(c, argv[0], b);
-        buf_puts(b, "), (sp_raise_cls(\"RangeError\", \"can't convert Complex into Integer\"), (sp_FloatArray *)0))");
-      }
-      /* Only a NUMBER coerces to an Integer pair. Everything else is
-         `[Float(other), Float(self)]`, which is where CRuby's messages come
-         from -- and the argument went into the sp_int slot as itself before,
-         so a String stopped the C build and a nil answered a coerced 0
-         (#4011). */
-      else if (a0 != TY_INT && a0 != TY_POLY && a0 != TY_UNKNOWN) {
-        int o = ++g_tmp;
-        buf_printf(b, "({ sp_float _tc%d = sp_poly_Float(", o); emit_boxed(c, argv[0], b);
-        buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
-                      " sp_FloatArray_push(_t%d, _tc%d);"
-                      " sp_FloatArray_push(_t%d, (sp_float)(%s)); _t%d; })", o, o, o, o, r, o);
-      }
-      else if (a0 == TY_POLY) {
-        /* the tag decides at run time, through the same helper the boxed
-           receiver path uses */
-        int o = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = sp_poly_coerce(sp_box_int(%s), ", o, r);
-        emit_boxed(c, argv[0], b);
-        buf_printf(b, "); sp_poly_to_poly_array(_t%d); })", o);
-      }
-      else {
-        int ta = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ sp_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new();"
-                      " sp_IntArray_push(_t%d, _t%d);"
-                      " sp_IntArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
-      }
-    }
-    /* Integer#eql?/equal?(x): value-equal only when x is itself Integer-typed
-       (no numeric coercion -- 1.eql?(1.0) is false). For a fixnum receiver
-       equal? is value identity, so it behaves the same as eql?. A Float or
-       any other concrete arg is never equal; a poly arg checks its tag. */
-    else if ((sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
-      /* a receiver holding its nil sentinel is nil, which is eql? and
-         equal? to nil alone: ask the boxed pair, as nil where it is one */
-      if (call_returns_nullable_int(c, recv)) {
-        buf_printf(b, "%s(sp_box_int_or_nil(%s), ", sp_streq(name, "eql?") ? "sp_poly_eql" : "sp_poly_equal", r);
-        emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-      else if (a0 == TY_POLY) {
-        int te = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_INT && _t%d.v.i == (%s); })", te, te, r);
-      }
-      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
-    }
+    else if (int_arms_clamp_pow(c, b, nt, name, recv, argc, argv, a0, r)) ;
     else handled = 0;
   }
   else { /* TY_FLOAT */
