@@ -6133,6 +6133,63 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
   return 0;
 }
 
+/* Regexp and MatchData: Regexp.compile and the class methods, a Regexp receiver, a MatchData receiver (infer_call_inner's rules, in their order) */
+static int infer_regexp_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+  /* Regexp.compile is an alias for Regexp.new */
+  if (recv >= 0 && sp_streq(name, "compile")) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
+      const char *cn = nt_str(nt, recv, "name");
+      if (cn && sp_streq(cn, "Regexp")) { *out = TY_REGEX; return 1; }
+    }
+  }
+
+  /* StringScanner instance methods */
+  /* StringScanner: a native-bound class (packages/strscan); no arms here. */
+
+  /* Regexp class methods */
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
+    if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "union")) { *out = TY_REGEX; return 1; }  /* argc 0 = the never-matching /(?!)/ */
+    if (sp_streq(name, "last_match") && argc == 0) { *out = TY_MATCHDATA; return 1; }
+    if (sp_streq(name, "last_match") && argc == 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "linear_time?") && argc == 1) { *out = TY_BOOL; return 1; }
+    if (sp_streq(name, "try_convert") && argc == 1) { *out = TY_POLY; return 1; }
+    if (sp_streq(name, "timeout") && argc == 0) { *out = TY_POLY; return 1; }   /* nil */
+    if (sp_streq(name, "timeout") && argc == 1) { *out = TY_POLY; return 1; }   /* timeout= returns its arg */
+    if (sp_streq(name, "timeout=") && argc == 1) { *out = TY_POLY; return 1; }
+  }
+
+  /* Regexp instance methods */
+  if (recv >= 0 && rt == TY_REGEX) {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+  }
+
+  /* MatchData instance methods */
+  if (recv >= 0 && rt == TY_MATCHDATA) {
+    {
+      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+      if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    }
+    if (sp_streq(name, "[]") && argc == 1 &&
+        (comp_ntype(c, argv[0]) == TY_RANGE ||
+         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))))
+      { *out = TY_POLY_ARRAY; return 1; }   /* md[range] (#2532) */
+    if (sp_streq(name, "[]") && argc == 1) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "[]") && argc == 2) { *out = TY_POLY_ARRAY; return 1; }   /* md[start, length] (#2507) */
+    if (sp_streq(name, "named_captures") && argc == 1) {
+      /* symbolize_names: false asks for the string keys (#3640) */
+      int kv = kwh_lookup(nt, argv[0], "symbolize_names");
+      const char *kvt = kv >= 0 ? nt_type(nt, kv) : NULL;
+      if (kvt && sp_streq(kvt, "FalseNode")) { *out = TY_STR_POLY_HASH; return 1; }
+      { *out = TY_SYM_POLY_HASH; return 1; }   /* symbolize (#2530) */
+    }
+  }
+  return 0;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -6924,58 +6981,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_new_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
-  /* Regexp.compile is an alias for Regexp.new */
-  if (recv >= 0 && sp_streq(name, "compile")) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
-      const char *cn = nt_str(nt, recv, "name");
-      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
-    }
-  }
-
-  /* StringScanner instance methods */
-  /* StringScanner: a native-bound class (packages/strscan); no arms here. */
-
-  /* Regexp class methods */
-  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) return TY_STRING;
-    if (sp_streq(name, "union")) return TY_REGEX;  /* argc 0 = the never-matching /(?!)/ */
-    if (sp_streq(name, "last_match") && argc == 0) return TY_MATCHDATA;
-    if (sp_streq(name, "last_match") && argc == 1) return TY_STRING;
-    if (sp_streq(name, "linear_time?") && argc == 1) return TY_BOOL;
-    if (sp_streq(name, "try_convert") && argc == 1) return TY_POLY;
-    if (sp_streq(name, "timeout") && argc == 0) return TY_POLY;   /* nil */
-    if (sp_streq(name, "timeout") && argc == 1) return TY_POLY;   /* timeout= returns its arg */
-    if (sp_streq(name, "timeout=") && argc == 1) return TY_POLY;
-  }
-
-  /* Regexp instance methods */
-  if (recv >= 0 && rt == TY_REGEX) {
-    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-    if (op && op->result != TY_UNKNOWN) return op->result;
-  }
-
-  /* MatchData instance methods */
-  if (recv >= 0 && rt == TY_MATCHDATA) {
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    if (sp_streq(name, "[]") && argc == 1 &&
-        (comp_ntype(c, argv[0]) == TY_RANGE ||
-         (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode"))))
-      return TY_POLY_ARRAY;   /* md[range] (#2532) */
-    if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
-    if (sp_streq(name, "[]") && argc == 2) return TY_POLY_ARRAY;   /* md[start, length] (#2507) */
-    if (sp_streq(name, "named_captures") && argc == 1) {
-      /* symbolize_names: false asks for the string keys (#3640) */
-      int kv = kwh_lookup(nt, argv[0], "symbolize_names");
-      const char *kvt = kv >= 0 ? nt_type(nt, kv) : NULL;
-      if (kvt && sp_streq(kvt, "FalseNode")) return TY_STR_POLY_HASH;
-      return TY_SYM_POLY_HASH;   /* symbolize (#2530) */
-    }
-  }
+  { TyKind r; if (infer_regexp_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
   { TyKind r; if (infer_builtin_cmethod_call(c, id, nt, name, recv, argc, argv, &r)) return r; }
 
