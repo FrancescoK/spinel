@@ -31042,31 +31042,8 @@ static void an_phase_storage(Compiler *c) {
   }
 }
 
-void analyze_program(Compiler *c) {
-  an_phase_desugar_register(c);
-
-  an_phase_class_structure(c);
-
-  an_phase_block_inline(c);
-
-  an_phase_pre_fixpoint(c);
-
-  an_phase_infer_fixpoint(c);
-
-  an_phase_post_fixpoint(c);
-
-  an_phase_procs(c);
-
-  an_phase_method_backstops(c);
-
-  an_phase_late_widen(c);
-
-  an_phase_proc_returns(c);
-
-
-  an_phase_storage(c);
-
-
+/* Value-type objects: a small, immutable, scalar-only leaf class is represented by value, unless an instance is boxed, held in a class variable or captured by a proc (analyze_program's steps, in their order) */
+static void an_phase_value_types(Compiler *c) {
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,
      scalar-only leaf whose instances never need a heap pointer (never boxed,
@@ -31378,6 +31355,34 @@ void analyze_program(Compiler *c) {
     TyKind lt = comp_ntype(c, st[n - 1]);
     if (ty_is_object(lt)) { int q = ty_object_class(lt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
   }
+}
+
+void analyze_program(Compiler *c) {
+  an_phase_desugar_register(c);
+
+  an_phase_class_structure(c);
+
+  an_phase_block_inline(c);
+
+  an_phase_pre_fixpoint(c);
+
+  an_phase_infer_fixpoint(c);
+
+  an_phase_post_fixpoint(c);
+
+  an_phase_procs(c);
+
+  an_phase_method_backstops(c);
+
+  an_phase_late_widen(c);
+
+  an_phase_proc_returns(c);
+
+
+  an_phase_storage(c);
+
+
+  an_phase_value_types(c);
 
   /* Reconcile a hash literal's node type with the variable it initializes.
      A literal like `{ begin: ... }` infers a narrow variant (SYM_POLY_HASH)
