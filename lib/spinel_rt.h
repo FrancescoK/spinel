@@ -3582,6 +3582,68 @@ static SP_UNUSED sp_int sp_range_lo_bound(sp_RbVal v) {
     sp_raise_cls("NotImplementedError", "a Range with a Float begin decided at run time is not supported by spinel");
   return v.tag == SP_TAG_NIL ? (sp_int)INTPTR_MIN : sp_poly_to_i(v);
 }
+/* Kernel#rand / Random#rand over a Range known only at run time (a parameter,
+   a boxed value), as CRuby's: an open side is Errno::EDOM, an empty range nil
+   for Kernel#rand and ArgumentError for Random#rand, an end written as a
+   Float a Float draw, an Integer range an Integer. */
+static SP_UNUSED sp_RbVal sp_rand_empty(const char *shown, int kernel) {
+  if (kernel) return sp_box_nil();
+  sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", shown));
+  return sp_box_nil();
+}
+static SP_UNUSED sp_RbVal sp_rand_range_v(sp_Random *g, sp_Range r, int kernel) {
+  if (!r.fe && (r.first == INTPTR_MIN || r.last == INTPTR_MAX))
+    sp_raise_cls("Errno::EDOM", "Numerical argument out of domain");
+  if (r.fe) {
+    if (r.first == INTPTR_MIN || r.fend != r.fend || r.fend == HUGE_VAL)
+      sp_raise_cls("Errno::EDOM", "Numerical argument out of domain");
+    if ((sp_float)r.first > r.fend || (r.fe == 2 && (sp_float)r.first == r.fend))
+      return sp_rand_empty(sp_range_inspect(r), kernel);
+    return sp_box_float((sp_float)r.first + sp_Random_rand_float(g) * (r.fend - (sp_float)r.first));
+  }
+  sp_int hi = r.excl ? r.last - 1 : r.last;
+  if (hi < r.first) return sp_rand_empty(sp_range_inspect(r), kernel);
+  return sp_box_int(r.first + sp_Random_rand_int(g, hi - r.first + 1));
+}
+static SP_UNUSED sp_RbVal sp_rand_frange_v(sp_Random *g, sp_FloatRange r, int kernel) {
+  if (r.omitted & (SP_FRANGE_NO_BEGIN | SP_FRANGE_NO_END) || r.first != r.first || r.last != r.last ||
+      r.first == -HUGE_VAL || r.last == HUGE_VAL)
+    sp_raise_cls("Errno::EDOM", "Numerical argument out of domain");
+  if (r.first > r.last || (r.excl && r.first == r.last)) return sp_rand_empty(sp_frange_inspect(r), kernel);
+  return sp_box_float(sp_Random_rand_float_range(g, r.first, r.last));
+}
+/* the argument boxed: whatever CRuby's rand takes (an Integer or Float
+   bound, a Range of either, nil) answers as it does there, and anything else
+   is the conversion TypeError */
+static SP_UNUSED sp_RbVal sp_rand_poly(sp_Random *g, sp_RbVal v, int kernel) {
+  switch (v.tag) {
+    case SP_TAG_INT: {
+      sp_int n = v.v.i;
+      if (kernel) { if (n < 0) n = -n; return n == 0 ? sp_box_float(sp_Random_rand_float(g)) : sp_box_int(sp_Random_rand_int(g, n)); }
+      if (n <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %lld", (long long)n));
+      return sp_box_int(sp_Random_rand_int(g, n));
+    }
+    case SP_TAG_FLT: {
+      sp_float f = v.v.f;
+      if (!kernel) return sp_box_float(sp_Random_rand_float_bound(g, f));
+      if (!isfinite(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
+      sp_int n = (sp_int)f; if (n < 0) n = -n;
+      return n > 0 ? sp_box_int(sp_Random_rand_int(g, n)) : sp_box_float(sp_Random_rand_float(g));
+    }
+    case SP_TAG_NIL:
+      if (kernel) return sp_box_float(sp_Random_rand_float(g));
+      sp_raise_cls("ArgumentError", "invalid argument - ");
+      return sp_box_nil();
+    case SP_TAG_BIGINT: return sp_box_bigint(sp_bigint_rand(g, (sp_Bigint *)v.v.p));
+    case SP_TAG_OBJ:
+      if (v.cls_id == SP_BUILTIN_RANGE && v.v.p) return sp_rand_range_v(g, *(sp_Range *)v.v.p, kernel);
+      if (v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return sp_rand_frange_v(g, *(sp_FloatRange *)v.v.p, kernel);
+      break;
+    default: break;
+  }
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_convert_src_name(v)));
+  return sp_box_nil();
+}
 /* The doubles in the order of their values, as int64 keys (CRuby's
    double_as_int64 / int64_as_double_to_num for Range#bsearch): a key one
    up is the next double up, and -Infinity / +Infinity are keys too. */

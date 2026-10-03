@@ -1667,6 +1667,17 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_puts(b, "sp_bigint_rand(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      /* a Range of either kind, or a boxed argument, draws as Random#rand
+         does (sp_rand_poly), answered in the call's own type */
+      else if (argc >= 1 && (comp_ntype(c, argv[0]) == TY_RANGE || comp_ntype(c, argv[0]) == TY_FLOAT_RANGE ||
+                             comp_ntype(c, argv[0]) == TY_POLY)) {
+        Buf rv; memset(&rv, 0, sizeof rv);
+        buf_puts(&rv, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, argv[0], &rv); buf_puts(&rv, ", 0)");
+        TyKind rk = comp_ntype(c, id);
+        if (rk == TY_POLY || rk == TY_UNKNOWN) buf_puts(b, rv.p);
+        else emit_unbox_text(c, rk, rv.p, b);
+        free(rv.p);
+      }
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_NIL) {
         /* rand(nil) is CRuby's ArgumentError, not the int slot's TypeError */
         buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
@@ -1760,18 +1771,25 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_puts(b, "(sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\"), (sp_int)0)");
           return 1;
         }
-        int is_float = lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
+        /* either bound a Float draws a Float, up to the end as written */
+        int is_float = (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) || (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
         if (is_float) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
           buf_puts(b, "; sp_Random_rand_float_range(");
           emit_expr(c, recv, b);
-          buf_printf(b, ", (sp_float)_t%d.first, (sp_float)_t%d.last); })", tr, tr);
+          buf_printf(b, ", (sp_float)_t%d.first, sp_range_end_num(_t%d)); })", tr, tr);
         }
         else {
           buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
           emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
+      }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+        /* a boxed argument draws by its run-time kind (sp_rand_poly): a Range
+           in a mixed slot was converted to an Integer bound and raised */
+        buf_puts(b, "sp_rand_poly("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ", 0)");
       }
       else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
         /* rand(Bignum bound): a uniform Bigint in [0, bound) (#3058) */

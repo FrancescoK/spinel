@@ -2932,6 +2932,16 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
 }
 
 /* A class method called on a builtin class constant: Time, File, IO, Fiber, Thread, Random, Marshal, JSON, Encoding (infer_call_inner's rules, in their order) */
+/* A literal Range argument to rand with a Float bound: the draw is a Float
+   ((1..2.5) included, which the Integer representation iterates) */
+static int rand_lit_range_float(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  const char *at = nt_type(nt, arg);
+  if (!at || !sp_streq(at, "RangeNode")) return 0;
+  int lo = nt_ref(nt, arg, "left"), hi = nt_ref(nt, arg, "right");
+  return (lo >= 0 && infer_type(c, lo) == TY_FLOAT) || (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
+}
+
 static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
   /* StringIO: a native-bound class (packages/stringio); no arms here. .new
      resolves through the class table, .open is Ruby in the package, and
@@ -3148,6 +3158,10 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand")) {
         if (argc < 1) { *out = TY_FLOAT; return 1; }
         TyKind rr0 = infer_type(c, argv[0]);
+        /* a boxed argument draws by its run-time kind (sp_rand_poly), a Float
+           Range or a literal Range with a Float bound a Float */
+        if (rr0 == TY_POLY) { *out = TY_POLY; return 1; }
+        if (rr0 == TY_FLOAT_RANGE || rand_lit_range_float(c, argv[0])) { *out = TY_FLOAT; return 1; }
         { *out = rr0 == TY_FLOAT ? TY_FLOAT : rr0 == TY_BIGINT ? TY_BIGINT : TY_INT; return 1; }
       }
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) { *out = TY_STRING; return 1; }
@@ -3168,12 +3182,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       TyKind a0 = infer_type(c, argv[0]);
       if (a0 == TY_FLOAT || a0 == TY_FLOAT_RANGE) { *out = TY_FLOAT; return 1; }   /* rand(Float range) -> Float (#2521) */
       if (a0 == TY_BIGINT) { *out = TY_BIGINT; return 1; }   /* rand(Bignum bound) -> Bigint (#3058) */
-      /* rand(Float range) -> Float (#2521) */
-      const char *atype = nt_type(nt, argv[0]);
-      if (atype && sp_streq(atype, "RangeNode")) {
-        int lo = nt_ref(nt, argv[0], "left");
-        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
-      }
+      /* a boxed argument draws by its run-time kind (sp_rand_poly) */
+      if (a0 == TY_POLY) { *out = TY_POLY; return 1; }
+      /* rand(Float range) -> Float (#2521), either bound a Float */
+      if (rand_lit_range_float(c, argv[0])) { *out = TY_FLOAT; return 1; }
       { *out = TY_INT; return 1; }
     }
     if (sp_streq(name, "bytes")) { *out = TY_STRING; return 1; }
@@ -4615,7 +4627,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (atype && sp_streq(atype, "RangeNode")) {
         int lo = nt_ref(nt, argv[0], "left");
         int hi = nt_ref(nt, argv[0], "right");
-        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) { *out = TY_FLOAT; return 1; }   /* rand(float_range) */
+        if (rand_lit_range_float(c, argv[0])) { *out = TY_FLOAT; return 1; }   /* rand(float_range), either bound */
         /* a statically empty/reversed int range yields nil (#2519) */
         if (lo >= 0 && hi >= 0 &&
             nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&

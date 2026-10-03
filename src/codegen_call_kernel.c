@@ -593,7 +593,9 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           buf_puts(b, "(sp_raise_cls(\"Errno::EDOM\", \"Domain error - rand\"), (sp_int)0)");
           return 1;
         }
-        int is_float = lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
+        /* either bound a Float draws a Float; an Integer begin keeps the end
+           as written (sp_range_end_num) */
+        int is_float = (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) || (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
         /* a statically empty/reversed int range -> nil (#2519) */
         if (islit && !is_float && lo >= 0 && hi >= 0 &&
             nt_type(nt, lo) && sp_streq(nt_type(nt, lo), "IntegerNode") &&
@@ -606,13 +608,14 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, av[0], b); buf_puts(b, "; ");
         if (is_float)
-          buf_printf(b, "(sp_float)_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (sp_float)(_t%d.last - _t%d.first); })", tr, tr, tr);
+          buf_printf(b, "(sp_float)_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (sp_range_end_num(_t%d) - (sp_float)_t%d.first); })", tr, tr, tr);
         else if (islit)
           buf_printf(b, "_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl); })", tr, tr, tr, tr);
         else
-          /* a range held in a variable can be empty at runtime -> nil, like CRuby;
-             otherwise an Integer. The result is a poly (Integer or nil) (#3221). */
-          buf_printf(b, "((_t%d.last - _t%d.excl) < _t%d.first) ? sp_box_nil() : sp_box_int(_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl)); })", tr, tr, tr, tr, tr, tr, tr);
+          /* a range held in a variable can be empty at run time -> nil, like
+             CRuby, open -> Errno::EDOM, and an end written as a Float draws a
+             Float: the result is a poly (#3221, sp_rand_range_v) */
+          buf_printf(b, "sp_rand_range_v(sp_random_default_get(), _t%d, 1); })", tr);
         return 1;
       }
       /* rand(int): 0 behaves like rand() (a Float in [0,1)); a nonzero magnitude
@@ -652,6 +655,12 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (comp_ntype(c, av[0]) == TY_BIGINT) {
         buf_puts(b, "sp_bigint_rand(sp_random_default_get(), ");
         emit_expr(c, av[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      /* a boxed argument draws by its run-time kind: a Range or Float Range
+         held in a mixed slot was converted to an Integer bound and raised */
+      if (comp_ntype(c, av[0]) == TY_POLY) {
+        buf_puts(b, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, av[0], b); buf_puts(b, ", 1)");
         return 1;
       }
       /* a dynamic Integer argument may be 0 at run time (a Float [0,1)) or

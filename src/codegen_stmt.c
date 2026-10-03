@@ -707,8 +707,12 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
   return 1;
 }
 
+/* rand answers its draw, srand the previous seed, putc its argument: as a
+   method's last expression their statement form left the method answering
+   nil (`def roll(r) = rand(r)`) */
 static int tail_output_has_value(const char *nm) {
-  return nm && (sp_streq(nm, "system") || sp_streq(nm, "p") || sp_streq(nm, "pp"));
+  return nm && (sp_streq(nm, "system") || sp_streq(nm, "p") || sp_streq(nm, "pp") ||
+                sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "putc"));
 }
 
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc) {
