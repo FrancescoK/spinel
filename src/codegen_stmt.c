@@ -5640,6 +5640,13 @@ void emit_tail_recv_value(Compiler *c, int id, int rr, Buf *b) {
     free(rb.p);
     return;
   }
+  /* a boxed Enumerator's `each { }` answers what its walk answers, the
+     collection an `each` Enumerator was made from, not the Enumerator */
+  const char *cn = nt_str(c->nt, id, "name");
+  if (comp_ntype(c, rr) == TY_POLY && ct == TY_POLY && cn && sp_streq(cn, "each")) {
+    buf_puts(b, "sp_poly_each_answer("); emit_expr(c, rr, b); buf_puts(b, ")");
+    return;
+  }
   emit_expr(c, rr, b);
 }
 

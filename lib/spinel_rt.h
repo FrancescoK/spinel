@@ -15427,6 +15427,15 @@ static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) {
   if (e->has_src || e->source.tag != SP_TAG_NIL) return e->source;
   return sp_box_poly_array(sp_Enumerator_to_a(e));
 }
+/* What a boxed receiver's `each { }` answers: an Enumerator answers its walk's
+   result (the collection an `each` Enumerator was made from), anything else
+   itself */
+static sp_RbVal sp_poly_each_answer(sp_RbVal v) SP_UNUSED;
+static sp_RbVal sp_poly_each_answer(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return sp_enum_walk_result((sp_Enumerator *)v.v.p);
+  return v;
+}
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
   e->yields_pair = SP_PAIR_PACKED;
