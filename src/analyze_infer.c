@@ -417,8 +417,7 @@ static int hv_op_ok(const NodeTable *nt, int call) {
   if ((sp_streq(nm, "[]=") || sp_streq(nm, "store")) && an == 2 && !has_blk) return 2;
   if ((sp_streq(nm, "[]") || sp_streq(nm, "delete")) && an == 1 && !has_blk) return 1;
   if (sp_streq(nm, "fetch") && an == 1 && !has_blk) return 1;
-  if ((sp_streq(nm, "key?") || sp_streq(nm, "has_key?") || sp_streq(nm, "include?") ||
-       sp_streq(nm, "member?")) && an == 1 && !has_blk) return 1;
+  if (is_key_query(nm) && an == 1 && !has_blk) return 1;
   if ((sp_streq(nm, "size") || sp_streq(nm, "length") || sp_streq(nm, "empty?") ||
        sp_streq(nm, "keys") || sp_streq(nm, "values") || sp_streq(nm, "clear")) && an == 0 && !has_blk) return 1;
   if (sp_streq(nm, "each_value") && an == 0 && has_blk) return 1;
@@ -5423,8 +5422,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
        each and its kin answer the receiver, map the block's values (#4846) */
     { int oblk = nt_ref(nt, id, "block");
       if (oblk >= 0 && nt_kind(nt, oblk) == NK_BlockNode) {
-        if ((sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
-             sp_streq(name, "each_entry") || sp_streq(name, "each_with_index")) && argc == 0)
+        if (is_each_walk_or_with_index(name) && argc == 0)
           { *out = rt; return 1; }
         if ((sp_streq(name, "map") || sp_streq(name, "collect")) && argc == 0)
           { *out = infer_map_block_ty(c, id, oblk); return 1; }
@@ -6010,8 +6008,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
        Ruby returns the enumerable itself, so type it as the original receiver
        obj, not the intermediate member array (#2546/#2547). The codegen value
        form (emit_iter_value_expr) yields obj to match. */
-    if ((sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")) &&
+    if (is_each_walk_or_with_index(name) &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rnm = nt_str(nt, recv, "name");
       int orecv = rnm && sp_streq(rnm, "__enum_to_a") ? nt_ref(nt, recv, "receiver") : -1;
@@ -6022,9 +6019,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
     /* each_entry belongs here too: Enumerable#each_entry answers the receiver
        exactly as #each does, and typing it nil left `arr.each_entry { }.class`
        reading NilClass (#3395). */
-    if (enumerable_recv &&
-        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry")))
+    if (enumerable_recv && is_each_walk_or_with_index(name))
       { *out = rt; return 1; }
     /* A poly receiver answers `each` with itself, exactly as the typed kinds
        do -- that is the receiver's own type, so claiming it says nothing the
@@ -6036,8 +6031,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
        The value form of the iterator (emit_iter_value_expr) yields the
        receiver for a poly one too, so the two agree. */
     if (rt == TY_POLY && nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
-         sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
+        (is_each_walk_or_with_index(name) ||
          /* each_index's poly arm hands back the boxed receiver as well;
             untyped, its value read as nil */
          sp_streq(name, "each_index") ||
@@ -7124,8 +7118,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   }
   /* ENV.key?/has_key?/include?/member?(key) -> bool */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "key?") || sp_streq(name, "has_key?") ||
-       sp_streq(name, "include?") || sp_streq(name, "member?"))) {
+      is_key_query(name)) {
     const char *rty = nt_type(nt, recv);
     if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");

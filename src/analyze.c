@@ -19132,8 +19132,7 @@ int dyn_call_site(Compiler *c, int n) {
   const char *nm = nt_str(nt, n, "name");
   int r = nt_ref(nt, n, "receiver");
   if (!nm || r < 0) return 0;
-  if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") ||
-        sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
+  if (!is_proc_invoke(nm)) return 0;
   TyKind rt = comp_ntype(c, r);
   if (rt != TY_PROC && rt != TY_METHOD) return 0;
   if (dyn_cap_wrapper(c, r)) return 0;
@@ -19472,8 +19471,7 @@ int dyn_open_site(Compiler *c, int n, int *shift) {
   if (!nm || r < 0) return 0;
   TyKind rt = comp_ntype(c, r);
   if (sp_streq(nm, "bind_call")) { *shift = 1; return rt == TY_METHOD; }
-  if (!(sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "[]") ||
-        sp_streq(nm, "yield") || sp_streq(nm, "==="))) return 0;
+  if (!is_proc_invoke(nm)) return 0;
   if (rt == TY_CURRY) return 1;
   return rt == TY_POLY && dyn_may_callable(c, r, 0);
 }
@@ -22696,8 +22694,7 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
     }
     return 0;
   }
-  if ((sp_streq(nm, "call") || sp_streq(nm, "()") || sp_streq(nm, "yield") || sp_streq(nm, "[]") ||
-       sp_streq(nm, "===")) && infer_type(c, rcv) == TY_PROC) return 1;
+  if (is_proc_invoke(nm) && infer_type(c, rcv) == TY_PROC) return 1;
   return 0;
 }
 

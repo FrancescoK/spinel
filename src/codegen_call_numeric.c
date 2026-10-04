@@ -464,8 +464,7 @@ int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const
     int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
     if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
       int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
-      if ((sp_streq(name, "include?") || sp_streq(name, "member?") ||
-           sp_streq(name, "cover?") || sp_streq(name, "===")) && argc == 1) {
+      if (is_range_membership(name) && argc == 1) {
         if (a0 != TY_STRING) {
           /* a non-string can't be in a string range: false (eval arg) */
           buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");

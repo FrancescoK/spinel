@@ -34,6 +34,10 @@ int is_equality_name(const char *n);  /* equal? eql? == */
 int is_bits_query(const char *n);     /* allbits? anybits? nobits? */
 int is_count_alias(const char *n);    /* length size count */
 int is_class_eval_family(const char *n);  /* class_eval module_eval class_exec module_exec */
+int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec */
+int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
+int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */
+int is_each_walk_or_with_index(const char *n); /* each each_entry reverse_each each_with_index */
 int is_call_or_yield(const char *n);  /* call () [] yield: is_call_alias's names and yield */
 int is_proc_invoke(const char *n);    /* call () [] yield ===: every name that invokes a Proc */
 int is_quantifier_or_count(const char *n);  /* all? any? none? one? count: is_quantifier's names and count */

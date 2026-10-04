@@ -101,6 +101,25 @@ int is_class_eval_family(const char *n) {
          sp_streq(n, "module_exec");
 }
 
+int is_eval_exec_family(const char *n) {
+  return is_class_eval_family(n) || sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
+}
+
+int is_key_query(const char *n) {
+  return sp_streq(n, "key?") || sp_streq(n, "has_key?") ||
+         sp_streq(n, "include?") || sp_streq(n, "member?");
+}
+
+int is_range_membership(const char *n) {
+  return sp_streq(n, "cover?") || sp_streq(n, "include?") ||
+         sp_streq(n, "member?") || sp_streq(n, "===");
+}
+
+int is_each_walk_or_with_index(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_with_index") ||
+         sp_streq(n, "reverse_each") || sp_streq(n, "each_entry");
+}
+
 int is_call_or_yield(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]") || sp_streq(n, "yield");
 }

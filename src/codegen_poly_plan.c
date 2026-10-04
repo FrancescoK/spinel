@@ -2331,8 +2331,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      ones fell through to the raise (#3781 follow-up). */
   int is_pfirstn = (sp_streq(name, "first") || sp_streq(name, "last")) &&
                    argc == 1 && !has_splat_arg;
-  int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
-                    sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
+  int is_include = is_key_query(name) && argc == 1;
   /* intersect? on a poly value that is a builtin array. The typed-receiver
      forms resolve, so only the union receiver was missing an arm and the
      call raised NoMethodError naming Array -- which is what the receiver

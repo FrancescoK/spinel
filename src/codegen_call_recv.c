@@ -10230,8 +10230,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        mistaken for an uncoverable one */
     if (argc >= 1 && (a0 == TY_UNKNOWN || a0 == TY_POLY)) a0 = infer_type(c, argv[0]);
     int tr = ++g_tmp;
-    if ((sp_streq(name, "cover?") || sp_streq(name, "include?") ||
-         sp_streq(name, "member?") || sp_streq(name, "===")) && argc == 1) {
+    if (is_range_membership(name) && argc == 1) {
       const char *fn = sp_streq(name, "include?") || sp_streq(name, "member?") ?
                        "sp_srange_include" : "sp_srange_cover";
       if (a0 == TY_STRING) {
@@ -10740,8 +10739,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
                       " range to a set\"), (sp_IntArray *)0) : sp_range_to_ia(_t%d))", t, t);
       else if (sp_streq(name, "to_a") || sp_streq(name, "entries"))
         buf_printf(b, "sp_range_to_ia(_t%d)", t);
-      else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
-               sp_streq(name, "cover?") || sp_streq(name, "===")) {
+      else if (is_range_membership(name)) {
         /* ===(range) / include?(range): CRuby compares endpoints against the
            value via <=>, and Integer <=> Range is nil, so these are always
            false. Only cover?(range) does endpoint containment. */

@@ -10927,8 +10927,7 @@ int desugar_class_new_blocks(Compiler *c) {
        defs shape a class that exists only at run time, and left in place
        they would land in the enclosing class */
     if (nm && recv >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
-        (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") || sp_streq(nm, "class_exec") ||
-         sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+        is_eval_exec_family(nm)) {
       NodeKind rk0 = nt_kind(nt, recv);
       /* `self.class.class_eval` names the enclosing class, as a constant does */
       int self_class = 0;
@@ -11144,8 +11143,7 @@ static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *
     const char *nm = nt_str(nt, s, "name");
     int blk = nt_ref(nt, s, "block");
     if (nm && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
-        (sp_streq(nm, "class_eval") || sp_streq(nm, "class_exec") || sp_streq(nm, "module_eval") ||
-         sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+        is_eval_exec_family(nm)) {
       int bb = nt_ref(nt, blk, "body");
       int bn = 0; const int *bs = bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? nt_arr(nt, bb, "body", &bn) : NULL;
       for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap);

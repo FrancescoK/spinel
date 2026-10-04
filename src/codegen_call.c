@@ -17629,8 +17629,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
                  (ty_is_array(at2) || ty_is_obj_array(at2)) ? "Array" :
                  ty_is_hash(at2) ? "Hash" : NULL;
       }
-      int pred = sp_streq(rn2, "cover?") || sp_streq(rn2, "include?") ||
-                 sp_streq(rn2, "member?") || sp_streq(rn2, "===");
+      int pred = is_range_membership(rn2);
       int wants_int = sp_streq(rn2, "first") || sp_streq(rn2, "last") ||
                       sp_streq(rn2, "take") || sp_streq(rn2, "drop") ||
                       sp_streq(rn2, "step") || sp_streq(rn2, "each_slice") ||
@@ -21336,8 +21335,7 @@ static void refuse_string_copies(Compiler *c, int id) {
       unsupported_feature(c, id, "a String is not yet shared by reference through tap on a fresh String");
   }
   int av[16];
-  int dyn = sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
-            sp_streq(name, "yield") || sp_streq(name, "===");
+  int dyn = is_proc_invoke(name);
   int ka = nt_ref(nt, id, "arguments"), kac = 0;
   const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
   for (int k = 0; k < kac; k++) {
@@ -23204,8 +23202,7 @@ int ie_body_ivar_write(const NodeTable *nt, int node) {
   int own_self_blk = -1;
   if (k == NK_CallNode) {
     const char *cn = nt_str(nt, node, "name");
-    if (cn && (sp_streq(cn, "instance_exec") || sp_streq(cn, "instance_eval") || sp_streq(cn, "class_exec") ||
-               sp_streq(cn, "class_eval") || sp_streq(cn, "module_exec") || sp_streq(cn, "module_eval")))
+    if (cn && is_eval_exec_family(cn))
       own_self_blk = nt_ref(nt, node, "block");
   }
   int nr = nt_num_refs(nt, node);

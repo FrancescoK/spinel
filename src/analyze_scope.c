@@ -7817,8 +7817,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
        by the method it is passed to */
     const char *bself = NULL;
     char *bown = NULL;
-    if (nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval") || sp_streq(nm, "class_exec") ||
-               sp_streq(nm, "module_exec") || sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) {
+    if (nm && is_eval_exec_family(nm)) {
       if (on_self) bself = self;
       else if (bc_is_const_node(nt, rv)) { bown = bc_resolve(b, rv); bself = bown ? bc_own(b, bown) : NULL; }
     }

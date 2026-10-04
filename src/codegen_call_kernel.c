@@ -1398,8 +1398,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   }
   /* ENV.key?/has_key?/include?/member?(key) -> getenv presence test */
   if (recv >= 0 && argc == 1 &&
-      (sp_streq(name, "key?") || sp_streq(name, "has_key?") ||
-       sp_streq(name, "include?") || sp_streq(name, "member?"))) {
+      is_key_query(name)) {
     const char *rty2 = nt_type(nt, recv);
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
