@@ -925,6 +925,14 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
                tf, tf, tn, ta, tf, tl);
     { *out = 1; return 1; }
   }
+  /* a boxed index is whatever it holds at run time: an Integer reads an
+     element, a Range a sub-array (sp_poly_index_poly). Read as an Integer,
+     a Range took element 0. */
+  if (sp_streq(name, "[]") && argc == 1 && a0 == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    buf_puts(b, "sp_poly_index_poly(sp_box_poly_array("); emit_expr(c, recv, b); buf_puts(b, "), ");
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
+    { *out = 1; return 1; }
+  }
   if (sp_streq(name, "[]") && argc == 1) {
     buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
     if (a0 == TY_POLY) { buf_puts(b, "sp_poly_arg_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
