@@ -14416,13 +14416,6 @@ int desugar_class_body_self_calls(Compiler *c) {
   return changed;
 }
 
-/* `class Rational < Numeric` -- a builtin reopened with its own superclass
-   named, as the bigdecimal gem's util.rb writes it -- is the reopening
-   `class Rational` is: Ruby accepts the superclass because it is the one the
-   class already has. Left in, it made a user class of the builtin's name,
-   whose struct the runtime's own type already took. The superclass is
-   dropped when it is the builtin's own (not for the exception classes,
-   whose chain the runtime answers). */
 /* `self.class` in an instance method of a reopened builtin -- a Hash, an
    Array, a String -- is that builtin: no program class may derive from one
    (the declaration is refused), so self is never anything else. Spelled as
@@ -14508,6 +14501,13 @@ int desugar_builtin_reopen_self_class(Compiler *c) {
   return changed;
 }
 
+/* `class Rational < Numeric` -- a builtin reopened with its own superclass
+   named, as the bigdecimal gem's util.rb writes it -- is the reopening
+   `class Rational` is: Ruby accepts the superclass because it is the one the
+   class already has. Left in, it made a user class of the builtin's name,
+   whose struct the runtime's own type already took. The superclass is
+   dropped when it is the builtin's own (not for the exception classes,
+   whose chain the runtime answers). */
 int desugar_builtin_reopen_named_superclass(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
