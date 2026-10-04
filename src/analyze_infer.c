@@ -4751,6 +4751,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (sp_streq(name, "sleep") && argc <= 1) { *out = TY_INT; return 1; }
     if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
       { *out = TY_STRING; return 1; }   /* ARGF's next line, or nil */
+    if (sp_streq(name, "readline") && argc == 0 && comp_bare_gets_is_argf(c))
+      { *out = TY_STRING; return 1; }   /* ARGF's next line; EOFError at its end */
   }
   return 0;
 }

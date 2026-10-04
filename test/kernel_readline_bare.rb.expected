@@ -1,0 +1,4 @@
+name? got alice
+name? got bob
+"carol\n"
+#<EOFError: end of file reached>
