@@ -7179,6 +7179,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (rname && sp_streq(rname, "Process") &&
         (sp_streq(name, "waitpid2") || sp_streq(name, "wait2")) && argc <= 1)
       return TY_POLY_ARRAY;
+    /* Process.last_status is $?: the last child's Process::Status, or nil */
+    if (rname && sp_streq(rname, "Process") && sp_streq(name, "last_status") && argc == 0)
+      return TY_PROCESS_STATUS;
     /* Process.wait / waitpid answer the pid they reaped and set $? */
     if (rname && sp_streq(rname, "Process") &&
         (sp_streq(name, "wait") || sp_streq(name, "waitpid")) && argc <= 1)

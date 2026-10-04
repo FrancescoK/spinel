@@ -1588,6 +1588,11 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       buf_printf(b, " _r; })\n");
       return 1;
     }
+    /* Process.last_status is $? (#7196) */
+    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "last_status") && argc == 0) {
+      buf_puts(b, "sp_last_process_status()");
+      return 1;
+    }
     /* Process.waitpid2(pid) -> [pid, raw_status]: the runtime hands back a
        2-element PolyArray, unboxed. The call's own type comes from
        infer_call, like every other arm here -- g_ret_type is the enclosing
