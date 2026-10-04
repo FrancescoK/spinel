@@ -6956,6 +6956,50 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
             nt_node_set_str(nt, toa, "name", "to_a");
             nt_node_set_ref(nt, toa, "receiver", hrecv);
             nt_node_set_ref(nt, wrecv, "receiver", toa);
+            /* `h.each.with_index { }` answers h, not the pairs the walk
+               now goes over: (h.to_a.each.with_index { }; h). A Hash no
+               variable names is held in a temp first, read once. */
+            if (sp_streq(nm, "with_index") && sp_streq(wrn, "each") && nt_ref(nt, id, "block") >= 0) {
+              NodeKind hk = nt_kind(nt, hrecv);
+              int simple = hk == NK_LocalVariableReadNode || hk == NK_InstanceVariableReadNode ||
+                           hk == NK_ConstantReadNode;
+              int base = nt->count;
+              int inner = nt_new_node(nt, "CallNode");
+              int st = nt_new_node(nt, "StatementsNode");
+              int pre = -1, tail = -1;
+              if (simple) tail = nt_clone_subtree(nt, hrecv);
+              else {
+                char tn[64]; snprintf(tn, sizeof tn, "__hwi_%s", comp_node_tag(c, id));
+                Scope *hs = comp_scope_of(c, id);
+                pre = nt_new_node(nt, "LocalVariableWriteNode");
+                int r1 = nt_new_node(nt, "LocalVariableReadNode");
+                tail = nt_new_node(nt, "LocalVariableReadNode");
+                if (pre >= 0 && r1 >= 0 && tail >= 0 && hs) {
+                  nt_node_set_str(nt, pre, "name", tn); nt_node_set_ref(nt, pre, "value", hrecv);
+                  nt_node_set_str(nt, r1, "name", tn); nt_node_set_str(nt, tail, "name", tn);
+                  nt_node_set_ref(nt, toa, "receiver", r1);
+                  scope_local_intern(hs, tn);
+                }
+                else tail = -1;
+              }
+              if (inner >= 0 && st >= 0 && tail >= 0) {
+                nt_node_set_str(nt, inner, "name", "with_index");
+                nt_node_set_ref(nt, inner, "receiver", wrecv);
+                nt_node_set_ref(nt, inner, "arguments", nt_ref(nt, id, "arguments"));
+                nt_node_set_ref(nt, inner, "block", nt_ref(nt, id, "block"));
+                int items[3], ni = 0;
+                if (pre >= 0) items[ni++] = pre;
+                items[ni++] = inner; items[ni++] = tail;
+                nt_node_set_arr(nt, st, "body", items, ni);
+                nt_node_set_type(nt, id, "ParenthesesNode");
+                nt_node_set_ref(nt, id, "body", st);
+                nt_node_set_ref(nt, id, "receiver", -1);
+                nt_node_set_ref(nt, id, "arguments", -1);
+                nt_node_set_ref(nt, id, "block", -1);
+                comp_grow_node_arrays(c);
+                for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
+              }
+            }
             comp_grow_node_arrays(c);
             c->nscope[toa] = c->nscope[wrecv];
             *changed = 1;
