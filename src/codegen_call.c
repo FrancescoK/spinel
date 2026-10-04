@@ -1268,6 +1268,20 @@ int hoist_block_proc(Compiler *c, int cblk) {
   free(pb.p);
   return t;
 }
+/* The block a dispatch's arms share, as one rooted proc temp: the call's
+   resolved block (cblk), or, when a written `&b` resolved to none inside an
+   inline that was handed a real proc (`g(&l)` inlining `@h.two(&b)`), that
+   proc. -1 when there is neither. */
+int hoist_dispatch_blk_proc(Compiler *c, int id, int cblk) {
+  if (cblk >= 0) return hoist_block_proc(c, cblk);
+  if (nt_ref(c->nt, id, "block") < 0 || !g_yield_proc_ref) return -1;
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", t, g_yield_proc_ref);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+  return t;
+}
 /* The trailing block parameter of a method that takes its block as one --
    a yielding method lowered to `__yblk__`, or a `&block` -- at a fallback
    call that spelled only its arguments: the call's block (`blk_tmp`, or

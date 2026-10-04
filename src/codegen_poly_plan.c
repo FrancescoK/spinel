@@ -1709,12 +1709,13 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
      class-method cascade, which already does this. */
   int blk_tmp0 = -1;
   { int cblk0 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-    if (cblk0 >= 0) {
+    if (cblk0 >= 0 || (nt_ref(nt, id, "block") >= 0 && g_yield_proc_ref)) {
       int npc0 = 0;
       const PolyCand *pc0 = comp_poly_candidates(c, name, &npc0);   /* (#4966) */
       for (int ki = 0; ki < npc0 && blk_tmp0 < 0; ki++) {
         int k = pc0[ki].cls;
-        if (!c->classes[k].instantiated) continue;
+        /* a reopened builtin (Hash, Array, String...) is never `.new`ed, and its arm runs too */
+        if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
         int mi0 = pc0[ki].mi;
         if (mi0 < 0) continue;
         Scope *cm0 = &c->scopes[mi0];
@@ -1725,7 +1726,7 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
           /* `&blk` that survived the forwarding resolution names a REAL
              proc (this function's own block param), not a literal to
              materialize: write the proc expression itself. */
-          blk_tmp0 = hoist_block_proc(c, cblk0);
+          blk_tmp0 = hoist_dispatch_blk_proc(c, id, cblk0);
         }
       }
     } }
@@ -2810,9 +2811,10 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
   /* Same shared-proc materialization the zero-arg dispatch does (#3399). */
   int blk_tmp2 = -1;
   { int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-    if (cblk2 >= 0) {
+    if (cblk2 >= 0 || (nt_ref(nt, id, "block") >= 0 && g_yield_proc_ref)) {
       for (int k = 0; k < c->nclasses && blk_tmp2 < 0; k++) {
-        if (!c->classes[k].instantiated) continue;
+        /* a reopened builtin (Hash, Array, String...) is never `.new`ed, and its arm runs too */
+        if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
         int mi2 = comp_method_in_chain(c, k, name, NULL);
         if (mi2 < 0) continue;
         Scope *cm2 = &c->scopes[mi2];
@@ -2821,7 +2823,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
             scope_needs_proc_form(c, mi2)) {
           /* a forwarded &blk / anonymous & is a live proc, not a literal
              to lower -- the same guard the other dispatch arms carry */
-          blk_tmp2 = hoist_block_proc(c, cblk2);
+          blk_tmp2 = hoist_dispatch_blk_proc(c, id, cblk2);
         }
       }
     } }

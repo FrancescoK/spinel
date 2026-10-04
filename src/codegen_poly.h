@@ -67,6 +67,7 @@ void emit_poly_index_cases(TyKind ret, int tr, int tv, const char *idxref, Buf *
 int  poly_pred_kind(const char *name, int argc);
 int  poly_exc_cand(Compiler *c, const char *name);
 int  hoist_block_proc(Compiler *c, int cblk);
+int  hoist_dispatch_blk_proc(Compiler *c, int id, int cblk);
 void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b);
 /* what a zero-argument poly dispatch answers beside its user arms, and its
    user candidates (poly_specials0) */
