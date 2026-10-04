@@ -865,6 +865,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
 
 /* freeze / frozen?, dup / clone, the identity methods that answer the receiver, and then / yield_self */
 int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
+  if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
+                   comp_ntype(c, recv) == TY_STR_RANGE) &&
+      emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 1, b)) return 1;
   /* freeze / frozen? on an array set/read the struct's frozen flag */
   if (recv >= 0 && argc == 0 && comp_ntype(c, recv) != TY_POLY) {
     TyKind crt = comp_ntype(c, recv);
@@ -1075,12 +1078,12 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   }
 
   /* frozen? on an immutable value type is constantly true (CRuby freezes
-     Integer/Float/Symbol/booleans/nil/Range/Complex/Rational values) */
+     Integer/Float/Symbol/booleans/nil/Complex/Rational values) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
     TyKind fvt = comp_ntype(c, recv);
     if (fvt == TY_NIL) { buf_puts(b, "1"); return 1; }
     if (fvt == TY_INT || fvt == TY_FLOAT || fvt == TY_SYMBOL || fvt == TY_BOOL ||
-        fvt == TY_RANGE || fvt == TY_COMPLEX || fvt == TY_RATIONAL ||
+        fvt == TY_COMPLEX || fvt == TY_RATIONAL ||
         fvt == TY_BIGINT) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return 1;
@@ -1132,7 +1135,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        keyword can't unfreeze what has no mutable state (#2379) */
     if (argc0 == 1 && sp_streq(name, "clone") &&
         (recv_t == TY_INT || recv_t == TY_FLOAT || recv_t == TY_BOOL ||
-         recv_t == TY_NIL || recv_t == TY_SYMBOL || recv_t == TY_RANGE ||
+         recv_t == TY_NIL || recv_t == TY_SYMBOL ||
          recv_t == TY_RATIONAL || recv_t == TY_COMPLEX || recv_t == TY_BIGINT)) {
       int dargs2 = nt_ref(nt, id, "arguments");
       int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;

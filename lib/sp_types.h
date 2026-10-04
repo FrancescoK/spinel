@@ -154,8 +154,11 @@ typedef sp_int sp_sym;
    Integer, so first / last / excl are the bounds of that walk (1..2), and the
    end as written is kept beside them -- fe 1 for an inclusive Float end, 2
    for an excluded one, fend its value; fe 0 (every other range, and the
-   zero-initialized one) has none. Read through sp_range_end_* (sp_range.h). */
-typedef struct{sp_int first;sp_int last;sp_int excl;sp_int step;sp_float fend;sp_int fe;}sp_Range;
+   zero-initialized one) has none. Read through sp_range_end_* (sp_range.h).
+   All three Range kinds default to frozen; dup sets their unfrozen flag.
+   Store it beside a byte-sized flag (fe 0..2, omitted 0..63, excl 0..1)
+   in the existing trailing word, keeping the by-value layouts the same size. */
+typedef struct{sp_int first;sp_int last;sp_int excl;sp_int step;sp_float fend;unsigned char fe;unsigned char unfrozen;}sp_Range;
 /* A Float range (1.0..3.0): endpoints kept as sp_float so cover?/include?/begin/
    end are exact (an int-backed sp_Range truncated them). Iteration is a TypeError
    in Ruby (only #step traverses a Float range), so no step/iteration state here.
@@ -165,7 +168,7 @@ typedef struct{sp_int first;sp_int last;sp_int excl;sp_int step;sp_float fend;sp
    in the value, and only #inspect / #to_s tell them apart -- CRuby prints
    "1.0.." for the first and "1.0..Infinity" for the second (#3670).
    bit 1 = begin omitted, bit 2 = end omitted. */
-typedef struct{sp_float first;sp_float last;sp_int excl;sp_int omitted;}sp_FloatRange;
+typedef struct{sp_float first;sp_float last;sp_int excl;unsigned char omitted;unsigned char unfrozen;}sp_FloatRange;
 #define SP_FRANGE_NO_BEGIN 1
 #define SP_FRANGE_NO_END   2
 /* A mixed literal (1.5..5) is a Float range whose END was written as an
@@ -178,7 +181,7 @@ typedef struct{sp_float first;sp_float last;sp_int excl;sp_int omitted;}sp_Float
    include?/...) materializes the element array through
    sp_StrArray_from_string_range, which is how the range behaved before it was
    a value of its own. */
-typedef struct{const char *first;const char *last;sp_int excl;}sp_StrRange;
+typedef struct{const char *first;const char *last;unsigned char excl;unsigned char unfrozen;}sp_StrRange;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

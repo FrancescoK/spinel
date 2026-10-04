@@ -49,6 +49,8 @@ typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;
    only types the call; codegen leaves it to the legacy chain. */
 typedef enum {
   BOPE_NONE,
+  BOPE_RANGE_CLONE,      /* Range#clone(freeze: ...) */
+  BOPE_RANGE_FREEZE,     /* Range#freeze */
   BOPE_TEMPLATE,          /* arg, its placeholders filled (codegen_ops.c) */
   BOPE_PSTATUS_SUCCESS,   /* Process::Status#success?: true, false or nil */
   BOPE_PSTATUS_EQ,        /* Process::Status#== / #eql? with no operand */
