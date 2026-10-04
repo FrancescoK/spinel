@@ -11331,6 +11331,8 @@ static sp_Time sp_time_at_args(sp_RbVal args) {
     else sp_raise_cls("ArgumentError", sp_sprintf("unexpected unit: %s", un ? un : sp_poly_class_name(u)));
   }
   sp_RbVal sub = sp_poly_arr_get(args, 1);
+  if (sub.tag != SP_TAG_INT && sub.tag != SP_TAG_FLT && !sp_poly_is_rational(sub))
+    sp_raise_cls("TypeError", sp_sprintf("can't convert %s into an exact number", sp_poly_class_name(sub)));
   if (sub.tag == SP_TAG_INT) return sp_time_add_nsec(t, (int64_t)sub.v.i * mult);
   return sp_time_add_nsec(t, (int64_t)(sp_poly_to_f_with_rational(sub) * (double)mult));
 }

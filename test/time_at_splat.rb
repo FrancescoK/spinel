@@ -26,3 +26,11 @@ begin
 rescue ArgumentError => e
   p e.message
 end
+# a subsecond part that is not a number is CRuby's TypeError
+[nil, "x"].each do |sub|
+  begin
+    at(1, sub)
+  rescue TypeError => e
+    p e.message
+  end
+end
