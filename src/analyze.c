@@ -15735,6 +15735,46 @@ static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrec
   return 1;
 }
 
+/* A chained value iterator over a fresh Hash literal is harmless when its
+   only Hash read is the iterator receiver itself: no code can observe the
+   unchanged stored Strings after the block. Keep that narrow case available
+   for hash_each_value_with_index_types.rb; other Hash values may alias live
+   Strings or the Hash may be read after the block. */
+static int an_hash_chain_is_unobserved_literal(Compiler *c, int hrecv) {
+  const NodeTable *nt = c->nt;
+  if (hrecv < 0 || nt_kind(nt, hrecv) != NK_LocalVariableReadNode) return 0;
+  const char *name = nt_str(nt, hrecv, "name");
+  Scope *scope = comp_scope_of(c, hrecv);
+  if (!name || !scope) return 0;
+  int reads = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, r) {
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && sp_streq(rn, name) && comp_scope_of(c, r) == scope) reads++;
+  }
+  if (reads != 1) return 0;
+  int value = -1;
+  for (int w = comp_lvw_first(c, name); w >= 0; w = comp_lvw_next(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, w) != scope) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || value >= 0) return 0;
+    value = nt_ref(nt, w, "value");
+  }
+  value = an_unparen(nt, value);
+  if (value < 0 || nt_kind(nt, value) != NK_HashNode) return 0;
+  int n = 0; const int *entries = nt_arr(nt, value, "elements", &n);
+  for (int i = 0; i < n; i++) {
+    if (nt_kind(nt, entries[i]) != NK_AssocNode) return 0;
+    int v = an_unparen(nt, nt_ref(nt, entries[i], "value"));
+    if (nt_kind(nt, v) == NK_StringNode) continue;
+    /* Unary + makes a fresh mutable String from a literal. */
+    if (nt_kind(nt, v) == NK_CallNode && nt_str(nt, v, "name") &&
+        sp_streq(nt_str(nt, v, "name"), "+@") &&
+        nt_kind(nt, nt_ref(nt, v, "receiver")) == NK_StringNode) continue;
+    return 0;
+  }
+  return 1;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -16240,6 +16280,14 @@ static int promote_shared_stored_strings(Compiler *c) {
       int inner = recv4;
       if (nt_kind(nt, inner) == NK_CallNode && nt_str(nt, inner, "enum_each_wrap"))
         inner = nt_ref(nt, inner, "receiver");
+      const char *inner_name = inner >= 0 ? nt_str(nt, inner, "name") : NULL;
+      int inner_recv = inner >= 0 ? nt_ref(nt, inner, "receiver") : -1;
+      int hrecv = -1, value_param = -1;
+      if (inner_name && an_hash_value_block(c, inner_name, inner_recv, &hrecv, &value_param) &&
+          dyn_block_appends(c, blk4, value_param) &&
+          !an_hash_chain_is_unobserved_literal(c, hrecv))
+        unsupported_feature(c, w,
+            "a String is not yet shared by reference through a Hash's chained index into an appending block");
       const char *it = inner >= 0 ? nt_str(nt, inner, "name") : NULL;
       int src = inner >= 0 ? nt_ref(nt, inner, "receiver") : -1;
       if (it && src >= 0 && nt_ref(nt, inner, "block") < 0 &&

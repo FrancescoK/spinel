@@ -616,6 +616,14 @@ spinel: 1 refusal, nothing written
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_call.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/string_hash_chained_index_alias.rb [default] rc=1
+spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
+== test/reject/string_hash_chained_index_alias.rb [promote] rc=1
+spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
+== test/reject/string_hash_chained_index_observed.rb [default] rc=1
+spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
+== test/reject/string_hash_chained_index_observed.rb [promote] rc=1
+spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
 == test/reject/string_hash_fresh.rb [default] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_fresh.rb [promote] rc=1
