@@ -1211,6 +1211,13 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      here -- and the receiver expression itself is still emitted in the
      caller's context (g_self unchanged at this point). */
   const char *recv_self_deref = NULL;
+  /* A poly arm's pre-hoisted receiver cast (#2448) is this call's receiver
+     only: a call the body inlines in turn (`@m.mix(&)` in `frame`, reached
+     through the arm) bound its own self to the arm's cast and the C did not
+     build (`sp_Mixer *` from `sp_Player *`). Cleared for the body, put back
+     on the way out. */
+  const char *saved_recv_expr = g_inline_recv_expr;
+  int saved_recv_cls = g_inline_recv_class;
   if (recv >= 0 && recv_class >= 0) {
     int self_is_val = c->classes[recv_class].is_value_type;
     int st = ++g_tmp;
@@ -1218,6 +1225,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     buf_printf(b, "sp_%s %s_t%d = ", c->classes[recv_class].c_name, self_is_val ? "" : "*", st);
     if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
     else emit_expr(c, recv, b);
+    g_inline_recv_expr = NULL; g_inline_recv_class = -1;
     buf_puts(b, ";");
     /* Root it: for the whole inlined body this temp is the only handle on the
        receiver, and every ivar read in the body goes through it. The body
@@ -1383,6 +1391,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
+  g_inline_recv_expr = saved_recv_expr; g_inline_recv_class = saved_recv_cls;
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
