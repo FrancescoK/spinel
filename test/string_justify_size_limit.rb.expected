@@ -1,0 +1,12 @@
+center 2^40: string size too big
+ljust max: string size too big
+rjust 2^40: string size too big
+center pad 2^62: string size too big
+ljust multibyte pad: string size too big
+rjust pad 2^40: string size too big
+empty pad: zero width padding
+***ab***
+abééé
+   ab
+"ab"
+still running
