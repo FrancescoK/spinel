@@ -1,10 +1,10 @@
-center 2^40: string size too big
-ljust max: string size too big
-rjust 2^40: string size too big
-center pad 2^62: string size too big
-ljust multibyte pad: string size too big
-rjust pad 2^40: string size too big
-empty pad: zero width padding
+center 2^40: NoMemoryError: failed to allocate memory
+ljust max: ArgumentError: argument too big
+rjust 2^40: NoMemoryError: failed to allocate memory
+center pad 2^62: NoMemoryError: failed to allocate memory
+ljust multibyte pad: NoMemoryError: failed to allocate memory
+rjust pad 2^40: NoMemoryError: failed to allocate memory
+empty pad: ArgumentError: zero width padding
 ***ab***
 abééé
    ab
