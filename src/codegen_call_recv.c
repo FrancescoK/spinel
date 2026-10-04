@@ -1733,11 +1733,15 @@ else {
       Buf ra = expr_buf(c, recv);
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
+      int vbase = g_tmp + 1; g_tmp += 2 * argc;   /* each value, then its length */
       for (int j = 0; j < argc; j++) {
-        int tv = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+        int tv = vbase + 2 * j, tn = tv + 1;
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[j], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
         buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
+      }
+      for (int j = 0; j < argc; j++) {
+        int tv = vbase + 2 * j, tn = tv + 1, ti = ++g_tmp;
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)", ti, ti, tn, ti);
         buf_printf(b, " sp_%sArray_push%s(_t%d, ", k, nil_store_sfx(c, k, NIL_STORE_BOXED), ta);
         { char el[64]; snprintf(el, sizeof el, "sp_poly_each_elem(_t%d, _t%d)", tv, ti);
@@ -1755,18 +1759,22 @@ else {
       Buf ra = expr_buf(c, recv);
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
+      /* every argument and its length first: one aliasing the receiver is
+         appended as it was, not as an earlier append grew it (CRuby) */
       int base = g_tmp + 1; g_tmp += argc;
+      int lbase = g_tmp + 1; g_tmp += argc;
       for (int j = 0; j < argc; j++) {
         buf_printf(b, " sp_%sArray *_t%d = ", k, base + j);
         emit_expr(c, argv[j], b);
         buf_printf(b, "; SP_GC_ROOT(_t%d);", base + j);
       }
+      for (int j = 0; j < argc; j++)
+        buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lbase + j, k, base + j);
       for (int j = 0; j < argc; j++) {
-        int ii = ++g_tmp, sn = ++g_tmp;
-        buf_printf(b, " { sp_int _t%d = sp_%sArray_length(_t%d);"
-                      " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
+        int ii = ++g_tmp, sn = lbase + j;
+        buf_printf(b, " { for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d)); }",
-                   sn, k, base + j, ii, ii, sn, ii, k, ta, k, base + j, ii);
+                   ii, ii, sn, ii, k, ta, k, base + j, ii);
         /* the appended elements carry their array's nils */
         if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
           buf_printf(b, " sp_%sArray_nil_from(_t%d, _t%d);", k, ta, base + j);
