@@ -28787,10 +28787,13 @@ static void an_phase_desugar_register(Compiler *c) {
         if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
             sp_streq(nt_str(ntc, rv, "name"), "Class") && mn && sp_streq(mn, "new") &&
             nt_ref(ntc, sc, "block") < 0) {
-          if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); continue; }
+          /* the anonymous class in between is remembered: reflection
+             that would name it is refused (resolve_parents) */
+          if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); nt_node_set_int(ntc, id, "anon_super", 1); continue; }
           if (ac == 1 && (nt_kind(ntc, av[0]) == NK_ConstantReadNode ||
                           nt_kind(ntc, av[0]) == NK_ConstantPathNode)) {
             nt_node_set_ref(ntc, id, "superclass", av[0]);
+            nt_node_set_int(ntc, id, "anon_super", 1);
             continue;
           }
         }
