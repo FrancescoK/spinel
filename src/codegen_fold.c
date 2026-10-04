@@ -4567,7 +4567,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                bound and the block runs between two reads of it */
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_es);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_int _t%d = ", ts_es); emit_int_expr(c, es_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            { Buf ib_; memset(&ib_, 0, sizeof ib_); emit_int_expr(c, es_argv[0], &ib_); buf_printf(g_pre, "sp_int _t%d = %s;\n", ts_es, ib_.p ? ib_.p : "0"); free(ib_.p); }
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_es, tres_es, rk_es);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_es);
@@ -4645,8 +4645,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             /* rooted like the result array below, for the same reason as the
                each_slice chain above */
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_ec);
+            Buf nb_ec; memset(&nb_ec, 0, sizeof nb_ec); emit_int_expr(c, ec_argv[0], &nb_ec);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_int _t%d = ", tn_ec); emit_int_expr(c, ec_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, "sp_int _t%d = %s;\n", tn_ec, nb_ec.p ? nb_ec.p : "0"); free(nb_ec.p);
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_ec, tres_ec, rk_ec);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_ec);
@@ -4746,13 +4747,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               buf_printf(g_pre, " _t%d = %s;\n", ta_wi, rb_wi.p ? rb_wi.p : ""); free(rb_wi.p);
               /* rooted like the result array below, as the each_cons chain is */
               emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_wi);
+              /* the count and the offset as Integers, whatever slot they
+                 arrive in, each rendered whole before its line: what an
+                 operand hoists (`with_index(w(1))`) goes ahead of the
+                 line, not into the middle of it */
+              Buf nb_wi; memset(&nb_wi, 0, sizeof nb_wi); emit_int_expr(c, ec_argv2[0], &nb_wi);
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_int _t%d = ", tn_wi); emit_int_expr(c, ec_argv2[0], g_pre); buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "sp_int _t%d = %s;\n", tn_wi, nb_wi.p ? nb_wi.p : "0"); free(nb_wi.p);
+              Buf ob_wi; memset(&ob_wi, 0, sizeof ob_wi);
+              if (wi_argc > 0 && wi_argv) emit_int_expr(c, wi_argv[0], &ob_wi);
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_int _t%d = ", toff_wi);
-              if (wi_argc > 0 && wi_argv) { emit_expr(c, wi_argv[0], g_pre); }
-              else { buf_puts(g_pre, "0"); }
-              buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "sp_int _t%d = %s;\n", toff_wi, ob_wi.p ? ob_wi.p : "0"); free(ob_wi.p);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_wi, tres_wi, rk_wi);
               emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_wi);
@@ -4764,8 +4769,14 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               /* assign second param (index) */
               const char *idx_p_wi = block_param_name(c, block, 1);
               if (idx_p_wi) {
+                /* a proc's parameter (`map(&proc { |(x, y), i| })`) is a
+                   boxed slot: the index is boxed into it */
+                Scope *isc_wi = comp_scope_of(c, block);
+                LocalVar *ilv_wi = isc_wi ? scope_local(isc_wi, idx_p_wi) : NULL;
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(idx_p_wi), tidx_wi);
+                if (ilv_wi && ilv_wi->type == TY_POLY)
+                  buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", rename_local(idx_p_wi), tidx_wi);
+                else buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(idx_p_wi), tidx_wi);
               }
               if (block_param_is_multi(c, block, 0)) {
                 int lc_wi = block_param_multi_count(c, block, 0);

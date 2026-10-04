@@ -200,6 +200,10 @@ spinel: a String read out of a Hash through its [key, value] pairs is mutated: a
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_values_at_appending_block.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/include_module_from_expression.rb [default] rc=1
+spinel: test/reject/include_module_from_expression.rb:0: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
+== test/reject/include_module_from_expression.rb [promote] rc=1
+spinel: test/reject/include_module_from_expression.rb:0: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
 == test/reject/instance_exec_default_ivar_write.rb [default] rc=1
 spinel: an instance variable written in a block that instance_exec or instance_eval runs on a value with no instance variable layout (nil, a builtin value, Object.new): the value has no slot to hold it at run time
 spinel: 1 refusal, nothing written

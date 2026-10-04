@@ -4395,6 +4395,10 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      (hoisted into a temp for GC when non-trivial, else a plain lvalue), so
      re-emitting it here references that same value rather than re-evaluating. */
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
+  /* a boxed Enumerator's `each { }` answers its walk's result -- the
+     collection an `each` Enumerator was made from -- not the Enumerator */
+  else if (rt == TY_POLY && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "each"))
+    buf_printf(b, " sp_poly_each_answer(_t%d); })", ta);
   else buf_printf(b, " _t%d; })", ta);
   if (to) view_unbind(g_n_argov - 1);
   return 1;

@@ -13489,6 +13489,9 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
     if (cn && *cn && (!strcmp(cn, "Exception") ||
                       (sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn)) ||
                       sp_exc_parent_of_name(cn))) {
+      /* SignalException resolves the signal name, as the static
+         `raise SignalException, "INT"` does (#3074): "SIGINT", signo 2 */
+      if (!strcmp(cn, "SignalException")) sp_raise_exc(sp_signal_exc_new(m));
       if (sp_syserr_kind(cn, NULL) != SP_SYSERR_NONE) {
         sp_Exception *se = sp_syserr_build(cn, 1, &m);
         /* a builtin raises as built (SystemCallError, 2 is an Errno::ENOENT);
@@ -15430,6 +15433,15 @@ static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) {
   if (!e) return sp_box_nil();
   if (e->has_src || e->source.tag != SP_TAG_NIL) return e->source;
   return sp_box_poly_array(sp_Enumerator_to_a(e));
+}
+/* What a boxed receiver's `each { }` answers: an Enumerator answers its walk's
+   result (the collection an `each` Enumerator was made from), anything else
+   itself */
+static sp_RbVal sp_poly_each_answer(sp_RbVal v) SP_UNUSED;
+static sp_RbVal sp_poly_each_answer(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return sp_enum_walk_result((sp_Enumerator *)v.v.p);
+  return v;
 }
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {

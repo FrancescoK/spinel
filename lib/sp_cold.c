@@ -3073,9 +3073,22 @@ sp_RbVal sp_Enumerator_size_p(void *e) { return sp_Enumerator_size((sp_Enumerato
    or is the replacement, which the generic element walk does not compute,
    so say so rather than answer the receiver. One read straight off its
    call is rewritten to the block form before it gets here. */
+/* The blockless collectors' Enumerators: each with a block answers what the
+   collector answers (`[1, 2].map.each { |v| v * 10 }` is [10, 20]), which
+   the generic walk, answering its receiver, does not compute either. */
+static const char *const sp_enum_collector_meths[] = {
+  "map", "collect", "flat_map", "collect_concat", "select", "filter", "filter_map",
+  "reject", "find", "detect", "find_all", "sort_by", "min_by", "max_by", "minmax_by",
+  "group_by", "partition", "sum", "count", "each_with_object", "inject", "reduce",
+  "uniq", "chunk_while", "slice_when", "take_while", "drop_while", "tally_by",
+  "map!", "collect!", "select!", "filter!", "reject!", "keep_if", "delete_if", "sort_by!",
+  NULL };
 void sp_enum_index_search_each_raise(void *p) {
   const char *em = ((sp_Enumerator *)p)->meth;
-  if (em && (strcmp(em, "index") == 0 || strcmp(em, "rindex") == 0 || strcmp(em, "find_index") == 0 ||
+  int coll = 0;
+  for (int i = 0; em && sp_enum_collector_meths[i]; i++)
+    if (strcmp(em, sp_enum_collector_meths[i]) == 0) { coll = 1; break; }
+  if (em && (coll || strcmp(em, "index") == 0 || strcmp(em, "rindex") == 0 || strcmp(em, "find_index") == 0 ||
              strncmp(em, "gsub(", 5) == 0 || strncmp(em, "gsub!(", 6) == 0))
     sp_raise_cls("NotImplementedError",
                  sp_sprintf("spinel: each on a boxed %s Enumerator is not supported", em));

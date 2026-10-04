@@ -1733,6 +1733,43 @@ static void reject_env_value_uses(Compiler *c) {
   free(ok);
 }
 
+/* `include x` / `extend x` / `prepend x` in a class or module body (or at
+   the top level) whose argument is not a constant -- `include w(Registry)` --
+   names a module only the run time knows. The mixin is resolved at compile
+   time by its constant, so such an argument was skipped and the module's
+   methods were silently missing; refuse it instead. */
+static void reject_dynamic_mixin_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int body = -1;
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) body = nt_ref(nt, id, "body");
+    else if (id == nt->root_id) body = nt_ref(nt, id, "statements");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, st, "name");
+      if (!nm || !(sp_streq(nm, "include") || sp_streq(nm, "extend") || sp_streq(nm, "prepend"))) continue;
+      int args = nt_ref(nt, st, "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      for (int a = 0; a < ac; a++) {
+        NodeKind ak = nt_kind(nt, av[a]);
+        if (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode || ak == NK_SelfNode) continue;
+        int ln = (int)nt_int(nt, st, "node_line", 0);
+        int fid = (int)nt_int(nt, st, "node_file", 0);
+        const char *file = nt_file_path(nt, fid);
+        if (!file || !*file) file = nt->source_file;
+        fprintf(stderr, "spinel: %s:%d: `%s` of a module named by an expression, not a "
+                        "constant, is not supported (the mixin is resolved at compile time)\n",
+                file ? file : "source.rb", ln, nm);
+        exit(1);
+      }
+    }
+  }
+}
+
 /* `A = SomeClass` (a constant aliasing a class) then `A.foo`: rewrite the
    ConstantRead receiver's name to the underlying class so class-method dispatch
    resolves it exactly like the direct `SomeClass.foo`. Mirrors the `class CONST`
@@ -28942,6 +28979,7 @@ static void an_phase_class_structure(Compiler *c) {
   expand_struct_forwarding_super(c);
   refuse_super_init_value(c);
   inherit_members(c);
+  reject_dynamic_mixin_args(c);
   register_includes(c);
   register_include_attrs(c);
   register_extends(c);
