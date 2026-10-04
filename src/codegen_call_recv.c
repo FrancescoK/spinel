@@ -5331,7 +5331,11 @@ else {
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
         buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
-        buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
+        /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(b, " sp_RbVal _t%d = _t%d->keys[_t%d->order[_t%d]];", tk, to, to, ti);
+        else
+          buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
         if (blk >= 0) {
           const char *bp0 = block_param_name(c, blk, 0);
           const char *bp1 = block_param_name(c, blk, 1);
