@@ -104,7 +104,7 @@ SPINEL = bin/spinel
 # EVP_CTRL_AEAD_SET_IVLEN) used to pass the probe and then stop `make` in the
 # middle with a #error. Compiling the real file rather than a copy of its
 # version guard is what keeps the two from drifting (#4253).
-SP_OSSL_PROBE = $(shell printf '\043include <openssl/ssl.h>\nint main(void){return TLS_client_method()!=0;}\n' > /tmp/sp_ossl_probe.c 2>/dev/null && $(CC) $(1) /tmp/sp_ossl_probe.c -lssl -lcrypto -o /tmp/sp_ossl_probe >/dev/null 2>&1 && $(CC) $(1) -fsyntax-only -Ilib -Ipackages/openssl packages/openssl/sp_openssl.c >/dev/null 2>&1 && echo yes)
+SP_OSSL_PROBE = $(shell d=$$(mktemp -d) && printf '\043include <openssl/ssl.h>\nint main(void){return TLS_client_method()!=0;}\n' > $$d/p.c 2>/dev/null && $(CC) $(1) $$d/p.c -lssl -lcrypto -o $$d/p >/dev/null 2>&1 && $(CC) $(1) -fsyntax-only -Ilib -Ipackages/openssl packages/openssl/sp_openssl.c >/dev/null 2>&1 && echo yes; rm -rf $$d)
 OPENSSL_AVAILABLE := $(call SP_OSSL_PROBE,)
 ifneq ($(OPENSSL_AVAILABLE),yes)
 # `brew --prefix` first: it knows a non-default HOMEBREW_PREFIX, which the
@@ -156,7 +156,7 @@ LIBFFI_CPPFLAGS := -I$(LIBFFI_PREFIX)/include
 LIBFFI_LIBDIR := $(LIBFFI_PREFIX)/lib
 endif
 endif
-FFI_AVAILABLE := $(shell printf 'int main(void){return 0;}\n' > /tmp/sp_ffi_probe.c 2>/dev/null && $(CC) /tmp/sp_ffi_probe.c $(if $(LIBFFI_LIBDIR),-L$(LIBFFI_LIBDIR)) -lffi -o /tmp/sp_ffi_probe >/dev/null 2>&1 && $(CC) $(LIBFFI_CPPFLAGS) -fsyntax-only -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c >/dev/null 2>&1 && echo yes)
+FFI_AVAILABLE := $(shell d=$$(mktemp -d) && printf 'int main(void){return 0;}\n' > $$d/p.c 2>/dev/null && $(CC) $$d/p.c $(if $(LIBFFI_LIBDIR),-L$(LIBFFI_LIBDIR)) -lffi -o $$d/p >/dev/null 2>&1 && $(CC) $(LIBFFI_CPPFLAGS) -fsyntax-only -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c >/dev/null 2>&1 && echo yes; rm -rf $$d)
 # A libffi outside the default search path: the -lffi that ffi.rb's ffi_lib
 # puts on a program's link line, and the loader at run time, need the
 # directory too -- exported for the same reasons as OPENSSL_PREFIX's above.
@@ -189,22 +189,22 @@ deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
 vendor/prism/include/prism/diagnostic.h:
 	@mkdir -p vendor/prism
 	@echo "Fetching prism v$(PRISM_VERSION) from rubygems.org..."
-	curl -sL -o /tmp/prism-$(PRISM_VERSION).gem https://rubygems.org/gems/prism-$(PRISM_VERSION).gem
 	@tmpdir=$$(mktemp -d); \
-	 tar -xf /tmp/prism-$(PRISM_VERSION).gem -C $$tmpdir data.tar.gz; \
+	 curl -sL -o $$tmpdir/prism-$(PRISM_VERSION).gem https://rubygems.org/gems/prism-$(PRISM_VERSION).gem && \
+	 tar -xf $$tmpdir/prism-$(PRISM_VERSION).gem -C $$tmpdir data.tar.gz; \
 	 tar -xzf $$tmpdir/data.tar.gz -C vendor/prism; \
-	 rm -rf $$tmpdir /tmp/prism-$(PRISM_VERSION).gem
+	 rm -rf $$tmpdir
 	@test -f $@ && echo "prism v$(PRISM_VERSION) ready at vendor/prism"
 
 # Same shape: download the rbs gem and extract its bundled C parser.
 vendor/rbs/include/rbs/parser.h:
 	@mkdir -p vendor/rbs
 	@echo "Fetching rbs v$(RBS_VERSION) from rubygems.org..."
-	curl -sL -o /tmp/rbs-$(RBS_VERSION).gem https://rubygems.org/gems/rbs-$(RBS_VERSION).gem
 	@tmpdir=$$(mktemp -d); \
-	 tar -xf /tmp/rbs-$(RBS_VERSION).gem -C $$tmpdir data.tar.gz; \
+	 curl -sL -o $$tmpdir/rbs-$(RBS_VERSION).gem https://rubygems.org/gems/rbs-$(RBS_VERSION).gem && \
+	 tar -xf $$tmpdir/rbs-$(RBS_VERSION).gem -C $$tmpdir data.tar.gz; \
 	 tar -xzf $$tmpdir/data.tar.gz -C vendor/rbs; \
-	 rm -rf $$tmpdir /tmp/rbs-$(RBS_VERSION).gem
+	 rm -rf $$tmpdir
 	@test -f $@ && echo "rbs v$(RBS_VERSION) ready at vendor/rbs"
 
 # A source archive that builds with no network: the tree at HEAD as git sees
@@ -3494,6 +3494,7 @@ scale-test: $(SPINEL_WORK)
 diff-test: $(SPINEL) bin/spinel-diff
 	@ok=1; \
 	if ! command -v ruby >/dev/null 2>&1; then echo "diff-test: skipped (needs ruby)"; exit 0; fi; \
+	TMPDIR=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-difftest.XXXXXX"); export TMPDIR; \
 	out=$$($(SPINEL) diff test/fixtures/diff/same.rb); rc=$$?; \
 	[ $$rc -eq 0 ] && echo "$$out" | grep -q '^spinel diff: same$$' || { echo "diff-test: FAIL (same.rb: rc=$$rc)"; echo "$$out"; ok=0; }; \
 	out=$$($(SPINEL) diff test/fixtures/diff/frozen_literal.rb); rc=$$?; \
@@ -3505,6 +3506,7 @@ diff-test: $(SPINEL) bin/spinel-diff
 	rm -f "$${TMPDIR:-/tmp}/spinel-diff-test.md"; \
 	ls "$${TMPDIR:-/tmp}"/spinel-diff-*.rb.* >/dev/null 2>&1 && { echo "diff-test: FAIL (scratch files left behind)"; ls "$${TMPDIR:-/tmp}"/spinel-diff-*; ok=0; }; \
 	$(SPINEL) diff /nonexistent.rb >/dev/null 2>&1; [ $$? -eq 4 ] || { echo "diff-test: FAIL (a missing file is the tool's own error, exit 4)"; ok=0; }; \
+	rm -rf "$$TMPDIR"; \
 	[ $$ok -eq 1 ] && echo "diff-test: pass" || exit 1
 gate-bench:
 	+@$(MAKE) --no-print-directory bench

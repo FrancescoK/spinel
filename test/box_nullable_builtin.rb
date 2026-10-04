@@ -15,7 +15,7 @@ a = box[0]
 puts "unset nil? #{a.nil?}"
 puts "BUG: truthy NULL IO" if a        # without the fix, this wrongly prints
 
-s.open("/tmp/box_nullable_builtin_out.txt")
+s.open("/tmp/box_nullable_builtin_out_#{Process.pid}.txt")
 box << s.io          # boxes a real IO into the poly array
 b = box[1]
 puts "open nil? #{b.nil?}"

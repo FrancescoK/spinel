@@ -2,7 +2,7 @@
 # every argument in order and answers the total byte count, as on a typed
 # File; with no arguments it writes nothing and answers 0. The receiver
 # and the arguments are evaluated in order before anything is written.
-path = "/tmp/sp_boxed_file_write_args.txt"
+path = "/tmp/sp_boxed_file_write_args_#{Process.pid}.txt"
 def fresh(path)
   h = File.open(path, "a")
   h.sync = true

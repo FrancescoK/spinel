@@ -8,16 +8,18 @@
 require "io/console"
 require "socket"
 
+# The scratch paths carry the process id, so that two runs at once do not
+# share them; the lines printed name them without it.
 def try(label)
   r = yield
-  puts "#{label} => #{r.inspect}"
+  puts "#{label} => #{r.inspect.gsub("_#{Process.pid}", "")}"
 rescue IOError, EOFError => e
-  puts "#{label}: #{e.class}: #{e.message}"
+  puts "#{label}: #{e.class}: #{e.message.gsub("_#{Process.pid}", "")}"
 end
 
-path = "/tmp/sp_io_closed_stream.txt"
-lines_path = "/tmp/sp_io_closed_stream_lines.txt"
-dir = "/tmp/sp_io_closed_stream_dir"
+path = "/tmp/sp_io_closed_stream_#{Process.pid}.txt"
+lines_path = "/tmp/sp_io_closed_stream_lines_#{Process.pid}.txt"
+dir = "/tmp/sp_io_closed_stream_dir_#{Process.pid}"
 if Dir.exist?(dir)
   Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }
   Dir.rmdir(dir)
@@ -26,7 +28,7 @@ Dir.mkdir(dir)
 3.times { |i| File.write("#{dir}/f#{i}", "") }
 # a wider directory for the temporary-receiver loops: master only loses the
 # handle once the sweep runs, which a three-entry listing never reaches
-bigdir = "/tmp/sp_io_closed_stream_bigdir"
+bigdir = "/tmp/sp_io_closed_stream_bigdir_#{Process.pid}"
 if Dir.exist?(bigdir)
   Dir.children(bigdir).each { |e| File.delete("#{bigdir}/#{e}") }
   Dir.rmdir(bigdir)

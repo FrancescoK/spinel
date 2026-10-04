@@ -5,7 +5,7 @@
 require "pathname"
 require "stringio"
 
-dir = "/tmp/spinel_implicit_conversion_protocol"
+dir = "/tmp/spinel_implicit_conversion_protocol_#{Process.pid}"
 if Dir.exist?(dir)
   Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }
   Dir.rmdir(dir)

@@ -134,7 +134,7 @@ server2.close
 # The bytes must be on disk before the call returns, so a read back
 # through a second handle sees them without a flush. A buffered write
 # would not have this property.
-path = "/tmp/syswrite_poly_test"
+path = "/tmp/syswrite_poly_test_#{Process.pid}"
 w = File.open(path, "wb")
 w.syswrite("buffered?")
 # Read through a second handle -- the stdio buffer of w is bypassed, so
