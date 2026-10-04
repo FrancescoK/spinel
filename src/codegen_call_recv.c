@@ -2867,8 +2867,14 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       else if (argc >= 2) {
         /* nil start / length are legal: "from the start" / "to the end" */
-        buf_printf(b, " sp_int _t%d = ", ts); emit_int_expr_nilable(c, argv[1], b);
-        buf_printf(b, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts);
+        buf_printf(b, " sp_int _t%d = ", ts);
+        /* a boxed start may be a Range or no number at all */
+        if (comp_ntype(c, argv[1]) == TY_POLY) {
+          buf_puts(b, "sp_fill_offset_arg("); emit_expr(c, argv[1], b); buf_printf(b, ", %d)", argc == 2);
+        }
+        else emit_int_expr_nilable(c, argv[1], b);
+        buf_printf(b, "; if (_t%d == SP_INT_NIL) _t%d = 0;", ts, ts);
+        buf_printf(b, " if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts);
         if (argc == 3 && comp_ntype(c, argv[2]) == TY_NIL) {
           /* a nil LENGTH is "to the end": keep the array-length bound */
           buf_puts(b, " (void)("); emit_expr(c, argv[2], b); buf_puts(b, ");");
@@ -2879,7 +2885,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
              sentinel -- is "to the end" as the literal one is; read as a
              number it was 0 or negative, and nothing was filled */
           buf_printf(b, " sp_int _t%d = ", tl);
-          if (comp_ntype(c, argv[2]) == TY_POLY) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, argv[2], b); buf_puts(b, ")"); }
+          if (comp_ntype(c, argv[2]) == TY_POLY) { buf_puts(b, "sp_fill_offset_arg("); emit_expr(c, argv[2], b); buf_puts(b, ", 0)"); }
           else emit_int_expr_nilable(c, argv[2], b);
           /* end = start+len; negative len = no-op (empty range) */
           buf_printf(b, "; if (_t%d != SP_INT_NIL) { if (_t%d < 0) _t%d = 0; _t%d = _t%d + _t%d; }",

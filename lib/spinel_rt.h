@@ -9726,13 +9726,36 @@ static sp_PolyPolyHash *sp_poly_as_poly_poly_hash(sp_RbVal v) {
    right keeps its identity and its mutations; only a mismatch pays for a
    rebuild. A nil element takes the slot's own nil, which is what a nullable
    int or float becomes everywhere else it meets a concrete slot. */
+/* A boxed start or length of Array#fill: nil is "from the start" / "to the
+   end", an Integer (or a Float, truncated) is the offset. A Range is the
+   span only as fill's sole offset, which the boxed form does not lower
+   (`range_alone`); after it a length makes CRuby's TypeError. Anything else
+   has no Integer conversion. Read as a number, a Range filled from 0. */
+static SP_UNUSED sp_int sp_fill_offset_arg(sp_RbVal v, int range_alone) {
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) return (sp_int)v.v.f;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && range_alone)
+    sp_raise_cls("NotImplementedError", "Array#fill with a Range held in an untyped slot");
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(v)));
+  return 0;
+}
 static sp_IntArray *sp_poly_as_int_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY) return (sp_IntArray *)v.v.p;
   if (v.tag == SP_TAG_NIL || !sp_poly_is_array_kind(v.cls_id)) return (sp_IntArray *)0;
   SP_GC_ROOT_RBVAL(v);   /* the source array is a boxed temporary; the converting pushes allocate */
   sp_IntArray *a = sp_IntArray_new(); SP_GC_ROOT(a);
   sp_int n = sp_poly_length(v);
-  for (sp_int i = 0; i < n; i++) sp_IntArray_push(a, sp_poly_as_int_or_nil(sp_poly_arr_get(v, i)));
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(v, i);
+    /* an element of another class has no Integer to give: read as one it
+       became its payload (a Symbol's id), a wrong value that said nothing.
+       The slot was typed too narrowly, so say so. */
+    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL)
+      sp_raise_cls("TypeError", sp_sprintf("an Array holding %s reached a slot typed as an Integer Array",
+                                           sp_poly_class_name(e)));
+    sp_IntArray_push(a, sp_poly_as_int_or_nil(e));
+  }
   sp_IntArray_note_nils(a);   /* a nil element converted to the sentinel */
   return a;
 }
@@ -9744,6 +9767,9 @@ static sp_FloatArray *sp_poly_as_float_array(sp_RbVal v) {
   sp_int n = sp_poly_length(v);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(v, i);
+    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_FLT && e.tag != SP_TAG_NIL)
+      sp_raise_cls("TypeError", sp_sprintf("an Array holding %s reached a slot typed as a Float Array",
+                                           sp_poly_class_name(e)));
     sp_FloatArray_push(a, e.tag == SP_TAG_INT ? (sp_float)e.v.i : sp_poly_as_float_or_nil(e));
   }
   sp_FloatArray_note_nils(a);   /* a nil element converted to the sentinel */
