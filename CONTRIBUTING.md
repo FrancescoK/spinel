@@ -41,7 +41,8 @@ A rebase or any other rewrite keeps the trailer's text but not its truth.
 MISMATCH or NO GATE TRAILER. The pre-commit hook (`ruby tools/gate.rb
 check`) refuses a commit that grows `emit_call_body` or any function over
 1,000 lines, adds a test whose `.expected` differs from CRuby run with
-`--enable-frozen-string-literal`, or writes to a fixed `/tmp` path. Where the
+`--enable-frozen-string-literal` (unless the test is marked
+`# spinel: not-cruby`, below), or writes to a fixed `/tmp` path. Where the
 gate can't pass natively, `ruby tools/gate.rb linux` runs it in a Linux
 container on this branch merged with `master`, and records the same stamp.
 
@@ -64,6 +65,10 @@ otherwise, and the `.expected` comparison is skipped with a warning.
   - A test whose values pass 2^31 (including through `to_r`, `**` or a
     Bignum) starts with `# spinel: int64`; the 32-bit lane runs every other
     test.
+  - A test whose `.expected` is Spinel's own answer and legitimately differs
+    from CRuby's (a refusal message, a Spinel-only API) carries
+    `# spinel: not-cruby` and a reason in its first lines; the pre-commit
+    hook then does not compare it with CRuby.
   - Use `Dir.tmpdir` for temporary files, not a fixed `/tmp` path, and no
     OS-specific paths.
   - Give every new test its `.expected` file.

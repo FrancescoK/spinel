@@ -135,6 +135,10 @@ module Gate
     warn "gate: no Ruby 4.0 or later (set GATE_RUBY); .expected not checked against CRuby"
   end
 
+  # `# spinel: not-cruby` in a test's first lines: its .expected is spinel's
+  # own answer and legitimately differs from CRuby's.
+  def not_cruby?(src) = src.lines.first(5).any? { |l| l.start_with?("# spinel: not-cruby") }
+
   def cruby(ruby, t, args)
     stdin = File.exist?("#{t}.stdin") ? "#{t}.stdin" : File::NULL
     IO.popen([ruby, "--enable-frozen-string-literal", t, *args], in: stdin, err: File::NULL) do |io|
@@ -173,7 +177,7 @@ module Gate
         warn "gate: #{t} has literals past 2^31 but no `# spinel: int64` marker"
       end
       next errors << "#{t}: no #{t}.expected" unless staged.include?("#{t}.expected")
-      next unless ruby
+      next if !ruby || not_cruby?(src)
 
       unless git("diff", "--quiet", "--", t, "#{t}.args", "#{t}.stdin")
         next warn("gate: #{t} has unstaged changes; .expected not checked")
