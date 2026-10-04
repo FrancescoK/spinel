@@ -16231,14 +16231,16 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   if (boxed) {
     tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, vrecv, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_exc_stage_recv(_t%d); _t%d; }), ", tv, tv, tv);
+    /* the raise below names the temp's class, so it is inside the temp's
+       scope: a root frame used to lend it a slot that outlived the scope */
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_exc_stage_recv(_t%d); ", tv, tv);
   }
   else { buf_puts(b, "sp_exc_stage_recv("); emit_boxed(c, vrecv, b); buf_puts(b, "), "); }
   { int vac; const int *vav = call_args(nt, id, &vac);
     for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
   if (boxed)
     buf_printf(b, "sp_raise_cls(\"NoMethodError\", sp_str_concat((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
-                  "sp_poly_class_name(_t%d))), %s)", kind, vnm, tv, default_value_from_compiler(c, comp_ntype(c, id)));
+                  "sp_poly_class_name(_t%d))), %s; }))", kind, vnm, tv, default_value_from_compiler(c, comp_ntype(c, id)));
   else
     buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
                kind, vnm, cname, default_value_from_compiler(c, comp_ntype(c, id)));
