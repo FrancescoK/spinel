@@ -7320,6 +7320,14 @@ else if (orecv >= 0 && onm) {
   g_pre = NULL; g_indent = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
+  /* a block written in a class method reads `self` as the class object, as
+     the method's own body does: the proc function has no `self` (#7166) */
+  char cm_self_p[32];
+  if (ie_cls < 0 && bs && bs->class_id >= 0 && bs->is_cmethod &&
+      !cmethod_takes_self_cls(c, (int)(bs - c->scopes))) {
+    snprintf(cm_self_p, sizeof cm_self_p, "((sp_Class){%d})", bs->class_id);
+    g_self = cm_self_p;
+  }
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
   int bs_moved = ie_cls >= 0 && sv_bcls >= 0;
   if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); bs->class_id = ie_cls; bs->is_cmethod = 0; }
