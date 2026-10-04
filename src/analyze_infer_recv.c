@@ -1657,8 +1657,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* poly.merge(other) { |k, old, new| } -- a Hash reached through a container.
      The conflict-block form builds the same general boxed-key/value hash the
      blockless one does; without a type it stayed unresolved. */
+  /* a user class's merge can only be the target of a boxed receiver: a
+     typed Hash takes this whatever the program defines */
   if (recv >= 0 && (rt == TY_POLY || ty_is_hash(rt)) && sp_streq(name, "merge") && argc == 1 &&
-      nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, "merge"))
+      nt_ref(nt, id, "block") >= 0 && (rt != TY_POLY || !an_user_defines_or_reads(c, "merge")))
     { *out = TY_POLY_POLY_HASH; return 1; }   /* the conflict block decides each value */
   /* `x.to_json` -- CRuby's json defines it on every core class. A user class
      that defines its own wins (the dispatch below sees it); everything else

@@ -13171,7 +13171,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      block form, and this arm handles boxed/cross-layout receivers. */
   if (recv >= 0 && (rt == TY_POLY || (ty_is_hash(rt) && rt != TY_POLY_POLY_HASH)) &&
       sp_streq(name, "merge") && argc == 1 &&
-      nt_ref(nt, id, "block") >= 0 && !user_defines_or_reads(c, "merge")) {
+      nt_ref(nt, id, "block") >= 0 && (rt != TY_POLY || !user_defines_or_reads(c, "merge"))) {
     if (emit_merge_any_block_boxed(c, id, recv, argv[0], b)) return 1;
   }
   /* poly.ljust/rjust/center(width[, pad]): a String read from a container
