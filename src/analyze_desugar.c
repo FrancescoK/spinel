@@ -1143,7 +1143,26 @@ int desugar_kernel_reopen(Compiler *c) {
         const char *vm = nt_str(nt, d, "name");
         pub = vm && sp_streq(vm, "public");
       }
-      else rest[nrest++] = d;
+      else {
+        /* `private :m` / `module_function :m` makes a def already seen
+           private: take its copy back out of Object, as a private Object
+           method is not yet refused on an explicit receiver */
+        const char *vm = nt_kind(nt, d) == NK_CallNode && nt_ref(nt, d, "receiver") < 0
+                         ? nt_str(nt, d, "name") : NULL;
+        int va = vm && is_visibility_or_module_function(vm) && !sp_streq(vm, "public")
+                 ? nt_ref(nt, d, "arguments") : -1;
+        int van = 0; const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &van) : NULL;
+        for (int a = 0; a < van; a++) {
+          NodeKind ak = nt_kind(nt, vav[a]);
+          const char *an = ak == NK_SymbolNode ? nt_str(nt, vav[a], "value")
+                         : ak == NK_StringNode ? nt_str(nt, vav[a], "content") : NULL;
+          for (int o = 0; an && o < nobj; o++) {
+            const char *on = nt_str(nt, objd[o], "name");
+            if (on && sp_streq(on, an)) { objd[o--] = objd[--nobj]; }
+          }
+        }
+        rest[nrest++] = d;
+      }
     }
     if (nrest) { nt_node_set_arr(nt, body, "body", rest, nrest); nb[nbn++] = st; }
     if (nobj) {
