@@ -1085,6 +1085,32 @@ static int kr_is_visibility_marker(const NodeTable *nt, int st) {
   const char *nm = nt_str(nt, st, "name");
   return nm && (is_visibility_or_module_function(nm));
 }
+/* In a Kernel def's copy in Object, a bare call to another of the
+   reopening's methods is a call on self: the Object method, not the
+   top-level copy, which would run with the main object as self and lose a
+   block handed on (`def wrap(&b) = inner(&b)`). An explicit self may name a
+   private method. */
+static void kr_self_calls(NodeTable *nt, int node, const char *const *names, int nn) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0) {
+    const char *nm = nt_str(nt, node, "name");
+    for (int i = 0; nm && i < nn; i++)
+      if (sp_streq(nm, names[i])) {
+        int sn = nt_new_node(nt, "SelfNode");
+        if (sn >= 0) nt_node_set_ref(nt, node, "receiver", sn);
+        break;
+      }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) kr_self_calls(nt, nt_ref_at(nt, node, i), names, nn);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) kr_self_calls(nt, ids[j], names, nn);
+  }
+}
 int desugar_kernel_reopen(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int root = nt->root_id;
@@ -1124,12 +1150,13 @@ int desugar_kernel_reopen(Compiler *c) {
     int *rest = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
     if (!rest) { nb[nbn++] = st; continue; }
     int nrest = 0;
-    /* a def no marker has made private (module_function makes its methods
-       private instance methods) is a public method of every object:
-       `5.me` reaches it as well as a bare `me`. It is also put in a
-       reopening of Object, which the explicit-receiver calls resolve
-       through. */
-    int pub = 1;
+    /* Each def is also a method of every object, so it is put in a
+       reopening of Object as well, which the explicit-receiver calls resolve
+       through (`5.me`) and a bare call in another class's method reaches
+       with that instance as self. The visibility markers go with it, so a
+       private one (`private`, `private :m`, module_function, which makes its
+       methods private instance methods) stays private there and an explicit
+       receiver is refused. */
     int *objd = (int *)malloc(sizeof(int) * (size_t)(bn + 1));
     int nobj = 0;
     for (int k = 0; k < bn; k++) {
@@ -1137,33 +1164,23 @@ int desugar_kernel_reopen(Compiler *c) {
       if (nt_kind(nt, d) == NK_DefNode && nt_ref(nt, d, "receiver") < 0) {
         nb[nbn++] = d;
         if (nn < KR_MAX && nt_str(nt, d, "name")) names[nn++] = nt_str(nt, d, "name");
-        if (pub && objd) { int cl = nt_clone_subtree(nt, d); if (cl >= 0) objd[nobj++] = cl; }
+        if (objd) { int cl = nt_clone_subtree(nt, d); if (cl >= 0) objd[nobj++] = cl; }
+        continue;
       }
-      else if (kr_is_visibility_marker(nt, d)) {
-        const char *vm = nt_str(nt, d, "name");
-        pub = vm && sp_streq(vm, "public");
-      }
-      else {
-        /* `private :m` / `module_function :m` makes a def already seen
-           private: take its copy back out of Object, as a private Object
-           method is not yet refused on an explicit receiver */
-        const char *vm = nt_kind(nt, d) == NK_CallNode && nt_ref(nt, d, "receiver") < 0
-                         ? nt_str(nt, d, "name") : NULL;
-        int va = vm && is_visibility_or_module_function(vm) && !sp_streq(vm, "public")
-                 ? nt_ref(nt, d, "arguments") : -1;
-        int van = 0; const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &van) : NULL;
-        for (int a = 0; a < van; a++) {
-          NodeKind ak = nt_kind(nt, vav[a]);
-          const char *an = ak == NK_SymbolNode ? nt_str(nt, vav[a], "value")
-                         : ak == NK_StringNode ? nt_str(nt, vav[a], "content") : NULL;
-          for (int o = 0; an && o < nobj; o++) {
-            const char *on = nt_str(nt, objd[o], "name");
-            if (on && sp_streq(on, an)) { objd[o--] = objd[--nobj]; }
-          }
+      const char *vm = nt_kind(nt, d) == NK_CallNode && nt_ref(nt, d, "receiver") < 0
+                       ? nt_str(nt, d, "name") : NULL;
+      int marker = kr_is_visibility_marker(nt, d);
+      if (objd && vm && is_visibility_or_module_function(vm) && nt_ref(nt, d, "block") < 0) {
+        int cl = nt_clone_subtree(nt, d);
+        if (cl >= 0) {
+          if (sp_streq(vm, "module_function")) nt_node_set_str(nt, cl, "name", "private");
+          objd[nobj++] = cl;
         }
-        rest[nrest++] = d;
       }
+      if (!marker) rest[nrest++] = d;
     }
+    for (int o = 0; o < nobj; o++)
+      if (nt_kind(nt, objd[o]) == NK_DefNode) kr_self_calls(nt, nt_ref(nt, objd[o], "body"), names, nn);
     if (nrest) { nt_node_set_arr(nt, body, "body", rest, nrest); nb[nbn++] = st; }
     if (nobj) {
       int oc = nt_new_node(nt, "ClassNode");
