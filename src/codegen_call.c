@@ -16107,6 +16107,62 @@ static int emit_cmethod_vis_refusal(Compiler *c, int id, int vrecv, const char *
 }
 
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b);
+const char *builtin_class_of_type(TyKind t);
+/* A private (or protected) method of a program's Object reopening, called
+   with an explicit receiver whose own class does not define the name: the
+   method is Object's, so the call is refused as CRuby refuses it, with the
+   receiver's class in the message (`5.foo` after `class Object; def foo;
+   private :foo; end`). A boxed receiver names its class at run time. */
+static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind vrt, int vcid,
+                                          const char *vnm, Buf *b) {
+  if (!vnm || builtin_object_method_known(vnm)) return 0;
+  int oci = comp_class_index(c, "Object");
+  if (oci < 0 || comp_method_in_class(c, oci, vnm) < 0) return 0;
+  int vis = comp_method_vis_declared(c, oci, vnm, NULL);
+  if (vis == SP_VIS_PUBLIC) return 0;
+  /* a protected method is callable from an instance's own methods */
+  if (vis == SP_VIS_PROTECTED) {
+    Scope *cs = comp_scope_of(c, id);
+    if (cs && !cs->is_cmethod && cs->class_id >= 0) return 0;
+  }
+  const char *cname = NULL;
+  int boxed = 0;
+  if (vcid >= 0) {
+    if (vcid == oci) return 0;
+    int mi = comp_method_in_chain(c, vcid, vnm, NULL);
+    if (mi >= 0 && c->scopes[mi].class_id != oci) return 0;
+    cname = class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name;
+  }
+  else if (vrt == TY_POLY) {
+    /* only when no class of the program answers the name itself */
+    for (int k = 0; k < c->nclasses; k++)
+      if (k != oci && comp_method_in_class(c, k, vnm) >= 0) return 0;
+    boxed = 1;
+  }
+  else {
+    cname = builtin_class_of_type(vrt);
+    if (!cname || builtin_method_known(cname, vnm)) return 0;
+  }
+  const char *kind = vis == SP_VIS_PRIVATE ? "private" : "protected";
+  const NodeTable *nt = c->nt;
+  buf_puts(b, "(");
+  int tv = -1;
+  if (boxed) {
+    tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, vrecv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_exc_stage_recv(_t%d); _t%d; }), ", tv, tv, tv);
+  }
+  else { buf_puts(b, "sp_exc_stage_recv("); emit_boxed(c, vrecv, b); buf_puts(b, "), "); }
+  { int vac; const int *vav = call_args(nt, id, &vac);
+    for (int k = 0; k < vac; k++) { buf_puts(b, "(void)("); emit_expr(c, vav[k], b); buf_puts(b, "), "); } }
+  if (boxed)
+    buf_printf(b, "sp_raise_cls(\"NoMethodError\", sp_str_concat((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
+                  "sp_poly_class_name(_t%d))), %s)", kind, vnm, tv, default_value_from_compiler(c, comp_ntype(c, id)));
+  else
+    buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
+               kind, vnm, cname, default_value_from_compiler(c, comp_ntype(c, id)));
+  return 1;
+}
 /* --plan-check: a call refused for its visibility binds no method */
 int emit_vis_refusal(Compiler *c, int id, Buf *b) {
   int r = emit_vis_refusal_x(c, id, b);
@@ -16127,6 +16183,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   if (vrecv >= 0) {
     TyKind vrt = comp_ntype(c, vrecv);
     if (ty_is_object(vrt)) vcid = ty_object_class(vrt);
+    if (plain && emit_object_reopen_vis_refusal(c, id, vrecv, vrt, vcid, vnm, b)) return 1;
   }
   else {
     Scope *vs = comp_scope_of(c, id);
