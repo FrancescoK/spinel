@@ -6188,6 +6188,20 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             active->name = strdup(shadow);
             /* Record the new dispatch chain entry: method_name -> shadow. */
             comp_prep_chain_add(&c->classes[ci], method_name, shadow);
+            /* Visibility is registered before prepends, by name: the class's
+               `private`/`protected` for method_name was declared for the body
+               just renamed, so it moves with that body, and method_name now
+               names the module's copy, which takes the module's own. Left by
+               name, a public module method over a private class one was
+               refused as private, and a private one over a public one was
+               called. */
+            {
+              int had = -1;
+              for (int vi = 0; vi < cif->nvis; vi++)
+                if (sp_streq(cif->vis_names[vi], method_name)) { had = cif->vis_kinds[vi]; break; }
+              if (had >= 0) comp_method_vis_set(cif, shadow, had);
+              comp_method_vis_set(cif, method_name, comp_method_vis(&c->classes[mod_id], method_name));
+            }
           }
           /* CLONE the module method into class ci rather than MOVING it. The
              same module can be prepended by more than one class, and moving
