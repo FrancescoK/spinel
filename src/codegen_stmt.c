@@ -749,8 +749,15 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* Kernel#p flushes stdout after writing, as CRuby's rb_p does: what it
+     printed is out before an exec replaces the process (puts, print and pp
+     leave theirs in the buffer, as CRuby's do) */
+  int p_flush = sp_streq(name, "p") && argc >= 1;
   if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "p") || sp_streq(name, "pp")) {
-    if (emit_output_spilled(c, name, argc, argv, b, indent)) return 1;
+    if (emit_output_spilled(c, name, argc, argv, b, indent)) {
+      if (p_flush) { emit_indent(b, indent); buf_puts(b, "fflush(stdout);\n"); }
+      return 1;
+    }
   }
   if (sp_streq(name, "puts")) {
     if (argc == 0) { emit_indent(b, indent); buf_puts(b, "putchar('\\n');\n"); return 1; }
@@ -758,7 +765,11 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
   if (sp_streq(name, "print")) { for (int k = 0; k < argc; k++) emit_print_one(c, argv[k], b, indent); return 1; }
-  if (is_inspect_print(name)) { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
+  if (is_inspect_print(name)) {
+    for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent);
+    if (p_flush) { emit_indent(b, indent); buf_puts(b, "fflush(stdout);\n"); }
+    return 1;
+  }
   if (sp_streq(name, "putc") && argc == 1) {
     /* Kernel#putc: an int writes (byte & 0xff); a string writes its first char. */
     TyKind at = comp_ntype(c, argv[0]);
