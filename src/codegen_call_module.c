@@ -790,6 +790,9 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
     if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return 1; }
+    /* the time every collection so far took (sp_gc_stat_seconds), in
+       nanoseconds as CRuby answers it */
+    if (sp_streq(name, "total_time") && argc == 0) { buf_puts(b, "((sp_int)(sp_gc_stat_seconds * 1e9))"); return 1; }
   }
 
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */
