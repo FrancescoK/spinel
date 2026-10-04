@@ -1292,6 +1292,9 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
        order and skipped an element that is no number, where CRuby raises
        the seed's own TypeError. */
     if (init_t == TY_FLOAT) {
+      /* typed boxed (analyze: a Complex element answers a Complex), the fold's
+         own value; a Float slot, if anything still types it so, unboxed */
+      if (comp_ntype(c, id) == TY_POLY) { emit_poly_sum_seed(c, recv, argv[0], b); return 1; }
       buf_puts(b, "sp_poly_to_f("); emit_poly_sum_seed(c, recv, argv[0], b); buf_puts(b, ")");
       return 1;
     }

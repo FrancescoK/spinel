@@ -755,6 +755,12 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         *out = fold_seed_typed(st, et) ? et : TY_POLY;
         return 1;
       }
+      /* A boxed array summed from a Float seed is a Float unless an element
+         is a Complex, which CRuby adds as it is and answers a Complex: the
+         call is that union, boxed. Typed Float, the Complex total could not
+         live in the slot. */
+      if (argc == 1 && blk < 0 && rt == TY_POLY_ARRAY && infer_type(c, argv[0]) == TY_FLOAT)
+        { *out = TY_POLY; return 1; }
       /* a float initial value promotes the whole sum to Float (e.g.
          ints.sum(0.0) or ints.sum(0.0) { |x| x }), regardless of the block. */
       if (argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
