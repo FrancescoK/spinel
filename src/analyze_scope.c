@@ -6686,6 +6686,9 @@ int poly_ivar_set_class(Compiler *c, int k) {
   ClassInfo *pk = &c->classes[k];
   if (pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
   if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
+  /* a reopened builtin's instances are the runtime's own structs, which
+     have no room for the program's ivars */
+  if (is_builtin_reopen(pk->name)) return 0;
   return 1;
 }
 /* The user classes a boxed receiver of instance_variable_set can be an
