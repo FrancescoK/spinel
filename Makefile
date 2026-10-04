@@ -269,7 +269,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h
+SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
