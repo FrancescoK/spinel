@@ -31,12 +31,12 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
       is_int_bit_op(name)) {
     TyKind at0 = comp_ntype(c, argv[0]);
-    if (emit_int_operand_fail(c, id, recv, argv[0], sp_streq(name, "<<") || sp_streq(name, ">>"), b)) return 1;
+    if (emit_int_operand_fail(c, id, recv, argv[0], is_shift_op(name), b)) return 1;
     /* Both operands are heap Bignums, and either side may allocate (and so
        collect) while the other is being evaluated -- the C operand order is
        unspecified besides. Evaluate left then right into rooted temps. */
     int tbl = ++g_tmp, tbr = ++g_tmp;
-    if (sp_streq(name, "<<") || sp_streq(name, ">>")) {
+    if (is_shift_op(name)) {
       buf_printf(b, "({ sp_Bigint *_t%d = ", tbl); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); int64_t _t%d = ", tbl, tbr);
       if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -68,7 +68,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        direct C shift (the hot idiom, e.g. optcarrot's `hi << sweep_shift`, whose
        counts are always small and non-negative -- routing it through a branchy
        helper cost ~4% fps). */
-    int is_shift = sp_streq(name, "<<") || sp_streq(name, ">>");
+    int is_shift = is_shift_op(name);
     /* a boxed receiver is read as the Integer it must be; nil has no such
        operator (NoMethodError) */
     char rcv_conv[48]; snprintf(rcv_conv, sizeof rcv_conv, "sp_poly_recv_i(\"%s\", ", name);
@@ -827,7 +827,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (argc == 0 && sp_streq(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1; }
     if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_int)0)"); return 1; }
     if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return 1; }
-    if (argc == 0 && (sp_streq(name, "to_r") || sp_streq(name, "rationalize"))) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return 1; }
+    if (argc == 0 && (is_to_rational(name))) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return 1; }
     /* nil.rationalize takes an epsilon of any kind and ignores it; it is
        still evaluated, after the receiver */
     if (argc == 1 && sp_streq(name, "rationalize")) {
@@ -1004,7 +1004,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       return 1;
     }
   }
-  if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
+  if ((is_unary_sign(name)) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
     if (rt == TY_POLY) {
       if (name[0] == '-') { buf_puts(b, "sp_poly_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else { buf_puts(b, "sp_poly_uplus("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -1210,7 +1210,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      arithmetic, so let them fall through. */
   if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY) &&
       rt != TY_TIME &&  /* Time +/- a poly is Time arithmetic (emit_array_arith_call, #2456) */
-      !(rt == TY_STRING && (sp_streq(name, "+") || sp_streq(name, "*"))) &&
+      !(rt == TY_STRING && (is_add_or_mul(name))) &&
       !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*")) &&
       /* `arr - x` is a set difference, served by the set-op arms with their
          run-time Array coercion; routing it here reached sp_poly_sub, which

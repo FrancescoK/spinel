@@ -357,7 +357,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     /* File.open(path, mode) / File.new(path, mode) without block -> TY_IO
        handle. The mode may be a string, an integer flag word (#2788), or a
        trailing `mode:` keyword (#2789). */
-    if (sp_streq(name, "open") || sp_streq(name, "new")) {
+    if (is_open_constructor(name)) {
       int block = nt_ref(nt, id, "block");
       int kw_mode = -1;
       if (argc >= 2 && nt_type(nt, argv[argc - 1]) &&
@@ -514,7 +514,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     /* Dir.new / Dir.open -> a directory handle; the block form closes on
        exit and returns the block's value (#2821) */
-    if ((sp_streq(name, "new") || sp_streq(name, "open")) && argc >= 1) {
+    if ((is_open_constructor(name)) && argc >= 1) {
       int dblk = nt_ref(nt, id, "block");
       if (dblk < 0) {
         buf_puts(b, "sp_Dir_new("); emit_path_expr(c, argv[0], b); buf_puts(b, ")");
@@ -563,7 +563,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
-    if ((sp_streq(name, "entries") || sp_streq(name, "children")) && argc == 1) {
+    if ((is_directory_entries(name)) && argc == 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if ((sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir")) && argc >= 1) {
@@ -1100,7 +1100,7 @@ else {
   /* Dir.exist? -> directory test; Dir.exists? was removed in Ruby 4.0 (#2780) */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
-      (sp_streq(name, "exist?") || sp_streq(name, "exists?")) && argc == 1) {
+      (is_exist_alias(name)) && argc == 1) {
     if (sp_streq(name, "exists?")) {
       buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
       buf_puts(b, "); sp_raise_cls(\"NoMethodError\", \"undefined method 'exists?' for class Dir\"); (sp_bool)0; })");
@@ -1158,7 +1158,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       }
       /* Socket.pair / .socketpair -> [end0, end1]; the runtime creates both on
          the first call and hands back the second on the next. */
-      if ((sp_streq(name, "pair") || sp_streq(name, "socketpair")) && argc >= 2) {
+      if ((is_socket_pair_alias(name)) && argc >= 2) {
         int tp0 = ++g_tmp, tp1 = ++g_tmp, tpa = ++g_tmp;
         buf_printf(b, "({ sp_File *_t%d = sp_sock_pair_end(", tp0);
         emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -1642,7 +1642,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         emit_expr(c, argv[0], b); buf_puts(b, ")))); })"); }
       return 1;
     }
-    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
+    if ((is_to_array_alias(name)) && argc == 0) {
       /* the hop a block of map and its kin reads (desugar_enum_block_yield_view) */
       const char *view = nt_str(nt, id, "enum_yield_view");
       if (view) {
@@ -1818,7 +1818,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_puts(b, "sp_Random_seed("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+    if ((is_text_conversion(name)) && argc == 0) {
       buf_puts(b, "sp_Random_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
@@ -1837,7 +1837,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     /* equal? and eql? are identity; == compares by internal PRNG state
        (#2524). Random defines no eql? of its own, so Object's applies:
        Random.new(1).eql?(Random.new(1)) is false where == is true. */
-    if ((sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1) {
+    if ((is_eql_or_equal(name)) && argc == 1) {
       buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
       if (comp_ntype(c, argv[0]) == TY_RANDOM) emit_expr(c, argv[0], b);
       else buf_puts(b, "0");
@@ -1845,7 +1845,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       return 1;
     }
     /* dup / clone copy the generator: the same state, a distinct object */
-    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+    if ((is_copy_alias(name)) && argc == 0) {
       if (sp_streq(name, "clone")) {
         /* clone keeps a frozen receiver's frozen bit; dup does not */
         int ro = ++g_tmp, rd = ++g_tmp;

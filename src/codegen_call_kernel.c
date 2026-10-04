@@ -94,7 +94,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   /* __method__ / __callee__ -> the enclosing method's name as a symbol
      (nil at the top level) */
   if (recv < 0 && argc == 0 &&
-      (sp_streq(name, "__method__") || sp_streq(name, "__callee__"))) {
+      (is_current_method(name))) {
     Scope *s = comp_scope_of(c, id);
     /* __callee__ names the ALIAS the call spelled, which only the call site
        knows: an alias shares the definition's one function. The prologue took
@@ -117,7 +117,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      value-type self (unreachable for observed classes) keeps the identity
      no-op for freeze and the loud reject for frozen?. */
   if (recv < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "freeze") || sp_streq(name, "frozen?"))) {
+      (is_freeze_family(name))) {
     Scope *s = comp_scope_of(c, id);
     int scid = s ? s->class_id : -1;
     if (scid >= 0 && comp_method_in_chain(c, scid, name, NULL) < 0) {
@@ -544,7 +544,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert to Hash\"), sp_PolyPolyHash_new())"); }
       return 1;
     }
-    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac == 1 &&
+    if ((is_format_alias(name)) && ac == 1 &&
         nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) {
       /* format(*args): the array's head is the format string */
       int sfx = nt_ref(nt, av[0], "expression");
@@ -555,7 +555,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         return 1;
       }
     }
-    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac >= 1) {
+    if ((is_format_alias(name)) && ac >= 1) {
       /* format(fmt, *args) -> sp_str_format_polyarr(fmt, poly_arr) */
       int tf = ++g_tmp, ta = ++g_tmp;
       /* Emit the format into a local buffer BEFORE opening the `const char
@@ -769,7 +769,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
 
   /* Kernel#puts / #print as an expression: run the statement emitters inside
      a statement-expression and yield nil (their Ruby value). */
-  if (recv < 0 && !bare_call_class_owned(c, id) && (sp_streq(name, "puts") || sp_streq(name, "print")) &&
+  if (recv < 0 && !bare_call_class_owned(c, id) && (is_text_print(name)) &&
       nt_ref(nt, id, "block") < 0) {
     buf_puts(b, "({ ");
     if (argc == 0 && sp_streq(name, "puts")) buf_puts(b, "putchar('\n');\n");
@@ -789,7 +789,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      the user-object hook), and unboxed back to the static type. */
   /* p(a, b, ...) as a value: prints each argument's inspect, returns the
      argument array. */
-  if (recv < 0 && !bare_call_class_owned(c, id) && (sp_streq(name, "p") || sp_streq(name, "pp")) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
+  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
     for (int k = 0; k < argc; k++) {
@@ -802,7 +802,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                t, t, t, t, t, t, t);
     return 1;
   }
-  if (recv < 0 && !bare_call_class_owned(c, id) && (sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
+  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
     TyKind at = comp_ntype(c, argv[0]);
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
@@ -818,7 +818,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      warn/printf/p(), the argument for putc). */
   if (recv < 0 && !bare_call_class_owned(c, id) && (sp_streq(name, "warn") || sp_streq(name, "printf") ||
                    (sp_streq(name, "putc") && argc == 1) ||
-                   ((sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 0)) &&
+                   ((is_inspect_print(name)) && argc == 0)) &&
       nt_ref(nt, id, "block") < 0) {
     buf_puts(b, "({ ");
     emit_output_call(c, id, b, 0);
@@ -1231,7 +1231,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       /* update/merge! with a conflict block: the block resolves keys already
          present in the environment (#2998) */
-      if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!")) && eac == 1 &&
+      if (enm && (is_hash_merge_bang(enm)) && eac == 1 &&
           nt_ref(nt, id, "block") >= 0) {
         TyKind htb = comp_ntype(c, eav[0]);
         const char *htyb = nt_type(nt, eav[0]);
@@ -1269,8 +1269,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int keep2 = sp_streq(enm, "keep_if") || sp_streq(enm, "select!") ||
                     sp_streq(enm, "filter!");
         /* the bang trio answers nil when nothing changed (#2844) */
-        int optn = sp_streq(enm, "reject!") || sp_streq(enm, "select!") ||
-                   sp_streq(enm, "filter!");
+        int optn = is_select_reject_bang(enm);
         buf_printf(b, "sp_env_filter_bang%s(", optn ? "_opt" : "");
         emit_proc_literal(c, id, b);
         buf_printf(b, ", %d)", keep2);
@@ -1280,7 +1279,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_puts(b, "(&(\"\\xff\" \"ENV\")[1])");
         return 1;
       }
-      if (enm && (sp_streq(enm, "dup") || sp_streq(enm, "clone")) && eac == 0) {
+      if (enm && (is_copy_alias(enm)) && eac == 0) {
         buf_printf(b, "(sp_raise_cls(\"TypeError\","
                       " (&(\"\\xff\" \"Cannot %s ENV, use ENV.to_h to get a copy of ENV as a hash\")[1])), sp_box_nil())",
                    enm);

@@ -498,7 +498,7 @@ static int ty_is_array_elem_iter(const char *n) {
 TyIterShape ty_iter_shape(const char *name) {
   if (!name) return TY_ITER_NONE;
   if (is_map_alias(name)) return TY_ITER_MAP;
-  if (sp_streq(name, "select") || sp_streq(name, "filter")) return TY_ITER_SELECT;
+  if (is_select_alias(name)) return TY_ITER_SELECT;
   if (sp_streq(name, "reject")) return TY_ITER_REJECT;
   return TY_ITER_NONE;
 }
@@ -519,7 +519,7 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
     return 0;
   }
   if (ty_is_hash(recv)) {
-    if (sp_streq(name, "each") || sp_streq(name, "each_pair")) {
+    if (is_each_or_pair(name)) {
       BY_PUT(0, ty_hash_key(recv)); BY_PUT(1, ty_hash_val(recv)); return 2;
     }
     if (sp_streq(name, "each_key")) { BY_PUT(0, ty_hash_key(recv)); return 1; }
@@ -611,7 +611,7 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
   int kind = ty_object_protocol_kind(rt);
   if (argc == 0) {
     if (kind == 1)
-      return sp_streq(name, "frozen?") || sp_streq(name, "freeze") ||
+      return is_freeze_family(name) ||
              (ty_object_protocol_io(rt) && sp_streq(name, "to_s"));
     /* a Range is always frozen; Time and Tms carry no frozen bit, so neither
        question is answered for them */
@@ -623,7 +623,7 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
   int is_equal = sp_streq(name, "equal?");
   int is_eql = sp_streq(name, "eql?");
   int is_case = sp_streq(name, "===");
-  int is_eq = is_case || sp_streq(name, "==") || sp_streq(name, "!=");
+  int is_eq = is_case || is_eq_or_ne(name);
   if (!is_eq && !is_eql && !is_equal) return 0;
   if (kind == 0) {
     /* the cross-family tier */

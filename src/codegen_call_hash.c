@@ -855,7 +855,7 @@ int emit_call_openstruct_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* dup / clone copy the member table. The generic identity shortcut handed
        back the receiver itself, so a write through the copy landed in the
        original. */
-    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+    if ((is_copy_alias(name)) && argc == 0) {
       buf_puts(b, "sp_OpenStruct_dup("); emit_expr(c, recv, b);
       buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
       return 1;

@@ -977,7 +977,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      fell through to the identity shortcut below and aliased the original.
      Value-type objects copy by value already; exception subclasses use distinct
      allocation, so both stay on the identity path. */
-  if (recv >= 0 && (sp_streq(name, "dup") || sp_streq(name, "clone")) &&
+  if (recv >= 0 && (is_copy_alias(name)) &&
       /* a generated READER of the name owns it, as in CRuby (#4190), and so
          does a method the class defines itself: Nokogiri's Node#dup is a deep
          copy, and the built-in shallow copy took its place (#5450) */
@@ -1102,7 +1102,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        skip the identity shortcut for them so the dedicated copy paths run.
        freeze/itself on any value stay identity. */
     TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
-    int is_dup_clone = sp_streq(name, "dup") || sp_streq(name, "clone");
+    int is_dup_clone = is_copy_alias(name);
     int recv_native = ty_is_object(recv_t) &&
                       c->classes[ty_object_class(recv_t)].is_native_class;
     /* freeze on a user instance or a boxed value has real state (the GC
@@ -1211,7 +1211,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   }
 
   /* then / yield_self: pass receiver to block, return block result */
-  if (recv >= 0 && (sp_streq(name, "then") || sp_streq(name, "yield_self"))) {
+  if (recv >= 0 && (is_then_alias(name))) {
     int blk = nt_ref(nt, id, "block");
     /* with NO block, an enumerator of one element -- the receiver (#4028),
        named `then` for either name, as CRuby's yield_self is then's alias */
@@ -1823,7 +1823,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     }
     /* a boolean has no #=~ (so #!~ fails the same way): CRuby's NoMethodError.
        A program that REOPENS TrueClass/FalseClass with its own #=~ keeps it. */
-    if (nm0 && (sp_streq(nm0, "=~") || sp_streq(nm0, "!~")) && ac0 == 1 && rt0 == TY_BOOL &&
+    if (nm0 && (is_match_operator(nm0)) && ac0 == 1 && rt0 == TY_BOOL &&
         !diag_user_defines(c, "=~")) {
       int t1 = ++g_tmp;
       buf_printf(b, "({ sp_int _t%d = ", t1); emit_expr(c, rv0, b);
@@ -1880,7 +1880,7 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
     if (gvnm && (sp_streq(gvnm, "$stderr") || sp_streq(gvnm, "$stdout"))) {
       int is_err = gvnm[1] == 's' && gvnm[2] == 't' && gvnm[3] == 'd' && gvnm[4] == 'e';
       const char *fd = is_err ? "stderr" : "stdout";
-      if (sp_streq(name, "puts") || sp_streq(name, "print")) {
+      if (is_text_print(name)) {
         int want_nl = sp_streq(name, "puts");
         /* Join with the comma operator so the whole thing stays a single C
            expression -- valid both as a statement and in value position (a
@@ -1897,7 +1897,7 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
         return 1;
       }
       if (sp_streq(name, "flush")) { buf_printf(b, "fflush(%s)", fd); return 1; }
-      if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
+      if (is_io_write(name)) {
         /* IO#write: write each arg (stringified), return total bytes written. */
         buf_puts(b, "({ sp_int _w = 0; ");
         for (int k = 0; k < argc; k++) {
@@ -1938,12 +1938,12 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
     emit_expr(c, recv, b); buf_puts(b, "))");
     return 1;
   }
-  if (recv >= 0 && argc == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
+  if (recv >= 0 && argc == 0 && (is_text_conversion(name)) &&
       (rt == TY_MUTEX || rt == TY_QUEUE || rt == TY_CONDVAR)) {
     emit_handle_inspect(c, recv, rt, b);
     return 1;
   }
-  if (recv >= 0 && argc == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
+  if (recv >= 0 && argc == 0 && (is_text_conversion(name)) &&
       (ty_is_ptr_array(rt) || ty_is_obj_array(rt))) {
     buf_puts(b, "sp_poly_inspect("); emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;

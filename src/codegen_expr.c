@@ -674,7 +674,7 @@ static int node_is_raise(Compiler *c, int nd) {
   if (nd < 0 || !nt_type(nt, nd) || !sp_streq(nt_type(nt, nd), "CallNode")) return 0;
   if (nt_ref(nt, nd, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, nd, "name");
-  return nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail"));
+  return nm && (is_raise_alias(nm));
 }
 
 /* One arm of a value-position if/unless: box a concrete arm into a poly
@@ -4576,4 +4576,3 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
 }
 
 /* ---- output statements (puts/print/p) ---- */
-

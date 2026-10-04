@@ -1918,7 +1918,7 @@ static int ivs_never_nil(Compiler *c, int v) {
         int ci = comp_class_index(c, nt_str(nt, r, "name"));
         return ci < 0 ? 1 : comp_cmethod_in_chain(c, ci, "new", NULL) < 0;
       }
-      if (sp_streq(nm, "+@") || sp_streq(nm, "-@")) return nt_kind(nt, r) == NK_StringNode;
+      if (is_unary_sign(nm)) return nt_kind(nt, r) == NK_StringNode;
       TyKind rt = comp_ntype(c, r);
       static const char *const OPS[] = { "+", "-", "*", "/", "%", "**", "<<", "to_s", "to_i", "to_f",
                                          "to_a", "to_sym", "dup", NULL };
@@ -2424,7 +2424,7 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   if (rt != TY_STRING && rt != TY_STRBUF) return 1;
   const char *nm = nt_str(nt, v, "name");
-  return nm && (sp_streq(nm, "<<") || sp_streq(nm, "concat") || str_self_call(nt, v));
+  return nm && (is_append_concat(nm) || str_self_call(nt, v));
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
@@ -3291,7 +3291,7 @@ int call_never_returns(Compiler *c, int id) {
   if (comp_ntype(c, id) != TY_VOID) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
-  if (recv < 0 && (sp_streq(nm, "raise") || sp_streq(nm, "fail"))) return 1;
+  if (recv < 0 && (is_raise_alias(nm))) return 1;
   int mi = -1;
   if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, id, nm);
   else {

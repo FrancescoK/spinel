@@ -1287,7 +1287,7 @@ int call_returns_nullable_int(Compiler *c, int node) {
   if (sp_streq(nm, "index") || sp_streq(nm, "rindex") || sp_streq(nm, "delete_at") ||
       sp_streq(nm, "byteindex") || sp_streq(nm, "byterindex") ||
       sp_streq(nm, "pop") || sp_streq(nm, "shift") || sp_streq(nm, "delete")) return 1;
-  if (sp_streq(nm, "begin") || sp_streq(nm, "end")) {
+  if (is_range_bound_reader(nm)) {
     int r = nt_ref(nt, node, "receiver");
     TyKind rrt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
     /* MatchData#begin/end (an unmatched optional group -> nil) and,
@@ -11090,7 +11090,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int pk = emit_exc_reopen_pick_head(c, xr, xn, from, b);
         /* none above it: #message / #to_s are Exception's own, the stored
            message; any other name has no superclass method */
-        if ((sp_streq(uname, "message") || sp_streq(uname, "to_s")) && comp_ntype(c, id) == TY_STRING)
+        if ((is_exception_message(uname)) && comp_ntype(c, id) == TY_STRING)
           buf_printf(b, "_xi%d < 0 ? sp_exc_message((struct sp_Exception_s *)%s) : ", pk, g_self);
         else
           buf_printf(b, "if (_xi%d < 0) sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"); ",
@@ -11109,7 +11109,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       }
     }
     if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) && !s->is_cmethod &&
-        (sp_streq(uname, "message") || sp_streq(uname, "to_s"))) {
+        (is_exception_message(uname))) {
       TyKind rt = comp_ntype(c, id);
       Buf mb; memset(&mb, 0, sizeof mb);
       buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
@@ -12435,7 +12435,7 @@ static int why_pushed_object(Compiler *c, int lit) {
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (id < wid) continue;   /* a push before the write fills an earlier value of the name */
     const char *cn = nt_str(nt, id, "name");
-    if (!cn || !(sp_streq(cn, "<<") || sp_streq(cn, "push"))) continue;
+    if (!cn || !(is_push_operator(cn))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
@@ -15490,7 +15490,7 @@ char *codegen_program(const NodeTable *nt) {
   g_has_user_init_copy = 0;
   for (int id = 0, r, dc; id < c->nt->count && !g_has_user_init_copy; id++) {
     const char *dn = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
-    if (dn && (sp_streq(dn, "dup") || sp_streq(dn, "clone")) &&
+    if (dn && (is_copy_alias(dn)) &&
         (r = nt_ref(c->nt, id, "receiver")) >= 0 && comp_ntype(c, r) == TY_POLY)
       for (int k = 0; k < c->nclasses && !g_has_user_init_copy; k++)
         if (user_init_copy_scope(c, k, &dc) >= 0) g_has_user_init_copy = 1;
@@ -15865,4 +15865,3 @@ char *codegen_program(const NodeTable *nt) {
     if (types_out && !(keep && *keep)) return strdup(""); }
   return b.p;
 }
-

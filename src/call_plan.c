@@ -863,7 +863,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
     if (mi >= 0 && c->classes[k].is_struct && !c->classes[k].is_data && g_gen_obj_struct_values &&
         ret == TY_POLY && nt_ref(c->nt, id, "block") < 0 &&
         nt_str(c->nt, c->scopes[mi].def_node, "synth") &&
-        (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+        (is_each_or_pair(name))) {
       cpoly_add(p, &cap, PA_SYNTH_ENUM, k, mi, TY_ENUMERATOR, PC_SAME);
       continue;
     }
@@ -949,7 +949,7 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   if (sp_streq(name, "read_nonblock") && ps->pos_argc == 1 && splat_a < 0) cpoly_family(p, cap, PB_IO_READ_NB);
   if (sp_streq(name, "write") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_WRITE);
   if (sp_streq(name, "syswrite") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_SYSWRITE);
-  if ((sp_streq(name, "puts") || sp_streq(name, "print")) && plain) cpoly_family(p, cap, PB_IO_PRINT);
+  if ((is_text_print(name)) && plain) cpoly_family(p, cap, PB_IO_PRINT);
   if (sp_streq(name, "putc") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_PUTC);
   if (((sp_streq(name, "seek") && (argc == 1 || argc == 2)) ||
        (sp_streq(name, "read") && argc == 1 && (ret == TY_POLY || ret == TY_STRING))) && plain) {
@@ -1333,17 +1333,17 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
   int fam = -1;
   if (obj_done) fam = -1;
   else if (sp_streq(name, "__to_enum_each") && (ret == TY_POLY || ret == TY_ENUMERATOR)) fam = PB_D_ENUM_EACH;
-  else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) fam = PB_D_TO_S;
+  else if (is_text_conversion(name)) fam = PB_D_TO_S;
   else if (cpoly_name_in(name, case_conv)) fam = PB_D_CASE_CONV;
   else if (cpoly_name_in(name, num)) fam = PB_D_NUM;
   else if (sp_streq(name, "digits")) fam = PB_D_DIGITS;
   else if (cpoly_name_in(name, arr_t) && (ret == TY_POLY || ret == TY_POLY_ARRAY)) fam = PB_D_ARRAY_TRANSFORM;
   else if (ps->pred) fam = PB_D_PRED;
-  else if (sp_streq(name, "to_i") || sp_streq(name, "to_f")) fam = PB_D_TO_IF;
+  else if (is_numeric_conversion(name)) fam = PB_D_TO_IF;
   else if (blockless && (sp_streq(name, "any?") || sp_streq(name, "none?"))) fam = PB_D_ANY_NONE;
   else if (sp_streq(name, "to_h") && blockless && ret == TY_POLY) fam = PB_D_TO_H;
   if (fam >= 0) cpoly_family(p, cap, fam);
-  if (sp_streq(name, "each_index") || sp_streq(name, "each_with_index")) cpoly_family(p, cap, PB_N_EACH_INDEX);
+  if (is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
   if (sp_streq(name, "join")) cpoly_family(p, cap, PB_N_JOIN);
   if (sp_streq(name, "alive?")) cpoly_family(p, cap, PB_N_ALIVE);
   if (sp_streq(name, "kill")) cpoly_family(p, cap, PB_N_KILL);
@@ -1467,7 +1467,7 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   /* map!/collect! rewrites a builtin array in place, given a block body */
   int block = nt_ref(c->nt, id, "block");
   int map_bang = 0;
-  if (sp_streq(name, "map!") || sp_streq(name, "collect!")) {
+  if (is_map_bang_alias(name)) {
     int body = nt_ref(c->nt, block, "body");
     int bn = 0;
     if (body >= 0) (void)nt_arr(c->nt, body, "body", &bn);

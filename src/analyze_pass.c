@@ -2618,7 +2618,7 @@ static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope
     const char *wcn = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? nt_str(nt, wv, "name") : NULL;
     int wr = wcn ? nt_ref(nt, wv, "receiver") : -1;
     TyKind wrt = wr >= 0 ? infer_type(c, wr) : TY_UNKNOWN;
-    if (wcn && (sp_streq(wcn, "[]") || sp_streq(wcn, "at")) &&
+    if (wcn && (is_element_at_alias(wcn)) &&
         (wrt == TY_INT_ARRAY_ARRAY || wrt == TY_FLOAT_ARRAY_ARRAY)) return 1;
   }
   return 0;
@@ -2671,7 +2671,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
         if (an == 1) vnode = argv[0];
       }
-      else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
+      else if (name && (is_prepend_alias(name)) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
            (a foreign value used to store its raw bits into the typed slots) */
         is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
@@ -2774,7 +2774,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         knode = argv[0]; vnode = argv[1];
       }
-      else if (name && (sp_streq(name, "merge!") || sp_streq(name, "update")) && an >= 1) {
+      else if (name && (is_hash_merge_bang(name)) && an >= 1) {
         /* merging hashes into an empty-{} local writes their keys/values:
            key+value evidence exactly like []= (#2434) */
         TyKind mat = infer_type(c, argv[0]);
@@ -3508,7 +3508,7 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
       int is_io_pair = vnm && vcn &&
         ((sp_streq(vcn, "IO") && sp_streq(vnm, "pipe")) ||
          (sp_streq(vcn, "Socket") &&
-          (sp_streq(vnm, "pair") || sp_streq(vnm, "socketpair"))));
+          (is_socket_pair_alias(vnm))));
       /* UNIXSocket.pair is deliberately absent: the call itself has no arm, so
          naming it here would claim a typing for something that cannot compile. */
       if (is_io_pair) {
@@ -3971,7 +3971,7 @@ int infer_write_types(Compiler *c) {
             const char *rvnm2 = nt_str(nt, val_id, "name");
             int rvrecv2 = nt_ref(nt, val_id, "receiver");
             if (rvrecv2 >= 0 && rvnm2 &&
-                (sp_streq(rvnm2, "dup") || sp_streq(rvnm2, "clone"))) {
+                (is_copy_alias(rvnm2))) {
               const char *rrt2 = nt_type(nt, rvrecv2);
               if (rrt2 && sp_streq(rrt2, "LocalVariableReadNode")) {
                 const char *rrn2 = nt_str(nt, rvrecv2, "name");
@@ -5445,7 +5445,7 @@ static int array_src_walk(Compiler *c, int v, int pinned, int apply, int *stack,
   /* `v.then { ... }`: the block's value */
   const char *cn = nt_str(nt, v, "name");
   int tblk = nt_ref(nt, v, "block");
-  if (mi < 0 && cn && (sp_streq(cn, "then") || sp_streq(cn, "yield_self")) && nt_ref(nt, v, "receiver") >= 0 &&
+  if (mi < 0 && cn && (is_then_alias(cn)) && nt_ref(nt, v, "receiver") >= 0 &&
       tblk >= 0 && nt_kind(nt, tblk) == NK_BlockNode &&
       ie_block_break_next_ty(c, nt_ref(nt, tblk, "body")) == TY_UNKNOWN) {
     int bl[16];
@@ -5820,7 +5820,7 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
         TyKind rt = infer_type(c, r), yt[2];
         int elem_at = -1;
         if (ty_is_hash(rt))
-          elem_at = sp_streq(cn, "each_value") ? 0 : sp_streq(cn, "each") || sp_streq(cn, "each_pair") ? 1 : -1;
+          elem_at = sp_streq(cn, "each_value") ? 0 : is_each_or_pair(cn) ? 1 : -1;
         else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0)
           elem_at = 0;
         if (bi == elem_at) ch |= widen_boxed_elem_sources(c, r, elem, depth + 1);
@@ -7655,7 +7655,7 @@ int infer_param_types(Compiler *c) {
        hook (in codegen) with the original as the sole argument. That call has no
        Ruby CallNode, so seed the hook's first param to the receiver's class here
        -- otherwise it stays TY_UNKNOWN and the backstop prunes the method. */
-    if (recv >= 0 && name && (sp_streq(name, "dup") || sp_streq(name, "clone"))) {
+    if (recv >= 0 && name && (is_copy_alias(name))) {
       TyKind drt = infer_type(c, recv);
       if (ty_is_object(drt)) {
         int dcid = ty_object_class(drt);
@@ -7742,7 +7742,7 @@ int infer_param_types(Compiler *c) {
 
     /* proc >> proc / proc << proc: widen both operands' params to POLY so the
        dynamic intermediate value flows through the boxed side-channel. #2650 */
-    if (recv >= 0 && name && (sp_streq(name, ">>") || sp_streq(name, "<<")) &&
+    if (recv >= 0 && name && (is_shift_op(name)) &&
         infer_type(c, recv) == TY_PROC) {
       int aargs = nt_ref(nt, id, "arguments");
       int an = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &an) : NULL;
@@ -10805,7 +10805,7 @@ static void ewo_scan_pushes(Compiler *c, int id, const char *memo, TyKind *acc) 
     const char *rty = rcv >= 0 ? nt_type(nt, rcv) : NULL;
     if (nm && rty && sp_streq(rty, "LocalVariableReadNode") &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), memo) &&
-        (sp_streq(nm, "<<") || sp_streq(nm, "push"))) {
+        (is_push_operator(nm))) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int k = 0; k < an; k++) *acc = ty_unify(*acc, infer_type(c, argv[k]));
@@ -10841,7 +10841,7 @@ static void yarg_scan_pushes(Compiler *c, int id, const char *memo, TyKind *acc,
     const char *rty = rcv >= 0 ? nt_type(nt, rcv) : NULL;
     if (nm && rty && sp_streq(rty, "LocalVariableReadNode") &&
         nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), memo) &&
-        (sp_streq(nm, "<<") || sp_streq(nm, "push"))) {
+        (is_push_operator(nm))) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int k = 0; k < an; k++) {
@@ -12218,7 +12218,7 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
   }
 
   /* hash.each_value { |v| } binds value; each_key { |k| } binds key */
-  if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
+  if ((is_hash_key_value_each(name)) && ty_is_hash(rt)) {
     Scope *hs = comp_scope_of(c, block);
     LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
     TyKind want = sp_streq(name, "each_value") ? ty_hash_val(rt) : ty_hash_key(rt);
@@ -13338,7 +13338,7 @@ int infer_block_params(Compiler *c) {
     if (!p0 && !block_param_is_multi(c, block, 0)) continue;
 
     /* then / yield_self: block param receives the receiver value */
-    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) && p0) {
+    if ((is_then_alias(name)) && p0) {
       Scope *bs = comp_scope_of(c, block);
       if (bp_widen(bs, p0, rt == TY_NIL ? TY_POLY : rt)) changed = 1;
       continue;
@@ -13379,8 +13379,7 @@ int infer_block_params(Compiler *c) {
        argument boxed; typed during inference, not only when emitted, so what
        the block computes from it is typed too (left unknown, `v = i * 10`
        contributed nothing and `v` came out a String beside `v = "s"`) */
-    else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
-              sp_streq(name, "downto") || sp_streq(name, "step")) && rt == TY_POLY)
+    else if ((is_integer_iteration(name)) && rt == TY_POLY)
       pt = TY_POLY;
     else if (rt == TY_POLY && sp_streq(name, "each_line"))
       pt = TY_STRING;  /* File/IO object yielding lines */
@@ -13392,7 +13391,7 @@ int infer_block_params(Compiler *c) {
              (sp_streq(name, "each_line") || sp_streq(name, "each") ||
               (rt == TY_IO && sp_streq(name, "each_char")) || (rt == TY_ARGF && sp_streq(name, "each_string"))))
       pt = TY_STRING;
-    else if (rt == TY_IO && (sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")))
+    else if (rt == TY_IO && (is_byte_codepoint_each(name)))
       pt = TY_INT;
     else if (rt == TY_POLY && sp_streq(name, "each_byte"))
       pt = TY_INT;
@@ -13466,7 +13465,7 @@ int infer_block_params(Compiler *c) {
       }
     }
     /* (range).lazy.select/reject/filter { |x| } : x is an integer range element */
-    else if ((sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter")) &&
+    else if ((is_select_reject(name)) &&
              rt == TY_UNKNOWN && recv >= 0 &&
              nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
              nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy")) {
@@ -14542,7 +14541,7 @@ static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) 
       int args = nt_ref(nt, v, "arguments");
       int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an >= 1) aname = bi_local_name(nt, argv[0]);
-      if (op && (sp_streq(op, "*") || sp_streq(op, "**"))) {
+      if (op && (is_mul_or_pow(op))) {
         if ((rname && bi_reaches(pairs, np, lname, rname, 0)) ||
             (aname && bi_reaches(pairs, np, lname, aname, 0)))
           bi_promote(c, id, lname);
@@ -14560,7 +14559,7 @@ static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) 
   if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
     const char *op = nt_str(nt, id, "binary_operator");
     const char *lname = nt_str(nt, id, "name");
-    if (op && lname && (sp_streq(op, "*") || sp_streq(op, "**")))
+    if (op && lname && (is_mul_or_pow(op)))
       bi_promote(c, id, lname);
   }
   int nr = nt_num_refs(nt, id);

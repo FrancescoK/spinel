@@ -1421,7 +1421,7 @@ static void vis_apply_attr(Compiler *c, ClassInfo *cls, int call, int kind, int 
   if (!nm) return;
   int reader = sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_accessor") ||
                sp_streq(nm, "attr");
-  int writer = sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor");
+  int writer = is_attr_writer_family(nm);
   if (!reader && !writer) return;
   int args = nt_ref(nt, call, "arguments");
   int an = 0;
@@ -6943,7 +6943,7 @@ int infer_ivar_types(Compiler *c) {
          and `@t.hour` after it had no arm (the logger gem's Period). */
       else if (sp_streq(ty, "InstanceVariableOperatorWriteNode") && ci->ivar_types[iv] == TY_TIME) {
         const char *op2 = nt_str(nt, id, "binary_operator");
-        if (op2 && (sp_streq(op2, "+") || sp_streq(op2, "-")) &&
+        if (op2 && (is_add_sub(op2)) &&
             (vt == TY_INT || vt == TY_FLOAT || vt == TY_BIGINT))
           vt = TY_TIME;
       }

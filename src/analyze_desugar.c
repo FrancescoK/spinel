@@ -635,7 +635,7 @@ static int yic_is_closure_call(const NodeTable *nt, int node) {
   const char *nm = nt_str(nt, node, "name");
   if (!nm) return 0;
   int recv = nt_ref(nt, node, "receiver");
-  if (recv < 0) return sp_streq(nm, "proc") || sp_streq(nm, "lambda");
+  if (recv < 0) return is_proc_constructor(nm);
   const char *rty = nt_type(nt, recv);
   return sp_streq(nm, "new") && rty && sp_streq(rty, "ConstantReadNode") &&
          nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Proc");
@@ -752,7 +752,7 @@ static int me_stmt_defines(const NodeTable *nt, int s, const char *m) {
   int nn = sk == NK_AliasMethodNode ? nt_ref(nt, s, "new_name") : -1;
   if (nn >= 0) return nt_kind(nt, nn) == NK_SymbolNode && nt_str(nt, nn, "value") && sp_streq(nt_str(nt, nn, "value"), m);
   const char *cn = sk == NK_CallNode ? nt_str(nt, s, "name") : NULL;
-  int w = cn && (sp_streq(cn, "attr_writer") || sp_streq(cn, "attr_accessor")), r = cn && !sp_streq(cn, "attr_writer");
+  int w = cn && (is_attr_writer_family(cn)), r = cn && !sp_streq(cn, "attr_writer");
   if (!cn || (!w && !sp_streq(cn, "attr") && !sp_streq(cn, "attr_reader") && !sp_streq(cn, "define_method") && !sp_streq(cn, "alias_method"))) return 0;
   int an = 0; const int *av = nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &an);
   for (int a = 0; a < an; a++) {
@@ -1069,8 +1069,7 @@ static int kr_is_visibility_marker(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 ||
       nt_ref(nt, st, "arguments") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
   const char *nm = nt_str(nt, st, "name");
-  return nm && (sp_streq(nm, "module_function") || sp_streq(nm, "private") ||
-                sp_streq(nm, "public") || sp_streq(nm, "protected"));
+  return nm && (is_visibility_or_module_function(nm));
 }
 int desugar_kernel_reopen(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -1481,8 +1480,8 @@ int desugar_handle_attr_accessor(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
-    int reader = nm && (sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr_reader"));
-    int writer = nm && (sp_streq(nm, "attr_accessor") || sp_streq(nm, "attr_writer"));
+    int reader = nm && (is_attr_reader_family(nm));
+    int writer = nm && (is_attr_writer_family(nm));
     if (!reader && !writer) continue;
     int recv = nt_ref(nt, id, "receiver");
     const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
@@ -1759,7 +1758,7 @@ static int mrv_paren_value(const NodeTable *nt, int v) {
 static int mrv_then_self(Compiler *c, int r) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, r, "name");
-  if (!nm || !(sp_streq(nm, "then") || sp_streq(nm, "yield_self"))) return 0;
+  if (!nm || !(is_then_alias(nm))) return 0;
   int b = nt_ref(nt, r, "block");
   int bp = nt_ref(nt, b, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
   int rn = 0, on = 0; const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
@@ -2048,7 +2047,7 @@ int desugar_int_enum_with_index(Compiler *c) {
     if (infer_type(c, recv) != TY_RANGE) continue;
     int base = nt->count;
     int blk = nt_ref(nt, id, "block");
-    if (blk >= 0 && (sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index"))) {
+    if (blk >= 0 && (is_with_index_alias(nm))) {
       /* Block form returns the Integer RECEIVER (CRuby: the enumerator's
          underlying each return), not the range: hoist the receiver into a
          temp, run the chain for effect, and make the original call a
@@ -5077,7 +5076,7 @@ int enum_pair_source_call(const NodeTable *nt, int recv) {
   if (!rn) return 0;
   return (sp_streq(rn, "each_with_index") && rc == 0) ||
          (sp_streq(rn, "with_index") && rc <= 1) ||
-         ((sp_streq(rn, "each_with_object") || sp_streq(rn, "with_object")) && rc == 1);
+         ((is_with_object_alias(rn)) && rc == 1);
 }
 
 /* The anonymous `&` of the method around call `id`, once every forward
@@ -6084,8 +6083,7 @@ static int fwd_body_def(const NodeTable *nt, int st) {
   if (fwd_node_is(nt, st, "DefNode")) return st;
   if (!fwd_node_is(nt, st, "CallNode") || nt_ref(nt, st, "receiver") >= 0) return -1;
   const char *nm = nt_str(nt, st, "name");
-  if (!nm || !(sp_streq(nm, "private") || sp_streq(nm, "protected") ||
-               sp_streq(nm, "public") || sp_streq(nm, "module_function"))) return -1;
+  if (!nm || !(is_visibility_or_module_function(nm))) return -1;
   int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
   return an == 1 && fwd_node_is(nt, av[0], "DefNode") ? av[0] : -1;
 }
@@ -6496,8 +6494,8 @@ void desugar_extended_module_attrs(Compiler *c) {
       int s = st[k];
       const char *an = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 &&
                        nt_ref(nt, s, "block") < 0 ? nt_str(nt, s, "name") : NULL;
-      int rd = an && (sp_streq(an, "attr_accessor") || sp_streq(an, "attr_reader"));
-      int wr = an && (sp_streq(an, "attr_accessor") || sp_streq(an, "attr_writer"));
+      int rd = an && (is_attr_reader_family(an));
+      int wr = an && (is_attr_writer_family(an));
       int ar = nt_ref(nt, s, "arguments");
       int ac = 0; const int *av = (rd || wr) && ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       int ok = ac > 0;
@@ -6640,7 +6638,7 @@ static int dmp_literal_block(NodeTable *nt, int v) {
   int recv = nt_ref(nt, v, "receiver");
   int blk = nt_ref(nt, v, "block");
   if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
-  if (recv < 0 && (sp_streq(nm, "lambda") || sp_streq(nm, "proc"))) return blk;
+  if (recv < 0 && (is_proc_constructor(nm))) return blk;
   if (recv >= 0 && sp_streq(nm, "new") && nt_kind(nt, recv) == NK_ConstantReadNode &&
       sp_streq(nt_str(nt, recv, "name"), "Proc")) return blk;
   return -1;
@@ -7908,10 +7906,10 @@ int desugar_enum_walk_calls(Compiler *c) {
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     const char *hn = NULL;
     if ((is_map_alias(name)) && an == 0) hn = "__enumw_map";
-    else if ((sp_streq(name, "select") || sp_streq(name, "filter")) && an == 0) hn = "__enumw_select";
+    else if ((is_select_alias(name)) && an == 0) hn = "__enumw_select";
     else if (sp_streq(name, "reject") && an == 0) hn = "__enumw_reject";
     else if (sp_streq(name, "filter_map") && an == 0) hn = "__enumw_filter_map";
-    else if ((sp_streq(name, "each_with_object") || sp_streq(name, "with_object")) && an == 1) hn = "__enumw_each_with_object";
+    else if ((is_with_object_alias(name)) && an == 1) hn = "__enumw_each_with_object";
     else if ((is_reduce_alias(name)) && an <= 1) hn = an ? "__enumw_inject1" : "__enumw_inject0";
     else if ((is_each_window(name)) && an == 1)
       hn = name[5] == 's' ? "__enumw_each_slice" : "__enumw_each_cons";
@@ -8036,7 +8034,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
        routed through the same `__to_enum_each` synthesis (#3756) before this
        runs, so it reaches here as TY_ENUMERATOR too. */
     int lazy_driven = rt == TY_ENUMERATOR &&
-                      (sp_streq(name, "take_while") || sp_streq(name, "find") || sp_streq(name, "detect"));
+                      (is_find_or_take_while(name));
     /* Range overrides these in CRuby with an O(1) answer read off the
        endpoints, never calling each -- observable, not only faster: a Float
        range cannot iterate at all, and `(1.0..5.0).minmax` answers. Those
@@ -9115,14 +9113,14 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     if ((sp_streq(nm, "permutation") && argc <= 1) || (sp_streq(nm, "product") && argc >= 1)) {
       *elem = TY_POLY_ARRAY; return 1;
     }
-    if ((sp_streq(nm, "each_key") || sp_streq(nm, "each_value")) && argc == 0) {
+    if ((is_hash_key_value_each(nm)) && argc == 0) {
       *elem = TY_POLY; return 1;
     }
     return 0;
   }
   if (rt == TY_INT) {
     if ((sp_streq(nm, "times") && argc == 0) ||
-        ((sp_streq(nm, "upto") || sp_streq(nm, "downto")) && argc == 1)) { *elem = TY_INT; return 1; }
+        ((is_bounded_int_step(nm)) && argc == 1)) { *elem = TY_INT; return 1; }
     /* the numbers step yields are Integers or Floats; neither spreads */
     if (sp_streq(nm, "step") && argc >= 1 && argc <= 2) { *elem = TY_INT; return 1; }
     return 0;
@@ -10638,7 +10636,7 @@ static int ra_body_declares_reader(const NodeTable *nt, const int *st, int upto,
     }
     if (nt_kind(nt, st[k]) != NK_CallNode || nt_ref(nt, st[k], "receiver") >= 0) continue;
     const char *cn = nt_str(nt, st[k], "name");
-    if (!cn || !(sp_streq(cn, "attr_reader") || sp_streq(cn, "attr_accessor"))) continue;
+    if (!cn || !(is_attr_reader_family(cn))) continue;
     int an = nt_ref(nt, st[k], "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     for (int i = 0; i < ac; i++) {
@@ -13340,7 +13338,7 @@ static int ffi_sclass_defines(Compiler *c, int ci, const char *name) {
         if (qk == NK_DefNode && sp_streq(qn, name)) return 1;
         if (qk != NK_CallNode || nt_ref(nt, ss[q], "receiver") >= 0) continue;
         int rd = sp_streq(qn, "attr_reader") || sp_streq(qn, "attr_accessor") || sp_streq(qn, "attr");
-        int wr = sp_streq(qn, "attr_writer") || sp_streq(qn, "attr_accessor");
+        int wr = is_attr_writer_family(qn);
         if (!rd && !wr) continue;
         int an = nt_ref(nt, ss[q], "arguments");
         int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
@@ -13738,7 +13736,7 @@ static int sce_eval_string(const NodeTable *nt, int st) {
       int la = nt_ref(nt, l, "arguments"), ln = 0;
       const int *lv = la >= 0 ? nt_arr(nt, la, "arguments", &ln) : NULL;
       int lr = nt_ref(nt, l, "receiver");
-      if (!op || !(sp_streq(op, "+") || sp_streq(op, "-")) || ln != 1 || !lv || lr < 0 ||
+      if (!op || !(is_add_sub(op)) || ln != 1 || !lv || lr < 0 ||
           nt_kind(nt, lr) != NK_SourceLineNode || nt_kind(nt, lv[0]) != NK_IntegerNode)
         return -1;
     }
@@ -13962,8 +13960,7 @@ static int sce_program_reflects(const NodeTable *nt) {
 static int sce_bare_visibility(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "arguments") >= 0) return 0;
   const char *m = nt_str(nt, st, "name");
-  return m && (sp_streq(m, "private") || sp_streq(m, "protected") || sp_streq(m, "public") ||
-               sp_streq(m, "module_function"));
+  return m && (is_visibility_or_module_function(m));
 }
 int desugar_static_class_eval(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;

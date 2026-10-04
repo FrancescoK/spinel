@@ -300,7 +300,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
     if (is_set_op(name) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
-      const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+      const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
       buf_printf(b, "sp_PolyArray_%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
@@ -310,7 +310,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
        box the argument to a poly array, then run the poly op. */
     if (is_set_op(name) && argc == 1 &&
         (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY)) {
-      const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+      const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
       const char *conv = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
                          a0 == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
       buf_printf(b, "sp_PolyArray_%s(", fn);
@@ -320,14 +320,13 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
     /* poly-array receiver, POLY argument: same run-time coercion (#3475) */
     if (is_set_op(name) && argc == 1 &&
         a0 == TY_POLY) {
-      const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+      const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
       buf_printf(b, "sp_PolyArray_%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ", sp_poly_set_operand(");
       emit_expr(c, argv[0], b); buf_puts(b, "))"); return 1;
     }
     /* variadic named set ops on a poly array: fold over each argument */
-    if ((sp_streq(name, "intersection") || sp_streq(name, "union") ||
-         sp_streq(name, "difference")) && argc >= 2) {
+    if ((is_named_set_operator(name)) && argc >= 2) {
       int ok = 1;
       for (int j = 0; j < argc; j++) {
         TyKind atj = comp_ntype(c, argv[j]);
@@ -352,7 +351,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
     return 0;
   }
   if (is_set_op(name) && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
-    const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : ((sp_streq(name, "|") || sp_streq(name, "union")) ? "union" : "difference");
+    const char *fn = (is_intersection_alias(name)) ? "intersect" : ((is_union_alias(name)) ? "union" : "difference");
     /* empty literal [] arg: use a null pointer (safe for all sp_*Array_* set ops) */
     if (a0 == TY_UNKNOWN) { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", NULL)"); }
     else { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -362,7 +361,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
      box both operands to poly and run the poly set op (result poly). */
   if (is_set_op(name) && argc == 1 &&
       (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY || a0 == TY_POLY_ARRAY) && a0 != rt) {
-    const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+    const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
     const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
                          rt == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
     const char *conv_r = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
@@ -384,7 +383,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
      failed to compile (#3475). */
   if (is_set_op(name) && argc == 1 &&
       a0 == TY_POLY) {
-    const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+    const char *fn = (is_intersection_alias(name)) ? "intersect" : (is_union_alias(name) ? "union" : "difference");
     const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
                          rt == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
     int tl = ++g_tmp;
@@ -394,8 +393,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
   }
   /* variadic named set ops: union/intersection/difference(*others) fold the
      binary operator over each argument, accumulating in a rooted temp. */
-  if ((sp_streq(name, "intersection") || sp_streq(name, "union") ||
-       sp_streq(name, "difference")) && argc >= 2) {
+  if ((is_named_set_operator(name)) && argc >= 2) {
     int ok = 1;
     for (int j = 0; j < argc; j++) {
       TyKind atj = comp_ntype(c, argv[j]);
@@ -1829,8 +1827,8 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
              sp_streq(name, "intersection") || sp_streq(name, "&") ||
              sp_streq(name, "+") || sp_streq(name, "zip"))) {
           /* call the real function with NULL receiver (handles empty-self case) */
-          const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect"
-                         : (sp_streq(name, "|") || sp_streq(name, "union")) ? "union"
+          const char *fn = (is_intersection_alias(name)) ? "intersect"
+                         : (is_union_alias(name)) ? "union"
                          : (sp_streq(name, "+")) ? "concat"
                          : "difference";
           buf_printf(b, "sp_%sArray_%s(NULL, ", ek, fn); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -1882,7 +1880,7 @@ int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, 
         if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return 1; }
         if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }  /* #2322 */
-        if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return 1; }
+        if ((is_text_conversion(name)) && argc == 0) { buf_puts(b, "\"[]\""); return 1; }
         if ((sp_streq(name, "join") || sp_streq(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return 1; }
         if ((sp_streq(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return 1; }
         if ((sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq") ||

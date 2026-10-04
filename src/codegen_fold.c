@@ -2817,7 +2817,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       int ex = nt_ref(nt, sblk, "expression");
       if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
     }
-    if (sop && (sp_streq(sop, "&") || sp_streq(sop, "|") || sp_streq(sop, "-"))) {
+    if (sop && (is_bit_set_operator(sop))) {
       const char *sfn = sp_streq(sop, "&") ? "sp_IntArray_intersect"
                       : sp_streq(sop, "|") ? "sp_IntArray_union" : "sp_IntArray_difference";
       int ta = ++g_tmp, tn = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
@@ -3775,7 +3775,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   int is_sel = sp_streq(name, "select") || sp_streq(name, "filter") ||
                sp_streq(name, "find_all");
   int is_rej = sp_streq(name, "reject");
-  int is_toa = sp_streq(name, "to_a") || sp_streq(name, "entries");
+  int is_toa = is_to_array_alias(name);
   int is_cnt = sp_streq(name, "count");
   int is_any = sp_streq(name, "any?"), is_all = sp_streq(name, "all?"), is_none = sp_streq(name, "none?");
   int is_each = sp_streq(name, "each");
@@ -5248,7 +5248,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   int is_each = sp_streq(inner, "each");
   /* map!.with_index: collect like map, then write the result back into the
      receiver in place; the chain evaluates to the receiver */
-  int is_mapbang = sp_streq(inner, "map!") || sp_streq(inner, "collect!");
+  int is_mapbang = is_map_bang_alias(inner);
   TyIterShape shp = ty_iter_shape(inner);  /* map/select/reject; NONE for each */
   if (is_mapbang) shp = TY_ITER_MAP;
   if (!is_each && !is_mapbang && shp == TY_ITER_NONE) return 0;
@@ -5394,7 +5394,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int take = name && sp_streq(name, "take_while");
-  int inc = name && (sp_streq(name, "include?") || sp_streq(name, "member?"));
+  int inc = name && (is_membership_alias(name));
   if (!name || (!take && !inc && !sp_streq(name, "find") && !sp_streq(name, "detect"))) return 0;
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
   int iargs = nt_ref(nt, id, "arguments");
@@ -5661,7 +5661,7 @@ static void emit_pred_cond(Buf *b, int pred_kind, const char *cond, int acc, int
 int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
-  if (!name || !(sp_streq(name, "index") || sp_streq(name, "rindex"))) return 0;
+  if (!name || !(is_string_index(name))) return 0;
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;

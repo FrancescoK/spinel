@@ -153,7 +153,7 @@ no_gsub_enum:
   /* Object receivers (incl. native-bound classes like StringScanner) dispatch
      their own match?/match methods; only string-ish receivers belong here. */
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && rt != TY_NIL && !ty_is_object(rt) &&
-      (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
+      (is_match_family(name))) {
     int are = re_lit_index(c, argv[0]);
     /* a receiver of no known type (a bare name that resolves to nothing and
        raises NameError) is boxed: the tag checks below take it */
@@ -161,8 +161,7 @@ no_gsub_enum:
     /* a numeric receiver has no =~/!~/match?/match (Object#=~ was removed):
        raise NoMethodError rather than matching the number as a string. */
     if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
-        (sp_streq(name, "=~") || sp_streq(name, "!~") ||
-         sp_streq(name, "match?") || sp_streq(name, "match"))) {
+        (is_match_family(name))) {
       const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
       const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -373,8 +372,7 @@ no_gsub_enum:
              NoMethodError instead of matching the number as a string (which
              would pass a numeric into sp_re_match_p's const char* slot). */
           if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
-              (sp_streq(name, "=~") || sp_streq(name, "!~") ||
-               sp_streq(name, "match?") || sp_streq(name, "match"))) {
+              (is_match_family(name))) {
             const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
             const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
             buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -833,7 +831,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     if (emit_builtin_op(c, id, recv, TY_SYMBOL, name, b)) return 1;
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
-    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+    if ((is_slice_alias(name)) && argc == 1 &&
         nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
       /* :s[a..b] / :s[a...b] over the name; a beginless/endless bound is 0 /
          the name length. The name is materialized once to avoid re-evaluating
@@ -852,7 +850,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       else buf_printf(b, "(sp_int)sp_str_length(_t%d), 0); })", t);
       return 1;
     }
-    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+    if ((is_slice_alias(name)) && argc == 1 &&
         (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
       buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
@@ -870,7 +868,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
 
   /* boolean receiver methods */
   if (recv >= 0 && rt == TY_BOOL) {
-    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
+    if (is_text_conversion(name)) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? sp_str_frozen_true : sp_str_frozen_false)");
       return 1;
     }
@@ -989,7 +987,7 @@ int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, 
     return 1;
   }
   if (recv >= 0 && rt == TY_SYMBOL && argc == 1 &&
-      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      (is_eql_or_equal(name)) &&
       comp_ntype(c, argv[0]) == TY_SYMBOL) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
     emit_expr(c, argv[0], b); buf_puts(b, "))");

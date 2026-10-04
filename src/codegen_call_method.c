@@ -618,7 +618,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 &&
       (comp_ntype(c, recv) == TY_PROC || comp_ntype(c, recv) == TY_CURRY ||
        comp_ntype(c, recv) == TY_POLY) &&
-      argc == 1 && (sp_streq(name, "<<") || sp_streq(name, ">>")) &&
+      argc == 1 && (is_shift_op(name)) &&
       (comp_ntype(c, argv[0]) == TY_PROC || comp_ntype(c, argv[0]) == TY_CURRY ||
        comp_ntype(c, argv[0]) == TY_POLY) &&
       /* `<<` on a boxed receiver is far more often Array/String append, so a
@@ -657,7 +657,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 &&
       (comp_ntype(c, recv) == TY_PROC || comp_ntype(c, recv) == TY_CURRY ||
        comp_ntype(c, recv) == TY_METHOD) &&
-      argc == 1 && (sp_streq(name, "<<") || sp_streq(name, ">>")) &&
+      argc == 1 && (is_shift_op(name)) &&
       ty_never_callable(comp_ntype(c, argv[0])) &&
       !user_defines_or_reads(c, "call")) {
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
@@ -2036,7 +2036,7 @@ int emit_call_proc_literal_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     int _pr_recv = nt_ref(nt, id, "receiver");
     const char *_pr_nm = nt_str(nt, id, "name");
     int is_literal = 0;
-    if (_pr_recv < 0 && _pr_nm && (sp_streq(_pr_nm, "proc") || sp_streq(_pr_nm, "lambda")))
+    if (_pr_recv < 0 && _pr_nm && (is_proc_constructor(_pr_nm)))
       is_literal = 1;
     if (!is_literal && _pr_recv >= 0 && _pr_nm && sp_streq(_pr_nm, "new")) {
       const char *_rty = nt_type(nt, _pr_recv);

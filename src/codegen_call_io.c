@@ -33,7 +33,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "readpartial") ||
        /* a socket's addresses: a connection passed into a Thread arrives
           boxed, and a server reads REMOTE_ADDR from it */
-       ((sp_streq(name, "addr") || sp_streq(name, "peeraddr")) && argc == 0 &&
+       ((is_socket_address(name)) && argc == 0 &&
         sp_feature_required("socket")) ||
        /* the descriptor controls, at CRuby's arities, unless a splat carries
           the arguments, the advice is not a Symbol, or a class method or an
@@ -57,13 +57,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           read back out of a container, is a poly value like any other, and
           without an arm here `w.read_nonblock(n, exception: false)` had no
           emitter at all (#4236/#4237) */
-       sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock") ||
+       is_nonblock_io(name) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
           a condition it was refused as non-bool. IO#wait stays off the list,
           ConditionVariable#wait shares the name. */
-       ((sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
-         sp_streq(name, "wait_priority")) && argc <= 1) ||
+       ((is_io_wait(name)) && argc <= 1) ||
        /* File::Stat's predicates: a stat read out of a container is the
           same boxed handle. Not where a class method may own the name. */
        (argc == 0 && boxed_stat_pred(name) >= 0 && !class_method_named(c, name)))) {
@@ -205,9 +204,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          anything else goes on to the IO handle */
       const char *dirfn = NULL;
       if (argc == 0) {
-        if (sp_streq(name, "path") || sp_streq(name, "to_path")) dirfn = "sp_Dir_path";
+        if (is_path_reader(name)) dirfn = "sp_Dir_path";
         else if (sp_streq(name, "read")) dirfn = "sp_Dir_read";
-        else if (sp_streq(name, "tell") || sp_streq(name, "pos")) dirfn = "sp_Dir_tell";
+        else if (is_io_position(name)) dirfn = "sp_Dir_tell";
         else if (sp_streq(name, "fileno")) dirfn = "sp_Dir_fileno";
         else if (sp_streq(name, "close")) dirfn = "sp_Dir_close";
       }
@@ -242,7 +241,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         emit_to_s_expr(c, argv[0], b);
         buf_puts(b, "); })");
       }
-      else if (sp_streq(name, "puts") || sp_streq(name, "print")) {
+      else if (is_text_print(name)) {
         /* sp_File_puts appends a newline per argument unless the argument
            already ends in one, and flattens an array argument through
            sp_File_puts_val -- the same split the TY_IO arm makes. */
@@ -282,7 +281,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
-      else if (sp_streq(name, "addr") || sp_streq(name, "peeraddr"))
+      else if (is_socket_address(name))
         buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
       /* a stat's mode and fields, answered as the TY_IO arms answer them,
          for a stat's handle only */
@@ -296,7 +295,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         emit_stat_handle_only(tio2, name, b);
         buf_printf(b, "sp_stat_field(_t%d, %d); })", tio2, k);
       }
-      else if (sp_streq(name, "path") || sp_streq(name, "to_path"))
+      else if (is_path_reader(name))
         buf_printf(b, "sp_File_path(_t%d); })", tio2);
       else if (sp_streq(name, "readlines")) buf_printf(b, "sp_File_readlines(_t%d); })", tio2);
       else if (sp_streq(name, "rewind")) buf_printf(b, "sp_File_rewind(_t%d); })", tio2);
@@ -327,7 +326,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* read_nonblock / write_nonblock, the same answers the typed-receiver
          arms give: `exception: false` answers the wait symbol (read) or nil
          (write) instead of raising, so those shapes are poly (#4236/#4237). */
-      else if ((sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock")) &&
+      else if ((is_nonblock_io(name)) &&
                argc >= 1) {
         const char *lty9 = nt_type(nt, argv[argc - 1]);
         int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
@@ -380,7 +379,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
-      else if (sp_streq(name, "tell") || sp_streq(name, "pos"))
+      else if (is_io_position(name))
         buf_printf(b, "sp_File_tell(_t%d); })", tio2);
       else if (sp_streq(name, "pread") && argc >= 1) {
         buf_printf(b, "sp_File_pread(_t%d, ", tio2);
@@ -401,7 +400,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* the separator, limit and `chomp:` a typed handle takes: dropping
          them read `f.gets("o")` and `f.gets(3)` as a whole line. The handle
          is rooted across the arguments, which are evaluated after it. */
-      else if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
+      else if (is_line_read(name)) {
         buf_printf(b, "SP_GC_ROOT(_t%d); sp_File_%s(_t%d, ", tio2,
                    sp_streq(name, "readline") ? "readline_sep" : "gets_sep", tio2);
         emit_gets_sep_args(c, argv, argc, b);
@@ -435,8 +434,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         }
         buf_puts(b, "; })");
       }
-      else if (sp_streq(name, "wait_readable") || sp_streq(name, "wait_writable") ||
-               sp_streq(name, "wait_priority")) {
+      else if (is_io_wait(name)) {
         char tr[32]; snprintf(tr, sizeof tr, "_t%d", tio2);
         emit_io_wait(c, name, argc, argv, tr, b);
         buf_puts(b, "; })");
@@ -498,7 +496,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       free(rb.p); return 1;
     }
     if (sp_feature_required("socket") && argc == 0 &&
-        (sp_streq(name, "addr") || sp_streq(name, "peeraddr"))) {
+        (is_socket_address(name))) {
       buf_printf(b, "sp_sock_addr(%s, %d)", r, sp_streq(name, "peeraddr") ? 1 : 0);
       free(rb.p); return 1;
     }
@@ -679,7 +677,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       free(rb.p); return 1;
     }
-    if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
+    if (is_line_read(name)) {
       /* readline raises EOFError at end of file (#2817) */
       int is_rdl = sp_streq(name, "readline");
       buf_printf(b, "sp_File_%s(%s, ", is_rdl ? "readline_sep" : "gets_sep", r);
@@ -734,7 +732,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     /* read_nonblock / write_nonblock: a real non-blocking try. `exception:
        false` answers nil instead of raising IO::*Wait* / EOFError. */
-    if ((sp_streq(name, "read_nonblock") || sp_streq(name, "write_nonblock")) && argc >= 1) {
+    if ((is_nonblock_io(name)) && argc >= 1) {
       const char *lty8 = nt_type(nt, argv[argc - 1]);
       int kwh8 = (lty8 && sp_streq(lty8, "KeywordHashNode")) ? argv[argc - 1] : -1;
       int exc8 = kwh8 >= 0 ? kwh_lookup(nt, kwh8, "exception") : -1;
@@ -866,7 +864,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       free(rb.p); return 1;
     }
-    if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
+    if (is_io_write(name)) {
       /* every argument writes in order; the return is the total byte count (#2814) */
       /* A String operand goes to the _bin entry, which sizes it with the
          header length so an embedded NUL is written rather than truncating
@@ -998,7 +996,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return 1;
     }
-    if (sp_streq(name, "print") || sp_streq(name, "puts")) {
+    if (is_text_print(name)) {
       /* emit as a statement-like expression: print each arg, return nil.
          Non-string args are stringified via sp_poly_to_s (sp_File_write wants
          a char *), matching Kernel#puts/#print coercion.
@@ -1171,7 +1169,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        holds (a last line without "\n" keeps its "\r") */
     int chomp_kw = argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode
                    ? struct_kwarg_value(c, argv[0], "chomp") : -1;
-    if ((sp_streq(name, "gets") || sp_streq(name, "readline")) && chomp_kw >= 0) {
+    if ((is_line_read(name)) && chomp_kw >= 0) {
       int tf = ++g_tmp, tl = ++g_tmp;
       buf_printf(b, "({ int _t%d = ", tf);
       emit_kw_flag(c, chomp_kw, b);
@@ -1180,7 +1178,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                     " ? sp_str_chomp(_t%d) : _t%d; })", tl, tl, tl, tf, tl, tl, tl, tl, tl);
       return 1;
     }
-    if (sp_streq(name, "gets") || sp_streq(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return 1; }
+    if (is_line_read(name)) { buf_puts(b, "sp_argf_gets()"); return 1; }
     if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return 1; }
     if (sp_streq(name, "filename") || sp_streq(name, "path")) { buf_puts(b, "sp_argf_filename()"); return 1; }
     if (sp_streq(name, "eof?") || sp_streq(name, "eof")) { buf_puts(b, "sp_argf_eof()"); return 1; }
@@ -1216,7 +1214,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     emit_expr(c, recv, &drb);
     const char *dr = drb.p ? drb.p : "NULL";
     if (sp_streq(name, "read") && argc == 0) { buf_printf(b, "sp_Dir_read(%s)", dr); free(drb.p); return 1; }
-    if ((sp_streq(name, "path") || sp_streq(name, "to_path")) && argc == 0) {
+    if ((is_path_reader(name)) && argc == 0) {
       buf_printf(b, "sp_Dir_path(%s)", dr); free(drb.p); return 1;
     }
     /* Dir#inspect renders as #<Dir:PATH> (#3250). */
@@ -1227,7 +1225,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     if (sp_streq(name, "close") && argc == 0) { buf_printf(b, "sp_Dir_close(%s)", dr); free(drb.p); return 1; }
     if (sp_streq(name, "rewind") && argc == 0) { buf_printf(b, "sp_Dir_rewind(%s)", dr); free(drb.p); return 1; }
-    if ((sp_streq(name, "tell") || sp_streq(name, "pos")) && argc == 0) {
+    if ((is_io_position(name)) && argc == 0) {
       buf_printf(b, "sp_Dir_tell(%s)", dr); free(drb.p); return 1;
     }
     if (sp_streq(name, "seek") && argc == 1) {  /* Dir#seek(pos) -> self (#2967) */
@@ -1241,7 +1239,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "; sp_Dir_seek(%s, _t%d); _t%d; })", dr, tp, tp);
       free(drb.p); return 1;
     }
-    if ((sp_streq(name, "children") || sp_streq(name, "entries")) && argc == 0) {
+    if ((is_directory_entries(name)) && argc == 0) {
       buf_printf(b, "sp_Dir_entries_h(%s, %d)", dr, sp_streq(name, "children") ? 1 : 0);
       free(drb.p); return 1;
     }

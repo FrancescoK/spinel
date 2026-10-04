@@ -755,7 +755,7 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
   if (sp_streq(name, "print")) { for (int k = 0; k < argc; k++) emit_print_one(c, argv[k], b, indent); return 1; }
-  if (sp_streq(name, "p") || sp_streq(name, "pp")) { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
+  if (is_inspect_print(name)) { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
   if (sp_streq(name, "putc") && argc == 1) {
     /* Kernel#putc: an int writes (byte & 0xff); a string writes its first char. */
     TyKind at = comp_ntype(c, argv[0]);
@@ -1907,7 +1907,7 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
   const char *k = (t == TY_POLY_ARRAY) ? "Poly" : array_kind(t);
   if (!k) return 0;
   TyKind vt = comp_ntype(c, v);
-  if (sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "-")) {
+  if (is_bit_set_operator(op)) {
     const char *conv = (t == TY_POLY_ARRAY && vt != t) ? poly_array_rhs_conv(vt) : NULL;
     if (vt != t && vt != TY_UNKNOWN && !conv) return 0;
     const char *fn = sp_streq(op, "&") ? "intersect" : (sp_streq(op, "|") ? "union" : "difference");
@@ -2010,7 +2010,7 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
                            const char *slot, const char *rhs, Buf *b) {
   const char *fn = NULL;
   if (vt == TY_POLY) return 0;
-  if (et == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>")))
+  if (et == TY_INT && (is_shift_op(op)))
     fn = int_shift_fn(c, op, v);
   else if (et == TY_INT) fn = int_arith_fn(op);
   else if (et == TY_FLOAT && sp_streq(op, "%")) fn = vt == TY_INT ? "sp_fmod_intdiv" : "sp_fmod";
@@ -2085,7 +2085,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      sp_int_shl / sp_int_shr, whose overflow check is the only one there is;
      a runtime count goes through sp_int_shl_ck / sp_int_shr_ck below. A bare
      C shift wrapped `x <<= n` to 0 at n = 70 where `x << n` raised. */
-  int is_shift = bitop && (sp_streq(op, "<<") || sp_streq(op, ">>"));
+  int is_shift = bitop && (is_shift_op(op));
   /* A slot that can hold nil is nil there, and nil has no << or >>: CRuby's
      NoMethodError, where the shift read the nil sentinel as a number (the
      arithmetic helpers test it; these shifts did not) */
@@ -2106,7 +2106,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   Buf rb; memset(&rb, 0, sizeof rb);
   int nfread = 0;
   if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, &rb)) nfread = 1;
-  else if (t == TY_INT && fn && (sp_streq(op, "/") || sp_streq(op, "%"))) emit_int_divisor(c, v, &rb);
+  else if (t == TY_INT && fn && (is_div_or_mod(op))) emit_int_divisor(c, v, &rb);
   /* a boxed rhs of a Float op is kept boxed for the nil test below */
   else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
   else if (vt == TY_POLY) {
@@ -2300,13 +2300,13 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     return;
   }
   /* a loop-bounded counter's `+= k` is a plain C add (see above) */
-  if (t == TY_INT && int_arith_fn(op) && (sp_streq(op, "+") || sp_streq(op, "-")) &&
+  if (t == TY_INT && int_arith_fn(op) && (is_add_sub(op)) &&
       local_is_bounded_counter(c, id, nm, lv)) {
     buf_printf(b, "%s = %s %s ", lval, lval, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
   if (emit_scalar_op_assign(c, lval, t, op, v, cap, lv && lv->nullable_int, b)) return;
-  if (t == TY_COMPLEX && (sp_streq(op, "+") || sp_streq(op, "*"))) {
+  if (t == TY_COMPLEX && (is_add_or_mul(op))) {
     /* coerce the rhs like the binary path does: an Integer, a Float or a boxed
        value all have to reach sp_complex_* as an sp_Complex */
     buf_printf(b, "%s = sp_complex_%s(%s, ", lval, sp_streq(op, "+") ? "add" : "mul",
@@ -2399,7 +2399,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
      Integer / Float exist (the binary emitter's sp_time_add_i / add_f /
      sub_i); the operator-assignment form fell through to the refusal (the
      logger gem's Period, `t += SiD if hour > 12`). */
-  if (t == TY_TIME && (sp_streq(op, "+") || sp_streq(op, "-"))) {
+  if (t == TY_TIME && (is_add_sub(op))) {
     TyKind vt = comp_ntype(c, v);
     int neg = sp_streq(op, "-");
     if (vt == TY_INT) {
@@ -2422,7 +2422,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     if (fn) {
       buf_printf(b, "%s = %s(%s, ", lval, fn,
                  lv_op_assign_src(c, lval, TY_INT, subtree_has_side_effect(c, v), rtn, sizeof rtn));
-      if (sp_streq(op, "/") || sp_streq(op, "%")) emit_int_divisor(c, v, b);
+      if (is_div_or_mod(op)) emit_int_divisor(c, v, b);
       else emit_expr(c, v, b);
       buf_puts(b, ");\n");
       return;
@@ -5576,7 +5576,7 @@ static void emit_case_int_label(Buf *b, long long v) {
    boolean slot keeps the plain conversion (true | nil is true). */
 const char *op_assign_int_conv(TyKind slot, const char *op) {
   if (slot == TY_BOOL) return "sp_poly_to_i(";
-  if (op && (sp_streq(op, "<<") || sp_streq(op, ">>"))) return "sp_poly_arg_i_of(";
+  if (op && (is_shift_op(op))) return "sp_poly_arg_i_of(";
   return "sp_poly_opnd_i(";
 }
 
@@ -11076,7 +11076,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     /* `@t += n` / `@t -= n` on a Time slot: the same arm the local form
        takes (a Time is a struct; the raw C operator below cannot add to it) */
-    else if (vt == TY_TIME && op && (sp_streq(op, "+") || sp_streq(op, "-")) &&
+    else if (vt == TY_TIME && op && (is_add_sub(op)) &&
              (comp_ntype(c, nt_ref(nt, id, "value")) == TY_INT ||
               comp_ntype(c, nt_ref(nt, id, "value")) == TY_FLOAT)) {
       int ival = nt_ref(nt, id, "value");
@@ -13730,7 +13730,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
      would hand out a copy). */
-  if ((sp_streq(name, "<<") || sp_streq(name, "concat")) && argc == 1) {
+  if ((is_append_concat(name)) && argc == 1) {
     int chain[64]; int nchain = 0; int cur = id;
     while (nchain < 64) {
       cur = unwrap_parens(c, cur);
@@ -14060,9 +14060,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
   /* The same shim over a READER call that hands out the handle
      (`obj.name[0] = "X"`), whose call node reads as the shadow. */
   if ((rt == TY_STRING || rt == TY_STRBUF) && nt_kind(nt, recv) == NK_CallNode &&
-      (sp_streq(name, "[]=") || sp_streq(name, "insert") ||
-       sp_streq(name, "clear") || sp_streq(name, "slice!") ||
-       sp_streq(name, "setbyte"))) {
+      (is_string_position_mutator(name))) {
     char srefR[1024];
     SbReaderSave svR;
     int tH = sb_reader_shim_open(c, recv, srefR, sizeof srefR, &svR);
@@ -14086,9 +14084,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
      read and the final reassignment at it), then swaps the handle's buffer
      contents in place so every alias observes the mutation. */
   if (rt == TY_STRING &&
-      (sp_streq(name, "[]=") || sp_streq(name, "insert") ||
-       sp_streq(name, "clear") || sp_streq(name, "slice!") ||
-       sp_streq(name, "setbyte"))) {
+      (is_string_position_mutator(name))) {
     /* An IVAR receiver has no name the rename table can carry, so the shadow
        is published to the ivar emitter instead; everything else -- the value
        arm re-run, the frozen check, the byte swap at the end -- is the same
@@ -14171,7 +14167,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   if (ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     /* Hash#store is the method form of []= */
-    if (hn && (sp_streq(name, "[]=") || sp_streq(name, "store")) && argc == 2) {
+    if (hn && (is_store_alias(name)) && argc == 2) {
       /* The key and the value are sibling arguments of the set: C picks their
          order and roots neither, so a fresh key has no root while the value
          beside it allocates. A receiver or a key that can allocate takes the
@@ -14853,7 +14849,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* an Integer slot shifted by a boxed count: the range-checked helper on
        the unboxed count, as a runtime count always is (the poly fold below
        answered a Bignum the slot then truncated: `a[0] <<= n` was 0) */
-    else if (vt == TY_POLY && rt == TY_INT_ARRAY && (sp_streq(op, "<<") || sp_streq(op, ">>")))
+    else if (vt == TY_POLY && rt == TY_INT_ARRAY && (is_shift_op(op)))
       buf_printf(b, "%s(%s, %s%s))", int_shift_fn(c, op, -1), slot, op_assign_int_conv(TY_INT, op), rhs);
     else if (vt == TY_POLY && pf) {
       /* typed int/float slot, poly RHS: box the slot, fold via the dynamic

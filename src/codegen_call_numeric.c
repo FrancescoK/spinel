@@ -110,7 +110,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   if (recv >= 0 && rt == TY_BIGINT) {
     Buf rs = expr_buf(c, recv);
     const char *r = rs.p ? rs.p : "";
-    if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0) {
+    if ((is_text_conversion(name)) && argc == 0) {
       /* NULL is this slot's nil: #to_s answers "" and #inspect "nil", the
          way they do for every other nullable pointer type (#4800). */
       int tsv = ++g_tmp;
@@ -121,7 +121,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* to_i / to_int on a Bignum is self -- returning the full value, not the
        64-bit-truncated sp_bigint_to_int (#2319) */
-    if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
+    if ((is_to_integer(name)) && argc == 0) {
       buf_printf(b, "(%s)", r); free(rs.p); return 1;
     }
     if ((sp_streq(name, "magnitude") || sp_streq(name, "abs")) && argc == 0) {
@@ -132,7 +132,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Bignum#downto(hi)/#upto(hi) with no block: materialize the Bignum sequence
        as a poly array (a Bignum range has no lazy Enumerator type) (#2305). */
-    if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
+    if ((is_bounded_int_step(name)) && argc == 1 &&
         nt_ref(nt, id, "block") < 0) {
       int up = sp_streq(name, "upto");
       buf_printf(b, "sp_bigint_range_array(%s, ", r);
@@ -155,7 +155,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "integer?") && argc == 0) {
       buf_printf(b, "((void)(%s), TRUE)", r); free(rs.p); return 1;
     }
-    if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) {
+    if ((is_succ_alias(name)) && argc == 0) {
       buf_printf(b, "sp_bigint_add(%s, sp_bigint_new_int(1))", r); free(rs.p); return 1;
     }
     if (sp_streq(name, "pred") && argc == 0) {
@@ -326,7 +326,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       free(rs.p); return 1;
     }
     /* Bignum modulo/%/remainder/divmod/#[]/modular-pow (#2594) */
-    if ((sp_streq(name, "modulo") || sp_streq(name, "%")) && argc == 1) {
+    if ((is_modulo_alias(name)) && argc == 1) {
       buf_printf(b, "sp_bigint_mod(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
       free(rs.p); return 1;
     }
@@ -438,7 +438,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* to_r / rationalize on a Bignum -> Rational(self, 1); quo -> Rational(self,
        arg). The numerator exceeds sp_int, so these produce a boxed big
        Rational (poly) rather than the by-value int Rational (#2469). */
-    if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) {
+    if ((is_to_rational(name)) && argc == 0) {
       buf_printf(b, "sp_brat_from_bigint(%s)", r); free(rs.p); return 1;
     }
     if (sp_streq(name, "quo") && argc == 1) {
@@ -505,8 +505,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      A Rational receiver only steps. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
       ((comp_ntype(c, recv) == TY_INT &&
-        (sp_streq(name, "times") || sp_streq(name, "upto") ||
-         sp_streq(name, "downto") || sp_streq(name, "step"))) ||
+        (is_integer_iteration(name))) ||
        /* a Float steps too, and a boxed receiver's Float arm re-enters here
           in expression position (#4763) */
        ((comp_ntype(c, recv) == TY_RATIONAL || comp_ntype(c, recv) == TY_FLOAT ||

@@ -194,3 +194,375 @@ int is_instance_eval_family(const char *n) {
 int is_find_alias(const char *n) {
   return sp_streq(n, "find") || sp_streq(n, "detect");
 }
+
+int is_mul_or_pow(const char *n) {
+  return sp_streq(n, "*") || sp_streq(n, "**");
+}
+
+int is_proc_constructor(const char *n) {
+  return sp_streq(n, "proc") || sp_streq(n, "lambda");
+}
+
+int is_lazy_force(const char *n) {
+  return sp_streq(n, "to_a") || sp_streq(n, "force");
+}
+
+int is_with_object_alias(const char *n) {
+  return sp_streq(n, "each_with_object") || sp_streq(n, "with_object");
+}
+
+int is_indexed_each(const char *n) {
+  return sp_streq(n, "each_index") || sp_streq(n, "each_with_index");
+}
+
+int is_range_bound_reader(const char *n) {
+  return sp_streq(n, "begin") || sp_streq(n, "end");
+}
+
+int is_each_or_index(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_with_index");
+}
+
+int is_find_or_take_while(const char *n) {
+  return sp_streq(n, "find") || sp_streq(n, "detect") || sp_streq(n, "take_while");
+}
+
+int is_membership_alias(const char *n) {
+  return sp_streq(n, "include?") || sp_streq(n, "member?");
+}
+
+int is_element_at_alias(const char *n) {
+  return sp_streq(n, "[]") || sp_streq(n, "at");
+}
+
+int is_sort_family(const char *n) {
+  return sp_streq(n, "sort") || sp_streq(n, "sort!");
+}
+
+int is_store_alias(const char *n) {
+  return sp_streq(n, "[]=") || sp_streq(n, "store");
+}
+
+int is_hash_merge_bang(const char *n) {
+  return sp_streq(n, "merge!") || sp_streq(n, "update");
+}
+
+int is_append_concat(const char *n) {
+  return sp_streq(n, "<<") || sp_streq(n, "concat");
+}
+
+int is_each_or_pair(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_pair");
+}
+
+int is_slice_alias(const char *n) {
+  return sp_streq(n, "[]") || sp_streq(n, "slice");
+}
+
+int is_element_pick(const char *n) {
+  return sp_streq(n, "first") || sp_streq(n, "last") || sp_streq(n, "sample");
+}
+
+int is_eql_or_equal(const char *n) {
+  return sp_streq(n, "equal?") || sp_streq(n, "eql?");
+}
+
+int is_with_index_alias(const char *n) {
+  return sp_streq(n, "with_index") || sp_streq(n, "each_with_index");
+}
+
+int is_text_print(const char *n) {
+  return sp_streq(n, "puts") || sp_streq(n, "print");
+}
+
+int is_match_operator(const char *n) {
+  return sp_streq(n, "=~") || sp_streq(n, "!~");
+}
+
+int is_eq_or_ne(const char *n) {
+  return sp_streq(n, "==") || sp_streq(n, "!=");
+}
+
+int is_string_index(const char *n) {
+  return sp_streq(n, "index") || sp_streq(n, "rindex");
+}
+
+int is_current_method(const char *n) {
+  return sp_streq(n, "__method__") || sp_streq(n, "__callee__");
+}
+
+int is_freeze_family(const char *n) {
+  return sp_streq(n, "freeze") || sp_streq(n, "frozen?");
+}
+
+int is_attr_writer_family(const char *n) {
+  return sp_streq(n, "attr_writer") || sp_streq(n, "attr_accessor");
+}
+
+int is_visibility_or_module_function(const char *n) {
+  return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public") || sp_streq(n, "module_function");
+}
+
+int is_attr_reader_family(const char *n) {
+  return sp_streq(n, "attr_accessor") || sp_streq(n, "attr_reader");
+}
+
+int is_then_alias(const char *n) {
+  return sp_streq(n, "then") || sp_streq(n, "yield_self");
+}
+
+int is_select_alias(const char *n) {
+  return sp_streq(n, "select") || sp_streq(n, "filter");
+}
+
+int is_hash_key_value_each(const char *n) {
+  return sp_streq(n, "each_value") || sp_streq(n, "each_key");
+}
+
+int is_bounded_int_step(const char *n) {
+  return sp_streq(n, "upto") || sp_streq(n, "downto");
+}
+
+int is_add_sub(const char *n) {
+  return sp_streq(n, "+") || sp_streq(n, "-");
+}
+
+int is_array_push_family(const char *n) {
+  return sp_streq(n, "push") || sp_streq(n, "<<") || sp_streq(n, "append") || sp_streq(n, "unshift") || sp_streq(n, "prepend");
+}
+
+int is_take_drop(const char *n) {
+  return sp_streq(n, "take") || sp_streq(n, "drop");
+}
+
+int is_extrema_family(const char *n) {
+  return sp_streq(n, "min") || sp_streq(n, "max") || sp_streq(n, "minmax");
+}
+
+int is_unary_sign(const char *n) {
+  return sp_streq(n, "-@") || sp_streq(n, "+@");
+}
+
+int is_text_conversion(const char *n) {
+  return sp_streq(n, "to_s") || sp_streq(n, "inspect");
+}
+
+int is_substitution(const char *n) {
+  return sp_streq(n, "gsub") || sp_streq(n, "sub");
+}
+
+int is_encoding_mutator(const char *n) {
+  return sp_streq(n, "force_encoding") || sp_streq(n, "encode!");
+}
+
+int is_socket_address(const char *n) {
+  return sp_streq(n, "addr") || sp_streq(n, "peeraddr");
+}
+
+int is_nonblock_io(const char *n) {
+  return sp_streq(n, "read_nonblock") || sp_streq(n, "write_nonblock");
+}
+
+int is_io_wait(const char *n) {
+  return sp_streq(n, "wait_readable") || sp_streq(n, "wait_writable") || sp_streq(n, "wait_priority");
+}
+
+int is_io_write(const char *n) {
+  return sp_streq(n, "write") || sp_streq(n, "syswrite");
+}
+
+int is_path_reader(const char *n) {
+  return sp_streq(n, "path") || sp_streq(n, "to_path");
+}
+
+int is_hash_constructor(const char *n) {
+  return sp_streq(n, "new") || sp_streq(n, "__hash_new_default");
+}
+
+int is_exist_alias(const char *n) {
+  return sp_streq(n, "exist?") || sp_streq(n, "exists?");
+}
+
+int is_open_constructor(const char *n) {
+  return sp_streq(n, "open") || sp_streq(n, "new");
+}
+
+int is_socket_pair_alias(const char *n) {
+  return sp_streq(n, "pair") || sp_streq(n, "socketpair");
+}
+
+int is_directory_entries(const char *n) {
+  return sp_streq(n, "children") || sp_streq(n, "entries");
+}
+
+int is_io_position(const char *n) {
+  return sp_streq(n, "tell") || sp_streq(n, "pos");
+}
+
+int is_byte_codepoint_each(const char *n) {
+  return sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint");
+}
+
+int is_to_array_alias(const char *n) {
+  return sp_streq(n, "to_a") || sp_streq(n, "entries");
+}
+
+int is_select_reject(const char *n) {
+  return sp_streq(n, "select") || sp_streq(n, "reject") || sp_streq(n, "filter");
+}
+
+int is_casecmp_family(const char *n) {
+  return sp_streq(n, "casecmp") || sp_streq(n, "casecmp?");
+}
+
+int is_to_integer(const char *n) {
+  return sp_streq(n, "to_i") || sp_streq(n, "to_int");
+}
+
+int is_add_or_mul(const char *n) {
+  return sp_streq(n, "+") || sp_streq(n, "*");
+}
+
+int is_remainder_family(const char *n) {
+  return sp_streq(n, "modulo") || sp_streq(n, "%") || sp_streq(n, "remainder");
+}
+
+int is_to_rational(const char *n) {
+  return sp_streq(n, "to_r") || sp_streq(n, "rationalize");
+}
+
+int is_format_alias(const char *n) {
+  return sp_streq(n, "format") || sp_streq(n, "sprintf");
+}
+
+int is_shift_op(const char *n) {
+  return sp_streq(n, "<<") || sp_streq(n, ">>");
+}
+
+int is_named_set_operator(const char *n) {
+  return sp_streq(n, "intersection") || sp_streq(n, "union") || sp_streq(n, "difference");
+}
+
+int is_exception_message(const char *n) {
+  return sp_streq(n, "message") || sp_streq(n, "to_s");
+}
+
+int is_eq_or_eql(const char *n) {
+  return sp_streq(n, "==") || sp_streq(n, "eql?");
+}
+
+int is_copy_alias(const char *n) {
+  return sp_streq(n, "dup") || sp_streq(n, "clone");
+}
+
+int is_pop_shift(const char *n) {
+  return sp_streq(n, "pop") || sp_streq(n, "shift");
+}
+
+int is_element_access(const char *n) {
+  return sp_streq(n, "[]") || sp_streq(n, "[]=");
+}
+
+int is_first_or_take(const char *n) {
+  return sp_streq(n, "first") || sp_streq(n, "take");
+}
+
+int is_map_bang_alias(const char *n) {
+  return sp_streq(n, "map!") || sp_streq(n, "collect!");
+}
+
+int is_exception_full_message(const char *n) {
+  return sp_streq(n, "full_message") || sp_streq(n, "detailed_message");
+}
+
+int is_inspect_print(const char *n) {
+  return sp_streq(n, "p") || sp_streq(n, "pp");
+}
+
+int is_select_reject_bang(const char *n) {
+  return sp_streq(n, "reject!") || sp_streq(n, "select!") || sp_streq(n, "filter!");
+}
+
+int is_raise_alias(const char *n) {
+  return sp_streq(n, "raise") || sp_streq(n, "fail");
+}
+
+int is_size_or_count(const char *n) {
+  return sp_streq(n, "size") || sp_streq(n, "count");
+}
+
+int is_modulo_alias(const char *n) {
+  return sp_streq(n, "%") || sp_streq(n, "modulo");
+}
+
+int is_bit_set_operator(const char *n) {
+  return sp_streq(n, "&") || sp_streq(n, "|") || sp_streq(n, "-");
+}
+
+int is_rectangular_alias(const char *n) {
+  return sp_streq(n, "rect") || sp_streq(n, "rectangular");
+}
+
+int is_partition_family(const char *n) {
+  return sp_streq(n, "partition") || sp_streq(n, "rpartition");
+}
+
+int is_local_time(const char *n) {
+  return sp_streq(n, "localtime") || sp_streq(n, "getlocal");
+}
+
+int is_iso8601_alias(const char *n) {
+  return sp_streq(n, "iso8601") || sp_streq(n, "xmlschema");
+}
+
+int is_prepend_alias(const char *n) {
+  return sp_streq(n, "unshift") || sp_streq(n, "prepend");
+}
+
+int is_push_operator(const char *n) {
+  return sp_streq(n, "<<") || sp_streq(n, "push");
+}
+
+int is_integer_iteration(const char *n) {
+  return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto") || sp_streq(n, "step");
+}
+
+int is_numeric_conversion(const char *n) {
+  return sp_streq(n, "to_i") || sp_streq(n, "to_f");
+}
+
+int is_succ_alias(const char *n) {
+  return sp_streq(n, "succ") || sp_streq(n, "next");
+}
+
+int is_div_or_mod(const char *n) {
+  return sp_streq(n, "/") || sp_streq(n, "%");
+}
+
+int is_initialize_family(const char *n) {
+  return sp_streq(n, "initialize_copy") || sp_streq(n, "initialize");
+}
+
+int is_intersection_alias(const char *n) {
+  return sp_streq(n, "&") || sp_streq(n, "intersection");
+}
+
+int is_union_alias(const char *n) {
+  return sp_streq(n, "|") || sp_streq(n, "union");
+}
+
+int is_line_read(const char *n) {
+  return sp_streq(n, "gets") || sp_streq(n, "readline");
+}
+
+int is_string_position_mutator(const char *n) {
+  return sp_streq(n, "slice!") || sp_streq(n, "setbyte") || sp_streq(n, "insert") || sp_streq(n, "clear") || sp_streq(n, "[]=");
+}
+
+int is_range_end_reader(const char *n) {
+  return sp_streq(n, "end") || sp_streq(n, "last");
+}
+
+int is_match_family(const char *n) {
+  return sp_streq(n, "=~") || sp_streq(n, "!~") || sp_streq(n, "match?") || sp_streq(n, "match");
+}

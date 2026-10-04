@@ -226,7 +226,7 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
       g_gen_obj_struct_values && ret == TY_POLY && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
       nt_str(nt, c->scopes[mi].def_node, "synth") &&
-      (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+      (is_each_or_pair(name))) {
     a->kind = PA_SYNTH_ENUM; a->mi = mi; a->vty = TY_ENUMERATOR;
     return 1;
   }
@@ -1974,7 +1974,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
      classes still answers them. Without a default arm the result stayed
      the empty-string default, so `@x.to_s` on a poly-widened int printed
      blank. Route the fallthrough through the runtime poly converter. */
-  if (!obj_default_done && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
+  if (!obj_default_done && (is_text_conversion(name))) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_TO_S, -1, TY_UNKNOWN, PC_SAME);
     const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
     buf_printf(b, " default: _t%d = ", tr);
@@ -2022,7 +2022,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
          if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_NUM, -1, TY_UNKNOWN, PC_SAME);
     char nv[96];
     int int_valued = sp_streq(name, "bit_length");
-    if (sp_streq(name, "succ") || sp_streq(name, "next"))
+    if (is_succ_alias(name))
       snprintf(nv, sizeof nv, "sp_poly_succ_m(_t%d, %d)", tv, sp_streq(name, "next") ? 1 : 0);
     else if (sp_streq(name, "pred"))
       snprintf(nv, sizeof nv, "sp_poly_sub(_t%d, sp_box_int(1))", tv);
@@ -2104,7 +2104,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
      `"7".to_f`) only reached this dispatch because a user class owns the
      name; a builtin receiver still has to get its own answer. */
   if (!obj_default_done && argc == 0 &&
-      (sp_streq(name, "to_i") || sp_streq(name, "to_f"))) {
+      (is_numeric_conversion(name))) {
         if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_TO_IF, -1, TY_UNKNOWN, PC_SAME);
     char cv[64];
     snprintf(cv, sizeof cv, "%s(_t%d)", sp_streq(name, "to_i") ? "sp_poly_to_i_meth" : "sp_poly_to_f_meth", tv);
@@ -2146,7 +2146,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
   }
   /* The blockless index enumerators, same shape: an Array reaching this
      dispatch still answers them with an Enumerator. */
-  if (argc == 0 && (sp_streq(name, "each_index") || sp_streq(name, "each_with_index"))) {
+  if (argc == 0 && (is_indexed_each(name))) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_N_EACH_INDEX, -1, TY_UNKNOWN, PC_SAME);
     int ewi = !sp_streq(name, "each_index");
     char ev[96];
@@ -2347,7 +2347,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
                      /* the two-argument form is String's alone -- Array#index
                         takes one argument -- so only the default arm below
                         answers it, and the array cases stay out (#4149). */
-                     ((sp_streq(name, "index") || sp_streq(name, "rindex")) &&
+                     ((is_string_index(name)) &&
                       argc == 2 && nt_ref(nt, id, "block") < 0);
   /* push/<</append on a poly value that is actually a builtin array: the
      array-mutate statement path skips it when a user class also defines the
@@ -2357,7 +2357,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   int is_push = is_push_alias(name) && argc >= 1;
   /* unshift/prepend are the same arm at the other end: without one they fell
      to the switch's NoMethodError default on a genuine Array (#4320). */
-  int is_unshift = (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1;
+  int is_unshift = (is_prepend_alias(name)) && argc >= 1;
   /* delete(chars) with a string arg: the poly value may be a string even
      when a user class also defines `delete` (the bundled Set does), so the
      switch needs a TAG_STR pre-arm routing to String#delete (doom's
@@ -2371,7 +2371,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      answered NoMethodError, naming String, for a method String has
      (#4413). A class nothing instantiates no longer takes the name away;
      this is the same hole for one that IS instantiated. */
-  int is_strpart = (sp_streq(name, "partition") || sp_streq(name, "rpartition")) &&
+  int is_strpart = (is_partition_family(name)) &&
                    argc == 1 && infer_type(c, argv[0]) == TY_STRING;
   /* The multi-set forms of count/delete/squeeze (String's alone) when a
      user class also owns the name: the switch needs a TAG_STR pre-arm or

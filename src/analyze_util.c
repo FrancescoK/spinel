@@ -1563,7 +1563,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
           else if (nt_kind(nt, bexpr) == NK_CallNode) {
             const char *pnm = nt_str(nt, bexpr, "name");
             int pblk = nt_ref(nt, bexpr, "block");
-            if (pnm && pblk >= 0 && (sp_streq(pnm, "proc") || sp_streq(pnm, "lambda")) &&
+            if (pnm && pblk >= 0 && (is_proc_constructor(pnm)) &&
                 nt_kind(nt, pblk) == NK_BlockNode)
               pbody = nt_ref(nt, pblk, "body");
           }
@@ -2109,7 +2109,7 @@ int is_proc_literal(Compiler *c, int id) {
   if (nt_ref(nt, id, "block") < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 && name && (sp_streq(name, "proc") || sp_streq(name, "lambda"))) return 1;
+  if (recv < 0 && name && (is_proc_constructor(name))) return 1;
   if (recv >= 0 && name && sp_streq(name, "new") && is_proc_constant(nt, recv)) return 1;
   return 0;
 }
@@ -2541,11 +2541,11 @@ TyKind method_obj_adapter_ret(TyKind arr, const char *op) {
   if (!op) return TY_UNKNOWN;
   if (arr == TY_INT_ARRAY) {
     if (sp_streq(op, "push")) return TY_INT_ARRAY;
-    if (sp_streq(op, "[]") || sp_streq(op, "[]=")) return TY_INT;
+    if (is_element_access(op)) return TY_INT;
   }
   else if (arr == TY_STR_ARRAY) {
     if (sp_streq(op, "push")) return TY_STR_ARRAY;
-    if (sp_streq(op, "[]") || sp_streq(op, "[]=")) return TY_STRING;
+    if (is_element_access(op)) return TY_STRING;
   }
   return TY_UNKNOWN;
 }

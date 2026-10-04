@@ -1579,7 +1579,7 @@ void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *c
   /* x *= y  (LocalVariableOperatorWriteNode with * or **) */
   if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
     const char *op = nt_str(nt, id, "binary_operator");
-    if (op && (sp_streq(op, "*") || sp_streq(op, "**"))) {
+    if (op && (is_mul_or_pow(op))) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) {
         for (int k = 0; k < *n; k++) if (sp_streq((*names)[k], nm)) goto skip_mul;
@@ -1596,7 +1596,7 @@ void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *c
     if (nm && val >= 0 && sp_streq(nt_type(nt, val) ? nt_type(nt, val) : "", "CallNode")) {
       const char *op2 = nt_str(nt, val, "name");
       int recv2 = nt_ref(nt, val, "receiver");
-      if (op2 && (sp_streq(op2, "*") || sp_streq(op2, "**")) && recv2 >= 0 &&
+      if (op2 && (is_mul_or_pow(op2)) && recv2 >= 0 &&
           sp_streq(nt_type(nt, recv2) ? nt_type(nt, recv2) : "", "LocalVariableReadNode") &&
           sp_streq(nt_str(nt, recv2, "name") ? nt_str(nt, recv2, "name") : "", nm)) {
         for (int k = 0; k < *n; k++) if (sp_streq((*names)[k], nm)) goto skip_lv;
@@ -5316,7 +5316,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         if (bex >= 0 && nt_type(nt, bex) && sp_streq(nt_type(nt, bex), "CallNode")) {
           const char *lname = nt_str(nt, bex, "name");
           int lblk = nt_ref(nt, bex, "block");
-          if (lname && (sp_streq(lname, "lambda") || sp_streq(lname, "proc")) &&
+          if (lname && (is_proc_constructor(lname)) &&
               nt_ref(nt, bex, "receiver") < 0 && lblk >= 0 &&
               nt_type(nt, lblk) && sp_streq(nt_type(nt, lblk), "BlockNode"))
             nt_node_set_ref(nt, id, "block", lblk);
@@ -5604,7 +5604,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
               sp_streq(nm, "partition") || sp_streq(nm, "group_by"))) {
       nt_node_set_str(nt, recv, "name", sp_streq(rn, "each_char") ? "chars" : "lines");
     }
-    else if ((sp_streq(nm, "to_a") || sp_streq(nm, "force")) && sp_streq(rn, "take") &&
+    else if ((is_lazy_force(nm)) && sp_streq(rn, "take") &&
              nt_ref(nt, id, "block") < 0) {
       /* X.take(n).to_a == X.first(n) -- and first(n) is what the lazy
          pipeline terminates on, so a lazy .take(n).to_a materializes. */
@@ -5620,7 +5620,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         nt_node_set_ref(nt, id, "receiver", inner);
       }
     }
-    else if ((sp_streq(nm, "with_object") || sp_streq(nm, "each_with_object")) &&
+    else if ((is_with_object_alias(nm)) &&
              sp_streq(rn, "each")) {
       int inner = nt_ref(nt, recv, "receiver");
       if (inner < 0) continue;
@@ -7308,7 +7308,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       int fra = nt_ref(nt, fr, "arguments"); int frac = 0;
       if (fra >= 0) nt_arr(nt, fra, "arguments", &frac);
       if (frn && frac == 0 &&
-          (sp_streq(frn, "each_index") || sp_streq(frn, "each_with_index"))) {
+          (is_indexed_each(frn))) {
         int toa3 = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, toa3, "name", "to_a");
         nt_node_set_ref(nt, toa3, "receiver", fr);
@@ -7616,7 +7616,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
   }
   /* String-endpoint ranges materialize to a StrArray, which has no
      begin/end of its own: alias them to first/last (#2411). */
-  if (nm && (sp_streq(nm, "begin") || sp_streq(nm, "end")) &&
+  if (nm && (is_range_bound_reader(nm)) &&
       nt_ref(nt, id, "block") < 0) {
     int brc = nt_ref(nt, id, "receiver");
     int ban = 0; { int _a = nt_ref(nt, id, "arguments");
@@ -7935,7 +7935,7 @@ int desugar_enum_method_recv(Compiler *c) {
         nt_node_set_str(nt, wrap, "enum_recv", "1");
       /* a statement `e.each { }` pulls the elements one at a time instead
          (codegen): an endless Enumerator has no array to read */
-      if ((sp_streq(nm, "each") || sp_streq(nm, "each_with_index")) && nt_ref(nt, id, "block") >= 0)
+      if ((is_each_or_index(nm)) && nt_ref(nt, id, "block") >= 0)
         nt_node_set_str(nt, wrap, "enum_each_wrap", "1");
       /* the call still yields what the Enumerator yields (enum_pair_source_call) */
       nt_node_set_str(nt, wrap, "enum_hop", "1");
@@ -8045,9 +8045,9 @@ int desugar_enum_method_recv(Compiler *c) {
     const char *matn = "__enum_to_a";
     if (comp_method_in_chain(c, cid, "__to_enum_each", NULL) >= 0 &&
         (sp_streq(nm, "first") || sp_streq(nm, "take") || sp_streq(nm, "lazy") ||
-         ((sp_streq(nm, "find") || sp_streq(nm, "detect") || sp_streq(nm, "take_while")) &&
+         ((is_find_or_take_while(nm)) &&
           nt_ref(nt, id, "block") >= 0) ||
-         ((sp_streq(nm, "include?") || sp_streq(nm, "member?")) &&
+         ((is_membership_alias(nm)) &&
           nt_ref(nt, id, "block") < 0)))
       matn = "__to_enum_each";
     int wrap = nt_new_node(nt, "CallNode");
@@ -9032,7 +9032,7 @@ static int oa_elem_evidence(Compiler *c, OAS *sl, int S, int node) {
 }
 static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (!nm || has_block) return 0;
-  if ((sp_streq(nm, "[]") || sp_streq(nm, "at")) && argc == 1) return 1;
+  if ((is_element_at_alias(nm)) && argc == 1) return 1;
   if (sp_streq(nm, "[]=") && argc == 2) return 1;
   if (is_push_alias(nm) && argc >= 1) return 1;
   if (is_len_alias(nm) && argc == 0) return 1;
@@ -9044,7 +9044,7 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
      step 4 kills the component otherwise, so an escaping `arr.sort.map`
      keeps today's boxed poly path instead of becoming a reject. */
   if ((is_minmax_query(nm)) && argc == 0) return 1;
-  if ((sp_streq(nm, "sort") || sp_streq(nm, "sort!")) && argc == 0) return 1;
+  if ((is_sort_family(nm)) && argc == 0) return 1;
   return 0;
 }
 
@@ -9514,7 +9514,7 @@ static int narrow_locals_from_arrays(Compiler *c) {
         const char *cn = nt_str(nt, v, "name");
         int crecv = nt_ref(nt, v, "receiver");
         int can = 0; { int ca = nt_ref(nt, v, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
-        int idx_op = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at")) && can == 1;
+        int idx_op = cn && (is_element_at_alias(cn)) && can == 1;
         int end_op = cn && (is_endpoint_query(cn)) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok = 0; break; }
         TyKind rt = infer_type(c, crecv);
@@ -9592,7 +9592,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
     int crecv = nt_ref(nt, v, "receiver");
     int cargs = nt_ref(nt, v, "arguments");
     int can = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &can);
-    if (cn && (sp_streq(cn, "sort") || sp_streq(cn, "sort!")) && can == 0 &&
+    if (cn && (is_sort_family(cn)) && can == 0 &&
         nt_ref(nt, v, "block") < 0 && crecv >= 0 && read_slot[crecv] >= 0) {
       claimed[crecv] = 1;
       oa_uf_union(sl, S, read_slot[crecv]);
@@ -9668,7 +9668,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
         int mtr = nt_ref(nt, mtail, "receiver");
         int mta = nt_ref(nt, mtail, "arguments"); int mtan = 0;
         if (mta >= 0) nt_arr(nt, mta, "arguments", &mtan);
-        if (mtn && (sp_streq(mtn, "[]") || sp_streq(mtn, "at")) && mtan == 1 &&
+        if (mtn && (is_element_at_alias(mtn)) && mtan == 1 &&
             mtr >= 0 && read_slot[mtr] >= 0) {
           claimed[mtr] = 1;
           oa_uf_union(sl, S, read_slot[mtr]);
@@ -10150,7 +10150,7 @@ static int narrow_object_arrays(Compiler *c) {
           /* a sort/sort! RESULT must land in a modeled consumer (statement
              position, or a slot-alias write handled in step 5); an escaping
              result keeps the component on the boxed poly path. */
-          if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) &&
+          if ((is_sort_family(name)) &&
               !(id < nc && value_ok[id]))
             sl[S].alive = 0;
         }
@@ -11854,8 +11854,8 @@ static unsigned hash_key_write_bits(Compiler *c, int id, const Scope **sc, const
   if (nt_kind(nt, id) != NK_CallNode) return 0;
   const char *wn = nt_str(nt, id, "name");
   if (!wn) return 0;
-  int set = sp_streq(wn, "[]=") || sp_streq(wn, "store");
-  int upd = sp_streq(wn, "update") || sp_streq(wn, "merge!");
+  int set = is_store_alias(wn);
+  int upd = is_hash_merge_bang(wn);
   if (!set && !upd) return 0;
   int wr = nt_ref(nt, id, "receiver");
   if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode) return 0;
@@ -12413,7 +12413,7 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
       if (is_call) {
         const char *nm = nt_str(nt, id, "name");
         if (!nm) continue;
-        is_upd = sp_streq(nm, "update") || sp_streq(nm, "merge!");
+        is_upd = is_hash_merge_bang(nm);
         if (!is_upd && !sp_streq(nm, "[]=") && !sp_streq(nm, "store")) continue;
       }
       int recv = nt_ref(nt, id, "receiver");
@@ -12570,7 +12570,7 @@ static void hash_key_evidence(Compiler *c, int w, const char *cn, const char *ln
   const NodeTable *nt = c->nt;
   const char *wn = nt_str(nt, w, "name");
   if (!wn) return;
-  int write = sp_streq(wn, "[]=") || sp_streq(wn, "store");
+  int write = is_store_alias(wn);
   if (!write && !sp_streq(wn, "[]") && !sp_streq(wn, "fetch") && !sp_streq(wn, "dig") &&
       !sp_streq(wn, "key?") && !sp_streq(wn, "has_key?") && !sp_streq(wn, "include?") && !sp_streq(wn, "member?"))
     return;
@@ -13959,7 +13959,7 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v) {
     int ca = nt_ref(nt, v, "arguments"); int cac = 0;
     if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
     if (!cn || cr < 0 || nt_ref(nt, v, "block") >= 0) return -1;
-    if (!((cac == 1 && (sp_streq(cn, "<<") || sp_streq(cn, "concat"))) ||
+    if (!((cac == 1 && (is_append_concat(cn))) ||
           (cac == 0 && sp_streq(cn, "+@")) || str_self_call(nt, v))) return -1;
     v = cr; stepped = 1;
   }
@@ -14098,7 +14098,7 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
       int cr = nt_ref(nt, v, "receiver");
       int ca = nt_ref(nt, v, "arguments"); int cac = 0;
       if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
-      if (cn && (sp_streq(cn, "<<") || sp_streq(cn, "concat")) &&
+      if (cn && (is_append_concat(cn)) &&
           cr >= 0 && cac == 1) { v = cr; continue; }
       /* +s is s itself unless s is frozen (sp_String_uplus decides) */
       if (cn && sp_streq(cn, "+@") && cr >= 0 && cac == 0) { v = cr; continue; }
@@ -14798,7 +14798,7 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
       continue;
     }
     int elem = ty_is_hash(infer_type(c, recv))
-      ? (k == 1 && (sp_streq(itn, "each") || sp_streq(itn, "each_pair"))) ||
+      ? (k == 1 && (is_each_or_pair(itn))) ||
         (k == 0 && sp_streq(itn, "each_value"))
       : k == 0 && strbuf_elem_first_iterator(itn);
     if (elem)
@@ -14874,9 +14874,9 @@ static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, 
   int a = nt_ref(nt, node, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   int nest = -1;
-  if (sp_streq(mn, "[]") || sp_streq(mn, "slice"))
+  if (is_slice_alias(mn))
     nest = (an == 1 && nt_kind(nt, av[0]) != NK_RangeNode) || ty_is_hash(rt) ? 1 : 0;
-  else if (sp_streq(mn, "first") || sp_streq(mn, "last") || sp_streq(mn, "sample"))
+  else if (is_element_pick(mn))
     nest = an == 0 ? 1 : 0;
   else if (sp_streq(mn, "dig")) nest = an;
   else if (sp_streq(mn, "flatten")) {
@@ -15100,7 +15100,7 @@ static void an_append_scan(Compiler *c, int node, int *app, int *rd, int cap, in
     int recv = nt_ref(nt, node, "receiver");
     int a = nt_ref(nt, node, "arguments");
     int ac = 0; if (a >= 0) nt_arr(nt, a, "arguments", &ac);
-    if (nm && recv >= 0 && ac == 1 && (sp_streq(nm, "<<") || sp_streq(nm, "concat")) &&
+    if (nm && recv >= 0 && ac == 1 && (is_append_concat(nm)) &&
         (nt_kind(nt, recv) == NK_LocalVariableReadNode ||
          nt_kind(nt, recv) == NK_InstanceVariableReadNode)) {
       if (*n_app < cap) app[(*n_app)++] = recv;
@@ -15726,7 +15726,7 @@ static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrec
     *vi = 0;
   }
   else if (sp_streq(itn, "each_value")) *vi = 0;
-  else if (sp_streq(itn, "each") || sp_streq(itn, "each_pair")) *vi = 1;
+  else if (is_each_or_pair(itn)) *vi = 1;
   else return 0;
   if (recv < 0 || (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_HashNode) ||
       !ty_is_hash(infer_type(c, recv)))
@@ -15840,7 +15840,7 @@ static int promote_shared_stored_strings(Compiler *c) {
          made it a handle); they must not themselves force the promotion */
       { const char *wn2 = nt_str(nt, w, "name");
         int is_eq = wty && sp_streq(wty, "CallNode") && wn2 &&
-                    (sp_streq(wn2, "equal?") || sp_streq(wn2, "eql?"));
+                    (is_eql_or_equal(wn2));
         if (is_eq && !vlv->str_shared) continue; }
       vlv->type = TY_STRBUF;
       vlv->str_shared = 1;
@@ -16236,7 +16236,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     int blk4 = nt_ref(nt, w, "block");
     if (blk4 < 0) continue;
     int recv4 = nt_ref(nt, w, "receiver");
-    if ((sp_streq(itn, "with_index") || sp_streq(itn, "each_with_index")) && recv4 >= 0) {
+    if ((is_with_index_alias(itn)) && recv4 >= 0) {
       int inner = recv4;
       if (nt_kind(nt, inner) == NK_CallNode && nt_str(nt, inner, "enum_each_wrap"))
         inner = nt_ref(nt, inner, "receiver");
@@ -17351,7 +17351,7 @@ static int narrow_params_from_arrays(Compiler *c) {
         const char *cn = nt_str(nt, a, "name");
         int crecv = nt_ref(nt, a, "receiver");
         int can = 0; { int ca = nt_ref(nt, a, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
-        int idx_op = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at")) && can == 1;
+        int idx_op = cn && (is_element_at_alias(cn)) && can == 1;
         int end_op = cn && (is_endpoint_query(cn)) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok[slot] = 0; continue; }
         TyKind rt = infer_type(c, crecv);
@@ -18189,7 +18189,7 @@ static int dyn_is_proc_literal(Compiler *c, int n) {
   int b = nt_ref(nt, n, "block");
   if (!nm || b < 0 || nt_kind(nt, b) != NK_BlockNode) return 0;
   int r = nt_ref(nt, n, "receiver");
-  if (r < 0) return sp_streq(nm, "proc") || sp_streq(nm, "lambda");
+  if (r < 0) return is_proc_constructor(nm);
   return sp_streq(nm, "new") && nt_kind(nt, r) == NK_ConstantReadNode &&
          nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "Proc");
 }
@@ -18320,7 +18320,7 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
       int ji = dyn_name_at(pn, np, nt_str(nt, av[i], "name"));
       if (ji < 0) continue;
       /* printed: the bytes are all that is read */
-      if (ur < 0 && un && (sp_streq(un, "puts") || sp_streq(un, "print"))) continue;
+      if (ur < 0 && un && (is_text_print(un))) continue;
       *kept |= 1u << ji;
       if (un && dyn_call_hands_on(c, node, un, ur, av[i])) *app |= 1u << ji;
     }
@@ -23175,7 +23175,7 @@ static int elem_miss_call(Compiler *c, int v) {
   if (nt_int(nt, v, "masgn_elem", LLONG_MIN) != LLONG_MIN) return 0;
   if (sp_streq(nm, "[]") || sp_streq(nm, "at") || sp_streq(nm, "slice")) return argc == 1 && blk < 0;
   if (sp_streq(nm, "dig")) return argc >= 1;
-  if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))
+  if (is_element_pick(nm))
     return argc == 0 && blk < 0;
   if (is_minmax_query(nm)) return argc == 0;
   if (is_find_alias(nm)) return blk >= 0;
@@ -23204,7 +23204,7 @@ int scalar_nil_only_call(Compiler *c, int id, TyKind rt) {
     if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_KeywordHashNode ||
         nt_kind(nt, argv[k]) == NK_BlockArgumentNode) return 0;
   int hit = argc == 0 ? (sp_streq(nm, "to_a") || sp_streq(nm, "to_h"))
-          : argc == 1 ? (sp_streq(nm, "=~") || sp_streq(nm, "!~") ||
+          : argc == 1 ? (is_match_operator(nm) ||
                          (rt == TY_FLOAT && is_bit_op(nm)))
           : 0;
   return hit;
@@ -23813,7 +23813,7 @@ static void nn_cond(Compiler *c, int id, const NNF *in, NNF *t, NNF *e, int ctx)
     /* `x.nil?`, `x == nil`, `x != nil` on a local */
     int nilcmp = nm && recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode &&
                  ((ca < 0 && sp_streq(nm, "nil?")) ||
-                  (an == 1 && nt_kind(nt, av[0]) == NK_NilNode && (sp_streq(nm, "==") || sp_streq(nm, "!="))));
+                  (an == 1 && nt_kind(nt, av[0]) == NK_NilNode && (is_eq_or_ne(nm))));
     if (nilcmp) {
       *t = *in; nn_visit(c, recv, t, ctx);
       *e = *t;
@@ -26351,7 +26351,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     if (hi > 8) return 0;
   }
-  int idx = (sp_streq(cnm, "index") || sp_streq(cnm, "rindex")) && comp_method_index(c, cnm) < 0;
+  int idx = (is_string_index(cnm)) && comp_method_index(c, cnm) < 0;
   for (int si = 0; idx && si < c->nscopes; si++)
     if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm)) idx = 0;
   int fixed = argc - 1;
@@ -26862,7 +26862,7 @@ static int bo_may_act(const NodeTable *nt, int e) {
   case NK_CallNode: {
     const char *nm = nt_str(nt, e, "name");
     int blk = nt_ref(nt, e, "block");
-    if (nt_ref(nt, e, "receiver") < 0 && nm && (sp_streq(nm, "proc") || sp_streq(nm, "lambda")) &&
+    if (nt_ref(nt, e, "receiver") < 0 && nm && (is_proc_constructor(nm)) &&
         blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && nt_ref(nt, e, "arguments") < 0)
       return 0;
     /* `method(:m)` / `obj.method(:m)` only builds the Method object, and the
@@ -28476,7 +28476,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
        intern it now so the id table is sized before the codegen prologue */
     else if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
       const char *nm = nt_str(c->nt, id, "name");
-      if (nm && (sp_streq(nm, "__method__") || sp_streq(nm, "__callee__"))) {
+      if (nm && (is_current_method(nm))) {
         Scope *s = comp_scope_of(c, id);
         if (s && s->name && s->name[0]) comp_sym_intern(c, s->name);
       }
@@ -30719,7 +30719,7 @@ static void an_phase_proc_returns(Compiler *c) {
             if (an >= 1) recv = av[0];
           }
           int slice_first = is_each_window(inm);
-          int idx_second = sp_streq(inm, "each_with_index") || sp_streq(inm, "with_index");
+          int idx_second = is_with_index_alias(inm);
           /* only an iterator whose block receives ELEMENTS: `fetch(i) { |i| }`
              hands its block the index, `each_with_index` its second param */
           if (!slice_first && !strbuf_elem_first_iterator(inm) &&
@@ -30737,7 +30737,7 @@ static void an_phase_proc_returns(Compiler *c) {
             if (is_each_window(cn)) {
               slice_first = 1; recv = nt_ref(nt, recv, "receiver"); break;
             }
-            if (sp_streq(cn, "with_index") || sp_streq(cn, "each_with_index")) idx_second = 1;
+            if (is_with_index_alias(cn)) idx_second = 1;
             else if (!(sp_streq(cn, "each") || sp_streq(cn, "with_object") || sp_streq(cn, "lazy") ||
                        sp_streq(cn, "each_entry"))) break;
             recv = nt_ref(nt, recv, "receiver");
@@ -31152,7 +31152,7 @@ static void an_phase_value_types(Compiler *c) {
        freeze can hit any boxable instance, so it marks every class. */
     if (sp_streq(ty, "CallNode")) {
       const char *fzn = nt_str(c->nt, id, "name");
-      if (fzn && (sp_streq(fzn, "freeze") || sp_streq(fzn, "frozen?"))) {
+      if (fzn && (is_freeze_family(fzn))) {
         int frecv = nt_ref(c->nt, id, "receiver");
         int q = -1;
         if (frecv >= 0) {

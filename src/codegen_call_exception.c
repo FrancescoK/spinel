@@ -20,7 +20,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       class_is_exc_subclass(c, ty_object_class(comp_ntype(c, recv)))) {
     /* dup/clone copy the whole subclass struct via the GC header size, so
        mutating the copy's ivars leaves the original alone (#2772) */
-    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0 &&
+    if ((is_copy_alias(name)) && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0) {
       int xc2 = ty_object_class(comp_ntype(c, recv));
       buf_printf(b, "((sp_%s *)sp_exc_dup((sp_Exception *)(", c->classes[xc2].c_name);
@@ -58,7 +58,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        no-argument accessors had an arm and both were refused (#3870). */
     if (argc == 1 && comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0 &&
         (sp_streq(name, "exception") ||
-         ((sp_streq(name, "==") || sp_streq(name, "eql?")) &&
+         ((is_eq_or_eql(name)) &&
           (comp_ntype(c, argv[0]) == TY_EXCEPTION ||
            (ty_is_object(comp_ntype(c, argv[0])) &&
             class_is_exc_subclass(c, ty_object_class(comp_ntype(c, argv[0])))))))) {
@@ -252,7 +252,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         return 1;
       }
       /* the renderings read the overridden #message, as the typed receiver's do */
-      if ((sp_streq(name, "full_message") || sp_streq(name, "detailed_message")) &&
+      if ((is_exception_full_message(name)) &&
           exc_has_user_msg_override(c)) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", t);
@@ -359,7 +359,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
 
     /* dup/clone copy the whole (subclass-sized) struct so mutating the copy
        leaves the original alone (#2772) */
-    if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
+    if ((is_copy_alias(name)) && argc == 0) {
       buf_puts(b, "sp_exc_dup((sp_Exception *)(");
       emit_expr(c, recv, b); buf_puts(b, "))");
       return 1;
@@ -508,7 +508,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
 int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* raise */
   /* `fail` is an exact alias of `Kernel#raise`. */
-  if (recv < 0 && !bare_call_class_owned(c, id) && (sp_streq(name, "raise") || sp_streq(name, "fail"))) {
+  if (recv < 0 && !bare_call_class_owned(c, id) && (is_raise_alias(name))) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     /* Resolve a raise target's runtime class name: a ConstantPathNode naming a

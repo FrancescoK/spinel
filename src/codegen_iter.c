@@ -1652,7 +1652,7 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      nothing, while the call answers its argument (or the argument array),
      which a predicate iterator reads as the block's truthiness
      (`h.any? { |pa| p pa }` did not build). */
-  if (nt_ref(nt, id, "receiver") < 0 && (sp_streq(nm, "p") || sp_streq(nm, "pp")) &&
+  if (nt_ref(nt, id, "receiver") < 0 && (is_inspect_print(nm)) &&
       nt_ref(nt, id, "block") < 0 && !bare_call_class_owned(c, id)) {
     int pa = nt_ref(nt, id, "arguments"), pn = 0;
     if (pa >= 0) nt_arr(nt, pa, "arguments", &pn);
@@ -3352,7 +3352,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
      (a nested-array element) -- without this default arm the switch missed
      it silently and the mutation vanished (#3234). Rewrite in place over the
      normalized working array, then write back into the typed original. */
-  if (sp_streq(name, "map!") || sp_streq(name, "collect!")) {
+  if (is_map_bang_alias(name)) {
     const char *dp0 = block_param_name(c, block, 0);
     const char *dp0r = dp0 ? rename_local(dp0) : NULL;
     int dbody = nt_ref(nt, block, "body");
@@ -3841,7 +3841,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int is_tap = sp_streq(name, "tap");
-  int is_then = sp_streq(name, "then") || sp_streq(name, "yield_self");
+  int is_then = is_then_alias(name);
   if (!is_tap && !is_then) return 0;
   int block = nt_ref(nt, id, "block");
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
@@ -4207,7 +4207,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   /* `e.each { }` over an Enumerator answers what its underlying each does:
      a generator's body value, a materialized one's collection. The walk
      runs once; the `to_a` hop in front of it is never evaluated. */
-  if ((sp_streq(name, "each") || sp_streq(name, "each_with_index")) &&
+  if ((is_each_or_index(name)) &&
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_each_wrap") &&
       nt_ref(nt, recv, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR &&
@@ -5043,7 +5043,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
   /* n.upto(m) / n.downto(m) { [|i|] ... } -- a fresh temp drives the loop and
      the block param (if any) is rebound from it each iteration, like n.times.
      A blockless-param form (`1.upto(5) { body }`) must still run the body. */
-  if ((sp_streq(name, "upto") || sp_streq(name, "downto")) && rt == TY_INT) {
+  if ((is_bounded_int_step(name)) && rt == TY_INT) {
     int up = sp_streq(name, "upto");
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
@@ -5925,7 +5925,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
    -1 to go on) */
 static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char *name, int recv, int body, const char *p0, TyKind rt) {
   /* hash.each / each_pair { |k, v| ... } */
-  if ((sp_streq(name, "each") || sp_streq(name, "each_pair")) && ty_is_hash(rt)) {
+  if ((is_each_or_pair(name)) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
     const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
@@ -6037,7 +6037,7 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
   }
 
   /* hash.each_value { |v| ... } / each_key { |k| ... } -- single param */
-  if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
+  if ((is_hash_key_value_each(name)) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
     int is_val = sp_streq(name, "each_value");
