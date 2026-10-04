@@ -14980,6 +14980,26 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       { char ivb[300]; int defc = -1;
         const char *riv = an_reader_ivar_of(c, node, &defc, ivb, sizeof ivb);
         if (riv && defc >= 0) return strbuf_ivar_source_walk(c, defc, riv, depth + 1, mode); }
+      /* `Hash.new { |hh, k| hh[k] = v }`: the default block's first
+         parameter is the Hash itself, and what it stores there is the
+         Hash's */
+      int hnew = sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+                 nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash");
+      /* `Hash.new(v)`: a read of a missing key answers v itself (not
+         counted as a value the Hash holds when asking for a non-String) */
+      if (hnew && blk < 0 && SB_KIND(mode) != SB_HAS_NONSTRING) {
+        int ha = nt_ref(nt, node, "arguments"), hn = 0;
+        const int *hv = ha >= 0 ? nt_arr(nt, ha, "arguments", &hn) : NULL;
+        if (hn >= 1 && nt_kind(nt, hv[0]) != NK_KeywordHashNode)
+          return strbuf_store_leaf(c, hv[0], depth, mode);
+      }
+      if (hnew && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+        const char *hp = block_param_name(c, blk, 0);
+        Scope *hs = hp ? comp_scope_of(c, blk) : NULL;
+        if (hs && SB_KIND(mode) != SB_DEMAND)
+          return strbuf_container_stores_kind(c, hp, hs, depth + 1, mode);
+        return hs ? strbuf_demand_container_stores_here(c, hp, hs, depth + 1, mode) : 0;
+      }
       /* `Array.new(n) { ... }` fills the array with its block's tail */
       if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
@@ -16072,10 +16092,11 @@ static int promote_shared_stored_strings(Compiler *c) {
     const char *contn = nt_str(nt, cont, "name");
     Scope *conts = contn ? comp_scope_of(c, cont) : NULL;
     LocalVar *contv = (contn && conts) ? scope_local(conts, contn) : NULL;
-    /* a block parameter bound to boxed elements is POLY, whatever it holds */
+    /* a block parameter bound to boxed elements is POLY, whatever it holds,
+       and so is a local bound from one (`x = a[0]; x[0] << "!"`): its
+       stores are walked to the container they name */
     if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
-                   contv->type != TY_UNKNOWN &&
-                   !(contv->type == TY_POLY && contv->is_block_param))) continue;
+                   contv->type != TY_UNKNOWN && contv->type != TY_POLY)) continue;
     changed |= strbuf_demand_container_stores(c, contn, conts);
   }
 
@@ -31256,6 +31277,16 @@ static void an_phase_storage(Compiler *c) {
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (!ch) break;
+  }
+  /* A read an is_a? or nil guard narrowed to String (`m(x) if
+     x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
+     one lifted into the handle for a parameter appended to keeps the box,
+     so the callee appends to the variable's own String. The narrowing ran
+     before the lifts were decided. */
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
+    if (!c->poly_strbuf_lift[r] || c->nilnarrow[r] != TY_STRING) continue;
+    c->nilnarrow[r] = TY_UNKNOWN;
+    c->ntype[r] = TY_POLY;
   }
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
