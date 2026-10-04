@@ -2130,6 +2130,8 @@ static int hwi_lwrite(NodeTable *nt, const char *nm, int val) {
   if (n >= 0) { nt_node_set_str(nt, n, "name", nm); nt_node_set_ref(nt, n, "value", val); }
   return n;
 }
+static int block_body_breaks(const NodeTable *nt, int node);
+int subtree_has_own_redo(const NodeTable *nt, int id);
 int desugar_hash_iter_with_index(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2141,8 +2143,17 @@ int desugar_hash_iter_with_index(Compiler *c) {
     int wa = nt_ref(nt, id, "arguments");
     int wn = 0; const int *wv = wa >= 0 ? nt_arr(nt, wa, "arguments", &wn) : NULL;
     if (wn > 1) continue;
+    /* with_index(nil) counts from 0; an offset that is not an Integer keeps
+       the original shape */
+    if (wn == 1 && nt_kind(nt, wv[0]) == NK_NilNode) wn = 0;
+    if (wn == 1 && infer_type(c, wv[0]) != TY_INT) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    /* a block that breaks or redoes, or whose body is not plain statements,
+       is left as it was */
+    { int bb = nt_ref(nt, blk, "body");
+      if (bb < 0 || nt_kind(nt, bb) != NK_StatementsNode ||
+          block_body_breaks(nt, bb) || subtree_has_own_redo(nt, bb)) continue; }
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     if (nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0) continue;

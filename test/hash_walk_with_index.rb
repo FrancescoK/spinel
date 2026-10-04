@@ -12,7 +12,7 @@ p h.transform_keys.with_index { |k, i| "#{k}#{i}" }
 p [10, 20, 30].filter_map.with_index { |x, i| x if i > 0 }
 n = 0
 p h.select.with_index { |(k, v), i| n += 1; next false if i == 1; true }, n
-
-# a blockless transform is an Enumerator over the values (keys)
-e = h.transform_values
-p e.class, e.size, e.to_a, h.transform_keys.to_a
+p h.select.with_index(nil) { |(k, v), i| i == 0 }
+p h.reject.with_index { |(k, v), i| break 42 if i == 1; false }
+o = 5
+p h.select.with_index(o) { |(k, v), i| i == 6 }
