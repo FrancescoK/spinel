@@ -696,7 +696,8 @@ Not yet shared:
 - a repeated keyword whose later value is a String variable bound to an appending parameter, unless the value is already passed as a shared handle;
 
 - through `Thread.new` or `Fiber#resume`, a String variable handed to a block parameter that appends to it, unless its read already hands over the shared handle or the local is read only as that argument;
-- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`), a stored String variable when the value parameter appends to it;
+- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`, `values_at` or `fetch_values`), a stored String variable when the value parameter appends to it;
+- through a Hash's `[key, value]` pairs (`h.to_a`, `h.first`, `h.min_by { }`, `k, v = h.first`, an iterator over them), a String value that is then mutated;
 - through `yield` into a capture-wrapper block, a String variable whose captured parameter appends to it without already being the shared handle, including a splatted yield;
 - through an Array's chained index into an appending block;
 

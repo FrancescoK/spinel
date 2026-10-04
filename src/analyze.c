@@ -28203,6 +28203,265 @@ static void rewrite_builtin_alias_self_calls(Compiler *c) {
     free(target);
   }
 }
+/* A String a Hash holds, read back out through the [key, value] pairs a
+   builtin builds (`h.to_a`, `h.first`, `h.min_by { }`, `h.sort_by { }`,
+   `k, v = h.first`), is a copy: the pairs are new Arrays, and nothing makes
+   the Hash's Strings handles for them. A mutation through one would land on
+   the copy and leave the Hash as it was, so it is refused (the same family
+   as the Hash value-block refusal). */
+static int hp_name_in(const char *nm, const char *const *set) {
+  for (int k = 0; nm && set[k]; k++) if (sp_streq(nm, set[k])) return 1;
+  return 0;
+}
+static int hp_argc(const NodeTable *nt, int call) {
+  int a = nt_ref(nt, call, "arguments"), an = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &an);
+  return an;
+}
+/* A call's name, receiver and argument count, read through the rewrite
+   that turns `recv.max_by { }` into `__enum_max_by__3(recv) { }` */
+static const char *hp_call(const NodeTable *nt, int x, int *recv, int *argc, char *buf, size_t bn) {
+  const char *nm = nt_str(nt, x, "name");
+  int a = nt_ref(nt, x, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  *recv = nt_ref(nt, x, "receiver"); *argc = an;
+  if (nm && !strncmp(nm, "__enum_", 7) && *recv < 0 && an >= 1) {
+    const char *b = nm + 7, *e = strstr(b, "__");
+    size_t l = e ? (size_t)(e - b) : strlen(b);
+    if (l >= bn) l = bn - 1;
+    memcpy(buf, b, l); buf[l] = 0;
+    *recv = av[0]; *argc = an - 1;
+    return buf;
+  }
+  return nm;
+}
+static int hp_pairs(Compiler *c, int x, int depth);
+static int hp_hash_node = -1;   /* the Hash the last hp_hash_walk answered yes for */
+/* `x` is a Hash, or a blockless walk of one (`h.each`, `h.each_pair`):
+   what its Enumerable methods walk is its pairs */
+static int hp_hash_walk(Compiler *c, int x) {
+  const NodeTable *nt = c->nt;
+  x = an_unparen(nt, x);
+  if (x < 0) return 0;
+  if (ty_is_hash(infer_type(c, x))) { hp_hash_node = x; return 1; }
+  static const char *const walks[] = { "each", "each_pair", "each_entry", "lazy", NULL };
+  if (nt_kind(nt, x) != NK_CallNode || nt_ref(nt, x, "block") >= 0) return 0;
+  char buf[64]; int r, an;
+  const char *nm = hp_call(nt, x, &r, &an, buf, sizeof buf);
+  if (!hp_name_in(nm, walks) || an) return 0;
+  if (r < 0 || !ty_is_hash(infer_type(c, r))) return 0;
+  hp_hash_node = r;
+  return 1;
+}
+/* `x` answers an Array of a Hash's own pairs */
+static int hp_pairs(Compiler *c, int x, int depth) {
+  const NodeTable *nt = c->nt;
+  x = an_unparen(nt, x);
+  if (x < 0 || depth > 8 || nt_kind(nt, x) != NK_CallNode) return 0;
+  char buf[64]; int r, an;
+  const char *nm = hp_call(nt, x, &r, &an, buf, sizeof buf);
+  if (!nm || r < 0) return 0;
+  static const char *const of_hash[] = { "to_a", "entries", "sort", "sort_by", "take", "drop",
+    "take_while", "drop_while", "select", "filter", "reject", "find_all", "partition", NULL };
+  static const char *const counted[] = { "first", "min", "max", "min_by", "max_by", NULL };
+  static const char *const of_pairs[] = { "dup", "clone", "to_a", "sort", "sort_by", "reverse",
+    "take", "drop", "take_while", "drop_while", "select", "filter", "reject", "find_all",
+    "uniq", "compact", "shuffle", "rotate", "first", "last", NULL };
+  if (hp_hash_walk(c, r)) {
+    /* a Hash's own select/reject answer a Hash; a walk's answer pairs */
+    int own = ty_is_hash(infer_type(c, r));
+    if (own && (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "reject"))) return 0;
+    if (hp_name_in(nm, of_hash)) return 1;
+    if (hp_name_in(nm, counted) && an == 1) return 1;
+    return 0;
+  }
+  if (hp_pairs(c, r, depth + 1)) {
+    if ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0) return 0;
+    return hp_name_in(nm, of_pairs);
+  }
+  return 0;
+}
+/* `x` answers one of a Hash's pairs */
+static int hp_pair(Compiler *c, int x) {
+  const NodeTable *nt = c->nt;
+  x = an_unparen(nt, x);
+  if (x < 0 || nt_kind(nt, x) != NK_CallNode) return 0;
+  char buf[64]; int r, an;
+  const char *nm = hp_call(nt, x, &r, &an, buf, sizeof buf);
+  if (!nm || r < 0) return 0;
+  static const char *const picks[] = { "first", "find", "detect", "min", "max", "min_by", "max_by",
+    "assoc", "rassoc", "sample", NULL };
+  if (hp_hash_walk(c, r)) return hp_name_in(nm, picks) && (an == 0 || sp_streq(nm, "assoc") || sp_streq(nm, "rassoc"));
+  if (hp_pairs(c, r, 0)) {
+    static const char *const elem[] = { "[]", "at", "fetch", "dig", NULL };
+    if (hp_name_in(nm, elem) && an == 1) return 1;
+    return hp_name_in(nm, picks) && an == 0 ? 1 : (sp_streq(nm, "last") && an == 0);
+  }
+  return 0;
+}
+/* `x` reads the value half of a pair: `pair[1]`, `pair.last`, `pair[-1]` */
+static int hp_value_of(const NodeTable *nt, int x, int *pair) {
+  x = an_unparen(nt, x);
+  if (x < 0 || nt_kind(nt, x) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, x, "name");
+  int r = nt_ref(nt, x, "receiver");
+  if (!nm || r < 0) return 0;
+  int a = nt_ref(nt, x, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  int v = 0;
+  if (sp_streq(nm, "last") && an == 0) v = 1;
+  else if ((sp_streq(nm, "[]") || sp_streq(nm, "at") || sp_streq(nm, "fetch") || sp_streq(nm, "dig")) &&
+           an == 1 && nt_kind(nt, av[0]) == NK_IntegerNode) {
+    long long i = nt_int(nt, av[0], "value", 0);
+    v = i == 1 || i == -1;
+  }
+  if (v) *pair = r;
+  return v;
+}
+/* Is `call` a String mutation that a copy would lose? */
+static int hp_string_mutation(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int r = nt_ref(nt, call, "receiver");
+  if (!nm || r < 0 || !sp_str_mutator(nm, SP_MUT_LOCAL)) return 0;
+  TyKind rt = infer_type(c, r);
+  if (rt == TY_STRING || rt == TY_STRBUF) return 1;
+  /* a boxed receiver may be the String too; for a name an Array answers
+     as well, only when the Hash's values may be Strings */
+  if (rt != TY_POLY) return 0;
+  static const char *const shared[] = { "<<", "concat", "replace", "clear", "insert", "[]=",
+    "slice!", "prepend", "push", "delete", "freeze", NULL };
+  return hp_name_in(nm, shared) ? -1 : 1;
+}
+/* The block of a call over `x`'s pairs binds its pair (one parameter) or
+   the value (the second of two); answers -1 for neither. */
+static int hp_block_binding(Compiler *c, int call, int *value_idx, int *pair_idx) {
+  const NodeTable *nt = c->nt;
+  char buf[64]; int r, an;
+  buf[0] = 0;
+  const char *cn = hp_call(nt, call, &r, &an, buf, sizeof buf);
+  if (!buf[0] && cn) snprintf(buf, sizeof buf, "%s", cn);
+  int blk = nt_ref(nt, call, "block");
+  *value_idx = *pair_idx = -1;
+  if (r < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  int over_pairs = hp_pairs(c, r, 0);
+  int over_hash = !over_pairs && hp_hash_walk(c, r);
+  if (!over_pairs && !over_hash) return 0;
+  /* the iterators that hand each pair to the block (a Hash's own select,
+     each_value and the like yield something else) */
+  static const char *const by_pair[] = { "each", "each_pair", "each_entry", "map", "collect",
+    "flat_map", "filter_map", "sort_by", "min_by", "max_by", "find", "detect", "group_by",
+    "partition", "sum", "count", "find_index", "each_with_index", "each_with_object", NULL };
+  if (over_pairs) {
+    static const char *const more[] = { "select", "filter", "reject", "find_all", "take_while",
+      "drop_while", "any?", "all?", "none?", NULL };
+    if (!hp_name_in(buf[0] ? buf : nt_str(nt, call, "name"), by_pair) &&
+        !hp_name_in(buf[0] ? buf : nt_str(nt, call, "name"), more)) return 0;
+  }
+  else if (!hp_name_in(buf[0] ? buf : nt_str(nt, call, "name"), by_pair)) return 0;
+  const char *nm = buf[0] ? buf : nt_str(nt, call, "name");
+  int np = 0;
+  while (np < 4 && block_param_name(c, blk, np)) np++;
+  if (sp_streq(nm, "each_with_index") || sp_streq(nm, "each_with_object")) *pair_idx = 0;
+  else if (np == 1) *pair_idx = 0;
+  /* over a Hash itself, |k, v| is the value block master refuses already */
+  else if (np >= 2 && over_pairs) *value_idx = 1;
+  return *pair_idx >= 0 || *value_idx >= 0;
+}
+/* the Hash the pair came from may hold a String */
+static int hp_may_be_string(TyKind t) {
+  return t == TY_STRING || t == TY_STRBUF || t == TY_POLY || t == TY_UNKNOWN;
+}
+static int hp_hash_may_hold_string(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (hp_hash_node < 0) return 1;
+  TyKind hv = ty_hash_val(infer_type(c, hp_hash_node));
+  if (!hp_may_be_string(hv)) return 0;
+  if (hv != TY_POLY) return 1;
+  /* a boxed-value Hash a local holds: what its literals and `[]=` put in */
+  int h = an_unparen(nt, hp_hash_node);
+  if (nt_kind(nt, h) != NK_LocalVariableReadNode) return 1;
+  const char *hn = nt_str(nt, h, "name");
+  Scope *hs = comp_scope_of(c, h);
+  if (!hn || !hs) return 1;
+  for (int w = comp_lvw_first(c, hn); w >= 0; w = comp_lvw_next(c, w)) {
+    if (comp_scope_of(c, w) != hs) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 1;
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    if (v < 0 || nt_kind(nt, v) != NK_HashNode) return 1;
+    int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+    for (int e = 0; e < en; e++) {
+      if (nt_kind(nt, el[e]) != NK_AssocNode) return 1;
+      if (hp_may_be_string(infer_type(c, nt_ref(nt, el[e], "value")))) return 1;
+    }
+  }
+  int nw = 0;
+  TyKind wv = aset_value_type_ex(c, h, &nw);
+  return nw > 0 && hp_may_be_string(wv);
+}
+static void hp_refuse(Compiler *c, int call) {
+  unsupported_feature(c, call,
+      "a String read out of a Hash through its [key, value] pairs is mutated: a String is not "
+      "yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)");
+}
+static void refuse_hash_pair_string_mutations(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  /* the iterator calls whose block binds a pair or its value, once */
+  int nb = 0, cap = 0, *binds = NULL;
+  NT_FOREACH_KIND(nt, NK_CallNode, it) {
+    int vi, pi;
+    if (nt_ref(nt, it, "block") < 0 || !hp_block_binding(c, it, &vi, &pi)) continue;
+    if (nb == cap) { cap = cap ? cap * 2 : 16; binds = (int *)realloc(binds, sizeof(int) * (size_t)cap); if (!binds) return; }
+    binds[nb++] = it;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    int mk = hp_string_mutation(c, call);
+    if (!mk) continue;
+    hp_hash_node = -1;
+    int r = nt_ref(nt, call, "receiver"), pair = -1;
+    /* `h.first[1] << x`, `h.to_a[0].last << x` */
+    if (hp_value_of(nt, r, &pair) && hp_pair(c, pair)) {
+      if (mk > 0 || hp_hash_may_hold_string(c)) hp_refuse(c, call);
+      continue;
+    }
+    int rl = an_unparen(nt, r);
+    const char *pn = rl >= 0 && nt_kind(nt, rl) == NK_LocalVariableReadNode ? nt_str(nt, rl, "name") : NULL;
+    int pairp = 0; const char *pairn = NULL;
+    if (!pn && hp_value_of(nt, r, &pair)) {
+      int pl = an_unparen(nt, pair);
+      if (pl >= 0 && nt_kind(nt, pl) == NK_LocalVariableReadNode) { pairn = nt_str(nt, pl, "name"); pairp = 1; }
+    }
+    const char *ln = pn ? pn : pairn;
+    if (!ln) continue;
+    Scope *ls = comp_scope_of(c, rl >= 0 && pn ? rl : an_unparen(nt, pair));
+    /* a block parameter that binds a pair or its value */
+    int hit = 0;
+    for (int bi = 0; bi < nb && !hit; bi++) {
+      int it = binds[bi], vi, pi;
+      if (!hp_block_binding(c, it, &vi, &pi)) continue;
+      int blk = nt_ref(nt, it, "block");
+      if (ls && comp_scope_of(c, nt_ref(nt, blk, "body") >= 0 ? nt_ref(nt, blk, "body") : blk) != ls) continue;
+      const char *want = pairp ? (pi >= 0 ? block_param_name(c, blk, pi) : NULL)
+                               : (vi >= 0 ? block_param_name(c, blk, vi) : NULL);
+      if (want && sp_streq(want, ln)) { hit = 1; break; }
+    }
+    /* `k, v = h.first` / `pair = h.first; pair[1] << x` */
+    for (int w = comp_lvw_first(c, ln); w >= 0 && !hit; w = comp_lvw_next(c, w)) {
+      if (comp_scope_of(c, w) != ls) continue;
+      if (nt_kind(nt, w) == NK_LocalVariableWriteNode && pairp && hp_pair(c, nt_ref(nt, w, "value"))) hit = 1;
+    }
+    if (!hit && !pairp) {
+      NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
+        if (comp_scope_of(c, mw) != ls || !hp_pair(c, nt_ref(nt, mw, "value"))) continue;
+        int ln2 = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln2);
+        if (ln2 >= 2 && nt_kind(nt, lefts[1]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[1], "name") &&
+            sp_streq(nt_str(nt, lefts[1], "name"), ln)) { hit = 1; break; }
+      }
+    }
+    if (hit && (mk > 0 || hp_hash_may_hold_string(c))) hp_refuse(c, call);
+  }
+  free(binds);
+}
 
 /* A bare `@ivar` argument whose ivar is written from a local, handed to a
    parameter the callee appends to: the callee would append to a copy, so
@@ -32457,6 +32716,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
   refuse_lent_ivar_copies(c);
+  refuse_hash_pair_string_mutations(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
