@@ -1359,6 +1359,7 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
 int g_expr_depth = 0;
 
 void emit_expr(Compiler *c, int id, Buf *b) {
+  if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
   /* an argument of a call re-emitted as its builtin sees the reopenings */
   if (g_io_skip_reopen && id != g_io_skip_node) {
     g_io_skip_reopen = 0;

@@ -15248,6 +15248,25 @@ sp_RbVal sp_enum_with_index_value(sp_Enumerator *e);
    each_with_index returns the source receiver; anything else is unsupported. */
 sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped);
 sp_RbVal sp_enum_with_index_result(sp_Enumerator *e, sp_PolyArray *mapped);
+/* The same, for an enumerator that keeps or drops elements by the block's
+   value: a stored `h.select` / `a.reject` driven by `.with_index { }`
+   answers the kept elements -- a Hash of the kept pairs for a Hash, an
+   Array for anything else -- as CRuby does. `items` are the elements the
+   block was given, in order with `mapped`. */
+static SP_UNUSED sp_RbVal sp_enum_with_index_kept(sp_Enumerator *e, sp_PolyArray *items, sp_PolyArray *mapped) {
+  SP_GC_ROOT(e); SP_GC_ROOT(items); SP_GC_ROOT(mapped);
+  const char *m = e ? e->meth : NULL;
+  int keep = m && (!strcmp(m, "select") || !strcmp(m, "filter") || !strcmp(m, "find_all"));
+  int drop = m && !strcmp(m, "reject");
+  if (!keep && !drop) return sp_enum_with_index_result(e, mapped);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  for (sp_int i = 0; i < items->len && i < mapped->len; i++)
+    if (sp_poly_truthy(mapped->data[i]) == keep) sp_PolyArray_push(r, items->data[i]);
+  sp_RbVal src = e->source;
+  if (src.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(src.cls_id))
+    return sp_poly_to_h_m(sp_box_poly_array(r));
+  return sp_box_poly_array(r);
+}
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
   sp_int n = sp_poly_length(h);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
@@ -15431,6 +15450,18 @@ static sp_RbVal sp_yield_splat_pack(sp_RbVal a) {
 static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) SP_UNUSED;
 static sp_RbVal sp_enum_walk_result(sp_Enumerator *e) {
   if (!e) return sp_box_nil();
+  /* an enumerator of a method that answers by the block's values (a stored
+     `a.reject`, `h.map`) does not answer its collection: the walk here
+     keeps no block values, so say so rather than hand back the source */
+  if (e->meth) {
+    static const char *const by_block[] = { "select", "filter", "find_all", "reject", "map", "collect",
+      "flat_map", "collect_concat", "filter_map", "sort_by", "min_by", "max_by", "group_by",
+      "partition", "find", "detect", "find_index", "sum", "count", NULL };
+    for (int k = 0; by_block[k]; k++)
+      if (!strcmp(e->meth, by_block[k]))
+        sp_raise_cls("NotImplementedError",
+                     sp_sprintf("the value of a walk over a stored %s enumerator", e->meth));
+  }
   if (e->has_src || e->source.tag != SP_TAG_NIL) return e->source;
   return sp_box_poly_array(sp_Enumerator_to_a(e));
 }

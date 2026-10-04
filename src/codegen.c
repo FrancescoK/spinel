@@ -752,6 +752,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
 }
 
 void emit_int_expr(Compiler *c, int node, Buf *b) {
+  if (b == g_pre) { emit_into_pre_line(c, emit_int_expr, node); return; }
   emit_int_expr_ex(c, node, 1, b);
 }
 
@@ -830,6 +831,7 @@ static int class_is_user_numeric(Compiler *c, int cid) {
 }
 
 void emit_float_expr(Compiler *c, int node, Buf *b) {
+  if (b == g_pre) { emit_into_pre_line(c, emit_float_expr, node); return; }
   if (yield_site_type(c, node) == TY_POLY) {
     buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
@@ -979,6 +981,7 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
 }
 
 void emit_str_expr(Compiler *c, int node, Buf *b) {
+  if (b == g_pre) { emit_into_pre_line(c, emit_str_expr, node); return; }
   emit_str_expr_ex(c, node, 1, b);
 }
 
@@ -1831,6 +1834,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
 /* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
+  if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   rc_depth++;
   emit_boxed_impl(c, node, b);
   rc_depth--;

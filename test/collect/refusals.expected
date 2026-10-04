@@ -508,6 +508,12 @@ spinel: 1 refusal, nothing written
 spinel: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_two_modules.rb [promote] rc=1
 spinel: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
+== test/reject/map_bang_with_index_untyped_proc.rb [default] rc=1
+spinel: map!.with_index with a block whose value is untyped, on a typed Array
+spinel: 1 refusal, nothing written
+== test/reject/map_bang_with_index_untyped_proc.rb [promote] rc=1
+spinel: map!.with_index with a block whose value is untyped, on a typed Array
+spinel: 1 refusal, nothing written
 == test/reject/method_of_builtin_module.rb [default] rc=1
 spinel: ENV.method(:each) is not supported: a Method object of a builtin module or class function has no compiled function to bind. Call ENV.each directly, or wrap it in a lambda
 spinel: 1 refusal, nothing written
