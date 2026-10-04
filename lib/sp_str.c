@@ -400,6 +400,8 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
   if (!t) return s;
   size_t la = sp_str_byte_len(s), lb = sp_str_byte_len(t);
   if (lb == 0) return s;
+  int text_append = sp_str_is_binary(s) && !sp_str_is_binary(t) &&
+                    !sp_str_ascii_only(t) && sp_str_ascii_only(s);
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;
@@ -410,6 +412,7 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
       ((char *)s)[la + lb] = 0;
       sp_str_lcache_drop(s);
       sp_str_set_len((char *)s, la + lb);
+      if (text_append) sp_str_as_text((char *)s);
       return s;
     }
   }
@@ -419,11 +422,10 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
   memcpy(r + la, t, lb);
   r[la + lb] = 0;
   sp_str_set_len(r, la + lb);
-  /* the receiver's encoding survives the append: the in-place path keeps the
-     header (and its BINARY bit) but the grow path allocates a fresh one, so a
-     `s << x` that outgrew its buffer silently turned a pack / String#b result
-     back into UTF-8 */
-  if (sp_str_is_binary(s)) sp_str_mark_binary(r);
+  /* Preserve BINARY when growing the receiver. A compatible text append to
+     an ASCII-only binary receiver is the exception: text_append has already
+     selected UTF-8, so do not mark the replacement buffer binary. */
+  if (sp_str_is_binary(s) && !text_append) sp_str_mark_binary(r);
   return r;
 }
 /* The same append for the first `lb` bytes of `t`, for the append form of an
