@@ -14443,6 +14443,10 @@ static int bsc_walk(NodeTable *nt, int n, const char *cn) {
   /* another class, a singleton body or a nested def has a self of its own */
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
   if (k == NK_DefNode && nt_ref(nt, n, "receiver") >= 0) return 0;
+  /* a block or a lambda may run under another self (instance_eval,
+     instance_exec, define_method, or a proc handed to one later), which
+     only the run time knows */
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
   int changed = 0;
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, n, "name");

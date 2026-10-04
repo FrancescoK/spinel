@@ -38,3 +38,11 @@ p [1, 2].emptied, [1].kind_name
 p "abc".blank_copy
 p 1.kind_name, 1.5.kind_name
 p Text::String.new.kind_name, Text::Rich.new.kind_name
+
+# a block may run under another self: instance_eval / instance_exec keep
+# the run-time answer
+class String
+  def other_class(o) = o.instance_eval { self.class }
+  def other_class_exec(o) = o.instance_exec(1) { |_| self.class }
+end
+p "x".other_class(1), "x".other_class_exec(:s)
