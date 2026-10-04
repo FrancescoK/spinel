@@ -3384,6 +3384,39 @@ static int engine_absent_fold(NodeTable *nt, int e, int in) {
   return 1;
 }
 
+/* The settled engine checks of one statement list, spliced: each if /
+   unless whose predicate the engine fold decided is replaced by its live
+   branch's statements. An elsif chain is left as it is. */
+static int engine_splice_list(NodeTable *nt, int body) {
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int changed = 0;
+  for (int again = 1, rounds = 0; again && rounds < 8; rounds++) {
+    again = 0;
+    int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+    for (int k = 0; k < n; k++) {
+      NodeKind sk = nt_kind(nt, st[k]);
+      int pred = sk == NK_IfNode || sk == NK_UnlessNode ? nt_ref(nt, st[k], "predicate") : -1;
+      if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0) continue;
+      int live = (nt_kind(nt, pred) == NK_TrueNode) == (sk == NK_IfNode)
+                 ? nt_ref(nt, st[k], "statements")
+                 : nt_ref(nt, st[k], sk == NK_IfNode ? "subsequent" : "else_clause");
+      if (live >= 0 && nt_kind(nt, live) == NK_ElseNode) live = nt_ref(nt, live, "statements");
+      if (live >= 0 && nt_kind(nt, live) != NK_StatementsNode) continue;
+      int ln = 0; const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
+      int *nb = malloc(sizeof(int) * (size_t)(n + ln));
+      if (!nb) return changed;
+      memcpy(nb, st, sizeof(int) * (size_t)k);
+      if (ln) memcpy(nb + k, lb, sizeof(int) * (size_t)ln);
+      memcpy(nb + k + ln, st + k + 1, sizeof(int) * (size_t)(n - k - 1));
+      nt_node_set_arr(nt, body, "body", nb, n - 1 + ln);
+      free(nb);
+      changed = again = 1;
+      break;
+    }
+  }
+  return changed;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -3485,39 +3518,16 @@ int desugar_engine_branches(Compiler *c) {
       st = nt_arr(nt, id, "body", &n);
     }
   }
-  /* In a class or module body a settled engine check is spliced away: the
-     live branch's statements take the if's place, so a declaration the
-     body scans for (native_lib, native_func, include, attr_*) is seen
-     where it is written for one engine (#7205). */
+  /* In a class or module body, or at the top level, a settled engine check
+     is spliced away: the live branch's statements take the if's place, so a
+     declaration the body scans for (native_lib, native_func, include,
+     attr_*), or a `module Kernel` reopening hoisted from the top level, is
+     seen where it is written for one engine (#7205, #7204). */
+  if (nt->root_id >= 0) changed |= engine_splice_list(nt, nt_ref(nt, nt->root_id, "statements"));
   for (int id = 0; id < nt->count; id++) {
     NodeKind ck = nt_kind(nt, id);
-    if (ck != NK_ModuleNode && ck != NK_ClassNode && ck != NK_SingletonClassNode) continue;
-    int body = nt_ref(nt, id, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    for (int again = 1, rounds = 0; again && rounds < 8; rounds++) {
-      again = 0;
-      int n = 0; const int *st = nt_arr(nt, body, "body", &n);
-      for (int k = 0; k < n; k++) {
-        NodeKind sk = nt_kind(nt, st[k]);
-        int pred = sk == NK_IfNode || sk == NK_UnlessNode ? nt_ref(nt, st[k], "predicate") : -1;
-        if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0) continue;
-        int live = (nt_kind(nt, pred) == NK_TrueNode) == (sk == NK_IfNode)
-                   ? nt_ref(nt, st[k], "statements")
-                   : nt_ref(nt, st[k], sk == NK_IfNode ? "subsequent" : "else_clause");
-        if (live >= 0 && nt_kind(nt, live) == NK_ElseNode) live = nt_ref(nt, live, "statements");
-        if (live >= 0 && nt_kind(nt, live) != NK_StatementsNode) continue;   /* an elsif: left as it is */
-        int ln = 0; const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
-        int *nb = malloc(sizeof(int) * (size_t)(n + ln));
-        if (!nb) break;
-        memcpy(nb, st, sizeof(int) * (size_t)k);
-        if (ln) memcpy(nb + k, lb, sizeof(int) * (size_t)ln);
-        memcpy(nb + k + ln, st + k + 1, sizeof(int) * (size_t)(n - k - 1));
-        nt_node_set_arr(nt, body, "body", nb, n - 1 + ln);
-        free(nb);
-        changed = again = 1;
-        break;
-      }
-    }
+    if (ck == NK_ModuleNode || ck == NK_ClassNode || ck == NK_SingletonClassNode)
+      changed |= engine_splice_list(nt, nt_ref(nt, id, "body"));
   }
   return changed;
 }
