@@ -5345,9 +5345,11 @@ static int case_subject_needs_root(Compiler *c, TyKind pt, const int *whens, int
   if (!needs_root(pt) || comp_ty_value_obj(c, pt)) return 0;
   for (int w = 0; w < nw; w++) {
     int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
-    for (int k = 0; k < wc; k++) if (subtree_may_allocate(nt, conds[k])) return 1;
+    for (int k = 0; k < wc; k++) if (subtree_allocates(nt, conds[k])) return 1;
   }
-  return 0;
+  /* no operand allocates: the unrooted subject is a decision, keyed at the
+     first `when` */
+  return nw > 0 && !decide_node(nt, whens[0], "case-root", NULL);
 }
 
 /* `case <array or hash> when <cond>`: Array#=== and Hash#=== are Object#===,
@@ -8836,10 +8838,14 @@ static void masgn_target_parts(const NodeTable *nt, int t, int *recv, int *key) 
    operator over scalars is a CallNode to subtree_may_allocate, but `a[i % n]`
    builds nothing; what has no effect and answers a scalar is arithmetic. */
 static int masgn_part_allocates(Compiler *c, int id) {
-  if (!subtree_may_allocate(c->nt, id)) return 0;
-  if (subtree_has_side_effect(c, id)) return 1;
-  TyKind t = comp_ntype(c, id);
-  return !(t == TY_INT || t == TY_FLOAT || t == TY_BOOL);
+  if (subtree_allocates(c->nt, id)) {
+    if (subtree_has_side_effect(c, id)) return 1;
+    TyKind t = comp_ntype(c, id);
+    if (!(t == TY_INT || t == TY_FLOAT || t == TY_BOOL)) return 1;
+  }
+  /* a part that builds nothing is a decision, either way it was found: the
+     temps bound before it go unrooted on its strength */
+  return id >= 0 && !decide_node(c->nt, id, "masgn-root", NULL);
 }
 /* Whether the subtree reads the variable a target of the given kind writes. */
 static int masgn_reads(const NodeTable *nt, int id, const char *rty, const char *name) {
@@ -8895,7 +8901,8 @@ static int masgn_part_plain(Compiler *c, int id, const int *lefts, int before) {
 /* A literal that is not built -- rodata, which no sweep touches; a Bignum
    is built. */
 static int masgn_rodata(Compiler *c, int id) {
-  return node_is_pure_literal(c->nt, id) && !subtree_may_allocate(c->nt, id) && comp_ntype(c, id) != TY_BIGINT;
+  return node_is_pure_literal(c->nt, id) && !subtree_allocates(c->nt, id) && comp_ntype(c, id) != TY_BIGINT &&
+         decide_node(c->nt, id, "masgn-root", NULL);
 }
 /* The root push for a temp, after the `;` of the statement that set it, when
    `emit_gc_root_tmp` has one for the type. */

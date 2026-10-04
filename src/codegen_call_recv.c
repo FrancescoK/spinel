@@ -689,7 +689,7 @@ static int fetch_operand_is_inert(Compiler *c, int n) {
   switch (nt_kind(c->nt, n)) {
     case NK_LocalVariableReadNode: case NK_IntegerNode: case NK_FloatNode:
     case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
-      return 1;
+      return decide_node(c->nt, n, "fetch-inert", NULL);
     default:
       return 0;
   }
@@ -9539,7 +9539,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
              this read is typically in a loop: `ctx.buf.getbyte(i)` over a
              200 KB buffer copied the whole string once per row. Same type,
              same const char * -- the live buffer rather than a snapshot. */
-          else if (c->strbuf_read_raw[id])
+          else if (c->strbuf_read_raw[id] && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
             buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
@@ -12303,7 +12303,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
            call behind it are dead code on this read. analyze established the
            proof for the GC root elision; this is the same fact paying twice. */
         buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
-                    : expr_is_arr_or_nil(c, recv) ? "sp_poly_arr_get_aon("
+                    : expr_is_arr_or_nil(c, recv) && decide_node(c->nt, recv, "aon-get", NULL) ? "sp_poly_arr_get_aon("
                                                   : "sp_poly_arr_get_hash(");
         emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
