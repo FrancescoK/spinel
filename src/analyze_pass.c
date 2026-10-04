@@ -11063,6 +11063,10 @@ static void yarg_scan_pushes(Compiler *c, int id, const char *memo, TyKind *acc,
     for (int k = 0; k < n; k++) if (ids[k] >= 0) yarg_scan_pushes(c, ids[k], memo, acc, open); }
 }
 
+/* the kinds narrow_empty_array_args_by_yield stamps an empty literal with */
+static int yarg_stamped(TyKind w) {
+  return w == TY_INT_ARRAY || w == TY_FLOAT_ARRAY || w == TY_STR_ARRAY;
+}
 int narrow_empty_array_args_by_yield(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (!c->arr_want) return 0;
@@ -11080,7 +11084,7 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
       int a = av[j];
       if (a < 0 || a >= c->node_cap || nt_kind(nt, a) != NK_ArrayNode) continue;
       int en = 0; nt_arr(nt, a, "elements", &en);
-      if (en == 0 && c->arr_want[a] == TY_UNKNOWN) any_empty = 1;
+      if (en == 0 && (c->arr_want[a] == TY_UNKNOWN || yarg_stamped(c->arr_want[a]))) any_empty = 1;
       /* a non-empty literal the block may push another kind into */
       if (en > 0 && blk >= 0 && c->arr_want[a] != TY_POLY_ARRAY) any_empty = 1;
     }
@@ -11099,7 +11103,11 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
       if (a < 0 || a >= c->node_cap || nt_kind(nt, a) != NK_ArrayNode) continue;
       int en = 0; nt_arr(nt, a, "elements", &en);
       int seeded = en > 0 && blk >= 0 && c->arr_want[a] != TY_POLY_ARRAY;
-      if (!seeded && (en != 0 || c->arr_want[a] != TY_UNKNOWN)) continue;
+      /* an empty literal this pass stamped is looked at again: a push read
+         before its value's type settled (`m << (c ? x.to_s : x)` with x
+         still open answers String) stamped the first kind seen */
+      int restamp = en == 0 && yarg_stamped(c->arr_want[a]);
+      if (!seeded && !restamp && (en != 0 || c->arr_want[a] != TY_UNKNOWN)) continue;
       const char *pn = m->pnames[j];
       if (!pn) continue;
       TyKind acc = TY_UNKNOWN; int open = 0;
@@ -11129,6 +11137,13 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
         if (!open && acc != TY_UNKNOWN && ty_is_array(lt) && lt != TY_POLY_ARRAY &&
             acc != ty_array_elem(lt))
           changed |= widen_arg_array(c, a);
+        continue;
+      }
+      if (restamp) {
+        if (!open && acc != TY_UNKNOWN && ty_array_of(acc) != c->arr_want[a]) {
+          c->arr_want[a] = TY_POLY_ARRAY;
+          changed = 1;
+        }
         continue;
       }
       if (!open && (acc == TY_INT || acc == TY_FLOAT || acc == TY_STRING)) {
