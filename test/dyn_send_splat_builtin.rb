@@ -28,3 +28,7 @@ foo = Foo.new
 p foo.snd([1, 2], :map) { |v| v * 3 }
 p foo.snd("ab", :upcase)
 p foo.snd(5, :succ)
+
+# a variadic name past the arms' cap keeps the splat call
+p [].snd(:push, 1, 2, 3, 4, 5)
+p [1, 2, 3].snd(:values_at, 0, 1, 2, 0, 1)
