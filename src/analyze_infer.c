@@ -8009,6 +8009,44 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
   return 0;
 }
 
+static TyKind infer_conditional_attr_write(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  /* `a.v ||= x` evaluates to the attribute's (assigned-or-existing) value:
+     the backing ivar's type when the receiver class is known. */
+  int recv = nt_ref(nt, id, "receiver");
+  const char *attr = nt_str(nt, id, "name");
+  TyKind rt2 = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  if (attr && ty_is_object(rt2)) {
+    int cid2 = ty_object_class(rt2);
+    /* An explicit `def` reader or writer is a method call, not an ivar
+       touch: the value is the reader's answer or the assigned value, and
+       neither need be the backing ivar's type (`def v=(x); @v = x * 10; end`
+       stores an Integer while the expression answers what was assigned).
+       Unify the two arms, the way the emitter does (#4148). */
+    int rmi2 = -1, wmi2 = -1;
+    int rk2 = comp_resolve_member(c, cid2, attr, 0, NULL, &rmi2);
+    int wk2 = comp_resolve_member(c, cid2, attr, 1, NULL, &wmi2);
+    if (rk2 == SP_MEMBER_METHOD || wk2 == SP_MEMBER_METHOD) {
+      int v3 = nt_ref(nt, id, "value");
+      TyKind at = v3 >= 0 ? infer_type(c, v3) : TY_UNKNOWN;
+      TyKind rr = (rk2 == SP_MEMBER_METHOD && rmi2 >= 0) ? (TyKind)c->scopes[rmi2].ret : TY_UNKNOWN;
+      if (rk2 == SP_MEMBER_ATTR) {
+        char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", attr);
+        int iv = comp_ivar_index(&c->classes[cid2], ivn);
+        if (iv >= 0) rr = ivar_value_ty(&c->classes[cid2], iv);
+      }
+      if (rr == TY_UNKNOWN || rr == TY_VOID) return at;
+      if (at == TY_UNKNOWN) return rr;
+      return ty_unify(rr, at);
+    }
+    char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", attr);
+    int ii2 = comp_ivar_index(&c->classes[cid2], ivn2);
+    if (ii2 >= 0) return ivar_value_ty(&c->classes[cid2], ii2);
+  }
+  int v2 = nt_ref(nt, id, "value");
+  return v2 >= 0 ? infer_type(c, v2) : TY_UNKNOWN;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -8703,37 +8741,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     return hv;
   }
   if (nk == NK_DefNode) return TY_SYMBOL;  /* `def` evaluates to :name */
-  if (nk == NK_CallOrWriteNode || nk == NK_CallAndWriteNode) {
-    /* `a.v ||= x` evaluates to the attribute's (assigned-or-existing) value:
-       the backing ivar's type when the receiver class is known. */
-    int recv = nt_ref(nt, id, "receiver");
-    const char *attr = nt_str(nt, id, "name");
-    TyKind rt2 = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
-    if (attr && ty_is_object(rt2)) {
-      int cid2 = ty_object_class(rt2);
-      /* An explicit `def` reader or writer is a method call, not an ivar
-         touch: the value is the reader's answer or the assigned value, and
-         neither need be the backing ivar's type (`def v=(x); @v = x * 10; end`
-         stores an Integer while the expression answers what was assigned).
-         Unify the two arms, the way the emitter does (#4148). */
-      int rmi2 = -1, wmi2 = -1;
-      int rk2 = comp_resolve_member(c, cid2, attr, 0, NULL, &rmi2);
-      int wk2 = comp_resolve_member(c, cid2, attr, 1, NULL, &wmi2);
-      if (rk2 == SP_MEMBER_METHOD || wk2 == SP_MEMBER_METHOD) {
-        int v3 = nt_ref(nt, id, "value");
-        TyKind at = v3 >= 0 ? infer_type(c, v3) : TY_UNKNOWN;
-        TyKind rr = (rk2 == SP_MEMBER_METHOD && rmi2 >= 0) ? (TyKind)c->scopes[rmi2].ret : TY_UNKNOWN;
-        if (rr == TY_UNKNOWN || rr == TY_VOID) return at;
-        if (at == TY_UNKNOWN) return rr;
-        return ty_unify(rr, at);
-      }
-      char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", attr);
-      int ii2 = comp_ivar_index(&c->classes[cid2], ivn2);
-      if (ii2 >= 0) return ivar_value_ty(&c->classes[cid2], ii2);
-    }
-    int v2 = nt_ref(nt, id, "value");
-    return v2 >= 0 ? infer_type(c, v2) : TY_UNKNOWN;
-  }
+  if (nk == NK_CallOrWriteNode || nk == NK_CallAndWriteNode)
+    return infer_conditional_attr_write(c, id);
   if (nk == NK_NextNode) {
     /* `next v` produces the BLOCK's value: its type is v's type (nil when
        bare). Leaving it untyped made a yield whose block ends in `next v`
