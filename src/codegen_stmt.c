@@ -13785,7 +13785,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
         buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                    tbR, srefR2, tbR);
         if (sp_streq(name, "prepend")) {
-          buf_puts(b, "sp_str_concat("); emit_expr(c, argv[0], b);
+          buf_puts(b, "sp_str_concat("); emit_str_expr(c, argv[0], b);
           buf_printf(b, ", sp_String_cstr(_t%d))", tbR);
         }
         else emit_expr(c, argv[0], b);
@@ -13810,7 +13810,9 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
     }
     if (assignable && sp_streq(name, "prepend") && argc == 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
-      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      /* a boxed argument reads as its string, TypeError for anything else,
+         as replace's does */
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
     if (!assignable && sp_streq(name, "clear") && argc == 0 &&
