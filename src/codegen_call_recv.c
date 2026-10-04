@@ -2778,6 +2778,17 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
        fill quietly did nothing (#3611). */
     for (int fa = 1; fa < argc; fa++) {
       TyKind ft = comp_ntype(c, argv[fa]);
+      /* a Range is a start only in fill(value, range); with a length
+         after it, CRuby converts it to an Integer and raises, once every
+         operand has run in order */
+      if (fa == 1 && argc == 3 &&
+          (ft == TY_RANGE || ft == TY_FLOAT_RANGE || ft == TY_STR_RANGE)) {
+        buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+        for (int fo = 0; fo < argc; fo++) { buf_puts(b, "); (void)("); emit_expr(c, argv[fo], b); }
+        buf_puts(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\"); ");
+        buf_printf(b, "(sp_%sArray *)0; })", (rt == TY_POLY_ARRAY) ? "Poly" : k);
+        { *out = 1; return 1; }
+      }
       /* nil is allowed: it means "from the start" / "to the end" */
       const char *fcn = ft == TY_STRING ? "String" : ft == TY_SYMBOL ? "Symbol"
                       : ty_is_array(ft) ? "Array"
