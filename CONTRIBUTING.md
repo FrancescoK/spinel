@@ -50,7 +50,8 @@ container on this branch merged with `master`, and records the same stamp.
 `ruby` from `PATH` when it is Ruby 4.0 or later (`tools/gate-ruby` picks
 it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
 `make gate` skips the stamp and passes or fails exactly as it would
-otherwise, and the `.expected` comparison is skipped with a warning.
+otherwise, and the `.expected` comparison is skipped with a warning. `make gate-tool-test`
+tests `tools/gate.rb` itself.
 
 ## What the review checks
 
