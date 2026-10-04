@@ -898,7 +898,7 @@ int desugar_body_module_eval(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
@@ -13714,7 +13714,7 @@ int desugar_singleton_attr(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
@@ -14167,7 +14167,7 @@ int desugar_static_class_eval(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0, vis = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
