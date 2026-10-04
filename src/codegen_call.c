@@ -22873,9 +22873,9 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         nt_ref(c->nt, id, "block") < 0 &&
         !(bmi0 < c->nscopes && c->scopes[bmi0].yields)) {
       Scope *esc0 = comp_scope_of(c, id);
-      int ecls0 = esc0 ? esc0->class_id : -1;
+      int ecls0 = g_ie_class_id >= 0 ? g_ie_class_id : esc0 ? esc0->class_id : -1;   /* #7213 */
       int shad0 = ecls0 >= 0 && ecls0 < c->nclasses &&
-                  (esc0->is_cmethod ? comp_cmethod_in_chain(c, ecls0, bn0, NULL) >= 0
+                  ((g_ie_class_id < 0 && esc0->is_cmethod) ? comp_cmethod_in_chain(c, ecls0, bn0, NULL) >= 0
                                     : (comp_method_in_chain(c, ecls0, bn0, NULL) >= 0 ||
                                        comp_is_reader(&c->classes[ecls0], bn0)));
       if (!shad0) { emit_method_call(c, id, b); return; }

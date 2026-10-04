@@ -4676,6 +4676,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name), fvia = UC_TOP;
+    /* in a block run by instance_eval, the receiver's own method answers
+       before a top-level def of the same name (#7213) */
+    { int iec = ie_class_of(c, id);
+      if (mi >= 0 && iec >= 0 && iec < c->nclasses && comp_method_in_chain(c, iec, name, NULL) >= 0) mi = -1; }
     if (mi < 0) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
     if (mi >= 0) { *out = an_user_call(c, id, mi, fvia, fvia == UC_TOP ? -1 : c->scopes[mi].class_id); return 1; }
     /* Kernel conversions */
@@ -6555,9 +6559,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (bmi < 0) { bmi = comp_included_method_index(c, name, id); bvia = UC_INCLUDED; }
     if (bmi >= 0) {
       Scope *bsc = comp_scope_of(c, id);
-      int bcls = bsc ? bsc->class_id : -1;
+      /* in a block run by instance_eval, self is the receiver (#7213) */
+      int biec = ie_class_of(c, id);
+      int bcls = biec >= 0 ? biec : bsc ? bsc->class_id : -1;
       int shadowed = bcls >= 0 && bcls < c->nclasses &&
-                     (bsc->is_cmethod
+                     ((biec < 0 && bsc->is_cmethod)
                         ? comp_cmethod_in_chain(c, bcls, name, NULL) >= 0
                         : (comp_method_in_chain(c, bcls, name, NULL) >= 0 ||
                            comp_is_reader(&c->classes[bcls], name)));
