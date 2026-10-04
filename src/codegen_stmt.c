@@ -13774,11 +13774,15 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
     const char *rty = nt_type(nt, recv);
     int assignable = str_mut_recv_assignable(c, recv);
     if (sb_shadowed_reader(recv)) assignable = 1;   /* the reader shim's shadow */
-    /* an in-place mutator on a frozen string literal raises FrozenError */
+    /* an in-place mutator on a frozen string literal raises FrozenError,
+       once its arguments are evaluated */
     if (rty && sp_streq(rty, "StringNode") &&
         (sp_streq(name, "insert") || sp_streq(name, "prepend") || sp_streq(name, "<<") ||
          sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "clear") ||
-         sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!"))) {
+         sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!") ||
+         sp_streq(name, "[]="))) {
+      for (int a = 0; a < argc; a++)
+        if (nt_kind(nt, argv[a]) != NK_SplatNode) emit_stmt(c, argv[a], b, indent);
       emit_indent(b, indent);
       buf_puts(b, "sp_raise_frozen_str("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
@@ -14146,8 +14150,10 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
       }
       return 1;
     }
-    /* `<<` onto a frozen string literal raises FrozenError */
+    /* `<<` onto a frozen string literal raises FrozenError, once the first
+       link's argument is evaluated (the later links never run) */
     if (rty && sp_streq(rty, "StringNode")) {
+      emit_stmt(c, chain[nchain - 1], b, indent);
       emit_indent(b, indent);
       buf_puts(b, "sp_raise_frozen_str("); emit_expr(c, cur, b); buf_puts(b, ");\n");
       return 1;
