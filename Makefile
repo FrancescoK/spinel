@@ -135,6 +135,11 @@ export LIBRARY_PATH := $(OPENSSL_PREFIX)/lib$(if $(LIBRARY_PATH),:$(LIBRARY_PATH
 # reason as the two above for being an export rather than a flag -- the run
 # is a child process of the test recipe.
 export LD_LIBRARY_PATH := $(OPENSSL_PREFIX)/lib$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
+# The exports above live only as long as `make`: a `spinel` run afterwards
+# (or `spin build`) linked `-lssl` with no -L and failed with `library
+# 'ssl' not found` (#7191). The probed directory is recorded in the
+# compiler (spinel_rev.h), which puts it beside the package's -l flags.
+SPINEL_OPENSSL_LIBDIR := $(OPENSSL_PREFIX)/lib
 endif
 endif
 endif
@@ -316,7 +321,8 @@ build/csrc/spinel_rev.h: FORCE | build/csrc
 	esac; \
 	t=$@.tmp.$$$$; \
 	{ echo "#define SPINEL_BUILD_REV \"$$r\""; \
-	  echo "#define SPINEL_RELEASE \"$$d\""; } > $$t; \
+	  echo "#define SPINEL_RELEASE \"$$d\""; \
+	  echo "#define SPINEL_OPENSSL_LIBDIR \"$(SPINEL_OPENSSL_LIBDIR)\""; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
 build/csrc/main.o: build/csrc/spinel_rev.h
