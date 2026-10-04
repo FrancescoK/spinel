@@ -19,7 +19,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       (is_reduce_alias(name)) &&
       comp_ntype(c, argv[0]) == TY_SYMBOL) {
-    if (!poly_name_user_claimed(c, name, argc, 0)) {
+    if (!poly_name_user_claimed(c, name, argc)) {
       buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
@@ -52,7 +52,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     else if (sp_streq(name, "max")) pn9 = "sp_poly_arr_max_n";
     else if (sp_streq(name, "shuffle") && argc == 0) pn9 = "sp_poly_arr_shuffle";
     if (pn9) {
-      if (!poly_name_user_claimed(c, name, argc, 1)) {
+      if (!poly_name_user_claimed(c, name, argc)) {
         Buf cb9; memset(&cb9, 0, sizeof cb9);
         /* a value that is no collection is the call's NoMethodError
            (sp_poly_enum_chk): nil.take(1) and its siblings answered [] */
@@ -75,7 +75,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* values_at takes any number of indices; collect them into a poly array. */
   if (recv >= 0 && rt == TY_POLY && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
       sp_streq(name, "values_at")) {
-    if (!poly_name_user_claimed(c, name, argc, 0)) {
+    if (!poly_name_user_claimed(c, name, argc)) {
       int ti9 = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ti9, ti9);
@@ -122,7 +122,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "resume") || sp_streq(name, "transfer") ||
        (sp_streq(name, "raise") && argc <= 3))) {
-    if (!poly_name_user_claimed(c, name, argc, 1)) {
+    if (!poly_name_user_claimed(c, name, argc)) {
       Buf fv; memset(&fv, 0, sizeof fv);
       int tf = ++g_tmp;
       buf_printf(&fv, "({ sp_Fiber *_t%d = sp_poly_as_fiber(", tf);
@@ -166,7 +166,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
          must shadow the builtin helper exactly like `def value` does, or the
          reader call is hijacked (e.g. sp_poly_fiber_value on a Node). The
          general poly dispatch below emits reader arms, so it handles them. */
-      if (!poly_name_user_claimed(c, name, argc, 1)) {
+      if (!poly_name_user_claimed(c, name, argc)) {
         TyKind want = comp_ntype(c, id);
         int is_bool = sp_streq(name, "alive?") || sp_streq(name, "blocking?");
         if (is_bool && want == TY_POLY) buf_puts(b, "sp_box_bool(");
@@ -184,7 +184,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       ((argc == 0 && (sp_streq(name, "deq") || sp_streq(name, "num_waiting"))) ||
        (argc == 1 && sp_streq(name, "enq")) ||
        (argc == 1 && sp_streq(name, "deq")) || (argc == 2 && sp_streq(name, "enq")))) {
-    if (!poly_name_user_claimed(c, name, argc, 1)) {
+    if (!poly_name_user_claimed(c, name, argc)) {
       Buf qv; memset(&qv, 0, sizeof qv);
       if (sp_streq(name, "deq") && argc == 1) {   /* deq(non_block) */
         buf_puts(&qv, "sp_poly_queue_pop_flag("); emit_boxed(c, recv, &qv);

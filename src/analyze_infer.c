@@ -257,7 +257,7 @@ int an_program_spawns_threads(Compiler *c) {
 
 /* Does a class other than a native one read `name` as an attribute: an
    attr_reader, a Struct/Data member, or an alias of one? Asked the way the
-   emitter asks (poly_name_user_claimed with readers, comp_reader_in_chain),
+   emitter asks (poly_name_user_claimed, comp_reader_in_chain),
    so inference and emission take the same arm. */
 static int an_class_reads_name(Compiler *c, const char *name) {
   if (an_builtin_only) return 0;   /* deriving the builtin-only answer (#3459) */
@@ -6149,7 +6149,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      A class that reads a value of its own as `members` -- an attr_reader, a
      Struct/Data member of that name, or an alias of one -- answers it
      through the dispatch, as the emitter's #members arm stands aside for it
-     (poly_name_user_claimed with readers), so the answer is not the names. */
+     (poly_name_user_claimed), so the answer is not the names. */
   if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
       argc == 0 && nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
       !an_user_recv_defines_method(c, name)) {
