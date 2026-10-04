@@ -34,9 +34,42 @@ int bop_name_mutates(const char *name, unsigned sites) {
   return 0;
 }
 
+static const BuiltinZeroOp bop_zero_ops[] = {
+#define BZ_IO(name, fn, ret, max, mode, poly_ret, tail) \
+  { TY_IO, name, #fn, poly_ret, tail },
+#define BZ_STR(name, fn, ret, max, block) \
+  { TY_STRING, name, #fn, ret, "" },
+#include "builtin_zero_ops.inc"
+#undef BZ_IO
+#undef BZ_STR
+};
+
+const BuiltinZeroOp *bop_zero_find(TyKind recv, const char *name) {
+  if (!name) return NULL;
+  for (unsigned i = 0; i < sizeof bop_zero_ops / sizeof bop_zero_ops[0]; i++) {
+    if (bop_zero_ops[i].recv != recv) continue;
+    if (sp_streq(name, bop_zero_ops[i].name)) return &bop_zero_ops[i];
+  }
+  return NULL;
+}
+
+#define BZ_EMIT_DIRECT BOPE_TEMPLATE
+#define BZ_EMIT_CLOSE BOPE_TEMPLATE
+#define BZ_EMIT_SELF BOPE_TEMPLATE
+#define BZ_EMIT_NONE BOPE_NONE
+#define BZ_ARG_DIRECT(fn) #fn "($r)"
+#define BZ_ARG_CLOSE(fn) "({ " #fn "($r); sp_box_nil(); })"
+#define BZ_ARG_SELF(fn) "({ sp_File *_t$t = $r; " #fn "(_t$t); _t$t; })"
+#define BZ_ARG_NONE(fn) NULL
+#define BZ_IO(name, fn, ret, max, mode, poly_ret, tail) \
+  { TY_IO, name, 0, max, BF_ANY, ret, BZ_EMIT_##mode, BZ_ARG_##mode(fn), 0 },
+#define BZ_STR(name, fn, ret, max, block) \
+  { TY_STRING, name, 0, max, block, ret, BOPE_TEMPLATE, #fn "($r)", 0 },
+
 /* Rows grouped by receiver kind. Within a kind the order does not matter:
    lookups go through the sorted index below. */
 static const BuiltinOp bop_rows[] = {
+#include "builtin_zero_ops.inc"
   /* Process::Tms: four cumulative CPU times, all Float (#3044), fields of
      the by-value struct */
   { TY_TMS, "utime",  0, 0, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "($r).utime", 0, 0, BOPF_BOXED },
@@ -1045,33 +1078,24 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "respond_to?",    0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },  /* true or false whatever the name */
   { TY_IO, "read",           0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_read($r)", TY_UNKNOWN },
   { TY_IO, "read",           0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
-  { TY_IO, "gets",           0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_gets($r)", TY_UNKNOWN },
   { TY_IO, "gets",           0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
-  { TY_IO, "readline",       0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "path",           0, 127, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_path($r)", TY_UNKNOWN },
   { TY_IO, "to_path",        0, 127, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_path($r)", TY_UNKNOWN },
-  { TY_IO, "getc",           0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_getc($r)", TY_UNKNOWN },
   { TY_IO, "getc",           0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
-  { TY_IO, "readchar",       0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_File_readchar($r)", TY_UNKNOWN },
   { TY_IO, "readchar",       0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "readpartial",    0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "sysread",        0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "ftype",          0,   0, BF_ANY, TY_STRING,   BOPE_TEMPLATE, "sp_stat_ftype($r)", TY_UNKNOWN },
   { TY_IO, "ftype",          0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
   { TY_IO, "pread",          0, 127, BF_ANY, TY_STRING,   BOPE_NONE },
-  { TY_IO, "readlines",      0, 127, BF_ANY, TY_STR_ARRAY, BOPE_NONE },
   { TY_IO, "write",          0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "syswrite",       0, 127, BF_ANY, TY_INT,      BOPE_NONE },
-  { TY_IO, "pos",            0, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_tell($r)", TY_UNKNOWN },
-  { TY_IO, "tell",           0, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_tell($r)", TY_UNKNOWN },
   { TY_IO, "seek",           1,   1, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_seek($r, $i0, 0)", TY_UNKNOWN },
   { TY_IO, "seek",           2, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_seek($r, $i0, $i1)", TY_UNKNOWN },
   { TY_IO, "seek",           0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "rewind",         0, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_rewind($r)", TY_UNKNOWN },
-  { TY_IO, "fileno",         0, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_fileno($r)", TY_UNKNOWN },
   { TY_IO, "to_i",           0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_fileno($r)", TY_UNKNOWN },
   { TY_IO, "to_i",           0, 127, BF_ANY, TY_INT,      BOPE_NONE },
-  { TY_IO, "lineno",         0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_lineno($r)", TY_UNKNOWN },
   { TY_IO, "lineno",         0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "lineno=",        1,   1, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_set_lineno($r, $i0)", TY_UNKNOWN },
   { TY_IO, "lineno=",        0, 127, BF_ANY, TY_INT,      BOPE_NONE },
@@ -1083,7 +1107,6 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "fsync",          0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "fdatasync",      0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_fsync($r)", TY_UNKNOWN },
   { TY_IO, "fdatasync",      0, 127, BF_ANY, TY_INT,      BOPE_NONE },
-  { TY_IO, "getbyte",        0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_getbyte($r)", TY_UNKNOWN },
   { TY_IO, "getbyte",        0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "sysseek",        1,   1, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_sysseek($r, $i0, 0)", TY_UNKNOWN },
   { TY_IO, "sysseek",        2, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_sysseek($r, $i0, $i1)", TY_UNKNOWN },
@@ -1094,26 +1117,17 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "chmod",          0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "mode",           0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_stat_mode($r)", TY_UNKNOWN },
   { TY_IO, "mode",           0, 127, BF_ANY, TY_INT,      BOPE_NONE },
-  { TY_IO, "readbyte",       0,   0, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_readbyte($r)", TY_UNKNOWN },
   { TY_IO, "readbyte",       0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "fcntl",          1,   1, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_fcntl($r, $i0, 0)", TY_UNKNOWN },
   { TY_IO, "fcntl",          2, 127, BF_ANY, TY_INT,      BOPE_TEMPLATE, "sp_File_fcntl($r, $i0, $i1)", TY_UNKNOWN },
   { TY_IO, "fcntl",          0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "pwrite",         0, 127, BF_ANY, TY_INT,      BOPE_NONE },
   { TY_IO, "chown",          2,   2, BF_ANY, TY_INT,      BOPE_NONE },  /* #3104 */
-  { TY_IO, "close",          0, 127, BF_ANY, TY_POLY,     BOPE_TEMPLATE, "({ sp_File_close($r); sp_box_nil(); })", TY_UNKNOWN },  /* nil (#2801) */
   { TY_IO, "flock",          1,   1, BF_ANY, TY_POLY,     BOPE_TEMPLATE, "sp_File_flock($r, $i0)", TY_UNKNOWN },
   { TY_IO, "flock",          0, 127, BF_ANY, TY_POLY,     BOPE_NONE },  /* 0, or false for a held LOCK_NB */
   { TY_IO, "print",          0, 127, BF_ANY, TY_NIL,      BOPE_NONE },
   { TY_IO, "puts",           0, 127, BF_ANY, TY_NIL,      BOPE_NONE },
-  { TY_IO, "flush",          0, 127, BF_ANY, TY_IO,       BOPE_TEMPLATE, "({ sp_File *_t$t = $r; sp_File_flush(_t$t); _t$t; })", TY_UNKNOWN },  /* self (#2799) */
   { TY_IO, "binmode",        0, 127, BF_ANY, TY_IO,       BOPE_TEMPLATE, "({ sp_File *_t$t = $r; sp_File_set_binmode(_t$t); _t$t; })", TY_UNKNOWN },
-  { TY_IO, "closed?",        0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_closed_p($r)", TY_UNKNOWN },
-  { TY_IO, "eof?",           0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_eof_p($r)", TY_UNKNOWN },
-  { TY_IO, "eof",            0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_eof_p($r)", TY_UNKNOWN },
-  { TY_IO, "tty?",           0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_tty_p($r)", TY_UNKNOWN },
-  { TY_IO, "isatty",         0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_tty_p($r)", TY_UNKNOWN },
-  { TY_IO, "sync",           0, 127, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_sync_p($r)", TY_UNKNOWN },
   { TY_IO, "autoclose?",     0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_autoclose_p($r)", TY_UNKNOWN },
   { TY_IO, "autoclose?",     0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },
   { TY_IO, "==",             0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },
@@ -1480,25 +1494,16 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "[]=",             2,   3, BF_ANY,      TY_STRING,     BOPE_NONE },  /* the assigned string (#2370) */
   { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE },  /* clone(freeze: ...) */
   { TY_STRING, "encoding",        0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "sp_box_encoding(sp_str_is_binary($r) ? sp_encoding_binary() : sp_encoding_utf8())", 0 },  /* an Encoding value */
-  { TY_STRING, "upcase",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_upcase($r)", 0 },
   { TY_STRING, "upcase",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "downcase",        0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_downcase($r)", 0 },
   { TY_STRING, "downcase",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "capitalize",      0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_capitalize($r)", 0 },
   { TY_STRING, "capitalize",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "swapcase",        0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_swapcase($r)", 0 },
   { TY_STRING, "swapcase",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "reverse",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_reverse($r)", 0 },
   { TY_STRING, "delete_prefix",   1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_delete_prefix($r, $s0)", 0 },
   { TY_STRING, "delete_suffix",   1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_delete_suffix($r, $s0)", 0 },
-  { TY_STRING, "strip",           0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_strip($r)", 0 },
   { TY_STRING, "lstrip",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_lstrip($r)", 0 },
   { TY_STRING, "rstrip",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_rstrip($r)", 0 },
-  { TY_STRING, "chomp",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_chomp($r)", 0 },
   { TY_STRING, "chomp",           2, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_chomp($r)", 0 },
   { TY_STRING, "chomp",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "chop",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_chop($r)", 0 },
-  { TY_STRING, "chr",             0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_chr($r)", 0 },
   { TY_STRING, "chr",             0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "clamp",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "squeeze",         2, 127, BF_ANY,      TY_STRING,     BOPE_STR_SET_N, NULL, 0 },
@@ -1509,9 +1514,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "tr",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "tr_s",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_tr_s($r, $s0, $s1)", 0 },
   { TY_STRING, "tr_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "succ",            0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_succ($r)", 0 },
   { TY_STRING, "succ",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "next",            0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_succ($r)", 0 },
   { TY_STRING, "next",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "delete",          2, 127, BF_ANY,      TY_STRING,     BOPE_STR_SET_N, NULL, 0 },
   { TY_STRING, "delete",          1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_delete($r, $s0)", 0 },
@@ -1612,10 +1615,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "each_byte",       0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
   { TY_STRING, "each_byte",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "each_codepoint",  0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { TY_STRING, "chars",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_chars($r)", 0 },
   { TY_STRING, "chars",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
   { TY_STRING, "chars",           0, 127, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },
-  { TY_STRING, "bytes",           0,   0, BF_NONE,     TY_INT_ARRAY,  BOPE_TEMPLATE, "sp_str_bytes($r)", 0 },
   { TY_STRING, "bytes",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
   { TY_STRING, "bytes",           0, 127, BF_ANY,      TY_INT_ARRAY,  BOPE_NONE },
   { TY_STRING, "codepoints",      0,   0, BF_NONE,     TY_INT_ARRAY,  BOPE_TEMPLATE, "sp_str_codepoints($r)", 0 },
@@ -2036,6 +2037,17 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "one?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))
+
+#undef BZ_IO
+#undef BZ_STR
+#undef BZ_EMIT_DIRECT
+#undef BZ_EMIT_CLOSE
+#undef BZ_EMIT_SELF
+#undef BZ_EMIT_NONE
+#undef BZ_ARG_DIRECT
+#undef BZ_ARG_CLOSE
+#undef BZ_ARG_SELF
+#undef BZ_ARG_NONE
 
 /* Row indices sorted by (receiver kind, name), built on first use. */
 static int bop_index[BOP_NROWS];

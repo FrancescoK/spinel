@@ -1571,28 +1571,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
     /* the readers answer what the typed receiver's arms answer: gets and
        getc a nil-able String (NULL boxes to nil), getbyte an Integer or
        the nil sentinel, readline/readchar/readbyte raise EOFError */
-    static const struct { const char *nm, *fn; TyKind rt; const char *tail; } IOZ[] = {
-      {"close",   "sp_File_close",    TY_VOID},
-      {"closed?", "sp_File_closed_p", TY_BOOL},
-      {"eof?",    "sp_File_eof_p",    TY_BOOL},
-      {"eof",     "sp_File_eof_p",    TY_BOOL},
-      {"tty?",    "sp_File_tty_p",    TY_BOOL},
-      {"isatty",  "sp_File_tty_p",    TY_BOOL},
-      {"flush",   "sp_File_flush",    TY_VOID},
-      {"fileno",  "sp_File_fileno",   TY_INT},
-      {"tell",    "sp_File_tell",     TY_INT},
-      {"pos",     "sp_File_tell",     TY_INT},
-      {"lineno",  "sp_File_lineno",   TY_INT},
-      {"sync",    "sp_File_sync_p",   TY_BOOL},
-      {"gets",    "sp_File_gets",     TY_STRING},
-      {"getc",    "sp_File_getc",     TY_STRING},
-      {"readchar", "sp_File_readchar", TY_STRING},
-      {"readline", "sp_File_readline_sep", TY_STRING, ", \"\\n\", 0, 0"},
-      {"readbyte", "sp_File_readbyte", TY_INT},
-      {"getbyte", "sp_File_getbyte",  TY_INT},
-      {"readlines", "sp_File_readlines", TY_STR_ARRAY},
-      {NULL, NULL, TY_VOID, NULL}
-    };
+    const BuiltinZeroOp *io_op = bop_zero_find(TY_IO, name);
     /* a bare puts writes the newline and answers nil (#6158) */
     if (sp_streq(name, "puts")) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_PUTS, -1, TY_UNKNOWN, PC_SAME);
@@ -1601,12 +1580,11 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
       if (ret == TY_POLY) buf_printf(b, "_t%d = sp_box_nil(); ", tr);
       buf_puts(b, "}\nelse ");
     }
-    for (int i = 0; IOZ[i].nm; i++) {
-      if (!sp_streq(name, IOZ[i].nm)) continue;
+    if (io_op) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IOZ, -1, TY_UNKNOWN, PC_SAME);
       char ioex[128];
-      snprintf(ioex, sizeof ioex, "%s((sp_File *)_t%d.v.p%s)", IOZ[i].fn, tv,
-               IOZ[i].tail ? IOZ[i].tail : "");
+      snprintf(ioex, sizeof ioex, "%s((sp_File *)_t%d.v.p%s)", io_op->fn, tv,
+               io_op->tail);
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { ",
                  tv, tv);
       /* the value only lands when the result slot can hold it: poly boxes
@@ -1614,15 +1592,14 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
          keeps the call for its effect and leaves the seed */
       if (ret == TY_POLY && sp_streq(name, "getbyte"))
         buf_printf(b, "_t%d = sp_box_int_or_nil(%s)", tr, ioex);
-      else if (ret == TY_POLY && IOZ[i].rt != TY_VOID) {
+      else if (ret == TY_POLY && io_op->result != TY_VOID) {
         buf_printf(b, "_t%d = ", tr);
-        emit_boxed_text(c, IOZ[i].rt, ioex, b);
+        emit_boxed_text(c, io_op->result, ioex, b);
       }
-      else if (ret == IOZ[i].rt && IOZ[i].rt != TY_VOID)
+      else if (ret == io_op->result && io_op->result != TY_VOID)
         buf_printf(b, "_t%d = %s", tr, ioex);
       else buf_puts(b, ioex);
       buf_puts(b, "; }\nelse ");
-      break;
     }
   }
   /* A zero-arg CONTAINER reduction whose name a user class also owns
@@ -1677,22 +1654,9 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
   { int sci = comp_class_index(c, "String");
     if (sci >= 0 && comp_method_in_chain(c, sci, name, NULL) >= 0) str_reopen_owns = 1; }
   if (argc == 0 && !str_reopen_owns) {
-    static const struct { const char *nm, *fn; int arr; } STRT[] = {
-      {"upcase","sp_str_upcase",0}, {"downcase","sp_str_downcase",0},
-      {"capitalize","sp_str_capitalize",0}, {"swapcase","sp_str_swapcase",0},
-      {"strip","sp_str_strip",0}, {"reverse","sp_str_reverse",0},
-      {"chomp","sp_str_chomp",0}, {"chop","sp_str_chop",0},
-      {"succ","sp_str_succ",0}, {"next","sp_str_succ",0},
-      {"chr","sp_str_chr",0},
-      {"bytes","sp_str_bytes",1}, {"chars","sp_str_chars",2}, {NULL,NULL,0}
-    };
-    for (int si = 0; STRT[si].nm; si++) {
-      if (!sp_streq(name, STRT[si].nm)) continue;
-      /* the result has to fit the slot the dispatch assigns into */
-      int ok = STRT[si].arr == 0 ? (ret == TY_POLY || ret == TY_STRING)
-             : STRT[si].arr == 1 ? (ret == TY_POLY || ret == TY_INT_ARRAY)
-             :                     (ret == TY_POLY || ret == TY_STR_ARRAY);
-      if (!ok) break;
+    const BuiltinZeroOp *str_op = bop_zero_find(TY_STRING, name);
+    /* The result has to fit the slot the dispatch assigns into. */
+    if (str_op && (ret == TY_POLY || ret == str_op->result)) {
       /* #chr is Integer#chr on an int tag: stringifying first turns
          65.chr into "65".chr == "6" (#3328). */
       if (sp_streq(name, "chr")) {
@@ -1704,12 +1668,11 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
       }
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRT, -1, TY_UNKNOWN, PC_SAME);
       buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
-      if (ret != TY_POLY) buf_printf(b, "%s(_t%d.v.s)", STRT[si].fn, tv);
-      else if (STRT[si].arr == 1) buf_printf(b, "sp_box_int_array(%s(_t%d.v.s))", STRT[si].fn, tv);
-      else if (STRT[si].arr == 2) buf_printf(b, "sp_box_str_array(%s(_t%d.v.s))", STRT[si].fn, tv);
-      else buf_printf(b, "sp_box_str(%s(_t%d.v.s))", STRT[si].fn, tv);
+      if (ret != TY_POLY) buf_printf(b, "%s(_t%d.v.s)", str_op->fn, tv);
+      else if (str_op->result == TY_INT_ARRAY) buf_printf(b, "sp_box_int_array(%s(_t%d.v.s))", str_op->fn, tv);
+      else if (str_op->result == TY_STR_ARRAY) buf_printf(b, "sp_box_str_array(%s(_t%d.v.s))", str_op->fn, tv);
+      else buf_printf(b, "sp_box_str(%s(_t%d.v.s))", str_op->fn, tv);
       buf_puts(b, "; }\nelse ");
-      break;
     }
     /* #split is the same shape but answers an ARRAY, so it needs the slot
        conversion the table above cannot express: a user class owning

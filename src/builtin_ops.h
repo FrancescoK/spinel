@@ -30,6 +30,17 @@ enum {
 int bop_name_has_reader(const char *name, unsigned surface);
 int bop_name_mutates(const char *name, unsigned sites);
 
+/* The runtime call behind a zero-argument IO/String row. Boxed dispatch
+   owns its tag and result-slot guards; it shares the call facts with the
+   typed rows without borrowing their arity or return-value policy. */
+typedef struct {
+  TyKind recv;
+  const char *name, *fn;
+  TyKind result;
+  const char *tail;
+} BuiltinZeroOp;
+const BuiltinZeroOp *bop_zero_find(TyKind recv, const char *name);
+
 /* What a row asks of the call's block. BF_ANY: the legacy rule ignored the
    block, so the row does too. */
 typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;
