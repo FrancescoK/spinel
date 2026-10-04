@@ -1129,6 +1129,7 @@ int scope_has_callable_symbol(Compiler *c, int s);
 int scope_toplevel_included(Compiler *c, int s);
 int scope_uses_ivars(Compiler *c, int mi);
 int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
+const char *forwarded_real_proc(int blk0, int blk);
 int emit_block_arg_proc(Compiler *c, int fe, Buf *b);
 void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b);
 int struct_kwarg_value(Compiler *c, int kwh, const char *name);
@@ -1362,6 +1363,7 @@ int class_body_list(Compiler *c, int **out_ci, int **out_body);
 TyKind an_builtin_answer(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int node_is_empty_container(const NodeTable *nt, int node);
+int an_empty_container_kind(Compiler *c, int b);
 TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
@@ -1607,7 +1609,7 @@ const char *array_index_bad_class(Compiler *c, int id);
 int  poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max);
 int  poly_redispatch_kind(Compiler *c, int id, const char *name, int argc);
 int  face_arg_misfit(Compiler *c, unsigned kind, int arg);
-int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers);
+int poly_name_user_claimed(Compiler *c, const char *name, int argc);
 /* Does CRuby take argc arguments to cls#name, by the instance arity table
    (sp_builtin_arity_spec_tbl)? 1 for a name the table has no row for. */
 int builtin_arity_admits(const char *cls, const char *name, int argc);

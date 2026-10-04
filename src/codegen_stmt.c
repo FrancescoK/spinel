@@ -1432,8 +1432,18 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     }
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a
-         fresh sp_String so later `<<` appends are amortized O(1). */
-      buf_puts(b, "sp_String_new_shared("); emit_expr(c, v, b); buf_puts(b, ")");
+         fresh sp_String so later `<<` appends are amortized O(1). An RHS
+         that diverges (the unresolved-call gate's sp_raise_nomethod(...),
+         an sp_RbVal; the node stays TY_UNKNOWN) has no String to wrap:
+         keep the raise and answer a NULL handle, as emit_str_expr does for
+         its const char* slot. Wrapped, the C did not build. */
+      Buf rv; memset(&rv, 0, sizeof rv);
+      emit_expr(c, v, &rv);
+      const char *rtxt = rv.p ? rv.p : "";
+      if (strncmp(past_open_parens(rtxt), "sp_raise_", 9) == 0)
+        buf_printf(b, "((void)(%s), (sp_String *)NULL)", rtxt);
+      else buf_printf(b, "sp_String_new_shared(%s)", rtxt);
+      free(rv.p);
     }
   }
 }
@@ -8664,6 +8674,16 @@ int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b) {
   return 0;
 }
 
+/* Does a slot of class type take `val` through emit_obj_upcast_prefix: an
+   object of a class below the slot's, neither of them a value type? */
+static int slot_takes_subclass(Compiler *c, TyKind slot, TyKind val) {
+  if (!ty_is_object(slot) || !ty_is_object(val)) return 0;
+  int sc = ty_object_class(slot), vc = ty_object_class(val);
+  if (sc < 0 || vc < 0 || sc == vc) return 0;
+  if (c->classes[sc].is_value_type || c->classes[vc].is_value_type) return 0;
+  return is_descendant(c, vc, sc);
+}
+
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, Buf *b) {
   for (int k = 0; k < c->nclasses; k++) {
@@ -8704,15 +8724,18 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
     TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : at;
     /* skip a class whose slot can't hold this concrete rhs (the runtime object
        isn't that class anyway): a raw assignment between mismatched C types
-       would not compile */
-    if (at != ivt && at != TY_POLY && ivt != TY_POLY) continue;
+       would not compile. A slot typed as an ancestor of the rhs's class does
+       hold it, through the upcast: with `@left` settled as Node, a Column
+       stored through `obj.left = col` lost every arm and raised
+       NoMethodError for a writer the receiver has. */
+    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at)) continue;
     buf_printf(b, " case %d: ", k);
     { char opn[64]; snprintf(opn, sizeof opn, "((sp_%s *)%s)", c->classes[k].c_name, objp);
       emit_frozen_obj_guard(c, k, opn, b); }
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
     if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
-    else buf_puts(b, src);
+    else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
     buf_puts(b, "; break;");
   }
   /* a real IO in the slot keeps its own writer beside the program's: a Log

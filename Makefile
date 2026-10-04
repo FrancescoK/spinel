@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -961,7 +961,7 @@ test: $(SPINEL_TIMEOUT)
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -1138,6 +1138,28 @@ cli-opts-test: $(SPINEL)
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
+# A program that also links mruby (libmruby.a) gets mruby's own mrb_malloc,
+# mrb_str_new, ... The regexp engine must not define those names. If it does,
+# the link fails (GNU ld), or the engine calls mruby's copy and crashes (ld64).
+# test/link-names/foreign_mrb.c defines the names and aborts if one is called.
+link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
+	@ok=1; tmp=$$(mktemp -d /tmp/spinel-linknames.XXXXXX); t=test/link-names/regexp_program.rb; \
+	for a in $(SP_RT_LIB) $(SP_RT_MT_LIB); do \
+	  s=$$(nm -gP --defined-only "$$a") || { echo "link-names-test: FAIL (nm could not read $$a)"; ok=0; continue; }; \
+	  n=$$(echo "$$s" | awk '$$1 ~ /^_?mrb_/ { print $$1 }' | sort -u); \
+	  [ -z "$$n" ] || { echo "link-names-test: FAIL ($$a defines mruby names: $$(echo $$n | tr '\n' ' '))"; ok=0; }; \
+	done; \
+	$(CC) -c test/link-names/foreign_mrb.c -o "$$tmp/foreign_mrb.o" || ok=0; \
+	if $(SPINEL) "$$t" --link "$$tmp/foreign_mrb.o" -o "$$tmp/p" >"$$tmp/b.out" 2>&1; then \
+	  ! grep -qE 'duplicate symbol|multiple definition' "$$tmp/b.out" || \
+	    { echo "link-names-test: FAIL (the link saw two definitions of a name)"; grep -E 'duplicate symbol|multiple definition' "$$tmp/b.out" | sort -u | sed -n 1,5p; ok=0; }; \
+	  "$$tmp/p" >"$$tmp/r.out" 2>&1; rc=$$?; \
+	  [ $$rc -eq 0 ] && cmp -s "$$tmp/r.out" "$$t.expected" || \
+	    { echo "link-names-test: FAIL (the program exited $$rc or printed other output)"; sed -n 1,5p "$$tmp/r.out"; ok=0; }; \
+	else echo "link-names-test: FAIL (the program did not build next to mruby's names)"; sed -n 1,5p "$$tmp/b.out"; ok=0; fi; \
+	rm -rf "$$tmp"; \
+	[ $$ok = 1 ] && echo "link-names-test: pass" || exit 1
+
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
 	for t in test/reject/string_thread_arg.rb test/reject/string_fiber_arg.rb test/reject/string_thread_global_arg.rb test/reject/string_thread_ivar_arg.rb test/reject/string_thread_method_param_arg.rb test/reject/string_fiber_method_param_arg.rb test/reject/string_thread_block_param_arg.rb test/reject/string_thread_arg_in_loop.rb; do \
@@ -1225,6 +1247,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
 	else grep -q "redo in this block" "$$tmp/rui.out" || \
 	  { echo "reject-test: FAIL (a redo with no label rejected without saying why)"; sed -n 1,5p "$$tmp/rui.out"; ok=0; }; fi; \
+	t=test/reject/class_body_block_next.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cbn.c" >"$$tmp/cbn.out" 2>&1; then \
+	  echo "reject-test: FAIL (a next in a class body block compiled)"; ok=0; \
+	else grep -q "next in a block that is a class body" "$$tmp/cbn.out" || \
+	  { echo "reject-test: FAIL (a next in a class body block rejected without saying why)"; sed -n 1,5p "$$tmp/cbn.out"; ok=0; }; fi; \
 	t=test/reject/instance_exec_default_ivar_write.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/idw.c" >"$$tmp/idw.out" 2>&1; then \
 	  echo "reject-test: FAIL (an ivar written in a block default on a value with no ivars compiled)"; ok=0; \
@@ -2967,6 +2994,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/hash_or_write_index_setter.rb -c --no-line-map -o "$$tmp/hos.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_or_write_index_setter: -c)"; ok=0; }; \
 	grep -q 'sp_PolyPolyHash \* iv_traps;' "$$tmp/hos.c" && grep -q 'sp_PolyPolyHash \* iv_hooks;' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 an index write into (@h ||= {}) left @h boxed)"; ok=0; }; \
 	grep -q 'sp_OrwMem_poke(sp_OrwMem \*self, sp_int lv_addr, sp_int lv_value)' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 a Hash index write widened an unrelated user []=)"; ok=0; }; \
+	$(SPINEL) test/infer/define_method_runtime_name_next.rb -c --no-line-map -o "$$tmp/dmr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (define_method_runtime_name_next: -c)"; ok=0; }; \
+	grep -q 'sp_sym sp_Maker_s_make(' "$$tmp/dmr.c" && grep -q 'sp_int sp_Maker_s_count(' "$$tmp/dmr.c" && grep -q 'sp_sym sp_Maker_s_mixed(' "$$tmp/dmr.c" || { echo "infer-test: FAIL (a next in a define_method block with a run-time name is read as the enclosing method's return)"; ok=0; }; \
 	SPINEL_SPLIT_STRICT=1 $(SPINEL) --jobs=3 test/dispatch_override_param_list.rb -o "$$tmp/split" >/dev/null 2>&1 && "$$tmp/split" | cmp -s - test/dispatch_override_param_list.rb.expected || { echo "infer-test: FAIL (#4847 --jobs=3 split build)"; ok=0; }; \
 	$(SPINEL) test/infer/file_foreach_block_streams.rb -c --no-line-map -o "$$tmp/ffbs.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (file_foreach_block_streams: -c)"; ok=0; }; \
 	grep -q 'sp_file_readlines(' "$$tmp/ffbs.c" && { echo "infer-test: FAIL (File.foreach with a block reads the whole file through readlines)"; ok=0; }; \
@@ -3101,6 +3130,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'static (inline )?((__attribute__\(\(always_inline\)\)|SP_ALWAYS_INLINE) )?sp_int sp_F_s_add\(sp_int [A-Za-z_]+, sp_int [A-Za-z_]+\)' "$$tmp/t.c" || { echo "infer-test: FAIL (an int table on an ivar poisoned the helper it feeds)"; grep -E 'sp_F_s_add\(' "$$tmp/t.c" | head -1; ok=0; }; \
 	grep -Eq 'sp_PtrArray \* *iv_t;' "$$tmp/t.c" || { echo "infer-test: FAIL (the ivar table lost its typed representation)"; ok=0; }; \
 	grep -Eq 'sp_IntArray \* *lv_row' "$$tmp/t.c" || { echo "infer-test: FAIL (a row read out of the table stayed boxed)"; ok=0; }; \
+	$(SPINEL) test/infer/ivar_table_nil_only_store.rb -c --no-line-map -o "$$tmp/tn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile ivar_table_nil_only_store)"; exit 1; }; \
+	for v in loc par ret; do grep -Eq "sp_PtrArray \* *iv_$$v;" "$$tmp/tn.c" || { echo "infer-test: FAIL (an ivar table that stores a nil-only value lost its typed representation: @$$v)"; ok=0; }; done; \
 	$(SPINEL) test/infer/class_method_table_arg.rb -c --no-line-map -o "$$tmp/m.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile class_method_table_arg)"; exit 1; }; \
 	grep -Eq 'sp_PtrArray \* *lv_rows' "$$tmp/m.c" || { echo "infer-test: FAIL (a table passed to a class method lost its typed representation)"; grep -E 'sp_M_s_consume\(' "$$tmp/m.c" | head -1; ok=0; }; \
 	grep -Eq 'static (inline )?((__attribute__\(\(always_inline\)\)|SP_ALWAYS_INLINE) )?sp_int sp_F_s_mul\(sp_int [A-Za-z_]+, sp_int [A-Za-z_]+\)' "$$tmp/m.c" || { echo "infer-test: FAIL (a helper reading an element of the table bound a boxed parameter)"; grep -E 'sp_F_s_mul\(' "$$tmp/m.c" | head -1; ok=0; }; \
@@ -3245,6 +3276,9 @@ collect-errors-test: $(SPINEL)
 refusals-corpus-test: $(SPINEL)
 	@tools/refusals.sh --corpus
 
+# The signal checks wait for the program (waitfor polls up to 10s, stopping
+# when the program dies) instead of sleeping a second: under the gate's load
+# a new binary can take longer than that to start.
 alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	@tmp=$$(mktemp -d /tmp/spinel-alloc.XXXXXX); ok=1; \
 	$(SPINEL) test/alloc-report/sites.rb -o "$$tmp/sites" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile)"; exit 1; }; \
@@ -3277,20 +3311,28 @@ alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 	sat=$$(awk '/;\(no-scan\) /{print $$NF}' "$$tmp/sm.folded" | head -1); \
 	[ -n "$$full" ] && [ "$$full" = "$$sat" ] || { echo "alloc-report-test: FAIL (a saturated run changed a surviving row: $$full vs $$sat)"; ok=0; }; \
 	$(SPINEL) test/alloc-report/signal_dump.rb -o "$$tmp/sig" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile signal_dump)"; exit 1; }; \
-	SPINEL_ALLOC_REPORT="$$tmp/sig.folded" "$$tmp/sig" >/dev/null 2>&1 & \
-	sigpid=$$!; sleep 1; kill -USR1 $$sigpid 2>/dev/null; sleep 1; \
-	kill -0 $$sigpid 2>/dev/null || { echo "alloc-report-test: FAIL (the signal ended the program instead of dumping)"; ok=0; }; \
-	first=$$(awk '/^alloc;.*String /{print $$NF; exit}' "$$tmp/sig.folded" 2>/dev/null); \
-	[ -n "$$first" ] || { echo "alloc-report-test: FAIL (no report from a running program)"; ok=0; }; \
-	sleep 1; kill -USR1 $$sigpid 2>/dev/null; sleep 1; \
-	second=$$(awk '/^alloc;.*String /{print $$NF; exit}' "$$tmp/sig.folded" 2>/dev/null); \
+	waitfor() { n=0; while [ $$n -lt 100 ]; do eval "$$2" && return 0; kill -0 $$1 2>/dev/null || return 1; sleep 0.1; n=$$((n+1)); done; return 1; }; \
+	strings_in() { awk '/^alloc;.*String /{print $$NF; exit}' "$$1" 2>/dev/null; }; \
+	SPINEL_ALLOC_REPORT="$$tmp/sig.folded" "$$tmp/sig" > "$$tmp/sig.out" 2>&1 & \
+	sigpid=$$!; \
+	if waitfor $$sigpid 'grep -q ready "$$tmp/sig.out" 2>/dev/null'; then \
+	  kill -USR1 $$sigpid 2>/dev/null; waitfor $$sigpid '[ -n "$$(strings_in "$$tmp/sig.folded")" ]'; \
+	  kill -0 $$sigpid 2>/dev/null || { echo "alloc-report-test: FAIL (the signal ended the program instead of dumping)"; ok=0; }; \
+	  first=$$(strings_in "$$tmp/sig.folded"); \
+	  [ -n "$$first" ] || { echo "alloc-report-test: FAIL (no report from a running program)"; ok=0; }; \
+	  kill -USR1 $$sigpid 2>/dev/null; waitfor $$sigpid '[ "$$(strings_in "$$tmp/sig.folded")" -gt "$${first:-0}" ] 2>/dev/null'; \
+	  second=$$(strings_in "$$tmp/sig.folded"); \
+	  [ -n "$$second" ] && [ "$$second" -gt "$${first:-0}" ] || { echo "alloc-report-test: FAIL (the second signal did not re-dump a later table: $$first then $$second)"; ok=0; }; \
+	else echo "alloc-report-test: FAIL (signal_dump did not start within 10s)"; ok=0; fi; \
 	kill -9 $$sigpid 2>/dev/null; wait $$sigpid 2>/dev/null; \
-	[ -n "$$second" ] && [ "$$second" -gt "$${first:-0}" ] || { echo "alloc-report-test: FAIL (the second signal did not re-dump a later table: $$first then $$second)"; ok=0; }; \
 	$(SPINEL) test/alloc-report/signal_dump_idle.rb -o "$$tmp/idle" >/dev/null 2>&1 || { echo "alloc-report-test: FAIL (compile signal_dump_idle)"; exit 1; }; \
-	SPINEL_ALLOC_REPORT="$$tmp/idle.folded" "$$tmp/idle" >/dev/null 2>&1 & \
-	idlepid=$$!; sleep 1; kill -USR1 $$idlepid 2>/dev/null; sleep 1; \
-	kill -0 $$idlepid 2>/dev/null || { echo "alloc-report-test: FAIL (the signal ended the idle program)"; ok=0; }; \
-	grep -qE '^alloc;.*String [0-9]+$$' "$$tmp/idle.folded" 2>/dev/null || { echo "alloc-report-test: FAIL (an idle program did not report when signalled: the dump is waiting for an allocation that will never come)"; ok=0; }; \
+	SPINEL_ALLOC_REPORT="$$tmp/idle.folded" "$$tmp/idle" > "$$tmp/idle.out" 2>&1 & \
+	idlepid=$$!; \
+	if waitfor $$idlepid '[ -s "$$tmp/idle.out" ]'; then \
+	  kill -USR1 $$idlepid 2>/dev/null; waitfor $$idlepid 'grep -qE "^alloc;.*String [0-9]+$$" "$$tmp/idle.folded" 2>/dev/null'; \
+	  kill -0 $$idlepid 2>/dev/null || { echo "alloc-report-test: FAIL (the signal ended the idle program)"; ok=0; }; \
+	  grep -qE '^alloc;.*String [0-9]+$$' "$$tmp/idle.folded" 2>/dev/null || { echo "alloc-report-test: FAIL (an idle program did not report when signalled: the dump is waiting for an allocation that will never come)"; ok=0; }; \
+	else echo "alloc-report-test: FAIL (signal_dump_idle did not start within 10s)"; ok=0; fi; \
 	kill -9 $$idlepid 2>/dev/null; wait $$idlepid 2>/dev/null; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "alloc-report-test: pass"; else exit 1; fi

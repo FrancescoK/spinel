@@ -9,6 +9,24 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+/* The receiver of an Integer bit operator. For a shift, an Integer slot
+   that can hold its nil sentinel (cmp_operand_may_be_nil) is tested first:
+   nil has no << or >>, and the sentinel shifted read as a number (`>> 1` of
+   a nil attribute answered -4611686018427387904). & | ^ are left as they
+   were: the marking counts every typed array element read, and the test
+   cost the bit-twiddling loops (nqueens) a branch per operand. */
+static void emit_int_bit_recv(Compiler *c, int recv, TyKind rt, const char *conv,
+                              const char *name, Buf *b) {
+  if (rt != TY_INT || !is_shift_op(name) || !cmp_operand_may_be_nil(c, recv)) {
+    emit_poly_unboxed(c, recv, rt, conv, b);
+    return;
+  }
+  int tn = ++g_tmp;
+  buf_printf(b, "({ sp_int _t%d = ", tn);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; })", tn, name, tn);
+}
+
 /* Integer shifts, <=>, the comparison and equality operators, and is_a? on a poly receiver */
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
@@ -84,7 +102,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          (which may run arbitrary code, and allocate) is evaluated */
       int tpl = ++g_tmp, tpr = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = sp_bigint_new_int(", tpl);
-      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
+      emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tpl, tpr);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bigint_%s(_t%d, _t%d); })", tpr,
@@ -119,7 +137,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (is_shift && lit_shift &&
         (litc < 0 || litc >= 64 || sp_streq(name, "<<"))) {
       buf_printf(b, "sp_int_%s(", sp_streq(name, "<<") ? "shl" : "shr");
-      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
+      emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
       buf_printf(b, ", %lldLL)", litc);
       return 1;
     }
@@ -127,7 +145,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* a runtime shift count: range-checked (negative shifts the other way,
          past-the-word raises) via a single-compare fast path (#2423) */
       buf_printf(b, "sp_int_%s_ck(", sp_streq(name, "<<") ? "shl" : "shr");
-      emit_poly_unboxed(c, recv, rt, rcv_conv, b);
+      emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
       buf_puts(b, ", ");
       if (at0 == TY_POLY) { buf_puts(b, "sp_poly_bit_operand("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else if (at0 == TY_FLOAT) { buf_puts(b, "(sp_int)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -153,7 +171,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     int shl_neg_safe = sp_streq(name, "<<");
     buf_puts(b, "(");
     if (shl_neg_safe) buf_puts(b, "(sp_int)((uint64_t)(");
-    emit_poly_unboxed(c, recv, rt, rcv_conv, b);
+    emit_int_bit_recv(c, recv, rt, rcv_conv, name, b);
     if (shl_neg_safe) buf_puts(b, ")");
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {

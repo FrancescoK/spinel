@@ -1290,9 +1290,13 @@ int hoist_dispatch_blk_proc(Compiler *c, int id, int cblk) {
 void emit_trailing_blk_arg(Compiler *c, const Scope *m, int id, int blk_tmp, Buf *b) {
   if (!m->blk_param || !m->blk_param[0] || m->yields) return;
   if (blk_tmp >= 0) { buf_printf(b, ", _t%d", blk_tmp); return; }
-  int cblk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  int blk0 = nt_ref(c->nt, id, "block");
+  int cblk = resolve_forwarded_block(c, blk0);
+  /* a `&`/`&blk` in an inlined forwarder whose block is a real proc (a proc
+     form's parameter) passes that proc, as a Method call's does */
+  const char *fwd = forwarded_real_proc(blk0, cblk);
   if (cblk >= 0) buf_printf(b, ", _t%d", hoist_block_proc(c, cblk));
-  else buf_puts(b, ", NULL");
+  else buf_printf(b, ", %s", fwd ? fwd : "NULL");
 }
 /* The call's literal block as one rooted proc temp, ahead of a dispatch whose
    arms share it (only one arm runs), or -1 when there is none to build. A
@@ -1843,18 +1847,20 @@ int recv_user_defines(Compiler *c, const char *name) {
    -- a real method living in a class's readers list rather than the method
    chain. Used where a builtin poly-method shortcut must decline to the general
    cls_id dispatch so a field-reader arm (which the general path DOES emit) wins
-   over a colliding builtin (e.g. Data member `day` vs Time#day, #3239). */
+   over a colliding builtin (e.g. Data member `day` vs Time#day, #3239). Every
+   shortcut asks it the same way: one that left readers out answered a user
+   object's `attr_reader :values` with Hash#values' NoMethodError. */
 /* Set while emitting a poly dispatch's builtin-container arm. Inside that arm
    the runtime value is known to BE an Array or Hash, so the user classes that
    own the name are not candidates there and the builtin emitters must serve it
    as if the name were unowned -- the switch's own case labels keep the user
    receivers out (#3459). */
 
-int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers) {
+int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
   if (g_poly_builtin_arm) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_poly_arm_defines_n(c, k, name, argc) ||
-        (readers && !c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
+        (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
   return 0;
 }
 
@@ -14344,6 +14350,36 @@ static int io_builtin_name(const char *m) {
    table's and the argument-count table's rows, which cover different
    classes (IO's are only in the second): the names a send on a receiver of
    that class can reach (desugar_dynamic_send). May repeat a name. */
+/* The argument counts a builtin method of this name takes, over every
+   class that has one, as CRuby's tables above give them -- the
+   block-carrying call's counts `with_block` -- and *hi is -1 where one
+   takes any number. A spec row the probe could not prove says nothing.
+   Answers whether any class has the name. */
+int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi) {
+  int found = 0, l = 0, h = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    int n = pass ? (int)(sizeof sp_builtin_arity_spec_tbl / sizeof sp_builtin_arity_spec_tbl[0])
+                 : (int)(sizeof sp_builtin_arity_tbl / sizeof sp_builtin_arity_tbl[0]);
+    for (int i = 0; i < n; i++) {
+      int rl, rh;
+      if (pass) {
+        const SpAritySpec *r = &sp_builtin_arity_spec_tbl[i];
+        if (!r->m || !sp_streq(r->m, name)) continue;
+        rl = with_block ? r->blk_min : r->min; rh = with_block ? r->blk_max : r->max;
+        if (rl < 0) continue;
+      } else {
+        if (!sp_builtin_arity_tbl[i].m || !sp_streq(sp_builtin_arity_tbl[i].m, name)) continue;
+        int a = sp_builtin_arity_tbl[i].a;
+        rl = a >= 0 ? a : -a - 1; rh = a >= 0 ? a : -1;
+      }
+      if (!found) { l = rl; h = rh; found = 1; continue; }
+      if (rl < l) l = rl;
+      if (h >= 0 && (rh < 0 || rh > h)) h = rh;
+    }
+  }
+  if (found) { *lo = l; *hi = h; }
+  return found;
+}
 int builtin_method_names(const char *cls, const char **out, int cap) {
   int n = 0;
   for (int i = 0; sp_builtin_arity_tbl[i].cls && n < cap; i++)
@@ -21527,9 +21563,7 @@ int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b) {
    (blk < 0 for a written blk0). Read as written, the block named a proc
    local the inlined body does not declare, and the C did not compile
    (`def fw(&) = method(:t).call(1, &)`). */
-const char *forwarded_real_proc(int blk0, int blk) {
-  return blk0 >= 0 && blk < 0 ? g_yield_proc_ref : NULL;
-}
+
 
 /* The block argument a Method call hands a target that keeps a `&blk`
    parameter: the site's literal block as a proc, a Proc passed with `&`, a

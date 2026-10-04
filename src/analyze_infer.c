@@ -257,7 +257,7 @@ int an_program_spawns_threads(Compiler *c) {
 
 /* Does a class other than a native one read `name` as an attribute: an
    attr_reader, a Struct/Data member, or an alias of one? Asked the way the
-   emitter asks (poly_name_user_claimed with readers, comp_reader_in_chain),
+   emitter asks (poly_name_user_claimed, comp_reader_in_chain),
    so inference and emission take the same arm. */
 static int an_class_reads_name(Compiler *c, const char *name) {
   if (an_builtin_only) return 0;   /* deriving the builtin-only answer (#3459) */
@@ -2006,10 +2006,13 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
   return 1;
 }
 
+/* The analyze twin of codegen's poly_name_user_claimed, readers included: an
+   attr_reader is an arm of the dispatch like a def. */
 static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
   if (an_builtin_only) return 0;
   for (int k = 0; k < c->nclasses; k++)
-    if (comp_poly_arm_defines_n(c, k, name, argc)) return 1;
+    if (comp_poly_arm_defines_n(c, k, name, argc) ||
+        (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
   return 0;
 }
 
@@ -6146,7 +6149,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      A class that reads a value of its own as `members` -- an attr_reader, a
      Struct/Data member of that name, or an alias of one -- answers it
      through the dispatch, as the emitter's #members arm stands aside for it
-     (poly_name_user_claimed with readers), so the answer is not the names. */
+     (poly_name_user_claimed), so the answer is not the names. */
   if (recv >= 0 && (sp_streq(name, "members") || sp_streq(name, "deconstruct")) &&
       argc == 0 && nt_ref(nt, id, "block") < 0 && infer_type(c, recv) == TY_POLY &&
       !an_user_recv_defines_method(c, name)) {
@@ -7601,6 +7604,23 @@ int an_empty_container_kind(Compiler *c, int b) {
   }
   return 0;
 }
+/* `(a; b)` is its last statement. An empty `[]` / `{}` there reads UNKNOWN
+   for want of an element type, and unlike `([])` a sequence is not looked
+   through by the slot that takes it: nothing settled a type, the consumer
+   took the boxed slot and boxed "no value" into it, so `x = (1; [])`
+   assigned nil. It carries a value, as the same tail of a `begin` does:
+   poly. */
+static TyKind an_paren_ty(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, id, "body");
+  if (body < 0) return TY_NIL;
+  int n = 0;
+  const int *b = nt_arr(nt, body, "body", &n);
+  if (n <= 0) return TY_NIL;
+  TyKind r = infer_type(c, b[n - 1]);
+  if (r == TY_UNKNOWN && n > 1 && an_empty_container_kind(c, b[n - 1])) return TY_POLY;
+  return r;
+}
 /* `x || {}` / `x || Hash.new` with a nil (or not yet typed) left: the nil-guard
    fallback, whose value is the empty hash on the right. That producer, else
    -1. */
@@ -8406,13 +8426,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (ty_is_hash(rt)) return ty_hash_val(rt);
     return TY_POLY;
   }
-  if (nk == NK_ParenthesesNode) {
-    int body = nt_ref(nt, id, "body");
-    if (body < 0) return TY_NIL;
-    int n = 0;
-    const int *b = nt_arr(nt, body, "body", &n);
-    return n > 0 ? infer_type(c, b[n - 1]) : TY_NIL;
-  }
+  if (nk == NK_ParenthesesNode) return an_paren_ty(c, id);
   if (nk == NK_StatementsNode) {
     int n = 0;
     const int *b = nt_arr(nt, id, "body", &n);

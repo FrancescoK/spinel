@@ -4486,33 +4486,23 @@ int desugar_array_at(Compiler *c) {
   return changed;
 }
 
-/* Is `target` what `node` answers: the node itself, the last statement of a
-   body, or the end of an if/unless branch or a parenthesized group? */
-static int cow_in_tail(const NodeTable *nt, int node, int target) {
-  if (node < 0) return 0;
-  if (node == target) return 1;
-  switch (nt_kind(nt, node)) {
-  case NK_StatementsNode: {
-    int n = 0;
-    const int *st = nt_arr(nt, node, "body", &n);
-    return st && n > 0 && cow_in_tail(nt, st[n - 1], target);
-  }
-  case NK_ParenthesesNode: return cow_in_tail(nt, nt_ref(nt, node, "body"), target);
-  case NK_ElseNode: return cow_in_tail(nt, nt_ref(nt, node, "statements"), target);
-  case NK_IfNode:
-    return cow_in_tail(nt, nt_ref(nt, node, "statements"), target) ||
-           cow_in_tail(nt, nt_ref(nt, node, "subsequent"), target);
-  case NK_UnlessNode:
-    return cow_in_tail(nt, nt_ref(nt, node, "statements"), target) ||
-           cow_in_tail(nt, nt_ref(nt, node, "else_clause"), target);
-  default: return 0;
-  }
-}
-
-/* The op-assign is what its method returns: its value is used. */
-static int cow_is_method_value(Compiler *c, int id) {
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].def_node >= 0 && cow_in_tail(c->nt, c->scopes[s].body, id)) return 1;
+/* The last statement of a block whose call any user class defines (a
+   user `each`): an_value_dropped reads only the call's name, but that
+   method can answer the block's value. */
+static int cow_user_block_value(Compiler *c, const int *parent, int id) {
+  const NodeTable *nt = c->nt;
+  int st = parent[id];
+  if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
+  int sn = 0;
+  const int *sb = nt_arr(nt, st, "body", &sn);
+  if (sn <= 0 || sb[sn - 1] != id) return 0;
+  int blk = parent[st];
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  int call = parent[blk];
+  const char *bn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  if (!bn) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, bn, NULL) >= 0) return 1;
   return 0;
 }
 
@@ -4533,6 +4523,7 @@ int desugar_call_op_write(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
+  int *parent = NULL;
   for (int id = 0; id < n0; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallOperatorWriteNode")) continue;
@@ -4551,9 +4542,20 @@ int desugar_call_op_write(Compiler *c) {
     for (int k = 0; k < c->nclasses && !has_def_writer; k++)
       if (comp_method_in_chain(c, k, wname, NULL) >= 0 || comp_method_in_chain(c, k, attr, NULL) >= 0) has_def_writer = 1;
     char aname[300]; snprintf(aname, sizeof aname, "%s", attr);
-    /* attr_writer: keep the store, unless the method answers the op-assign's
-       value, which the writer call carries and the store does not */
-    if (!has_def_writer && !cow_is_method_value(c, id)) continue;
+    /* attr_writer: keep the store, unless something reads the op-assign's
+       value (a method's tail, `x = (w.n += 1)`, a block's last statement,
+       also in the block of a user `each`), which the writer call carries
+       and the store does not */
+    if (!has_def_writer) {
+      if (!parent) parent = an_parent_map(nt);
+      if (!parent) continue;
+      if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
+      /* defined?(w.n += 1) is "assignment": as the writer call it read "method" */
+      int up = parent[id];
+      while (up >= 0 && (nt_kind(nt, up) == NK_ParenthesesNode || nt_kind(nt, up) == NK_StatementsNode))
+        up = parent[up];
+      if (up >= 0 && nt_kind(nt, up) == NK_DefinedNode) continue;
+    }
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {
       /* (__cow_N = recv; __cow_N.attr = __cow_N.attr op value) */
@@ -4622,6 +4624,7 @@ int desugar_call_op_write(Compiler *c) {
     (void)base;
     changed = 1;
   }
+  free(parent);
   return changed;
 }
 
@@ -6931,6 +6934,87 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
   return 1;
 }
 
+
+/* The `next`s the block whose body is `id` owns: not the ones a loop or an
+   inner block, lambda or def takes. With `retype` each becomes a `return`. */
+static int owned_next_walk(NodeTable *nt, int id, int depth, int retype) {
+  if (id < 0 || id >= nt->count || depth > 200) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  int found = 0;
+  if (k == NK_NextNode) { if (retype) nt_node_set_type(nt, id, "ReturnNode"); found = 1; }
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++) found |= owned_next_walk(nt, nd->r[i].ref, depth + 1, retype);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) found |= owned_next_walk(nt, nd->a[i].ids[j], depth + 1, retype);
+  return found;
+}
+
+/* Whether the pieces of an interpolated String or Symbol can spell `name`:
+   the literal ones in order, a `#{}` standing for any text. `open` says a
+   `#{}` came just before, so the next literal piece may start anywhere. */
+static int interp_pieces_spell(const NodeTable *nt, const int *parts, int pn, int k, int open, const char *name) {
+  for (; k < pn; k++) {
+    const char *s = sym_or_str_literal(nt, parts[k]);
+    if (!s) { open = 1; continue; }
+    size_t n = strlen(s);
+    if (!n) continue;
+    if (!open) { if (strncmp(name, s, n)) return 0; name += n; continue; }
+    for (const char *h = strstr(name, s); h; h = strstr(h + 1, s))
+      if (interp_pieces_spell(nt, parts, pn, k + 1, 0, h + n)) return 1;
+    return 0;
+  }
+  return open || !*name;
+}
+
+/* A `define_method` call whose name is an interpolated String or Symbol that
+   can spell define_method or define_singleton_method. The methods an `each`
+   over literals names (collect_dm_each_unroll) get theirs put together at
+   compile time, with no literal in the program spelling it whole:
+
+     [:method].each { |v| define_method("define_#{v}") { |n, &b| b.call } } */
+static int dm_interp_name_may_be_dm(const NodeTable *nt, int call) {
+  const char *cn = nt_str(nt, call, "name");
+  if (!cn || !sp_streq(cn, "define_method")) return 0;
+  int args = nt_ref(nt, call, "arguments"), an = 0, pn = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return 0;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k != NK_InterpolatedStringNode && k != NK_InterpolatedSymbolNode) return 0;
+  const int *parts = nt_arr(nt, av[0], "parts", &pn);
+  return interp_pieces_spell(nt, parts, pn, 0, 0, "define_method") ||
+         interp_pieces_spell(nt, parts, pn, 0, 0, "define_singleton_method");
+}
+
+/* A define_method or define_singleton_method block that is registered as a
+   method is that method's body, compiled as a C function with no loop for a
+   `continue` to name, and a `next` it owns ends the call with its value,
+   which is what a `return` there does:
+
+     define_method(:m) { next v if c; w }  ->  define_method(:m) { return v if c; w }
+
+   `id` is such a body. Called only where the block becomes a method
+   (walk_scope, collect_dm_each_unroll, desugar_define_method_keywords): a
+   call whose name is not known at compile time registers nothing, and a
+   `return` left in its block would be read as the enclosing method's. A
+   program with a method of its own by either name is left alone: that one
+   may run the block as a block. A `def` makes one, and so does an `alias`
+   or an `alias_method`, which names it by a Symbol or a String, so a Symbol
+   or String literal spelling either name anywhere in the program counts as
+   one, and so does a `define_method` whose interpolated name can spell it.
+   The program is searched only when the body owns a `next`. */
+int method_body_next_to_return(NodeTable *nt, int id) {
+  if (!owned_next_walk(nt, id, 0, 0)) return 0;
+  for (int d = 0; d < nt->count; d++) {
+    NodeKind k = nt_kind(nt, d);
+    const char *dn = k == NK_DefNode ? nt_str(nt, d, "name") : sym_or_str_literal(nt, d);
+    if (dn && (sp_streq(dn, "define_method") || sp_streq(dn, "define_singleton_method"))) return 0;
+    if (k == NK_CallNode && dm_interp_name_may_be_dm(nt, d)) return 0;
+  }
+  return owned_next_walk(nt, id, 0, 1);
+}
+
 /* `define_method(:m, <proc>)` / `define_method(:m, &<proc>)` in a class,
    module or `class << self` body, where <proc> is a Proc literal or a body
    local assigned one once, earlier in the body -> `define_method(:m) { }`
@@ -7110,6 +7194,7 @@ int desugar_define_method_keywords(Compiler *c) {
       nt_node_set_ref(nt, def, "parameters", pn);
       nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
       nt_node_set_ref(nt, def, "receiver", dself);
+      method_body_next_to_return(nt, nt_ref(nt, def, "body"));
       if (id != bv[i]) {
         /* `private define_method(...)` -> `private def ...` */
         nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);

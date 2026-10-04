@@ -4,7 +4,7 @@
 #include "repr.h"
 
 
-static int narrow_int_table_ivars(Compiler *c);  /* declared early: the fixpoint calls it */
+static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 
 /* --int-overflow=promote flag; see analyze.h. Default off. */
@@ -9260,7 +9260,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
    TY_INT_ARRAY_ARRAY with the write's TY_POLY_ARRAY -- two array kinds,
    which unify to the plain poly scalar -- and the slot would come out
    WORSE than it went in. */
-static int narrow_int_table_ivars(Compiler *c) {
+static int narrow_int_table_ivars(Compiler *c, int in_round) {
   int narrowed = 0;
   /* Re-assert first. The slot's own write still reads TY_POLY_ARRAY and ~90
      sites derive an ivar type from one, so something re-derives this one on
@@ -9288,7 +9288,18 @@ static int narrow_int_table_ivars(Compiler *c) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
     for (int iv = 0; iv < cl->nivars; iv++) {
-      if (cl->ivar_int_table[iv]) continue;   /* already narrowed and pinned */
+      /* A table this pass pinned is vetted again on every round: what it
+         was pinned on can change. `@banks[0] = a1` pinned @banks while a1,
+         through a chain of methods written below their callees, still
+         answered the int array an append on a receiver not typed yet makes;
+         a1 then settled boxed, and the boxed row was read back as a bare
+         sp_IntArray *. narrow_object_arrays' own pin (ivar_oa_type) is
+         decided again by that pass. The call after the fixpoint keeps a
+         pinned table: a local that only ever held nil has been declared
+         boxed by then, and `x = nil; @t[i] = x` would read as a boxed row,
+         with no round left to retype what was read out of the table. */
+      int pinned = cl->ivar_int_table[iv];
+      if (pinned && (!in_round || cl->ivar_oa_type[iv] != TY_UNKNOWN)) continue;
       if (!ivl) {
         ivl = malloc(sizeof(int) * (size_t)(nt->count + 1));
         if (!ivl) return narrowed;
@@ -9321,7 +9332,7 @@ static int narrow_int_table_ivars(Compiler *c) {
           if (r >= 0 && r < nt->count) first_call[r] = u;
         }
       }
-      if (cl->ivar_types[iv] != TY_POLY_ARRAY) continue;
+      if (!pinned && cl->ivar_types[iv] != TY_POLY_ARRAY) continue;
       const char *ivn = cl->ivars[iv];
       if (!ivn || !ivn[0]) continue;
       if (class_ivar_pinned(cl, ivn)) continue;         /* an --rbs seed owns it */
@@ -9429,6 +9440,13 @@ static int narrow_int_table_ivars(Compiler *c) {
       if (ok && saw_table) {
         cl->ivar_types[iv] = TY_INT_ARRAY_ARRAY;
         cl->ivar_int_table[iv] = 1;
+        if (!pinned) narrowed = 1;
+      }
+      else if (pinned) {
+        /* back on the poly array its write reads, for the evidence of the
+           rounds to come */
+        cl->ivar_types[iv] = TY_POLY_ARRAY;
+        cl->ivar_int_table[iv] = 0;
         narrowed = 1;
       }
     }
@@ -22581,6 +22599,11 @@ static int pf_wanted(Compiler *c, const char *name) {
                       : (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) ? "Numeric" : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       if (rci >= 0 && comp_method_in_class(c, rci, name) >= 0) return 1;
+      /* and an Object reopening's, on a builtin receiver, with a block or
+         without one: the Object fallback reaches it the same way */
+      int obj = comp_class_index(c, "Object");
+      if (obj >= 0 && rt != TY_UNKNOWN && !ty_is_object(rt) && builtin_class_of_type(rt) &&
+          comp_method_in_class(c, obj, name) >= 0) return 1;
     }
     /* a method the program adds to Object, called with a block on an object
        whose class chain stops short of Object (#5779): the call reaches it
@@ -25267,6 +25290,14 @@ int nullable_int_value(Compiler *c, int v) {
     if (nn_index_inbounds(v)) return 0;
     if (nullable_int_call_name(nt_str(nt, v, "name"))) return 1;
     if (nn_call_unboxes_nil(c, v)) return 1;
+    /* A setter assignment answers its RHS, not the writer's return. Its
+       nullable scalar must survive when the assignment itself is boxed.
+       The check above already accounts for a safe-navigation receiver. */
+    if (call_is_setter_assign(nt, v)) {
+      int ca = nt_ref(nt, v, "arguments"), an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (an == 1) return nullable_int_value(c, av[0]);
+    }
     /* a missed element read is the sentinel in an int slot; only boxing is
        affected, typed reads keep their inline arms */
     if (elem_miss_call(c, v)) return 1;
@@ -26648,6 +26679,16 @@ int splat_local_sure_lit(Compiler *c, int x) {
   }
   return reads == seen ? lit : -1;
 }
+/* A binary operator takes its one operand whatever the receiver, and no
+   block moves that count. A splat into one -- `a.==(*rest)`, an operator
+   arm of `public_send(*args, &block)` -- passed the array itself as the
+   operand: == answered false and + raised TypeError. */
+static int splat_binary_operator(const char *name) {
+  static const char *const ops[] = { "==", "!=", "eql?", "equal?", "===", "=~", "<=>",
+    "<", "<=", ">", ">=", "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", NULL };
+  for (int i = 0; ops[i]; i++) if (sp_streq(name, ops[i])) return 1;
+  return 0;
+}
 /* How many arguments the builtin requires, for a splat whose length only the
    run time knows and that splat_dispatch_on_length declined (a block, `&.`, a
    user method of the name that cannot take every count). Only the required
@@ -26678,6 +26719,7 @@ static int splat_builtin_arity(const char *name) {
   };
   for (int i = 0; tab[i].name; i++)
     if (sp_streq(name, tab[i].name)) return tab[i].arity;
+  if (splat_binary_operator(name)) return 1;
   return -1;
 }
 /* Whether some user method of this name could not take `n` positional
@@ -26743,7 +26785,32 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
       if (variadic) *variadic = tab[i].variadic;
       return 1;
     }
+  if (splat_binary_operator(name)) {
+    if (lo) *lo = 1;
+    if (hi) *hi = 1;
+    if (variadic) *variadic = 0;
+    return 1;
+  }
   return 0;
+}
+/* An arm of a dynamic send (`public_send(*args)`) on a receiver whose class
+   only the run time knows takes the rest of the list into whatever builtin
+   its name is: the counts come from CRuby's arity tables, over every class
+   with the name, so the arm dispatches on the length as the names above do.
+   A name taking any number is dispatched up to a cap, and a longer list
+   keeps the splat call (variadic 2, as slice's other counts do): `push`
+   with five elements reached the builtin that way before these arms. */
+static int splat_dyn_arm_range(Compiler *c, int id, const char *name, int with_block,
+                               int *lo, int *hi, int *variadic) {
+  if (!nt_int((NodeTable *)c->nt, id, "dyn_arm", 0)) return 0;
+  int l, h;
+  if (!builtin_name_arity_span(name, with_block, &l, &h)) return 0;
+  int v = 0;
+  if (h < 0 || h > l + 3) { h = l + 3; v = 2; }
+  if (lo) *lo = l;
+  if (hi) *hi = h;
+  if (variadic) *variadic = v;
+  return 1;
 }
 /* A node that can be copied into each arm of the dispatch without being
    evaluated more than once, or out of order, in the arm that runs. */
@@ -26815,15 +26882,24 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   NodeTable *nt = (NodeTable *)c->nt;
   const char *cnm = nt_str(nt, id, "name");
   int lo, hi, variadic;
-  if (!cnm || !splat_builtin_range(cnm, &lo, &hi, &variadic)) return 0;
+  if (!cnm) return 0;
+  int blk = nt_ref(nt, id, "block");
+  /* a dynamic send's arm (`public_send(*args)`) takes its counts from
+     CRuby's tables, the block-carrying call's where there is a block */
+  int odyn = 0;
+  if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
+    if (!splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) return 0;
+    odyn = 1;
+  }
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
      beside a replacement, as CRuby does, so their two-argument arm is the
-     blockless call. Any other name keeps its splat. */
-  int blk = nt_ref(nt, id, "block");
+     blockless call. An operator's one arm takes it as it stands, and a
+     dynamic send's arms share their one block node. Any other name keeps
+     its splat. */
   int subst = sp_streq(cnm, "sub") || sp_streq(cnm, "sub!") || sp_streq(cnm, "gsub") || sp_streq(cnm, "gsub!");
-  if (blk >= 0 && !subst) return 0;
-  if (blk >= 0) lo = 1;
+  if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn) return 0;
+  if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
   const char *cop = nt_str(nt, id, "call_operator");
@@ -26991,8 +27067,11 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_int(nt, rd, "depth", adepth);
       int spn = nt_new_node(nt, "SplatNode");
       nt_node_set_ref(nt, spn, "expression", rd);
-      nt_node_set_int(nt, spn, "splat_lo", blo);
-      nt_node_set_int(nt, spn, "splat_hi", bhi);
+      /* a dynamic send's capped name takes any count past the arms */
+      if (!odyn) {
+        nt_node_set_int(nt, spn, "splat_lo", blo);
+        nt_node_set_int(nt, spn, "splat_hi", bhi);
+      }
       args[k] = spn;
     }
     int an = nt_new_node(nt, "ArgumentsNode");
@@ -27004,7 +27083,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, arm, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, arm, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, arm, "arguments", an);
-    nt_node_set_ref(nt, arm, "block", -1);
+    nt_node_set_ref(nt, arm, "block", odyn ? blk : -1);
   }
   /* built from the longest count down, each arm the else of the next */
   int first_len = lo - fixed < 0 ? 0 : lo - fixed;
@@ -27038,7 +27117,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, cl, "vis_enforce", "1");
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
-    nt_node_set_ref(nt, cl, "block", blk >= 0 && m == 1 ? blk : -1);
+    nt_node_set_ref(nt, cl, "block", blk >= 0 && (m == 1 || odyn) ? blk : -1);
     int an = -1;
     if (m > 0) {
       an = nt_new_node(nt, "ArgumentsNode");
@@ -27117,7 +27196,8 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     const char *cnm = nt_str(nt, id, "name");
     if (!cnm) continue;
     int listed = splat_builtin_arity(cnm) >= 0 || sp_streq(cnm, "slice") || sp_streq(cnm, "fill");
-    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL)) continue;
+    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL) &&
+        !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL)) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
@@ -27171,7 +27251,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
       if (sp_streq(cnm, "insert") && sp_at > 0) continue;
       /* A block moves the required count (`sub(pat) { .. }` takes one
          argument, not two), so leave those alone. */
-      n =nt_ref(nt, id, "block") >= 0 ? -1 : splat_builtin_arity(cnm);
+      n = nt_ref(nt, id, "block") >= 0 && !splat_binary_operator(cnm) ? -1 : splat_builtin_arity(cnm);
       /* slice has no arity to expand to on purpose (see the table). Leave the
          splat as it stands rather than refusing the program: Hash#slice's
          emitter iterates it, which is what the call means. */
@@ -29142,7 +29222,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
        infer_write_types to have given the ivar its poly-array type first, and
        the locals read out of it (`row = @t[r]`) need one more write pass to
        re-derive from the narrowed type before the binding below sees them. */
-    if (narrow_int_table_ivars(c)) ch |= infer_write_types(c);
+    if (narrow_int_table_ivars(c, 1)) ch |= infer_write_types(c);
     /* The same timing argument for a table held in a LOCAL, or one that
        crosses a call: the helper reading `row = t[i]` binds its parameter on
        the round the call is first seen, and a parameter only ever widens. Run
@@ -30830,7 +30910,7 @@ static void an_phase_late_widen(Compiler *c) {
   /* narrow monomorphic object arrays (POLY_ARRAY -> obj-pointer array) before
      the node cache is finalized so the rebuild below propagates the new element
      types to every `arr[i]` / `arr[i].field` site. */
-  narrow_int_table_ivars(c);
+  narrow_int_table_ivars(c, 0);
   narrow_object_arrays(c);
   narrow_locals_from_arrays(c);
   /* after the locals: a parameter can be fed an element the local rule has
