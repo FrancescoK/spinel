@@ -4969,7 +4969,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, sp_poly_iter_elem(_t%d, _t%d));\n",
                  rename_local(restn2), tpair2, trecv2, ti2);
     }
-    for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
+    /* a `next <v>` answers for this element: the body writes a slot and the
+       push below reads it, where the bare `continue` of a tail read skipped
+       the push and dropped the element */
+    int nx2 = spair < 0 && bn2 >= 1 && fold_body_has_next(c, body2);
+    if (!nx2) for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
     Buf vb2; memset(&vb2, 0, sizeof vb2);
     if (spair >= 0 && bn2 >= 1) {
@@ -5004,6 +5008,15 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "}\n");
       buf_printf(&vb2, "_t%d", tv3);
+    }
+    else if (nx2) {
+      int tv4 = ++g_tmp;
+      char tvbuf4[24]; snprintf(tvbuf4, sizeof tvbuf4, "_t%d", tv4);
+      emit_indent(g_pre, g_indent);
+      if (res_poly2) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tv4, tv4);
+      else { emit_ctype(c, ty_array_elem(restype2), g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv4, default_value_from_compiler(c, ty_array_elem(restype2))); }
+      emit_block_value_into(c, block, tvbuf4, res_poly2, g_indent);
+      buf_puts(&vb2, tvbuf4);
     }
     else if (bn2 < 1) buf_puts(&vb2, "sp_box_nil()");
     else if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &vb2);
