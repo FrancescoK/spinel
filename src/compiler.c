@@ -1698,8 +1698,16 @@ static void pc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) 
   PolyCand *v = NULL; int n = 0, cap = 0;
   for (int k = 0; k < c->nclasses; k++) {
     PolyCand pc; pc.cls = k; pc.rdcls = -1; pc.native = c->classes[k].is_native_class;
-    pc.mi = comp_method_in_chain(c, k, name, NULL);
-    if (!pc.native && pc.mi < 0 && !comp_reader_in_chain(c, k, name, &pc.rdcls)) continue;
+    int mdc = -1, rdc = -1;
+    pc.mi = comp_method_in_chain(c, k, name, &mdc);
+    /* a reader the chain declares below the method answers in its place:
+       a subclass's attr_reader overrides the def it inherits, as the
+       dispatch's arm does */
+    if (!pc.native && comp_reader_in_chain(c, k, name, &rdc) &&
+        (pc.mi < 0 || (rdc >= 0 && mdc >= 0 && rdc != mdc && is_descendant(c, rdc, mdc)))) {
+      pc.mi = -1; pc.rdcls = rdc;
+    }
+    if (!pc.native && pc.mi < 0 && pc.rdcls < 0) continue;
     if (n == cap) { cap = cap ? cap * 2 : 8; v = realloc(v, sizeof *v * (size_t)cap); }
     v[n++] = pc;
   }
