@@ -1,19 +1,23 @@
 # Assignment answers the nullable numeric RHS, even when the writer returns
 # a Symbol. Boxing that result must retain nil; ordinary sends answer the body.
 class Writer
+  # Return a Symbol regardless of the RHS so assignment and direct-call results differ.
   def value=(value)
     :writer_result
   end
 end
 
+# Print the boxed value and its nil predicate to expose lost nullable metadata.
 def report(value)
   p [value, value.nil?]
 end
 
+# Preserve nil from a missing receiver when the assignment returns an Integer RHS.
 def assign_integer(writer)
   writer&.value = 7
 end
 
+# Preserve nil from a missing receiver when the assignment returns a Float RHS.
 def assign_float(writer)
   writer&.value = 1.5
 end
