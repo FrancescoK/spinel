@@ -954,6 +954,8 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   int kwh = ps->kwh, plain = kwh < 0 && splat_a < 0;
   if (ps->index) cpoly_family(p, cap, PB_INDEX_CASES);
   if (sp_streq(name, "read_nonblock") && ps->pos_argc == 1 && splat_a < 0) cpoly_family(p, cap, PB_IO_READ_NB);
+  if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && plain)
+    cpoly_family(p, cap, PB_IO_READPARTIAL);
   if (sp_streq(name, "write") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_WRITE);
   if (sp_streq(name, "syswrite") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_SYSWRITE);
   if ((is_text_print(name)) && plain) cpoly_family(p, cap, PB_IO_PRINT);

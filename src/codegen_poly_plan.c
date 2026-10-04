@@ -75,7 +75,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
                                      "str-partition", "str-setop", "store", "str-encode", "str-split",
-                                     "int-bitref", "index-cases", "io-read_nonblock", "io-write",
+                                     "int-bitref", "index-cases", "io-read_nonblock", "io-readpartial", "io-write",
                                      "io-syswrite", "io-print", "io-putc", "io-seek/read", "unshift", "push",
                                      "pack", "join(sep)", "include?-cases", "array-index", "intersect?",
                                      "strftime", "aref-str", "aref-sym", "aref-poly", "predicate(arg)",
@@ -2929,6 +2929,20 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       else buf_printf(b, "sp_box_str(_t%d)", trd7);
     }
     else buf_printf(b, "_t%d", trd7);
+    buf_puts(b, "; break; }");
+  }
+  /* readpartial / sysread(len) on the builtin IO tag, the same shape: a
+     TCPSocket beside an SSLSocket (an openssl package class) reached the
+     class-id switch, which had an arm only for the SSLSocket (#7315) */
+  if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && kwh < 0 && splat_a < 0) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL, -1, TY_UNKNOWN, PC_SAME);
+    int trp = ++g_tmp;
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_i(_t%d)", atmp[0]);
+    else buf_printf(b, "(sp_int)_t%d", atmp[0]);
+    buf_printf(b, "); _t%d = ", tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
+    else buf_printf(b, "_t%d", trp);
     buf_puts(b, "; break; }");
   }
   if (sp_streq(name, "write") && argc == 1 && kwh < 0 && splat_a < 0) {
