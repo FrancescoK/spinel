@@ -15776,6 +15776,18 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;
   }
+  /* h.transform_values / h.transform_keys with no block -> an Enumerator
+     over the values (keys); a chained with_index is rewritten into the walk
+     itself before codegen (desugar_hash_iter_with_index) */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && ty_is_hash(comp_ntype(c, recv)) &&
+      (sp_streq(name, "transform_values") || sp_streq(name, "transform_keys"))) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_poly_array(sp_poly_%s(", te,
+               sp_streq(name, "transform_values") ? "values" : "keys");
+    emit_boxed(c, recv, b);
+    buf_printf(b, "))); _t%d->meth = SPL(\"%s\"); _t%d; })", te, name, te);
+    return 1;
+  }
   /* arr.each_with_index / arr.each_index with no block -> an external
      Enumerator: each_with_index yields [element, index] pairs, each_index
      yields the indices. A chained/terminal use (each_with_index.map/.to_a) is

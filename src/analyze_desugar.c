@@ -2108,6 +2108,142 @@ int desugar_int_enum_with_index(Compiler *c) {
   return changed;
 }
 
+/* `h.select.with_index(off) { |(k, v), i| }` on a Hash (and the other
+   Hash walks, and an Array's filter_map): the Enumerator's with_index ran
+   the block and answered the receiver, ignoring the walk -- select kept
+   everything. The call becomes the walk itself with a counter beside it:
+     (c = off; h.select { |k, v| i = c; c = c + 1; ... })
+   A `|pair, i|` block takes `pair = [k, v]` first; transform_values,
+   transform_keys and filter_map on an Array walk one value. */
+static int hwi_new_int(NodeTable *nt, long long v) {
+  int n = nt_new_node(nt, "IntegerNode");
+  if (n >= 0) nt_node_set_int(nt, n, "value", v);
+  return n;
+}
+static int hwi_lread(NodeTable *nt, const char *nm) {
+  int n = nt_new_node(nt, "LocalVariableReadNode");
+  if (n >= 0) nt_node_set_str(nt, n, "name", nm);
+  return n;
+}
+static int hwi_lwrite(NodeTable *nt, const char *nm, int val) {
+  int n = nt_new_node(nt, "LocalVariableWriteNode");
+  if (n >= 0) { nt_node_set_str(nt, n, "name", nm); nt_node_set_ref(nt, n, "value", val); }
+  return n;
+}
+int desugar_hash_iter_with_index(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "with_index")) continue;
+    int wa = nt_ref(nt, id, "arguments");
+    int wn = 0; const int *wv = wa >= 0 ? nt_arr(nt, wa, "arguments", &wn) : NULL;
+    if (wn > 1) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+    if (nt_ref(nt, recv, "block") >= 0 || nt_ref(nt, recv, "arguments") >= 0) continue;
+    const char *m = nt_str(nt, recv, "name");
+    int src = nt_ref(nt, recv, "receiver");
+    if (!m || src < 0) continue;
+    TyKind st = infer_type(c, src);
+    int pair = ty_is_hash(st) &&
+               (sp_streq(m, "select") || sp_streq(m, "filter") || sp_streq(m, "reject") ||
+                sp_streq(m, "filter_map") || sp_streq(m, "each") || sp_streq(m, "each_pair"));
+    int single = (ty_is_hash(st) && (sp_streq(m, "transform_values") || sp_streq(m, "transform_keys"))) ||
+                 (ty_is_array(st) && sp_streq(m, "filter_map"));
+    if (!pair && !single) continue;
+    /* |p, i| exactly, p a name or (for a pair) a (k, v) pattern */
+    int bpn = nt_ref(nt, blk, "parameters");
+    int pn = bpn >= 0 ? nt_ref(nt, bpn, "parameters") : -1;
+    int nreq = 0; const int *req = pn >= 0 ? nt_arr(nt, pn, "requireds", &nreq) : NULL;
+    if (nreq != 2 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "block") >= 0) continue;
+    { int no = 0; nt_arr(nt, pn, "optionals", &no); if (no) continue; }
+    if (nt_kind(nt, req[1]) != NK_RequiredParameterNode) continue;
+    const char *iname = nt_str(nt, req[1], "name");
+    int p0 = req[0];
+    int p0_multi = nt_kind(nt, p0) == NK_MultiTargetNode;
+    const int *ml = NULL; int mln = 0;
+    if (p0_multi) {
+      if (!pair) continue;
+      ml = nt_arr(nt, p0, "lefts", &mln);
+      if (mln != 2 || nt_ref(nt, p0, "rest") >= 0 ||
+          nt_kind(nt, ml[0]) != NK_RequiredParameterNode || nt_kind(nt, ml[1]) != NK_RequiredParameterNode) continue;
+    }
+    else if (nt_kind(nt, p0) != NK_RequiredParameterNode) continue;
+    const char *p0name = p0_multi ? NULL : nt_str(nt, p0, "name");
+    int body = nt_ref(nt, blk, "body");
+    int bscope = body >= 0 ? c->nscope[body] : -1;
+    int encl = c->nscope[id];
+    if (!iname || bscope < 0 || encl < 0) continue;
+    int base = nt->count;
+    char cn[64], kn[64], vn[64];
+    snprintf(cn, sizeof cn, "_spwc%s", comp_node_tag(c, id));
+    snprintf(kn, sizeof kn, "_spwk%s", comp_node_tag(c, id));
+    snprintf(vn, sizeof vn, "_spwv%s", comp_node_tag(c, id));
+    scope_local_intern(&c->scopes[encl], cn);
+    /* the walk's own block parameters */
+    int nreqs[2]; int nnr = 0;
+    int pre[4]; int npre = 0;
+    if (pair && p0_multi) { nreqs[0] = ml[0]; nreqs[1] = ml[1]; nnr = 2; }
+    else if (pair) {
+      int kp = nt_new_node(nt, "RequiredParameterNode"), vp = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, kp, "name", kn); nt_node_set_str(nt, vp, "name", vn);
+      nreqs[0] = kp; nreqs[1] = vp; nnr = 2;
+      LocalVar *kl = scope_local_intern(&c->scopes[bscope], kn); kl->is_block_param = 1;
+      LocalVar *vl = scope_local_intern(&c->scopes[bscope], vn); vl->is_block_param = 1;
+      int arr = nt_new_node(nt, "ArrayNode");
+      int els[2] = { hwi_lread(nt, kn), hwi_lread(nt, vn) };
+      nt_node_set_arr(nt, arr, "elements", els, 2);
+      pre[npre++] = hwi_lwrite(nt, p0name, arr);
+      LocalVar *pl = scope_local_intern(&c->scopes[bscope], p0name);
+      pl->is_block_param = 0;
+    }
+    else { nreqs[0] = p0; nnr = 1; }
+    /* i = c; c = c + 1 */
+    pre[npre++] = hwi_lwrite(nt, iname, hwi_lread(nt, cn));
+    { int plus = nt_new_node(nt, "CallNode");
+      int pa = nt_new_node(nt, "ArgumentsNode");
+      int one = hwi_new_int(nt, 1);
+      nt_node_set_arr(nt, pa, "arguments", &one, 1);
+      nt_node_set_str(nt, plus, "name", "+");
+      nt_node_set_ref(nt, plus, "receiver", hwi_lread(nt, cn));
+      nt_node_set_ref(nt, plus, "arguments", pa);
+      nt_node_set_ref(nt, plus, "block", -1);
+      pre[npre++] = hwi_lwrite(nt, cn, plus); }
+    { LocalVar *il = scope_local_intern(&c->scopes[bscope], iname); il->is_block_param = 0; }
+    int newp = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, newp, "requireds", nreqs, nnr);
+    nt_node_set_ref(nt, bpn, "parameters", newp);
+    /* the body: the prefix, then what was there */
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    int *nb = malloc(sizeof(int) * (size_t)(npre + bn + 1));
+    for (int k = 0; k < npre; k++) nb[k] = pre[k];
+    for (int k = 0; k < bn; k++) nb[npre + k] = bb[k];
+    nt_node_set_arr(nt, body, "body", nb, npre + bn);
+    free(nb);
+    int bnodes_end = nt->count;
+    /* (c = off; src.m { ... }) */
+    nt_node_set_ref(nt, recv, "block", blk);
+    int init = hwi_lwrite(nt, cn, wn == 1 ? wv[0] : hwi_new_int(nt, 0));
+    int stmts = nt_new_node(nt, "StatementsNode");
+    { int items[2] = { init, recv }; nt_node_set_arr(nt, stmts, "body", items, 2); }
+    int paren = nt_new_node(nt, "ParenthesesNode");
+    nt_node_set_ref(nt, paren, "body", stmts);
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "receiver", paren);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "block", -1);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = j < bnodes_end ? bscope : encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* reduce(&pr) -> reduce { |a, b| pr.call(a, b) }, and so for the comparators
    sort, sort!, min, max and minmax, whose emitters read a block's body too
    and ran a Proc block argument as if no block were given. */
