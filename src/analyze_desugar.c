@@ -7991,6 +7991,18 @@ int desugar_builtins(Compiler *c) {
       if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) cn0 = nt_str(nt, er, "name");
     }
     if (cn0 && sp_streq(cn0, "with_object")) cn0 = "each_with_object";
+    /* `recv.send(:tally)` / public_send / __send__ with a literal name is
+       retargeted onto `recv.tally` inside the fixpoint
+       (desugar_public_send_recv), after this pass: give it its copy under
+       the name it will have, or the retargeted call found no definition and
+       raised NoMethodError for an Array's own tally */
+    if (cn0 && (sp_streq(cn0, "send") || sp_streq(cn0, "public_send") || sp_streq(cn0, "__send__")) &&
+        nt_ref(nt, id, "receiver") >= 0) {
+      int sa = nt_ref(nt, id, "arguments"), sac = 0;
+      const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &sac) : NULL;
+      if (sac >= 1 && nt_kind(nt, sav[0]) == NK_SymbolNode && nt_str(nt, sav[0], "value"))
+        cn0 = nt_str(nt, sav[0], "value");
+    }
     /* collect_concat is flat_map under another name: the call takes the
        name the definition has (a program that defines collect_concat
        itself keeps its call) */
