@@ -212,6 +212,12 @@ spinel: 1 refusal, nothing written
 == test/reject/instance_exec_refusal_moved_scope.rb [promote] rc=1
 spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed allocation registry to walk -- the GC tracks bytes, not a live-object index (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/instance_exec_untraced_proc_param.rb [default] rc=1
+spinel: instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal
+spinel: 1 refusal, nothing written
+== test/reject/instance_exec_untraced_proc_param.rb [promote] rc=1
+spinel: instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal
+spinel: 1 refusal, nothing written
 == test/reject/io_popen.rb [default] rc=1
 spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
 spinel: 1 refusal, nothing written

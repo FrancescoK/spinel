@@ -2250,6 +2250,69 @@ static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int b
   return cls < -1 && !arg && sp_streq(nm, "new") ? -1 : cls;
 }
 
+/* `recv.instance_exec(args, &pr)` where `pr` is a positional or keyword
+   parameter of the enclosing def: the proc literals its call sites hand
+   that parameter are the blocks run with self = `cls`, so their bodies are
+   marked (#7213). Answers 1 when every call site passes a proc literal, nil
+   or nothing there, 0 when one passes anything else (which this cannot
+   trace), -1 when `pr` is not such a parameter. */
+/* applied after the enclosing blocks' own marks, which would cover them */
+static int ie_param_marks[256][2], ie_param_n;
+static int ie_param_literals(Compiler *c, int blk, int cls) {
+  const NodeTable *nt = c->nt;
+  int x = nt_ref(nt, blk, "expression");
+  if (x < 0 || nt_kind(nt, x) != NK_LocalVariableReadNode) return -1;
+  const char *pn = nt_str(nt, x, "name");
+  Scope *sc = comp_scope_of(c, x);
+  if (!pn || !sc || sc->def_node < 0 || nt_kind(nt, sc->def_node) != NK_DefNode || !sc->name) return -1;
+  if (sc->blk_param && sp_streq(sc->blk_param, pn)) return -1;
+  int def = sc->def_node, params = nt_ref(nt, def, "parameters");
+  if (params < 0) return -1;
+  /* its position among the positionals, or its keyword */
+  int pos = -1, kw = 0, at = 0;
+  static const char *const pos_lists[] = { "requireds", "optionals" };
+  for (int l = 0; l < 2 && pos < 0; l++) {
+    int n = 0; const int *ps = nt_arr(nt, params, pos_lists[l], &n);
+    for (int i = 0; i < n; i++, at++)
+      if (sp_streq(nt_str(nt, ps[i], "name"), pn)) { pos = at; break; }
+  }
+  if (pos < 0) {
+    int n = 0; const int *ks = nt_arr(nt, params, "keywords", &n);
+    for (int i = 0; i < n && !kw; i++) if (sp_streq(nt_str(nt, ks[i], "name"), pn)) kw = 1;
+    if (!kw) return -1;
+  }
+  /* a write to it in the body could hand instance_exec another proc */
+  for (int w = comp_lvw_first_sc(c, (int)(sc - c->scopes), pn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (comp_scope_of(c, w) == sc) return 0;
+  int traced = 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    if (!sp_streq(nt_str(nt, u, "name"), sc->name)) continue;
+    int args = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int npos = an, kh = -1;
+    if (an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode) { kh = av[an - 1]; npos--; }
+    for (int i = 0; i < npos; i++) if (nt_kind(nt, av[i]) == NK_SplatNode) { traced = 0; npos = 0; }
+    int v = -1;
+    if (!kw) v = pos < npos ? av[pos] : -1;
+    else if (kh >= 0) {
+      int en = 0; const int *el = nt_arr(nt, kh, "elements", &en);
+      for (int i = 0; i < en; i++) {
+        if (nt_kind(nt, el[i]) != NK_AssocNode) { traced = 0; continue; }
+        int k = nt_ref(nt, el[i], "key");
+        if (nt_kind(nt, k) == NK_SymbolNode && sp_streq(nt_str(nt, k, "value"), pn)) v = nt_ref(nt, el[i], "value");
+      }
+    }
+    if (v < 0 || nt_kind(nt, v) == NK_NilNode) continue;
+    if (!is_proc_create(c, v)) { traced = 0; continue; }
+    int body = nt_ref(nt, nt_kind(nt, v) == NK_LambdaNode ? v : nt_ref(nt, v, "block"), "body");
+    if (body >= 0 && cls >= 0 && ie_param_n < (int)(sizeof ie_param_marks / sizeof ie_param_marks[0])) {
+      ie_param_marks[ie_param_n][0] = body;
+      ie_param_marks[ie_param_n++][1] = cls;
+    }
+  }
+  return traced;
+}
+
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -2265,6 +2328,7 @@ void build_ie_map(Compiler *c) {
   if (!pend) return;
   ie_forward_memo_reset();
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
+  ie_param_n = 0;
   for (int pass = 0; pass < 2; pass++)
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -2296,11 +2360,17 @@ void build_ie_map(Compiler *c) {
       }
     }
     int body = ie_block_body(c, blk);
+    if (body < 0 && !pass && nt_kind(nt, blk) == NK_BlockArgumentNode && is_instance_eval_family(nm)) {
+      int tr = ie_param_literals(c, blk, cls);
+      if (tr >= 0) nt_node_set_int((NodeTable *)nt, id, "ie_param_traced", tr + 1);
+    }
     if (body < 0) continue;
     if (pass) pend[body] = pend[body] == -1 || pend[body] == cls ? cls : -2 - id;
     mark_ie_subtree(c, body, pass ? pend[body] : cls);
   }
   for (int i = 0; i < nt->count; i++) if (pend[i] != -1) mark_ie_subtree(c, i, pend[i]);
+  for (int i = 0; i < ie_param_n; i++) mark_ie_subtree(c, ie_param_marks[i][0], ie_param_marks[i][1]);
+  ie_param_n = 0;
   free(pend);
 }
 

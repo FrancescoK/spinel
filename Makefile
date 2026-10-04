@@ -1253,6 +1253,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a redo with no label for it compiled)"; ok=0; \
 	else grep -q "redo in this block" "$$tmp/rui.out" || \
 	  { echo "reject-test: FAIL (a redo with no label rejected without saying why)"; sed -n 1,5p "$$tmp/rui.out"; ok=0; }; fi; \
+	t=test/reject/instance_exec_untraced_proc_param.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/iup.c" >"$$tmp/iup.out" 2>&1; then \
+	  echo "reject-test: FAIL (instance_exec of an untraceable proc parameter compiled)"; ok=0; \
+	else grep -q "proc parameter some call site hands a value" "$$tmp/iup.out" || \
+	  { echo "reject-test: FAIL (an untraceable proc parameter rejected without saying why)"; sed -n 1,5p "$$tmp/iup.out"; ok=0; }; fi; \
 	t=test/reject/class_body_block_next.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cbn.c" >"$$tmp/cbn.out" 2>&1; then \
 	  echo "reject-test: FAIL (a next in a class body block compiled)"; ok=0; \

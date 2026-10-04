@@ -728,11 +728,22 @@ int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp
   const char *fn = fe >= 0 ? nt_str(nt, fe, "name") : NULL;
   int rc = ty_is_object(rt) ? ty_object_class(rt) : -1, lit = ie_block_body(c, blk);
   int k = lit >= 0 ? ie_class_of(c, lit) : -1;
-  if (rc < 0 || c->classes[rc].is_value_type || (rb >= 0 && rb != blk) || (rb < 0 && !g_yield_proc_ref) ||
+  /* a proc handed in through a positional or keyword parameter: the call
+     sites' literals were marked to run on the receiver (ie_param_literals);
+     one the analysis could not follow is refused here, not left to raise
+     NoMethodError at run time (#7213) */
+  long long ptr = nt_int(nt, id, "ie_param_traced", 0);
+  int pparam = ptr > 0 && fe >= 0 && !tramp && comp_ntype(c, fe) == TY_PROC &&
+               !(fn && es->blk_param && sp_streq(fn, es->blk_param));
+  if (pparam && ptr == 1)
+    unsupported_feature(c, id, "instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal");
+  if (pparam && rc >= 0 && !c->classes[rc].is_value_type) rb = -2;
+  if (rc < 0 || c->classes[rc].is_value_type || (rb >= 0 && rb != blk) || (rb == -1 && !g_yield_proc_ref) ||
       (rb >= 0 && !tramp && !(fn && es->blk_param && sp_streq(fn, es->blk_param)) && (k < 0 || !is_descendant(c, rc, k))))
     return 0;
   Buf pb, sb, eb; memset(&pb, 0, sizeof pb); memset(&sb, 0, sizeof sb); memset(&eb, 0, sizeof eb);
-  if (rb < 0) buf_puts(&pb, g_yield_proc_ref);
+  if (rb == -2) emit_expr(c, fe, &pb);
+  else if (rb < 0) buf_puts(&pb, g_yield_proc_ref);
   else if (!emit_block_arg_proc(c, fe, &pb)) { free(pb.p); return 0; }
   if (self_cls >= 0) buf_puts(&sb, g_self); else emit_expr(c, recv, &sb);
   int tp = ++g_tmp, ts = ++g_tmp;
