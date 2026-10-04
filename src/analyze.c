@@ -28327,21 +28327,44 @@ static void an_phase_desugar_register(Compiler *c) {
   /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
      parentheses around one expression. Anything else -- `(A rescue B)`,
      `(x; Base)`, a local variable -- was read as no superclass and the class
-     silently became a subclass of Object: refuse it. */
+     silently became a subclass of Object: refuse it. Of the calls, only the
+     class makers are read: `Struct.new(..)`, `Data.define(..)`, and
+     `Class.new` / `Class.new(Base)` without a block, whose anonymous class
+     adds nothing, so the class inherits Base directly. Any other call
+     (`class A < f`) was Object as well. */
   {
-    const NodeTable *ntc = c->nt;
+    NodeTable *ntc = (NodeTable *)c->nt;
     for (int id = 0; id < ntc->count; id++) {
       if (nt_kind(ntc, id) != NK_ClassNode) continue;
       int sc = nt_ref(ntc, id, "superclass");
       if (sc < 0) continue;
       NodeKind sk = nt_kind(ntc, sc);
-      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode || sk == NK_CallNode) continue;
+      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) continue;
+      const char *what = nt_type(ntc, sc);
+      if (sk == NK_CallNode) {
+        if (is_struct_call(c, sc)) continue;
+        int rv = nt_ref(ntc, sc, "receiver");
+        const char *mn = nt_str(ntc, sc, "name");
+        int ca = nt_ref(ntc, sc, "arguments"), ac = 0;
+        const int *av = ca >= 0 ? nt_arr(ntc, ca, "arguments", &ac) : NULL;
+        if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
+            sp_streq(nt_str(ntc, rv, "name"), "Class") && mn && sp_streq(mn, "new") &&
+            nt_ref(ntc, sc, "block") < 0) {
+          if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); continue; }
+          if (ac == 1 && (nt_kind(ntc, av[0]) == NK_ConstantReadNode ||
+                          nt_kind(ntc, av[0]) == NK_ConstantPathNode)) {
+            nt_node_set_ref(ntc, id, "superclass", av[0]);
+            continue;
+          }
+        }
+        what = "a call other than Struct.new, Data.define or a blockless Class.new(Constant)";
+      }
       int ln = (int)nt_int(ntc, id, "node_line", 0);
       const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
       if (!file || !*file) file = ntc->source_file;
       if (!file || !*file) file = "source.rb";
       fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
-                      "write the superclass as a constant\n", file, ln, nt_type(ntc, sc));
+                      "write the superclass as a constant\n", file, ln, what);
       exit(1);
     }
   }

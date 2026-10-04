@@ -116,6 +116,10 @@ spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass e
 spinel: the constant name Class__reopen is reserved by the compiler
 == test/reject/class_reopen_reserved_name.rb [promote] rc=1
 spinel: the constant name Class__reopen is reserved by the compiler
+== test/reject/class_superclass_method_call.rb [default] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
+== test/reject/class_superclass_method_call.rb [promote] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_then_module.rb [default] rc=1
 spinel: Thing is not a module (the first declaration, at line 0, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
