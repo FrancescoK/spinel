@@ -484,6 +484,7 @@ static inline sp_float sp_math_gamma(sp_float x){if(x<0.0&&x==floor(x))sp_raise_
    so an implicit declaration mistypes the result, and a program that never
    spawns should not carry two lines about it. */
 sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args, sp_RbVal opts);
+void sp_process_exec(sp_RbVal cmd, sp_RbVal args);   /* lib/sp_process.c: Kernel#exec */
 int sp_process_open_redirect(const char *path, int slot, int *owned);
 SP_NORETURN void sp_process_spawn_fail(int *owned, const char *cls, const char *msg);
 sp_PolyArray *sp_process_waitpid2(sp_int pid);
@@ -2630,10 +2631,13 @@ static inline sp_Rational sp_poly_kernel_rational_arg(sp_RbVal v) {
   return sp_poly_kernel_rational(v);
 }
 /* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
-   reduce accumulator typed when the block folds through the poly `+`. */
+   reduce accumulator typed when the block folds through the poly `+`. A Float
+   real part stays Float-classed, as sp_poly_complex_arg keeps it: cleared, a
+   whole Float read as an Integer, so `x + Complex(0, 2)` with x = 1.0 was
+   (1+2i) where CRuby answers (1.0+2i). */
 static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return *(sp_Complex *)v.v.p;
-  return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
+  return (sp_Complex){sp_poly_to_f(v), 0.0, v.tag == SP_TAG_FLT ? SP_CPLX_RE_F : 0};
 }
 /* A boxed argument of Kernel#Complex as a Complex, and whether it is one
    (*cplx): a Complex as it is, a String parsed whole (Complex("1+2i", 1) is
@@ -7475,13 +7479,18 @@ static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; sp_int s
 /* Array#sum with the default (Integer 0) initial value, folding via sp_poly_add
    so the result promotes to the element class (Float for any Float element,
    Rational/Bignum likewise) rather than dropping non-Integer elements. */
-static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) { sp_RbVal s = sp_box_int(0); if (!a) return s; for (sp_int i = 0; i < a->len; i++) s = sp_poly_add(s, a->data[i]); return s; }
+/* Array#sum with no seed is sum(0): CRuby's exact phase, then from the first
+   Float the compensated one. Folding through sp_poly_add alone dropped the
+   compensation, so `[3, 0.1, 0.2].sum` was 3.3000000000000003 where CRuby,
+   and this array's own `.sum(0)` through sp_poly_sum_seed, answer 3.3. */
+static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);
+static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) {
+  if (!a) return sp_box_int(0);
+  return sp_poly_sum_seed(sp_box_poly_array(a), sp_box_int(0));
+}
 /* Array#sum with a String initial value: concatenate the string elements onto
    the initial (["a","b"].sum("") == "ab"). */
 static const char *sp_PolyArray_sum_str(sp_PolyArray *a, const char *init) { const char *s = init ? init : ""; if (!a) return s; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_STR && a->data[i].v.s) s = sp_str_concat(s, a->data[i].v.s); } return s; }
-/* Array#sum with a Float initial value: numeric fold over Integer and Float
-   elements, accumulating as double (the result is a Float). */
-static sp_float sp_PolyArray_sum_float(sp_PolyArray *a) { if (!a) return 0.0; sp_float s = 0.0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += (sp_float)a->data[i].v.i; else if (a->data[i].tag == SP_TAG_FLT) s += a->data[i].v.f; } return s; }
 /* Bignum#downto(hi)/#upto(hi) materialized: a poly array of Bignums from `lo`
    to `hi` inclusive (descending for downto, ascending for upto) (#2305). */
 static sp_PolyArray *sp_bigint_range_array(sp_Bigint *lo, sp_Bigint *hi, int up) {
@@ -10043,6 +10052,9 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
      with its cls_id >= 0 test cannot claim it) */
   if (idx.tag == SP_TAG_INT && recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))
     return sp_poly_arr_get_hash(recv, idx.v.i);
+  /* nil is no array index: CRuby's TypeError, not element 0 */
+  if (idx.tag == SP_TAG_NIL && recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id))
+    sp_raise_cls("TypeError", "no implicit conversion from nil to integer");
   /* heterogeneous-key hash: any key kind (incl. Method) looks up directly. */
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_POLY_POLY_HASH)
     return sp_PolyPolyHash_get((sp_PolyPolyHash *)recv.v.p, idx);

@@ -146,17 +146,23 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   return changed;
 }
 
-/* Kernel#spawn is Process.spawn: a receiverless `spawn(...)` gets Process as
-   its receiver, which the spawn arms already take, unless the program
-   defines a spawn of its own anywhere (#7203). */
+/* Kernel#spawn and Kernel#exec are Process.spawn and Process.exec: a
+   receiverless `spawn(...)` / `exec(...)` gets Process as its receiver,
+   which their arms take, unless the program defines a method of that name
+   of its own anywhere (#7203). */
 int desugar_bare_spawn(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "spawn")) return 0;
+  int own_spawn = 0, own_exec = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "spawn")) own_spawn = 1;
+    if (sn && sp_streq(sn, "exec")) own_exec = 1;
+  }
+  if (own_spawn && own_exec) return 0;
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "spawn")) continue;
+    if (!nm || !((sp_streq(nm, "spawn") && !own_spawn) || (sp_streq(nm, "exec") && !own_exec))) continue;
     if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
     int an = 0, args = nt_ref(nt, id, "arguments");
     if (args >= 0) nt_arr(nt, args, "arguments", &an);

@@ -666,6 +666,20 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
   else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
 }
 
+/* Bind a merge block's parameter `pn` (of block `blk`) to `text`, a value of
+   type `vt`: boxed on the way in when the parameter's slot is boxed, as it
+   is in a block handed through a method's `&blk` (emit_fetch_blk_param's
+   rule). */
+static void emit_merge_blk_param(Compiler *c, int blk, const char *pn, TyKind vt, const char *text, Buf *b) {
+  if (!pn) return;
+  Scope *bs = comp_scope_of(c, blk);
+  LocalVar *lv = bs ? scope_local(bs, pn) : NULL;
+  buf_printf(b, " lv_%s = ", rename_local(pn));
+  if (lv && lv->type == TY_POLY && vt != TY_POLY) emit_boxed_text(c, vt, text, b);
+  else buf_puts(b, text);
+  buf_puts(b, ";");
+}
+
 static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
 static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
 
@@ -923,6 +937,14 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
                tl, tr, tn, tf, tr, tr, tn, tr, tf, tr);
     buf_printf(b, " (_t%d < 0 || _t%d > _t%d) ? (sp_PolyArray *)0 : sp_PolyArray_slice(_t%d, _t%d, _t%d); })",
                tf, tf, tn, ta, tf, tl);
+    { *out = 1; return 1; }
+  }
+  /* a boxed index is whatever it holds at run time: an Integer reads an
+     element, a Range a sub-array (sp_poly_index_poly). Read as an Integer,
+     a Range took element 0. */
+  if (sp_streq(name, "[]") && argc == 1 && a0 == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    buf_puts(b, "sp_poly_index_poly(sp_box_poly_array("); emit_expr(c, recv, b); buf_puts(b, "), ");
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
     { *out = 1; return 1; }
   }
   if (sp_streq(name, "[]") && argc == 1) {
@@ -4659,7 +4681,16 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
   Buf tv; memset(&tv, 0, sizeof tv);
   if (bval >= 0) {
-    if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, &tv);
+    TyKind bt = comp_ntype(c, bval);
+    if (vt == TY_POLY && bt != TY_POLY) emit_boxed(c, bval, &tv);
+    /* and a boxed value into a typed slot (a block handed through a
+       method's `&blk` sees boxed parameters, so `o + n` is boxed) */
+    else if (bt == TY_POLY && vt != TY_POLY && vt != TY_UNKNOWN && vt != TY_VOID) {
+      Buf ev; memset(&ev, 0, sizeof ev);
+      emit_expr(c, bval, &ev);
+      emit_unbox_text(c, vt, ev.p ? ev.p : "sp_box_nil()", &tv);
+      free(ev.p);
+    }
     else emit_expr(c, bval, &tv);
   }
   g_pre = saved_pre;
@@ -5282,7 +5313,12 @@ else {
           }
         }
         TyKind at = comp_ntype(c, argv[0]);
-        int blk = nt_ref(nt, id, "block");
+        /* a forwarded `&blk` is the caller's block: none where it passed none
+           (a plain merge), its literal where it passed one (whose parameters
+           the collision binds); a real proc handed in its place stays */
+        int blk0 = nt_ref(nt, id, "block");
+        int blk = resolve_forwarded_block(c, blk0);
+        if (blk < 0 && forwarded_real_proc(blk0, blk)) blk = blk0;
         /* A receiver whose values are boxed takes another variant's pairs
            boxed -- the key too when its keys are (a local or ivar widened
            because a merged value or the conflict block's did not fit the
@@ -5309,8 +5345,11 @@ else {
             const char *bp1 = block_param_name(c, blk, 1);
             const char *bp2 = block_param_name(c, blk, 2);
             buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) {", hn, tr, trk);
-            if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), trk);
-            if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, trk);
+            char k1[24], v1[96];
+            snprintf(k1, sizeof k1, "_t%d", trk);
+            snprintf(v1, sizeof v1, "sp_%sHash_get(_t%d, _t%d)", hn, tr, trk);
+            emit_merge_blk_param(c, blk, bp0, kt, k1, b);
+            emit_merge_blk_param(c, blk, bp1, vt, v1, b);
             if (bp2) {
               buf_printf(b, " lv_%s = ", rename_local(bp2));
               emit_boxed_text(c, avt, aval, b);
@@ -5331,15 +5370,23 @@ else {
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
         buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
-        buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
+        /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(b, " sp_RbVal _t%d = _t%d->keys[_t%d->order[_t%d]];", tk, to, to, ti);
+        else
+          buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
         if (blk >= 0) {
           const char *bp0 = block_param_name(c, blk, 0);
           const char *bp1 = block_param_name(c, blk, 1);
           const char *bp2 = block_param_name(c, blk, 2);
           buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) {", hn, tr, tk);
-          if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), tk);
-          if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
-          if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
+          char k2[24], v2[96], w2[96];
+          snprintf(k2, sizeof k2, "_t%d", tk);
+          snprintf(v2, sizeof v2, "sp_%sHash_get(_t%d, _t%d)", hn, tr, tk);
+          snprintf(w2, sizeof w2, "sp_%sHash_get(_t%d, _t%d)", hn, to, tk);
+          emit_merge_blk_param(c, blk, bp0, kt, k2, b);
+          emit_merge_blk_param(c, blk, bp1, vt, v2, b);
+          emit_merge_blk_param(c, blk, bp2, vt, w2, b);
           buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
           emit_blk_value_as(c, blk, vt, b);
           buf_printf(b, "); }\nelse { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);

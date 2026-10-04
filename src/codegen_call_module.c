@@ -1385,7 +1385,8 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
        8-element flat array positionally -- this keeps the runtime
        TU out of spinel_rt.h's static-inline family entirely. The
        [:child, :out|:err|Integer] redirect is recognized inline. */
-    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "spawn") && argc >= 1) {
+    if (tcn && sp_streq(tcn, "Process") && (sp_streq(name, "spawn") || sp_streq(name, "exec")) && argc >= 1) {
+      int is_exec = sp_streq(name, "exec");
       g_uses_symbols = 1;
       int tcmd = ++g_tmp;
       int targs = ++g_tmp;
@@ -1401,6 +1402,13 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             ltk == TY_POLY) {
           last_is_opts = 1;
         }
+      }
+      /* exec's options (chdir:, redirections) are not taken: refused, not
+         dropped */
+      if (is_exec && last_is_opts) {
+        unsupported_feature(c, id, "exec with an options Hash (Process.spawn takes chdir: and the redirections)");
+        buf_puts(b, "0");
+        return 1;
       }
       int n_args = extra - (last_is_opts ? 1 : 0);
       int has_splat = 0;
@@ -1584,7 +1592,10 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          slot, so it closes the parent's copies and never a caller's IO. */
       buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int((_t%d[0] >= 0) | ((_t%d[1] >= 0) << 1) | ((_t%d[2] >= 0) << 2)));",
                  topts, town, town, town);
-      buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, targs, topts);
+      if (is_exec)   /* Kernel#exec: the process becomes the command, or raises its Errno */
+        buf_printf(b, " sp_process_exec(_t%d, sp_box_poly_array(_t%d)); sp_int _r = 0; (void)_t%d;", tcmd, targs, topts);
+      else
+        buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, targs, topts);
       buf_printf(b, " _r; })\n");
       return 1;
     }

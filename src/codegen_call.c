@@ -728,11 +728,22 @@ int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp
   const char *fn = fe >= 0 ? nt_str(nt, fe, "name") : NULL;
   int rc = ty_is_object(rt) ? ty_object_class(rt) : -1, lit = ie_block_body(c, blk);
   int k = lit >= 0 ? ie_class_of(c, lit) : -1;
-  if (rc < 0 || c->classes[rc].is_value_type || (rb >= 0 && rb != blk) || (rb < 0 && !g_yield_proc_ref) ||
+  /* a proc handed in through a positional or keyword parameter: the call
+     sites' literals were marked to run on the receiver (ie_param_literals);
+     one the analysis could not follow is refused here, not left to raise
+     NoMethodError at run time (#7213) */
+  long long ptr = nt_int(nt, id, "ie_param_traced", 0);
+  int pparam = ptr > 0 && fe >= 0 && !tramp && comp_ntype(c, fe) == TY_PROC &&
+               !(fn && es->blk_param && sp_streq(fn, es->blk_param));
+  if (pparam && ptr == 1)
+    unsupported_feature(c, id, "instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal");
+  if (pparam && rc >= 0 && !c->classes[rc].is_value_type) rb = -2;
+  if (rc < 0 || c->classes[rc].is_value_type || (rb >= 0 && rb != blk) || (rb == -1 && !g_yield_proc_ref) ||
       (rb >= 0 && !tramp && !(fn && es->blk_param && sp_streq(fn, es->blk_param)) && (k < 0 || !is_descendant(c, rc, k))))
     return 0;
   Buf pb, sb, eb; memset(&pb, 0, sizeof pb); memset(&sb, 0, sizeof sb); memset(&eb, 0, sizeof eb);
-  if (rb < 0) buf_puts(&pb, g_yield_proc_ref);
+  if (rb == -2) emit_expr(c, fe, &pb);
+  else if (rb < 0) buf_puts(&pb, g_yield_proc_ref);
   else if (!emit_block_arg_proc(c, fe, &pb)) { free(pb.p); return 0; }
   if (self_cls >= 0) buf_puts(&sb, g_self); else emit_expr(c, recv, &sb);
   int tp = ++g_tmp, ts = ++g_tmp;
@@ -7461,6 +7472,17 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           continue;
         }
         TyKind at = infer_type(c, argv[a]);
+        /* A local whose slot is boxed reads as an sp_RbVal where its read is
+           typed a shared String handle (a String-or-nil parameter that a
+           handle arm asks for as a String): no read unboxes a handle, so the
+           temp takes the slot's kind, or the C bound an sp_RbVal to an
+           sp_String * (#7305). */
+        if (at == TY_STRBUF && nt_kind(nt, argv[a]) == NK_LocalVariableReadNode) {
+          Scope *ls = comp_scope_of(c, argv[a]);
+          const char *lnm = nt_str(nt, argv[a], "name");
+          LocalVar *alv = ls && lnm ? scope_local(ls, lnm) : NULL;
+          if (alv && alv->type == TY_POLY) at = TY_POLY;
+        }
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. */
@@ -11894,7 +11916,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     int eq = !sp_streq(name, "!=");
     /* a Process::Status against an Integer compares its status word (its
        builtin-op rows) */
-    if (rt == TY_PROCESS_STATUS && a0 == TY_INT && emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    if (rt == TY_PROCESS_STATUS && (a0 == TY_INT || a0 == TY_FLOAT || a0 == TY_PROCESS_STATUS) &&
+        emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    /* ... and against a value of any other kind (a String, an object)
+       is false: no status word equals it */
+    if (rt == TY_PROCESS_STATUS && is_eq_or_ne(name) && a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_PROCESS_STATUS &&
+        a0 != TY_NIL && a0 != TY_POLY && a0 != TY_UNKNOWN) {
+      emit_voided_operands(c, recv, argv[0], !eq, b);
+      return 1;
+    }
     if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0) ||
                                    ty_is_hash(rt) || ty_is_hash(a0))) {
       emit_poly_cmp_ordered(c, "sp_poly_eql", recv, argv[0], b);
@@ -13656,8 +13686,10 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
     if (s->class_id != ci || s->is_cmethod || !s->name || !s->name[0]) continue;
     /* A prepended module that defines a method the class defines too renames
        the class's own body to `__prep_<n>_<name>`, so the module's copy can
-       super into it. The class still defines <name>: list it under that name.
-       A renamed module copy (a second prepend over the first) stays out. */
+       super into it. The class still defines <name>: list it under that name,
+       with the visibility the rename carried to the body's own name (the
+       name itself answers the module's copy). A renamed module copy (a second
+       prepend over the first) stays out. */
     const char *nm = s->name;
     if (strncmp(nm, "__prep_", 7) == 0) {
       if (s->origin_module_ci > 0) continue;
@@ -13666,7 +13698,7 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
     }
     if (name_is_synth_method(c, nm) || scope_is_struct_synth(c, si)) continue;
     if (s->origin_module_ci > 0 && !with_modules) continue;
-    refl_note(r, nm, refl_vis_wanted(refl_own_vis(c, ci, si, nm), pub, prot, priv));
+    refl_note(r, nm, refl_vis_wanted(refl_own_vis(c, ci, si, s->name), pub, prot, priv));
   }
   for (int i = 0; i < k->naliases; i++) {
     const char *an = k->alias_new[i];

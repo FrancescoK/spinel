@@ -384,6 +384,44 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   return (sp_int)pid;
 }
 
+/* Kernel#exec / Process.exec: replace the process with the command, read
+   as spawn reads it -- one String a command line, through the shell when it
+   carries a shell character; [program, argv0]; the arguments Strings. What
+   the program has buffered for its streams is not written, as under CRuby.
+   Returns only by raising the Errno the exec failed with. */
+void sp_process_exec(sp_RbVal cmd, sp_RbVal args_box) {
+  sp_PolyArray *args = (args_box.tag == SP_TAG_OBJ && args_box.cls_id == SP_BUILTIN_POLY_ARRAY)
+                       ? (sp_PolyArray *)args_box.v.p : NULL;
+  int na = args ? (int)args->len : 0;
+  const char *prog = NULL, *argv0 = NULL;
+  if (cmd.tag == SP_TAG_STR) prog = argv0 = cmd.v.s;
+  else if (cmd.tag == SP_TAG_OBJ && cmd.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray *pa = (sp_PolyArray *)cmd.v.p;
+    if (pa->len != 2) sp_raise_cls("ArgumentError", "wrong first argument");
+    for (int i = 0; i < 2; i++)
+      if (pa->data[i].tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(pa->data[i]));
+    prog = pa->data[0].v.s; argv0 = pa->data[1].v.s;
+  }
+  else sp_raise_cls("TypeError", "wrong first argument type (expected String or Array)");
+  for (int i = 0; i < na; i++)
+    if (args->data[i].tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(args->data[i]));
+  int via_shell = cmd.tag == SP_TAG_STR && na == 0 &&
+                  strpbrk(prog, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
+  char **argv = (char **)malloc(sizeof(char *) * (size_t)(na + 4));
+  if (!argv) sp_raise_cls("NoMemoryError", "out of memory");
+  int ai = 0;
+  if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
+  argv[ai++] = (char *)argv0;
+  for (int i = 0; i < na; i++) argv[ai++] = (char *)args->data[i].v.s;
+  argv[ai] = NULL;
+  execvp(via_shell ? "/bin/sh" : prog, argv);
+  int e = errno;
+  free(argv);
+  errno = e;
+  sp_raise_cls(e == ENOENT ? "Errno::ENOENT" : e == EACCES ? "Errno::EACCES" : "SystemCallError",
+               sp_errf_path(e, prog));
+}
+
 /* The wait itself lives in the scheduler (sp_sched_wait_child): a blocking
    waitpid answers for the OS worker, and a started green thread is pinned to
    its worker, so blocking here stalls the thread that may have to drain this
