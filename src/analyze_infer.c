@@ -6599,6 +6599,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
          override, so the type must hold each of their returns. Answering
          the base's declared return alone typed `@snap = attributes` a
          Hash where the switch answered sp_RbVal (#4600). */
+      /* a reader nearer than the def it overrides answers instead, as the
+         emitted read does (the implicit-self arm below types it) (#7303) */
+      if (omi >= 0 && !osc->is_cmethod && ocls >= 0 &&
+          comp_resolve_member(c, ocls, name, 0, NULL, NULL) == SP_MEMBER_ATTR)
+        omi = -1;
       if (omi >= 0 && omi < c->nscopes && !c->scopes[omi].yields && osc)
         return an_self_call_ret(c, osc, name, omi, id);
     }
