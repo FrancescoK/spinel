@@ -554,6 +554,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_append_through_proc_keyword.rb [promote] rc=1
 spinel: a String is passed to a proc's parameter `k` through `f.call`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_array_rebound_iterator_alias.rb [default] rc=1
+spinel: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
+== test/reject/string_array_rebound_iterator_alias.rb [promote] rc=1
+spinel: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
 == test/reject/string_chained_index_append.rb [default] rc=1
 spinel: a String is not yet shared by reference through an Array's chained index into an appending block
 == test/reject/string_chained_index_append.rb [promote] rc=1
@@ -790,6 +794,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_splat_global_toplevel.rb [promote] rc=1
 spinel: a String is passed to `app`'s parameter `a` through a splat, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_split_result_iterator_append.rb [default] rc=1
+spinel: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_result_iterator_append.rb [promote] rc=1
+spinel: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_tap_fresh_append.rb [default] rc=1
 spinel: a String is not yet shared by reference through tap on a fresh String
 spinel: 1 refusal, nothing written

@@ -15775,6 +15775,70 @@ static int an_hash_chain_is_unobserved_literal(Compiler *c, int hrecv) {
   return 1;
 }
 
+/* String#split's result carries ordinary String copies whose elements are
+   not visible to the store walk. Do not promote the block parameter alone
+   and silently mutate a detached copy. */
+static int an_local_string_array_has_untracked_call_store(Compiler *c,
+                                                            const char *name, Scope *scope) {
+  const NodeTable *nt = c->nt;
+  for (int w = comp_lvw_first(c, name); w >= 0; w = comp_lvw_next(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, w) != scope ||
+        nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    int value = an_unparen(nt, nt_ref(nt, w, "value"));
+    if (value < 0 || nt_kind(nt, value) != NK_CallNode || infer_type(c, value) != TY_STR_ARRAY ||
+        !nt_str(nt, value, "name") || !sp_streq(nt_str(nt, value, "name"), "split"))
+      continue;
+    int stores[64];
+    if (strbuf_container_store_values(c, w, name, scope, 1, stores) == 0) return 1;
+  }
+  return 0;
+}
+
+/* Detect the direct block-local sequence `t = element; t << ...; t = other`.
+   The alias analysis deliberately excludes rebound locals, so the element
+   would otherwise be copied before the append. */
+static int an_block_rebinds_appended_element_alias(Compiler *c, int blk, const char *param) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, blk, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int n = 0; const int *stmts = nt_arr(nt, body, "body", &n);
+  const char *aliases[16]; int appended[16] = {0}; int na = 0;
+  Scope *scope = comp_scope_of(c, blk);
+  for (int i = 0; i < n; i++) {
+    int stmt = stmts[i];
+    if (nt_kind(nt, stmt) == NK_LocalVariableWriteNode) {
+      const char *name = nt_str(nt, stmt, "name");
+      int value = nt_ref(nt, stmt, "value");
+      const char *source = value >= 0 && nt_kind(nt, value) == NK_LocalVariableReadNode
+                           ? nt_str(nt, value, "name") : NULL;
+      int source_alias = source && sp_streq(source, param);
+      for (int a = 0; a < na && !source_alias; a++)
+        if (source && appended[a] >= 0 && sp_streq(source, aliases[a])) source_alias = 1;
+      int target = -1;
+      for (int a = 0; a < na; a++) if (name && sp_streq(name, aliases[a])) { target = a; break; }
+      if (target >= 0) {
+        if (appended[target]) return 1;
+        aliases[target] = NULL; appended[target] = -1;
+      }
+      if (source_alias && name && na < 16) {
+        aliases[na] = name; appended[na] = 0; na++;
+      }
+    }
+    else if (nt_kind(nt, stmt) == NK_CallNode) {
+      const char *method = nt_str(nt, stmt, "name");
+      int recv = nt_ref(nt, stmt, "receiver");
+      const char *name = recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode
+                         ? nt_str(nt, recv, "name") : NULL;
+      if (method && is_append_concat(method) && name && scope) {
+        for (int a = 0; a < na; a++)
+          if (appended[a] >= 0 && sp_streq(name, aliases[a])) appended[a] = 1;
+      }
+    }
+  }
+  return 0;
+}
+
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -16387,7 +16451,13 @@ static int promote_shared_stored_strings(Compiler *c) {
         !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), bp4, 0) &&
         !block_yields_param_to_lender(c, blk4, bp4, &cbl)) {
       if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
-      if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) continue;
+      if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) {
+        if (nt_kind(nt, recv4) == NK_LocalVariableReadNode && ty_is_array(infer_type(c, recv4)) &&
+            an_block_rebinds_appended_element_alias(c, blk4, bp4))
+          unsupported_feature(c, w,
+              "a String appended to through a rebound iterator alias is not yet shared by reference with its Array");
+        continue;
+      }
       alias_mut = 1;
     }
     /* An Array literal iterated in place (`[+"e"].each { |x| t = x; t << y;
@@ -16427,6 +16497,10 @@ static int promote_shared_stored_strings(Compiler *c) {
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
     if (contt4 != TY_STR_ARRAY && contt4 != TY_POLY_ARRAY) continue;
+    if (!lit4 && contt4 == TY_STR_ARRAY &&
+        an_local_string_array_has_untracked_call_store(c, contn4, conts4))
+      unsupported_feature(c, w,
+          "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block");
     if (contt4 == TY_POLY_ARRAY) {
       /* A poly array may still narrow to a nested numeric table. Binding the
          element param poly here is permanent -- a block parameter only widens
