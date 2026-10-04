@@ -657,7 +657,7 @@ int emit_op_array_nmin(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
+    if ((is_minmax_query(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
       /* as CRuby's nmin_run computes it (sp_PolyArray_nmin), which checks
          the size first */
       int t = ++g_tmp;
@@ -674,7 +674,7 @@ int emit_op_array_nmin(Compiler *c, const BopCtx *x, Buf *b) {
      cannot tell the two orders apart and keeps its sort; one that can
      hold nil runs the boxed cut first, which raises where CRuby does
      (an unmarked one only when its may_nil flag says so). */
-  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && block < 0) {
+  if ((is_minmax_query(name)) && argc == 1 && block < 0) {
     int want_max = sp_streq(name, "max");
     int t = ++g_tmp, tn = ++g_tmp;
     buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
@@ -1878,7 +1878,7 @@ int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, 
         if (sp_streq(name, "class") && argc == 0) { buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Array\")})"); return 1; }
         /* first/last type poly (boxed nil, printable as nil); the rest keep
            the historical int-nil sentinel pending their own nil arms */
-        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
+        if ((is_endpoint_query(name)) && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
         if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return 1; }
         if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "sp_box_nil()"); return 1; }  /* #2322 */

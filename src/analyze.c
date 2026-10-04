@@ -1796,7 +1796,7 @@ static int ie_self_call_names(Compiler *c, int node, const char **names, int n, 
       for (int i = 0; i < n; i++) if (sp_streq(names[i], nm)) seen = 1;
       if (!seen && n < max) names[n++] = nm;
     }
-    if (self_call || (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))))
+    if (self_call || (nm && (is_instance_eval_family(nm))))
       skip = nt_ref(nt, node, "block");
   }
   int nr = nt_num_refs(nt, node);
@@ -1829,7 +1829,7 @@ static int ie_ivar_names(Compiler *c, int node, const char **names, int n, int m
   int skip = -1;
   if (k == NK_CallNode) {
     const char *cn = nt_str(nt, node, "name");
-    if (cn && (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec"))) skip = nt_ref(nt, node, "block");
+    if (cn && (is_instance_eval_family(cn))) skip = nt_ref(nt, node, "block");
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -2159,7 +2159,7 @@ static int ie_forward_find(Compiler *c, int node, const Scope *s, int self_cls, 
         TyKind rt = r >= 0 ? infer_type(c, r) : TY_UNKNOWN;
         int cm = r < 0 ? s->is_cmethod : rt == TY_CLASS;
         int rcls = r < 0 ? self_cls : ty_is_object(rt) ? ty_object_class(rt) : cm ? class_recv_static_ci(c, r) : -1;
-        if (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec")) {
+        if (is_instance_eval_family(cn)) {
           if (!cm && (r < 0 || rcls >= 0)) return rcls;
         }
         else if (ie_forward_hops < 8) {
@@ -5247,7 +5247,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        falls to a NoMethodError. For a finite source (a bounded range literal or
        an array) the lazy is a no-op -- drop it so the eager each_cons/each_slice
        Enumerator, and a following .first(m), materialize (#3171). */
-    if ((sp_streq(nm, "each_cons") || sp_streq(nm, "each_slice")) && recv >= 0 &&
+    if ((is_each_window(nm)) && recv >= 0 &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy") &&
         nt_ref(nt, recv, "block") < 0 && nt_ref(nt, recv, "arguments") < 0) {
@@ -5334,7 +5334,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        sort { cmp } then take from the appropriate end (max descends). A block
        argument read off a local, a constant or a Symbol literal (`&pr`,
        `&:<=>`) goes to the sort the same way, which serves it as its own. */
-    if ((sp_streq(nm, "max") || sp_streq(nm, "min")) && recv >= 0 &&
+    if ((is_minmax_query(nm)) && recv >= 0 &&
         nt_ref(nt, id, "block") >= 0) {
       int margs = nt_ref(nt, id, "arguments");
       int man = 0;
@@ -6100,7 +6100,7 @@ static int desugar_str_range_methods(Compiler *c) {
     if (sp_streq(nm, "minmax") && an == 0 && nt_ref(nt, id, "block") < 0) native = 1;
     /* min / max with a comparator block walk the members as Enumerable's do;
        the endpoint readers answered as though there were no block */
-    if ((sp_streq(nm, "min") || sp_streq(nm, "max")) && nt_ref(nt, id, "block") >= 0) native = 0;
+    if ((is_minmax_query(nm)) && nt_ref(nt, id, "block") >= 0) native = 0;
     /* a block-driven step by an Integer has its own arm (the statement
        iteration's String-range step), which walks an endless range too and
        answers the range; any other stride is `step(n).each { }`: the blockless
@@ -6127,7 +6127,7 @@ static int desugar_str_range_methods(Compiler *c) {
       continue;
     }
     /* first/last are the endpoints bare, a prefix/suffix ARRAY with a count */
-    if (!native && an == 0 && (sp_streq(nm, "first") || sp_streq(nm, "last"))) native = 1;
+    if (!native && an == 0 && (is_endpoint_query(nm))) native = 1;
     if (native) continue;
     int toa = nt_new_node(nt, "CallNode");
     if (toa < 0) continue;
@@ -7049,7 +7049,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
   }
   /* The block forms of each_slice / each_cons answer the receiver too, and
      over a blockless `.each` that receiver is the Enumerator (#3857). */
-  if (nm && (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) &&
+  if (nm && (is_each_window(nm)) &&
       nt_ref(nt, id, "block") >= 0 && nt_int(nt, id, "enum_self_result", -1) < 0) {
     int srecv = nt_ref(nt, id, "receiver");
     if (srecv >= 0 && nt_kind(nt, srecv) == NK_CallNode && nt_ref(nt, srecv, "block") < 0) {
@@ -7299,7 +7299,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
      compiler refused it, while a fold answering the accumulator answered 0
      (#4321). Interpose to_a, exactly as the reverse_each sibling above does;
      the fold's answer is its own, so this hop needs no `enum_recv` marker. */
-  if (nm && (sp_streq(nm, "reduce") || sp_streq(nm, "inject")) &&
+  if (nm && (is_reduce_alias(nm)) &&
       nt_ref(nt, id, "block") >= 0) {
     int fr = nt_ref(nt, id, "receiver");
     if (fr >= 0 && nt_kind(nt, fr) == NK_CallNode && nt_ref(nt, fr, "block") < 0 &&
@@ -7879,7 +7879,7 @@ int desugar_enum_method_recv(Compiler *c) {
     int recv_is_slice_enum = 0;
     if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rn2 = nt_str(nt, recv, "name");
-      recv_is_slice_enum = rn2 && (sp_streq(rn2, "each_slice") || sp_streq(rn2, "each_cons"));
+      recv_is_slice_enum = rn2 && (is_each_window(rn2));
     }
     if (rt == TY_ENUMERATOR && recv_is_slice_enum && nt_ref(nt, id, "block") >= 0 &&
         !enum_lazy_driven && !sp_streq(nm, "map") && !sp_streq(nm, "collect") &&
@@ -8037,7 +8037,7 @@ int desugar_enum_method_recv(Compiler *c) {
        each_slice returns that array. Record the original receiver so the
        emit yields it instead (#2981). */
     if (nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")))
+        (is_each_window(nm)))
       nt_node_set_int(nt, id, "enum_self_result", recv);
     /* The short-circuiting Enumerables stop before the source runs out, so
        they ride the fiber-backed generator rather than the eager element
@@ -9037,13 +9037,13 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (is_push_alias(nm) && argc >= 1) return 1;
   if (is_len_alias(nm) && argc == 0) return 1;
   if (sp_streq(nm, "empty?") && argc == 0) return 1;
-  if ((sp_streq(nm, "first") || sp_streq(nm, "last")) && argc == 0) return 1;
+  if ((is_endpoint_query(nm)) && argc == 0) return 1;
   /* no-block comparisons: usable when the element class has `<=>` (the
      needs_cmp bit, checked at component resolution). sort's RESULT must
      also land in a modeled place (slot alias or statement position) --
      step 4 kills the component otherwise, so an escaping `arr.sort.map`
      keeps today's boxed poly path instead of becoming a reject. */
-  if ((sp_streq(nm, "min") || sp_streq(nm, "max")) && argc == 0) return 1;
+  if ((is_minmax_query(nm)) && argc == 0) return 1;
   if ((sp_streq(nm, "sort") || sp_streq(nm, "sort!")) && argc == 0) return 1;
   return 0;
 }
@@ -9515,7 +9515,7 @@ static int narrow_locals_from_arrays(Compiler *c) {
         int crecv = nt_ref(nt, v, "receiver");
         int can = 0; { int ca = nt_ref(nt, v, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
         int idx_op = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at")) && can == 1;
-        int end_op = cn && (sp_streq(cn, "first") || sp_streq(cn, "last")) && can == 0;
+        int end_op = cn && (is_endpoint_query(cn)) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok = 0; break; }
         TyKind rt = infer_type(c, crecv);
         /* element type of a narrowed obj-array OR the new int-array-array */
@@ -9653,7 +9653,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
        drops through does not reach Hash#map at all, so the program stopped
        running. Narrowing a slot whose builder cannot build it at that kind is
        worse than leaving it boxed. */
-    else if (cn && (sp_streq(cn, "map") || sp_streq(cn, "collect")) && can == 0 &&
+    else if (cn && (is_map_alias(cn)) && can == 0 &&
              nt_ref(nt, v, "block") >= 0 && nt_type(nt, nt_ref(nt, v, "block")) &&
              sp_streq(nt_type(nt, nt_ref(nt, v, "block")), "BlockNode") &&
              crecv >= 0 && ty_is_array(infer_type(c, crecv))) {
@@ -9789,7 +9789,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (!ty_is_ptr_array(c->arr_want[id])) continue;
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *rn = nt_str(nt, id, "name");
-        if (!rn || !(sp_streq(rn, "map") || sp_streq(rn, "collect"))) continue;
+        if (!rn || !(is_map_alias(rn))) continue;
       }
       c->arr_want[id] = TY_UNKNOWN;
       if (n_cleared == cap_cleared) {
@@ -10171,7 +10171,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (oa_block_has_nested_block(nt, nt_ref(nt, id, "block"))) sl[S].row_iter |= 4;
         /* an each-family walk answers its receiver: one whose value is used
            hands the array on (bit 8). A map answers a new array. */
-        int maps = name && (sp_streq(name, "map") || sp_streq(name, "collect"));
+        int maps = name && (is_map_alias(name));
         if (!fold && !maps && !(id < nc && walk_disc[id])) sl[S].row_iter |= 8;
       }
       else sl[S].alive = 0;
@@ -13413,7 +13413,7 @@ static void compute_byref_out_params(Compiler *c) {
       if (sp_streq(cn, "to_proc")) lit = nt_ref(nt, id, "receiver");
       else { int a = nt_ref(nt, id, "arguments"), ac = 0;
              const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-             lit = ac > 0 ? av[sp_streq(cn, "inject") || sp_streq(cn, "reduce") ? ac - 1 : 0] : -2; }
+             lit = ac > 0 ? av[is_reduce_alias(cn) ? ac - 1 : 0] : -2; }
     }
     else continue;
     if (lit == -2) continue;   /* no argument names a method */
@@ -14396,7 +14396,7 @@ static int strbuf_map_block_tail(Compiler *c, int val) {
   /* map / collect only: flat_map's block tail is an ARRAY of elements, not one
      element, so its stores are a level deeper than this reads. That shape is
      still dropped. */
-  if (!mn || !(sp_streq(mn, "map") || sp_streq(mn, "collect"))) return -1;
+  if (!mn || !(is_map_alias(mn))) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
   int body = nt_ref(nt, blk, "body");
@@ -17352,7 +17352,7 @@ static int narrow_params_from_arrays(Compiler *c) {
         int crecv = nt_ref(nt, a, "receiver");
         int can = 0; { int ca = nt_ref(nt, a, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
         int idx_op = cn && (sp_streq(cn, "[]") || sp_streq(cn, "at")) && can == 1;
-        int end_op = cn && (sp_streq(cn, "first") || sp_streq(cn, "last")) && can == 0;
+        int end_op = cn && (is_endpoint_query(cn)) && can == 0;
         if ((!idx_op && !end_op) || crecv < 0) { ok[slot] = 0; continue; }
         TyKind rt = infer_type(c, crecv);
         TyKind ec = ty_is_obj_array(rt) ? ty_object(ty_obj_array_class(rt))
@@ -23177,8 +23177,8 @@ static int elem_miss_call(Compiler *c, int v) {
   if (sp_streq(nm, "dig")) return argc >= 1;
   if (sp_streq(nm, "first") || sp_streq(nm, "last") || sp_streq(nm, "sample"))
     return argc == 0 && blk < 0;
-  if (sp_streq(nm, "min") || sp_streq(nm, "max")) return argc == 0;
-  if (sp_streq(nm, "find") || sp_streq(nm, "detect")) return blk >= 0;
+  if (is_minmax_query(nm)) return argc == 0;
+  if (is_find_alias(nm)) return blk >= 0;
   return 0;
 }
 
@@ -24341,7 +24341,7 @@ static int nn_fresh_nilfree(Compiler *c, int v) {
     if (st && n == 1) { rr = st[0]; rk = nt_kind(nt, rr); }
   }
   if (sp_streq(nm, "to_a") && an == 0 && blk < 0 && rk == NK_RangeNode) return 1;
-  if ((sp_streq(nm, "map") || sp_streq(nm, "collect")) && an == 0 && blk >= 0 &&
+  if ((is_map_alias(nm)) && an == 0 && blk >= 0 &&
       (rk == NK_RangeNode || (rk == NK_CallNode && nt_str(nt, rr, "name") &&
                               sp_streq(nt_str(nt, rr, "name"), "times"))))
     return nn_surely(c, tail);
@@ -24798,11 +24798,11 @@ int nullable_int_value(Compiler *c, int v) {
     /* an element read out of an array some element of which is the sentinel */
     if (rcv0 >= 0 && elem_returning_call(cn) && nullable_int_elem_expr(c, rcv0, 0)) return 1;
     /* a fold's value is its block's, and `find`/`detect` hand back an element */
-    if (cn && (sp_streq(cn, "reduce") || sp_streq(cn, "inject"))) {
+    if (cn && (is_reduce_alias(cn))) {
       int ft = call_block_tail(c, v);
       if (ft >= 0 && nullable_int_value(c, ft)) return 1;
     }
-    if (rcv0 >= 0 && cn && (sp_streq(cn, "find") || sp_streq(cn, "detect")) &&
+    if (rcv0 >= 0 && cn && (is_find_alias(cn)) &&
         nullable_int_elem_expr(c, rcv0, 0)) return 1;
     int rcv = nt_ref(nt, v, "receiver");
     /* a receiverless call resolves as emission does: the class-method chain
@@ -24892,7 +24892,7 @@ static int aon_container(Compiler *c, int v, int depth) {
                           sp_streq(nm, "dup") || sp_streq(nm, "clone") ||
                           sp_streq(nm, "to_a")))
       return aon_container(c, rc, depth + 1);
-    if (nm && (sp_streq(nm, "map") || sp_streq(nm, "collect"))) {
+    if (nm && (is_map_alias(nm))) {
       int blk = nt_ref(nt, v, "block");
       int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
       if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
@@ -30718,7 +30718,7 @@ static void an_phase_proc_returns(Compiler *c) {
             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
             if (an >= 1) recv = av[0];
           }
-          int slice_first = sp_streq(inm, "each_cons") || sp_streq(inm, "each_slice");
+          int slice_first = is_each_window(inm);
           int idx_second = sp_streq(inm, "each_with_index") || sp_streq(inm, "with_index");
           /* only an iterator whose block receives ELEMENTS: `fetch(i) { |i| }`
              hands its block the index, `each_with_index` its second param */
@@ -30734,7 +30734,7 @@ static void an_phase_proc_returns(Compiler *c) {
                               nt_ref(nt, recv, "block") < 0; guard++) {
             const char *cn = nt_str(nt, recv, "name");
             if (!cn) break;
-            if (sp_streq(cn, "each_cons") || sp_streq(cn, "each_slice")) {
+            if (is_each_window(cn)) {
               slice_first = 1; recv = nt_ref(nt, recv, "receiver"); break;
             }
             if (sp_streq(cn, "with_index") || sp_streq(cn, "each_with_index")) idx_second = 1;
@@ -30862,7 +30862,7 @@ static void an_phase_storage(Compiler *c) {
     TyKind rt2 = c->ntype[recv2];
     int cls2 = ty_is_object(rt2) ? ty_object_class(rt2) : ie_poly_mark(c, id, rt2);
     if (cls2 < 0) continue;
-    int is_ie2 = sp_streq(nm2, "instance_eval") || sp_streq(nm2, "instance_exec");
+    int is_ie2 = is_instance_eval_family(nm2);
     if (is_ie2) {
       if (comp_method_in_chain(c, cls2, nm2, NULL) >= 0) continue;
     }
@@ -31315,7 +31315,7 @@ static void an_phase_value_types(Compiler *c) {
       }
       /* instance_eval/exec lifts the block body into a method on the receiver
          that needs a by-pointer self; exclude such receivers. */
-      if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec")) && recv >= 0) {
+      if (nm && (is_instance_eval_family(nm)) && recv >= 0) {
         TyKind rt = comp_ntype(c, recv);
         if (ty_is_object(rt)) { int q = ty_object_class(rt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
       }

@@ -4141,7 +4141,7 @@ int iter_value_answers_recv(Compiler *c, int id) {
         sp_streq(name, "each_entry") ||
         /* each_slice / each_cons answer the receiver too; over a Hash or a
            Range that receiver is the marked `to_a` hop's own receiver */
-        ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+        ((is_each_window(name)) &&
          nt_ref(nt, id, "receiver") >= 0 &&
          ((nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_CallNode &&
            nt_str(nt, nt_ref(nt, id, "receiver"), "enum_recv")) ||
@@ -6622,4 +6622,3 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* ---- interpolation ---- */
-

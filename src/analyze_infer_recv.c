@@ -156,14 +156,14 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       /* the block forms that walk up from the bounded end rather than
          materializing: the elements are the range's own ints (#3863) */
       if (nt_ref(nt, id, "block") >= 0 && argc == 0) {
-        if (sp_streq(name, "find") || sp_streq(name, "detect")) { *out = TY_INT; return 1; }
+        if (is_find_alias(name)) { *out = TY_INT; return 1; }
       }
     }
   }
   /* min(n) / max(n) on an Integer Range answer an Array of its ints, however
      the Range is bounded (#3665) */
   if (rt == TY_RANGE && recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "min") || sp_streq(name, "max")))
+      (is_minmax_query(name)))
     { *out = TY_INT_ARRAY; return 1; }
   /* Range#sum(seed): CRuby adds the closed form to an INTEGER seed and answers
      a Float for a seed of any other class (it runs the seed through
@@ -184,7 +184,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (rt == TY_RANGE && nt_ref(nt, id, "block") >= 0 &&
       nt_type(nt, nt_ref(nt, id, "block")) &&
       sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
-      ((argc == 1 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) ||
+      ((argc == 1 && (is_each_window(name))) ||
        (argc == 0 && (sp_streq(name, "reverse_each") || sp_streq(name, "each_with_index")))))
     { *out = TY_RANGE; return 1; }
   return 0;
@@ -787,7 +787,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       { *out = ty_array_elem(rt); return 1; }
     }
-    if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
+    if (is_reduce_alias(name)) {
       /* inject(&:&|:||:-) over a literal array of int arrays: set operation
          folding the inner arrays -> an int array. */
       if (rt == TY_POLY_ARRAY && comp_is_nested_int_array_literal(c, recv)) {
@@ -1601,7 +1601,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (sp_streq(name, "each_cons") || sp_streq(name, "each_slice") ||
        sp_streq(name, "combination") || sp_streq(name, "permutation")) &&
       !an_user_defines_or_reads(c, name))
-    { *out = (sp_streq(name, "each_cons") || sp_streq(name, "each_slice"))
+    { *out = (is_each_window(name))
              ? TY_ENUMERATOR : TY_POLY_ARRAY; return 1; }   /* as the typed array answers */
   /* A blockless `each` / `each_entry` / `each_with_index` on a boxed receiver
      (an Array read out of a container, a block parameter) is an external
@@ -1685,7 +1685,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      inner array read out of a poly container): the matched element (or nil) is
      boxed, so the result is poly (#2904). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+      (is_find_alias(name)) &&
       nt_ref(nt, id, "block") >= 0 && !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* exception accessors on a poly receiver (an exception rescued into a
@@ -1861,7 +1861,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      fold runs over boxed elements, so the result is boxed. */
   if (recv >= 0 && rt == TY_POLY && argc <= 1 && nt_ref(nt, id, "block") >= 0 &&
       !an_user_recv_defines_method(c, name) &&
-      (sp_streq(name, "reduce") || sp_streq(name, "inject")))
+      (is_reduce_alias(name)))
     { *out = TY_POLY; return 1; }
   /* String#start_with? / #end_with? on a poly value: a bool. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -1880,7 +1880,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 && !an_user_recv_defines_method(c, name) &&
       nt_ref(nt, id, "block") >= 0) {
     if (sp_streq(name, "sort")) { *out = TY_POLY_ARRAY; return 1; }
-    if (sp_streq(name, "min") || sp_streq(name, "max")) { *out = TY_POLY; return 1; }
+    if (is_minmax_query(name)) { *out = TY_POLY; return 1; }
   }
   /* Data#with on a poly value (a Data read out of a container) returns a new
      Data instance, boxed poly (#2890). */

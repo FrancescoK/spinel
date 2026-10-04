@@ -4475,7 +4475,7 @@ int desugar_main_self_call(Compiler *c) {
        `instance_exec { }` on main is the `self.instance_eval` spelling,
        which the rebinding machinery serves; bare, it was refused */
     if (recv < 0 && nt_ref(nt, id, "block") >= 0 &&
-        (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
+        (is_instance_eval_family(name)) &&
         comp_method_index(c, name) < 0 && self_is_main(c, id)) {
       int sn = nt_new_node(nt, "SelfNode");
       if (sn < 0) continue;
@@ -5406,8 +5406,8 @@ int desugar_value_callable_forwards(Compiler *c) {
          its arity at run time. Declined for want of a static arity, `h.map
          (&q)` stayed in its &-form, and the call raised NoMethodError at
          run time. */
-      int is_map = sp_streq(name, "map") || sp_streq(name, "collect");
-      int is_find = sp_streq(name, "find") || sp_streq(name, "detect");
+      int is_map = is_map_alias(name);
+      int is_find = is_find_alias(name);
       FwdShape sh = { 0, 0 };
       int cpc = fwd_callable_arity(c, ex, &sh);
       if (cpc < 0) {
@@ -5461,7 +5461,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       nt_node_set_ref(nt, callnode, "arguments", callargs);
     }
     if (spread < 0 && callnode >= 0)
-      callnode = fwd_arity_pick(c, nt, ex, id, callnode, sp_streq(name, "find") || sp_streq(name, "detect"),
+      callnode = fwd_arity_pick(c, nt, ex, id, callnode, is_find_alias(name),
                                 find_proc_test);
 
     int body = nt_new_node(nt, "StatementsNode");
@@ -5921,7 +5921,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        have their own walk from the bounded end: routing them through to_a
        turned a working search into a RangeError (#3863). The other names
        have no such walk and keep the (faithfully raising) hop. */
-    if (rt == TY_RANGE && (sp_streq(nm, "find") || sp_streq(nm, "detect"))) {
+    if (rt == TY_RANGE && (is_find_alias(nm))) {
       int rn7 = an_unparen(nt, recv);
       if (rn7 >= 0 && nt_type(nt, rn7) && sp_streq(nt_type(nt, rn7), "RangeNode") &&
           nt_ref(nt, rn7, "right") < 0) continue;
@@ -7857,8 +7857,8 @@ int nested_row_iter_call(Compiler *c, int id) {
   if (is_each_walk(nm) &&
       argc == 0 && np <= 1) return 1;
   if (sp_streq(nm, "each_with_index") && argc == 0 && np <= 2) return 1;
-  if ((sp_streq(nm, "map") || sp_streq(nm, "collect")) && argc == 0 && np <= 1) return 1;
-  if ((sp_streq(nm, "reduce") || sp_streq(nm, "inject")) && argc <= 1 && np == 2) return 1;
+  if ((is_map_alias(nm)) && argc == 0 && np <= 1) return 1;
+  if ((is_reduce_alias(nm)) && argc <= 1 && np == 2) return 1;
   if (sp_streq(nm, "zip") && argc == 1 && (np == 1 || np == 2)) return 1;
   return 0;
 }
@@ -7907,13 +7907,13 @@ int desugar_enum_walk_calls(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     const char *hn = NULL;
-    if ((sp_streq(name, "map") || sp_streq(name, "collect")) && an == 0) hn = "__enumw_map";
+    if ((is_map_alias(name)) && an == 0) hn = "__enumw_map";
     else if ((sp_streq(name, "select") || sp_streq(name, "filter")) && an == 0) hn = "__enumw_select";
     else if (sp_streq(name, "reject") && an == 0) hn = "__enumw_reject";
     else if (sp_streq(name, "filter_map") && an == 0) hn = "__enumw_filter_map";
     else if ((sp_streq(name, "each_with_object") || sp_streq(name, "with_object")) && an == 1) hn = "__enumw_each_with_object";
-    else if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && an <= 1) hn = an ? "__enumw_inject1" : "__enumw_inject0";
-    else if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) && an == 1)
+    else if ((is_reduce_alias(name)) && an <= 1) hn = an ? "__enumw_inject1" : "__enumw_inject0";
+    else if ((is_each_window(name)) && an == 1)
       hn = name[5] == 's' ? "__enumw_each_slice" : "__enumw_each_cons";
     else if (sp_streq(name, "each_entry") && an == 0) hn = "__enumw_each_entry";
     else if (sp_streq(name, "with_index") && an <= 1) {
@@ -8102,7 +8102,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
        (nothing there is an inlineable block), raising this definition's
        own ArgumentError for a call that plainly passed one
        (`[1, 2, 3].inject(&:+)`). */
-    if (sp_streq(name, "reduce") || sp_streq(name, "inject")) {
+    if (is_reduce_alias(name)) {
       int blk9 = nt_ref(nt, id, "block");
       if (blk9 < 0) continue;
       if (nt_kind(nt, blk9) == NK_BlockArgumentNode) {
@@ -9144,14 +9144,14 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
   if (ty_is_array(rt) || ty_is_obj_array(rt)) et = ty_array_elem(rt);
   else if (rt == TY_RANGE) et = TY_INT;
   else return 0;
-  if ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && argc == 1) {
+  if ((is_each_window(nm)) && argc == 1) {
     *elem = TY_POLY_ARRAY;   /* an Array of whatever the elements are */
     return 1;
   }
   if (sp_streq(nm, "sum") && argc <= 1) { *elem = et; return 1; }
   /* inject with a seed yields the accumulator and the element (the seedless
      form is builtins/enumerable.rb's, which yields them itself) */
-  if ((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc == 1) return 2;
+  if ((is_reduce_alias(nm)) && argc == 1) return 2;
   if (ty_is_array(rt) || ty_is_obj_array(rt)) {
     /* each_index and the block form of fill yield the index */
     if ((sp_streq(nm, "each_index") && argc == 0) || (sp_streq(nm, "fill") && argc <= 2)) {
@@ -9187,7 +9187,7 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
    such a block for the prologue below: left to it, the rest read nil, or the
    call was refused (check_block_rest_support). */
 static int bs_binds_rest(TyKind rt, const char *nm, int argc) {
-  if ((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc > 0) return 0;
+  if ((is_reduce_alias(nm)) && argc > 0) return 0;
   if (builtin_enum_name_index(nm) >= 0) return 1;
   if (rt == TY_INT) return 1;   /* times, upto, downto, step */
   if (sp_streq(nm, "step")) return rt == TY_FLOAT || rt == TY_RANGE || rt == TY_FLOAT_RANGE;
@@ -9242,7 +9242,7 @@ static int bs_enum_yield_count(Compiler *c, int recv, const char *nm, int argc, 
     const char *rn = nt_str(nt, recv, "name");
     int ra = nt_ref(nt, recv, "arguments");
     int rc = 0; if (ra >= 0) nt_arr(nt, ra, "arguments", &rc);
-    if (rn && rc == 1 && (sp_streq(rn, "each_slice") || sp_streq(rn, "each_cons"))) {
+    if (rn && rc == 1 && (is_each_window(rn))) {
       int known = enum_pair_spread_iter(nm);
       for (int k = 0; packed[k]; k++) if (sp_streq(nm, packed[k])) known = 1;
       if (!known) return 0;
@@ -9542,7 +9542,7 @@ static int pdl_body_reads(const NodeTable *nt, int id, const char **names, int n
 static int bs_extras_read(Compiler *c, int blk, const char *const *names, int np, int m,
                           const char *nm, int argc) {
   if (np <= m || ((builtin_enum_name_index(nm) >= 0) &&
-                  !((sp_streq(nm, "inject") || sp_streq(nm, "reduce")) && argc > 0))) return 0;
+                  !((is_reduce_alias(nm)) && argc > 0))) return 0;
   return pdl_body_reads(c->nt, nt_ref(c->nt, blk, "body"), (const char **)names + m, np - m);
 }
 
@@ -9919,7 +9919,7 @@ static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, cons
   const char *mn = ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode ? nt_str(nt, ex, "value") : NULL;
   TyKind elem; int hash_pair;
   if (!mn || !*mn) return 0;
-  if (sp_streq(nm, "reduce") || sp_streq(nm, "inject")) return 0;
+  if (is_reduce_alias(nm)) return 0;
   if (user_block_values(c, id) != 2 &&
       (recv < 0 || (bs_enum_yield_count(c, recv, nm, argc, &elem) != 2 &&
                     bs_yield_count(infer_type(c, recv), nm, argc, &elem, &hash_pair) != 2 &&

@@ -166,3 +166,31 @@ int is_block_loop_method(const char *n) {
          sp_streq(n, "step") || sp_streq(n, "loop") ||
          sp_streq(n, "each_with_index");
 }
+
+int is_each_window(const char *n) {
+  return sp_streq(n, "each_cons") || sp_streq(n, "each_slice");
+}
+
+int is_reduce_alias(const char *n) {
+  return sp_streq(n, "inject") || sp_streq(n, "reduce");
+}
+
+int is_minmax_query(const char *n) {
+  return sp_streq(n, "min") || sp_streq(n, "max");
+}
+
+int is_endpoint_query(const char *n) {
+  return sp_streq(n, "first") || sp_streq(n, "last");
+}
+
+int is_map_alias(const char *n) {
+  return sp_streq(n, "map") || sp_streq(n, "collect");
+}
+
+int is_instance_eval_family(const char *n) {
+  return sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
+}
+
+int is_find_alias(const char *n) {
+  return sp_streq(n, "find") || sp_streq(n, "detect");
+}

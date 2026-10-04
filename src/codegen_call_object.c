@@ -356,7 +356,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       else emit_expr(c, argv[0], b);
       return 1;
     }
-    if (argc == 0 && (sp_streq(name, "min") || sp_streq(name, "max"))) {
+    if (argc == 0 && (is_minmax_query(name))) {
       buf_puts(b, "sp_box_nil()"); return 1;   /* empty: nil (#2406) */
     }
     if (argc == 0 && sp_streq(name, "minmax")) {
@@ -446,7 +446,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
 
 /* instance_eval / instance_exec with a block, run with the receiver as self (direct, or through a trampoline) */
 int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
-  int ie_direct = recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"));
+  int ie_direct = recv >= 0 && (is_instance_eval_family(name));
   /* a nested block's ivars are its own receiver's */
   if (ie_direct && g_ie_nil_ivars && g_ie_nil_ivars != id + 1) {
     int sv_nil = g_ie_nil_ivars; g_ie_nil_ivars = 0;

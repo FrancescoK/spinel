@@ -10738,7 +10738,7 @@ else {
     int sblk = nt_ref(nt, id, "block");
     if (snm && srecv >= 0 && sblk >= 0) {
       TyKind srt = comp_ntype(c, srecv);
-      int is_ie = sp_streq(snm, "instance_eval") || sp_streq(snm, "instance_exec");
+      int is_ie = is_instance_eval_family(snm);
       int discard = (is_ie && ty_is_object(srt)) ||
                     (ty_is_object(srt) && comp_trampoline_kind(c, ty_object_class(srt), snm, NULL));
       if (discard) {

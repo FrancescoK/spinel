@@ -17,7 +17,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      (it falls through to the general poly dispatch below). */
   /* inject/reduce(:op) on a container-read poly iterable (#3234) */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+      (is_reduce_alias(name)) &&
       comp_ntype(c, argv[0]) == TY_SYMBOL) {
     if (!poly_name_user_claimed(c, name, argc, 0)) {
       buf_puts(b, "sp_poly_inject_sym("); emit_expr(c, recv, b); buf_puts(b, ", ");

@@ -47,4 +47,12 @@ int is_str_each_iter(const char *n);  /* each_char each_line each_byte each_code
 int is_diverging_call(const char *n); /* raise fail throw exit exit! abort: a Kernel call that never returns */
 int is_block_loop_method(const char *n); /* times each upto downto step loop each_with_index: a block run an unbounded number of times */
 
+int is_each_window(const char *n); /* each_cons each_slice: consecutive or disjoint element windows */
+int is_reduce_alias(const char *n); /* inject reduce: Enumerable reduction aliases */
+int is_minmax_query(const char *n); /* min max: extrema queries */
+int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
+int is_map_alias(const char *n); /* map collect: Enumerable transformation aliases */
+int is_instance_eval_family(const char *n); /* instance_eval instance_exec */
+int is_find_alias(const char *n); /* find detect: Enumerable search aliases */
+
 #endif

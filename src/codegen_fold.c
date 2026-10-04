@@ -447,7 +447,7 @@ int emit_hash_reduce_search_expr(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
   int is_min = sp_streq(name, "min_by"), is_max = sp_streq(name, "max_by");
-  int is_find = sp_streq(name, "find") || sp_streq(name, "detect");
+  int is_find = is_find_alias(name);
   if ((!is_min && !is_max && !is_find) || argc != 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = comp_ntype(c, recv);
@@ -3609,7 +3609,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
-  int is_inject = sp_streq(name, "inject") || sp_streq(name, "reduce");
+  int is_inject = is_reduce_alias(name);
   if (!is_inject) return 0;  /* other terminals handled in a later pass */
 
   int arr = -1, off = -1;
@@ -3771,7 +3771,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
-  int is_map = sp_streq(name, "map") || sp_streq(name, "collect");
+  int is_map = is_map_alias(name);
   int is_sel = sp_streq(name, "select") || sp_streq(name, "filter") ||
                sp_streq(name, "find_all");
   int is_rej = sp_streq(name, "reject");

@@ -715,7 +715,7 @@ int call_breaks(Compiler *c, int id) {
   const char *bty = nt_type(nt, block);
   if (!bty || !sp_streq(bty, "BlockNode")) return 0;   /* not &proc / &:sym */
   const char *name = nt_str(nt, id, "name");
-  if (name && (sp_streq(name, "instance_exec") || sp_streq(name, "instance_eval"))) return 0;
+  if (name && (is_instance_eval_family(name))) return 0;
   if (nt_ref(nt, id, "receiver") < 0 && call_user_yield_mi(c, id) < 0) return 0;
   return block_has_top_break(c, nt_ref(nt, block, "body"));
 }
@@ -1268,7 +1268,7 @@ static int range_each_is_external(Compiler *c, int id) {
                  would answer the elements instead (#3857). each_entry is
                  renamed to each, so the recorded self-result marks it. */
               sp_streq(m, "each_entry") ||
-              ((sp_streq(m, "each_slice") || sp_streq(m, "each_cons")) &&
+              ((is_each_window(m)) &&
                nt_ref(nt, n, "block") >= 0))) return 1;
     if (nt_int(nt, n, "enum_self_result", -1) == id) return 1;
     /* the drain a self-result rewrite interposed: the each stays an Enumerator
@@ -1317,7 +1317,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   /* each_slice/each_cons: the block form and the blockless Enumerator form
      (.to_a / .map chains) both materialize transparently -- the slices carry
      the range's own ints. */
-  if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) && argc >= 1)
+  if ((is_each_window(name)) && argc >= 1)
     return 1;
   /* block-taking Enumerable forms the array emitters serve: partition,
      each_with_index, sort_by, chunk_while, sum { }, and the block forms of
@@ -1329,13 +1329,13 @@ int range_enum_redispatch(Compiler *c, int id) {
        sp_streq(name, "chunk") ||
        sp_streq(name, "sum") || sp_streq(name, "each_with_object")))
     return 1;
-  if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
+  if ((is_reduce_alias(name)) && block >= 0)
     return 1;
   /* cycle { }: the array emitter serves both the counted and endless forms;
      the yielded elements are the range's own ints */
   if (sp_streq(name, "cycle") && block >= 0) return 1;
   /* reduce/inject: the explicit symbol / initial-value forms (no block). */
-  if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;
+  if ((is_reduce_alias(name)) && argc >= 1 && block < 0) return 1;
   /* count: the block / argument forms (bare count is size, handled natively). */
   if (sp_streq(name, "count")) return block >= 0 || argc >= 1;
   /* take/drop and reverse_each materialize transparently (the results carry
@@ -1343,7 +1343,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   if ((sp_streq(name, "take") || sp_streq(name, "drop")) && argc == 1) return 1;
   if (sp_streq(name, "reverse_each")) return 1;
   /* min(n)/max(n)/minmax with a count return arrays of the range's ints */
-  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) return 1;
+  if ((is_minmax_query(name)) && argc >= 1) return 1;
   /* blockless all?/any?/none?/one?: a truthiness scan, which the materialized
      int array performs identically (an int is always truthy) (#3859). The
      pattern-argument forms scan the same elements with `===`. */
@@ -1379,7 +1379,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (block < 0 && sp_streq(name, "each_with_index")) return 1;
   /* inject(:op) / reduce(:op): the Symbol-operator fold runs over the [k, v]
      pairs, the same materialization the block form below rides (#3830) */
-  if (block < 0 && (sp_streq(name, "reduce") || sp_streq(name, "inject"))) return 1;
+  if (block < 0 && (is_reduce_alias(name))) return 1;
   /* pair-array Enumerables with no dedicated hash emitter: find_index, uniq,
      zip, tally, reverse_each ride the materialized redispatch, block or not
      (#2372) */
@@ -1392,7 +1392,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (sp_streq(name, "min") || sp_streq(name, "max") || sp_streq(name, "minmax")) return 1;
   if (sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "find_all")) return 1;
   if (sp_streq(name, "each_with_index")) return 1;
-  if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
+  if (is_reduce_alias(name)) return 1;
   /* comparator-block sort over the [k, v] pairs -> a poly array of pairs */
   if (sp_streq(name, "sort")) return 1;
   /* flat_map keeps its dedicated hash emitter */
@@ -2562,7 +2562,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            sp_streq(name, "take") || sp_streq(name, "drop") ||
            sp_streq(name, "rotate") || sp_streq(name, "sample") ||
            (sp_streq(name, "shuffle") && argc == 0) ||
-           sp_streq(name, "min") || sp_streq(name, "max"))) {
+           is_minmax_query(name))) {
         int has_user = 0;
         if (!an_builtin_only)
         for (int k = 0; k < c->nclasses && !has_user; k++)
@@ -3376,7 +3376,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
                             sp_streq(name, "first") || sp_streq(name, "last") ||
                             sp_streq(name, "min") || sp_streq(name, "max")))
             { *out = TY_STRING; return 1; }
-          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last")))
+          if (argc == 1 && (is_endpoint_query(name)))
             { *out = TY_STR_ARRAY; return 1; }
         }
       }
@@ -3419,9 +3419,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     if (is_quantifier(name)) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
       { *out = range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY; return 1; }
-    if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+    if ((is_each_window(name)) &&
         argc == 1 && nt_ref(nt, id, "block") < 0) { *out = TY_ENUMERATOR; return 1; }
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) { *out = TY_INT_ARRAY; return 1; }
+    if ((is_endpoint_query(name)) && argc == 1) { *out = TY_INT_ARRAY; return 1; }
     if (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
         sp_streq(name, "first") || sp_streq(name, "last") ||
         sp_streq(name, "size") || sp_streq(name, "count") ||
@@ -3466,7 +3466,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
   /* (range).lazy[.select/reject{blk}].first(n) / .first. The chain may be held
      in a variable (`p = src.lazy.select{}; p.first(n)`) -- resolve the alias to
      the chain node so the forced type matches emit_lazy_pipeline_expr (#2932). */
-  if (sp_streq(name, "first") || sp_streq(name, "last")) {
+  if (is_endpoint_query(name)) {
     int lrecv = lazy_resolve_chain(c, recv);
   if (lrecv >= 0 && nt_type(nt, lrecv) && sp_streq(nt_type(nt, lrecv), "CallNode")) {
     int lazy_src = -1;
@@ -3477,7 +3477,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
          emit_lazy_pipeline_expr fuses) */
       int cur9 = lrecv;
       const char *rname9 = nt_str(nt, cur9, "name");
-      if (rname9 && (sp_streq(rname9, "each_cons") || sp_streq(rname9, "each_slice")) &&
+      if (rname9 && (is_each_window(rname9)) &&
           nt_ref(nt, cur9, "block") < 0) {
         grouped = 1;
         cur9 = nt_ref(nt, cur9, "receiver");
@@ -3530,7 +3530,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
         cur = nt_ref(nt, cur, "receiver"); continue;
       }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
-      if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { cur = nt_ref(nt, cur, "receiver"); continue; }
+      if (is_map_alias(nm)) { cur = nt_ref(nt, cur, "receiver"); continue; }
       if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
           sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
           sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
@@ -5322,7 +5322,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
     TyKind arr_t0 = arr_t;
     if (arr_t == TY_RANGE) arr_t = TY_INT_ARRAY;
     if (inner && ty_is_array(arr_t)) {
-      if (sp_streq(inner, "map") || sp_streq(inner, "collect")) {
+      if (is_map_alias(inner)) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
           int body = nt_ref(nt, blk, "body");
@@ -5349,7 +5349,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
     TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
     if (ty_is_array(chain_at)) {
       TyKind elem = ty_array_elem(chain_at);
-      if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
+      if (is_reduce_alias(name)) {
         int args = nt_ref(nt, id, "arguments");
         int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
         TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
@@ -5385,7 +5385,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
          result type on it so single-param forms fall to their normal rules. */
       int two_param = blk >= 0 && !block_param_is_multi(c, blk, 0) &&
                       block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
-      if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
+      if (two_param && (is_map_alias(name)))
         { *out = ty_array_of(bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN); return 1; }
       if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
           (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
@@ -5408,7 +5408,7 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
   if (recv >= 0 && ty_is_obj_array(rt)) {
     int ecls = ty_obj_array_class(rt);
     if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) { *out = ty_object(ecls); return 1; }
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    if ((is_endpoint_query(name)) && argc == 0) { *out = ty_object(ecls); return 1; }
     if (sp_streq(name, "[]=") && argc == 2) { *out = ty_object(ecls); return 1; }
     if (is_push_alias(name)) { *out = rt; return 1; }
     if (is_len_alias(name) && argc == 0) { *out = TY_INT; return 1; }
@@ -5417,14 +5417,14 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
        classes with `<=>`): sort keeps the array type, min/max yield an
        element (NULL-encoded nil when empty). */
     if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) && argc == 0) { *out = rt; return 1; }
-    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) { *out = ty_object(ecls); return 1; }
+    if ((is_minmax_query(name)) && argc == 0) { *out = ty_object(ecls); return 1; }
     /* the block iterators the narrowing pass admits (nested_row_iter_call):
        each and its kin answer the receiver, map the block's values (#4846) */
     { int oblk = nt_ref(nt, id, "block");
       if (oblk >= 0 && nt_kind(nt, oblk) == NK_BlockNode) {
         if (is_each_walk_or_with_index(name) && argc == 0)
           { *out = rt; return 1; }
-        if ((sp_streq(name, "map") || sp_streq(name, "collect")) && argc == 0)
+        if ((is_map_alias(name)) && argc == 0)
           { *out = infer_map_block_ty(c, id, oblk); return 1; }
       } }
   }
@@ -5823,12 +5823,12 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
   /* recv.instance_eval/exec { ... } -> the block's last-expression type
      (bare calls inside resolve via the ie node->class map). A trampoline
      method `recv.M { ... }` resolves the same way. */
-  int ie_kind = (recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
+  int ie_kind = (recv >= 0 && (is_instance_eval_family(name)) &&
                  ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
   /* a non-object receiver (nil, a scalar) is served by the non-object splice;
      type it by the block's last-expression the same way (#2956) */
   if (!ie_kind && recv >= 0 && !ty_is_object(rt) &&
-      (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"))) {
+      (is_instance_eval_family(name))) {
     int nblk = nt_ref(nt, id, "block");
     if (nblk >= 0 && nt_type(nt, nblk) && sp_streq(nt_type(nt, nblk), "BlockNode")) ie_kind = 1;
   }
@@ -5982,7 +5982,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
       nt_type(nt, nt_ref(nt, id, "block")) &&
       sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode") &&
-      ((argc == 1 && (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) ||
+      ((argc == 1 && (is_each_window(name))) ||
        /* each_entry answers the receiver too, and the value emitter yields it:
           left on the pair array's type the two disagreed and the C compiler
           was handed a hash where an array was declared (#3895). It is
@@ -6116,7 +6116,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      the element either way, then had its already-boxed value boxed a second
      time under that array type. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 0 &&
-      (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+      (is_find_alias(name)) &&
       infer_type(c, recv) == TY_POLY && !an_user_defines_or_reads(c, name))
     { *out = TY_POLY; return 1; }
   /* find_all is NOT the third spelling of select: Hash#select answers a Hash,
@@ -6129,7 +6129,7 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
      kind it turns out to be -- an Array for an Array, the Hash itself for a
      Hash -- so the result rides boxed, like the filtering siblings above. */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && argc == 1 &&
-      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      (is_each_window(name)) &&
       infer_type(c, recv) == TY_POLY)
     { *out = TY_POLY; return 1; }
   /* `poly.zip(other) { }` / `poly.cycle(n) { }` answer nil, as they do for a
@@ -6273,7 +6273,7 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
     if (sp_streq(name, "cover?")) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "gcdlcm")) { *out = TY_POLY_ARRAY; return 1; }   /* a Bignum pair stays boxed (#4665) */
     if (sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) { *out = TY_POLY; return 1; }
-    if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+    if ((is_reduce_alias(name)) &&
         nt_ref(nt, id, "block") < 0 && infer_type(c, argv[0]) == TY_SYMBOL) { *out = TY_POLY; return 1; }
   }
   return 0;
@@ -6922,7 +6922,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
           if (st0 == TY_NIL || st0 == TY_BOOL || st0 == TY_VOID) st0 = TY_POLY;
           return st0;
         }
-        if (argc == 0 && (sp_streq(name, "min") || sp_streq(name, "max"))) return TY_POLY;
+        if (argc == 0 && (is_minmax_query(name))) return TY_POLY;
         if (argc == 0 && sp_streq(name, "minmax")) return TY_POLY_ARRAY;    /* (#2406) */
         if (argc == 1 && is_cmp_op(name)) return TY_BOOL;  /* (#2399) */
         rt = TY_STR_POLY_HASH;

@@ -2329,7 +2329,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   /* `xs.first(n)` / `xs.last(n)` on a poly value that is a container at run
      time: the zero-arg forms have had an arm for a long time, the counted
      ones fell through to the raise (#3781 follow-up). */
-  int is_pfirstn = (sp_streq(name, "first") || sp_streq(name, "last")) &&
+  int is_pfirstn = (is_endpoint_query(name)) &&
                    argc == 1 && !has_splat_arg;
   int is_include = is_key_query(name) && argc == 1;
   /* intersect? on a poly value that is a builtin array. The typed-receiver
@@ -4066,7 +4066,7 @@ int poly_redispatch_kind(Compiler *c, int id, const char *name, int argc) {
             emitter and bakes a NoMethodError whose argument does not even
             typecheck. Leave the guarded shape on its existing path (it raises
             at run time, as it did before) rather than failing the build. */
-         sp_streq(name, "each_cons") || sp_streq(name, "each_slice")));
+         is_each_window(name)));
   if (!takes) return 0;
   /* `each_slice(n) { }` / `each_cons(n) { }` answer the RECEIVER, and for a
      Hash that is the hash itself, not the pairs the re-dispatch materializes

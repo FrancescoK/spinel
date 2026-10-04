@@ -1248,7 +1248,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
   /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
      the ifnone proc's value on no-match; the result rides poly since the
      proc can return anything. A non-proc ifnone stays a loud reject. */
-  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 &&
+  if ((is_find_alias(name)) && block >= 0 &&
       argc == 1 && comp_ntype(c, argv[0]) == TY_PROC) {
     const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
     int body = nt_ref(nt, block, "body");
@@ -1290,7 +1290,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
     }
   }
   /* find / detect { |x| cond } - returns element or nil */
-  if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc == 0) {
+  if ((is_find_alias(name)) && block >= 0 && argc == 0) {
     const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
     int body = nt_ref(nt, block, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -2171,7 +2171,7 @@ else {
      array was a fresh allocation per call, and in a hot loop (an edit
      distance's `[ins, del, sub].min`) its garbage grew the heap to twice
      what the program kept. Each element runs once, in order. */
-  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
+  if ((is_minmax_query(name)) && argc == 0 &&
       rt == TY_INT_ARRAY && nt_kind(nt, recv) == NK_ArrayNode &&
       nt_ref(nt, id, "block") < 0) {
     int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
@@ -2196,7 +2196,7 @@ else {
      so far, as CRuby's VM does for them (sp_PolyArray_minmax_lit): the
      nil check and a boxed literal's comparisons name the pair that
      way round, where Array#max's on an array value is the other. */
-  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 && block < 0 &&
+  if ((is_minmax_query(name)) && argc == 0 && block < 0 &&
       array_literal_plain(c, recv)) {
     int want_max = sp_streq(name, "max");
     if (rt == TY_POLY_ARRAY) {
@@ -2213,7 +2213,7 @@ else {
       { *out = 1; return 1; }
     }
   }
-  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) {
+  if ((is_minmax_query(name)) && argc == 0) {
     buf_printf(b, "sp_%sArray_%s(", k, name); emit_nil_ck_recv(c, recv, rt, "cmp", 0, b); buf_puts(b, ")");
     { *out = 1; return 1; }
   }
@@ -2687,7 +2687,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   /* poly-array max/min: boxed elements compared at runtime (numerics,
      strings, int-array tuples lexicographically). */
-  if ((sp_streq(name, "max") || sp_streq(name, "min")) && argc == 0 &&
+  if ((is_minmax_query(name)) && argc == 0 &&
       rt == TY_POLY_ARRAY && nt_ref(nt, id, "block") < 0) {
     /* a literal's in CRuby's VM order (sp_PolyArray_minmax_lit) */
     if (array_literal_plain(c, recv)) {
@@ -3011,7 +3011,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* find / detect { |x| cond } on a poly array -> the element or nil. The
      typed-array forms live inside the `if (k)` block below, but array_kind is
      NULL for a poly array, so handle it here with the boxed element type. */
-  if (rt == TY_POLY_ARRAY && (sp_streq(name, "find") || sp_streq(name, "detect"))) {
+  if (rt == TY_POLY_ARRAY && (is_find_alias(name))) {
     int fblock = nt_ref(nt, id, "block");
     /* find(ifnone) { }: the proc is called on no-match, so its value (any
        type) rides the boxed result. A non-proc ifnone stays a loud reject. */
@@ -4082,7 +4082,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   TyKind res = comp_ntype(c, id);
   /* [].first / [].last on an empty literal: there is no element type to read;
      the value is nil (boxed -- the call types poly). */
-  if (recv >= 0 && argc == 0 && (sp_streq(name, "first") || sp_streq(name, "last")) &&
+  if (recv >= 0 && argc == 0 && (is_endpoint_query(name)) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
     int fe_n = 0; nt_arr(nt, recv, "elements", &fe_n);
     if (fe_n == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
@@ -4108,7 +4108,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
-    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) {
+    if ((is_endpoint_query(name)) && argc == 0) {
       buf_printf(b, "((%s *)sp_PtrArray_get(", ecn);
       emit_expr(c, recv, b);
       buf_puts(b, sp_streq(name, "first") ? ", 0))" : ", -1))");
@@ -4175,7 +4175,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_PtrArray_sort_obj_bang(_t%d, %d); _t%d; })", tr, ecls, tr);
       return 1;
     }
-    if (!nested && (sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
+    if (!nested && (is_minmax_query(name)) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "((%s *)sp_PtrArray_minmax_obj(", ecn);
       emit_expr(c, recv, b);
@@ -4191,7 +4191,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      `[[1,2],[3,4]].map { |row| row.find { } }`): coerce to a poly array and
      scan, mirroring the poly-array form inside the ty_is_array block below,
      which this receiver type does not enter (#2904). */
-  if (recv >= 0 && rt == TY_POLY && (sp_streq(name, "find") || sp_streq(name, "detect")) &&
+  if (recv >= 0 && rt == TY_POLY && (is_find_alias(name)) &&
       nt_ref(nt, id, "block") >= 0 && argc == 0) {
     int fblock = nt_ref(nt, id, "block");
     const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
@@ -4286,7 +4286,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                  sp_streq(nt_type(nt, argv[argc - 1]), "SymbolNode"));
   if (recv >= 0 && rt == TY_POLY &&
       (nt_ref(nt, id, "block") >= 0 || red_sym) &&
-      (sp_streq(name, "reduce") || sp_streq(name, "inject")) &&
+      (is_reduce_alias(name)) &&
       (argc <= 1 || red_sym) && g_n_argov < MAX_ARG_OVERRIDE) {
     int ta = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
@@ -4524,7 +4524,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
      generator or endless Enumerator regroups as it is pulled (materializing
      it never returned), anything else through its elements as below. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each_cons") || sp_streq(name, "each_slice")) &&
+      (is_each_window(name)) &&
       comp_ntype(c, id) == TY_ENUMERATOR && !user_defines_or_reads(c, name)) {
     int te = ++g_tmp;
     Buf eb; memset(&eb, 0, sizeof eb); emit_expr(c, recv, &eb);
@@ -10471,7 +10471,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           comp_ntype(c, nt_ref(nt, rn9, "left")) == TY_FLOAT &&
           ((argc == 0 && (sp_streq(name, "size") || sp_streq(name, "sum") ||
                           sp_streq(name, "count") || sp_streq(name, "to_a"))) ||
-           (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last"))))) {
+           (argc == 1 && (is_endpoint_query(name))))) {
         const char *dflt9 = (sp_streq(name, "to_a") || argc == 1)
                               ? "(sp_IntArray*)0" : "(sp_int)0";
         buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })", dflt9);
@@ -10517,7 +10517,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, ", %d); (sp_int)_t%d->len; })", excl9, ta9);
             return 1;
           }
-          if (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last"))) {
+          if (argc == 1 && (is_endpoint_query(name))) {
             int ta9 = ++g_tmp, tn9 = ++g_tmp;
             buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta9);
             emit_expr(c, lo9, b); buf_puts(b, ", "); emit_expr(c, hi9, b);
@@ -10665,7 +10665,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* min(n) / max(n): the n smallest or largest members, walked from the
        endpoint the count starts at, so a one-sided Range answers without
        materializing (and raises from the side it has no end on) (#3665). */
-    if (argc == 1 && (sp_streq(name, "min") || sp_streq(name, "max")) && block < 0) {
+    if (argc == 1 && (is_minmax_query(name)) && block < 0) {
       int trr = ++g_tmp, tnn = ++g_tmp, too = ++g_tmp, thi = ++g_tmp, tii = ++g_tmp;
       int want_min = sp_streq(name, "min");
       buf_printf(b, "({ sp_Range _t%d = ", trr); emit_expr(c, recv, b);
@@ -10712,7 +10712,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "sum") && block >= 0) known = 0;
     /* min(n)/max(n) return arrays of the smallest/largest n: Enumerable forms,
        served by the int-array redispatch below (the native arm is argless). */
-    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) known = 0;
+    if ((is_minmax_query(name)) && argc >= 1) known = 0;
     /* min/max/minmax with a comparator block: the comparator emitter serves
        the lowerable shapes; anything else must reject rather than silently
        ignore the block. */

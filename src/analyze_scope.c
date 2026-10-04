@@ -4751,7 +4751,7 @@ static int scope_body_has_receiverless_ie(Compiler *c, int scope_idx) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (nm && (sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval"))) return 1;
+    if (nm && (is_instance_eval_family(nm))) return 1;
   }
   return 0;
 }

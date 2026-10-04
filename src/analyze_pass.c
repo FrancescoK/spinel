@@ -4057,7 +4057,7 @@ int infer_write_types(Compiler *c) {
     const char *vnm = nt_str(nt, val_id, "name");
     int vrecv = nt_ref(nt, val_id, "receiver");
     if (!vnm || vrecv < 0) continue;
-    int is_ie = sp_streq(vnm, "instance_eval") || sp_streq(vnm, "instance_exec");
+    int is_ie = is_instance_eval_family(vnm);
     if (!is_ie) {
       TyKind vrt = infer_type(c, vrecv);
       int tramp = ty_is_object(vrt) &&
@@ -4965,7 +4965,7 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
     int r = nt_ref(nt, n, "receiver"), a = nt_ref(nt, n, "arguments"), an = 0;
     if (a >= 0) nt_arr(nt, a, "arguments", &an);
     int elem_read = (sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an >= 1) ||
-                    ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0);
+                    ((is_endpoint_query(nm)) && an == 0);
     if (r < 0 || !elem_read || nt_ref(nt, n, "block") >= 0) return nout;
     int outer[32];
     int no = container_literals(c, r, outer, 0, 32, depth + 1);
@@ -5294,7 +5294,7 @@ static int literal_rows_read(Compiler *c, int v, int apply) {
   if (a >= 0) nt_arr(nt, a, "arguments", &an);
   if (!nm || r < 0 || nt_ref(nt, v, "block") >= 0 ||
       !((sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an == 1) ||
-        ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0))) return -1;
+        ((is_endpoint_query(nm)) && an == 0))) return -1;
   if (nt_kind(nt, r) != NK_LocalVariableReadNode) return -1;
   const char *rn = nt_str(nt, r, "name");
   Scope *sc = rn ? comp_scope_of(c, r) : NULL;
@@ -5878,7 +5878,7 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
   if (a >= 0) nt_arr(nt, a, "arguments", &an);
   if (!nm || nt_ref(nt, v, "block") >= 0) return 0;
   if (r >= 0 && ((sp_streq(nm, "[]") && an == 1) || (sp_streq(nm, "fetch") && an >= 1) ||
-                 ((sp_streq(nm, "first") || sp_streq(nm, "last")) && an == 0)))
+                 ((is_endpoint_query(nm)) && an == 0)))
     return widen_boxed_elem_sources(c, r, elem, depth + 1);
   int mi = backprop_call_target(c, v);
   if (mi < 0) return 0;
@@ -9623,7 +9623,7 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
       nt_node_set_ref(nt, root, "receiver", sn);
       changed = 1;
     }
-    if (nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"))) skip = nt_ref(nt, root, "block");
+    if (nm && (is_instance_eval_family(nm))) skip = nt_ref(nt, root, "block");
   }
   int nr = nt_num_refs(nt, root);
   for (int i = 0; i < nr; i++) {
@@ -12347,7 +12347,7 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
   /* array.each_cons(n) / each_slice(n) { |a, b, ...| } -- a single param
      binds the n-element sub-array; multiple params destructure elements.
      Also handles |(a, b)| destructuring: leaves bind to element type. */
-  if ((sp_streq(name, "each_cons") || sp_streq(name, "each_slice")) && ty_is_array(rt)) {
+  if ((is_each_window(name)) && ty_is_array(rt)) {
     Scope *es = comp_scope_of(c, block);
     int np = 0; while (block_param_name(c, block, np)) np++;
     if (np == 0 && block_param_is_multi(c, block, 0)) {
@@ -12444,7 +12444,7 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
   /* arr.each.with_index(off).inject(init) { |acc, (v,i)| } / { |acc, pair| }
      and arr.each_with_index.inject{...}: type the fold's params over the
      [elem, index] pair enumerator. (matz/spinel#1481) */
-  if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+  if ((is_reduce_alias(name)) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_ref(nt, recv, "block") < 0) {
     int chain_arr = an_indexed_each_source(nt, recv);
@@ -12567,7 +12567,7 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
   }
 
   /* array.reduce(init) { |acc, elem| } or inject: p0=acc type, p1=elem type */
-  if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && ty_is_array(rt)) {
+  if ((is_reduce_alias(name)) && ty_is_array(rt)) {
     if (!p0) return changed | 2;
     Scope *rs = comp_scope_of(c, block);
     TyKind et2 = ty_array_elem(rt);

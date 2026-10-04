@@ -497,7 +497,7 @@ static int ty_is_array_elem_iter(const char *n) {
 
 TyIterShape ty_iter_shape(const char *name) {
   if (!name) return TY_ITER_NONE;
-  if (sp_streq(name, "map") || sp_streq(name, "collect")) return TY_ITER_MAP;
+  if (is_map_alias(name)) return TY_ITER_MAP;
   if (sp_streq(name, "select") || sp_streq(name, "filter")) return TY_ITER_SELECT;
   if (sp_streq(name, "reject")) return TY_ITER_REJECT;
   return TY_ITER_NONE;
@@ -509,7 +509,7 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   /* each_slice(n) and each_cons(n) hand their block one Array per step, which
      the block's parameter is typed from as a literal block's is */
   if ((ty_is_array(recv) || ty_is_hash(recv) || recv == TY_RANGE) &&
-      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) {
+      (is_each_window(name))) {
     BY_PUT(0, TY_UNKNOWN); return 1;
   }
   if (ty_is_array(recv)) {

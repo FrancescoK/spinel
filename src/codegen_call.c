@@ -2573,7 +2573,7 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
       cur = nt_ref(nt, cur, "receiver"); continue;
     }
     if (blk < 0) return 0;
-    if (sp_streq(nm, "map") || sp_streq(nm, "collect")) { ops[nops].kind = LK_MAP; ops[nops].arg = -1; nops++; }
+    if (is_map_alias(nm)) { ops[nops].kind = LK_MAP; ops[nops].arg = -1; nops++; }
     else if (sp_streq(nm, "select") || sp_streq(nm, "filter") || sp_streq(nm, "find_all") ||
              sp_streq(nm, "reject") || sp_streq(nm, "take_while") || sp_streq(nm, "drop_while") ||
              sp_streq(nm, "filter_map") || sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) {
@@ -18053,7 +18053,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
      Enumerator itself, so a generator or an endless one is not drained
      first (sp_Enumerator_regroup). */
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+      (is_each_window(name)) &&
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_hop") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "to_a") &&
       nt_ref(nt, recv, "receiver") >= 0 &&
@@ -18074,7 +18074,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
        comp_ntype(c, recv) == TY_RANGE ||
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
-      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) {
+      (is_each_window(name))) {
     /* the receiver is held across the count, which may allocate */
     Buf rsl;
     int csl = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rsl);
