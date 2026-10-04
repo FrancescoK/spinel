@@ -1,9 +1,11 @@
 # IO::Buffer each/each_byte/values/get_values/set_values, and the locked
 # block: data access stays allowed inside it, while free/resize/transfer
-# and a second locked refuse -- and the lock survives a raise.
+# and a second locked refuse -- and the lock is released by a raise out of
+# the block (Ruby 4.0.7; 4.0.4 left it locked, and every later call in the
+# outer block refused).
 def try(label)
   r = yield
-  puts "#{label}: => #{r.inspect}"
+  puts "#{label}: => #{red(r.inspect)}"
 rescue => e
   puts "#{label}: #{e.class}: #{e.message}"
 end
