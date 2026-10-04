@@ -1285,10 +1285,14 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
-    /* a Float initial value folds to a Float (bare sp_float, not boxed) */
+    /* a Float initial value folds to a Float (bare sp_float, not boxed),
+       through sp_poly_sum_seed, the seeded fold the boxed receiver already
+       takes: the receiver evaluated before the seed, the seed added first.
+       Adding the seed to a plain fold of the elements summed in the wrong
+       order and skipped an element that is no number, where CRuby raises
+       the seed's own TypeError. */
     if (init_t == TY_FLOAT) {
-      buf_puts(b, "("); emit_float_expr(c, argv[0], b);
-      buf_puts(b, " + sp_PolyArray_sum_float("); emit_expr(c, recv, b); buf_puts(b, "))");
+      buf_puts(b, "sp_poly_to_f("); emit_poly_sum_seed(c, recv, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     /* an Integer (or poly) seed folds via sp_poly_add so Float/Rational/

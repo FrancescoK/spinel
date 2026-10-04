@@ -1,0 +1,6 @@
+TypeError: String can't be coerced into Float
+TypeError: nil can't be coerced into Float
+TypeError: :sym can't be coerced into Float
+3.5
+4.0
+1.5
