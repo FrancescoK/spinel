@@ -28100,6 +28100,27 @@ static void an_phase_desugar_register(Compiler *c) {
       }
     }
   }
+  /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
+     parentheses around one expression. Anything else -- `(A rescue B)`,
+     `(x; Base)`, a local variable -- was read as no superclass and the class
+     silently became a subclass of Object: refuse it. */
+  {
+    const NodeTable *ntc = c->nt;
+    for (int id = 0; id < ntc->count; id++) {
+      if (nt_kind(ntc, id) != NK_ClassNode) continue;
+      int sc = nt_ref(ntc, id, "superclass");
+      if (sc < 0) continue;
+      NodeKind sk = nt_kind(ntc, sc);
+      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode || sk == NK_CallNode) continue;
+      int ln = (int)nt_int(ntc, id, "node_line", 0);
+      const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
+      if (!file || !*file) file = ntc->source_file;
+      if (!file || !*file) file = "source.rb";
+      fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
+                      "write the superclass as a constant\n", file, ln, nt_type(ntc, sc));
+      exit(1);
+    }
+  }
   /* A block written with its own rescue clause (`do ... rescue ... end`) has a
      BeginNode where every other block has a StatementsNode, so the body read as
      empty and the block's value was nil. Wrap it once here (#3710). */
