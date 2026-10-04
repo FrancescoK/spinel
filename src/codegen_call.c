@@ -7950,8 +7950,9 @@ else if (argc == 7) {
     /* a Rational subsecond (usec) has no int64 slot; route it through the
        float helper via sp_rational_to_f (#3091) */
     TyKind ut = comp_ntype(c, argv[6]);
+    /* a boxed one is any real number, read through the same float helper */
     buf_printf(b, "%s(sp_time_new%s(",
-               (ut == TY_FLOAT || ut == TY_RATIONAL) ? "sp_time_with_usec_f" : "sp_time_with_usec",
+               (ut == TY_FLOAT || ut == TY_RATIONAL || ut == TY_POLY) ? "sp_time_with_usec_f" : "sp_time_with_usec",
                is_utc ? "_utc" : "");
   }
 else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
@@ -7972,7 +7973,10 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   }
   if (argc == 7) {
     buf_puts(b, is_new ? ", " : "), ");
-    if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
+    if (comp_ntype(c, argv[6]) == TY_POLY) {
+      buf_puts(b, "sp_poly_to_f_with_rational("); emit_expr(c, argv[6], b); buf_puts(b, ")");
+    }
+    else if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
       buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[6], b); buf_puts(b, ")");
     }
     else emit_expr(c, argv[6], b);
