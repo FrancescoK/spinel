@@ -5569,6 +5569,10 @@ else {
           buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, argv[0], b);
           buf_printf(b, "; (sp_%sHash*)_t%d.v.p; })", hn, t);
         }
+        /* an unresolved argument (a name nothing defines) is the gate's
+           raise token: coerced to the receiver's layout, it raises before
+           the merge reads it (#7276, #7277) */
+        else if (at == TY_UNKNOWN) emit_unresolved_coerced(c, argv[0], rt, b);
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
