@@ -1,0 +1,12 @@
+class AisBase
+end
+
+class AisUser < AisBase
+end
+
+class AisRepo
+  def save_bang: () -> AisBase
+  def restore: () -> AisUser
+  def fresh: () -> AisUser
+  def plain: () -> AisBase
+end

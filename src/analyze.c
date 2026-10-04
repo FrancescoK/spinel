@@ -22808,6 +22808,14 @@ static int seed_contradicts(Compiler *c, TyKind slot, TyKind val, int ret) {
   int fv = ret ? seed_ret_family(c, val)  : seed_repr_family(c, val);
   if (!fs || !fv) return 0;
   if (fs != fv) return 1;
+  /* Two objects at a RETURN: a subclass in an ancestor's slot is legitimate,
+     but an ancestor (or an unrelated class) in a subclass's slot is a pointer
+     the declared C return type cannot hold, and cc refused it (#7278). */
+  if (ret && ty_is_object(slot) && ty_is_object(val) && slot != val) {
+    int cs = ty_object_class(slot), cv = ty_object_class(val);
+    if (cs < 0 || cs >= c->nclasses || cv < 0 || cv >= c->nclasses) return 0;
+    return !is_descendant(c, cv, cs);
+  }
   int ks = ret ? seed_ret_kind(slot) : seed_ptr_kind(slot);
   int kv = ret ? seed_ret_kind(val)  : seed_ptr_kind(val);
   /* Two HASHES differ convertibly in their VALUE kind -- the emitter rebuilds
