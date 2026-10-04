@@ -401,7 +401,7 @@ const char *sp_str_append_grow(const char *s, const char *t) {SP_GC_ROOT_STR(s);
   size_t la = sp_str_byte_len(s), lb = sp_str_byte_len(t);
   if (lb == 0) return s;
   int text_append = sp_str_is_binary(s) && !sp_str_is_binary(t) &&
-                    sp_str_ascii_only(s) && !sp_str_ascii_only(t);
+                    !sp_str_ascii_only(t) && sp_str_ascii_only(s);
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     sp_str_hdr *h = ((sp_str_hdr *)(s - 1)) - 1;

@@ -142,7 +142,7 @@ static inline void sp_String_append_bin(sp_String*s,const char*t){
   if(!s||!t)return;
   if(sp_String_is_frozen(s)){sp_raise_frozen_str(s->data);return;}
   if (s->binary && !sp_str_is_binary(t) &&
-      sp_str_ascii_only(s->data) && !sp_str_ascii_only(t)) {
+      !sp_str_ascii_only(t) && sp_str_ascii_only(s->data)) {
     s->binary=0;
     sp_str_as_text(s->data);
   }
