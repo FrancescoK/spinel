@@ -12108,6 +12108,19 @@ static int empty_hash_write_lit(Compiler *c, int v) {
   return an_or_empty_hash_fallback(c, v);
 }
 
+/* The variant an empty literal takes from one more key context: the first
+   one wins, unless the two are keyed by different classes among Symbol,
+   String and Integer. Then only the
+   poly-keyed variant holds both: keeping the first dropped the other key's
+   stores (`x = {}; y = x; y[:a] = 1; x["b"] = 2`). */
+static TyKind hash_want_join(TyKind cur, TyKind want) {
+  if (!ty_is_hash(cur)) return want;
+  TyKind ck = ty_hash_key(cur), wk = ty_hash_key(want);
+  int ckeyed = ck == TY_SYMBOL || ck == TY_STRING || ck == TY_INT;
+  int wkeyed = wk == TY_SYMBOL || wk == TY_STRING || wk == TY_INT;
+  if (cur == want || ck == wk || !ckeyed || !wkeyed) return cur;
+  return TY_POLY_POLY_HASH;
+}
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -12338,9 +12351,9 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
           if (wv < 0) { all_empty = 0; break; }
           all_empty = 1;
         }
-        else if (wv < c->node_cap && !ty_is_hash(c->hash_want[wv])) {
-          c->hash_want[wv] = want;
-          changed = 1;
+        else if (wv < c->node_cap) {
+          TyKind nw = hash_want_join(c->hash_want[wv], want);
+          if (nw != c->hash_want[wv]) { c->hash_want[wv] = nw; changed = 1; }
         }
       }
       if (!all_empty) break;
@@ -12358,9 +12371,9 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
       int srcs[32], ns = hash_literal_sources(c, recv, 0, srcs, 32, 0);
       for (int q = 0; q < ns; q++) {
         int en = 0; nt_arr(nt, srcs[q], "elements", &en);
-        if (en != 0 || srcs[q] >= c->node_cap || ty_is_hash(c->hash_want[srcs[q]])) continue;
-        c->hash_want[srcs[q]] = want;
-        changed = 1;
+        if (en != 0 || srcs[q] >= c->node_cap) continue;
+        TyKind nw = hash_want_join(c->hash_want[srcs[q]], want);
+        if (nw != c->hash_want[srcs[q]]) { c->hash_want[srcs[q]] = nw; changed = 1; }
       }
     }
   }
