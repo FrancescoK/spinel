@@ -3016,6 +3016,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       free(tb.p); }
     buf_puts(b, "; ");
   }
+  else if (nx_own && as_expr && g_ie_next_var && bn3 > 0 &&
+           (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode || nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode)) {
+    /* A conditional tail after a `next` guard (`next unless ok; k if c`):
+       emitted as a plain statement, its arms computed the value and dropped
+       it, so the block answered the carrier's nil and filter_map/select kept
+       nothing (#7283). Emit it as a tail whose arms store into the carrier,
+       as a `next` in one of them already does. */
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    const char *sv_rv = g_result_var; int sv_rp = g_result_poly; TyKind sv_rty = g_result_ty;
+    g_result_var = nxbuf; g_result_poly = g_ie_res_poly; g_result_ty = g_ie_res_poly ? TY_POLY : nx_bt;
+    emit_stmt_tail(c, bd3[bn3 - 1], b, 0);
+    g_result_var = sv_rv; g_result_poly = sv_rp; g_result_ty = sv_rty;
+  }
   else if (as_expr && !nx_own && bn3 > 0 &&
            nt_type(nt, bd3[bn3 - 1]) &&
            (sp_streq(nt_type(nt, bd3[bn3 - 1]), "IfNode") ||
