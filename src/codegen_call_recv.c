@@ -4456,7 +4456,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int sv = g_indent; g_indent++;
       Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "_t%d->data[_t%d] = %s;\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
+      buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, %s);\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       emit_indent(g_pre, g_indent);
@@ -9331,10 +9331,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (argc == 0 && ty_is_object(rt) &&
+    if (ty_is_object(rt) &&
         (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
          sp_streq(name, "singleton_methods")) &&
-        emit_object_methods_reflection(c, recv, ty_object_class(rt), name, b))
+        an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
+        emit_object_methods_reflection(c, recv, ty_object_class(rt), name,
+                                       an_object_methods_all_arg(c, ty_object_class(rt), argc, argv), b))
       return 1;
     if (emit_object_ivar_call(c, id, name, recv, rt, cid, argc, argv, b)) return 1;
     /* remove_instance_variable(:@x) returns the removed value. The fixed object

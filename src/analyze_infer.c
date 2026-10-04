@@ -152,6 +152,73 @@ TyKind an_builtin_answer(Compiler *c, int id) {
   return t;
 }
 
+/* What call `id`, on a chain from a yield, answers at a site whose receiver
+   is `kind`, for a site the per-site table (ty_recv_builtin_result) does not
+   answer. Once a reopen answers one site (`class Array; def size = "arr";
+   end`), the other sites need their own answer too, or the yield stays typed
+   as one site and the other sites' values land in that site's slot: an
+   Array block and a String block wrote the String's Integer size into a
+   `const char *`, and an Integer#succ reopen ran for a String block. The
+   builtin surface answers them, through the face pin the poly-receiver
+   dispatch uses: the call re-inferred with its receiver pinned to `kind`.
+   Only where a reopen is in play on the chain, so a program without one
+   keeps the typing it had.
+   A poly answer that comes from a poly argument is declined: the emitter
+   unboxes the argument and emits the concrete result, which a poly answer
+   would leave unboxed in the slot.
+   The answer is computed during analysis and recorded per (call, kind);
+   codegen (yield_builtin_method_site_type) and any inference asked after
+   analysis read the record, so the two agree and codegen re-infers nothing. */
+static struct { int node; TyKind kind, ans; } *ysa_tab;
+static int ysa_n, ysa_cap;
+static int ysa_find(int id, TyKind kind) {
+  for (int i = 0; i < ysa_n; i++)
+    if (ysa_tab[i].node == id && ysa_tab[i].kind == kind) return i;
+  return -1;
+}
+int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) {
+  const NodeTable *nt = c->nt;
+  int at = ysa_find(id, kind);
+  if (g_scopes_settled) {
+    if (at < 0 || ysa_tab[at].ans == TY_UNKNOWN) return 0;
+    *out = ysa_tab[at].ans;
+    return 1;
+  }
+  /* The pinned re-inference can ask this chain's per-site question again
+     (promote's `+` asks whether its yield receiver is widened); that inner
+     ask is about the pinned kind already, so it declines. */
+  static int busy = 0;
+  if (busy || face_active()) return 0;
+  if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "builtin_only", 0) ||
+      !comp_yield_chain_reopened(c, id)) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  busy = 1;
+  an_face_push(recv, kind);
+  TyKind ft = infer_call(c, id);
+  an_face_pop();
+  busy = 0;
+  if (ft == TY_VOID) ft = TY_UNKNOWN;
+  if (ft == TY_POLY) {
+    int an = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac && av; k++)
+      if (comp_ntype(c, av[k]) == TY_POLY) ft = TY_UNKNOWN;
+  }
+  if (at < 0) {
+    if (ysa_n == ysa_cap) {
+      ysa_cap = ysa_cap ? ysa_cap * 2 : 16;
+      ysa_tab = realloc(ysa_tab, sizeof *ysa_tab * ysa_cap);
+    }
+    at = ysa_n++;
+    ysa_tab[at].node = id; ysa_tab[at].kind = kind;
+  }
+  ysa_tab[at].ans = ft;
+  if (ft == TY_UNKNOWN) return 0;
+  *out = ft;
+  return 1;
+}
+
 /* Name-keyed answer memo, the same shape (and the same staleness argument) as
    udm_ in an_user_defines_method: the question below crosses every class with
    the ancestor chain, and infer_call asks it for every poly-receiver call node
@@ -1437,6 +1504,21 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   return 1;
 }
 
+/* The argument of obj.methods / public_methods / singleton_methods on an
+   instance of `cid`: 1 for none or a literal `true` (the whole list), 0 for a
+   literal `false` on an object with no singleton methods of its own, -1 for
+   anything else (left to the call's other paths). With `false`, `methods` and
+   `singleton_methods` answer the object's own singleton methods (none here)
+   and `public_methods` its class's own public instance methods. */
+int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv) {
+  if (argc == 0) return 1;
+  if (argc != 1 || !argv) return -1;
+  if (nt_kind(c->nt, argv[0]) == NK_TrueNode) return 1;
+  if (nt_kind(c->nt, argv[0]) == NK_FalseNode && cid >= 0 && cid < c->nclasses &&
+      !c->classes[cid].is_singleton_of) return 0;
+  return -1;
+}
+
 /* Klass.singleton_methods: listable ahead of time when the class does not
    define the name itself and every ancestor is a user class spinel knows the
    class methods of -- not a Struct/Data (whose generated class methods are
@@ -1752,7 +1834,8 @@ static int yield_recv_chain_kind(Compiler *c, int node, TyKind bt, TyKind *out) 
       *out = (rr == TY_UNKNOWN || rr == TY_VOID) ? TY_POLY : rr;
       return 1;
     } }
-  return ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, rk, out);
+  if (ty_recv_builtin_result(nt_str(nt, node, "name"), ac, a0, rk, out)) return 1;
+  return an_yield_site_builtin_answer(c, node, rk, out);
 }
 static int yield_recv_builtin_every_site(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
@@ -7022,9 +7105,10 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
       sp_streq(name, "instance_variables"))
     return TY_POLY_ARRAY;
-  if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
+  if (recv >= 0 && ty_is_object(rt) &&
       (sp_streq(name, "methods") || sp_streq(name, "public_methods") ||
        sp_streq(name, "singleton_methods")) &&
+      an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
       an_object_methods_listable(c, ty_object_class(rt), name))
     return TY_POLY_ARRAY;
 

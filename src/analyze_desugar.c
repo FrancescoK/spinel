@@ -7094,7 +7094,34 @@ static int any_call_passes_keywords(const NodeTable *nt, const char *name) {
   }
   return 0;
 }
-int desugar_forwarding_to_rest_callee(Compiler *c) {
+/* Does a def of `name` other than `self` still take `...`? */
+static int fwd_def_still_forwards(const NodeTable *nt, const char *name, int self) {
+  for (int id = 0; id < nt->count; id++) {
+    if (id == self || !fwd_node_is(nt, id, "DefNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int pn = nt_ref(nt, id, "parameters");
+    if (nm && sp_streq(nm, name) && pn >= 0 &&
+        fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "ForwardingParameterNode")) return 1;
+  }
+  return 0;
+}
+/* Does `def` hand its `...` to a method another def still declares with
+   `...`? That def has no shape to read until it is rewritten itself. A
+   `new(...)` reaches an initialize; `super(...)` names its one parent
+   method, whose shape is refused while that still takes `...`. */
+static int fwd_waits_on_forwarder(const NodeTable *nt, int def, int hi) {
+  for (int id = def + 1; id < hi; id++) {
+    if (!fwd_node_is(nt, id, "CallNode")) continue;
+    int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
+    const char *cn = nt_str(nt, id, "name");
+    if (ac < 1 || !av || !cn || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode")) continue;
+    if (fwd_def_still_forwards(nt, sp_streq(cn, "new") ? "initialize" : cn, def)) return 1;
+  }
+  return 0;
+}
+/* One pass over the `...` forwarders, in source order. With `wait`, one
+   whose target is still a `...` forwarder is left for a later pass. */
+static int fwd_rest_callee_pass(Compiler *c, int wait) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
@@ -7104,6 +7131,7 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
     if (pn < 0 || !fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "ForwardingParameterNode")) continue;
     const char *dname = nt_str(nt, def, "name");
     if (!dname) continue;
+    if (wait && fwd_waits_on_forwarder(nt, def, fwd_subtree_max(nt, def) + 1)) continue;
     int hi = fwd_subtree_max(nt, def) + 1;
     int calls[n0]; int ncalls = 0; int shape = 0; int ok = 1;
     int nfwd_args = 0;
@@ -7288,6 +7316,20 @@ int desugar_forwarding_to_rest_callee(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[def];
     changed = 1;
   }
+  return changed;
+}
+/* A forwarder takes the shape of the method it forwards to, and a `...`
+   forwarder has none until it is rewritten: `def top(...) = mid(...)`
+   written above `def mid(...) = leaf(...)` kept the __fwd_N model while mid
+   became `def mid(*)`, and handed mid an Integer where it takes the rest
+   Array. So the callee goes first wherever it stands: a forwarder waits
+   until no def of its target's name still takes `...`. What is left then
+   waits on one that stays in the __fwd_N model (a cycle, a target that
+   yields), and is read as before, from the defs that do say. */
+int desugar_forwarding_to_rest_callee(Compiler *c) {
+  int changed = 0;
+  while (fwd_rest_callee_pass(c, 1)) changed = 1;
+  while (fwd_rest_callee_pass(c, 0)) changed = 1;
   return changed;
 }
 
@@ -9264,6 +9306,20 @@ static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int
     }
     if ((is_hash_key_value_each(nm)) && argc == 0) {
       *elem = TY_POLY; return 1;
+    }
+    /* a slice or a window is one Array, of whatever a step of any receiver
+       yields, and the receivers of the in-place map (an Array, a Set) and
+       of each_index and fill (an Array) yield one value a step, the last
+       two an index. Left alone, `|*qs|` was never bound and read nil, and
+       `|a, b|` took a whole element. */
+    if ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && argc == 1) {
+      *elem = TY_POLY_ARRAY; return 1;
+    }
+    if ((sp_streq(nm, "map!") || sp_streq(nm, "collect!")) && argc == 0) {
+      *elem = TY_POLY; return 1;
+    }
+    if ((sp_streq(nm, "each_index") && argc == 0) || (sp_streq(nm, "fill") && argc <= 2)) {
+      *elem = TY_INT; return 1;
     }
     return 0;
   }

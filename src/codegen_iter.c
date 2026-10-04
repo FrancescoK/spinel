@@ -3371,13 +3371,8 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(&sw, indent + 1);
       buf_printf(&sw, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
                  tw, trecv, tw);
-      /* The loop below stores into the array's elements directly rather than
-         through a runtime mutator, so it carries its own write barrier: the
-         receiver may be an old array taking references to values this loop
-         has just made. Once before the loop is enough -- the remembered set
-         dedupes on the object, not the store. */
-      emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "sp_gc_wb((void *)_t%d);\n", tw);
+      /* The block can collect between stores, so each store needs the
+         runtime setter's barrier, not a single barrier before the loop. */
       emit_indent(&sw, indent + 1);
       buf_printf(&sw, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, tw, ti2);
       emit_indent(&sw, indent + 2);
@@ -3387,7 +3382,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
         Buf vb2; memset(&vb2, 0, sizeof vb2); emit_boxed(c, dbb[dbn - 1], &vb2);
         g_indent = svi;
         emit_indent(&sw, indent + 2);
-        buf_printf(&sw, "_t%d->data[_t%d] = %s;\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
+        buf_printf(&sw, "sp_PolyArray_set(_t%d, _t%d, %s);\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
         free(vb2.p); }
       emit_indent(&sw, indent + 1); buf_puts(&sw, "}\n");
       emit_indent(&sw, indent + 1);
@@ -3760,25 +3755,43 @@ int subtree_owns_redo(const NodeTable *nt, int body, int redo) {
 
 /* Does the subtree contain a `next` that belongs to THIS block, i.e. one not
    nested inside a deeper loop/block/def (which would own it instead)? Same
-   ownership rule as subtree_has_own_redo. */
-int subtree_has_own_next(const NodeTable *nt, int id) {
+   ownership rule as subtree_has_own_redo. With `next` >= 0 the answer is for
+   that one node, and it is also looked for where a nested iteration is
+   evaluated in this block: the receiver, the arguments and a `&blk` of a
+   call with a block, and the collection of a `for`. The any-`next` form
+   does not look there: its callers pick by the answer how a block spliced
+   in place is written, and emit_fallback_block_value leaves the leading
+   statements out of a block that has one. */
+static int subtree_has_own_next_ex(const NodeTable *nt, int id, int next) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (sp_streq(ty, "NextNode")) return 1;
+  if (sp_streq(ty, "NextNode")) return next < 0 || id == next;
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
-      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
-      sp_streq(ty, "LambdaNode"))
+      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "LambdaNode"))
     return 0;
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;
+  if (sp_streq(ty, "ForNode"))
+    return next >= 0 && subtree_has_own_next_ex(nt, nt_ref(nt, id, "collection"), next);
+  int blk = sp_streq(ty, "CallNode") ? nt_ref(nt, id, "block") : -1;
+  if (blk >= 0) {
+    if (next < 0) return 0;
+    const char *bty = nt_type(nt, blk);
+    return subtree_has_own_next_ex(nt, nt_ref(nt, id, "receiver"), next) ||
+           subtree_has_own_next_ex(nt, nt_ref(nt, id, "arguments"), next) ||
+           (bty && sp_streq(bty, "BlockArgumentNode") && subtree_has_own_next_ex(nt, blk, next));
+  }
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) if (subtree_has_own_next(nt, nt_ref_at(nt, id, i))) return 1;
+  for (int i = 0; i < nr; i++) if (subtree_has_own_next_ex(nt, nt_ref_at(nt, id, i), next)) return 1;
   int na = nt_num_arrs(nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int k = 0; k < n; k++) if (subtree_has_own_next(nt, ids[k])) return 1;
+    for (int k = 0; k < n; k++) if (subtree_has_own_next_ex(nt, ids[k], next)) return 1;
   }
   return 0;
+}
+int subtree_has_own_next(const NodeTable *nt, int id) { return subtree_has_own_next_ex(nt, id, -1); }
+int subtree_owns_next(const NodeTable *nt, int body, int next) {
+  return next >= 0 && subtree_has_own_next_ex(nt, body, next);
 }
 
 /* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
@@ -4387,6 +4400,24 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
   emit_indent(b, indent + 1);
   buf_printf(b, "_t%d = _t%d->len; _t%d = -1; _t%d = sp_box_nil(); _t%d = %s;\n",
              tn, t, tk, tnv, tkey, hash_order_key(rt, t, ti));
+  /* A rest, an optional or a post reaches here only over a boxed receiver,
+     whose Hash arm this is (emit_array_filter_loop's Array arm says why):
+     the key and the value bind from the two values the step yields, as
+     CRuby's block binds them; by name alone, `|*kv|` read nil. */
+  if (block_binds_gathered(c, block)) {
+    int tp = ++g_tmp;
+    char ks[32]; snprintf(ks, sizeof ks, "_t%d", tkey);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tp, tp);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_PolyArray_push(_t%d, ", tp); emit_boxed_text(c, hkt, ks, b); buf_puts(b, ");\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_PolyArray_push(_t%d, ", tp); emit_boxed_text(c, hvt, hash_order_val(rt, t, ti), b);
+    buf_puts(b, ");\n");
+    char vals[32]; snprintf(vals, sizeof vals, "_t%d", tp);
+    emit_boxed_step_binds(c, block, vals, b, indent + 1, 0);
+    kp = vp = NULL;
+  }
   /* a key or a value the block holds outlives its pair when the block drops
      the pair itself, or is reassigned, and then allocates, so a collectable
      one is rooted, as the each loop's are */
@@ -4515,7 +4546,30 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
              tk, tw, ti, kk, t, tw, te, tw, ti);
   emit_indent(b, li + 1);
   buf_printf(b, "_t%d = -1; _t%d = sp_box_nil(); _t%d = sp_%sArray_get(_t%d, _t%d);\n", tk, tnv, te, kk, t, ti);
-  if (bp) {
+  /* A rest, an optional or a post, or plain requireds an Array element
+     spreads across, reach here only over a boxed receiver, whose Array arm
+     this is: desugar_builtin_iter_block_shapes lowers them for a typed
+     receiver, and leaves a box alone, whose Hash arm takes a pair instead.
+     They bind from the step's one value as CRuby's block binds it. Bound by
+     the first name alone, `|*qs|` was never bound and read nil, and
+     `|a, b|` took the whole element. */
+  char es[32]; snprintf(es, sizeof es, "_t%d", te);
+  if (block_binds_gathered(c, block)) {
+    Buf eb; memset(&eb, 0, sizeof eb);
+    if (et == TY_POLY) buf_puts(&eb, es);
+    else emit_boxed_text(c, et, es, &eb);
+    Buf vals; memset(&vals, 0, sizeof vals);
+    buf_printf(&vals, "sp_yielded_args(0, %s)", eb.p ? eb.p : es);
+    emit_boxed_step_binds(c, block, vals.p, b, li + 1, 0);
+    free(eb.p); free(vals.p);
+  }
+  else if (et == TY_POLY && block_lead_only(c, block) && !block_param_is_multi(c, block, 0)) {
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_tuple_block_params(c, block, block, es, &pb);
+    if (pb.p) { emit_indent(b, li + 1); buf_printf(b, "%s\n", pb.p + (pb.p[0] == ' ')); }
+    free(pb.p);
+  }
+  else if (bp) {
     /* a poly parameter is the hoisted local, rooted where it is declared; a
        typed one shadows it at the element type, and a String is rooted */
     emit_indent(b, li + 1);

@@ -163,7 +163,7 @@ int builtin_method_known(const char *cls, const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int name_is_enumerable_module_method(const char *m);
-int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, Buf *b);
+int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all, Buf *b);
 int scope_reads_callee(Compiler *c, int si);
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out);
 TyKind block_next_value_ntype(const Compiler *c, int node);
@@ -367,6 +367,7 @@ extern int g_block_brk_exc_base;
 extern TyKind g_ret_type;
 extern int g_c_ret_void;   /* the C function returns void (a fiber body) */
 extern int g_c_ret_void;   /* the C function returns void (a fiber body) */
+extern int g_fiber_body;   /* that fiber body's statements, or -1 */
 extern const char *g_fn_pr_label;   /* real function's return funnel (see codegen_util.c) */
 extern const char *g_fn_pr_var;
 extern TyKind g_fn_ret_type;
@@ -596,6 +597,7 @@ int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
 int  subtree_has_own_next(const NodeTable *nt, int id);
+int  subtree_owns_next(const NodeTable *nt, int body, int next);
 int  subtree_reads_local(const NodeTable *nt, int id, const char *name);
 int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int  emit_inline_expr(Compiler *c, int id, Buf *b);
@@ -796,6 +798,9 @@ int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);
 const char *past_open_parens(const char *s);
 int inlined_local_needs_volatile(Compiler *c, LocalVar *lv);
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din);
+/* A parameter a closure captures is a heap cell: the `lv_<uniq>` a call
+   binds an argument to, for a later default to read, gets that cell too. */
+void emit_pd_cell_alias_into(Compiler *c, LocalVar *plv, const char *uniq, Buf *b, int indent);
 void emit_inlined_locals(Compiler *c, Scope *m, int tag, Buf *b, int din);
 void emit_retf_return(int eid, int has_retval, Buf *b);
 void emit_main_exit(Buf *b);
@@ -1358,6 +1363,7 @@ const char *int_shift_fn(Compiler *c, const char *op, int v);
 int class_def_body(Compiler *c, int def_node);
 int class_body_list(Compiler *c, int **out_ci, int **out_body);
 TyKind an_builtin_answer(Compiler *c, int id);
+int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int node_is_empty_container(const NodeTable *nt, int node);
 TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);

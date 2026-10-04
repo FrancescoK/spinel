@@ -872,7 +872,10 @@ static int yield_builtin_method_site_type(const Compiler *c, int id, TyKind *out
       *out = rr;
       return 1;
     } }
-  return ty_recv_builtin_result(op, ac, ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN, rt, out);
+  if (ty_recv_builtin_result(op, ac, ac == 1 && av ? comp_ntype(c, av[0]) : TY_UNKNOWN, rt, out)) return 1;
+  /* a site the table does not answer, beside a reopen on the chain: the
+     answer the analysis recorded for this site's kind */
+  return an_yield_site_builtin_answer((Compiler *)c, id, rt, out);
 }
 
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out) {
@@ -1106,6 +1109,10 @@ TyKind g_ret_type = TY_UNKNOWN;
    expressions type. `return <value>` emitted into it is a C constraint
    violation, and GCC 14 rejects it. */
 int g_c_ret_void = 0;
+/* The body of the Fiber.new / Thread.new / Enumerator.new block whose C
+   function is being emitted, or -1. A `next` this body owns leaves that
+   function (emit_next_leaving_body). */
+int g_fiber_body = -1;
 /* Mirror of the REAL enclosing function's return funnel: yield-method inlining
    overrides g_method_pr_label/-_var/g_ret_type with a per-inline funnel, and a
    spliced block body (which lexically belongs to the real function, so its
