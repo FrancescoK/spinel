@@ -834,7 +834,7 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
     if (sp_alloc_report_on) sp_alloc_report_count((void *)(SCAN), sizeof(sp_##CLS)); \
   } \
   else if (sp_slab_on > 0) { \
-    _p = (sp_##CLS *)sp_gc_alloc(sizeof(sp_##CLS), NULL, SCAN); \
+    _p = (sp_##CLS *)sp_gc_alloc_sized(sizeof(sp_##CLS), SCAN); \
   } \
   else { \
     _p = (sp_##CLS *)sp_gc_alloc_pool(sizeof(sp_##CLS), SCAN, sp_##CLS##_pool_recycle); \
@@ -11355,6 +11355,55 @@ static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
     return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);
   }
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
+}
+/* Hash[*args]: the splatted list is Hash[]'s argument list. One argument is
+   a Hash (copied) or a list of pairs; an even count alternates keys and
+   values, which pair up into the list sp_poly_to_h_m reads. */
+static sp_RbVal sp_hash_brackets_splat(sp_RbVal args) {
+  SP_GC_ROOT_RBVAL(args);
+  sp_PolyArray *av;
+  if (args.tag == SP_TAG_NIL) av = sp_PolyArray_new();
+  else if (args.tag == SP_TAG_OBJ && sp_poly_is_array_kind(args.cls_id)) av = sp_poly_to_poly_array(args);
+  else { av = sp_PolyArray_new(); SP_GC_ROOT(av); sp_PolyArray_push(av, args); }
+  SP_GC_ROOT(av);
+  sp_int n = av->len;
+  if (n == 1) {
+    sp_RbVal a = av->data[0];
+    if (a.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(a.cls_id)) return sp_poly_dup(a, 0);
+    if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) {
+      /* a list of [key, value] or [key] pairs; Hash[] raises ArgumentError
+         for anything else, where Array#to_h raises TypeError */
+      SP_GC_ROOT_RBVAL(a);
+      sp_int pn = sp_poly_length(a);
+      sp_PolyArray *ps = sp_PolyArray_new();
+      SP_GC_ROOT(ps);
+      for (sp_int i = 0; i < pn; i++) {
+        sp_RbVal e = sp_poly_arr_get(a, i);
+        if (!(e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)))
+          sp_raise_cls("ArgumentError", sp_sprintf("wrong element type %s at %lld (expected array)",
+                                                   sp_poly_class_name(e), (long long)i));
+        sp_int el = sp_poly_length(e);
+        if (el < 1 || el > 2)
+          sp_raise_cls("ArgumentError", sp_sprintf("invalid number of elements (%lld for 1..2)", (long long)el));
+        sp_PolyArray *pair = sp_PolyArray_new();
+        sp_PolyArray_push(ps, sp_box_poly_array(pair));
+        sp_PolyArray_push(pair, sp_poly_arr_get(e, 0));
+        sp_PolyArray_push(pair, el == 2 ? sp_poly_arr_get(e, 1) : sp_box_nil());
+      }
+      return sp_poly_to_h_m(sp_box_poly_array(ps));
+    }
+  }
+  if (n % 2 != 0) sp_raise_cls("ArgumentError", "odd number of arguments for Hash");
+  sp_PolyArray *pairs = sp_PolyArray_new();
+  SP_GC_ROOT(pairs);
+  for (sp_int i = 0; i < n; i += 2) {
+    /* rooted through the list before it is filled */
+    sp_PolyArray *pair = sp_PolyArray_new();
+    sp_PolyArray_push(pairs, sp_box_poly_array(pair));
+    sp_PolyArray_push(pair, av->data[i]);
+    sp_PolyArray_push(pair, av->data[i + 1]);
+  }
+  return sp_poly_to_h_m(sp_box_poly_array(pairs));
 }
 /* Data#with on a poly receiver (a Data read out of a container): dispatch by
    cls_id to a copy-update constructor, `ov` a symbol-keyed hash of the members

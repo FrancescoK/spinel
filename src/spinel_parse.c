@@ -430,7 +430,7 @@ else {
   }
 
   if (integer->negative) {
-    if (overflow || val >= max_negative) return -(long long)max_negative;
+    if (overflow || val >= max_negative) return -(long long)max_positive - 1;
     return -(long long)val;
   }
   if (overflow || val > max_positive) return (long long)max_positive;
@@ -614,7 +614,17 @@ static int flatten_node(pm_node_t *node) {
     pm_class_node_t *n = (pm_class_node_t *)node;
     N("ClassNode");
     R("constant_path", n->constant_path);
-    R("superclass", n->superclass);
+    /* `class A < (Base)`: parentheses around a single expression carry no
+       meaning, but every pass reads the superclass by its node kind, and a
+       ParenthesesNode read as no superclass at all (Object). */
+    pm_node_t *sup = n->superclass;
+    while (sup && PM_NODE_TYPE(sup) == PM_PARENTHESES_NODE) {
+      pm_node_t *pb = ((pm_parentheses_node_t *)sup)->body;
+      if (!pb || PM_NODE_TYPE(pb) != PM_STATEMENTS_NODE ||
+          ((pm_statements_node_t *)pb)->body.size != 1) break;
+      sup = ((pm_statements_node_t *)pb)->body.nodes[0];
+    }
+    R("superclass", sup);
     R("body", n->body);
     break;
   }

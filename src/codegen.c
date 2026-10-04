@@ -2511,13 +2511,6 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
   free(arms.p);
 }
 
-/* The result type of a block literal: its body's last statement. */
-static TyKind pf_block_result_ty(Compiler *c, int blk) {
-  if (blk < 0) return TY_UNKNOWN;
-  int body = nt_ref(c->nt, blk, "body");
-  int n = 0; const int *bb = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
-  return n > 0 ? comp_ntype(c, bb[n - 1]) : TY_NIL;
-}
 /* The type the method's own yield nodes were compiled against. */
 static TyKind pf_yield_ty(Compiler *c, int id, int *found) {
   if (id < 0) return TY_UNKNOWN;
@@ -6000,6 +5993,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = (cap_self && self_is_value) ? "." : "->";
   const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
+  /* The funnel itself is parked with its mirror, as the proc emitter parks
+     it: `_pr_done` and `_prret` belong to the method's C function, and an
+     `ensure` in the body ended in a `goto` to them from this one. */
+  const char *sv_fbprl = g_method_pr_label, *sv_fbprv = g_method_pr_var;
+  g_method_pr_label = NULL; g_method_pr_var = NULL;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   /* the body reads its captures from its own _fc, never from an enclosing
      proc's _cap: a fiber made inside a lifted block read `pr` through a
@@ -6232,6 +6230,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
+  g_method_pr_label = sv_fbprl; g_method_pr_var = sv_fbprv;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_cap_struct = sv_fbcap; g_cap_names = sv_fbcapn;
   g_c_loop_depth = sv_fbcld; g_fiber_body = sv_fbbody;
@@ -8810,7 +8809,7 @@ void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b) {
   char sel[256] = "";
   if (s && s->is_cmethod) {
     /* a class method is copied for each subclass it runs for, as one with
-       a bare `new` is (cmethod_has_bare_new): the copy allocates its class */
+       a bare `new` is: the copy allocates its class */
     if (g_emitting_class_id >= 0) base = g_emitting_class_id;
   }
   else if (!comp_ty_value_obj(c, ty_object(base))) {

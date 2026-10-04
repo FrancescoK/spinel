@@ -898,7 +898,7 @@ int desugar_body_module_eval(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
@@ -3712,6 +3712,11 @@ int desugar_dynamic_send(Compiler *c) {
       recv = sn;
       changed = 1;
     }
+    /* A socket's send(data, flags) is the datagram write, not Object#send.
+       The literal-name retarget above already leaves it alone (#2922); a
+       payload held in a variable reached here and became a dispatch over the
+       program's method names on the payload's bytes (#7193). */
+    if (sp_streq(nm, "send") && recv >= 0 && infer_type(c, recv) == TY_IO && sp_feature_required("socket")) continue;
     { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }  /* already lowered */
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
@@ -6603,21 +6608,6 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
     return fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
   }
   return fwd_class_value_new_shape(nt);
-}
-/* whether a def of `name` takes a *rest or **rest: a forward to it wants the
-   splat channels, where the direct model (one synthesized parameter per
-   forwarded argument) binds the first argument to the rest slot */
-static int def_has_rest_by_name(const NodeTable *nt, const char *name) {
-  for (int id = 0; id < nt->count; id++) {
-    if (!fwd_node_is(nt, id, "DefNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) continue;
-    if (fwd_node_is(nt, nt_ref(nt, pn, "rest"), "RestParameterNode") ||
-        fwd_node_is(nt, nt_ref(nt, pn, "keyword_rest"), "KeywordRestParameterNode")) return 1;
-  }
-  return 0;
 }
 static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
   int id = nt_new_node(nt, ty);
@@ -11388,9 +11378,6 @@ int desugar_class_new_blocks(Compiler *c) {
  * The hook method itself stays on M for anything that calls it by name. */
 static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
                                 const char *hook_name);
-static int incl_find_hook(const NodeTable *nt, const char *mn, int n0, const char **param) {
-  return incl_find_hook_named(nt, mn, n0, param, "included");
-}
 static int incl_find_hook_named(const NodeTable *nt, const char *mn, int n0, const char **param,
                                 const char *hook_name) {
   for (int m = 0; m < n0; m++) {
@@ -12740,19 +12727,6 @@ static int mo_params_sig(const NodeTable *nt, int def, char *out, size_t cap) {
   return o < cap;
 }
 
-/* is_a?(K), or `self == true` / `self == false` for the booleans */
-static int mo_override_pred(NodeTable *nt, int like, const char *cn) {
-  if (!sp_streq(cn, "TrueClass") && !sp_streq(cn, "FalseClass")) return mo_guard_pred(nt, like, cn);
-  int call = fwd_new_node_like(nt, like, "CallNode");
-  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
-  nt_node_set_ref(nt, call, "receiver", fwd_new_node_like(nt, like, "SelfNode"));
-  nt_node_set_str(nt, call, "name", "==");
-  int arg = fwd_new_node_like(nt, like, sp_streq(cn, "TrueClass") ? "TrueNode" : "FalseNode");
-  nt_node_set_arr(nt, args, "arguments", &arg, 1);
-  nt_node_set_ref(nt, call, "arguments", args);
-  return call;
-}
-
 int desugar_object_method_builtin_overrides(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -13840,7 +13814,7 @@ int desugar_singleton_attr(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
@@ -14293,7 +14267,7 @@ int desugar_static_class_eval(Compiler *c) {
     int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
     int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
     if (!bb) continue;
-    memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
     int *nb = NULL, nbn = 0, any = 0, vis = 0;
     for (int i = 0; i < bn; i++) {
       int st = bb[i];
@@ -14513,6 +14487,91 @@ int desugar_class_body_self_calls(Compiler *c) {
   }
   for (int i = 0; i < n0; i++) { free(q.qual[i]); free(q.outer[i]); }
   free(q.qual); free(q.outer); free(q.cls);
+  return changed;
+}
+
+/* `self.class` in an instance method of a reopened builtin -- a Hash, an
+   Array, a String -- is that builtin: no program class may derive from one
+   (the declaration is refused), so self is never anything else. Spelled as
+   the constant, `self.class.new` builds the builtin (activesupport's
+   Hash#extract! collects into `self.class.new`); resolved to the reopening
+   it named a user class of its own, with no constructor or struct. A
+   Numeric, Comparable or Object reopening serves several classes and keeps
+   its run-time answer. */
+static int bsc_builtin_one_class(const char *cn) {
+  static const char *const B[] = { "String", "Array", "Hash", "Symbol", "Integer", "Float",
+    "Range", "Regexp", "Time", "Proc", "NilClass", "TrueClass", "FalseClass", NULL };
+  for (int i = 0; B[i]; i++) if (sp_streq(cn, B[i])) return 1;
+  return 0;
+}
+static int bsc_walk(NodeTable *nt, int n, const char *cn) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  /* another class, a singleton body or a nested def has a self of its own */
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_DefNode && nt_ref(nt, n, "receiver") >= 0) return 0;
+  /* a block or a lambda may run under another self (instance_eval,
+     instance_exec, define_method, or a proc handed to one later), which
+     only the run time knows */
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  int changed = 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver");
+    if (nm && sp_streq(nm, "class") && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0 &&
+        (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
+      nt_node_reset(nt, n, "ConstantReadNode");
+      nt_node_set_str(nt, n, "name", cn);
+      return 1;
+    }
+  }
+  const SpNode *nd = &nt->nodes[n];
+  int nr = nd->nr; int refs[64]; if (nr > 64) nr = 64;
+  for (int j = 0; j < nr; j++) refs[j] = nd->r[j].ref;
+  for (int j = 0; j < nr; j++) changed |= bsc_walk(nt, refs[j], cn);
+  for (int j = 0; j < nt->nodes[n].na; j++) {
+    int an = nt->nodes[n].a[j].n;
+    int *ids = malloc(sizeof(int) * (size_t)(an + 1));
+    memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
+    for (int q = 0; q < an; q++) changed |= bsc_walk(nt, ids[q], cn);
+    free(ids);
+  }
+  return changed;
+}
+/* Mark the class bodies not nested in another class or module: a
+   program's own `Foo::String` shares the builtin's name but is a class of
+   its own, with subclasses allowed. */
+static void bsc_mark_toplevel(NodeTable *nt, int n, char *top) {
+  if (n < 0) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ClassNode) { top[n] = 1; return; }
+  if (k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_DefNode) return;
+  const SpNode *nd = &nt->nodes[n];
+  for (int j = 0; j < nd->nr; j++) bsc_mark_toplevel(nt, nd->r[j].ref, top);
+  for (int j = 0; j < nd->na; j++)
+    for (int q = 0; q < nd->a[j].n; q++) bsc_mark_toplevel(nt, nd->a[j].ids[q], top);
+}
+int desugar_builtin_reopen_self_class(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
+  bsc_mark_toplevel(nt, nt->root_id, top);
+  for (int n = 0; n < n0; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
+    int cp = nt_ref(nt, n, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, cp, "name");
+    if (!cn || !bsc_builtin_one_class(cn)) continue;
+    char cname[64]; snprintf(cname, sizeof cname, "%s", cn);
+    int b = nt_ref(nt, n, "body");
+    int bn = 0; const int *bs = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) {
+      int st = bs[k];
+      if (nt_kind(nt, st) != NK_DefNode || nt_ref(nt, st, "receiver") >= 0) continue;
+      changed |= bsc_walk(nt, nt_ref(nt, st, "body"), cname);
+    }
+  }
+  free(top);
   return changed;
 }
 
