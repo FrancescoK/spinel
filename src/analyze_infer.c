@@ -8774,7 +8774,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *uname = comp_super_name(c, p, s->name, s->is_cmethod);
     /* `super` in a respond_to? override no ancestor defines is Object's
        respond_to?: a boolean (see emit_super_respond_to) */
-    int rto_super = !s->is_cmethod && uname && sp_streq(uname, "respond_to?");
+    int rto_super = !s->is_cmethod && uname &&
+                    (sp_streq(uname, "respond_to?") ||
+                     /* and is_a? / kind_of? / instance_of? (codegen's twin) */
+                     sp_streq(uname, "is_a?") || sp_streq(uname, "kind_of?") ||
+                     sp_streq(uname, "instance_of?"));
     if (p < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
