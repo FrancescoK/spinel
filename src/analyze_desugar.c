@@ -4379,6 +4379,18 @@ int desugar_defined_method_call(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefinedNode || nt_ref(nt, id, "method_cond") >= 0) continue;
     int v = nt_ref(nt, id, "value");
+    /* defined?((e)) asks of e: parentheses around one statement are looked
+       through (`defined?((a += 1))` is "assignment", `defined?((zz))` nil).
+       Two statements or none stay, an "expression" or "nil". */
+    for (;;) {
+      if (v < 0 || nt_kind(nt, v) != NK_ParenthesesNode) break;
+      int body = nt_ref(nt, v, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn != 1) break;
+      v = bb[0];
+      nt_node_set_ref(nt, id, "value", v);
+      changed = 1;
+    }
     if (!defined_method_call(nt, v)) continue;
     int lv[64], k = 0;
     for (int cur = v; defined_method_call(nt, cur) && k < 64; cur = nt_ref(nt, cur, "receiver")) lv[k++] = cur;
@@ -4620,11 +4632,12 @@ int desugar_call_op_write(Compiler *c) {
       if (!parent) parent = an_parent_map(nt);
       if (!parent) continue;
       if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
-      /* defined?(w.n += 1) is "assignment": as the writer call it read "method" */
-      int up = parent[id];
-      while (up >= 0 && (nt_kind(nt, up) == NK_ParenthesesNode || nt_kind(nt, up) == NK_StatementsNode))
-        up = parent[up];
-      if (up >= 0 && nt_kind(nt, up) == NK_DefinedNode) continue;
+      /* defined?(w.n += 1) is "assignment": as the writer call it read "method".
+         desugar_defined_method_call has looked through any parentheses
+         around it, so the defined? names it as its value. */
+      int under_defined = 0;
+      NT_FOREACH_KIND(nt, NK_DefinedNode, d) if (nt_ref(nt, d, "value") == id) under_defined = 1;
+      if (under_defined) continue;
     }
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {

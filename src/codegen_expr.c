@@ -2667,6 +2667,9 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        plain or operator) answers "assignment" without evaluating. */
     else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
       res = "assignment";
+    /* `defined?(())`: the empty parentheses are nil's own word */
+    else if (sp_streq(vt, "ParenthesesNode") && nt_ref(nt, v, "body") < 0)
+      res = "nil";
     /* A composite expression answers "expression" even when its OPERANDS
        are undefined -- defined? never evaluates its argument. */
     else if (sp_streq(vt, "AndNode") || sp_streq(vt, "OrNode") ||
