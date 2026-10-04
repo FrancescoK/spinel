@@ -6320,6 +6320,8 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
       infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }
   /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
   if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) { *out = infer_type(c, recv); return 1; }
+  /* Hash[*args]: a hash of whatever kind the list builds at run time */
+  if (recv >= 0 && sp_streq(name, "__hash_brackets_splat")) { *out = TY_POLY; return 1; }
   /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
