@@ -16093,8 +16093,19 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
        answer other classes, the receiver cast to a Hash there) takes the
        Enumerator boxed (#7279) */
     Buf eb; memset(&eb, 0, sizeof eb);
-    buf_puts(&eb, "sp_Enumerator_new_from(");
-    emit_boxed(c, recv, &eb); buf_puts(&eb, ")");
+    if (is_each_or_pair(name)) {
+      buf_puts(&eb, "sp_Enumerator_new_from(");
+      emit_boxed(c, recv, &eb); buf_puts(&eb, ")");
+    }
+    else {
+      /* named by its method, as the Array's are, so a consumer that answers
+         by the method -- with_index's value -- knows it is not an each: a
+         stored `h.select` answered the whole Hash from `.with_index { }` */
+      int ts = ++g_tmp;
+      buf_printf(&eb, "({ sp_RbVal _t%d = ", ts); emit_boxed(c, recv, &eb);
+      buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from(_t%d), _t%d, SPL(\"%s\")); })",
+                 ts, ts, ts, name);
+    }
     if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);

@@ -5635,7 +5635,7 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_enum_with_index_result(_t%d, _t%d)", te, tres);
+  buf_printf(b, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
   (void)body;
   return 1;
 }
