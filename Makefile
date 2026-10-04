@@ -1119,7 +1119,8 @@ test-run: decisions-test
 # Each kind also has its row in the table in tools/README.md.
 DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
                  test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
-                 test/array_local_append_prepend_widen.rb test/poly_arm_kwrest_empty.rb
+                 test/array_local_append_prepend_widen.rb test/poly_arm_kwrest_empty.rb \
+                 test/struct_class_aref_arity_guard_scope.rb
 DECISION_KINDS = aon-get case-root fetch-inert gc-save inline-force masgn-root nn-inb nn-read no-alloc \
                  pd-hoist push-slot root-elide root-frame strbuf-raw
 decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)

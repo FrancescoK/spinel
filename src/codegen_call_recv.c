@@ -11532,16 +11532,28 @@ int emit_boxed_class_aref(Compiler *c, int id, Buf *b) {
     }
     buf_printf(b, "(_t%d.tag == SP_TAG_CLASS && (%s)) ? ", tsv, ids.p);
     view_bind(recv, "_t%d", tsv);
+    /* what either re-entry hoists (the arity guard of a builtin `[]`) reads
+       the temps bound above, which live only inside this expression: it runs
+       in its own arm, not ahead of the statement */
+    Buf *sv_pre = g_pre;
+    Buf npre; memset(&npre, 0, sizeof npre);
+    g_pre = &npre;
     nt_node_set_str((NodeTable *)nt, id, "name", "new");
     Buf nb; memset(&nb, 0, sizeof nb); emit_call(c, id, &nb);
     nt_node_set_str((NodeTable *)nt, id, "name", "[]");
     int sv_skip = g_aref_cls_skip;
     g_aref_cls_skip = id;
+    Buf apre; memset(&apre, 0, sizeof apre);
+    g_pre = &apre;
     Buf ab; memset(&ab, 0, sizeof ab); emit_call(c, id, &ab);
+    g_pre = sv_pre;
     g_aref_cls_skip = sv_skip;
     view_unbind(nov0);
-    buf_printf(b, "(%s) : (%s); })", nb.p ? nb.p : "sp_box_nil()", ab.p ? ab.p : "sp_box_nil()");
-    free(nb.p); free(ab.p); free(ids.p);
+    if (npre.p) buf_printf(b, "({\n%s(%s); })", npre.p, nb.p ? nb.p : "sp_box_nil()");
+    else buf_printf(b, "(%s)", nb.p ? nb.p : "sp_box_nil()");
+    if (apre.p) buf_printf(b, " : ({\n%s(%s); }); })", apre.p, ab.p ? ab.p : "sp_box_nil()");
+    else buf_printf(b, " : (%s); })", ab.p ? ab.p : "sp_box_nil()");
+    free(npre.p); free(apre.p); free(nb.p); free(ab.p); free(ids.p);
     return 1;
   }
   return 0;
