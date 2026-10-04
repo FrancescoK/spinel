@@ -2,13 +2,13 @@
 # enumerator, hash comparator min/max, Hash#flat_map single-param pair,
 # chunk/slice enumerator chains (each/select/reject/flat_map),
 # &:sym.to_proc as a block argument, and lazy take(n).force.
-s = "hello"
+s = +"hello"
 s.slice!(0)
 puts s
-s = "hello"
+s = +"hello"
 s.slice!(1..2)
 puts s
-s = "hello"
+s = +"hello"
 s.slice!(99)
 puts s
 p [1, 2, 3].min(*[2])

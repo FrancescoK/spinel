@@ -1,9 +1,9 @@
 # Rational %/modulo/remainder/divmod, Complex <=> (real-valued compare,
 # nil otherwise), slice! on literal receivers, and Hash#default after
 # a default= on an un-narrowed empty hash.
-p("hello".slice!(/l+/))
-p("hello".slice!("ell"))
-s = "hello"
+p((+"hello").slice!(/l+/))
+p((+"hello").slice!("ell"))
+s = +"hello"
 p(s.slice!(/l+/))
 p s
 a = {}; a.default = 9; c = (a.default); p c
