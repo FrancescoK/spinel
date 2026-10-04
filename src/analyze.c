@@ -3752,6 +3752,10 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
        collision-renamed form), and must match the same set */
     /* obj_X_ptr_array (`Array[X]`) is not a pin: see seed_obj_array_class */
     int ci = seed_class_index(c, buf + 4);
+    /* A module names no object layout: its methods exist only as copies in
+       its includers, and a value of the module type is one of them. It is
+       the boxed value, as a union of the includers would be (#7169). */
+    if (ci >= 0 && comp_class_is_module(c, &c->classes[ci])) return TY_POLY;
     return ci >= 0 ? ty_object(ci) : TY_UNKNOWN;
   }
   return TY_UNKNOWN;
