@@ -15913,7 +15913,8 @@ static int an_block_rebinds_appended_element_alias(Compiler *c, int blk, const c
       for (int a = 0; a < na && !source_alias; a++)
         if (source && appended[a] >= 0 && sp_streq(source, aliases[a])) source_alias = 1;
       int target = -1;
-      for (int a = 0; a < na; a++) if (name && sp_streq(name, aliases[a])) { target = a; break; }
+      /* a slot a rebinding cleared names nothing */
+      for (int a = 0; a < na; a++) if (name && aliases[a] && sp_streq(name, aliases[a])) { target = a; break; }
       if (target >= 0) {
         if (appended[target]) return 1;
         aliases[target] = NULL; appended[target] = -1;
