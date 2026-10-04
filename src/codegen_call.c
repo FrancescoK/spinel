@@ -1829,18 +1829,20 @@ int recv_user_defines(Compiler *c, const char *name) {
    -- a real method living in a class's readers list rather than the method
    chain. Used where a builtin poly-method shortcut must decline to the general
    cls_id dispatch so a field-reader arm (which the general path DOES emit) wins
-   over a colliding builtin (e.g. Data member `day` vs Time#day, #3239). */
+   over a colliding builtin (e.g. Data member `day` vs Time#day, #3239). Every
+   shortcut asks it the same way: one that left readers out answered a user
+   object's `attr_reader :values` with Hash#values' NoMethodError. */
 /* Set while emitting a poly dispatch's builtin-container arm. Inside that arm
    the runtime value is known to BE an Array or Hash, so the user classes that
    own the name are not candidates there and the builtin emitters must serve it
    as if the name were unowned -- the switch's own case labels keep the user
    receivers out (#3459). */
 
-int poly_name_user_claimed(Compiler *c, const char *name, int argc, int readers) {
+int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
   if (g_poly_builtin_arm) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_poly_arm_defines_n(c, k, name, argc) ||
-        (readers && !c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
+        (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
   return 0;
 }
 
