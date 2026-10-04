@@ -7176,6 +7176,7 @@ else {
       memcpy(fmt_use, spec, sl); fmt_use[sl] = 0;
     }
     char tmp[256]; int wn = 0;
+    char *wide = NULL;   /* a field longer than tmp, formatted again into the heap */
     sp_RbVal v;
     if (have_named) v = named_v;
     else {
@@ -7230,7 +7231,10 @@ else {
             bfmt[bl++] = spec[fi];
         bfmt[bl++] = 's'; bfmt[bl] = 0;
         wn = snprintf(tmp, sizeof(tmp), bfmt, digits);
-        if (conv == 'X') for (char *q = tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
+        if (wn >= (int)sizeof(tmp) && (wide = (char *)malloc((size_t)wn + 1)) != NULL)
+          snprintf(wide, (size_t)wn + 1, bfmt, digits);
+        else if (wn >= (int)sizeof(tmp)) wn = (int)sizeof(tmp) - 1;
+        if (conv == 'X') for (char *q = wide ? wide : tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
       }
       else {
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
@@ -7244,8 +7248,22 @@ else {
       else { free(buf); sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Integer", sp_convert_src_name(v))); }
       /* the non-decimal bases go through our own formatter: C's printf drops
          the '+' and ' ' flags on them and has no two's-complement form */
-      if (conv == 'd' || conv == 'i') wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
-      else wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
+      if (conv == 'd' || conv == 'i') {
+        wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
+        if (wn >= (int)sizeof(tmp) && (wide = (char *)malloc((size_t)wn + 1)) != NULL)
+          snprintf(wide, (size_t)wn + 1, fmt_use, lv);
+        else if (wn >= (int)sizeof(tmp)) wn = (int)sizeof(tmp) - 1;
+      }
+      else {
+        wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
+        /* it stops at the buffer's end: a wider field is formatted again */
+        for (size_t wsz = sizeof(tmp) * 2; wn >= (int)(wsz / 2) && wsz <= ((size_t)1 << 30); wsz *= 2) {
+          char *w2 = (char *)realloc(wide, wsz);
+          if (!w2) { wn = (int)sizeof(tmp); free(wide); wide = NULL; break; }
+          wide = w2;
+          wn = sp_fmt_binary(spec, sl, conv, lv, wide, wsz);
+        }
+      }
       }
     }
 else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G' ||
@@ -7264,6 +7282,14 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       /* pinned "C" locale so the decimal point is always '.', not the process
          locale's separator (the printf field/flag machinery stays libc's) */
       else wn = sp_snprintf_ruby_float(tmp, sizeof(tmp), fmt_use, dv);
+      /* `%.2f` of 1e300 is over 300 characters: snprintf answered the full
+         length and tmp held only its first 255, and the copy below read past
+         it (DBL_MAX printed stack bytes) */
+      if (wn >= (int)sizeof(tmp) && isfinite(dv)) {
+        wide = (char *)malloc((size_t)wn + 1);
+        if (wide) sp_snprintf_ruby_float(wide, (size_t)wn + 1, fmt_use, dv);
+        else wn = (int)sizeof(tmp) - 1;
+      }
     }
 else if (conv == 's' || conv == 'p') {
       /* %s is to_s, %p is inspect -- for every tag (symbols, arrays, hashes,
@@ -7340,9 +7366,10 @@ else {
         sp_raise_cls("ArgumentError", "incomplete format specifier; use %% (double %) instead");
       return "";
     }
-    if (wn < 0) continue;
+    if (wn < 0) { free(wide); continue; }
     if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }
-    memcpy(buf + out, tmp, wn); out += wn;
+    memcpy(buf + out, wide ? wide : tmp, wn); out += wn;
+    free(wide);
   }
   buf[out] = 0;
   char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
