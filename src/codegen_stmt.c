@@ -10630,7 +10630,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
   }
   if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return 1; }
   { int grecv = -1;
-    if (id != g_ivar_nil_guarded_id && ivar_nil_recv_guard(c, id, &grecv)) {
+    if (id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv)) {
       emit_ivar_nil_guard(c, id, grecv, b, indent);
       int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
       emit_stmt_inner(c, id, b, indent);

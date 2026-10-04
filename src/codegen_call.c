@@ -18150,10 +18150,58 @@ int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
   return r;
 }
 
-static int nil_recv_guard(Compiler *c, int id, int *recv_out) {
+/* An object-typed local of scope `sc` that a write in that scope sets to nil
+   (`b = nil`, `b = c ? Box.new : nil`): it is NULL until another write
+   fills it, and a user method called on it ran with a NULL self, or
+   crashed reading an ivar, where CRuby raises NoMethodError (#7262). */
+static int nil_value_node(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_NilNode) return 1;
+  if (k == NK_IfNode || k == NK_UnlessNode) {
+    int st = nt_ref(nt, v, "statements"), el = nt_ref(nt, v, "subsequent");
+    if (el < 0) el = nt_ref(nt, v, "else_clause");
+    if (st < 0) return 1;   /* `x if c` with no body answers nil */
+    int n = 0; const int *bd = nt_arr(nt, st, "body", &n);
+    if (n > 0 && nil_value_node(c, bd[n - 1])) return 1;
+    if (el < 0) return 1;   /* no else: nil when the condition fails */
+    if (nt_kind(nt, el) == NK_ElseNode) {
+      int es = nt_ref(nt, el, "statements");
+      if (es < 0) return 1;
+      int m = 0; const int *eb = nt_arr(nt, es, "body", &m);
+      return m > 0 && nil_value_node(c, eb[m - 1]);
+    }
+    return nil_value_node(c, el);
+  }
+  return 0;
+}
+/* `recv.x = v` through an attribute writer of class `cid` */
+static int nil_guard_writer(Compiler *c, int cid, const char *nm) {
+  size_t l = strlen(nm);
+  if (l < 2 || nm[l - 1] != '=' || l > 255) return 0;
+  char base[256]; memcpy(base, nm, l - 1); base[l - 1] = 0;
+  return comp_writer_in_chain(c, cid, base, NULL) != 0;
+}
+static int local_obj_nil_written(Compiler *c, Scope *sc, const char *ln, LocalVar *lv) {
+  if (lv->obj_nil_written) return lv->obj_nil_written == 1;
+  const NodeTable *nt = c->nt;
+  int si = (int)(sc - c->scopes);
+  lv->obj_nil_written = 2;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    if (c->nscope[w] != si) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, ln)) continue;
+    if (nil_value_node(c, nt_ref(nt, w, "value"))) { lv->obj_nil_written = 1; break; }
+  }
+  return lv->obj_nil_written == 1;
+}
+
+int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0) return 0;
+  if (recv < 0 || id == g_ivar_nil_guarded_id) return 0;
   if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || nil_answers_call(nm)) return 0;
@@ -18162,14 +18210,32 @@ static int nil_recv_guard(Compiler *c, int id, int *recv_out) {
     if (id == g_ivar_nil_guarded_id) return 0;
     return ivar_nil_recv_guard(c, id, recv_out);
   }
+  if (nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
+    /* a global some write sets to nil (`$g = nil`), as a local below */
+    const char *gn = nt_str(nt, recv, "name");
+    if (!gn || !ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+    int gcid = ty_object_class(rt);
+    if (comp_method_in_chain(c, gcid, nm, NULL) < 0 && !comp_reader_in_chain(c, gcid, nm, NULL) &&
+        !nil_guard_writer(c, gcid, nm))
+      return 0;
+    int nilw = 0;
+    NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, gn) && nil_value_node(c, nt_ref(nt, w, "value"))) { nilw = 1; break; }
+    }
+    if (!nilw) return 0;
+    *recv_out = recv;
+    return 1;
+  }
   if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   Scope *sc = comp_scope_of(c, recv);
   const char *ln = nt_str(nt, recv, "name");
   LocalVar *lv = sc && ln ? scope_local(sc, ln) : NULL;
-  if (!lv || !lv->is_param || !lv->obj_nilable) return 0;
-  if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+  if (!lv || !ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+  if (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)) return 0;
   int cid = ty_object_class(rt);
-  if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL))
+  if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL) &&
+      !nil_guard_writer(c, cid, nm))
     return 0;
   *recv_out = recv;
   return 1;

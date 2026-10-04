@@ -105,6 +105,9 @@ typedef struct {
   int obj_nilable;  /* an object-typed parameter some call site passes nil:
                        a user method called on it has to raise NoMethodError
                        for nil rather than run with a NULL self (#5088) */
+  int obj_nil_written; /* codegen's memo for an object-typed local: 1 when a
+                       write in its scope stores nil, 2 when none does, 0 not
+                       yet asked (#7262) */
   int box_nullable; /* an int parameter bound from an ivar that can be read
                        before anything assigned it: only BOXING it has to
                        yield nil. Kept apart from nullable_int, which also

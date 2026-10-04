@@ -1023,6 +1023,9 @@ void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *
 void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b);
 extern int g_ivar_nil_guarded_id;
 int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+/* the same for any receiver the call guards: an ivar as above, or a param or
+   local that can hold nil (codegen_call.c) */
+int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
