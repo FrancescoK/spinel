@@ -3377,10 +3377,14 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(&sw, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, tw, ti2);
       emit_indent(&sw, indent + 2);
       buf_printf(&sw, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", dp0r, tw, ti2);
-      for (int j2 = 0; j2 + 1 < dbn; j2++) emit_stmt(c, dbb[j2], b, indent + 2);
-      { int svi = g_indent; g_indent = indent + 2;
+      /* The block's statements and its value's preludes belong to this
+         arm's loop. The statements went to the caller's buffer and the
+         preludes to g_pre, so both ran once, ahead of the switch, with the
+         block parameter not yet bound. */
+      for (int j2 = 0; j2 + 1 < dbn; j2++) emit_stmt(c, dbb[j2], &sw, indent + 2);
+      { int svi = g_indent; Buf *svp = g_pre; g_indent = indent + 2; g_pre = &sw;
         Buf vb2; memset(&vb2, 0, sizeof vb2); emit_boxed(c, dbb[dbn - 1], &vb2);
-        g_indent = svi;
+        g_indent = svi; g_pre = svp;
         emit_indent(&sw, indent + 2);
         buf_printf(&sw, "sp_PolyArray_set(_t%d, _t%d, %s);\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
         free(vb2.p); }
@@ -3792,6 +3796,79 @@ static int subtree_has_own_next_ex(const NodeTable *nt, int id, int next) {
 int subtree_has_own_next(const NodeTable *nt, int id) { return subtree_has_own_next_ex(nt, id, -1); }
 int subtree_owns_next(const NodeTable *nt, int body, int next) {
   return next >= 0 && subtree_has_own_next_ex(nt, body, next);
+}
+
+/* Mark every `next` written where the value of `id` is: `id` itself, the
+   last statement of a sequence, an arm of an `if`, `unless`, `case` or
+   `begin`, the right of an `and` or `or`. An `ensure` clause, a condition
+   and every other operand are not: their value is not the node's. */
+static void mark_value_nexts(const NodeTable *nt, int id, char *mark) {
+  if (id < 0 || id >= nt->count) return;
+  int n = 0; const int *a;
+  switch (nt_kind(nt, id)) {
+  case NK_NextNode: mark[id] = 1; return;
+  case NK_StatementsNode:
+    a = nt_arr(nt, id, "body", &n);
+    if (n > 0) mark_value_nexts(nt, a[n - 1], mark);
+    return;
+  case NK_ParenthesesNode: mark_value_nexts(nt, nt_ref(nt, id, "body"), mark); return;
+  case NK_IfNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
+    return;
+  case NK_UnlessNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_ElseNode: case NK_InNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    return;
+  case NK_CaseNode: case NK_CaseMatchNode:
+    a = nt_arr(nt, id, "conditions", &n);
+    for (int i = 0; i < n; i++) mark_value_nexts(nt, a[i], mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_BeginNode:
+    /* with an `else`, the body's last statement is not the begin's value */
+    if (nt_ref(nt, id, "else_clause") < 0) mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "rescue_clause"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_RescueNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
+    return;
+  case NK_RescueModifierNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "expression"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "rescue_expression"), mark);
+    return;
+  case NK_AndNode: case NK_OrNode: mark_value_nexts(nt, nt_ref(nt, id, "right"), mark); return;
+  default:
+    /* a `when` has no kind of its own */
+    if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "WhenNode"))
+      mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    return;
+  }
+}
+
+/* Is this `next` the value of the block it leaves: written where the block's
+   last expression is, so that leaving the block with v and answering v are
+   the same thing? The expression emitter takes such a `next v` as v (#3026).
+   Any other `next` an expression holds -- an operand, an argument, the value
+   of an assignment, `c && (next)` ahead of more statements -- has to leave
+   the block from where it is. The marks are built once per node table. */
+int next_is_block_value(Compiler *c, int next) {
+  static char *mark; static const NodeTable *mark_nt; static int mark_n = -1; static unsigned mark_ver;
+  const NodeTable *nt = c->nt;
+  if (!mark || mark_nt != nt || mark_n != nt->count || mark_ver != nt->version) {
+    free(mark);
+    mark = calloc((size_t)nt->count + 1, 1);
+    if (!mark) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    NT_FOREACH_KIND(nt, NK_BlockNode, blk) mark_value_nexts(nt, nt_ref(nt, blk, "body"), mark);
+    NT_FOREACH_KIND(nt, NK_LambdaNode, lam) mark_value_nexts(nt, nt_ref(nt, lam, "body"), mark);
+    mark_nt = nt; mark_n = nt->count; mark_ver = nt->version;
+  }
+  return next >= 0 && next < nt->count && mark[next];
 }
 
 /* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
@@ -4624,8 +4701,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
       char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
       if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
     }
-    if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
-      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
+    if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
+      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
     else emit_retf_return(eid, has_retval, b);
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);

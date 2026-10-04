@@ -1,0 +1,11 @@
+{a: 1, b: 2}
+{a: 1, b: 2}
+{c: 3}
+{"x" => 1}
+{}
+{d: 4}
+{d: 4, e: 5}
+"odd number of arguments for Hash"
+[ArgumentError, "wrong element type Integer at 0 (expected array)"]
+[ArgumentError, "invalid number of elements (3 for 1..2)"]
+[ArgumentError, "invalid number of elements (0 for 1..2)"]

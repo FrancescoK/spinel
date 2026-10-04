@@ -282,6 +282,275 @@ kind, name and type, so two of them exchanging types go unseen. Keyed by
 where they start instead, the same pass finds no such exchange and reports
 three programs in which only the helper's line moved.
 
+## dead_code_probe
+
+`ruby tools/dead_code_probe.rb [--kind K,..] [--alien A] [--together |
+--each] [--sample N] [--seed S] [--opt LEVEL] [--jobs J] [--out DIR]
+[--timeout SEC] [--builds N] [--keep] [FILE..]` asks whether a program
+still prints its answer after code that never runs is added to it. Spinel
+types a slot from every write it can see, reached or not, and picks from
+the types the path a read, a call or a store takes; so
+`x = :dead if ::ARGV.length == 9123` in front of `x = 1` boxes `x` and
+sends every use of it down the boxed path, while the program does exactly
+what it did. The probe takes each FILE (default the `test/*.rb` the suite
+runs without a flag, so not `promote_*.rb`; or `--sample N` of them picked
+by `--seed`) that has a `.expected`, writes it again with such statements
+in it (`dead_code_edit.rb`), builds it, runs it as the suite runs the test
+(its `.args` and `.stdin`, from the root of the tree) and compares stdout
+and stderr with the `.expected` the unedited test is held to. No other
+oracle is needed: every test of the corpus becomes a test of the boxed
+path it does not name.
+
+Every edit is one statement under that guard, false in every run and not
+foldable, on the line of the statement it stands by, so no line of the
+program moves. The kinds, each named for the decision it takes from the
+compiler, with `ALIEN` the value `--alien` picks (`sym`, the default, is
+`:dead`; `str`, `int`, `float`, `nil`, `ary`, `obj`):
+
+| kind | the edit | what it does |
+|---|---|---|
+| `local` | `x = ALIEN` ahead of a local's first write | boxes the local |
+| `ivar` | `@x = ALIEN` ahead of an instance variable's first write in its class | boxes the slot in every instance |
+| `gvar` | `$x = ALIEN` ahead of a global's first write | boxes the global |
+| `elem` | `x << ALIEN`, or `x[ALIEN] = ALIEN`, after a first write of an array or hash literal | boxes the elements |
+| `arg` | at the top of a method, a call of it with one positional argument the alien (`m(a, ALIEN)`, or `C.new(ALIEN, b)` in `initialize`) | boxes the parameter |
+| `return` | `return ALIEN` at the top of a method | boxes its value |
+| `next` | `next ALIEN` at the top of a block or lambda | boxes its value |
+| `capture` | a lambda that reads a local or a parameter, stored in a global of its own | moves the variable to a cell |
+| `escape` | a local or a parameter stored in a global of its own | lets the value outlive its frame |
+| `raise` | `raise "dead"` at the top of a method | makes the method one that may raise |
+| `nop` | `nil` at the top of a method | the control: the guard and nothing else |
+
+A statement goes only where a statement can: directly in a body, never in
+the arm of a ternary or an interpolation, and at the top of `def m = expr`
+inside parentheses put around the expression. One that reads the variable
+stands in front of the statement after the write and is left out when the
+write ends its body. "First write" is the first in the source among the
+writes that are statements, within a method or a class body. A site whose
+edit does not parse where it stands is dropped.
+
+A pass is one build of a program with a set of edits. By default there is
+a pass per kind with every site of that kind edited; `--together` makes
+one pass of all kinds at once, and `--each` a pass per site. A pass that
+does not print the answer is cut down to the edits that carry the
+difference (those on the line a failed build names first, then by halving,
+ddmin), those are a finding, and the pass runs again without them, since
+one refusal hides every other edit of its pass. `--builds` (default 40) is
+the C compiles a program may spend on that; C that does not build is cut
+down asking the C compiler for its checks only. The build is most of the
+cost, so programs are built at `-Og` unless `--opt` names another level:
+300 tests take 21 minutes at `--jobs 4`, and the whole of `test/` at that
+rate over six hours, which is what `--sample` is for.
+
+What counts follows the generated-case probes: `wrong` is another answer
+(`output-diff`), a `crash`, a `timeout`, C that does not build
+(`link-error`) and a compiler that dies or fails without a word
+(`compiler-failure`). Whatever the compiler says in its own name before it
+writes any C (`compile-error`: a construct it does not compile, a call
+that cannot exist, a value it will not keep in a slot of another type) is
+the `refused` tier, listed and not counted. The probe does not read
+`docs/limitations.md`, so a wrong answer the limits describe is listed
+too. Three checks stand between a difference and a finding: the unedited
+program, copied to the scratch directory and built there, has to print its
+`.expected` (a test that reads a file beside itself is left out); the
+edited program has to print under the ruby running the probe, with
+`--enable-frozen-string-literal`, what the unedited one prints under it
+(an edit that changed the program is the tool's mistake, listed apart);
+and an answer that differs is asked for a second time. `nop` takes no
+decision from the compiler, so what it finds is not about types, and a
+difference another kind shows on the same line in the same words is
+counted once, as the control's.
+
+Output, under DIR (default `build/dead-code-probe/`): `summary.txt` (the
+findings by tier, label and kind, then in families: for a build that
+failed the words of the failure, for a run that ended in an exception
+CRuby does not raise the exception, else the kind of edit with the type
+the slot had in the unedited program's `--emit-types` dump) and for each
+finding `findings/<n>-<program>/` with `a.rb` (the test), `b.rb` (the test
+with that finding's edits and no others) and `finding.txt`. `b.rb` is a
+program of its own that answers differently under CRuby and spinel:
+`spinel diff b.rb` shows the difference, and
+
+```
+spinel-reduce --oracle-cmd 'spinel diff {} >/dev/null 2>&1; test $? -eq 1' b.rb
+```
+
+shrinks it (the boxed Enumerator of `test/enumerator_external.rb` comes
+down from 49 lines to `e = :dead if ::ARGV.length == 9123; e = [10, 20,
+30].each` and `p e.peek`). That oracle keeps any difference between the
+two, so what comes out can be another one than the finding's and is to be
+read. Exit status 0 with no wrong answer, 1 with one, 4 for the tool's own
+error. Like the other probes it is a CRuby script to run by hand (it needs
+Prism, which Ruby 3.3 and later bundle), not a gate, and not one of the
+tools make builds.
+
+What it does not see: `a, b = 1, 2`, `x += 1` and a write that is an
+argument are not edited; a method named by an operator or a keyword, or
+taking `...` or an anonymous splat, gets no `arg` edit; and every edit of
+a pass is in the build at once, so an edit that fails only beside typed
+neighbours of its own kind needs `--each`.
+
+## literal_probe
+
+`ruby tools/literal_probe.rb [--plant body|operand] [--needle own|searched]
+[--form string|symbol|interp].. [--bytes N] [--control] [--no-reduce]
+[--jobs J] [--out DIR] [--timeout SEC] [--keep] [FILE..]` asks whether the
+text of a string literal steers the compiler. It is not supposed to: a
+literal is data. But the write barrier, the root elision and the root frame
+are passes over the generated C as text, the call emitters search an arm's C
+for a name (`sp_raise_nomethod(`, `SP_GC_ROOT`, a temporary's `_t21`), and
+the parser searches the Ruby source for what a program mentions (`break`,
+`define_finalizer`, a builtin's name), so a literal that spells what one of
+them looks for is read as code, and the corpus has almost no such literal.
+The probe takes each FILE (default `test/*.rb`) and plants a string literal
+in void position at each site: with `--plant body` (the default) at the head
+of every method, block and lambda body and of the top level, with `--plant
+operand` around every receiver and argument that is a variable or a call, as
+`("..."; x)`. A first compile, with a marker in each literal, says which C
+function each lands in, and then each literal is given a needle. With
+`--needle own` (the default) it is that function's own lines (one of each
+shape, `--bytes` of them at most, 4000 by default): whatever a pass looks
+for in the C of this program, the program now also says as a string, in the
+function where it is looked for. With `--needle searched` it is every string
+spinel's sources search a text for, the literal arguments of the `strstr`,
+`strncmp` and `memcmp` calls under `src/`, read when the probe starts (214
+of them on 5204e5af): what a function's C does not say, and a pass asks
+whether it says. Then two compiles are compared, the needle and a control of
+the same bytes with every character but blanks, quotes and backslashes
+turned to `x`. The two C files have to be equal outside the planted
+literals, and each planted literal has to read back, through C's escapes, as
+the text that was written. Every compile plants every site, so only text
+changes between two of them; nothing is run and CRuby is not asked. `--form`
+names the literal: `string` (the default), `symbol` (`:"..."`, which lands
+in the symbol table) and `interp` (`"...#{nil}"`, whose text is copied by
+length); several take the sites in turn. A program that differs is reduced
+by delta debugging, over the sites and then over the words and the
+characters of the needle, to the shortest literal that still differs, its
+trigger; the places the needles spell it are then turned to control text and
+the program is asked again, so one program gives each of its triggers,
+twelve at most. Triggers alike but for the program's own names, its numbers
+and its one-letter words are one family (`->iv_NAME=`, `_tN`, `x(`). A
+family met in one program is asked about first in the next, by planting its
+trigger alone wherever the needles spell it, and only the smallest program
+of a family is reduced, which is what makes a pass over the corpus
+affordable. A finding is `literal` (the planted literal reads back as other
+text: the program holds a string it did not write), `code` (the C outside
+the literal changed: a barrier, a root, a branch or a builtin added or
+dropped), `control` (the control itself reads back as other text, or does
+not compile: text that spells nothing was cut) or `outcome` (the needle is
+refused, or crashes the compiler, where the control compiles). Twenty
+programs of each family, spread by size, are then built and run in both
+versions, and the summary says how many did not do the same. `--control`
+compiles the control twice and has to report nothing but the class
+`control`, which the control shows alone. Output, under DIR
+(default `build/literal-probe/`): `summary.txt` and for each family
+`findings/<n>-<class>/` holding `a.rb` (the control) and `b.rb` (the needle)
+of its smallest program, `note.txt` (the trigger, the first difference, what
+the builds did) and `programs.txt` (every program of the family, what its
+needles spell and, if it was run, what the two builds did). On 5204e5af at
+`--jobs 4`, over the 5,404 programs of `test/*.rb` it can compare (43,792
+literals), a pass with the programs' own C takes 9 minutes and one with the
+searched strings 34; an operand pass (5,073 programs, 130,272 literals)
+takes 18. Exit status 0 with no finding, 1 with one, 4 for the tool's own
+error. Like the other probes it is a CRuby script to run by hand (it needs
+Prism, which Ruby 3.3 and later bundle), not a gate, and not one of the
+tools make builds.
+
+What it does not see: a literal is planted where a statement or an operand
+stands, not inside an interpolation, a heredoc, a hash key or a `when`. The
+searched needle holds what the sources hand to three C functions, so a pass
+that walks the text by hand (the scan that takes a `#` for a comment) or
+reads its names from a table at run time (the builtins' own names) is met
+only where the program's C happens to spell its trigger. A family is named
+by its shortest trigger, so two passes that look for one text are one
+family. A program that is refused once a literal is planted is left out and
+counted (a planted body is no longer the one-line reader spinel knows by its
+shape), and so is one that reads a file beside itself, since the compiles
+are made from a scratch directory. And a difference is a finding whether or
+not the two builds do the same: most families only add code or keep a root,
+which the runs say and the classes do not.
+
+## operand_probe
+
+`ruby tools/operand_probe.rb [--int-overflow promote] [--jobs J] [--out DIR]
+[--timeout SEC] [--keep] [FILE..]` asks whether the operands of a call run
+as Ruby runs them: the receiver, then the arguments left to right, each
+once, and then the call. Spinel hands the operands of most calls to one C
+call, whose order C leaves open, and binds them in order first where it
+sees that the order shows (`emit_operands_in_order`, and the arms that do
+it by hand). An arm that does neither answers wrong only for a program
+whose operands have effects, and few programs of the suite have two in one
+call, so the suite does not say which arms are left. The probe gives every
+operand an effect. It writes each FILE (default `test/*.rb`) again with
+every operand `e` of every call spelled `__opN(e)`, where `def __opN(v)`
+logs N to stderr and answers `v` (a user method called with one argument,
+which is all the compiler sees of it), runs that program under ruby and
+under spinel, and reads the two logs call by call. An operand is the
+receiver or a positional argument; one the compiler reads by its spelling
+is left as written (a constant, `self`, a symbol, `nil`, `true`, `false`, a
+range, regexp, hash or lambda literal), and so is the whole call when it
+has fewer than two operands left, only literals, a splat or keywords, or a
+name the compiler resolves from the arguments (`send`, `respond_to?`,
+`require` and the others of `AS_WRITTEN`). The body of a block, a lambda or
+a `def` is asked on its own: it runs when it is called.
+
+A call is a finding, classed: `count` (one of its operands ran another
+number of times than the others, against ruby's counts: an operand dropped,
+or run twice, or never reached because a later one raised first), `order`
+(an operand was logged while the one before it had still to run) and
+`nested` (an operand of a call written inside one of its operands was
+logged before the operand ahead of that one: `f(a(x)) + g(b(y))` running
+`b` before `f`). Each call is read by its own operands, so a call that
+recurses, or that two calls of a block interleave, is read as it nests,
+and a builtin that calls its block in another sequence than ruby's does,
+which ruby does not promise, is no finding; two logs that differ with no
+such call are listed as `sequence` and not counted. A call ruby's own log
+shows out of order (a `retry`, a `throw` out of an operand) is not read.
+
+The instrumented program has to print under ruby what the program prints
+(its `.expected` file, or ruby's answer for the file as written), which
+also leaves out a program that reads a file beside itself; one whose
+threads write the log at once is left out too. When spinel refuses the
+instrumented program, does not build it, or runs it to another answer, the
+question was not asked: the program is listed under what happened and not
+counted, though the wrap is a valid program and each of those is a wrong
+answer or a refusal of its own. The first three programs of every class
+and method are asked again with only the operands of that one call
+wrapped, and the summary says for how many the call is still a finding.
+Output, under DIR (default `build/operand-probe/`): `summary.txt` (the
+findings by class and method, then by program) and for each program with a
+finding `findings/<n>-<program>/` holding `probe.rb` (the program as it was
+asked), `calls.txt` (each call, its class, and its operands in the order
+each log has them) and `alone-<line>-<column>.rb` for a call asked alone.
+The first 100,000 operands a run logs are read. Exit status 0 with no
+finding, 1 with one, 4 for the tool's own error. Like the other probes it
+is a CRuby script to run by hand (it needs Prism, which Ruby 3.3 and later
+bundle), not a gate, and not one of the tools make builds; the answers are
+compared as they print, so the reference is the `ruby` whose wording Spinel
+follows (4.0). The programs run from the repository's root, as `make test`
+runs them, so one that stops early can leave a file it made there.
+
+On 2e243ba7, with gcc 13.3 and ruby 3.3.6 (which does not print the
+`.expected` of 778 of the programs, so those are left out), a run over
+`test/*.rb` asks 2,968 programs, 22,505 calls and 47,894 operands, in 53
+minutes at `--jobs 3`. It finds 1,712 calls in 670 programs: 1,259 `order`,
+281 `nested`, 172 `count`, in 212 families of class and method, the
+largest `recv << arg` (674 calls in 308 programs), `push`, `[]=` and
+`first`. Of the 356 calls asked alone, 351 are still findings. 67 programs
+are a `sequence`, and 533 were not asked: 229 answer otherwise once
+instrumented (among them programs that append to a String the wrap handed
+on, which Spinel copies: #6179), 187 raise, 95 are refused, 17 do not
+build, 4 run out of time and 1 crashes.
+
+What it does not see: the order of anything that is not a call's operand
+(the elements of an Array literal, the parts of an interpolation, keyword
+arguments, the operands of `super` and `yield`), an operand with an effect
+the compiler can see and a wrapped one cannot (a write to a local a
+sibling reads), and what a call does when its operands are not calls: the
+wrap makes every operand a call of a user method, so a finding says that
+the call, given such operands, runs them out of order, not that the
+program as written answers wrong.
+
 ## Adding a tool
 
 Drop `tools/<name>.rb` (subset Ruby, `require_relative "tool_common"`
