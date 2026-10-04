@@ -3071,7 +3071,8 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         sp_streq(name, "stat"))
-      { *out = TY_STR_INT_HASH; return 1; }
+      /* GC.stat(key) is the one statistic */
+      { *out = argc == 1 && nt_kind(nt, argv[0]) != NK_KeywordHashNode ? TY_INT : TY_STR_INT_HASH; return 1; }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
       if (sp_streq(name, "times") && argc == 0) { *out = TY_TMS; return 1; }
