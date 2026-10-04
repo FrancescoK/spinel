@@ -5032,7 +5032,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       int tv4 = ++g_tmp;
       char tvbuf4[24]; snprintf(tvbuf4, sizeof tvbuf4, "_t%d", tv4);
       emit_indent(g_pre, g_indent);
-      if (res_poly2) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv4);
+      if (res_poly2) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tv4, tv4);
       else { emit_ctype(c, ty_array_elem(restype2), g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv4, default_value_from_compiler(c, ty_array_elem(restype2))); }
       emit_block_value_into(c, block, tvbuf4, res_poly2, g_indent);
       buf_puts(&vb2, tvbuf4);
