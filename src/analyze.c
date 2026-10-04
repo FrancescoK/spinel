@@ -29263,6 +29263,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= desugar_dynamic_const_get_arms(c);   /* recv.const_get(var) on any other receiver -> static name dispatch */
     ch |= desugar_reopen_implicit_self(c);     /* `last` in `class Range; def m` -> self.last */
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
+    ch |= desugar_bare_spawn(c);               /* spawn(...) -> Process.spawn(...) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */

@@ -146,6 +146,32 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   return changed;
 }
 
+/* Kernel#spawn is Process.spawn: a receiverless `spawn(...)` gets Process as
+   its receiver, which the spawn arms already take, unless the program
+   defines a spawn of its own anywhere (#7203). */
+int desugar_bare_spawn(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "spawn")) return 0;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "spawn")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
+    int an = 0, args = nt_ref(nt, id, "arguments");
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (an < 1 || id >= c->node_cap) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", "Process");
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", cr);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* A bare `new(...)` in a class body (`MAP = { 0 => new(0) }`, `ONE = new(1)`)
    is a call on the class itself, which is the implicit self there. Nothing
    resolved it: the constant it initialised typed unknown and was dropped,
