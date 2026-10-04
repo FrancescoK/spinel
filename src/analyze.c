@@ -28450,13 +28450,33 @@ static void hp_refuse(Compiler *c, int call) {
 }
 static void refuse_hash_pair_string_mutations(Compiler *c) {
   const NodeTable *nt = c->nt;
-  /* the iterator calls whose block binds a pair or its value, once */
-  int nb = 0, cap = 0, *binds = NULL;
+  /* the iterator calls whose block binds a pair or its value, once: the
+     block's scope, the names it binds, whether the Hash may hold a String */
+  int nb = 0, cap = 0;
+  struct HpBind { Scope *scope; const char *pair, *value; int may; } *binds = NULL;
   NT_FOREACH_KIND(nt, NK_CallNode, it) {
-    int vi, pi;
-    if (nt_ref(nt, it, "block") < 0 || !hp_block_binding(c, it, &vi, &pi)) continue;
-    if (nb == cap) { cap = cap ? cap * 2 : 16; binds = (int *)realloc(binds, sizeof(int) * (size_t)cap); if (!binds) return; }
-    binds[nb++] = it;
+    int vi, pi, blk = nt_ref(nt, it, "block");
+    if (blk < 0) continue;
+    hp_hash_node = -1;
+    if (!hp_block_binding(c, it, &vi, &pi)) continue;
+    if (nb == cap) {
+      cap = cap ? cap * 2 : 16;
+      binds = realloc(binds, sizeof *binds * (size_t)cap);
+      if (!binds) return;
+    }
+    int bb = nt_ref(nt, blk, "body");
+    binds[nb].scope = comp_scope_of(c, bb >= 0 ? bb : blk);
+    binds[nb].pair = pi >= 0 ? block_param_name(c, blk, pi) : NULL;
+    binds[nb].value = vi >= 0 ? block_param_name(c, blk, vi) : NULL;
+    binds[nb].may = hp_hash_may_hold_string(c);
+    nb++;
+  }
+  /* the multiple assignments from a pair (`k, v = h.first`), once */
+  int nm2 = 0, cap2 = 0, *pmw = NULL;
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
+    if (!hp_pair(c, nt_ref(nt, mw, "value"))) continue;
+    if (nm2 == cap2) { cap2 = cap2 ? cap2 * 2 : 8; pmw = (int *)realloc(pmw, sizeof(int) * (size_t)cap2); if (!pmw) { free(binds); return; } }
+    pmw[nm2++] = mw;
   }
   NT_FOREACH_KIND(nt, NK_CallNode, call) {
     int mk = hp_string_mutation(c, call);
@@ -28480,31 +28500,29 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
     Scope *ls = comp_scope_of(c, rl >= 0 && pn ? rl : an_unparen(nt, pair));
     /* a block parameter that binds a pair or its value */
     int hit = 0;
+    int may = -1;   /* a binding block's answer; -1 asks the Hash hp_pair found */
     for (int bi = 0; bi < nb && !hit; bi++) {
-      int it = binds[bi], vi, pi;
-      if (!hp_block_binding(c, it, &vi, &pi)) continue;
-      int blk = nt_ref(nt, it, "block");
-      if (ls && comp_scope_of(c, nt_ref(nt, blk, "body") >= 0 ? nt_ref(nt, blk, "body") : blk) != ls) continue;
-      const char *want = pairp ? (pi >= 0 ? block_param_name(c, blk, pi) : NULL)
-                               : (vi >= 0 ? block_param_name(c, blk, vi) : NULL);
-      if (want && sp_streq(want, ln)) { hit = 1; break; }
+      if (ls && binds[bi].scope != ls) continue;
+      const char *want = pairp ? binds[bi].pair : binds[bi].value;
+      if (want && sp_streq(want, ln)) { hit = 1; may = binds[bi].may; }
     }
     /* `k, v = h.first` / `pair = h.first; pair[1] << x` */
-    for (int w = comp_lvw_first(c, ln); w >= 0 && !hit; w = comp_lvw_next(c, w)) {
+    for (int w = pairp ? comp_lvw_first(c, ln) : -1; w >= 0 && !hit; w = comp_lvw_next(c, w)) {
       if (comp_scope_of(c, w) != ls) continue;
       if (nt_kind(nt, w) == NK_LocalVariableWriteNode && pairp && hp_pair(c, nt_ref(nt, w, "value"))) hit = 1;
     }
     if (!hit && !pairp) {
-      NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw) {
+      for (int q = 0; q < nm2 && !hit; q++) {
+        int mw = pmw[q];
         if (comp_scope_of(c, mw) != ls || !hp_pair(c, nt_ref(nt, mw, "value"))) continue;
         int ln2 = 0; const int *lefts = nt_arr(nt, mw, "lefts", &ln2);
         if (ln2 >= 2 && nt_kind(nt, lefts[1]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[1], "name") &&
-            sp_streq(nt_str(nt, lefts[1], "name"), ln)) { hit = 1; break; }
+            sp_streq(nt_str(nt, lefts[1], "name"), ln)) hit = 1;
       }
     }
-    if (hit && (mk > 0 || hp_hash_may_hold_string(c))) hp_refuse(c, call);
+    if (hit && (mk > 0 || (may < 0 ? hp_hash_may_hold_string(c) : may))) hp_refuse(c, call);
   }
-  free(binds);
+  free(binds); free(pmw);
 }
 
 /* A bare `@ivar` argument whose ivar is written from a local, handed to a
