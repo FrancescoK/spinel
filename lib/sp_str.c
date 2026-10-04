@@ -155,13 +155,32 @@ static inline char *sp_str_bin_from(char *r, const char *a) {
   return r;
 }
 
-const char*sp_str_concat(const char*a,const char*b){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b);char*r=sp_str_alloc(la+lb);memcpy(r,a,la);memcpy(r+la,b,lb);sp_str_bin_from(r,a);sp_str_bin_from(r,b);return r;}
+/* Whether a + b is binary, as CRuby's compatibility rule picks it: the
+   operands' shared encoding, else the one an ASCII-only operand gives way
+   to -- `String.new + "\u00e9"` is UTF-8 -- else binary (see above). */
+static int sp_str_cat_binary(const char *a, const char *b) {
+  int ab = sp_str_is_binary(a), bb = sp_str_is_binary(b);
+  if (ab == bb) return ab;
+  if (sp_str_ascii_only(b)) return ab;
+  if (sp_str_ascii_only(a)) return bb;
+  return 1;
+}
+/* The same rule folded over a run of parts: `bin` is the encoding of the
+   `pl` bytes of r already joined, s the next part. The prefix is scanned only
+   when the two encodings differ. */
+static int sp_str_bin_fold(const char *r, size_t pl, int bin, const char *s) {
+  int sb = sp_str_is_binary(s);
+  if (sb == bin || sp_str_ascii_only(s)) return bin;
+  for (size_t i = 0; i < pl; i++) if ((unsigned char)r[i] >= 0x80) return 1;
+  return sb;
+}
+const char*sp_str_concat(const char*a,const char*b){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b);char*r=sp_str_alloc(la+lb);memcpy(r,a,la);memcpy(r+la,b,lb);if(sp_str_cat_binary(a,b))sp_str_mark_binary(r);return r;}
 /* Issue #760: NULL src to memcpy is UB. Treat NULL as empty string. */
-const char*sp_str_concat3(const char*a,const char*b,const char*c){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);SP_GC_ROOT_STR(c);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;if(!c)c=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b),lc=sp_str_byte_len(c);char*r=sp_str_alloc(la+lb+lc);memcpy(r,a,la);memcpy(r+la,b,lb);memcpy(r+la+lb,c,lc);sp_str_bin_from(r,a);sp_str_bin_from(r,b);sp_str_bin_from(r,c);return r;}
-const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);SP_GC_ROOT_STR(c);SP_GC_ROOT_STR(d);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;if(!c)c=sp_str_empty;if(!d)d=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b),lc=sp_str_byte_len(c),ld=sp_str_byte_len(d);char*r=sp_str_alloc(la+lb+lc+ld);memcpy(r,a,la);memcpy(r+la,b,lb);memcpy(r+la+lb,c,lc);memcpy(r+la+lb+lc,d,ld);sp_str_bin_from(r,a);sp_str_bin_from(r,b);sp_str_bin_from(r,c);sp_str_bin_from(r,d);return r;}
+const char*sp_str_concat3(const char*a,const char*b,const char*c){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);SP_GC_ROOT_STR(c);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;if(!c)c=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b),lc=sp_str_byte_len(c);char*r=sp_str_alloc(la+lb+lc);memcpy(r,a,la);memcpy(r+la,b,lb);memcpy(r+la+lb,c,lc);{int ab=sp_str_cat_binary(a,b);int rb=ab==sp_str_is_binary(c)?ab:sp_str_ascii_only(c)?ab:(sp_str_ascii_only(a)&&sp_str_ascii_only(b))?sp_str_is_binary(c):1;if(rb)sp_str_mark_binary(r);}return r;}
+const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d){SP_GC_ROOT_STR(a);SP_GC_ROOT_STR(b);SP_GC_ROOT_STR(c);SP_GC_ROOT_STR(d);if(!a)a=sp_str_empty;if(!b)b=sp_str_empty;if(!c)c=sp_str_empty;if(!d)d=sp_str_empty;size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b),lc=sp_str_byte_len(c),ld=sp_str_byte_len(d);char*r=sp_str_alloc(la+lb+lc+ld);memcpy(r,a,la);memcpy(r+la,b,lb);memcpy(r+la+lb,c,lc);memcpy(r+la+lb+lc,d,ld);{int rb=sp_str_is_binary(a);rb=sp_str_bin_fold(r,la,rb,b);rb=sp_str_bin_fold(r,la+lb,rb,c);rb=sp_str_bin_fold(r,la+lb+lc,rb,d);if(rb)sp_str_mark_binary(r);}return r;}
 /* Concatenate N strings into a single GC-managed buffer. */
 /* Issue #760: NULL entries treated as empty strings. */
-const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:sp_str_empty);char*r=sp_str_alloc(total);char*p=r;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:sp_str_empty;size_t sl=sp_str_byte_len(s);memcpy(p,s,sl);p+=sl;sp_str_bin_from(r,s);}return r;}
+const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:sp_str_empty);char*r=sp_str_alloc(total);char*p=r;int rb=-1;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:sp_str_empty;size_t sl=sp_str_byte_len(s);rb=rb<0?sp_str_is_binary(s):sp_str_bin_fold(r,(size_t)(p-r),rb,s);memcpy(p,s,sl);p+=sl;}if(rb>0)sp_str_mark_binary(r);return r;}
 /* The unresolved-call gate's raise. Deliberately NOT declared noreturn
    (spinel_rt.h): gate arms sit inside hot dispatch functions and a noreturn
    call restructures their CFG; as a plain value-returning extern call the
@@ -203,7 +222,14 @@ const char *sp_str_plus_lit(const char *a, const char *lit, size_t ll) {
   char *r = sp_str_alloc(la + ll);
   memcpy(r, a, la);
   memcpy(r + la, lit, ll);
-  return sp_str_bin_from(r, a);
+  /* a binary receiver keeps its encoding unless it is ASCII-only and the
+     literal is not: then the result is the literal's UTF-8, as CRuby picks */
+  if (sp_str_is_binary(a)) {
+    int lit_ascii = 1;
+    for (size_t i = 0; i < ll && lit_ascii; i++) lit_ascii = (unsigned char)lit[i] < 0x80;
+    if (lit_ascii || !sp_str_ascii_only(a)) sp_str_mark_binary(r);
+  }
+  return r;
 }
 /* FrozenError naming the receiver, matching CRuby's
    "can't modify frozen String: \"abc\"" message shape. */
