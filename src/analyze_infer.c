@@ -1491,6 +1491,10 @@ int reduce_tail_from_acc(Compiler *c, int tail, const char *accp) {
   if (sp_streq(ty, "LocalVariableReadNode"))
     return nt_str(nt, tail, "name") && sp_streq(nt_str(nt, tail, "name"), accp);
   if (sp_streq(ty, "CallNode")) {
+    /* an element read out of it answers the element, not the accumulator
+       (`h[k]` walking a nested hash by a key path) */
+    const char *cn = nt_str(nt, tail, "name");
+    if (cn && (sp_streq(cn, "[]") || sp_streq(cn, "dig") || sp_streq(cn, "fetch"))) return 0;
     int rcv = nt_ref(nt, tail, "receiver");
     if (rcv >= 0 && nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode"))
       return nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), accp);
