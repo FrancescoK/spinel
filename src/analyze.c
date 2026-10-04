@@ -19315,8 +19315,12 @@ static int dyn_any_appender(Compiler *c) {
       unsigned bits = dyn_lit_bits(c, b) & 0xffffu;
       /* `each_with_object({}) { |x, memo| memo[k] = v }`: the block's second
          parameter IS the memo the call names, so when that is written as a
-         Hash or Array it is no String, whatever `k` and `v` turn out to be */
-      if (dyn_memo_is_container(c, n, nm)) bits &= ~2u;
+         Hash or Array it is no String, whatever `k` and `v` turn out to be.
+         Only the builtin: a user method of the same name hands its second
+         parameter whatever it likes (a String it yields), and clearing the
+         bit for it would drop a real appender, so a copy would lose the
+         append silently. */
+      if (dyn_memo_is_container(c, n, nm) && an_any_scope_by_name(c, nm) < 0) bits &= ~2u;
       if (!bits && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
