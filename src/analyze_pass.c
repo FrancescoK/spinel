@@ -2801,6 +2801,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       else if (name && sp_streq(name, "[]=") && an == 3) {
         /* a[start, len] = rhs: a splice over the (start, len) span */
         is_idx_write = 1; is_splice = 1; vt = splice_incoming_elem(c, argv[2]);
+        vnode = argv[2];
         splice_arr = ty_is_array(infer_type(c, argv[2])) && vt != TY_POLY_ARRAY;
       }
       else if (name && sp_streq(name, "fill") && an >= 1 && an <= 3 &&
@@ -3005,6 +3006,12 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           changed |= mask_add(&lv->store_val_src, unassigned_param_read(c, lsc, vnode));
         if (!is_splice && !is_push && kt == TY_POLY)
           changed |= mask_add(&lv->store_key_src, unassigned_param_read(c, lsc, knode));
+        /* A splice of another parameter's elements, that parameter boxed:
+           each call's argument for it is checked the same way. Left to run
+           time, the splice of a String through an Array of Integers could
+           only raise. */
+        if (is_splice && !is_fill && vt == TY_POLY && vnode >= 0)
+          changed |= mask_add(&lv->store_elems_src, unassigned_param_read(c, lsc, vnode));
         /* Each value a push, unshift or insert stores is its own evidence,
            and a store of the rest parameter's elements is checked at the
            binding against each call's own rest arguments. */
@@ -3066,7 +3073,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            Array's elements are checked as they land, as a boxed value is. */
         if (is_idx_write && !is_push) {
           if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
-          if (is_splice ? !is_fill && !splice_arr : kt != TY_INT && kt != TY_POLY) continue;
+          /* a general Array's elements spliced in are of kinds nothing here
+             knows: the typed array cannot be trusted to hold them */
+          int poly_src = is_splice && !is_fill && vt == TY_POLY_ARRAY;
+          if (is_splice ? !is_fill && !splice_arr && !poly_src : kt != TY_INT && kt != TY_POLY) continue;
           if (vt == TY_UNKNOWN || vt == TY_POLY || vt == ty_array_elem(lv->type)) continue;
           lv->type = TY_POLY_ARRAY; lv->push_widened = 1; changed = 1;
           continue;
@@ -5926,18 +5936,25 @@ static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) 
    splat or gathered has its elements' type only, and is not asked. */
 int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv,
                       const ArgLayout *L) {
-  if (!p || !argv || !(p->store_key_src | p->store_val_src)) return 0;
+  if (!p || !argv || !(p->store_key_src | p->store_val_src | p->store_elems_src)) return 0;
   int arr = ty_is_array(ct) && ct != TY_POLY_ARRAY;
   if (!arr && !(ty_is_hash(ct) && ct != TY_POLY_POLY_HASH)) return 0;
   for (int j = 0; j < L->n && j < 64; j++) {
     int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
-    int a = isk || isv ? layout_plain_arg(c, m, argv, L, j) : -1;
+    int ise = (int)((p->store_elems_src >> j) & 1ULL);
+    int a = isk || isv || ise ? layout_plain_arg(c, m, argv, L, j) : -1;
     if (a < 0) continue;
     TyKind t = infer_type(c, a);
     if (t == TY_STRBUF) t = TY_STRING;
     if (t == TY_UNKNOWN || t == TY_POLY || t == TY_VOID) continue;
     if (arr) {
       if (isv && t != ty_array_elem(ct)) return 1;
+      /* a spliced array's elements; a scalar is spliced in as itself */
+      if (ise) {
+        TyKind e = ty_is_array(t) ? ty_array_elem(t) : t;
+        if (e == TY_STRBUF) e = TY_STRING;
+        if (e != TY_UNKNOWN && e != TY_NIL && e != ty_array_elem(ct)) return 1;
+      }
       continue;
     }
     TyKind f = ct;
@@ -6305,7 +6322,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* A caller that hands its own parameters on, as the container and as
        the key or value, stores them the same way: record it on the caller's
        container parameter, for its own callers' binding to check. */
-    if (p->store_key_src | p->store_val_src) {
+    if (p->store_key_src | p->store_val_src | p->store_elems_src) {
       Scope *cs = comp_scope_of(c, call_id);
       int ck = unassigned_param_read(c, cs, anode);
       LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
@@ -6315,6 +6332,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         int cj = unassigned_param_read(c, cs, aj);
         if ((p->store_key_src >> j) & 1ULL) changed |= mask_add(&cp->store_key_src, cj);
         if ((p->store_val_src >> j) & 1ULL) changed |= mask_add(&cp->store_val_src, cj);
+        if ((p->store_elems_src >> j) & 1ULL) changed |= mask_add(&cp->store_elems_src, cj);
       }
     }
     if (src_misfit && p->type != TY_POLY) {
@@ -6350,6 +6368,21 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        store cannot fit widens there (widen_boxed_array_sources). */
     if (p->type == TY_POLY && at == TY_POLY && p->boxed_known_elem != TY_UNKNOWN)
       changed |= widen_boxed_array_sources(c, anode, p->boxed_known_elem, 0);
+    /* ...and so do the elements a splice through it takes from another of
+       its parameters, as far as this call's argument for it shows them */
+    if (p->type == TY_POLY && at == TY_POLY && p->store_elems_src) {
+      for (int j = 0; j < L.n && j < 64; j++) {
+        if (!((p->store_elems_src >> j) & 1ULL)) continue;
+        int aj = layout_plain_arg(c, m, argv, &L, j);
+        TyKind t = aj >= 0 ? infer_type(c, aj) : TY_UNKNOWN;
+        TyKind e = ty_is_array(t) ? ty_array_elem(t) : t;
+        if (e == TY_STRBUF) e = TY_STRING;
+        /* a general Array's elements are of no one kind: any typed array
+           the splice reaches widens */
+        if (e == TY_UNKNOWN || e == TY_NIL || e == TY_VOID || (e == TY_POLY && t != TY_POLY_ARRAY)) continue;
+        changed |= widen_boxed_array_sources(c, anode, e, 0);
+      }
+    }
     if (p->type == TY_POLY && ty_is_hash(at) && at != TY_POLY_POLY_HASH &&
         (p->boxed_store_key != TY_UNKNOWN || src_misfit)) {
       TyKind folded = at;

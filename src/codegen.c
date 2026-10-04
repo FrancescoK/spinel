@@ -931,6 +931,15 @@ const char *past_open_parens(const char *s) {
   return s;
 }
 
+/* Does an emitted expression diverge: lead with one of the SP_NORETURN
+   sp_raise_ helpers, bare or as the voided first operand of a comma (the
+   shape a call on a raising receiver takes, `((void)(<raise>), nil)`)? */
+int text_diverges(const char *txt) {
+  const char *p = past_open_parens(txt);
+  if (strncmp(p, "void)", 5) == 0) p = past_open_parens(p + 5);
+  return strncmp(p, "sp_raise_", 9) == 0;
+}
+
 static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   if (yield_site_type(c, node) == TY_POLY) {
     /* sp_poly_arg_str, not sp_poly_to_s: a boxed user object in this slot
@@ -1208,13 +1217,20 @@ const char *token_unbox_fmt(TyKind target) {
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
-  const char *txt = tmp.p ? tmp.p : "";
+  int r = emit_unresolved_coerced_text(c, node, target, tmp.p ? tmp.p : "", b);
+  free(tmp.p);
+  return r;
+}
+
+/* The same over the node's emitted text, for a caller that has it already */
+int emit_unresolved_coerced_text(Compiler *c, int node, TyKind target, const char *txt, Buf *b) {
   int is_tok = strncmp(past_open_parens(txt), "sp_raise_nomethod(", 18) == 0;
   /* The missing-super arm emits a `(sp_raise_cls(...), 0)` comma expression
      whose dummy tail is a bare int; in a pointer-typed slot that is ill-typed
      C. The raise never returns, so evaluate it for the raise and yield the
      slot's default instead. */
-  int is_cls_tok = strncmp(past_open_parens(txt), "sp_raise_cls(", 13) == 0;
+  int is_cls_tok = strncmp(past_open_parens(txt), "sp_raise_cls(", 13) == 0 ||
+                   (!is_tok && text_diverges(txt));
   if (is_tok) {
     const char *tf = token_unbox_fmt(target);
     if (tf) buf_printf(b, tf, txt);
@@ -1237,7 +1253,6 @@ int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b) {
     store_check(c, node, target, "a store of an untyped value", b);
     buf_puts(b, txt);
   }
-  free(tmp.p);
   return is_tok;
 }
 
@@ -7305,6 +7320,14 @@ else if (orecv >= 0 && onm) {
   g_pre = NULL; g_indent = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
+  /* a block written in a class method reads `self` as the class object, as
+     the method's own body does: the proc function has no `self` (#7166) */
+  char cm_self_p[32];
+  if (ie_cls < 0 && bs && bs->class_id >= 0 && bs->is_cmethod &&
+      !cmethod_takes_self_cls(c, (int)(bs - c->scopes))) {
+    snprintf(cm_self_p, sizeof cm_self_p, "((sp_Class){%d})", bs->class_id);
+    g_self = cm_self_p;
+  }
   if (ie_cls >= 0) g_ie_class_id = ie_cls;
   int bs_moved = ie_cls >= 0 && sv_bcls >= 0;
   if (bs_moved) { comp_scope_move_begin(c, (int)(bs - c->scopes)); bs->class_id = ie_cls; bs->is_cmethod = 0; }

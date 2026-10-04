@@ -6506,26 +6506,24 @@ static int sp_rbval_is_array(sp_RbVal v) {
    nil/scalar src as one element, splats an array src, and nil-fills a gap past
    the end). A typed array stays typed only when the result provably remains
    homogeneous -- an empty ([]) src, a same-kind array, or a matching scalar, AND
-   no nil-fill (start <= len). Otherwise the array is promoted to a poly array
-   (boxing its elements) and spliced there. Returns the possibly-new boxed array
-   so the caller stores it back into the receiver's slot. */
-/* Can sp_poly_arr_writeback store every element of `work` into typed array
-   `orig` without raising or changing a value? Its tests, except that an
-   Integer does not fit a Float array. */
-static int sp_poly_arr_fits_kind(sp_RbVal orig, const sp_PolyArray *work) {
-  if (orig.tag != SP_TAG_OBJ || !work) return 0;
+   no nil-fill (start <= len). Otherwise it splices through a poly copy written
+   back into it, and raises for an element it cannot hold. Returns the receiver
+   (a plain string box answers its new value), which the caller stores back. */
+/* The first element of `work` that typed array `orig` cannot hold as it is,
+   or -1: sp_poly_arr_writeback's tests, except that an Integer does not fit
+   a Float array (it would turn into a Float there, and CRuby keeps it an
+   Integer) and nil does not fit a String array. */
+static sp_int sp_poly_arr_misfit(sp_RbVal orig, const sp_PolyArray *work) {
   for (sp_int i = 0; i < work->len; i++) {
     sp_RbVal e = work->data[i];
     switch (orig.cls_id) {
-      case SP_BUILTIN_INT_ARRAY: if (e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL) return 0; break;
-      /* an Integer stays an Integer in CRuby; the Float array would turn it
-         into a Float, so it promotes instead */
-      case SP_BUILTIN_FLT_ARRAY: if (e.tag != SP_TAG_FLT && e.tag != SP_TAG_NIL) return 0; break;
-      case SP_BUILTIN_STR_ARRAY: if (e.tag != SP_TAG_STR && !sp_poly_is_strbuf(e)) return 0; break;
-      default: return 0;
+      case SP_BUILTIN_INT_ARRAY: if (e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL) return i; break;
+      case SP_BUILTIN_FLT_ARRAY: if (e.tag != SP_TAG_FLT && e.tag != SP_TAG_NIL) return i; break;
+      case SP_BUILTIN_STR_ARRAY: if (e.tag != SP_TAG_STR && !sp_poly_is_strbuf(e)) return i; break;
+      default: return i;
     }
   }
-  return 1;
+  return -1;
 }
 static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal src) {
   /* `s[start, len] = v` through a poly receiver: spinel strings splice into a
@@ -6608,26 +6606,34 @@ static sp_RbVal sp_poly_splice(sp_RbVal recv, sp_int start, sp_int len, sp_RbVal
     }
     default: return recv;
   }
-  /* splice a poly copy (handles nil / heterogeneous / nil-fill / a boxed
-     source). Index/length/frozen were validated up front, so nothing below
-     raises; the GC roots are pushed only around the actual allocation and pop
-     normally. */
-  SP_GC_ROOT_RBVAL(src);
-  /* recv is read element-by-element inside the conversion's push loop, each of
-     which can collect; a temporary receiver held by no rooted container would
-     otherwise dangle mid-loop. */
-  SP_GC_ROOT_RBVAL(recv);
-  sp_PolyArray *p = sp_poly_to_poly_array(recv);
-  SP_GC_ROOT(p);
-  sp_PolyArray_splice(p, start, len, src);
-  /* Every element still fits the receiver's kind -- a poly Array of
-     Integers spliced into an Integer array: write it back, so the array
-     keeps its identity, as Array#[]= does. Answered as a new array, the
-     store back landed in whatever slot the call site named (a parameter),
-     and the caller's array never changed. Only an element the kind cannot
-     hold promotes it. */
-  if (sp_poly_arr_fits_kind(recv, p)) { sp_poly_arr_writeback(recv, p); return recv; }
-  return sp_box_poly_array(p);
+  /* Splice a poly copy (nil / heterogeneous / nil-fill / a boxed source)
+     and write it back, so the array keeps its identity, as Array#[]= does.
+     An element the typed array cannot hold raises: a promoted copy answered
+     here was stored back only into the slot the call site named (a
+     parameter, a boxed local), and every other holder of the array kept the
+     old contents. The analysis widens the array where it is built whenever it
+     sees the stored kind; this is the store it could not see. The raise
+     comes after the roots are popped (an inline rescue does not restore
+     sp_gc_nroots). */
+  sp_RbVal bad = sp_box_nil();
+  sp_int at;
+  {
+    SP_GC_ROOT_RBVAL(src);
+    /* recv is read element-by-element inside the conversion's push loop, each
+       of which can collect; a temporary receiver held by no rooted container
+       would otherwise dangle mid-loop. */
+    SP_GC_ROOT_RBVAL(recv);
+    sp_PolyArray *p = sp_poly_to_poly_array(recv);
+    SP_GC_ROOT(p);
+    sp_PolyArray_splice(p, start, len, src);
+    at = sp_poly_arr_misfit(recv, p);
+    if (at < 0) sp_poly_arr_writeback(recv, p);
+    else bad = p->data[at];
+  }
+  if (at >= 0)
+    sp_raise_writeback_kind(bad, recv.cls_id == SP_BUILTIN_INT_ARRAY ? "Integer"
+                                 : recv.cls_id == SP_BUILTIN_FLT_ARRAY ? "Float" : "String");
+  return recv;
 }
 /* `arr[range] = src` on a poly receiver: resolve beginless (INTPTR_MIN -> 0) and
    endless (INTPTR_MAX -> length) endpoints and negative endpoints against the

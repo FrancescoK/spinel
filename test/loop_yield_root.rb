@@ -7,11 +7,9 @@
 # The last three arms rebind the block parameter, which puts the string the
 # block holds in a slot of its own: that one takes a root too.
 
-path = "/tmp/sp_loop_yield_root.txt"
-argf = "/tmp/sp_loop_yield_root_argf.txt"   # the file named in loop_yield_root.rb.args
-dir  = "/tmp/sp_loop_yield_root_dir"
+path = "/tmp/sp_loop_yield_root_#{Process.pid}.txt"
+dir  = "/tmp/sp_loop_yield_root_dir_#{Process.pid}"
 File.write(path, (1..300).map { |i| "L#{i}" }.join("\n") + "\n")
-File.write(argf, (1..200).map { |i| "A#{i}" }.join("\n") + "\n")
 if Dir.exist?(dir)
   Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }
   Dir.rmdir(dir)
@@ -56,6 +54,7 @@ d.close
 puts "Dir#each seen=#{seen3} bad=#{bad3}"
 
 # ARGF.each_line: the same loop over the files named in ARGV
+# (test/loop_yield_root_argf.txt, 200 lines)
 seen4 = 0
 bad4 = 0
 ARGF.each_line do |l|
@@ -106,4 +105,3 @@ puts "Dir#each rebound seen=#{seen7} bad=#{bad7}"
 Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }
 Dir.rmdir(dir)
 File.delete(path)
-File.delete(argf)

@@ -4,7 +4,7 @@
 # come from fstat(2) rather than from stat(path). And the stat accessors were
 # gated on the receiver still spelling `sp_file_stat_handle(...)`, so they were
 # lost the moment the stat was stored in a local.
-path = "/tmp/spinel_io_stat_from_fd.txt"
+path = "/tmp/spinel_io_stat_from_fd_#{Process.pid}.txt"
 File.write(path, "hello")
 
 f = File.open(path)

@@ -1379,18 +1379,11 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       int tcmd = ++g_tmp;
       int targs = ++g_tmp;
       int topts = ++g_tmp;
-      int tmerged = ++g_tmp;
-      /* cmd = argv[0] (boxed, so it can be String or Array) */
-      buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, ";");
-      /* args: collect argv[1..argc-2] (or empty if argc==1) into a
-         PolyArray. Skip the last arg if it's a Hash (the opts). */
-      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
       int extra = argc - 1;
-      /* Detect if the last positional arg is a Hash (opts). */
+      /* Detect if the last positional arg is a Hash (opts). A splat is the
+         argument list, not the options. */
       int last_is_opts = 0;
-      if (extra >= 1) {
+      if (extra >= 1 && nt_kind(nt, argv[argc - 1]) != NK_SplatNode) {
         TyKind ltk = comp_ntype(c, argv[argc - 1]);
         if (ltk == TY_SYM_POLY_HASH || ltk == TY_STR_POLY_HASH ||
             ltk == TY_POLY_POLY_HASH || ltk == TY_UNKNOWN ||
@@ -1399,11 +1392,52 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         }
       }
       int n_args = extra - (last_is_opts ? 1 : 0);
-      for (int k = 1; k <= n_args; k++) {
-        buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
-        emit_boxed(c, argv[k], b);
-        buf_puts(b, ");");
+      int has_splat = 0;
+      for (int k = 0; k <= n_args; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
+      if (has_splat) {
+        /* `spawn(*args)`: the command and its arguments are spread at run
+           time, then split, as the literal list is (#7192) */
+        int tall = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tall, tall);
+        for (int k = 0; k <= n_args; k++) {
+          if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+            int se = nt_ref(nt, argv[k], "expression");
+            int ts = ++g_tmp;
+            buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts);
+            if (se >= 0) emit_boxed(c, se, b); else buf_puts(b, "sp_box_nil()");
+            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
+                       ts, tall, ts);
+          }
+          else {
+            buf_printf(b, " sp_PolyArray_push(_t%d, ", tall);
+            emit_boxed(c, argv[k], b);
+            buf_puts(b, ");");
+          }
+        }
+        buf_printf(b, " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");", tall);
+        buf_printf(b, " sp_RbVal _t%d = _t%d->data[0];", tcmd, tall);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
+        buf_printf(b, " for (sp_int _i = 1; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]);",
+                   tall, targs, tall);
       }
+      else {
+        /* cmd = argv[0] (boxed, so it can be String or Array) */
+        buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
+        emit_boxed(c, argv[0], b);
+        buf_puts(b, ";");
+        /* args: collect argv[1..argc-2] (or empty if argc==1) into a
+           PolyArray. Skip the last arg if it's a Hash (the opts). */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
+        for (int k = 1; k <= n_args; k++) {
+          buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
+          emit_boxed(c, argv[k], b);
+          buf_puts(b, ");");
+        }
+      }
+      /* a [program, argv0] pair of Strings arrives as a String array: the
+         runtime reads it as a general one */
+      buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id != SP_BUILTIN_POLY_ARRAY && sp_rbval_is_array(_t%d))"
+                    " _t%d = sp_box_poly_array(sp_poly_to_poly_array(_t%d));", tcmd, tcmd, tcmd, tcmd, tcmd);
       /* opts: build an 8-element flat PolyArray
          [in_fd, out_fd, err_fd, pgroup, rlimit_cpu, rlimit_as, chdir, owned].
          If last_is_opts, each entry is a hash lookup result resolved
@@ -1539,18 +1573,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          slot, so it closes the parent's copies and never a caller's IO. */
       buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int((_t%d[0] >= 0) | ((_t%d[1] >= 0) << 1) | ((_t%d[2] >= 0) << 2)));",
                  topts, town, town, town);
-      /* If cmd is an Array, fold its elements into args (prefix). */
-      buf_printf(b, " sp_PolyArray *_t%d = _t%d;", tmerged, targs);
-      buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_POLY_ARRAY) {", tcmd, tcmd);
-      buf_printf(b, "   sp_PolyArray *_cmd = (sp_PolyArray *)_t%d.v.p;", tcmd);
-      buf_printf(b, "   _t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tmerged, tmerged);
-      buf_printf(b, "   for (sp_int _i = 0; _i < _cmd->len - 1; _i++) {");
-      buf_printf(b, "     if (_cmd->data[_i].tag != SP_TAG_STR) sp_process_spawn_fail(_t%d, \"ArgumentError\", \"command array element must be a String\");", town);
-      buf_printf(b, "     sp_PolyArray_push(_t%d, _cmd->data[_i]);", tmerged);
-      buf_printf(b, "   }");
-      buf_printf(b, "   for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]);", targs, tmerged, targs);
-      buf_puts(b, " }");
-      buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, tmerged, topts);
+      buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, targs, topts);
       buf_printf(b, " _r; })\n");
       return 1;
     }

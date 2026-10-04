@@ -3752,6 +3752,10 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
        collision-renamed form), and must match the same set */
     /* obj_X_ptr_array (`Array[X]`) is not a pin: see seed_obj_array_class */
     int ci = seed_class_index(c, buf + 4);
+    /* A module names no object layout: its methods exist only as copies in
+       its includers, and a value of the module type is one of them. It is
+       the boxed value, as a union of the includers would be (#7169). */
+    if (ci >= 0 && comp_class_is_module(c, &c->classes[ci])) return TY_POLY;
     return ci >= 0 ? ty_object(ci) : TY_UNKNOWN;
   }
   return TY_UNKNOWN;
@@ -9214,7 +9218,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
          hold what the callee pushes, so an int array stays an int array. */
       int boxed_hazard = 0;
       if (!p->push_widened) {
-        if (p->type != TY_POLY || (p->boxed_push_elem == TY_UNKNOWN && !p->store_val_src && !p->store_rest_src)) continue;
+        if (p->type != TY_POLY || (p->boxed_push_elem == TY_UNKNOWN && !p->store_val_src && !p->store_elems_src && !p->store_rest_src)) continue;
         boxed_hazard = 1;
       }
       const char *aty = nt_type(nt, a);

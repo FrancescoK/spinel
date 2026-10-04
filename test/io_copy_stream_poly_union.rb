@@ -7,8 +7,8 @@ def send_to(dst, io)
   IO.copy_stream(io, dst)
 end
 
-src_path = "/tmp/spinel_test_copy_stream_src.txt"
-dst_path = "/tmp/spinel_test_copy_stream_dst.txt"
+src_path = "/tmp/spinel_test_copy_stream_src_#{Process.pid}.txt"
+dst_path = "/tmp/spinel_test_copy_stream_dst_#{Process.pid}.txt"
 io1 = StringIO.new("hello-sio ")
 io2 = File.open(src_path, "w+")
 io2.write("hello-file")

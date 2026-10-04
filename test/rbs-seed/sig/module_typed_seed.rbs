@@ -1,0 +1,4 @@
+class MtsBox
+  def initialize: (MtsTagged? thing) -> void
+  def thing: () -> MtsTagged?
+end

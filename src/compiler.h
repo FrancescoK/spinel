@@ -157,6 +157,11 @@ typedef struct {
                        the key (value). Boxed when the callers disagree, so
                        the binding checks each call's argument j against the
                        container instead. */
+  unsigned long long store_elems_src; /* (params, arrays) bit j set: a splice
+                       through this parameter stores the ELEMENTS of the
+                       method's own positional parameter j (`a[i, n] = src`),
+                       boxed when its callers disagree: the binding checks
+                       each call's argument j's elements the same way. */
   int store_rest_src; /* (params, containers) one past the first element of the
                        method's rest parameter that a push, unshift or insert
                        through this parameter stores, or 0: the rest
