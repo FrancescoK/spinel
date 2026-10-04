@@ -66,11 +66,15 @@ URI::FTP or the scheme registry behind it. An https request needs the
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches.
-`OpenSSL::Digest::SHA256` / `SHA1` / `MD5` and `OpenSSL::HMAC.hexdigest` are
-there, over the runtime's own crypto rather than libssl -- class-method forms
-only, and no HMAC-MD5. `Cipher`, `PKey`,
-most of `X509`, and the incremental digest object API are not there, and a
-program that names them fails to compile rather than at run time. Spinel
+`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
+object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
+`hexdigest`, `digest_length`), `OpenSSL::HMAC`, `OpenSSL::KDF.hkdf` /
+`pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
+own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
+input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
+each described in its file under `packages/openssl/openssl/`. Most of `X509`
+is not there: a call to a method the package does not define compiles into
+CRuby's NoMethodError, raised when it is reached. Spinel
 implements no TLS and bundles no trust anchors: the chain is validated against
 the operating system's store, so a CA it stops trusting stops being trusted
 here on an OS update. The package exists only where libssl's headers were
