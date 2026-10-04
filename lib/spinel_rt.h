@@ -11797,6 +11797,39 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
   for (; i < n; i++) acc = sp_poly_add(acc, sp_poly_sum_item(v, items, i));
   return acc;
 }
+/* The same fold one value at a time, for a sum with a block: the block's
+   values are added as they come, so a value `+` refuses raises before the
+   next element's block runs, as CRuby's does. phase 0 is the exact run, 1
+   the compensated one (f, c), 2 plain `+`; a Float seed starts compensated,
+   as sp_poly_sum_seed's does. The caller roots `acc`. */
+typedef struct { sp_RbVal acc; sp_float f, c; int phase; } sp_SumState;
+static void sp_sum_init(sp_SumState *s, sp_RbVal seed) SP_UNUSED;
+static void sp_sum_init(sp_SumState *s, sp_RbVal seed) {
+  s->acc = seed; s->f = 0.0; s->c = 0.0;
+  if (sp_poly_sum_exact_p(seed)) s->phase = 0;
+  else if (seed.tag == SP_TAG_FLT) { s->phase = 1; s->f = seed.v.f; }
+  else s->phase = 2;
+}
+static void sp_sum_step(sp_SumState *s, sp_RbVal e) SP_UNUSED;
+static void sp_sum_step(sp_SumState *s, sp_RbVal e) {
+  if (s->phase == 0) {
+    if (sp_poly_sum_exact_p(e)) { s->acc = sp_poly_add(s->acc, e); return; }
+    if (e.tag == SP_TAG_FLT) { s->phase = 1; s->f = sp_poly_to_f(s->acc); s->c = 0.0; }
+    else s->phase = 2;
+  }
+  if (s->phase == 1) {
+    if (e.tag == SP_TAG_FLT || sp_poly_sum_exact_p(e)) { sp_float_sum_step(&s->f, &s->c, sp_poly_to_f(e)); return; }
+    /* a run that ends before the last value folds no compensation back,
+       as CRuby's does not */
+    s->acc = sp_box_float(s->f);
+    s->phase = 2;
+  }
+  s->acc = sp_poly_add(s->acc, e);
+}
+static sp_RbVal sp_sum_result(sp_SumState *s) SP_UNUSED;
+static sp_RbVal sp_sum_result(sp_SumState *s) {
+  return s->phase == 1 ? sp_box_float(s->f + s->c) : s->acc;
+}
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);  /* defined below, after sp_enum.h */
 /* The count-taking reads of Array's surface, for a receiver carried in a poly
    slot -- an array read out of a nested Array or Hash answers Array to #class
