@@ -3562,12 +3562,23 @@ sp_StrArray *sp_srange_to_a(sp_StrRange r) {
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
   return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
 }
-/* #include? / #member?: #cover? for a bounded range, which CRuby refuses to
-   answer for a beginless or endless one. */
+/* #include? / #member?: whether the walk String#upto takes meets x, as
+   CRuby's rb_str_include_range_p, stopping at the first equal member;
+   CRuby refuses to answer for a beginless or endless range. */
+static int sp_srange_include_i(const char *m, void *arg) {
+  const char **v = (const char **)arg;
+  if (!sp_str_eq(m, *v)) return 0;
+  *v = NULL;
+  return 1;
+}
 sp_bool sp_srange_include(sp_StrRange r, const char *x) {
   if (!r.first || !r.last)
     sp_raise_cls("TypeError", "cannot determine inclusion in beginless/endless ranges");
-  return sp_srange_cover(r, x);
+  if (!x) return 0;
+  const char *v = x;
+  SP_GC_ROOT_STR(v);
+  sp_str_upto_each(r.first, r.last, r.excl, sp_srange_include_i, &v);
+  return v == NULL;
 }
 /* #cover? / #=== compare lexicographically, no materialization. */
 sp_bool sp_srange_cover(sp_StrRange r, const char *x) {
