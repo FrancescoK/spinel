@@ -20,3 +20,13 @@ begin
 rescue ArgumentError => e
   p e.message
 end
+
+# a pair list Hash[] cannot read raises its ArgumentError (Array#to_h's
+# would be a TypeError)
+[[[1, 2, 3]], [[[1, 2, 3]]], [[[]]]].each do |a|
+  begin
+    p mk(*a)
+  rescue => e
+    p [e.class, e.message]
+  end
+end

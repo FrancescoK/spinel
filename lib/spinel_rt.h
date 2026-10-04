@@ -11370,7 +11370,28 @@ static sp_RbVal sp_hash_brackets_splat(sp_RbVal args) {
   if (n == 1) {
     sp_RbVal a = av->data[0];
     if (a.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(a.cls_id)) return sp_poly_dup(a, 0);
-    if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return sp_poly_to_h_m(a);
+    if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) {
+      /* a list of [key, value] or [key] pairs; Hash[] raises ArgumentError
+         for anything else, where Array#to_h raises TypeError */
+      SP_GC_ROOT_RBVAL(a);
+      sp_int pn = sp_poly_length(a);
+      sp_PolyArray *ps = sp_PolyArray_new();
+      SP_GC_ROOT(ps);
+      for (sp_int i = 0; i < pn; i++) {
+        sp_RbVal e = sp_poly_arr_get(a, i);
+        if (!(e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)))
+          sp_raise_cls("ArgumentError", sp_sprintf("wrong element type %s at %lld (expected array)",
+                                                   sp_poly_class_name(e), (long long)i));
+        sp_int el = sp_poly_length(e);
+        if (el < 1 || el > 2)
+          sp_raise_cls("ArgumentError", sp_sprintf("invalid number of elements (%lld for 1..2)", (long long)el));
+        sp_PolyArray *pair = sp_PolyArray_new();
+        sp_PolyArray_push(ps, sp_box_poly_array(pair));
+        sp_PolyArray_push(pair, sp_poly_arr_get(e, 0));
+        sp_PolyArray_push(pair, el == 2 ? sp_poly_arr_get(e, 1) : sp_box_nil());
+      }
+      return sp_poly_to_h_m(sp_box_poly_array(ps));
+    }
   }
   if (n % 2 != 0) sp_raise_cls("ArgumentError", "odd number of arguments for Hash");
   sp_PolyArray *pairs = sp_PolyArray_new();
