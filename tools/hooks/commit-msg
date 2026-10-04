@@ -1,0 +1,3 @@
+#!/usr/bin/env ruby
+require_relative "../gate"
+Gate.trailer(ARGV.fetch(0))
