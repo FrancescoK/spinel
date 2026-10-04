@@ -2965,6 +2965,7 @@ static int sp_bigint_fits_int(sp_Bigint *b) {
   return (sp_int)sp_bigint_to_int(b) != SP_INT_NIL;
 }
 static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_BIGINT) return sp_i64_to_int(sp_bigint_to_int((sp_Bigint *)v.v.p));   /* a 32-bit sp_int refuses what does not fit (RangeError); 64-bit keeps its wrap */
   if (v.tag == SP_TAG_STR) return (sp_int)strtoll(v.v.s ? v.v.s : sp_str_empty, NULL, 10);
   if (v.tag == SP_TAG_BOOL) return v.v.b ? 1 : 0;
@@ -4105,6 +4106,7 @@ static sp_int sp_poly_Integer(sp_RbVal v) {
   return 0;
 }
 static sp_float sp_poly_Float(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_FLT) return v.v.f;
   if (v.tag == SP_TAG_INT) return (sp_float)v.v.i;
   if (v.tag == SP_TAG_BIGINT) return sp_poly_to_f(v);
@@ -11485,6 +11487,7 @@ static sp_RbVal sp_poly_with_m(sp_RbVal v, sp_RbVal ov) {
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'with' for %s", sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_NIL) return sp_box_rational(sp_rational_new(0, 1));
   if (v.tag == SP_TAG_INT) return sp_box_rational(sp_rational_new(v.v.i, 1));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return v;
@@ -11522,6 +11525,7 @@ static sp_RbVal sp_poly_rationalize_m(sp_RbVal v, int argc, sp_RbVal eps) {
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'rationalize' for %s", sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   /* fl carries the per-component int/float flag inspect renders from, so it has
      to be set, not left as whatever the stack held. The typed path is the
      oracle here: `n.to_c` emits `(sp_Complex){n, 0, <1 for a Float, 0 for an
