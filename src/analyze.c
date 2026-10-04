@@ -15743,9 +15743,11 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
 static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return 0;
-  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings */
+  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings,
+     as do `values_at` and `fetch_values` */
   const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
-  if (rn && sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0 &&
+  if (rn && ((sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0) ||
+             sp_streq(rn, "values_at") || sp_streq(rn, "fetch_values")) &&
       nt_ref(nt, recv, "block") < 0) {
     if (!strbuf_elem_first_iterator(itn)) return 0;
     recv = nt_ref(nt, recv, "receiver");

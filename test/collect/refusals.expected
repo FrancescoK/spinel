@@ -184,6 +184,10 @@ spinel: 1 refusal, nothing written
 == test/reject/forwarding_super_yielding_optional.rb [promote] rc=1
 spinel: `super(...)` into a method that yields and takes an optional or *rest parameter: the forwarded arguments cannot leave one out
 spinel: 1 refusal, nothing written
+== test/reject/hash_values_at_appending_block.rb [default] rc=1
+spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/hash_values_at_appending_block.rb [promote] rc=1
+spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/instance_exec_default_ivar_write.rb [default] rc=1
 spinel: an instance variable written in a block that instance_exec or instance_eval runs on a value with no instance variable layout (nil, a builtin value, Object.new): the value has no slot to hold it at run time
 spinel: 1 refusal, nothing written
