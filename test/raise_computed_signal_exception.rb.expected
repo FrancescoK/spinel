@@ -1,0 +1,2 @@
+[SignalException, "SIGINT", 2]
+[ArgumentError, "boom"]
