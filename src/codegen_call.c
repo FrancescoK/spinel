@@ -7461,6 +7461,17 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           continue;
         }
         TyKind at = infer_type(c, argv[a]);
+        /* A local whose slot is boxed reads as an sp_RbVal where its read is
+           typed a shared String handle (a String-or-nil parameter that a
+           handle arm asks for as a String): no read unboxes a handle, so the
+           temp takes the slot's kind, or the C bound an sp_RbVal to an
+           sp_String * (#7305). */
+        if (at == TY_STRBUF && nt_kind(nt, argv[a]) == NK_LocalVariableReadNode) {
+          Scope *ls = comp_scope_of(c, argv[a]);
+          const char *lnm = nt_str(nt, argv[a], "name");
+          LocalVar *alv = ls && lnm ? scope_local(ls, lnm) : NULL;
+          if (alv && alv->type == TY_POLY) at = TY_POLY;
+        }
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. */
