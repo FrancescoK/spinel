@@ -1,10 +1,11 @@
-/* builtin_names.h -- the families of builtin method names the compiler asks
-   about by name in many places: `[] () call`, `is_a? kind_of? instance_of?`,
+/* builtin_names.h -- families of builtin method, class, and global names,
+   plus numeric literal tags, that the compiler asks about in many places:
+   `[] () call`, `is_a? kind_of? instance_of?`,
    ... Each predicate answers whether a name is one of its family; the
    family's names are listed once, in builtin_names.c, where every site that
    spelled the chain out now asks. A predicate compares the name with each of
-   its family in turn, as the chains did (sp_streq: the work counter counts
-   the same compares). Near-families (a set one name larger or smaller) are
+   its family in turn, as the chains did (sp_streq counts the work).
+   Near-families (a set one name larger or smaller) are
    different questions and keep their own spelling. */
 #ifndef SPINEL_BUILTIN_NAMES_H
 #define SPINEL_BUILTIN_NAMES_H
@@ -155,5 +156,20 @@ int is_integer_iteration(const char *n); /* downto step times upto */
 int is_visibility_or_module_function(const char *n); /* module_function private protected public */
 int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice! */
 int is_array_push_family(const char *n); /* << append prepend push unshift */
+
+int is_io_class_name(const char *n); /* File IO */
+int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
+int is_object_base_name(const char *n); /* BasicObject Object */
+int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
+int is_numeric_literal_tag(const char *n); /* Float Int */
+int is_standard_output_global(const char *n); /* $stderr $stdout */
+int is_program_name_global(const char *n); /* $0 $PROGRAM_NAME */
+int is_range_or_time_class(const char *n); /* Range Time */
+int is_numeric_class_name(const char *n); /* Float Integer */
+int is_queue_class_name(const char *n); /* Queue SizedQueue */
+int is_array_or_object_class(const char *n); /* Array Object */
+int is_array_hash_or_object_class(const char *n); /* Array Hash Object */
+
+int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 #endif

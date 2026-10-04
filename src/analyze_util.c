@@ -2900,7 +2900,7 @@ static const char *const io_family[] = {
   "UNIXSocket", "Socket", "BasicSocket", NULL };
 int io_family_name(const char *n) {
   if (!n) return 0;
-  if (sp_streq(n, "File") || sp_streq(n, "IO")) return 1;
+  if (is_io_class_name(n)) return 1;
   /* a socket class is the builtin only once the program loads socket */
   if (!sp_feature_required("socket")) return 0;
   for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;

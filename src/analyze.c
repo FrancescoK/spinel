@@ -10961,7 +10961,7 @@ static TyKind isa_narrow_type(const char *cn) {
   if (!cn) return TY_UNKNOWN;
   if (sp_streq(cn, "Array")) return TY_POLY_ARRAY;
   if (sp_streq(cn, "String")) return TY_STRING;
-  if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) return TY_INT;
+  if (is_integer_class_name(cn)) return TY_INT;
   if (sp_streq(cn, "Float")) return TY_FLOAT;
   if (sp_streq(cn, "Symbol")) return TY_SYMBOL;
   return TY_UNKNOWN;
@@ -23165,7 +23165,7 @@ static int elem_miss_call(Compiler *c, int v) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int blk = nt_ref(nt, v, "block");
   if (recv < 0) {
-    if ((sp_streq(nm, "Integer") || sp_streq(nm, "Float")) && argc >= 2 && argv &&
+    if ((is_numeric_class_name(nm)) && argc >= 2 && argv &&
         nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) return 1;
     return 0;
   }

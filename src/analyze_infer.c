@@ -2754,7 +2754,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
       if (cn && sp_streq(cn, "Array") && argc == 2) { *out = ty_array_of(infer_type(c, argv[1])); return 1; }
       if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; }
-      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) { *out = TY_POLY; return 1; }
+      if (cn && (is_object_base_name(cn))) { *out = TY_POLY; return 1; }
       if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
       if (cn && sp_streq(cn, "Hash"))
         { *out = sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN; return 1; }
@@ -2848,7 +2848,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         { *out = TY_POLY_ARRAY; return 1; }
       }
       if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; } /* Array.new / Array.new(n) */
-      if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) { *out = TY_POLY; return 1; }  /* identity sentinel */
+      if (cn && (is_object_base_name(cn))) { *out = TY_POLY; return 1; }  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
       /* Hash.new { |hash, key| default } : a poly-keyed poly hash with a
          default-proc (the block computes the missing-key value). A default-block
@@ -2906,7 +2906,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
       if (cn && sp_streq(cn, "Fiber")) { *out = TY_FIBER; return 1; }
       /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) { *out = TY_THREAD; return 1; }
-      if (cn && (sp_streq(cn, "Queue") || sp_streq(cn, "SizedQueue"))) { *out = TY_QUEUE; return 1; }
+      if (cn && (is_queue_class_name(cn))) { *out = TY_QUEUE; return 1; }
       if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")))) { *out = TY_MUTEX; return 1; }
       if (cn && sp_streq(cn, "ConditionVariable")) { *out = TY_CONDVAR; return 1; }
       if (cn && sp_streq(cn, "Random")) { *out = TY_RANDOM; return 1; }
@@ -3130,7 +3130,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
           nt_ref(nt, id, "block") >= 0)
         { *out = TY_THREAD; return 1; }
-      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Queue") || sp_streq(cn2, "SizedQueue"))) { *out = TY_QUEUE; return 1; }
+      if (cn2 && sp_streq(name, "new") && (is_queue_class_name(cn2))) { *out = TY_QUEUE; return 1; }
       if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || (sp_streq(cn2, "Monitor") && sp_feature_enabled("monitor")))) { *out = TY_MUTEX; return 1; }
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) { *out = TY_CONDVAR; return 1; }
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) { *out = TY_RANDOM; return 1; }
@@ -5191,7 +5191,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
                     sp_streq(name, "syswrite")) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gv = nt_str(nt, recv, "name");
-    if (gv && (sp_streq(gv, "$stdout") || sp_streq(gv, "$stderr")))
+    if (gv && (is_standard_output_global(gv)))
       { *out = (is_io_write(name)) ? TY_INT : TY_NIL; return 1; }
   }
 
@@ -7701,7 +7701,7 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
                sp_streq(nm, "LOCK_NB")))
       { *out = TY_INT; return 1; }   /* the open(2)/flock(2) flag constants (#2788, #2808) */
   }
-  if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
+  if (par_nm && (is_io_class_name(par_nm))) {
     /* IO#seek whence constants (File inherits them from IO) */
     if (nm && (sp_streq(nm, "SEEK_SET") || sp_streq(nm, "SEEK_CUR") ||
                sp_streq(nm, "SEEK_END"))) { *out = TY_INT; return 1; }
@@ -8123,7 +8123,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* the Process::Status of the last child waited for, NULL (nil) before
        any; it was an Integer, and `$?.exitstatus` raised NoMethodError */
     if (nm && sp_streq(nm, "$?")) return TY_PROCESS_STATUS;
-    if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
+    if (nm && (is_program_name_global(nm))) return TY_STRING;
     if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
     /* regex match globals: $~ is the last MatchData (NULL = nil); the
@@ -8214,7 +8214,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (sp_streq(cn, "Integer")) return TY_INT;
     if (sp_streq(cn, "Float"))   return TY_FLOAT;
     if (sp_streq(cn, "Symbol"))  return TY_SYMBOL;
-    if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) return TY_BOOL;
+    if (is_immediate_class_name(cn)) return TY_BOOL;
     /* an Array / Hash reopen takes self boxed (sp_RbVal): the receiver may
        be any element kind. Typing it as the unboxed poly array handed
        sp_PolyArray_length an sp_RbVal (#blank.rb) */

@@ -227,7 +227,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        not a positional argument: passed through as one it reached the base
        slot as a pointer (#3718). */
     int kconv_noraise = 0;
-    if (ac > 0 && (sp_streq(name, "Integer") || sp_streq(name, "Float"))) {
+    if (ac > 0 && (is_numeric_class_name(name))) {
       const char *lty = nt_type(nt, av[ac - 1]);
       if (lty && sp_streq(lty, "KeywordHashNode")) {
         int en = 0; const int *el = nt_arr(nt, av[ac - 1], "elements", &en);

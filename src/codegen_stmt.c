@@ -2929,7 +2929,7 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   { const char *q = isa_match_name(nt, cond_id, qbuf, sizeof qbuf); if (q) cn = q; }
   /* a class-aliasing constant (Alias = SomeClass) tests the aliased class */
   { const char *_ra = resolve_class_alias(c, cn); if (_ra) cn = _ra; }
-  if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum"))
+  if (is_integer_class_name(cn))
     buf_printf(b, "%s.tag == SP_TAG_INT", tmp);
   /* a mutable String boxes as its handle; a box with no handle is not one */
   else if (sp_streq(cn, "String"))
@@ -3555,7 +3555,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
       return 1;
     }
-    if (pt == TY_BOOL && (sp_streq(cn2, "TrueClass") || sp_streq(cn2, "FalseClass")) &&
+    if (pt == TY_BOOL && (is_boolean_class_name(cn2)) &&
         !comp_const(c, cn2)) {
       /* true vs false is the value, not the static type -- as in `when` (#2966);
          a program that reassigns the constant names some other class */
@@ -5821,7 +5821,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
           }
           else if (cn2 && pt == TY_BOOL &&
-                   (sp_streq(cn2, "TrueClass") || sp_streq(cn2, "FalseClass"))) {
+                   (is_boolean_class_name(cn2))) {
             /* a boolean's class (TrueClass vs FalseClass) is a runtime value,
                not decidable from the static TY_BOOL type (#2966) */
             buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
@@ -6156,7 +6156,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
         }
         else if (cn2 && pt == TY_BOOL &&
-                 (sp_streq(cn2, "TrueClass") || sp_streq(cn2, "FalseClass"))) {
+                 (is_boolean_class_name(cn2))) {
           /* a boolean's class is a runtime value, not the static TY_BOOL (#2966) */
           buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
         }

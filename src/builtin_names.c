@@ -566,3 +566,55 @@ int is_range_end_reader(const char *n) {
 int is_match_family(const char *n) {
   return sp_streq(n, "=~") || sp_streq(n, "!~") || sp_streq(n, "match?") || sp_streq(n, "match");
 }
+
+int is_integer_class_name(const char *n) {
+  return sp_streq(n, "Integer") || sp_streq(n, "Fixnum");
+}
+
+int is_numeric_class_name(const char *n) {
+  return sp_streq(n, "Integer") || sp_streq(n, "Float");
+}
+
+int is_range_or_time_class(const char *n) {
+  return sp_streq(n, "Time") || sp_streq(n, "Range");
+}
+
+int is_object_base_name(const char *n) {
+  return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
+}
+
+int is_queue_class_name(const char *n) {
+  return sp_streq(n, "Queue") || sp_streq(n, "SizedQueue");
+}
+
+int is_standard_output_global(const char *n) {
+  return sp_streq(n, "$stdout") || sp_streq(n, "$stderr");
+}
+
+int is_io_class_name(const char *n) {
+  return sp_streq(n, "IO") || sp_streq(n, "File");
+}
+
+int is_program_name_global(const char *n) {
+  return sp_streq(n, "$PROGRAM_NAME") || sp_streq(n, "$0");
+}
+
+int is_immediate_class_name(const char *n) {
+  return sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") || sp_streq(n, "NilClass");
+}
+
+int is_numeric_literal_tag(const char *n) {
+  return sp_streq(n, "Int") || sp_streq(n, "Float");
+}
+
+int is_boolean_class_name(const char *n) {
+  return sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass");
+}
+
+int is_array_or_object_class(const char *n) {
+  return sp_streq(n, "Object") || sp_streq(n, "Array");
+}
+
+int is_array_hash_or_object_class(const char *n) {
+  return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Object");
+}

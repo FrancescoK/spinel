@@ -1366,7 +1366,7 @@ int desugar_reopen_implicit_self(Compiler *c) {
        call does. The others hold one builtin kind and call their own
        directly. */
     int boxed_any = cn && (sp_streq(cn, "Object") || sp_streq(cn, "Numeric"));
-    if (!cn || !(boxed_any || sp_streq(cn, "Range") || sp_streq(cn, "Time") ||
+    if (!cn || !(boxed_any || is_range_or_time_class(cn) ||
                  io_family_class(c, sc->class_id) || sp_streq(cn, "Class") ||
                  sp_streq(cn, "Array") || sp_streq(cn, "Hash"))) continue;
     if (!boxed_any && comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
@@ -3622,7 +3622,7 @@ int desugar_dynamic_send(Compiler *c) {
         for (int k = 0; object_methods[k]; k++) dsend_add_name(&own, &nown, &cap, &seen, object_methods[k]);
         int is_enum = sp_streq(bcls, "Array") || sp_streq(bcls, "Hash") || sp_streq(bcls, "Range") ||
                       sp_streq(bcls, "File");
-        int is_num = sp_streq(bcls, "Integer") || sp_streq(bcls, "Float");
+        int is_num = is_numeric_class_name(bcls);
         int is_cmp = is_num || sp_streq(bcls, "String") || sp_streq(bcls, "Symbol") || sp_streq(bcls, "Time");
         for (int k = 0; is_enum && enumerable_methods[k]; k++) dsend_add_name(&own, &nown, &cap, &seen, enumerable_methods[k]);
         for (int k = 0; is_cmp && comparable_methods[k]; k++) dsend_add_name(&own, &nown, &cap, &seen, comparable_methods[k]);

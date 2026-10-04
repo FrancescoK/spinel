@@ -2315,7 +2315,7 @@ int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "if (_t%d > 0) for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) "
              "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d %% _t%d));\n",
              tlen, ti, ti, tn, ti, k, tr, k, ta, ti, tlen);
-  if (sp_streq(k, "Int") || sp_streq(k, "Float")) {   /* the receiver's nils, repeated */
+  if (is_numeric_literal_tag(k)) {   /* the receiver's nils, repeated */
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tr, ta);
   }
   buf_printf(b, "_t%d", tr);
@@ -4103,7 +4103,7 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d)));\n", k, tres, k, trv, tidx, tg);
   /* the same elements, reordered: the receiver's nils come along */
-  if (sp_streq(k, "Int") || sp_streq(k, "Float")) {
+  if (is_numeric_literal_tag(k)) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trv);
   }
@@ -5218,7 +5218,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   /* the kept (or mapped-to-itself) elements carry the receiver's nils: an
      element read out of an Integer or Float array is typed as a number even
      where a gap left the sentinel, so its may_nil is handed on whole */
-  if (!range_recv && k && rk && sp_streq(rk, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"))) {
+  if (!range_recv && k && rk && sp_streq(rk, k) && (is_numeric_literal_tag(k))) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trecv);
   }
@@ -5362,7 +5362,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   /* a kept element carries the receiver's nils (the map arm notes its own) */
-  if (collecting && !is_map && !range_src && k && rk && sp_streq(rk, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"))) {
+  if (collecting && !is_map && !range_src && k && rk && sp_streq(rk, k) && (is_numeric_literal_tag(k))) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tres, trecv);
   }

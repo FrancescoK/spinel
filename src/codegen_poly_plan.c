@@ -353,16 +353,16 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
     else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
     /* Object's (and Array's) methods take self boxed */
-    else if (sp_streq(_dcn, "Object") || sp_streq(_dcn, "Array"))
+    else if (is_array_or_object_class(_dcn))
       snprintf(_dself, sizeof _dself, "_t%d", tv);
-    else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass"))
+    else if (is_boolean_class_name(_dcn))
       snprintf(_dself, sizeof _dself, "(int)_t%d.v.b", tv);
     else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
-    else if (sp_streq(_dcn, "TrueClass") || sp_streq(_dcn, "FalseClass")) snprintf(_dself, sizeof _dself, "(int)_t%d.v.i", tv);
-    else if (sp_streq(_dcn, "Array") || sp_streq(_dcn, "Hash") || sp_streq(_dcn, "Object"))
+    else if (is_boolean_class_name(_dcn)) snprintf(_dself, sizeof _dself, "(int)_t%d.v.i", tv);
+    else if (is_array_hash_or_object_class(_dcn))
       snprintf(_dself, sizeof _dself, "_t%d", tv);
     /* a boxed Time / Range points at the value; the reopen takes it by value */
-    else if (sp_streq(_dcn, "Time") || sp_streq(_dcn, "Range"))
+    else if (is_range_or_time_class(_dcn))
       snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
     /* a boxed thread is the runtime's sp_thread handle (not an sp_Thread struct) */
     else if (sp_streq(_dcn, "Thread")) { snprintf(_dself, sizeof _dself, "(sp_thread *)_t%d.v.p", tv); _dstruct = 1; }
@@ -792,9 +792,9 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "NilClass"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-    else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+    else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
-    else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
+    else if (is_range_or_time_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
     else if (sp_streq(_dcn2, "Thread"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
@@ -807,7 +807,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
     else if (class_has_exc_name(c, defcls)) {
       snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
       self2_struct = 1; }
-    else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
+    else if (is_array_hash_or_object_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "Float"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
@@ -817,9 +817,9 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
     else if (sp_streq(_dcn2, "NilClass"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-    else if (sp_streq(_dcn2, "Object") || sp_streq(_dcn2, "Array"))
+    else if (is_array_or_object_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
-    else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+    else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.b", tv);
     /* parenthesized: a default reading an ivar spells `<self>->iv_x`,
        and a bare cast binds looser than `->` */
@@ -946,9 +946,9 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "NilClass"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-    else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+    else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.i", tv);
-    else if (sp_streq(_dcn2, "Time") || sp_streq(_dcn2, "Range"))
+    else if (is_range_or_time_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "*(sp_%s *)_t%d.v.p", _dcn2, tv);
     else if (sp_streq(_dcn2, "Thread"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_thread *)_t%d.v.p", tv);
@@ -961,7 +961,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
     else if (class_has_exc_name(c, defcls)) {
       snprintf(selfpbuf2, sizeof selfpbuf2, "((sp_Exception *)_t%d.v.p)", tv);
       self2_struct = 1; }
-    else if (sp_streq(_dcn2, "Array") || sp_streq(_dcn2, "Hash") || sp_streq(_dcn2, "Object"))
+    else if (is_array_hash_or_object_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "Float"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
@@ -971,9 +971,9 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
       snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_sym)_t%d.v.i", tv);
     else if (sp_streq(_dcn2, "NilClass"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "0");
-    else if (sp_streq(_dcn2, "Object") || sp_streq(_dcn2, "Array"))
+    else if (is_array_or_object_class(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
-    else if (sp_streq(_dcn2, "TrueClass") || sp_streq(_dcn2, "FalseClass"))
+    else if (is_boolean_class_name(_dcn2))
       snprintf(selfpbuf2, sizeof selfpbuf2, "(int)_t%d.v.b", tv);
     /* parenthesized: a default reading an ivar spells `<self>->iv_x`,
        and a bare cast binds looser than `->` */

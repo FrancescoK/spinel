@@ -727,7 +727,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     {
       const char *bcn = nt_str(nt, argv[0], "name");
       if (rt == TY_BOOL && bcn &&
-          (sp_streq(bcn, "TrueClass") || sp_streq(bcn, "FalseClass"))) {
+          (is_boolean_class_name(bcn))) {
         buf_puts(b, "(("); emit_expr(c, recv, b);
         buf_printf(b, ") %s 0)", sp_streq(bcn, "TrueClass") ? "!=" : "==");
         return 1;
@@ -738,7 +738,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        SizedQueue reported false for its own class (#3466). */
     { const char *qcn = nt_str(nt, argv[0], "name");
       if (eff_rt == TY_QUEUE && qcn &&
-          (sp_streq(qcn, "SizedQueue") || sp_streq(qcn, "Queue"))) {
+          (is_queue_class_name(qcn))) {
         int tq3 = ++g_tmp;
         int want_sized = sp_streq(qcn, "SizedQueue");
         buf_printf(b, "({ sp_queue *_t%d = ", tq3); emit_expr(c, recv, b);
@@ -855,7 +855,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     }
     if (argc == 1 && is_kind_query(name)) {
       const char *cn = isa_const_name(nt, argv[0]);
-      int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) : 0;
+      int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (is_object_base_name(cn))) : 0;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return 1;
     }

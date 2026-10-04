@@ -400,7 +400,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
       const char *aty = nt_type(nt, argv[0]);
-      if (sp_streq(cn, "NilClass") || sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass")) {
+      if (is_immediate_class_name(cn)) {
         int yn = -1;
         /* an object slot holds nil as NULL: asked at run time below */
         if (sp_streq(cn, "NilClass"))
@@ -1836,8 +1836,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* TrueClass.new / FalseClass.new / NilClass.new: no allocator */
     if (nm0 && sp_streq(nm0, "new") && rv0 >= 0 && nt_kind(nt, rv0) == NK_ConstantReadNode) {
       const char *cn0 = nt_str(nt, rv0, "name");
-      if (cn0 && (sp_streq(cn0, "TrueClass") || sp_streq(cn0, "FalseClass") ||
-                  sp_streq(cn0, "NilClass"))) {
+      if (cn0 && (is_immediate_class_name(cn0))) {
         buf_printf(b, "(sp_raise_cls(\"NoMethodError\","
                       " (&(\"\\xff\" \"undefined method 'new' for class %s\")[1])), 0)", cn0);
         return 1;
@@ -1877,7 +1876,7 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   if (recv >= 0 && argc >= 0 && nt_type(nt, recv) &&
       sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gvnm = nt_str(nt, recv, "name");
-    if (gvnm && (sp_streq(gvnm, "$stderr") || sp_streq(gvnm, "$stdout"))) {
+    if (gvnm && (is_standard_output_global(gvnm))) {
       int is_err = gvnm[1] == 's' && gvnm[2] == 't' && gvnm[3] == 'd' && gvnm[4] == 'e';
       const char *fd = is_err ? "stderr" : "stdout";
       if (is_text_print(name)) {

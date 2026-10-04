@@ -2074,7 +2074,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
        stream has to consult that global, or `$stderr = $stdout` writes to the
        real stderr anyway and `$stderr == $stdout` answers false (#3406).
        A program that never assigns has no such global and emits as before. */
-    if (nm && (sp_streq(nm, "$stdout") || sp_streq(nm, "$stderr"))) {
+    if (nm && (is_standard_output_global(nm))) {
       const char *base = sp_streq(nm, "$stdout") ? "sp_io_stdout()" : "sp_io_stderr()";
       const char *gv = sp_streq(nm, "$stdout") ? "gv_stdout" : "gv_stderr";
       LocalVar *sv = comp_gvar(c, nm + 1);
@@ -2084,7 +2084,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     }
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return 1; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return 1; }
-    if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return 1; }
+    if (nm && (is_program_name_global(nm))) { buf_puts(b, "sp_program_name"); return 1; }
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return 1; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return 1; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
@@ -2431,7 +2431,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (sp_streq(nm, "LOCK_UN")) { buf_puts(b, "((sp_int)LOCK_UN)"); return 1; }
       if (sp_streq(nm, "LOCK_NB")) { buf_puts(b, "((sp_int)LOCK_NB)"); return 1; }
     }
-    if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
+    if (par_nmc && (is_io_class_name(par_nmc)) && nm) {
       /* IO#seek whence constants (File inherits them from IO); the Ruby
          values 0/1/2 are what sp_File_seek expects. */
       if (sp_streq(nm, "SEEK_SET")) { buf_puts(b, "((sp_int)0)"); return 1; }

@@ -1975,7 +1975,7 @@ static int sg_new_class_ci(Compiler *c, int val) {
      opaque base struct with no cls_id field, and native/exception/struct
      classes have special layouts a synthesized subclass cannot carry. */
   const char *cn = c->classes[ci].name;
-  if (cn && (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) return -1;
+  if (cn && (is_object_base_name(cn))) return -1;
   if (c->classes[ci].is_native_class || c->classes[ci].is_struct ||
       c->classes[ci].is_data || class_is_exc_subclass(c, ci)) return -1;
   return ci;

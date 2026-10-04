@@ -2059,7 +2059,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          user-class struct does). Its class is statically that base, so emit the
          name-backed value and side-effect-eval the receiver. */
       const char *_ocn = _cidx >= 0 && _cidx < c->nclasses ? c->classes[_cidx].name : NULL;
-      if (_ocn && (sp_streq(_ocn, "Object") || sp_streq(_ocn, "BasicObject"))) {
+      if (_ocn && (is_object_base_name(_ocn))) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
         buf_printf(b, "), ((sp_Class){(sp_int)-1, SPL(\"%s\")}))", _ocn);
         return 1;
@@ -2526,7 +2526,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       const char *rcn2 = (rvt2 && (sp_streq(rvt2, "ConstantReadNode") ||
                                    sp_streq(rvt2, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
       if (rcn2 && (comp_class_index(c, rcn2) >= 0 ||
-                   sp_streq(rcn2, "TrueClass") || sp_streq(rcn2, "FalseClass") ||
+                   is_boolean_class_name(rcn2) ||
                    /* the roots: every object is one, and `Object === x` used to
                       fall past this arm into the missing-method gate */
                    is_object_root(rcn2) ||
@@ -2573,7 +2573,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         else if (sp_streq(cn2, "Class")) {
           buf_printf(b, "!sp_class_is_module_val(_cl%d); })", _clt);
         }
-        else if (sp_streq(cn2, "Object") || sp_streq(cn2, "BasicObject")) {
+        else if (is_object_base_name(cn2)) {
           buf_printf(b, "1; })");
         }
         else {

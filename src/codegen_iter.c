@@ -4120,7 +4120,7 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   free(cb.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   /* the kept elements carry the receiver's nils */
-  if (sp_streq(k, "Int") || sp_streq(k, "Float")) {
+  if (is_numeric_literal_tag(k)) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray_nil_from(_t%d, _t%d);\n", k, tr, ta);
   }
   buf_printf(b, "_t%d", tr);

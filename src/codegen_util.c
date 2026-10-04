@@ -3872,7 +3872,7 @@ const char *mc_reopen_cls(Compiler *c, int class_id, const char *mname) {
      reopen of these takes the `_oc` stem for every method. */
   {
     const char *rn = c->classes[class_id].name;
-    if (rn && (sp_streq(rn, "Range") || sp_streq(rn, "Time") ||
+    if (rn && (is_range_or_time_class(rn) ||
                io_family_class(c, class_id) || sp_streq(rn, "Class"))) {
       snprintf(buf, sizeof buf, "%s_oc", stem);
       return buf;
