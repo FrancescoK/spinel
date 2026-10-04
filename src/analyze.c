@@ -28761,6 +28761,43 @@ static void an_phase_desugar_register(Compiler *c) {
       }
     }
   }
+  /* `Struct.send(:new, :a)`, `Data.public_send(:define, :x)`: a class
+     maker reached through a literal-name send. The send is retargeted onto
+     the direct call only inside the fixpoint, after the passes that register
+     the class it makes have run, so `P = Data.send(:define, :x)` left P
+     undefined and its first use raised NameError. Retarget these here, as
+     the later pass would. */
+  {
+    NodeTable *ntm = (NodeTable *)c->nt;
+    int n0 = ntm->count;
+    for (int id = 0; id < n0; id++) {
+      if (nt_kind(ntm, id) != NK_CallNode) continue;
+      const char *nm = nt_str(ntm, id, "name");
+      if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__"))) continue;
+      int rv = nt_ref(ntm, id, "receiver");
+      if (rv < 0 || nt_kind(ntm, rv) != NK_ConstantReadNode) continue;
+      const char *rn = nt_str(ntm, rv, "name");
+      int sa = nt_ref(ntm, id, "arguments"), sac = 0;
+      const int *sav = sa >= 0 ? nt_arr(ntm, sa, "arguments", &sac) : NULL;
+      if (sac < 1 || nt_kind(ntm, sav[0]) != NK_SymbolNode) continue;
+      const char *mn = nt_str(ntm, sav[0], "value");
+      if (!rn || !mn) continue;
+      int maker = (sp_streq(mn, "new") && (sp_streq(rn, "Struct") || sp_streq(rn, "Class"))) ||
+                  (sp_streq(mn, "define") && sp_streq(rn, "Data"));
+      if (!maker) continue;
+      int rest[64], nrest = sac - 1;
+      if (nrest > 64) continue;
+      for (int k = 0; k < nrest; k++) rest[k] = sav[k + 1];
+      int na = nt_new_node(ntm, "ArgumentsNode");
+      if (na < 0) continue;
+      comp_grow_node_arrays(c);
+      c->nscope[na] = c->nscope[id];
+      nt_node_set_arr(ntm, na, "arguments", rest, nrest);
+      char mbuf[16]; snprintf(mbuf, sizeof mbuf, "%s", mn);
+      nt_node_set_str(ntm, id, "name", mbuf);
+      nt_node_set_ref(ntm, id, "arguments", nrest > 0 ? na : -1);
+    }
+  }
   /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
      parentheses around one expression. Anything else -- `(A rescue B)`,
      `(x; Base)`, a local variable -- was read as no superclass and the class
