@@ -1245,10 +1245,15 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         const char *htyb = nt_type(nt, eav[0]);
         if (htb == TY_STR_STR_HASH ||
             (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
+          /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
+             literal one is built here. Built as a literal, `&pr` gave a proc
+             with no body and every conflict read nil. */
+          int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
           buf_puts(b, "sp_env_update_h_blk(");
           emit_expr(c, eav[0], b);
           buf_puts(b, ", ");
-          emit_proc_literal(c, id, b);
+          if (bt >= 0) buf_printf(b, "_t%d", bt);
+          else emit_proc_literal(c, id, b);
           buf_puts(b, ")");
           return 1;
         }

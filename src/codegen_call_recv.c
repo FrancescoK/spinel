@@ -4816,6 +4816,14 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        arms below that stay read the argument nodes, the block or the
        program's own methods, and none of them can take a call a row takes. */
     if (emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    /* merge(other, &pr): a block that is not a literal one -- a proc at run
+       time, or a method's own block passed on -- has no body for the arms
+       below to read, which stored nil for every conflict. The any-block
+       emitter calls it (its result is the general boxed hash, as the call
+       is typed). */
+    if (sp_streq(name, "merge") && argc == 1 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode &&
+        comp_ntype(c, id) == TY_POLY_POLY_HASH && emit_merge_any_block_boxed(c, id, recv, argv[0], b))
+      return 1;
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
       unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
     const char *hn = ty_hash_cname(rt);
