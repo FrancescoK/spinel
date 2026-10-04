@@ -5096,58 +5096,6 @@ int desugar_proc_expr_block_arg(Compiler *c) {
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
-    /* `&(log; proc { |(k, v), m| ... })`: a parenthesized sequence ending in
-       a proc literal. Nothing followed the literal through the parentheses,
-       so its parameters were bound by nothing and read the elements as
-       Integers. Its leading statements and the literal, into a temp, go on
-       the enclosing statement, as the forms below do. */
-    if (exty && sp_streq(exty, "ParenthesesNode")) {
-      int pb = nt_ref(nt, ex, "body");
-      int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
-      if (!ps || pn < 2) continue;
-      int lit = ps[pn - 1];
-      if (!(nt_kind(nt, lit) == NK_LambdaNode || is_proc_create(c, lit))) continue;
-      /* CRuby runs the receiver and the arguments first: with an effect
-         among them, desugar_block_arg_order splits the sequence instead */
-      int rcv = nt_ref(nt, id, "receiver");
-      if (rcv >= 0 && subtree_has_side_effect(c, rcv)) continue;
-      int aa = nt_ref(nt, id, "arguments"); int an = 0;
-      const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
-      int eff = 0;
-      for (int k = 0; k < an && !eff; k++) eff = subtree_has_side_effect(c, av[k]);
-      if (eff) continue;
-      int st = -1, idx = -1;
-      if (!tp_enclosing_stmt(c, id, &st, &idx)) continue;
-      int encl = c->nscope[id];
-      int base = nt->count;
-      int wnode = nt_new_node(nt, "LocalVariableWriteNode");
-      int rd = nt_new_node(nt, "LocalVariableReadNode");
-      if (wnode < 0 || rd < 0) continue;
-      char bname[48];
-      snprintf(bname, sizeof bname, "__blkexpr_%s", comp_node_tag(c, id));
-      nt_node_set_str(nt, wnode, "name", bname);
-      nt_node_set_ref(nt, wnode, "value", lit);
-      nt_node_set_str(nt, rd, "name", bname);
-      nt_node_set_ref(nt, blk, "expression", rd);
-      int lead[pn];
-      for (int k = 0; k < pn - 1; k++) lead[k] = ps[k];
-      int bn = 0; const int *body = nt_arr(nt, st, "body", &bn);
-      int *nb = malloc(sizeof(int) * (size_t)(bn + pn));
-      if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      int o = 0;
-      for (int k = 0; k < idx; k++) nb[o++] = body[k];
-      for (int k = 0; k < pn - 1; k++) nb[o++] = lead[k];
-      nb[o++] = wnode;
-      for (int k = idx; k < bn; k++) nb[o++] = body[k];
-      nt_node_set_arr(nt, st, "body", nb, o);
-      free(nb);
-      comp_grow_node_arrays(c);
-      for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
-      LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bname);
-      lv->type = TY_PROC;
-      changed = 1;
-      continue;
-    }
     if (!exty || !sp_streq(exty, "CallNode")) continue;
     /* only the Proc combinators: everything else keeps its own lowering
        (&:sym, &obj.to_proc, &method(:m), a lambda literal, ...) */
