@@ -60,3 +60,5 @@ p "#{game.score -= 1}"
 3.times { game.score += 1 }
 p [game.score, game.title]
 p Round.new(game).play
+# defined? of the op-assign is "assignment", not the writer call's "method"
+p defined?(game.score += 1)

@@ -4468,6 +4468,11 @@ int desugar_call_op_write(Compiler *c) {
       if (!parent) parent = an_parent_map(nt);
       if (!parent) continue;
       if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
+      /* defined?(w.n += 1) is "assignment": as the writer call it read "method" */
+      int up = parent[id];
+      while (up >= 0 && (nt_kind(nt, up) == NK_ParenthesesNode || nt_kind(nt, up) == NK_StatementsNode))
+        up = parent[up];
+      if (up >= 0 && nt_kind(nt, up) == NK_DefinedNode) continue;
     }
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {
