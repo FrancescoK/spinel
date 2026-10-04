@@ -7442,7 +7442,15 @@ static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; sp_int s
 /* Array#sum with the default (Integer 0) initial value, folding via sp_poly_add
    so the result promotes to the element class (Float for any Float element,
    Rational/Bignum likewise) rather than dropping non-Integer elements. */
-static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) { sp_RbVal s = sp_box_int(0); if (!a) return s; for (sp_int i = 0; i < a->len; i++) s = sp_poly_add(s, a->data[i]); return s; }
+/* Array#sum with no seed is sum(0): CRuby's exact phase, then from the first
+   Float the compensated one. Folding through sp_poly_add alone dropped the
+   compensation, so `[3, 0.1, 0.2].sum` was 3.3000000000000003 where CRuby,
+   and this array's own `.sum(0)` through sp_poly_sum_seed, answer 3.3. */
+static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);
+static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) {
+  if (!a) return sp_box_int(0);
+  return sp_poly_sum_seed(sp_box_poly_array(a), sp_box_int(0));
+}
 /* Array#sum with a String initial value: concatenate the string elements onto
    the initial (["a","b"].sum("") == "ab"). */
 static const char *sp_PolyArray_sum_str(sp_PolyArray *a, const char *init) { const char *s = init ? init : ""; if (!a) return s; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_STR && a->data[i].v.s) s = sp_str_concat(s, a->data[i].v.s); } return s; }
