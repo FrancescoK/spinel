@@ -1104,6 +1104,40 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
                               sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) ||
        (comp_ntype(c, recv) == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode))) {
+    /* the value is evaluated once, into a temp the store reads and the
+       expression answers: evaluated again after the store, a call with
+       effects ran twice, and a value the store read through a boxed
+       dispatch came back boxed where the call answers a String */
+    int va = argv[argc - 1];
+    TyKind vt = comp_ntype(c, va), want = comp_ntype(c, id);
+    if (vt == TY_STRING || vt == TY_POLY) {
+      int tv = ++g_tmp;
+      char tn[24]; snprintf(tn, sizeof tn, "_t%d", tv);
+      /* in the prelude, where the store hoists its own reads of it */
+      size_t pre0 = g_pre->len;
+      Buf vb; memset(&vb, 0, sizeof vb);
+      emit_expr(c, va, &vb);
+      emit_indent(g_pre, g_indent);
+      if (vt == TY_POLY) buf_printf(g_pre, "sp_RbVal %s = %s; SP_GC_ROOT_RBVAL(%s);\n", tn, vb.p ? vb.p : "sp_box_nil()", tn);
+      else buf_printf(g_pre, "const char *%s = %s; SP_GC_ROOT(%s);\n", tn, vb.p ? vb.p : "NULL", tn);
+      int slot = view_bind(va, "%s", tn);
+      Buf mb; memset(&mb, 0, sizeof mb);
+      int ok = emit_array_mutate_stmt(c, id, &mb, 0);
+      view_unbind(slot);
+      if (ok) {
+        buf_puts(b, "({ ");
+        buf_puts(b, mb.p ? mb.p : "");
+        if (want == vt || want == TY_UNKNOWN || want == TY_VOID) buf_puts(b, tn);
+        else if (vt == TY_POLY) emit_unbox_text(c, want, tn, b);
+        else emit_boxed_text(c, vt, tn, b);
+        buf_puts(b, "; })");
+        free(vb.p); free(mb.p);
+        return 1;
+      }
+      /* no store to run: the value is the plain path's to evaluate */
+      g_pre->len = pre0; if (g_pre->p) g_pre->p[pre0] = 0;
+      free(vb.p); free(mb.p);
+    }
     Buf mb; memset(&mb, 0, sizeof mb);
     if (emit_array_mutate_stmt(c, id, &mb, 0)) {
       buf_puts(b, "({ ");
