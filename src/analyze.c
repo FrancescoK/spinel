@@ -11911,9 +11911,26 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
   if (sp_streq(vt, "HashNode")) { out[n++] = val; return n; }
   if (sp_streq(vt, "CallNode")) {
     const char *cn = nt_str(nt, val, "name");
+    int recv = nt_ref(nt, val, "receiver");
+    /* an element of an Array literal, by a constant index (`[x, 1][0]`),
+       that names a variable: a literal written there directly is boxed by
+       its context and takes the general hash already */
+    if (cn && sp_streq(cn, "[]") && recv >= 0 && nt_kind(nt, recv) == NK_ArrayNode &&
+        nt_ref(nt, val, "block") < 0) {
+      int a = nt_ref(nt, val, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+      if (ac != 1 || nt_kind(nt, av[0]) != NK_IntegerNode) return n;
+      long long i = nt_int(nt, av[0], "value", -1);
+      if (i < 0) i += en;
+      if (i < 0 || i >= en) return n;
+      for (int e = 0; e <= i; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return n;
+      if (nt_kind(nt, el[i]) != NK_LocalVariableReadNode) return n;
+      return hash_literal_sources(c, el[i], depth + 1, out, cap, n);
+    }
     if (!cn || (!sp_streq(cn, "dup") && !sp_streq(cn, "clone"))) return n;
     if (nt_ref(nt, val, "arguments") >= 0 || nt_ref(nt, val, "block") >= 0) return n;
-    return hash_literal_sources(c, nt_ref(nt, val, "receiver"), depth + 1, out, cap, n);
+    return hash_literal_sources(c, recv, depth + 1, out, cap, n);
   }
   if (sp_streq(vt, "LocalVariableReadNode")) {
     const char *ln = nt_str(nt, val, "name");
@@ -11935,7 +11952,10 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
       }
       return n;
     }
-    for (int w = 0; w < nt->count && n < cap; w++) {
+    /* the local's writes through the (scope, name) index, not a walk of
+       the whole table per read */
+    int lsi = (int)(ls - c->scopes);
+    for (int w = comp_lvw_first_sc(c, lsi, ln); w >= 0 && n < cap; w = comp_lvw_next_sc(c, w)) {
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != ls) continue;
@@ -12069,6 +12089,19 @@ static int empty_hash_write_lit(Compiler *c, int v) {
   return an_or_empty_hash_fallback(c, v);
 }
 
+/* The variant an empty literal takes from one more key context: the first
+   one wins, unless the two are keyed by different classes among Symbol,
+   String and Integer. Then only the
+   poly-keyed variant holds both: keeping the first dropped the other key's
+   stores (`x = {}; y = x; y[:a] = 1; x["b"] = 2`). */
+static TyKind hash_want_join(TyKind cur, TyKind want) {
+  if (!ty_is_hash(cur)) return want;
+  TyKind ck = ty_hash_key(cur), wk = ty_hash_key(want);
+  int ckeyed = ck == TY_SYMBOL || ck == TY_STRING || ck == TY_INT;
+  int wkeyed = wk == TY_SYMBOL || wk == TY_STRING || wk == TY_INT;
+  if (cur == want || ck == wk || !ckeyed || !wkeyed) return cur;
+  return TY_POLY_POLY_HASH;
+}
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -12299,12 +12332,30 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
           if (wv < 0) { all_empty = 0; break; }
           all_empty = 1;
         }
-        else if (wv < c->node_cap && !ty_is_hash(c->hash_want[wv])) {
-          c->hash_want[wv] = want;
-          changed = 1;
+        else if (wv < c->node_cap) {
+          TyKind nw = hash_want_join(c->hash_want[wv], want);
+          if (nw != c->hash_want[wv]) { c->hash_want[wv] = nw; changed = 1; }
         }
       }
       if (!all_empty) break;
+    }
+    /* Another name for the hash (`y = x`, `y = [x, 1][0]`): the key
+       operation says the same about the empty literal it was copied from,
+       which hash_literal_sources follows back. Without it the literal kept
+       the String-keyed default and a Symbol key stored through the alias
+       raised, or went into a `const char *` slot. */
+    /* A parameter stands for every call's argument, which the binding
+       answers for: following it here walked the calls once per key site. */
+    int is_param = 0;
+    for (int pi = 0; pi < sc->nparams && !is_param; pi++) is_param = sc->pnames[pi] && sp_streq(sc->pnames[pi], ln);
+    if (!all_empty && !is_param) {
+      int srcs[32], ns = hash_literal_sources(c, recv, 0, srcs, 32, 0);
+      for (int q = 0; q < ns; q++) {
+        int en = 0; nt_arr(nt, srcs[q], "elements", &en);
+        if (en != 0 || srcs[q] >= c->node_cap) continue;
+        TyKind nw = hash_want_join(c->hash_want[srcs[q]], want);
+        if (nw != c->hash_want[srcs[q]]) { c->hash_want[srcs[q]] = nw; changed = 1; }
+      }
     }
   }
   free((void *)tp_name);
@@ -18641,6 +18692,64 @@ static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int 
     if (dyn_scope_appends_arg(c, m, call, arg)) return 1;
   return 0;
 }
+/* An index assignment (`x[i] = v`) that cannot be a String's. `[]=` is on the
+   String-mutator table because `s[0] = "a"` rewrites a String, but the name is
+   every container's too, and a block parameter carries no type to ask: a
+   kept block doing `acc[:k] = 1` on a Hash was counted as "appends to the
+   String it is handed", and from then on every unresolved String `yield` in
+   the program was refused -- including ones in the bundled net/http -- for a
+   String nothing ever touched. String#[]= takes an Integer, Range, String or
+   Regexp index and a String value, so a Symbol index, or a value that is
+   written as a literal of another class, says the receiver is not a String. */
+static int dyn_index_write_not_string(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac < 2) return 0;
+  for (int i = 0; i < ac - 1; i++)
+    if (nt_kind(nt, av[i]) == NK_SymbolNode) return 1;
+  switch (nt_kind(nt, av[ac - 1])) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_NilNode:
+  case NK_ArrayNode: case NK_HashNode:
+    return 1;
+  default:
+    break;
+  }
+  /* a value the inference already settled as a non-String scalar */
+  TyKind vt = comp_ntype(c, av[ac - 1]);
+  if (vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL) return 1;
+  /* the receiver itself, when the inference knows it for a container: the
+     memo of `each_with_object({}) { |pair, result| result[k] = v }` is a
+     Hash whatever `k` and `v` are */
+  int ur = nt_ref(nt, node, "receiver");
+  TyKind rt = ur >= 0 ? comp_ntype(c, ur) : TY_UNKNOWN;
+  return ty_is_hash(rt) || ty_is_array(rt);
+}
+
+/* `recv.each_with_object(<memo>)` whose memo is spelled as a container: a
+   Hash or Array literal, or `Hash.new` / `Array.new` (with or without
+   arguments or a default block). */
+static int dyn_memo_is_container(Compiler *c, int call, const char *nm) {
+  const NodeTable *nt = c->nt;
+  /* by the time this runs the call may already be the Enumerable desugar
+     (`__enum_each_with_object__N(recv, memo)`); the memo is the last
+     argument either way */
+  if (!nm || (!sp_streq(nm, "each_with_object") && strncmp(nm, "__enum_each_with_object", 23) != 0)) return 0;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac < 1) return 0;
+  int memo = av[ac - 1];
+  NodeKind k = nt_kind(nt, memo);
+  if (k == NK_HashNode || k == NK_ArrayNode) return 1;
+  if (k != NK_CallNode) return 0;
+  const char *mn = nt_str(nt, memo, "name");
+  int r = nt_ref(nt, memo, "receiver");
+  if (!mn || !sp_streq(mn, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+  const char *cn = nt_str(nt, r, "name");
+  return cn && (sp_streq(cn, "Hash") || sp_streq(cn, "Array"));
+}
+
 static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsigned *app, unsigned *kept) {
   const NodeTable *nt = c->nt;
   if (node < 0) return;
@@ -18664,7 +18773,8 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
     int ur = nt_ref(nt, node, "receiver");
     int j = ur >= 0 && nt_kind(nt, ur) == NK_LocalVariableReadNode
               ? dyn_name_at(pn, np, nt_str(nt, ur, "name")) : -1;
-    if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
+    if (j >= 0 && un && sp_streq(un, "[]=") && dyn_index_write_not_string(c, node)) skip_recv = ur;
+    else if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
     else if (j >= 0 && dyn_pure_read_name(un)) skip_recv = ur;
     int a = nt_ref(nt, node, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -19184,7 +19294,12 @@ static int dyn_any_appender(Compiler *c) {
     if (dyn_is_proc_literal(c, n)) { if ((dyn_lit_bits(c, b) & 0xffffu) || dyn_lit_post_app(c, b)) g_dyn.any = 1; continue; }
     if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
       /* a block handed to a method that keeps it */
-      if (!(dyn_lit_bits(c, b) & 0xffffu) && !dyn_lit_post_app(c, b)) continue;
+      unsigned bits = dyn_lit_bits(c, b) & 0xffffu;
+      /* `each_with_object({}) { |x, memo| memo[k] = v }`: the block's second
+         parameter IS the memo the call names, so when that is written as a
+         Hash or Array it is no String, whatever `k` and `v` turn out to be */
+      if (dyn_memo_is_container(c, n, nm)) bits &= ~2u;
+      if (!bits && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
         Scope *m = &c->scopes[tg[e]];

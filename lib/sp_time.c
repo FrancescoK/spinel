@@ -155,9 +155,18 @@ static void sp_time_check_args(int64_t mo, int64_t d, int64_t h, int64_t mi, int
 static int64_t sp_time_civil_epoch(int64_t y, int64_t mo, int64_t d,
                                    int64_t h, int64_t mi, int64_t s);
 
+/* localtime/gmtime may share a process-wide buffer. Copying their result
+   still races with another OS worker; resolve into caller-owned storage.
+   Unlike localtime, POSIX localtime_r need not act as if it called tzset. */
+static struct tm *sp_time_local_tm(time_t s, struct tm *bd) {
+  tzset();
+  return localtime_r(&s, bd);
+}
+
 /* Not mktime(gmtime(s)) - s: macOS mktime answers -1 for any year before 1900. */
 static int32_t sp_time_local_offset(time_t s) {
-  struct tm *l = localtime(&s);
+  struct tm local;
+  struct tm *l = sp_time_local_tm(s, &local);
   if (!l) return 0;
   return (int32_t)(sp_time_civil_epoch(l->tm_year + 1900, l->tm_mon + 1, l->tm_mday,
                                        l->tm_hour, l->tm_min, l->tm_sec) - (int64_t)s);
@@ -333,6 +342,19 @@ sp_Time sp_time_with_usec_f(sp_Time t, double usec) {
 sp_Time sp_time_parse(const char *s) {SP_GC_ROOT_STR(s);
   const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
   int y, mo, d, h, mi, sec, n = 0;
+  /* a year alone ("2021", "-44", "+12345") is Time.new(year), as CRuby
+     reads it: four digits at least, local midnight of January 1 */
+  { const char *q = s + (*s == '+' || *s == '-');
+    size_t nd = 0;
+    while (q[nd] >= '0' && q[nd] <= '9') nd++;
+    if (nd > 0 && q[nd] == 0) {
+      if (nd < 4) sp_raise_cls("ArgumentError", sp_sprintf("year must be 4 or more digits: %s", s));
+      int64_t yy = 0;
+      for (size_t i = 0; i < nd && i < 18; i++) yy = yy * 10 + (q[i] - '0');
+      if (*s == '-') yy = -yy;
+      return sp_time_new(yy, 1, 1, 0, 0, 0);
+    }
+  }
   if (sscanf(s, "%4d-%2d-%2d%n", &y, &mo, &d, &n) != 3 || n == 0)
     sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
   const char *p = s + n;
@@ -407,23 +429,17 @@ void sp_time_vtm(sp_Time t, struct tm *bd, int32_t *off, char *zbuf) {
   if (t.is_utc == 2) {
     /* fixed offset: the civil value is the UTC civil value shifted east */
     time_t sh = s + (time_t)t.utc_off;
-    struct tm *g = gmtime(&sh);
-    if (g) { *bd = *g; }
-else { memset(bd, 0, sizeof(*bd)); }
+    if (!gmtime_r(&sh, bd)) memset(bd, 0, sizeof(*bd));
     if (off) *off = t.utc_off;
     if (zbuf) zbuf[0] = 0;
   }
 else if (t.is_utc) {
-    struct tm *g = gmtime(&s);
-    if (g) { *bd = *g; }
-else { memset(bd, 0, sizeof(*bd)); }
+    if (!gmtime_r(&s, bd)) memset(bd, 0, sizeof(*bd));
     if (off) *off = 0;
     if (zbuf) { zbuf[0]='U'; zbuf[1]='T'; zbuf[2]='C'; zbuf[3]=0; }
   }
 else {
-    struct tm *l = localtime(&s);
-    if (l) { *bd = *l; }
-else { memset(bd, 0, sizeof(*bd)); }
+    if (!sp_time_local_tm(s, bd)) memset(bd, 0, sizeof(*bd));
     if (off) *off = sp_time_local_offset(s);
     if (zbuf) {
       if (strftime(zbuf, 8, "%Z", bd) == 0) zbuf[0] = 0;
