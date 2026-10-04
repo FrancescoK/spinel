@@ -1583,16 +1583,13 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       emit_poly_sum_seed(c, recv, argv[0], b);
       { *out = 1; return 1; }
     }
-    /* A FLOAT seed over Floats does not compensate: CRuby reaches the
-       compensated loop only out of the exact phase, and a seed that is
-       already a Float never has one. An INTEGER seed does have one, so it
-       keeps the compensated call -- `[0.1, 0.2, 0.3].sum(0)` is 0.6 and
-       `.sum(0.0)` is 0.6000000000000001. The boxed fold draws the same
-       line; the two paths must not disagree. */
+    /* A FLOAT seed over Floats compensates from the first element, as Ruby
+       4.0.7 does: `[0.1, 0.2, 0.3].sum(0.0)` is 0.6, like `.sum(0)`. The
+       boxed fold draws the same line; the two paths must not disagree. */
     if (rt == TY_FLOAT_ARRAY && init_t == TY_FLOAT) {
       Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_FloatArray *", "SP_GC_ROOT", b, &rb);
       Buf ckb; memset(&ckb, 0, sizeof ckb);
-      buf_printf(b, "sp_FloatArray_sum_plain(%s, ", nil_sum_ck_text(c, recv, rt, 1, rb.p, &ckb)); free(rb.p); free(ckb.p);
+      buf_printf(b, "sp_FloatArray_sum(%s, ", nil_sum_ck_text(c, recv, rt, 1, rb.p, &ckb)); free(rb.p); free(ckb.p);
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       if (ch) buf_puts(b, "; })");
       { *out = 1; return 1; }
