@@ -11823,6 +11823,17 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, ", %d)", sp_streq(name, "next") ? 1 : 0);
     { *out = 1; return 1; }
   }
+  /* an Enumerator's peek beside its next: a boxed Enumerator (a local the
+     program also gives another class) answered NoMethodError for it, where
+     next already pulled */
+  if (sp_streq(name, "peek") && argc == 0) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+    buf_printf(b, "; if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR && _t%d.v.p))"
+                  " sp_raise_nomethod(sp_nomethod_msg(\"peek\", _t%d)); "
+                  "sp_Enumerator_peek((sp_Enumerator *)_t%d.v.p); })", tv, tv, tv, tv, tv);
+    { *out = 1; return 1; }
+  }
   if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_upcase, \"upcase\")"); { *out = 1; return 1; } }
   if (sp_streq(name, "downcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_downcase, \"downcase\")"); { *out = 1; return 1; } }
   if (sp_streq(name, "capitalize"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_capitalize, \"capitalize\")"); { *out = 1; return 1; } }

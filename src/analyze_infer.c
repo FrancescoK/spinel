@@ -2256,7 +2256,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
            sp_streq(name, "strip") || sp_streq(name, "reverse") ||
            sp_streq(name, "chomp") || sp_streq(name, "chop") ||
-           sp_streq(name, "succ") || sp_streq(name, "next") ||
+           sp_streq(name, "succ") || sp_streq(name, "next") || sp_streq(name, "peek") ||
            sp_streq(name, "chr") ||
            /* `strip` was here and its one-sided siblings were not, which is
               what most of this line is: a String reaching the dispatch
