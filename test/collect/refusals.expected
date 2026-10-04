@@ -204,6 +204,12 @@ spinel: 1 refusal, nothing written
 == test/reject/instance_exec_refusal_moved_scope.rb [promote] rc=1
 spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed allocation registry to walk -- the GC tracks bytes, not a live-object index (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [default] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
+spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [promote] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
+spinel: 1 refusal, nothing written
 == test/reject/io_reopen_yielding_call.rb [default] rc=1
 spinel: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
 spinel: 1 refusal, nothing written
