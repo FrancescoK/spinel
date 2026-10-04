@@ -293,5 +293,4 @@ void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv);
 void pa_end(Compiler *c, int frame, const PolyPlan *p);
 void pa_report(void);
 
-TyKind poly_arg_slot_type(Compiler *c, int node, TyKind at);
 #endif
