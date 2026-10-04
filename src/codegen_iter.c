@@ -3798,6 +3798,79 @@ int subtree_owns_next(const NodeTable *nt, int body, int next) {
   return next >= 0 && subtree_has_own_next_ex(nt, body, next);
 }
 
+/* Mark every `next` written where the value of `id` is: `id` itself, the
+   last statement of a sequence, an arm of an `if`, `unless`, `case` or
+   `begin`, the right of an `and` or `or`. An `ensure` clause, a condition
+   and every other operand are not: their value is not the node's. */
+static void mark_value_nexts(const NodeTable *nt, int id, char *mark) {
+  if (id < 0 || id >= nt->count) return;
+  int n = 0; const int *a;
+  switch (nt_kind(nt, id)) {
+  case NK_NextNode: mark[id] = 1; return;
+  case NK_StatementsNode:
+    a = nt_arr(nt, id, "body", &n);
+    if (n > 0) mark_value_nexts(nt, a[n - 1], mark);
+    return;
+  case NK_ParenthesesNode: mark_value_nexts(nt, nt_ref(nt, id, "body"), mark); return;
+  case NK_IfNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
+    return;
+  case NK_UnlessNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_ElseNode: case NK_InNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    return;
+  case NK_CaseNode: case NK_CaseMatchNode:
+    a = nt_arr(nt, id, "conditions", &n);
+    for (int i = 0; i < n; i++) mark_value_nexts(nt, a[i], mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_BeginNode:
+    /* with an `else`, the body's last statement is not the begin's value */
+    if (nt_ref(nt, id, "else_clause") < 0) mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "rescue_clause"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "else_clause"), mark);
+    return;
+  case NK_RescueNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "subsequent"), mark);
+    return;
+  case NK_RescueModifierNode:
+    mark_value_nexts(nt, nt_ref(nt, id, "expression"), mark);
+    mark_value_nexts(nt, nt_ref(nt, id, "rescue_expression"), mark);
+    return;
+  case NK_AndNode: case NK_OrNode: mark_value_nexts(nt, nt_ref(nt, id, "right"), mark); return;
+  default:
+    /* a `when` has no kind of its own */
+    if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "WhenNode"))
+      mark_value_nexts(nt, nt_ref(nt, id, "statements"), mark);
+    return;
+  }
+}
+
+/* Is this `next` the value of the block it leaves: written where the block's
+   last expression is, so that leaving the block with v and answering v are
+   the same thing? The expression emitter takes such a `next v` as v (#3026).
+   Any other `next` an expression holds -- an operand, an argument, the value
+   of an assignment, `c && (next)` ahead of more statements -- has to leave
+   the block from where it is. The marks are built once per node table. */
+int next_is_block_value(Compiler *c, int next) {
+  static char *mark; static const NodeTable *mark_nt; static int mark_n = -1; static unsigned mark_ver;
+  const NodeTable *nt = c->nt;
+  if (!mark || mark_nt != nt || mark_n != nt->count || mark_ver != nt->version) {
+    free(mark);
+    mark = calloc((size_t)nt->count + 1, 1);
+    if (!mark) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    NT_FOREACH_KIND(nt, NK_BlockNode, blk) mark_value_nexts(nt, nt_ref(nt, blk, "body"), mark);
+    NT_FOREACH_KIND(nt, NK_LambdaNode, lam) mark_value_nexts(nt, nt_ref(nt, lam, "body"), mark);
+    mark_nt = nt; mark_n = nt->count; mark_ver = nt->version;
+  }
+  return next >= 0 && next < nt->count && mark[next];
+}
+
 /* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
    stack) when the body contains a `redo` that targets this loop. The label
    sits at the body top so `redo` re-runs the body without advancing. */
@@ -4628,8 +4701,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
       char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
       if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
     }
-    if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
-      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
+    if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
+      buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
     else emit_retf_return(eid, has_retval, b);
     emit_indent(b, indent);
     buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);

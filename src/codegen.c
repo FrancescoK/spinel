@@ -5993,6 +5993,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = (cap_self && self_is_value) ? "." : "->";
   const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
+  /* The funnel itself is parked with its mirror, as the proc emitter parks
+     it: `_pr_done` and `_prret` belong to the method's C function, and an
+     `ensure` in the body ended in a `goto` to them from this one. */
+  const char *sv_fbprl = g_method_pr_label, *sv_fbprv = g_method_pr_var;
+  g_method_pr_label = NULL; g_method_pr_var = NULL;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   /* the body reads its captures from its own _fc, never from an enclosing
      proc's _cap: a fiber made inside a lifted block read `pr` through a
@@ -6225,6 +6230,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
+  g_method_pr_label = sv_fbprl; g_method_pr_var = sv_fbprv;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_cap_struct = sv_fbcap; g_cap_names = sv_fbcapn;
   g_c_loop_depth = sv_fbcld; g_fiber_body = sv_fbbody;
