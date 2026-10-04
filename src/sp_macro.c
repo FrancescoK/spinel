@@ -559,6 +559,11 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
       for (int i = 0; i < r.n; i++) if (r.a[i].k != MV_NIL) v.a[v.n++] = r.a[i];
       *out = v; ok = 1;
     }
+    else if (strcmp(name, "reverse") == 0 && r.k == MV_ARR) {
+      Mv v = r; v.a = calloc(r.n + 1, sizeof(Mv));
+      for (int i = 0; i < r.n; i++) v.a[i] = r.a[r.n - i - 1];
+      *out = v; ok = 1;
+    }
     else if ((strcmp(name, "size") == 0 || strcmp(name, "length") == 0) && r.k != MV_NIL) {
       *out = mv_nil(); out->k = MV_INT;
       out->i = r.k == MV_ARR ? r.n : (r.k == MV_STR || r.k == MV_SYM) ? (long long)strlen(r.s) : 0;
@@ -1673,7 +1678,7 @@ static int mx_ptr_cmp(const void *a, const void *b) {
   const pm_node_t *x = *(const pm_node_t *const *)a, *y = *(const pm_node_t *const *)b;
   return x < y ? -1 : x > y;
 }
-static void mx_sort_tracked(void) { qsort(g_mx_tracked, (size_t)g_mx_ntracked, sizeof *g_mx_tracked, mx_ptr_cmp); }
+static void mx_sort_tracked(void) { if (g_mx_ntracked) qsort(g_mx_tracked, (size_t)g_mx_ntracked, sizeof *g_mx_tracked, mx_ptr_cmp); }
 static int mx_is_tracked(const pm_node_t *n) {
   return g_mx_ntracked && bsearch(&n, g_mx_tracked, (size_t)g_mx_ntracked, sizeof *g_mx_tracked, mx_ptr_cmp) != NULL;
 }

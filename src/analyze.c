@@ -2574,33 +2574,6 @@ static void blkp_stamp_subtree(const NodeTable *nt, int node, int *stamp, int ge
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(nt, node, i, &n); for (int k = 0; k < n; k++) blkp_stamp_subtree(nt, ids[k], stamp, gen); }
 }
 
-/* A block/lambda parameter is interned into the enclosing (flat) scope, so two
-   blocks reusing a name -- or a block param sharing a name with an enclosing
-   local -- collapse onto one LocalVar and one type. The rename pass below splits
-   them, but only for nodes this predicate accepts. We accept any block owned by
-   a call: the collision check in rename_shadowing_block_params is the real
-   filter (it fires only when the name is actually shared), and codegen reads
-   every param name through block_param_name + rename_local, so a renamed slot
-   stays consistent in the inliner, the standalone-proc lowering, and the
-   instance_eval/exec splice path alike. Returns 1 if `L` is such a node. */
-int blkp_needs_rename(Compiler *c, int L) {
-  const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, L);
-  if (ty && sp_streq(ty, "LambdaNode")) return 1;
-  if (!ty || !sp_streq(ty, "BlockNode")) return 0;
-  /* A block owned by a call is renameable. Ordinary iteration blocks
-     (each/map/select/...) were once excluded on the assumption the inliner's
-     save/restore made them shadow-safe; that holds for the element-typed shadow
-     path but not when sibling blocks of divergent element types share a name
-     (e.g. `arr.map{|x| x+0.5}.map{|x| x.floor}` -- the poly-array map leg writes
-     the shared poly slot), so they go through the collision gate too. */
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_ref(nt, id, "block") != L) continue;
-    return nt_str(nt, id, "name") != NULL;
-  }
-  return 0;
-}
-
 /* ---- Colliding nested-constant qualification --------------------------
  * Constants live in a flat cst_<NAME> namespace, so `RootNS::Mid::LEAF` and
  * `Lex::RootNS::Mid::LEAF` collide. When the same constant name is written
@@ -3565,8 +3538,8 @@ void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
   /* Reverse map block-node -> owning node (the node whose "block" ref is it),
-     built in one O(n) pass. blkp_needs_rename otherwise rescans all n nodes per
-     block, making this whole pass O(blocks*n) on large inputs (a flattened
+     built in one O(n) pass. Finding a block's owner by scanning all n nodes
+     per block made this whole pass O(blocks*n) on large inputs (a flattened
      runtime is ~500k nodes). */
   int *owner = malloc((size_t)n * sizeof(int));
   if (!owner) return;
@@ -3597,8 +3570,8 @@ void rename_shadowing_block_params(Compiler *c) {
     if (!ty) continue;
     int is_lambda = sp_streq(ty, "LambdaNode");
     if (!is_lambda && !sp_streq(ty, "BlockNode")) continue;
-    /* renameable: a lambda, or a block owned by a named call (see
-       blkp_needs_rename) -- resolved in O(1) through the owner index. */
+    /* renameable: a lambda, or a block owned by a named call -- resolved in
+       O(1) through the owner index. */
     if (!is_lambda) {
       int o = owner[L];
       if (o < 0 || nt_str(nt, o, "name") == NULL) continue;
@@ -5529,6 +5502,18 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           /* Hash[] is laxer about pair shape than Array#to_h: a one-element
              sub-array gives a nil value rather than raising */
           nt_node_set_int(nt, id, "hash_brackets", 1);
+          continue;
+        }
+        /* Hash[*args]: the splatted list is the argument list, so whether it
+           is one Hash or pair list or alternating keys and values is known
+           only at run time -- reading it as the pairs (the rewrite below)
+           took the list itself for them */
+        if (an == 1 && nt_type(nt, av0[0]) &&
+            sp_streq(nt_type(nt, av0[0]), "SplatNode") &&
+            nt_ref(nt, av0[0], "expression") >= 0) {
+          nt_node_set_str(nt, id, "name", "__hash_brackets_splat");
+          nt_node_set_ref(nt, id, "receiver", nt_ref(nt, av0[0], "expression"));
+          nt_node_set_ref(nt, id, "arguments", -1);
           continue;
         }
         /* Hash[arg] with any single non-literal argument: the same pairs.to_h
@@ -8921,10 +8906,6 @@ static int oa_find(OAS *sl, int n, int sidx, LocalVar *lv) {
   }
   return -1;
 }
-static int oa_find_iv(OAS *sl, int n, int ici, int iiv) {
-  for (int i = 0; i < n; i++) if (sl[i].ici == ici && sl[i].iiv == iiv) return i;
-  return -1;
-}
 static int oa_uf_find(OAS *sl, int i) {
   while (sl[i].uf != i) { sl[i].uf = sl[sl[i].uf].uf; i = sl[i].uf; }
   return i;
@@ -11948,9 +11929,26 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
   if (sp_streq(vt, "HashNode")) { out[n++] = val; return n; }
   if (sp_streq(vt, "CallNode")) {
     const char *cn = nt_str(nt, val, "name");
+    int recv = nt_ref(nt, val, "receiver");
+    /* an element of an Array literal, by a constant index (`[x, 1][0]`),
+       that names a variable: a literal written there directly is boxed by
+       its context and takes the general hash already */
+    if (cn && sp_streq(cn, "[]") && recv >= 0 && nt_kind(nt, recv) == NK_ArrayNode &&
+        nt_ref(nt, val, "block") < 0) {
+      int a = nt_ref(nt, val, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+      if (ac != 1 || nt_kind(nt, av[0]) != NK_IntegerNode) return n;
+      long long i = nt_int(nt, av[0], "value", -1);
+      if (i < 0) i += en;
+      if (i < 0 || i >= en) return n;
+      for (int e = 0; e <= i; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return n;
+      if (nt_kind(nt, el[i]) != NK_LocalVariableReadNode) return n;
+      return hash_literal_sources(c, el[i], depth + 1, out, cap, n);
+    }
     if (!cn || (!sp_streq(cn, "dup") && !sp_streq(cn, "clone"))) return n;
     if (nt_ref(nt, val, "arguments") >= 0 || nt_ref(nt, val, "block") >= 0) return n;
-    return hash_literal_sources(c, nt_ref(nt, val, "receiver"), depth + 1, out, cap, n);
+    return hash_literal_sources(c, recv, depth + 1, out, cap, n);
   }
   if (sp_streq(vt, "LocalVariableReadNode")) {
     const char *ln = nt_str(nt, val, "name");
@@ -11972,7 +11970,10 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
       }
       return n;
     }
-    for (int w = 0; w < nt->count && n < cap; w++) {
+    /* the local's writes through the (scope, name) index, not a walk of
+       the whole table per read */
+    int lsi = (int)(ls - c->scopes);
+    for (int w = comp_lvw_first_sc(c, lsi, ln); w >= 0 && n < cap; w = comp_lvw_next_sc(c, w)) {
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, w, "name");
       if (!wn || !sp_streq(wn, ln) || comp_scope_of(c, w) != ls) continue;
@@ -12106,6 +12107,19 @@ static int empty_hash_write_lit(Compiler *c, int v) {
   return an_or_empty_hash_fallback(c, v);
 }
 
+/* The variant an empty literal takes from one more key context: the first
+   one wins, unless the two are keyed by different classes among Symbol,
+   String and Integer. Then only the
+   poly-keyed variant holds both: keeping the first dropped the other key's
+   stores (`x = {}; y = x; y[:a] = 1; x["b"] = 2`). */
+static TyKind hash_want_join(TyKind cur, TyKind want) {
+  if (!ty_is_hash(cur)) return want;
+  TyKind ck = ty_hash_key(cur), wk = ty_hash_key(want);
+  int ckeyed = ck == TY_SYMBOL || ck == TY_STRING || ck == TY_INT;
+  int wkeyed = wk == TY_SYMBOL || wk == TY_STRING || wk == TY_INT;
+  if (cur == want || ck == wk || !ckeyed || !wkeyed) return cur;
+  return TY_POLY_POLY_HASH;
+}
 static int mark_empty_hash_key_ctx(Compiler *c) {
   int changed = 0;
   if (!c->hash_want) return 0;
@@ -12336,12 +12350,30 @@ static int mark_empty_hash_key_ctx(Compiler *c) {
           if (wv < 0) { all_empty = 0; break; }
           all_empty = 1;
         }
-        else if (wv < c->node_cap && !ty_is_hash(c->hash_want[wv])) {
-          c->hash_want[wv] = want;
-          changed = 1;
+        else if (wv < c->node_cap) {
+          TyKind nw = hash_want_join(c->hash_want[wv], want);
+          if (nw != c->hash_want[wv]) { c->hash_want[wv] = nw; changed = 1; }
         }
       }
       if (!all_empty) break;
+    }
+    /* Another name for the hash (`y = x`, `y = [x, 1][0]`): the key
+       operation says the same about the empty literal it was copied from,
+       which hash_literal_sources follows back. Without it the literal kept
+       the String-keyed default and a Symbol key stored through the alias
+       raised, or went into a `const char *` slot. */
+    /* A parameter stands for every call's argument, which the binding
+       answers for: following it here walked the calls once per key site. */
+    int is_param = 0;
+    for (int pi = 0; pi < sc->nparams && !is_param; pi++) is_param = sc->pnames[pi] && sp_streq(sc->pnames[pi], ln);
+    if (!all_empty && !is_param) {
+      int srcs[32], ns = hash_literal_sources(c, recv, 0, srcs, 32, 0);
+      for (int q = 0; q < ns; q++) {
+        int en = 0; nt_arr(nt, srcs[q], "elements", &en);
+        if (en != 0 || srcs[q] >= c->node_cap) continue;
+        TyKind nw = hash_want_join(c->hash_want[srcs[q]], want);
+        if (nw != c->hash_want[srcs[q]]) { c->hash_want[srcs[q]] = nw; changed = 1; }
+      }
     }
   }
   free((void *)tp_name);
@@ -15780,9 +15812,11 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
 static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return 0;
-  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings */
+  /* `h.values.each { |v| }`: the Array `values` answers holds those Strings,
+     as do `values_at` and `fetch_values` */
   const char *rn = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
-  if (rn && sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0 &&
+  if (rn && ((sp_streq(rn, "values") && nt_ref(nt, recv, "arguments") < 0) ||
+             sp_streq(rn, "values_at") || sp_streq(rn, "fetch_values")) &&
       nt_ref(nt, recv, "block") < 0) {
     if (!strbuf_elem_first_iterator(itn)) return 0;
     recv = nt_ref(nt, recv, "receiver");
@@ -18676,6 +18710,64 @@ static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int 
     if (dyn_scope_appends_arg(c, m, call, arg)) return 1;
   return 0;
 }
+/* An index assignment (`x[i] = v`) that cannot be a String's. `[]=` is on the
+   String-mutator table because `s[0] = "a"` rewrites a String, but the name is
+   every container's too, and a block parameter carries no type to ask: a
+   kept block doing `acc[:k] = 1` on a Hash was counted as "appends to the
+   String it is handed", and from then on every unresolved String `yield` in
+   the program was refused -- including ones in the bundled net/http -- for a
+   String nothing ever touched. String#[]= takes an Integer, Range, String or
+   Regexp index and a String value, so a Symbol index, or a value that is
+   written as a literal of another class, says the receiver is not a String. */
+static int dyn_index_write_not_string(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, node, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac < 2) return 0;
+  for (int i = 0; i < ac - 1; i++)
+    if (nt_kind(nt, av[i]) == NK_SymbolNode) return 1;
+  switch (nt_kind(nt, av[ac - 1])) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_NilNode:
+  case NK_ArrayNode: case NK_HashNode:
+    return 1;
+  default:
+    break;
+  }
+  /* a value the inference already settled as a non-String scalar */
+  TyKind vt = comp_ntype(c, av[ac - 1]);
+  if (vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL) return 1;
+  /* the receiver itself, when the inference knows it for a container: the
+     memo of `each_with_object({}) { |pair, result| result[k] = v }` is a
+     Hash whatever `k` and `v` are */
+  int ur = nt_ref(nt, node, "receiver");
+  TyKind rt = ur >= 0 ? comp_ntype(c, ur) : TY_UNKNOWN;
+  return ty_is_hash(rt) || ty_is_array(rt);
+}
+
+/* `recv.each_with_object(<memo>)` whose memo is spelled as a container: a
+   Hash or Array literal, or `Hash.new` / `Array.new` (with or without
+   arguments or a default block). */
+static int dyn_memo_is_container(Compiler *c, int call, const char *nm) {
+  const NodeTable *nt = c->nt;
+  /* by the time this runs the call may already be the Enumerable desugar
+     (`__enum_each_with_object__N(recv, memo)`); the memo is the last
+     argument either way */
+  if (!nm || (!sp_streq(nm, "each_with_object") && strncmp(nm, "__enum_each_with_object", 23) != 0)) return 0;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac < 1) return 0;
+  int memo = av[ac - 1];
+  NodeKind k = nt_kind(nt, memo);
+  if (k == NK_HashNode || k == NK_ArrayNode) return 1;
+  if (k != NK_CallNode) return 0;
+  const char *mn = nt_str(nt, memo, "name");
+  int r = nt_ref(nt, memo, "receiver");
+  if (!mn || !sp_streq(mn, "new") || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+  const char *cn = nt_str(nt, r, "name");
+  return cn && (sp_streq(cn, "Hash") || sp_streq(cn, "Array"));
+}
+
 static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsigned *app, unsigned *kept) {
   const NodeTable *nt = c->nt;
   if (node < 0) return;
@@ -18699,7 +18791,8 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
     int ur = nt_ref(nt, node, "receiver");
     int j = ur >= 0 && nt_kind(nt, ur) == NK_LocalVariableReadNode
               ? dyn_name_at(pn, np, nt_str(nt, ur, "name")) : -1;
-    if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
+    if (j >= 0 && un && sp_streq(un, "[]=") && dyn_index_write_not_string(c, node)) skip_recv = ur;
+    else if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
     else if (j >= 0 && dyn_pure_read_name(un)) skip_recv = ur;
     int a = nt_ref(nt, node, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
@@ -19219,7 +19312,12 @@ static int dyn_any_appender(Compiler *c) {
     if (dyn_is_proc_literal(c, n)) { if ((dyn_lit_bits(c, b) & 0xffffu) || dyn_lit_post_app(c, b)) g_dyn.any = 1; continue; }
     if (b >= 0 && nt_kind(nt, b) == NK_BlockNode) {
       /* a block handed to a method that keeps it */
-      if (!(dyn_lit_bits(c, b) & 0xffffu) && !dyn_lit_post_app(c, b)) continue;
+      unsigned bits = dyn_lit_bits(c, b) & 0xffffu;
+      /* `each_with_object({}) { |x, memo| memo[k] = v }`: the block's second
+         parameter IS the memo the call names, so when that is written as a
+         Hash or Array it is no String, whatever `k` and `v` turn out to be */
+      if (dyn_memo_is_container(c, n, nm)) bits &= ~2u;
+      if (!bits && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
         Scope *m = &c->scopes[tg[e]];
@@ -25187,6 +25285,14 @@ int nullable_int_value(Compiler *c, int v) {
     if (nn_index_inbounds(v)) return 0;
     if (nullable_int_call_name(nt_str(nt, v, "name"))) return 1;
     if (nn_call_unboxes_nil(c, v)) return 1;
+    /* A setter assignment answers its RHS, not the writer's return. Its
+       nullable scalar must survive when the assignment itself is boxed.
+       The check above already accounts for a safe-navigation receiver. */
+    if (call_is_setter_assign(nt, v)) {
+      int ca = nt_ref(nt, v, "arguments"), an = 0;
+      const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+      if (an == 1) return nullable_int_value(c, av[0]);
+    }
     /* a missed element read is the sentinel in an int slot; only boxing is
        affected, typed reads keep their inline arms */
     if (elem_miss_call(c, v)) return 1;
@@ -25275,6 +25381,29 @@ int nullable_int_value(Compiler *c, int v) {
    does not recognise answers "no". */
 static int aon_value(Compiler *c, int v, int depth);
 
+/* What a node on a local's write list means to the scans below: 1 for a
+   write that assigns its `value` (`x = v`, `x ||= v`, `x &&= v`), -1 for one
+   that assigns what an operator answered (`x += v`), which nothing here
+   reads, 0 for a write in a branch that was pruned, which assigns nothing. */
+static int aon_write_kind(const NodeTable *nt, int id) {
+  switch (nt_kind(nt, id)) {
+    case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode:
+    case NK_LocalVariableAndWriteNode: return 1;
+    case NK_LocalVariableOperatorWriteNode: return -1;
+    default: return 0;
+  }
+}
+
+/* A multiple assignment, a `for`, a rescue or a pattern binds a local
+   through a target, to a value the write list does not hold. */
+static int aon_local_is_target(Compiler *c, Scope *sc, const char *name) {
+  NT_FOREACH_KIND(c->nt, NK_LocalVariableTargetNode, t) {
+    const char *tn = nt_str(c->nt, t, "name");
+    if (tn && sp_streq(tn, name) && comp_scope_of(c, t) == sc) return 1;
+  }
+  return 0;
+}
+
 /* Is every ELEMENT of the container-valued expression `v` an array or nil? */
 static int aon_container(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
@@ -25326,9 +25455,11 @@ static int aon_container(Compiler *c, int v, int depth) {
     int saw = 0;
     for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
       int id = lw_shared_node(r);
-      if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(nt, id, "name");
       if (!wn || !sp_streq(wn, nm) || comp_scope_of(c, id) != sc) continue;
+      int wk = aon_write_kind(nt, id);
+      if (wk < 0) return 0;
+      if (!wk) continue;
       int wv = nt_ref(nt, id, "value");
       /* an empty literal carries no element evidence of its own; the stores
          below are what fill it */
@@ -25339,7 +25470,7 @@ static int aon_container(Compiler *c, int v, int depth) {
       if (!aon_container(c, wv, depth + 1)) return 0;
       saw = 1;
     }
-    if (!saw) return 0;
+    if (!saw || aon_local_is_target(c, sc, nm)) return 0;
     /* every store into it must put an array or nil there */
     NT_FOREACH_KIND(nt, NK_CallNode, w) {
       const char *wn2 = nt_str(nt, w, "name");
@@ -25459,13 +25590,15 @@ static void mark_array_or_nil_slots(Compiler *c) {
         int saw = 0, ok = 1;
         for (int r = lw_shared_first(c, lv->name, s); r >= 0 && ok; r = lw_shared_next(r)) {
           int id = lw_shared_node(r);
-          if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
           const char *wn = nt_str(nt, id, "name");
           if (!wn || !sp_streq(wn, lv->name) || comp_scope_of(c, id) != sc) continue;
+          int wk = aon_write_kind(nt, id);
+          if (wk < 0) { ok = 0; break; }
+          if (!wk) continue;
           saw = 1;
           if (!aon_value(c, nt_ref(nt, id, "value"), 0)) ok = 0;
         }
-        if (saw && ok) { lv->arr_or_nil = 1; changed = 1; }
+        if (saw && ok && !aon_local_is_target(c, sc, lv->name)) { lv->arr_or_nil = 1; changed = 1; }
       }
     }
     if (!changed) break;
@@ -27367,6 +27500,19 @@ static void desugar_block_arg_order(Compiler *c) {
       }
       else av[k] = BO_HOIST(av[k]);
     }
+    /* `&(log; proc { ... })`: the sequence's statements run here, in turn,
+       and the proc literal they end in is the block itself -- hoisted whole,
+       the literal sat inside a temp's parentheses where nothing bound its
+       parameters, and they read the elements as Integers */
+    if (nt_kind(nt, be) == NK_ParenthesesNode) {
+      int pb = nt_ref(nt, be, "body");
+      int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+      if (ps && pn >= 2 && ns + pn < 255 &&
+          (nt_kind(nt, ps[pn - 1]) == NK_LambdaNode || is_proc_create(c, ps[pn - 1]))) {
+        for (int k = 0; k < pn - 1; k++) stm[ns++] = ps[k];
+        be = ps[pn - 1];
+      }
+    }
     int nbe = BO_HOIST(be);
     #undef BO_HOIST
     if (ns == 0 || ns >= 255) { free(av); continue; }
@@ -28110,6 +28256,27 @@ static void an_phase_desugar_register(Compiler *c) {
       }
     }
   }
+  /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
+     parentheses around one expression. Anything else -- `(A rescue B)`,
+     `(x; Base)`, a local variable -- was read as no superclass and the class
+     silently became a subclass of Object: refuse it. */
+  {
+    const NodeTable *ntc = c->nt;
+    for (int id = 0; id < ntc->count; id++) {
+      if (nt_kind(ntc, id) != NK_ClassNode) continue;
+      int sc = nt_ref(ntc, id, "superclass");
+      if (sc < 0) continue;
+      NodeKind sk = nt_kind(ntc, sc);
+      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode || sk == NK_CallNode) continue;
+      int ln = (int)nt_int(ntc, id, "node_line", 0);
+      const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
+      if (!file || !*file) file = ntc->source_file;
+      if (!file || !*file) file = "source.rb";
+      fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
+                      "write the superclass as a constant\n", file, ln, nt_type(ntc, sc));
+      exit(1);
+    }
+  }
   /* A block written with its own rescue clause (`do ... rescue ... end`) has a
      BeginNode where every other block has a StatementsNode, so the body read as
      empty and the block's value was nil. Wrap it once here (#3710). */
@@ -28131,6 +28298,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_errno_aliases(c);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
   desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
+  desugar_builtin_reopen_self_class(c);  /* self.class in a reopened Hash -> Hash */
   desugar_engine_branches(c);
   desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --
                                            ahead of the runtime-condition defs, which it answers statically */

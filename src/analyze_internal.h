@@ -90,6 +90,7 @@ int is_handler_proc_block(Compiler *c, int id);
 int builtin_class_id(const char *name);
 int builtin_class_parent_id(int id);
 int desugar_builtin_reopen_named_superclass(Compiler *c);
+int desugar_builtin_reopen_self_class(Compiler *c);
 const char *class_ruby_name(Compiler *c, int ci); /* codegen.c */
 int builtin_object_method_known(const char *m);
 int core_method_name(const char *n);   /* analyze_desugar.c: a core class's public method */
@@ -171,6 +172,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
 /* 1 if `id` is any proc-creating literal: a proc/lambda/Proc.new call (above)
    or a `->(){}` LambdaNode. */
 int is_proc_create(Compiler *c, int id);
+int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
 
 /* Shared cached local-write index (analyze_pass.c): bucket walk over
    (scope, name) for "every write of local X in scope S" queries, instead of
@@ -250,7 +252,6 @@ void register_include_attrs(Compiler *c);
 void rewrite_attr_supers(Compiler *c);
 void unmark_referenced_module_sources(Compiler *c);
 void register_extends(Compiler *c);
-int cmethod_has_bare_new(Compiler *c, int mi);
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
 int class_value_escapes(Compiler *c, int cid);
 void specialize_inherited_cls_new(Compiler *c);
@@ -436,7 +437,6 @@ int desugar_block_capture_wrap(Compiler *c);
 int desugar_user_not_match(Compiler *c);
 int desugar_env_enum(Compiler *c);
 int desugar_dir_surface(Compiler *c);
-const char *builtin_class_var_static_name(Compiler *c, int node);
 int local_write_binds_value(NodeKind k);
 int desugar_enumerable_chain(Compiler *c);
 int desugar_implicit_send(Compiler *c);
@@ -525,7 +525,6 @@ int blkp_binds_param(Compiler *c, int create, const char *name);
 void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn);
 void numbered_rename_locals_str(NodeTable *nt, int L, const char *from, const char *to);
 void blkp_mark_subtree(const NodeTable *nt, int node, char *marks);
-int blkp_needs_rename(Compiler *c, int L);
 void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth, QCWrite **ws, int *n, int *cap);
 int qc_read_chain(const NodeTable *nt, int node, char (*chain)[64], int *abs_anchor);
 void qc_qualified_name(char *out, size_t cap, const QCWrite *w);

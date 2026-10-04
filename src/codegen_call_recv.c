@@ -408,7 +408,7 @@ static TyKind emit_product_operand(Compiler *c, int node, TyKind at, Buf *b) {
 
 /* The class a builtin type answers to #class, for a "no implicit conversion of
    X into Array" message. Only the kinds conv_to_ary_impossible admits. */
-static const char *conv_builtin_class_name(TyKind t) {
+const char *conv_builtin_class_name(TyKind t) {
   if (t == TY_STRING || t == TY_STRBUF) return "String";
   if (t == TY_INT || t == TY_BIGINT) return "Integer";
   if (t == TY_FLOAT) return "Float";
@@ -424,7 +424,7 @@ static const char *conv_builtin_class_name(TyKind t) {
    an arm that cannot serve it. Deliberately excludes TY_POLY / TY_UNKNOWN (may
    be an array at run time) and every OBJECT type (a user class may define
    #to_ary, which CRuby honours). */
-static int conv_to_ary_impossible(TyKind t) {
+int conv_to_ary_impossible(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
          t == TY_FLOAT || t == TY_SYMBOL || t == TY_PROC || t == TY_TIME ||
          t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
@@ -667,6 +667,7 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
 }
 
 static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
+static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
 
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
    literal. */
@@ -1020,21 +1021,12 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_puts(b, " "); emit_boxed(c, argv[1], b); buf_puts(b, "; })");
     }
     else if (blk >= 0) {
-      int bbody = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      int bval = bn > 0 ? bb[bn - 1] : -1;
       buf_puts(b, " ({ ");
       emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
-      if (emit_blk_value_via_next(c, blk, TY_POLY, b)) {
-        buf_puts(b, "; }); })");
-        { *out = 1; return 1; }
-      }
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
-      if (bval >= 0) {
-        if (comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-        else emit_expr(c, bval, b);
-      }
-      else buf_puts(b, "sp_box_nil()");
+      /* The value with its setup, after the parameter is bound: left in
+         g_pre the setup ran ahead of the whole call, on the nil the
+         parameter starts as. */
+      emit_blk_value_as(c, blk, TY_POLY, b);
       buf_puts(b, "; }); })");
     }
     else {
@@ -1798,22 +1790,10 @@ else {
     else if (blk >= 0) {
       /* fetch(i) { |i| default }: an out-of-bounds index yields the
          (original) index to the block; its value is the result */
-      int bbody = nt_ref(nt, blk, "body");
-      int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      int bval = bn > 0 ? bb[bn - 1] : -1;
       buf_puts(b, " ({ ");
       emit_fetch_blk_param(c, id, blk, TY_INT, ti, b);
-      /* a `next <v>` answers the block's value, as in the Hash arm */
-      if (emit_blk_value_via_next(c, blk, boxed ? TY_POLY : et, b)) {
-        buf_puts(b, "; }); })");
-        { *out = 1; return 1; }
-      }
-      for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], b, 0);
-      if (bval >= 0) {
-        if (boxed && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
-        else emit_expr(c, bval, b);
-      }
-      else buf_puts(b, boxed ? "sp_box_nil()" : default_value_from_compiler(c, et));
+      /* the value with its setup after the parameter is bound, as above */
+      emit_blk_value_as(c, blk, boxed ? TY_POLY : et, b);
       buf_puts(b, "; }); })");
     }
     else {
@@ -2768,16 +2748,16 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         if (fit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
         else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
       }
-      IterStep st; emit_iter_step_open(c, fblk, 0, g_indent + 1, &st);
-      Buf vb; memset(&vb, 0, sizeof vb);
-      TyKind fvt = emit_iter_step_tail(c, &st, &vb);
+      /* A poly value is boxed by the step, once: boxed again here, with
+         the store begun, its setup lines landed inside the call. */
+      TyKind vt = comp_ntype(c, fbb[fbn - 1]);
+      IterStep st; emit_iter_step_open(c, fblk, sp_streq(fk, "Poly") && (vt == TY_POLY || vt == TY_UNKNOWN), g_indent + 1, &st);
+      Buf vb; memset(&vb, 0, sizeof vb); vt = emit_iter_step_tail(c, &st, &vb);
       emit_indent(g_pre, g_indent + 1);
       if (sp_streq(fk, "Poly")) {
-        TyKind vt = fvt;
         buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, ", trecv, ti);
         if (vt != TY_POLY && vt != TY_UNKNOWN) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
-        else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, fbb[fbn - 1], &bx);
-               buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+        else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         buf_puts(g_pre, ");\n");
       }
       else {
@@ -2798,6 +2778,17 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
        fill quietly did nothing (#3611). */
     for (int fa = 1; fa < argc; fa++) {
       TyKind ft = comp_ntype(c, argv[fa]);
+      /* a Range is a start only in fill(value, range); with a length
+         after it, CRuby converts it to an Integer and raises, once every
+         operand has run in order */
+      if (fa == 1 && argc == 3 &&
+          (ft == TY_RANGE || ft == TY_FLOAT_RANGE || ft == TY_STR_RANGE)) {
+        buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+        for (int fo = 0; fo < argc; fo++) { buf_puts(b, "); (void)("); emit_expr(c, argv[fo], b); }
+        buf_puts(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\"); ");
+        buf_printf(b, "(sp_%sArray *)0; })", (rt == TY_POLY_ARRAY) ? "Poly" : k);
+        { *out = 1; return 1; }
+      }
       /* nil is allowed: it means "from the start" / "to the end" */
       const char *fcn = ft == TY_STRING ? "String" : ft == TY_SYMBOL ? "Symbol"
                       : ty_is_array(ft) ? "Array"

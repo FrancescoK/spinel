@@ -1,0 +1,7 @@
+Base
+"base"
+Outer::Inner
+"inner"
+Base
+"base!"
+[C, Base]

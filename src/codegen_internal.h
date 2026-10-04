@@ -371,6 +371,7 @@ extern int g_fiber_body;   /* that fiber body's statements, or -1 */
 extern const char *g_fn_pr_label;   /* real function's return funnel (see codegen_util.c) */
 extern const char *g_fn_pr_var;
 extern TyKind g_fn_ret_type;
+const char *proc_ret_slot(void);
 /* Set while emitting a self-recursive yield method (is_lowered_yield=1).
    Persists into inner proc literal bodies so { yield } forwards the block
    param (g_lowered_blk_name, or the synthetic __yblk__). */
@@ -503,7 +504,7 @@ extern int g_bigl_n;
 int bigl_intern(const char *v);
 /* Whole-program feature presence, computed once before main is emitted, so the
    main() prologue can skip setup a trivial program never needs:
-   g_uses_symbols -> sp_tu_init sets sp_sym_name_fn; g_uses_regex -> sp_tu_init
+   g_emit_sym_rt -> sp_tu_init sets sp_sym_name_fn; g_uses_regex -> sp_tu_init
    wires the regex error handler; g_uses_argv -> the sp_argv copy loop runs.
    g_re_init_needed is the OR of the
    conditions that give sp_tu_init a body (symbols/regex/class-machinery/user
@@ -598,6 +599,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
 int  subtree_has_own_next(const NodeTable *nt, int id);
 int  subtree_owns_next(const NodeTable *nt, int body, int next);
+int  next_is_block_value(Compiler *c, int next);
 int  subtree_reads_local(const NodeTable *nt, int id, const char *name);
 int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int  emit_inline_expr(Compiler *c, int id, Buf *b);
@@ -855,7 +857,6 @@ void cg_memo_put(CgMemo *m, const char *key, int tag, int val);
 /* The unescaped source of a regex literal or a constant bound to one (for
    capture detection). Returns NULL when nid is not a resolvable regex. */
 const char *re_lit_src(Compiler *c, int nid);
-int re_lit_flags(Compiler *c, int nid);
 void emit_interp(Compiler *c, int id, Buf *b);
 int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
@@ -1004,6 +1005,10 @@ const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
+/* A builtin type that certainly has no #to_ary, and its class name for the
+   "no implicit conversion of X into Array" TypeError (codegen_call_recv.c). */
+int conv_to_ary_impossible(TyKind t);
+const char *conv_builtin_class_name(TyKind t);
 void ty_traits_render(const char *cell, const char *expr, Buf *b);
 const char *raise_tail_value_c(Compiler *c, TyKind t);
 const char *array_times_type_error(TyKind at);
@@ -1114,18 +1119,12 @@ const char *iv_c(const char *name);  /* ivar/member name -> valid C field id (#3
    where the last definition wins, matching comp_method_in_class. A top-level
    `def` is shadowed by a later top-level `def` of the same name. */
 int scope_is_shadowed(Compiler *c, int s);
-#define SP_MAX_PROC_FORM 4096
-extern int g_pf_emitting;   /* inside a proc-form body (#3399) */
-void scope_mark_proc_form(Compiler *c, int s);
-void scope_veto_proc_form(Compiler *c, int s);
 int  scope_needs_proc_form(Compiler *c, int s);
 int  scope_proc_form_of(Compiler *c, int s);
 int  expr_is_held_ref(Compiler *c, int node);   /* a read of a held object: no root needed */
 int  proc_form_live(Compiler *c, int s);
 int  proc_form_source(Compiler *c, int s);
 int  ctor_init_proc_form(Compiler *c, int cid);
-void scope_proc_form_begin(Compiler *c, int s);
-void scope_proc_form_end(Compiler *c, int s);
 int scope_has_callable_symbol(Compiler *c, int s);
 int scope_toplevel_included(Compiler *c, int s);
 int scope_uses_ivars(Compiler *c, int mi);
@@ -1152,7 +1151,6 @@ int resolve_forwarded_block(Compiler *c, int block);
 int emit_hash_collect_expr(Compiler *c, int id, Buf *b);
 int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty, int *ids_out, TyKind *ty_out, int cap);
 int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new_ty, int min_id, int **saved_ids, TyKind **saved_tys);
-void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int block_tail_is_unresolved(Compiler *c, int node);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);
@@ -1174,7 +1172,6 @@ int emit_inject_expr(Compiler *c, int id, Buf *b);
 int emit_reduce_block_expr(Compiler *c, int id, Buf *b);
 int emit_sortby_expr(Compiler *c, int id, Buf *b);
 int emit_sort_cmp_expr(Compiler *c, int id, Buf *b);
-void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx, TyKind et, Buf *b);
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b);
 int emit_lazy_class_expr(Compiler *c, int id, Buf *b);
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b);
@@ -1370,7 +1367,6 @@ TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
 void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, const char *src, Buf *b);
-void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b);
 void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc);
 int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc);

@@ -417,8 +417,10 @@ static int node_is_container_elem(Compiler *c, int id) {
      - every read of it is the receiver of one of the operations below;
      - every `[]=` / `store` into it writes an object of one class (never nil);
      - for an ivar, no module method, class method or class body names it.
-   Computed once per fixpoint round, over the whole table. */
-typedef struct { int kind, owner; const char *name; int cls; int bad; int writes; } HvSlot;
+   Computed once per fixpoint round, over the whole table. A slot keeps its
+   own copy of the name: the node's string is freed when a pass renames the
+   local (subtree_rename_local) before the round ends. */
+typedef struct { int kind, owner; char *name; int cls; int bad; int writes; } HvSlot;
 static HvSlot *g_hv = NULL;
 static int g_hv_n = 0, g_hv_cap = 0;
 static unsigned g_hv_gen = 0;
@@ -465,7 +467,8 @@ static HvSlot *hv_find(int kind, int owner, const char *name, int create) {
     if (!g_hv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   HvSlot *h = &g_hv[g_hv_n++];
-  h->kind = kind; h->owner = owner; h->name = name; h->cls = -1; h->bad = 0; h->writes = 0;
+  h->kind = kind; h->owner = owner; h->name = strdup(name); h->cls = -1; h->bad = 0; h->writes = 0;
+  if (!h->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   return h;
 }
 /* The hash operations a slot may be the receiver of, with their argument and
@@ -497,6 +500,7 @@ static int hv_is_poly_hash(TyKind t) {
 static void hv_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_hv_building = 1;
+  for (int i = 0; i < g_hv_n; i++) free(g_hv[i].name);
   g_hv_n = 0;
   int n = nt->count;
   unsigned char *ok = calloc((size_t)(n > 0 ? n : 1), 1);
@@ -4260,9 +4264,9 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
            A candidate taking a block (a yielding one through its
            proc form) is reached by the poly receiver's class-tag dispatch
            instead, which answers poly. */
-        if (c->scopes[kmi].rest_idx < 0 &&
+        if ((c->scopes[kmi].rest_idx < 0 || rest_packable_arm(c, &c->scopes[kmi])) &&
             (c->scopes[kmi].yields || (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]))) {
-          if (splat ? argc - splat <= c->scopes[kmi].nparams : argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams) nblk++;
+          if (c->scopes[kmi].rest_idx >= 0 || (splat ? argc - splat <= c->scopes[kmi].nparams : argc >= c->scopes[kmi].nrequired && argc <= c->scopes[kmi].nparams)) nblk++;
           continue;
         }
         /* a *rest the emitter packs is an arm like any other */
@@ -6320,6 +6324,8 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
       infer_type(c, argv[0]) == TY_BIGINT) { *out = TY_BIGINT; return 1; }
   /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
   if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) { *out = infer_type(c, recv); return 1; }
+  /* Hash[*args]: a hash of whatever kind the list builds at run time */
+  if (recv >= 0 && sp_streq(name, "__hash_brackets_splat")) { *out = TY_POLY; return 1; }
   /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

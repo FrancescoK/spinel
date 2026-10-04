@@ -2511,13 +2511,6 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
   free(arms.p);
 }
 
-/* The result type of a block literal: its body's last statement. */
-static TyKind pf_block_result_ty(Compiler *c, int blk) {
-  if (blk < 0) return TY_UNKNOWN;
-  int body = nt_ref(c->nt, blk, "body");
-  int n = 0; const int *bb = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
-  return n > 0 ? comp_ntype(c, bb[n - 1]) : TY_NIL;
-}
 /* The type the method's own yield nodes were compiled against. */
 static TyKind pf_yield_ty(Compiler *c, int id, int *found) {
   if (id < 0) return TY_UNKNOWN;
@@ -5063,12 +5056,37 @@ void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
 /* Collect the parameter names declared by a block/lambda node (requireds,
    optionals, posts, rest). Used to declare a nested block's params in the
    flat fiber-body C function it is inlined into. */
+/* The numbered or `it` parameter reads of a block's own body (a nested
+   block's are its own): `_1`, `it`, and the per-block names the analysis
+   renames them to (`_1__b11`). */
+static void collect_numbered_reads(Compiler *c, int id, NameSet *out) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(c->nt, id);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return;
+  if (k == NK_LocalVariableReadNode || (nt_type(c->nt, id) && sp_streq(nt_type(c->nt, id), "ItLocalVariableReadNode"))) {
+    const char *nm = nt_str(c->nt, id, "name");
+    if (nm && ((nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && (!nm[2] || nm[2] == '_')) ||
+               (nm[0] == 'i' && nm[1] == 't' && (!nm[2] || nm[2] == '_'))))
+      nameset_add(out, nm);
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) collect_numbered_reads(c, ch, out); }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int j = 0; j < n; j++) if (ids[j] >= 0) collect_numbered_reads(c, ids[j], out); }
+}
 static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
   const NodeTable *nt = c->nt;
   const char *spa = nt_str(nt, blk, "sym_proc_arg");
   if (spa) nameset_add(out, spa);
   int bp_node = nt_ref(nt, blk, "parameters");
-  if (bp_node < 0) return;
+  /* a numbered-parameter or `it` block has no names to read off its node --
+     a `-> { _1 }` has no node at all: they are the ones its body reads (an
+     enclosing block's cannot be read there, as Ruby refuses it) */
+  if (bp_node < 0 || nt_kind(nt, bp_node) == NK_NumberedParametersNode ||
+      (nt_type(nt, bp_node) && sp_streq(nt_type(nt, bp_node), "ItParametersNode"))) {
+    collect_numbered_reads(c, nt_ref(nt, blk, "body"), out);
+    return;
+  }
   int inner = nt_ref(nt, bp_node, "parameters");
   int pn = inner >= 0 ? inner : bp_node;
   if (pn < 0) return;
@@ -5369,6 +5387,19 @@ const char *proc_post_name(Compiler *c, int create, int idx) {
    with no parameters node at all, so the classifier must derive them from the
    used-name set. Returns the highest _N used (0 when none). Only meaningful
    when the proc declares no explicit parameters (Ruby forbids mixing). */
+/* The names the proc's OWN body reads, leaving out nested blocks and
+   lambdas: a `_1` in `-> { xs.map { _1 } }` is the inner block's parameter,
+   and counting it made the lambda demand an argument it does not take. */
+static void proc_collect_used_shallow(Compiler *c, int id, NameSet *out) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(c->nt, id);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return;
+  if (k == NK_LocalVariableReadNode) nameset_add(out, nt_str(c->nt, id, "name"));
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) proc_collect_used_shallow(c, ch, out); }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int j = 0; j < n; j++) if (ids[j] >= 0) proc_collect_used_shallow(c, ids[j], out); }
+}
 int proc_numbered_max(const NameSet *used) {
   int mx = 0;
   for (int i = 0; i < used->n; i++) {
@@ -6000,6 +6031,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = (cap_self && self_is_value) ? "." : "->";
   const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
+  /* The funnel itself is parked with its mirror, as the proc emitter parks
+     it: `_pr_done` and `_prret` belong to the method's C function, and an
+     `ensure` in the body ended in a `goto` to them from this one. */
+  const char *sv_fbprl = g_method_pr_label, *sv_fbprv = g_method_pr_var;
+  g_method_pr_label = NULL; g_method_pr_var = NULL;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   /* the body reads its captures from its own _fc, never from an enclosing
      proc's _cap: a fiber made inside a lifted block read `pr` through a
@@ -6232,6 +6268,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
+  g_method_pr_label = sv_fbprl; g_method_pr_var = sv_fbprv;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_cap_struct = sv_fbcap; g_cap_names = sv_fbcapn;
   g_c_loop_depth = sv_fbcld; g_fiber_body = sv_fbbody;
@@ -6778,7 +6815,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
          names surface as plain local reads -- so the count comes from the
          body, and the names are the literal ones (nothing renames a block
          with no node to record the new name on). */
-      nnumbered = proc_numbered_max(&used);
+      { NameSet own = {0};
+        proc_collect_used_shallow(c, body, &own);
+        nnumbered = proc_numbered_max(&own);
+        free(own.v); }
       for (int k = 1; k <= nnumbered; k++) {
         /* NameSet stores the POINTER: use the scope-interned stable name, not
            a stack buffer. The analyze pass interned _k on this scope already. */
@@ -8810,7 +8850,7 @@ void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b) {
   char sel[256] = "";
   if (s && s->is_cmethod) {
     /* a class method is copied for each subclass it runs for, as one with
-       a bare `new` is (cmethod_has_bare_new): the copy allocates its class */
+       a bare `new` is: the copy allocates its class */
     if (g_emitting_class_id >= 0) base = g_emitting_class_id;
   }
   else if (!comp_ty_value_obj(c, ty_object(base))) {
@@ -11921,7 +11961,13 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_printf(b, "    sp_alloc_report_tag((void *)sp_%s__gc_scan, \"%s\");\n", ci->c_name, rn);
   }
   buf_puts(b, "  }\n");
-  if (g_uses_symbols)
+  /* The runtime archive names a Symbol through this hook (a Hash's `k: v`
+     keys in inspect, a boxed Symbol's to_s and length, among others), so it
+     goes in wherever the symbol runtime is emitted, as sp_json_sym_intern_fn
+     does below, not only where the compiler interned a Symbol name of its own:
+     `o["a"] = 1` on an OpenStruct interns :a at run time, and without the
+     hook `o.to_h` printed {"": 1}. */
+  if (g_emit_sym_rt)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
   /* A C stack that ran out becomes a catchable SystemStackError: the fault
      handler in the runtime archive cannot reach this TU's exception stack,
