@@ -4575,3 +4575,33 @@ void kw_key_inspect(const char *kn, int is_sym, char *out, size_t n) {
   if (o < n) snprintf(out + o, n - o, "%s", quote ? "\"" : "");
   else out[n - 1] = 0;
 }
+
+/* An emitter asked to write into g_pre itself, after a partial line
+   (`buf_printf(g_pre, "sp_int _t3 = "); emit_int_expr(c, v, g_pre)`): what
+   the expression hoists would land in the middle of that line -- an
+   argument through a method with a default (`with_index(w(1))`), a value
+   stored through a setter -- and the C did not build. The value is emitted
+   into a side buffer, the hoisted statements are spliced in where the
+   line starts, and the value is appended to the line. */
+void emit_into_pre_line(Compiler *c, void (*fn)(Compiler *, int, Buf *), int node) {
+  Buf *pre = g_pre;
+  size_t ls = pre->len;
+  while (ls > 0 && pre->p[ls - 1] != '\n') ls--;
+  Buf val; memset(&val, 0, sizeof val);
+  Buf hoist; memset(&hoist, 0, sizeof hoist);
+  g_pre = &hoist;
+  fn(c, node, &val);
+  g_pre = pre;
+  if (hoist.len > 0) {
+    size_t tail = pre->len - ls;
+    char *saved = malloc(tail + 1);
+    memcpy(saved, pre->p + ls, tail); saved[tail] = 0;
+    pre->len = ls; pre->p[ls] = 0;
+    buf_puts(pre, hoist.p);
+    if (pre->len > 0 && pre->p[pre->len - 1] != '\n') buf_puts(pre, "\n");
+    buf_putn(pre, saved, tail);
+    free(saved);
+  }
+  if (val.p) buf_puts(pre, val.p);
+  free(val.p); free(hoist.p);
+}

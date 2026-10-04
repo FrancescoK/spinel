@@ -261,6 +261,7 @@ extern int g_ie_res_poly;
 extern const char *g_self;
 extern const char *g_self_deref;
 extern const char *g_inline_recv_expr;
+void emit_into_pre_line(Compiler *c, void (*fn)(Compiler *, int, Buf *), int node);
 extern int g_inline_recv_class;
 /* When emitting class/module body statements, the class index (-1 outside). */
 extern int g_class_body_id;
