@@ -1,0 +1,11 @@
+can't modify frozen Hash: {k: 1}
+true
+can't modify frozen Hash: {k: 1}
+true
+can't modify frozen Hash: {k: 1}
+true
+can't modify frozen Hash: {k: 1}
+true
+can't modify frozen Hash: {k: 1}
+true
+can't modify frozen Hash: {"a" => [1]}
