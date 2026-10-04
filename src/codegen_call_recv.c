@@ -9617,7 +9617,9 @@ static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
     }
     fe_up[fl] = 0;
     fe_bin = sp_streq(fe_up, "ASCII-8BIT") || sp_streq(fe_up, "BINARY");
-    fe_txt = sp_streq(fe_up, "UTF-8");
+    /* US-ASCII has no tag of its own: it is text, so a high byte reads as
+       the invalid character it is there rather than as a binary byte */
+    fe_txt = sp_streq(fe_up, "UTF-8") || sp_streq(fe_up, "US-ASCII") || sp_streq(fe_up, "ASCII");
   }
   return fe_bin ? 1 : fe_txt ? 0 : -1;
 }
