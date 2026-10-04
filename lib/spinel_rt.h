@@ -12738,10 +12738,16 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      carries, as CRuby's does: a rescue clause fills only an empty cause, so
      it never saw the new one. A frozen exception is raised as a copy that
      takes the cause, as in CRuby. A cause whose chain leads back to the
-     object is dropped rather than closing a cycle (CRuby refuses it with
-     ArgumentError). */
+     object would close a cycle: CRuby raises ArgumentError instead. The
+     object named as its own cause leaves its cause as it is. */
   if (sp_exc_top > 0 && sp_explicit_cause_set && sp_explicit_cause && sp_pending_exc_obj) {
-    if (sp_exc_cause_chain_reaches((sp_Exception *)sp_explicit_cause, sp_pending_exc_obj)) sp_explicit_cause = NULL;
+    if (sp_explicit_cause == sp_pending_exc_obj) {
+      sp_explicit_cause = ((sp_Exception *)sp_pending_exc_obj)->cause;
+    }
+    else if (sp_exc_cause_chain_reaches((sp_Exception *)sp_explicit_cause, sp_pending_exc_obj)) {
+      sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_pending_exc_obj = NULL;
+      sp_raise_cls("ArgumentError", "circular causes");
+    }
     else {
       if (sp_gc_is_frozen(sp_pending_exc_obj)) sp_pending_exc_obj = sp_exc_dup((sp_Exception *)sp_pending_exc_obj);
       sp_gc_wb(sp_pending_exc_obj);
