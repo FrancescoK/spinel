@@ -2631,10 +2631,13 @@ static inline sp_Rational sp_poly_kernel_rational_arg(sp_RbVal v) {
   return sp_poly_kernel_rational(v);
 }
 /* Unbox a boxed Complex (a real number becomes re+0i). Used to keep a Complex
-   reduce accumulator typed when the block folds through the poly `+`. */
+   reduce accumulator typed when the block folds through the poly `+`. A Float
+   real part stays Float-classed, as sp_poly_complex_arg keeps it: cleared, a
+   whole Float read as an Integer, so `x + Complex(0, 2)` with x = 1.0 was
+   (1+2i) where CRuby answers (1.0+2i). */
 static inline sp_Complex sp_poly_as_complex(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX && v.v.p) return *(sp_Complex *)v.v.p;
-  return (sp_Complex){sp_poly_to_f(v), 0.0, 0};
+  return (sp_Complex){sp_poly_to_f(v), 0.0, v.tag == SP_TAG_FLT ? SP_CPLX_RE_F : 0};
 }
 /* A boxed argument of Kernel#Complex as a Complex, and whether it is one
    (*cplx): a Complex as it is, a String parsed whole (Complex("1+2i", 1) is
