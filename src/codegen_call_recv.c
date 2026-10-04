@@ -9047,12 +9047,28 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       }
     }
     /* Dynamic klass argument typed as TY_CLASS: runtime sp_class_le check */
-    if (comp_ntype(c, argv[0]) == TY_CLASS) {
+    if (comp_ntype(c, argv[0]) == TY_CLASS ||
+        (comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_ConstantReadNode)) {
       int cid = ty_object_class(rt);
       int k = ++g_tmp;
-      buf_printf(b, "({ sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
+      buf_printf(b, "({ sp_Class _t%d = ", k);
+      /* a class read out of a boxed slot is checked: CRuby's TypeError */
+      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_printf(b, "; ");
       if (sp_streq(name, "instance_of?")) {
-        buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; })", singleton_visible_ci(c, cid), k);
+        if (cid >= 0 && cid < c->nclasses && !c->classes[cid].is_value_type && class_has_descendants(c, cid)) {
+          /* the object's own class, which a subclass instance running an
+             inherited method (`instance_of?(w(Animal))` in a Dog) does not
+             share with the method's: read off the object, a synthesized
+             singleton class answering as its parent (#4142) */
+          int o9 = ++g_tmp;
+          buf_printf(b, "sp_int _t%d = (", o9); emit_expr(c, recv, b); buf_puts(b, ")->cls_id; (");
+          for (int kk = 0; kk < c->nclasses; kk++)
+            if (singleton_visible_ci(c, kk) != kk) buf_printf(b, "_t%d == %d ? %d : ", o9, kk, singleton_visible_ci(c, kk));
+          buf_printf(b, "_t%d) == _t%d.cls_id; })", o9, k);
+        }
+        else buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; })", singleton_visible_ci(c, cid), k);
       }
       else {
         buf_puts(b, "sp_class_le(");

@@ -793,14 +793,24 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   }
 
   /* poly.is_a?(class_var) where the argument is a TY_CLASS typed expression.
-     Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+     Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins.
+     A typed builtin receiver (`5.is_a?(k)`, `nil.is_a?(k)`) is boxed and asked
+     the same way: it had no arm, and raised NoMethodError or answered false. */
+  int builtin_rt = rt != TY_POLY && !ty_is_object(rt) && rt != TY_CLASS && rt != TY_UNKNOWN &&
+                   rt != TY_VOID && rt != TY_EXCEPTION && rt != TY_IO;
+  if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
       is_kind_query(name) &&
-      comp_ntype(c, argv[0]) == TY_CLASS &&
+      (comp_ntype(c, argv[0]) == TY_CLASS || comp_ntype(c, argv[0]) == TY_POLY) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
-    buf_printf(b, "sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    if (rt == TY_POLY) emit_expr(c, recv, b); else emit_boxed(c, recv, b);
+    buf_printf(b, "; ");
+    /* a class read out of a boxed slot is checked: CRuby's TypeError */
+    buf_printf(b, "sp_Class _t%d = ", k);
+    if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else emit_expr(c, argv[0], b);
+    buf_printf(b, "; ");
     if (sp_streq(name, "instance_of?"))
       buf_printf(b, "sp_poly_get_class(_t%d).cls_id == _t%d.cls_id; })", t, k);
     else

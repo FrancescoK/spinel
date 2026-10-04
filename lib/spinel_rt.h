@@ -10674,6 +10674,13 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
    name match for instance_of? (and same-class is_a?), plus the builtin-ancestry
    table for is_a?. A dynamic user-class ancestor is out of reach here, so this
    under-reports at worst (never a false positive) -- the safe direction. */
+/* The class argument of is_a? / kind_of? / instance_of? read out of a boxed
+   slot (a class passed through a method or stored in an ivar): a Class or
+   Module, else CRuby's TypeError. */
+static SP_UNUSED sp_Class sp_isa_class_arg(sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS) sp_raise_cls("TypeError", "class or module required");
+  return sp_unbox_class(v);
+}
 static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
   const char *cn = sp_poly_to_s(cls);
   if (!cn) return FALSE;
