@@ -18298,6 +18298,108 @@ static int local_obj_nil_written(Compiler *c, Scope *sc, const char *ln, LocalVa
   return lv->obj_nil_written == 1;
 }
 
+/* Can a user method answer nil (a NULL object pointer) where its type says
+   a user object: a nil it writes (`cond ? Box.new : nil`, a bare `return`),
+   a builtin pick that finds nothing (`@items.find { }`, `.first`), a `&.`
+   call, another such method, or an ivar of its class that nothing ever
+   writes (`def self.box = @box`). A call on its result then raises
+   NoMethodError where it ran with a NULL self (#7262). */
+static int ret_nilable_value(Compiler *c, int mi, int v, int depth);
+static int ivar_never_written(Compiler *c, int cid, const char *ivn) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind wk[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+    NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableTargetNode };
+  for (int k = 0; k < 5; k++)
+    NT_FOREACH_KIND(nt, wk[k], w) {
+      const char *wn = nt_str(nt, w, "name");
+      Scope *ws = comp_scope_of(c, w);
+      if (wn && sp_streq(wn, ivn) && (!ws || ws->class_id == cid || ws->class_id < 0)) return 0;
+    }
+  /* a setter or a reflective write fills it from outside */
+  if (cid >= 0 && comp_resolve_member(c, cid, ivn + 1, 1, NULL, NULL) == SP_MEMBER_ATTR) return 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, cl) {
+    const char *cn = nt_str(nt, cl, "name");
+    if (cn && (sp_streq(cn, "instance_variable_set") || sp_streq(cn, "instance_variable_get"))) return 0;
+  }
+  return 1;
+}
+static int ret_nilable_returns(Compiler *c, int mi, int node, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_ReturnNode) {
+    int a = nt_ref(nt, node, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 0 || (an == 1 && ret_nilable_value(c, mi, av[0], depth))) return 1;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (ret_nilable_returns(c, mi, nt_ref_at(nt, node, i), depth)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (ret_nilable_returns(c, mi, ids[j], depth)) return 1;
+  }
+  return 0;
+}
+static int method_ret_nilable(Compiler *c, int mi, int depth) {
+  static signed char *memo = NULL; static int memo_n = 0; static const NodeTable *memo_nt = NULL;
+  if (mi < 0 || mi >= c->nscopes || depth > 4) return 0;
+  if (memo_nt != c->nt || memo_n < c->nscopes) {
+    free(memo); memo_n = c->nscopes; memo = calloc((size_t)memo_n, 1); memo_nt = c->nt;
+    if (!memo) { memo_n = 0; return 0; }
+  }
+  if (memo[mi]) return memo[mi] == 1;
+  memo[mi] = 2;   /* a recursion answers no */
+  Scope *m = &c->scopes[mi];
+  const NodeTable *nt = c->nt;
+  int r = 0;
+  if (m->def_node >= 0 && m->body >= 0) {
+    r = ret_nilable_value(c, mi, m->body, depth);
+    /* every `return` the body holds, outside a nested lambda or def */
+    if (!r) r = ret_nilable_returns(c, mi, m->body, depth);
+  }
+  memo[mi] = r ? 1 : 2;
+  return r;
+}
+static int ret_nilable_value(Compiler *c, int mi, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0) return 1;
+  NodeKind k = nt_kind(nt, v);
+  if (nil_value_node(c, v)) return 1;
+  if (k == NK_StatementsNode || k == NK_BeginNode) {
+    int st = k == NK_BeginNode ? nt_ref(nt, v, "statements") : v;
+    if (st < 0) return 1;
+    int n = 0; const int *bd = nt_arr(nt, st, "body", &n);
+    return n == 0 ? 1 : ret_nilable_value(c, mi, bd[n - 1], depth);
+  }
+  if (k == NK_ReturnNode) return 0;   /* counted with the returns */
+  if (k == NK_InstanceVariableReadNode) {
+    const char *ivn = nt_str(nt, v, "name");
+    return ivn && ivar_never_written(c, c->scopes[mi].class_id, ivn);
+  }
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, v, "name");
+    const char *op = nt_str(nt, v, "call_operator");
+    if (op && sp_streq(op, "&.")) return 1;
+    int r = nt_ref(nt, v, "receiver");
+    int a = nt_ref(nt, v, "arguments"), an = 0;
+    if (a >= 0) nt_arr(nt, a, "arguments", &an);
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (nm && r >= 0 && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt))) {
+      static const char *const picks[] = { "find", "detect", "first", "last", "min", "max", "min_by",
+        "max_by", "sample", "shift", "pop", NULL };
+      for (int i = 0; picks[i]; i++) if (sp_streq(nm, picks[i]) && an == 0) return 1;
+      if ((sp_streq(nm, "[]") || sp_streq(nm, "at") || sp_streq(nm, "dig")) && an >= 1) return 1;
+      return 0;
+    }
+    const CallPlan *p = cplan_user(c, v);
+    return p && p->mi >= 0 && method_ret_nilable(c, p->mi, depth + 1);
+  }
+  return 0;
+}
+
 int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -18324,6 +18426,18 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
       if (wn && sp_streq(wn, gn) && nil_value_node(c, nt_ref(nt, w, "value"))) { nilw = 1; break; }
     }
     if (!nilw) return 0;
+    *recv_out = recv;
+    return 1;
+  }
+  if (nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode) {
+    /* a user method's own nil result (`find(1).v`, `M.box.hello`) */
+    if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+    int rcid = ty_object_class(rt);
+    if (comp_method_in_chain(c, rcid, nm, NULL) < 0 && !comp_reader_in_chain(c, rcid, nm, NULL) &&
+        !nil_guard_writer(c, rcid, nm))
+      return 0;
+    const CallPlan *rp = cplan_user(c, unwrap_parens(c, recv));
+    if (!rp || rp->mi < 0 || !method_ret_nilable(c, rp->mi, 0)) return 0;
     *recv_out = recv;
     return 1;
   }
@@ -19910,7 +20024,33 @@ void emit_call(Compiler *c, int id, Buf *b) {
   refuse_string_copies(c, id);
   int grecv = -1;
   int guard = nil_recv_guard(c, id, &grecv);
-  if (guard) {
+  if (guard && nt_kind(c->nt, unwrap_parens(c, grecv)) == NK_CallNode) {
+    /* a call's result is read once, into a rooted temp the call reads */
+    int tg = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, grecv, &rb);
+    Buf decl; memset(&decl, 0, sizeof decl);
+    emit_ctype(c, comp_ntype(c, grecv), &decl);
+    buf_printf(&decl, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
+               tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(c->nt, id, "name"));
+    int slot = view_bind(grecv, "_t%d", tg);
+    size_t pre0 = g_pre ? g_pre->len : 0;
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_call_held(c, id, &cb);
+    view_unbind(slot);
+    if (g_pre && g_pre->len > pre0) {
+      Buf rest; memset(&rest, 0, sizeof rest);
+      buf_puts(&rest, g_pre->p + pre0);
+      g_pre->len = pre0; g_pre->p[pre0] = 0;
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, decl.p); buf_puts(g_pre, "\n");
+      buf_puts(g_pre, rest.p);
+      free(rest.p);
+      buf_puts(b, cb.p ? cb.p : "");
+    }
+    else buf_printf(b, "({ %s%s; })", decl.p, cb.p ? cb.p : "");
+    free(rb.p); free(decl.p); free(cb.p);
+  }
+  else if (guard) {
     /* A call whose emission hoists its work (an iterator's loop) into
        g_pre reads the receiver there, so the guard goes in front of that
        work rather than around the expression left behind. */

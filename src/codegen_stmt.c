@@ -10637,7 +10637,26 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
   }
   if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return 1; }
   { int grecv = -1;
-    if (id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv)) {
+    if (id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv) &&
+        nt_kind(nt, unwrap_parens(c, grecv)) == NK_CallNode) {
+      /* a call's result: read once into a rooted temp the statement reads */
+      int tg = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_expr(c, grecv, &rb);
+      emit_indent(b, indent); buf_puts(b, "{ ");
+      emit_ctype(c, comp_ntype(c, grecv), b);
+      buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+                 tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(nt, id, "name"));
+      free(rb.p);
+      int slot = view_bind(grecv, "_t%d", tg);
+      int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
+      emit_stmt_inner(c, id, b, indent + 1);
+      g_ivar_nil_guarded_id = sv;
+      view_unbind(slot);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+    if (grecv >= 0) {
       emit_ivar_nil_guard(c, id, grecv, b, indent);
       int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
       emit_stmt_inner(c, id, b, indent);
