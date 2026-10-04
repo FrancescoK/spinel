@@ -1,0 +1,4 @@
+Errno::ENOENT
+No such file or directory - /nonexistent_spinel_exec_target
+spawned
+replaced by echo

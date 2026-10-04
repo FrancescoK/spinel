@@ -7191,6 +7191,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       return TY_INT;
     if (rname && sp_streq(rname, "Process") && sp_streq(name, "spawn") && argc >= 1)
       return TY_INT;
+    /* Process.exec replaces the process: it answers nothing */
+    if (rname && sp_streq(rname, "Process") && sp_streq(name, "exec") && argc >= 1)
+      return TY_NIL;
     if (rname && sp_streq(rname, "Process") &&
         (sp_streq(name, "waitpid2") || sp_streq(name, "wait2")) && argc <= 1)
       return TY_POLY_ARRAY;
