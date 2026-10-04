@@ -7460,7 +7460,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
           continue;
         }
-        TyKind at = infer_type(c, argv[a]);
+        TyKind at = poly_arg_slot_type(c, argv[a], infer_type(c, argv[a]));
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. */

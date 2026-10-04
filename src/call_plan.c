@@ -60,6 +60,18 @@ static const char *cplan_reopen_class(TyKind rt) {
   }
 }
 
+/* The type a poly dispatch holds an argument in: a local whose slot is
+   boxed is held boxed, whatever its read was typed. A String-or-nil
+   parameter read where a String store demands its handle was typed the
+   handle, and the temp declared sp_String * took the sp_RbVal slot (#7305). */
+TyKind poly_arg_slot_type(Compiler *c, int node, TyKind at) {
+  if (node < 0 || nt_kind(c->nt, node) != NK_LocalVariableReadNode || at == TY_POLY) return at;
+  Scope *s = comp_scope_of(c, node);
+  const char *ln = nt_str(c->nt, node, "name");
+  LocalVar *lv = s && ln ? scope_local(s, ln) : NULL;
+  return lv && lv->type == TY_POLY && (at == TY_STRING || at == TY_STRBUF) ? TY_POLY : at;
+}
+
 /* a program's own Object method, for a name Object's builtin surface does
    not answer itself */
 static void cplan_object_reopen(Compiler *c, const char *name, CallPlan *p) {
@@ -1104,7 +1116,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   for (int a = 0; a < argc; a++) atmp_ty[a] = TY_UNKNOWN;
   for (int a = 0; a < pos_argc; a++) {
     if (nt_kind(nt, argv[a]) == NK_SplatNode) { atmp_ty[a] = TY_POLY_ARRAY; continue; }
-    TyKind at = comp_ntype(c, argv[a]);
+    TyKind at = poly_arg_slot_type(c, argv[a], comp_ntype(c, argv[a]));
     atmp_ty[a] = at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN ? TY_POLY : at;
   }
   int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
