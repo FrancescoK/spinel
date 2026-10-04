@@ -1856,6 +1856,8 @@ GC_MINOR_TESTS := test/combinations_yield_ivar.rb \
                   test/boxed_map_bang_write_barrier.rb \
                   test/boxed_map_bang_dispatch_write_barrier.rb \
                   test/gc_minor_thread_retval.rb \
+                  test/gc_alloc_front_sizes.rb \
+                  test/gc_alloc_front_threads.rb \
                   test/str_fresh_recv_rooted.rb \
                   test/gc_minor_thread_tls_first_write.rb \
                   test/proc_cell_capture_marked.rb \
