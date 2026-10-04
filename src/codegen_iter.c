@@ -5167,6 +5167,24 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
   return -1;
 }
 
+/* Combinatorial rows are boxed PolyArrays even when the parameter keeps
+   the element-array type inferred from a yield-set receiver. Convert that
+   row to the parameter's array representation before binding it. */
+static void emit_poly_combination_param(Compiler *c, int block, const char *pn,
+                                        int tc, int ti, int indent, Buf *b) {
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, pn) : NULL;
+  TyKind pt = lv ? lv->type : TY_UNKNOWN;
+  emit_indent(b, indent);
+  if (pt == TY_POLY_ARRAY)
+    buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", pn, tc, ti);
+  else if (ty_is_array(pt)) {
+    char src[80]; snprintf(src, sizeof src, "sp_PolyArray_get(_t%d, _t%d)", tc, ti);
+    emit_block_param_from_boxed(c, pn, pt, src, b);
+  }
+  else buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", pn, tc, ti);
+}
+
 /* emit_iteration_stmt_body's combination / permutation family with a block
    (its refusals and its forms) and Array#each_cons (answers 1 emitted, 0
    declined, -1 to go on) */
@@ -5239,16 +5257,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
     if (ac == 1) emit_int_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
     buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
     emit_indent(b, indent + 1); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
-    if (p0) {
-      Scope *cbsc = comp_scope_of(c, block);
-      LocalVar *clv = cbsc ? scope_local(cbsc, p0) : NULL;
-      TyKind cpt = clv ? clv->type : TY_UNKNOWN;
-      emit_indent(b, indent + 2);
-      if (cpt == TY_POLY_ARRAY)
-        buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tc, ti);
-      else
-        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tc, ti);
-    }
+    if (p0) emit_poly_combination_param(c, block, p0, tc, ti, indent + 2, b);
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
