@@ -16034,8 +16034,15 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
        sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
        sp_streq(name, "max_by") || sp_streq(name, "group_by") ||
        sp_streq(name, "partition"))) {
-    buf_puts(b, "sp_Enumerator_new_from(");
-    emit_boxed(c, recv, b); buf_puts(b, ")");
+    /* a poly result slot (the default arm of a dispatch whose user arms
+       answer other classes, the receiver cast to a Hash there) takes the
+       Enumerator boxed (#7279) */
+    Buf eb; memset(&eb, 0, sizeof eb);
+    buf_puts(&eb, "sp_Enumerator_new_from(");
+    emit_boxed(c, recv, &eb); buf_puts(&eb, ")");
+    if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    else buf_puts(b, eb.p);
+    free(eb.p);
     return 1;
   }
   /* hash.each_value / hash.each_key with no block -> an external Enumerator
@@ -16043,9 +16050,13 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       ty_is_hash(comp_ntype(c, recv)) &&
       (is_hash_key_value_each(name))) {
-    buf_printf(b, "sp_Enumerator_new_from_items(sp_enum_hash_side(");
-    emit_boxed(c, recv, b);
-    buf_printf(b, ", %d))", sp_streq(name, "each_key") ? 1 : 0);
+    Buf eb; memset(&eb, 0, sizeof eb);
+    buf_printf(&eb, "sp_Enumerator_new_from_items(sp_enum_hash_side(");
+    emit_boxed(c, recv, &eb);
+    buf_printf(&eb, ", %d))", sp_streq(name, "each_key") ? 1 : 0);
+    if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    else buf_puts(b, eb.p);
+    free(eb.p);
     return 1;
   }
   /* <enumerator>.with_index(off) with no block -> a materialized Enumerator over
