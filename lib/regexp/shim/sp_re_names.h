@@ -32,8 +32,12 @@
 #define mrb_re_flags_cat sp_re_mrb_re_flags_cat
 #define mrb_re_free sp_re_mrb_re_free
 #define mrb_re_is_word_char sp_re_mrb_re_is_word_char
-/* This name is a function only in the RE_NO_UNICODE_* build. */
+/* This name is a function only in the RE_NO_UNICODE_* build (the
+   conditions shim/mruby.h turns into MRB_USE_ASCII_CTYPE); in the default
+   build re_internal.h defines it as a macro, which this one would clash with. */
+#if defined(MRB_USE_ASCII_CTYPE) || defined(RE_NO_UNICODE_CASE) || defined(RE_NO_UNICODE_CTYPE)
 #define mrb_re_needs_case_data sp_re_mrb_re_needs_case_data
+#endif
 #define mrb_re_rexec sp_re_mrb_re_rexec
 #define mrb_realloc sp_re_mrb_realloc
 #define mrb_realloc_simple sp_re_mrb_realloc_simple
