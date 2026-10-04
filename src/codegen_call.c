@@ -22246,6 +22246,18 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+  /* A top-level def (a hoisted `module Kernel` method among them) is a
+     private method of Object, so every receiver answers it to include_all:
+     `5.respond_to?(:foo, true)` read false. A receiver whose class has its
+     own respond_to? keeps the answer below. */
+  if (!resolved && foldable && include_all && recv >= 0 &&
+      !(ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0)) {
+    for (int si = 0; si < c->nscopes; si++) {
+      const Scope *ts = &c->scopes[si];
+      if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod &&
+          !ts->is_proc_form && sp_streq(ts->name, qm)) { resolved = yes = 1; break; }
+    }
+  }
   /* An IO answers by its kind -- a File, a socket, a server socket, a stat
      share the type -- which only the handle knows: sp_io_responds decides at
      run time. A method an Object reopening defines answers here; one an
