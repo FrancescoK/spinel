@@ -12399,8 +12399,8 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i") &&
       comp_ntype(c, id) != TY_POLY) {
     int tr = ++g_tmp, tb = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tr); emit_expr(c, recv, b);
+    buf_printf(b, "); sp_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_str_to_i_base(_t%d.v.s, _t%d)"
                   " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0); })",
                tr, tr, tb);
