@@ -14313,13 +14313,15 @@ int infer_return_types(Compiler *c) {
        return in optcarrot's hottest poke path for ~4% fps. Keep those at
        their pre-pass type; the main fixpoint still widens to poly freely. */
     if (g_ret_no_new_poly == 1 && r == TY_POLY && sc->ret != TY_POLY) continue;
-    /* At 2 (the late ivar-widening re-run) ONE transition is taken: a return
-       that had a concrete type follows its body to poly, because the ivar the
-       body answers widened after the return was derived and a String reading
-       over a poly value does not build (#4451). Everything else is left where
-       the earlier, gated re-runs settled it. */
+    /* At 2 (the late ivar-widening re-run) a return follows its body only
+       where the ivar the body answers widened after the return was derived:
+       a concrete type to poly (a String reading over a poly value does not
+       build, #4451), and an Integer to a Bignum (`def get = @v` returned a
+       promoted loop local's Bignum through an sp_int). Everything else is
+       left where the earlier, gated re-runs settled it. */
     if (g_ret_no_new_poly == 2 &&
-        !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL)) continue;
+        !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
+        !(r == TY_BIGINT && sc->ret == TY_INT)) continue;
     /* An element-less-hash body (`{}` / Hash.new) infers TY_UNKNOWN every pass
        (no witnessed element). Once a caller has pinned it to a concrete hash
        (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
