@@ -11905,7 +11905,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     int eq = !sp_streq(name, "!=");
     /* a Process::Status against an Integer compares its status word (its
        builtin-op rows) */
-    if (rt == TY_PROCESS_STATUS && a0 == TY_INT && emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    if (rt == TY_PROCESS_STATUS && (a0 == TY_INT || a0 == TY_FLOAT || a0 == TY_PROCESS_STATUS) &&
+        emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    /* ... and against a value of any other kind (a String, an object)
+       is false: no status word equals it */
+    if (rt == TY_PROCESS_STATUS && is_eq_or_ne(name) && a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_PROCESS_STATUS &&
+        a0 != TY_NIL && a0 != TY_POLY && a0 != TY_UNKNOWN) {
+      emit_voided_operands(c, recv, argv[0], !eq, b);
+      return 1;
+    }
     if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0) ||
                                    ty_is_hash(rt) || ty_is_hash(a0))) {
       emit_poly_cmp_ordered(c, "sp_poly_eql", recv, argv[0], b);
