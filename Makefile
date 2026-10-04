@@ -3492,11 +3492,14 @@ spin-check: bin/spin
 	@tools/spin_e2e.sh bin/spin
 
 # Full pre-push gate: test || bench || optcarrot in parallel.
+# tools/gate.rb records the tree the gate tested (see CONTRIBUTING.md) under
+# the Ruby tools/gate-ruby picks; without one (GATE_RUBY, or a Ruby 4.0 on
+# PATH) that step is skipped, and it never decides the gate's result.
 gate:
-	@ruby tools/gate.rb start
+	@r=$$(sh tools/gate-ruby) && "$$r" tools/gate.rb start || true
 	+@$(MAKE) --no-print-directory all $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory gate-legs
-	@CC="$(CC)" ruby tools/gate.rb stamp
+	@r=$$(sh tools/gate-ruby) && CC="$(CC)" "$$r" tools/gate.rb stamp || true
 	@echo "gate: ALL GREEN"
 
 hooks:

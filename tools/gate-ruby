@@ -1,0 +1,10 @@
+#!/bin/sh
+# Print the Ruby that tools/gate.rb and tools/hooks run under, and that
+# judges a new test's .expected: $GATE_RUBY, else `ruby` from PATH, and
+# only when it is Ruby 4.0 or later (the project follows the current
+# release). Print nothing, and exit 1, when there is no such Ruby; the
+# callers then skip their step rather than fail.
+r=${GATE_RUBY:-ruby}
+v=$("$r" -e 'print RUBY_VERSION' 2>/dev/null) || exit 1
+[ "${v%%.*}" -ge 4 ] 2>/dev/null || exit 1
+echo "$r"

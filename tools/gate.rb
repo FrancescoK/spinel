@@ -126,9 +126,18 @@ module Gate
     out
   end
 
-  def cruby(t, args)
+  # The CRuby that judges a new test's .expected: tools/gate-ruby's pick
+  # ($GATE_RUBY, else a Ruby 4.0 or later on PATH), or nil after a warning.
+  def reference_ruby
+    ruby = run("sh", File.join(__dir__, "gate-ruby")).to_s.strip
+    return ruby unless ruby.empty?
+
+    warn "gate: no Ruby 4.0 or later (set GATE_RUBY); .expected not checked against CRuby"
+  end
+
+  def cruby(ruby, t, args)
     stdin = File.exist?("#{t}.stdin") ? "#{t}.stdin" : File::NULL
-    IO.popen(["ruby", "--enable-frozen-string-literal", t, *args], in: stdin, err: File::NULL) do |io|
+    IO.popen([ruby, "--enable-frozen-string-literal", t, *args], in: stdin, err: File::NULL) do |io|
       reader = Thread.new { io.read }
       next reader.value if reader.join(20)
 
@@ -154,24 +163,26 @@ module Gate
         end
       end
     end
-    git("diff", "--cached", "--name-only", "--diff-filter=A", "--", "test/*.rb").to_s.split("\n").each do |t|
-      next if t.count("/") > 1
-
+    added = git("diff", "--cached", "--name-only", "--diff-filter=A", "--", "test/*.rb").to_s.split("\n")
+      .reject { |t| t.count("/") > 1 }
+    ruby = reference_ruby unless added.empty?
+    added.each do |t|
       src = show(":#{t}")
       errors << "#{t}: use Dir.tmpdir, not a fixed /tmp path" if src.match?(%r{["']/tmp/})
       if !src.include?("# spinel: int64") && src.scan(/(?<![\w.])\d[\d_]{9,}/).any? { |n| n.delete("_").to_i >= 2**31 }
         warn "gate: #{t} has literals past 2^31 but no `# spinel: int64` marker"
       end
       next errors << "#{t}: no #{t}.expected" unless staged.include?("#{t}.expected")
+      next unless ruby
 
       unless git("diff", "--quiet", "--", t, "#{t}.args", "#{t}.stdin")
         next warn("gate: #{t} has unstaged changes; .expected not checked")
       end
 
-      out = cruby(t, File.exist?("#{t}.args") ? File.read("#{t}.args").split : [])
+      out = cruby(ruby, t, File.exist?("#{t}.args") ? File.read("#{t}.args").split : [])
       next warn("gate: #{t} ran over 20s under CRuby; .expected not checked") unless out
 
-      errors << "#{t}: .expected differs from `ruby --enable-frozen-string-literal #{t}`" if out != show(":#{t}.expected")
+      errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out != show(":#{t}.expected")
     end
     errors.each { |e| warn "gate: #{e}" }
     errors.empty? ? 0 : 1

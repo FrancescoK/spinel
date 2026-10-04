@@ -36,13 +36,20 @@ Gate: green tree c5355fd0df33 master c55f919a6452 (linux-aarch64 gcc-14.2.0) tes
 
 The trailer goes only on a commit that, merged with that `master`, gives
 exactly the tested tree; a commit that changed after the gate loses it.
-`ruby tools/gate.rb verify <commit>` checks it the same way. The pre-commit
-hook (`ruby tools/gate.rb check`) refuses a commit that grows
-`emit_call_body` or any function over 1,000 lines, adds a test whose
-`.expected` differs from CRuby run with `--enable-frozen-string-literal`, or
-writes to a fixed `/tmp` path. Where the gate can't pass natively, `ruby
-tools/gate.rb linux` runs it in a Linux container on this branch merged with
-`master`, and records the same stamp.
+A rebase or any other rewrite keeps the trailer's text but not its truth.
+`ruby tools/gate.rb verify <commit>` checks it the same way and says OK,
+MISMATCH or NO GATE TRAILER. The pre-commit hook (`ruby tools/gate.rb
+check`) refuses a commit that grows `emit_call_body` or any function over
+1,000 lines, adds a test whose `.expected` differs from CRuby run with
+`--enable-frozen-string-literal`, or writes to a fixed `/tmp` path. Where the
+gate can't pass natively, `ruby tools/gate.rb linux` runs it in a Linux
+container on this branch merged with `master`, and records the same stamp.
+
+`make gate`'s stamp and the `.expected` comparison use `GATE_RUBY`, else
+`ruby` from `PATH` when it is Ruby 4.0 or later (`tools/gate-ruby` picks
+it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
+`make gate` skips the stamp and passes or fails exactly as it would
+otherwise, and the `.expected` comparison is skipped with a warning.
 
 ## What the review checks
 
