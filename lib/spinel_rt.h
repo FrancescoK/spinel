@@ -6510,15 +6510,17 @@ static int sp_rbval_is_array(sp_RbVal v) {
    (boxing its elements) and spliced there. Returns the possibly-new boxed array
    so the caller stores it back into the receiver's slot. */
 /* Can sp_poly_arr_writeback store every element of `work` into typed array
-   `orig` without raising? The same tests it makes. */
+   `orig` without raising or changing a value? Its tests, except that an
+   Integer does not fit a Float array. */
 static int sp_poly_arr_fits_kind(sp_RbVal orig, const sp_PolyArray *work) {
   if (orig.tag != SP_TAG_OBJ || !work) return 0;
   for (sp_int i = 0; i < work->len; i++) {
     sp_RbVal e = work->data[i];
     switch (orig.cls_id) {
       case SP_BUILTIN_INT_ARRAY: if (e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL) return 0; break;
-      case SP_BUILTIN_FLT_ARRAY:
-        if (e.tag != SP_TAG_FLT && e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL) return 0; break;
+      /* an Integer stays an Integer in CRuby; the Float array would turn it
+         into a Float, so it promotes instead */
+      case SP_BUILTIN_FLT_ARRAY: if (e.tag != SP_TAG_FLT && e.tag != SP_TAG_NIL) return 0; break;
       case SP_BUILTIN_STR_ARRAY: if (e.tag != SP_TAG_STR && !sp_poly_is_strbuf(e)) return 0; break;
       default: return 0;
     }
