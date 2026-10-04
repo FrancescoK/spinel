@@ -618,3 +618,7 @@ int is_array_or_object_class(const char *n) {
 int is_array_hash_or_object_class(const char *n) {
   return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Object");
 }
+
+int is_ivar_access(const char *n) {
+  return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set");
+}

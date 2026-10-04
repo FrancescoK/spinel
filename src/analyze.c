@@ -27733,6 +27733,19 @@ static void refuse_lent_ivar_copies(Compiler *c) {
 }
 }
 
+static void poly_ivar_set_reference(Compiler *c, int id, int recv) {
+  TyKind rt = comp_ntype(c, recv);
+  if (ty_is_object(rt)) {
+    int q = ty_object_class(rt);
+    if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+  }
+  else if (rt == TY_POLY) {
+    for (int q = 0; q < c->nclasses; q++)
+      if (poly_ivar_set_class(c, q) && poly_ivar_set_reaches(c, id, q))
+        c->classes[q].is_value_type = 0;
+  }
+}
+
 /* Setup, the AST desugarings and the registration passes: scopes, locals, attrs, aliases, globals and constants, FFI declarations (analyze_program's steps, in their order) */
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
@@ -31379,11 +31392,7 @@ static void an_phase_value_types(Compiler *c) {
             c->classes[s->class_id].is_value_type = 0;
         }
         else {
-          TyKind ivrty = comp_ntype(c, ivr);
-          if (ty_is_object(ivrty)) {
-            int q = ty_object_class(ivrty);
-            if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-          }
+          poly_ivar_set_reference(c, id, ivr);
         }
       }
     }

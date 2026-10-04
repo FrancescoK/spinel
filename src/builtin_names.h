@@ -172,4 +172,6 @@ int is_array_hash_or_object_class(const char *n); /* Array Hash Object */
 
 int is_integer_class_name(const char *n); /* Fixnum Integer */
 
+int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
+
 #endif
