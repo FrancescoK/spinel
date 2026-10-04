@@ -2408,6 +2408,17 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     }
   }
   if (emit_array_op_assign(c, lval, t, op, v, b)) return;
+  /* `x |= v` / `&=` / `^=` on a true/false local: TrueClass's and
+     FalseClass's operators answer a boolean from the operand's truthiness,
+     and always evaluate it (#7271) */
+  if (t == TY_BOOL && (sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"))) {
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_cond(c, v, &cb);
+    buf_printf(b, "%s = (sp_bool)((%s) %s ((%s) ? 1 : 0));\n", lval,
+               lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn), op, cb.p ? cb.p : "0");
+    free(cb.p);
+    return;
+  }
   /* `t += n` / `t -= n` on a Time: Time + Integer / Float and Time -
      Integer / Float exist (the binary emitter's sp_time_add_i / add_f /
      sub_i); the operator-assignment form fell through to the refusal (the
