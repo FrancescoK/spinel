@@ -12,6 +12,7 @@
 #include "node_table.h"
 #include "types.h"
 #include "builtin_names.h"
+#include "builtin_ops.h"
 
 /* require-gate (defined in spinel_parse.c). sp_feature_enabled(name) is 1 when
    feature `name` may be provided: always when the gate is off (g_require_gate
@@ -1019,14 +1020,14 @@ int        dynamic_new_may_reach(Compiler *c, int call_id, int cid);  /* k.new c
 int        anon_struct_ci_for_value(Compiler *c, int val);  /* k = Struct.new(...) value node */
 const char *struct_call_dup_member(Compiler *c, int callnode);  /* first duplicate member sym name, or NULL */
 const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symbol local */
-/* The String in-place mutators, as one table with a per-site mask (see
-   sp_str_mutator in analyze_util.c). The demand analysis and the codegen
+/* The String in-place mutators, as one table with a per-site mask in
+   builtin_ops.c. The demand analysis and the codegen
    re-routes used to keep four near-identical copies of this list; a mutator
    added to one and missed in another is exactly how #3307 / #3333 arrived. */
-#define SP_MUT_LOCAL     1u  /* seeds local-slot promotion: every mutator */
-#define SP_MUT_CONTAINER 2u  /* container-read mutation: no `[]=` */
-#define SP_MUT_IVAR      4u  /* ivar slot or a reader call (no rename) */
-#define SP_MUT_NARROW    8u  /* guard-narrowed poly re-route: also no append_as_bytes */
+#define SP_MUT_LOCAL     BOP_MUT_LOCAL      /* seeds local-slot promotion: every mutator */
+#define SP_MUT_CONTAINER BOP_MUT_CONTAINER  /* container-read mutation */
+#define SP_MUT_IVAR      BOP_MUT_IVAR       /* ivar slot or a reader call (no rename) */
+#define SP_MUT_NARROW    BOP_MUT_NARROW     /* guard-narrowed poly re-route: no append_as_bytes */
 /* 1 iff `nm` is a String in-place mutator serviceable at every site in `want`. */
 int sp_str_mutator(const char *nm, unsigned want);
 /* 1 iff call node `id` is a String method whose value is its receiver. */

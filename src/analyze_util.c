@@ -635,25 +635,7 @@ const char *sym_static_value(Compiler *c, int node) {
    its handle, through the shared-mutable shim's shadow (#4363), and a
    guard-narrowed box through its poly arm as the others do. */
 int sp_str_mutator(const char *nm, unsigned want) {
-  static const struct { const char *nm; unsigned mask; } M[] = {
-    { "[]=",             15u }, { "insert",         15u }, { "slice!",     15u },
-    { "setbyte",         15u },
-    { "append_as_bytes", SP_MUT_LOCAL | SP_MUT_CONTAINER | SP_MUT_IVAR },
-    { "<<",              15u }, { "concat",         15u }, { "prepend",    15u },
-    { "replace",         15u }, { "clear",          15u }, { "bytesplice", 15u },
-    { "gsub!",           15u }, { "sub!",           15u }, { "upcase!",    15u },
-    { "downcase!",       15u }, { "capitalize!",    15u }, { "swapcase!",  15u },
-    { "strip!",          15u }, { "lstrip!",        15u }, { "rstrip!",    15u },
-    { "chomp!",          15u }, { "chop!",          15u }, { "squeeze!",   15u },
-    { "tr!",             15u }, { "delete!",        15u }, { "tr_s!",      15u },
-    { "delete_prefix!",  15u }, { "delete_suffix!", 15u }, { "reverse!",   15u },
-    { "succ!",           15u }, { "next!",          15u }, { "scrub!",     15u },
-    { NULL, 0 }
-  };
-  if (!nm) return 0;
-  for (int i = 0; M[i].nm; i++)
-    if (sp_streq(nm, M[i].nm)) return (M[i].mask & want) == want;
-  return 0;
+  return bop_name_mutates(nm, want);
 }
 /* A String call whose value is its receiver, whatever it did to it first:
    to_s, to_str, itself and freeze, and the mutators that answer self --

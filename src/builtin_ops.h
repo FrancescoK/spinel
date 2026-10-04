@@ -14,6 +14,22 @@
 
 #include "types.h"
 
+/* Name-only properties of the boxed builtin surfaces. They do not depend
+   on a call's arity, block, or the concrete receiver row. */
+enum {
+  BOP_READ_NUMERIC = 1u,
+  BOP_READ_CONTAINER = 2u,
+  BOP_READ_STRING = 4u
+};
+enum {
+  BOP_MUT_LOCAL = 1u,
+  BOP_MUT_CONTAINER = 2u,
+  BOP_MUT_IVAR = 4u,
+  BOP_MUT_NARROW = 8u
+};
+int bop_name_has_reader(const char *name, unsigned surface);
+int bop_name_mutates(const char *name, unsigned sites);
+
 /* What a row asks of the call's block. BF_ANY: the legacy rule ignored the
    block, so the row does too. */
 typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;

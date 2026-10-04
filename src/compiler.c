@@ -2322,33 +2322,11 @@ const char *poly_enum_op_for(const char *name) {
    the user method's return -- typing it as the user's made the builtin arm's
    boxed answer read as that object, and the program segfaulted (#4012). */
 int poly_numeric_read_p(const char *name) {
-  static const char *const N[] = {
-    "abs", "round", "succ", "next", "pred", "ceil", "floor", "truncate",
-    "numerator", "denominator", "nonzero?", NULL };
-  if (!name) return 0;
-  for (int i = 0; N[i]; i++) if (sp_streq(name, N[i])) return 1;
-  return 0;
+  return bop_name_has_reader(name, BOP_READ_NUMERIC);
 }
 
 int poly_container_read_p(const char *name) {
-  static const char *const N[] = {
-    "first", "last", "keys", "values", "min", "max", "sum", "sort",
-    "reverse", "index",
-    /* the surface serves these now: each ends the dispatch in a runtime
-       helper that lets the receiver answer for itself, so the call's type is
-       the union rather than whichever user method owns the name */
-    "delete", "dig", "values_at",
-    /* a blockless each answers an Enumerator over the container; a class
-       with a Ruby each in the program left an Array on the raise default */
-    "each",
-    /* an Array's pop and shift answer through sp_poly_pop / sp_poly_shift,
-       which mutate the container behind the boxed pointer in place: a user
-       class owning the name left the call typed from that method alone, and
-       a genuine Array's answer was dropped or raised (#5099) */
-    "pop", "shift", NULL };
-  if (!name) return 0;
-  for (int i = 0; N[i]; i++) if (sp_streq(name, N[i])) return 1;
-  return 0;
+  return bop_name_has_reader(name, BOP_READ_CONTAINER);
 }
 
 /* The read-only String surface a poly receiver can be served from. Same idea
@@ -2369,19 +2347,7 @@ int poly_container_read_p(const char *name) {
    arm by NAME, so for those it would emit the container's helper inside a
    String-tagged arm. They keep whatever the container arms already give them. */
 int poly_string_read_p(const char *name) {
-  static const char *const N[] = {
-    "ascii_only?", "b", "byteindex", "byterindex", "byteslice", "bytesize",
-    "casecmp", "casecmp?", "center", "codepoints", "crypt",
-    "delete_prefix", "delete_suffix", "dump", "encode", "encoding",
-    "end_with?", "getbyte", "gsub", "hex", "intern",
-    "lines", "ljust", "lstrip", "match", "match?", "oct",
-    "partition", "rjust", "rpartition", "rstrip", "scan", "scrub",
-    "squeeze", "start_with?", "sub", "to_str", "to_sym",
-    "tr", "tr_s", "undump", "unicode_normalize", "unpack", "unpack1",
-    "valid_encoding?", NULL };
-  if (!name) return 0;
-  for (int i = 0; N[i]; i++) if (sp_streq(name, N[i])) return 1;
-  return 0;
+  return bop_name_has_reader(name, BOP_READ_STRING);
 }
 
 /* The class `self.class` at `recv` names when only one class can answer it:
