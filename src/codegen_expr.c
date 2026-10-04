@@ -3345,6 +3345,22 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     if (res == TY_VOID || res == TY_UNKNOWN || res == TY_NIL) res = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
+    /* An unresolved left emits a poly fallback. One that diverges -- a bare
+       name nothing defines raises NameError -- makes the whole chain diverge:
+       keep the raise and answer the result's own placeholder, so the slot
+       around the chain type-checks, and a chain nested in another reads as
+       diverging too (#7164). */
+    Buf lunk; memset(&lunk, 0, sizeof lunk);
+    if (lt == TY_UNKNOWN) {
+      emit_expr(c, left, &lunk);
+      if (text_diverges(lunk.p ? lunk.p : "")) {
+        buf_printf(b, "((void)(%s), %s)", lunk.p,
+                   res == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, res));
+        free(lunk.p);
+        return 1;
+      }
+    }
+    const char *ltxt = lunk.p ? lunk.p : "";
     buf_puts(b, "({ ");
     emit_ctype(c, (lt == TY_UNKNOWN || lt_falsy_const) ? res : lt, b);
     buf_printf(b, " _t%d = ", t);
@@ -3355,18 +3371,20 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     }
     /* an unresolved (TY_UNKNOWN) left emits a poly fallback (sp_box_nil); coerce
        it to the unified scalar result so the temp's declared type matches. */
-    else if (lt == TY_UNKNOWN && res == TY_INT) { buf_puts(b, "sp_poly_to_i_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
-    else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", ltxt);
+    else if (lt == TY_UNKNOWN && res == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", ltxt);
     /* a bool-unified chain with an unresolved left (a poly dispatch whose
        node type stayed unknown, e.g. alias-to-reader through a poly element):
        take its truthiness, mirroring the int/float coercions (#3276) */
-    else if (lt == TY_UNKNOWN && res == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, left, b); buf_puts(b, ")"); }
+    else if (lt == TY_UNKNOWN && res == TY_BOOL) buf_printf(b, "sp_poly_truthy(%s)", ltxt);
     /* The left may be an unresolved call emitting an sp_RbVal raise token
        (`x.details || "~"`, where details is typed String from the `||` but
        lowers to sp_raise_nomethod); coerce it to the temp's DECLARED type (res
        when the left itself is unknown) rather than assigning the raw token. A
        normal left emits unchanged. */
-    else emit_unresolved_coerced(c, left, lt == TY_UNKNOWN ? res : lt, b);
+    else if (lt == TY_UNKNOWN) emit_unresolved_coerced_text(c, left, res, ltxt, b);
+    else emit_unresolved_coerced(c, left, lt, b);
+    free(lunk.p);
     buf_puts(b, "; ");
     /* Truthiness of the left, built into its own buffer so the arms can be
        captured before it is committed to `b`. */
