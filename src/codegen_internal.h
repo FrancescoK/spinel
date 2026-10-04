@@ -623,6 +623,7 @@ int  push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind 
 void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
 /* emit_args_filled over the arguments `argv[0..argc)`, a run of some call's
    arguments (`raise Cls, msg` passes Cls.new the message alone); `argsNode`

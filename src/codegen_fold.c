@@ -104,6 +104,16 @@ static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
   return blk_tmp;
 }
 
+/* `, <proc>` after a call's receiver and arguments, when its callee `m`
+   takes its block as a proc parameter: the block the call site gives, or
+   NULL. A callee that yields takes none. */
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b) {
+  if (!m || !m->blk_param || !m->blk_param[0] || m->yields) return;
+  int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  if (blk_node >= 0) buf_printf(b, ", _t%d", emit_blk_proc_tmp(c, blk_node));
+  else buf_puts(b, ", NULL");
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");

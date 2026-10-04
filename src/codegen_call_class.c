@@ -3323,6 +3323,8 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_expr(c, recv, b);
           emit_args_filled(c, oc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+          /* a method taking `&block` takes the call's block, or NULL (#7200) */
+          emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
           buf_puts(b, ")");
           return 1;
         }

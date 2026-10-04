@@ -22768,6 +22768,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ciR, nmR), mc(nmR));
           emit_expr(c, recvR, b);
           emit_args_filled(c, miR, nt_ref(ntR, id, "arguments"), ", ", b);
+          emit_callee_block_arg(c, id, &c->scopes[miR], b);
           buf_puts(b, ")");
           return;
         }
