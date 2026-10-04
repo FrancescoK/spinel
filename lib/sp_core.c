@@ -428,37 +428,124 @@ int sp_snprintf_c_float(char *buf, size_t size, const char *fmt, double v) {
   return snprintf(buf, size, fmt, v);
 }
 
-/* Ruby's float conversions round the SHORTEST round-trip decimal
-   representation, not the exact binary value: `format("%.2f", 2.675)` answers
-   2.68 where C's printf answers 2.67, since 2.675 is stored as
-   2.67499999999999982 and Ruby's dtoa works from the four digits "2675" that
-   identify that double. Ties there go to even, so 2.345 answers 2.34 where C
-   answers 2.35. Round to `keep` significant digits the same way and rebuild
-   the value, leaving libc to lay out the field. */
-static double sp_float_round_shortest(double v, int keep) {
-  if (!isfinite(v) || v == 0.0 || keep <= 0 || keep > 17) return v;
-  char digs[48];
-  int nd = 0;
-  double a = v < 0 ? -v : v;
-  int dp = sp_float_shortest(a, digs, &nd);
-  /* nothing to re-round: the cut falls before the first digit (where Ruby's
-     own dtoa consults the exact value instead) or past the last one. A value
-     that needs 16 or 17 digits to identify it is left alone as well -- Ruby's
-     dtoa gives up on its own fast path there and rounds the exact binary
-     value, which is what libc does below. */
-  if (nd <= 0 || keep >= nd || nd > 15) return v;
-  long long num = 0;
-  for (int i = 0; i < keep; i++) num = num * 10 + (digs[i] - '0');
-  int rd = digs[keep] - '0', tail = 0;
-  for (int i = keep + 1; i < nd; i++) if (digs[i] != '0') { tail = 1; break; }
-  if (rd > 5 || (rd == 5 && (tail || (num & 1)))) num++;
-  /* num scaled by 10^(dp-keep+1); parse it back for the correctly-rounded
-     double (a carry that lengthened num keeps the same scale) */
+/* Ruby's float conversions go through its BSD__dtoa (missing/dtoa.c), whose
+   fast path generates the digits in double arithmetic and, unlike David
+   Gay's original, settles a remainder within its error bound of one half as
+   a tie, to even: `format("%.2f", 2.675)` answers 2.68 where C's printf
+   answers 2.67 (2.675 is stored as 2.67499999999999982), and
+   `format("%.2f", 0.69 / 6)` (0.11499999999999999112) answers 0.12 (#7270).
+   The fast path is run here as dtoa runs it (mode 3 for %f with the
+   precision as decimals, mode 2 for %e/%g as significant digits), and the
+   digits it settles on are rebuilt into the double libc then lays out. Where
+   dtoa leaves the fast path for its exact arithmetic (more than 14 digits, a
+   cut before the first digit, a denormal), the exact binary value is
+   rounded, which is what libc does. *keep_zeros is set when dtoa answers its
+   digits untrimmed: a tie settled to even whose exact value lies above the
+   half keeps its trailing zeros, which %g then prints (`format("%.5g",
+   7.91905000000000001)` is 7.9190). */
+static double sp_float_round_ruby(double v, int mode, int ndigits, int *keep_zeros) {
+  static const double tens[] = {
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14,
+    1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22 };
+  static const double bigtens[] = { 1e16, 1e32, 1e64, 1e128, 1e256 };
+  if (!isfinite(v) || v == 0.0) return v;
+  union { double f; uint64_t u; } x, d2, e;
+  double d = v < 0 ? -v : v;
+  x.f = d;
+  int bexp = (int)((x.u >> 52) & 0x7ff);
+  if (bexp == 0) return v;
+  /* k: dtoa's estimate of floor(log10(d)), exact when it can check it */
+  d2.u = (x.u & 0x000fffffffffffffULL) | 0x3ff0000000000000ULL;
+  int i = bexp - 1023;
+  double dsl = (d2.f - 1.5) * 0.289529654602168 + 0.1760912590558 + i * 0.301029995663981;
+  int k = (int)dsl;
+  if (dsl < 0. && dsl != k) k--;
+  int k_check = 1;
+  if (k >= 0 && k <= 22) {
+    if (d < tens[k]) k--;
+    k_check = 0;
+  }
+  int ilim, ilim1;
+  if (mode == 2) {
+    if (ndigits <= 0) ndigits = 1;
+    ilim = ilim1 = ndigits;
+  }
+  else {
+    ilim = ndigits + k + 1;
+    ilim1 = ilim - 1;
+  }
+  if (ilim <= 0 || ilim > 14) return v;
+  int ieps = 2;
+  if (k > 0) {
+    double ds = tens[k & 0xf];
+    int j = k >> 4;
+    if (j & 0x10) { j &= 0xf; d /= bigtens[4]; ieps++; }
+    for (int n = 0; j; j >>= 1, n++)
+      if (j & 1) { ieps++; ds *= bigtens[n]; }
+    d /= ds;
+  }
+  else if (k < 0) {
+    int j1 = -k;
+    d *= tens[j1 & 0xf];
+    for (int j = j1 >> 4, n = 0; j; j >>= 1, n++)
+      if (j & 1) { ieps++; d *= bigtens[n]; }
+  }
+  if (k_check && d < 1.) {
+    if (ilim1 <= 0) return v;
+    ilim = ilim1; k--; d *= 10.; ieps++;
+  }
+  e.f = ieps * d + 7.;
+  e.u -= (uint64_t)52 << 52;
+  double eps = e.f * tens[ilim - 1];
+  char s[24];
+  int n = 0;
+  for (int t = 1;; t++, d *= 10.) {
+    long L = (long)d;
+    if (!(d -= L)) ilim = t;
+    s[n++] = (char)('0' + L);
+    if (t == ilim) {
+      if (d > 0.5 + eps) goto bump_up;
+      if (d < 0.5 - eps) break;
+      /* within the error bound of a half: a tie, to even */
+      if ((s[n - 1] - '0') & 1) goto bump_up;
+      /* dtoa redoes these digits exactly and keeps them whatever the exact
+         remainder; above an exact half it does not trim their zeros */
+      /* an integer below 1e15 is redone by dtoa's small-integer loop, which
+         stops at the last kept digit without trimming */
+      if (keep_zeros && x.f == floor(x.f) && k <= 14) *keep_zeros = 1;
+      else if (keep_zeros && n < 20) {
+        char ex[900];
+        snprintf(ex, sizeof ex, "%.800e", v < 0 ? -v : v);
+        int dpos = n;               /* digit after the kept ones, in ex's mantissa */
+        const char *q = ex; int seen = 0;
+        while (*q && *q != 'e') {
+          if (*q >= '0' && *q <= '9') {
+            if (seen == dpos) break;
+            seen++;
+          }
+          q++;
+        }
+        if (*q >= '0' && *q <= '9') {
+          int above = *q > '5';
+          if (*q == '5') for (const char *t = q + 1; *t && *t != 'e'; t++) if (*t != '0') { above = 1; break; }
+          *keep_zeros = above;
+        }
+      }
+      break;
+    }
+  }
+  goto rebuild;
+bump_up:
+  while (n > 0 && s[n - 1] == '9') n--;
+  if (n == 0) { s[n++] = '1'; k++; }
+  else s[n - 1]++;
+rebuild:
+  s[n] = 0;
   char buf[64];
-  snprintf(buf, sizeof buf, "%llde%d", num, dp - keep + 1);
+  snprintf(buf, sizeof buf, "0.%se%d", s, k + 1);
   char *end = NULL;
   double r = 0;
-  if (!sp_read_float(buf, &end, &r)) return v;
+  if (!sp_read_float(buf, &end, &r) || !isfinite(r)) return v;
   return v < 0 ? -r : r;
 }
 /* sprintf's float directives: the C-locale delegation above, with Ruby's
@@ -477,16 +564,47 @@ int sp_snprintf_ruby_float(char *buf, size_t size, const char *fmt, double v) {
       prec = 0;
       for (const char *q = dot + 1; *q >= '0' && *q <= '9'; q++) prec = prec * 10 + (*q - '0');
     }
-    int keep;
-    if (conv == 'f') {
-      char digs[48];
-      int nd = 0;
-      double a = v < 0 ? -v : v;
-      keep = sp_float_shortest(a, digs, &nd) + prec + 1;
+    int keep_zeros = 0;
+    if (conv == 'f') v = sp_float_round_ruby(v, 3, prec, NULL);
+    else if (conv == 'e' || conv == 'E') v = sp_float_round_ruby(v, 2, prec + 1, NULL);
+    else {
+      v = sp_float_round_ruby(v, 2, prec, &keep_zeros);
+      /* %g with dtoa's digits untrimmed: the alternate form keeps the zeros;
+         a point it adds with no digit after it is not Ruby's */
+      if (keep_zeros && !strchr(fmt, '#') && n + 2 < 48) {
+        /* the flags and the width are laid out here, around the digits */
+        const char *f = fmt + 1;
+        int minus = 0, zero = 0, plus = 0, space = 0, width = 0;
+        for (;; f++) {
+          if (*f == '-') minus = 1;
+          else if (*f == '0') zero = 1;
+          else if (*f == '+') plus = 1;
+          else if (*f == ' ') space = 1;
+          else break;
+        }
+        while (*f >= '0' && *f <= '9' && width < 10000) width = width * 10 + (*f++ - '0');
+        if (width > 1000) return sp_snprintf_c_float(buf, size, fmt, v);
+        char af[64], body[512];
+        snprintf(af, sizeof af, "%%%s%s#%s", plus ? "+" : "", space ? " " : "", f);
+        int w = sp_snprintf_c_float(body, sizeof body, af, v);
+        if (w < 0 || (size_t)w >= sizeof body) return sp_snprintf_c_float(buf, size, fmt, v);
+        char *pt = strchr(body, '.');
+        if (pt && (pt[1] < '0' || pt[1] > '9')) { memmove(pt, pt + 1, strlen(pt + 1) + 1); w--; }
+        int pad = width > w ? width - w : 0;
+        char out[1100]; int o = 0;
+        const char *b0 = body;
+        if (!minus && zero && pad) {
+          if (*b0 == '-' || *b0 == '+' || *b0 == ' ') out[o++] = *b0++;
+          while (pad-- > 0) out[o++] = '0';
+        }
+        else if (!minus) while (pad-- > 0) out[o++] = ' ';
+        while (*b0) out[o++] = *b0++;
+        if (minus) while (pad-- > 0) out[o++] = ' ';
+        out[o] = 0;
+        if (size) { size_t c = (size_t)o < size - 1 ? (size_t)o : size - 1; memcpy(buf, out, c); buf[c] = 0; }
+        return o;
+      }
     }
-    else if (conv == 'g' || conv == 'G') keep = prec ? prec : 1;
-    else keep = prec + 1;
-    v = sp_float_round_shortest(v, keep);
   }
   return sp_snprintf_c_float(buf, size, fmt, v);
 }

@@ -1799,7 +1799,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
        path by falling through. */
     if (acid < 0) {
       const char *bcn = nt_str(nt, recv, "name");
-      if (bcn && sp_streq(bcn, "String")) { buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))"); return 1; }
+      if (bcn && sp_streq(bcn, "String")) { buf_puts(b, "sp_str_empty_binary()"); return 1; }
       if (bcn && sp_streq(bcn, "Array"))  { buf_puts(b, "sp_PolyArray_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { buf_puts(b, "sp_PolyPolyHash_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Object")) { buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)"); return 1; }
@@ -2793,9 +2793,13 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      helper beside it. Fall through to the class-member resolution instead. */
   if (recv < 0 && comp_method_index(c, name) >= 0) {
     Scope *esc = comp_scope_of(c, id);
-    int ecls = esc ? esc->class_id : -1;
+    /* a block run by instance_eval answers on its receiver's class: a
+       forwarded block's bare call took the top-level def of the same name
+       over the receiver's method (#7213) */
+    int ecls = g_ie_class_id >= 0 ? g_ie_class_id : esc ? esc->class_id : -1;
+    int ecm = g_ie_class_id < 0 && esc && esc->is_cmethod;
     int shadowed = ecls >= 0 && ecls < c->nclasses &&
-                   (esc->is_cmethod
+                   (ecm
                       ? comp_cmethod_in_chain(c, ecls, name, NULL) >= 0
                       : (comp_method_in_chain(c, ecls, name, NULL) >= 0 ||
                          comp_is_reader(&c->classes[ecls], name)));
@@ -3323,6 +3327,8 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_expr(c, recv, b);
           emit_args_filled(c, oc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+          /* a method taking `&block` takes the call's block, or NULL (#7200) */
+          emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
           buf_puts(b, ")");
           return 1;
         }

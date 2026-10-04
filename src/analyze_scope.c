@@ -3350,6 +3350,32 @@ static void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
 
 /* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
    module bodies. Called during analyze_program before fixpoint. */
+/* A native_func is a module function of its module: a bare call to it in one
+   of the module's own singleton methods (`hexdigest(x)` in `def self.twice`)
+   is the call on the module, as `Hasher.hexdigest(x)` is (#7205). The
+   module's own def of that name, if it has one, is what the call reaches. */
+static void bare_native_func_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (c->n_native_funcs == 0) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || nt_ref(nt, id, "receiver") >= 0) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || !sc->is_cmethod || sc->class_id < 0) continue;
+    const char *mod = c->classes[sc->class_id].name;
+    int hit = 0;
+    for (int i = 0; i < c->n_native_funcs && !hit; i++)
+      hit = sp_streq(c->native_funcs[i].mod, mod) && sp_streq(c->native_funcs[i].name, nm);
+    if (!hit || comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", mod);
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", cr);
+  }
+}
+
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
@@ -3836,6 +3862,7 @@ void register_ffi_decls(Compiler *c) {
       }
     }
   }
+  bare_native_func_calls(c);
 }
 
 /* Resolve Module.<method> against ffi_struct declarations. See compiler.h. */

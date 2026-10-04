@@ -116,6 +116,10 @@ spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass e
 spinel: the constant name Class__reopen is reserved by the compiler
 == test/reject/class_reopen_reserved_name.rb [promote] rc=1
 spinel: the constant name Class__reopen is reserved by the compiler
+== test/reject/class_superclass_method_call.rb [default] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
+== test/reject/class_superclass_method_call.rb [promote] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_then_module.rb [default] rc=1
 spinel: Thing is not a module (the first declaration, at line 0, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
@@ -207,6 +211,12 @@ spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed
 spinel: 1 refusal, nothing written
 == test/reject/instance_exec_refusal_moved_scope.rb [promote] rc=1
 spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed allocation registry to walk -- the GC tracks bytes, not a live-object index (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [default] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
+spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [promote] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
 spinel: 1 refusal, nothing written
 == test/reject/io_reopen_yielding_call.rb [default] rc=1
 spinel: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0

@@ -19363,8 +19363,12 @@ static int dyn_any_appender(Compiler *c) {
       unsigned bits = dyn_lit_bits(c, b) & 0xffffu;
       /* `each_with_object({}) { |x, memo| memo[k] = v }`: the block's second
          parameter IS the memo the call names, so when that is written as a
-         Hash or Array it is no String, whatever `k` and `v` turn out to be */
-      if (dyn_memo_is_container(c, n, nm)) bits &= ~2u;
+         Hash or Array it is no String, whatever `k` and `v` turn out to be.
+         Only the builtin: a user method of the same name hands its second
+         parameter whatever it likes (a String it yields), and clearing the
+         bit for it would drop a real appender, so a copy would lose the
+         append silently. */
+      if (dyn_memo_is_container(c, n, nm) && an_any_scope_by_name(c, nm) < 0) bits &= ~2u;
       if (!bits && !dyn_lit_post_app(c, b)) continue;
       int nk = dyn_block_targets(c, n, tg);
       for (int e = 0; e < nk && !g_dyn.any; e++) {
@@ -22848,6 +22852,14 @@ static int seed_contradicts(Compiler *c, TyKind slot, TyKind val, int ret) {
   int fv = ret ? seed_ret_family(c, val)  : seed_repr_family(c, val);
   if (!fs || !fv) return 0;
   if (fs != fv) return 1;
+  /* Two objects at a RETURN: a subclass in an ancestor's slot is legitimate,
+     but an ancestor (or an unrelated class) in a subclass's slot is a pointer
+     the declared C return type cannot hold, and cc refused it (#7278). */
+  if (ret && ty_is_object(slot) && ty_is_object(val) && slot != val) {
+    int cs = ty_object_class(slot), cv = ty_object_class(val);
+    if (cs < 0 || cs >= c->nclasses || cv < 0 || cv >= c->nclasses) return 0;
+    return !is_descendant(c, cv, cs);
+  }
   int ks = ret ? seed_ret_kind(slot) : seed_ptr_kind(slot);
   int kv = ret ? seed_ret_kind(val)  : seed_ptr_kind(val);
   /* Two HASHES differ convertibly in their VALUE kind -- the emitter rebuilds
@@ -28644,21 +28656,44 @@ static void an_phase_desugar_register(Compiler *c) {
   /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
      parentheses around one expression. Anything else -- `(A rescue B)`,
      `(x; Base)`, a local variable -- was read as no superclass and the class
-     silently became a subclass of Object: refuse it. */
+     silently became a subclass of Object: refuse it. Of the calls, only the
+     class makers are read: `Struct.new(..)`, `Data.define(..)`, and
+     `Class.new` / `Class.new(Base)` without a block, whose anonymous class
+     adds nothing, so the class inherits Base directly. Any other call
+     (`class A < f`) was Object as well. */
   {
-    const NodeTable *ntc = c->nt;
+    NodeTable *ntc = (NodeTable *)c->nt;
     for (int id = 0; id < ntc->count; id++) {
       if (nt_kind(ntc, id) != NK_ClassNode) continue;
       int sc = nt_ref(ntc, id, "superclass");
       if (sc < 0) continue;
       NodeKind sk = nt_kind(ntc, sc);
-      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode || sk == NK_CallNode) continue;
+      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) continue;
+      const char *what = nt_type(ntc, sc);
+      if (sk == NK_CallNode) {
+        if (is_struct_call(c, sc)) continue;
+        int rv = nt_ref(ntc, sc, "receiver");
+        const char *mn = nt_str(ntc, sc, "name");
+        int ca = nt_ref(ntc, sc, "arguments"), ac = 0;
+        const int *av = ca >= 0 ? nt_arr(ntc, ca, "arguments", &ac) : NULL;
+        if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
+            sp_streq(nt_str(ntc, rv, "name"), "Class") && mn && sp_streq(mn, "new") &&
+            nt_ref(ntc, sc, "block") < 0) {
+          if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); continue; }
+          if (ac == 1 && (nt_kind(ntc, av[0]) == NK_ConstantReadNode ||
+                          nt_kind(ntc, av[0]) == NK_ConstantPathNode)) {
+            nt_node_set_ref(ntc, id, "superclass", av[0]);
+            continue;
+          }
+        }
+        what = "a call other than Struct.new, Data.define or a blockless Class.new(Constant)";
+      }
       int ln = (int)nt_int(ntc, id, "node_line", 0);
       const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
       if (!file || !*file) file = ntc->source_file;
       if (!file || !*file) file = "source.rb";
       fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
-                      "write the superclass as a constant\n", file, ln, nt_type(ntc, sc));
+                      "write the superclass as a constant\n", file, ln, what);
       exit(1);
     }
   }
@@ -29580,6 +29615,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= desugar_dynamic_const_get_arms(c);   /* recv.const_get(var) on any other receiver -> static name dispatch */
     ch |= desugar_reopen_implicit_self(c);     /* `last` in `class Range; def m` -> self.last */
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
+    ch |= desugar_bare_spawn(c);               /* spawn(...) -> Process.spawn(...) */
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */

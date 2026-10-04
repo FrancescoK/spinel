@@ -146,6 +146,32 @@ int desugar_builtin_class_var_recv(Compiler *c) {
   return changed;
 }
 
+/* Kernel#spawn is Process.spawn: a receiverless `spawn(...)` gets Process as
+   its receiver, which the spawn arms already take, unless the program
+   defines a spawn of its own anywhere (#7203). */
+int desugar_bare_spawn(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "spawn")) return 0;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "spawn")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
+    int an = 0, args = nt_ref(nt, id, "arguments");
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (an < 1 || id >= c->node_cap) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", "Process");
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", cr);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* A bare `new(...)` in a class body (`MAP = { 0 => new(0) }`, `ONE = new(1)`)
    is a call on the class itself, which is the implicit self there. Nothing
    resolved it: the constant it initialised typed unknown and was dropped,
@@ -3375,6 +3401,39 @@ static int engine_absent_fold(NodeTable *nt, int e, int in) {
   return 1;
 }
 
+/* The settled engine checks of one statement list, spliced: each if /
+   unless whose predicate the engine fold decided is replaced by its live
+   branch's statements. An elsif chain is left as it is. */
+static int engine_splice_list(NodeTable *nt, int body) {
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+  int changed = 0;
+  for (int again = 1, rounds = 0; again && rounds < 8; rounds++) {
+    again = 0;
+    int n = 0; const int *st = nt_arr(nt, body, "body", &n);
+    for (int k = 0; k < n; k++) {
+      NodeKind sk = nt_kind(nt, st[k]);
+      int pred = sk == NK_IfNode || sk == NK_UnlessNode ? nt_ref(nt, st[k], "predicate") : -1;
+      if (pred < 0 || nt_int(nt, pred, "engine_check", 0) <= 0) continue;
+      int live = (nt_kind(nt, pred) == NK_TrueNode) == (sk == NK_IfNode)
+                 ? nt_ref(nt, st[k], "statements")
+                 : nt_ref(nt, st[k], sk == NK_IfNode ? "subsequent" : "else_clause");
+      if (live >= 0 && nt_kind(nt, live) == NK_ElseNode) live = nt_ref(nt, live, "statements");
+      if (live >= 0 && nt_kind(nt, live) != NK_StatementsNode) continue;
+      int ln = 0; const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
+      int *nb = malloc(sizeof(int) * (size_t)(n + ln));
+      if (!nb) return changed;
+      memcpy(nb, st, sizeof(int) * (size_t)k);
+      if (ln) memcpy(nb + k, lb, sizeof(int) * (size_t)ln);
+      memcpy(nb + k + ln, st + k + 1, sizeof(int) * (size_t)(n - k - 1));
+      nt_node_set_arr(nt, body, "body", nb, n - 1 + ln);
+      free(nb);
+      changed = again = 1;
+      break;
+    }
+  }
+  return changed;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -3475,6 +3534,17 @@ int desugar_engine_branches(Compiler *c) {
       changed = 1;
       st = nt_arr(nt, id, "body", &n);
     }
+  }
+  /* In a class or module body, or at the top level, a settled engine check
+     is spliced away: the live branch's statements take the if's place, so a
+     declaration the body scans for (native_lib, native_func, include,
+     attr_*), or a `module Kernel` reopening hoisted from the top level, is
+     seen where it is written for one engine (#7205, #7204). */
+  if (nt->root_id >= 0) changed |= engine_splice_list(nt, nt_ref(nt, nt->root_id, "statements"));
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind ck = nt_kind(nt, id);
+    if (ck == NK_ModuleNode || ck == NK_ClassNode || ck == NK_SingletonClassNode)
+      changed |= engine_splice_list(nt, nt_ref(nt, id, "body"));
   }
   return changed;
 }
@@ -4326,6 +4396,18 @@ int desugar_defined_method_call(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefinedNode || nt_ref(nt, id, "method_cond") >= 0) continue;
     int v = nt_ref(nt, id, "value");
+    /* defined?((e)) asks of e: parentheses around one statement are looked
+       through (`defined?((a += 1))` is "assignment", `defined?((zz))` nil).
+       Two statements or none stay, an "expression" or "nil". */
+    for (;;) {
+      if (v < 0 || nt_kind(nt, v) != NK_ParenthesesNode) break;
+      int body = nt_ref(nt, v, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn != 1) break;
+      v = bb[0];
+      nt_node_set_ref(nt, id, "value", v);
+      changed = 1;
+    }
     if (!defined_method_call(nt, v)) continue;
     int lv[64], k = 0;
     for (int cur = v; defined_method_call(nt, cur) && k < 64; cur = nt_ref(nt, cur, "receiver")) lv[k++] = cur;
@@ -4567,11 +4649,12 @@ int desugar_call_op_write(Compiler *c) {
       if (!parent) parent = an_parent_map(nt);
       if (!parent) continue;
       if (an_value_dropped(nt, parent, id) && !cow_user_block_value(c, parent, id)) continue;
-      /* defined?(w.n += 1) is "assignment": as the writer call it read "method" */
-      int up = parent[id];
-      while (up >= 0 && (nt_kind(nt, up) == NK_ParenthesesNode || nt_kind(nt, up) == NK_StatementsNode))
-        up = parent[up];
-      if (up >= 0 && nt_kind(nt, up) == NK_DefinedNode) continue;
+      /* defined?(w.n += 1) is "assignment": as the writer call it read "method".
+         desugar_defined_method_call has looked through any parentheses
+         around it, so the defined? names it as its value. */
+      int under_defined = 0;
+      NT_FOREACH_KIND(nt, NK_DefinedNode, d) if (nt_ref(nt, d, "value") == id) under_defined = 1;
+      if (under_defined) continue;
     }
     char opname[64]; snprintf(opname, sizeof opname, "%s", op);
     if (!simple) {

@@ -9258,7 +9258,7 @@ static void emit_cls_answers_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n"
               "  if (v.tag == SP_TAG_CLASS) {\n"
               "    const char *n = sp_class_val_name(v);\n"
-              "    if (strcmp(n, \"String\") == 0) return sp_box_str(sp_str_dup_external((&(\"\\xff\")[1])));\n"
+              "    if (strcmp(n, \"String\") == 0) return sp_box_str(sp_str_empty_binary());\n"
               "    if (strcmp(n, \"Array\") == 0) return sp_box_poly_array(sp_PolyArray_new());\n"
               "    if (strcmp(n, \"Hash\") == 0) return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);\n"
               "    if (strcmp(n, \"Object\") == 0) return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);\n"
@@ -13564,6 +13564,23 @@ static int deferred_raise_body(Compiler *c, int like, int scope, const char *msg
   return st;
 }
 
+/* An instance method of a program class (not a module, a builtin reopening
+   or a Struct) of which neither the class nor any descendant is ever
+   instantiated: no receiver for it exists, whatever reached its name. */
+static int scope_is_orphan_method(Compiler *c, int s) {
+  const Scope *sc = &c->scopes[s];
+  int k0 = sc->class_id;
+  if (k0 < 0 || k0 >= c->nclasses || sc->is_cmethod || sc->is_proc_form) return 0;
+  const ClassInfo *ci = &c->classes[k0];
+  if (ci->is_struct || ci->is_native_class || is_builtin_reopen(ci->name) ||
+      sp_streq(ci->name, "Toplevel")) return 0;
+  int dn = ci->def_node;
+  if (dn < 0 || dn >= c->nt->count || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if ((k == k0 || is_descendant(c, k, k0)) && c->classes[k].instantiated) return 0;
+  return 1;
+}
+
 /* `send` / `__send__` / `public_send` with a literal symbol/string name is
    rewritten to a direct call before this point (textually for a receiver form,
    on the AST for implicit self). A call to one of these that survives therefore
@@ -15712,7 +15729,34 @@ char *codegen_program(const NodeTable *nt) {
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
     int ndiag0 = g_ndiags;
+    int orphan = scope_is_orphan_method(c, s);
+    if (orphan) g_unsup_quiet = 1;
     EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+    g_unsup_quiet = 0;
+    /* An instance method of a class no instance of which is ever built is
+       reachable by its name alone (another class's method of that name is
+       called), and its argument types come from callers that never reach
+       it. A refusal in it does not stop the build: it is emitted raising
+       NotImplementedError naming the refusal, should an instance turn up
+       after all (#7280). */
+    if (orphan && g_ndiags > ndiag0 && c->scopes[s].body >= 0) {
+      char dmsg[2600];
+      const SpDiag *d = &g_diags[g_ndiags - 1];
+      if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
+      else snprintf(dmsg, sizeof dmsg, "%s", d->msg);
+      while (g_ndiags > ndiag0) {
+        g_ndiags--;
+        free((char *)g_diags[g_ndiags].file); free((char *)g_diags[g_ndiags].msg);
+      }
+      int ob = c->scopes[s].body;
+      int nb = deferred_raise_body(c, ob, s, dmsg);
+      if (nb >= 0) {
+        c->scopes[s].body = nb;
+        EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
+        c->scopes[s].body = ob;
+      }
+      continue;
+    }
     /* --defer-refusals: a refused method is emitted again with a body that
        raises NotImplementedError naming the refusal, when it is called */
     if (defer_refusals() && g_ndiags > ndiag0 && c->scopes[s].body >= 0) {

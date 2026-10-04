@@ -135,6 +135,11 @@ export LIBRARY_PATH := $(OPENSSL_PREFIX)/lib$(if $(LIBRARY_PATH),:$(LIBRARY_PATH
 # reason as the two above for being an export rather than a flag -- the run
 # is a child process of the test recipe.
 export LD_LIBRARY_PATH := $(OPENSSL_PREFIX)/lib$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
+# The exports above live only as long as `make`: a `spinel` run afterwards
+# (or `spin build`) linked `-lssl` with no -L and failed with `library
+# 'ssl' not found` (#7191). The probed directory is recorded in the
+# compiler (spinel_rev.h), which puts it beside the package's -l flags.
+SPINEL_OPENSSL_LIBDIR := $(OPENSSL_PREFIX)/lib
 endif
 endif
 endif
@@ -316,7 +321,8 @@ build/csrc/spinel_rev.h: FORCE | build/csrc
 	esac; \
 	t=$@.tmp.$$$$; \
 	{ echo "#define SPINEL_BUILD_REV \"$$r\""; \
-	  echo "#define SPINEL_RELEASE \"$$d\""; } > $$t; \
+	  echo "#define SPINEL_RELEASE \"$$d\""; \
+	  echo "#define SPINEL_OPENSSL_LIBDIR \"$(SPINEL_OPENSSL_LIBDIR)\""; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
 build/csrc/main.o: build/csrc/spinel_rev.h
@@ -1547,6 +1553,11 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/sb.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sb.out"; ok=0; }; fi; \
 	done; \
+	t=test/reject/io_popen.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/pop.c" >"$$tmp/pop.out" 2>&1; then \
+	  echo "reject-test: FAIL (IO.popen compiled into a run-time NoMethodError)"; ok=0; \
+	else grep -q "IO.popen is not supported" "$$tmp/pop.out" || \
+	  { echo "reject-test: FAIL (IO.popen refused without saying why)"; sed -n 1,5p "$$tmp/pop.out"; ok=0; }; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "reject-test: pass"; else exit 1; fi
 
@@ -2129,7 +2140,7 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-RBS_SEED_CHECKS := attr_writer_poly_value dyn_send_arm_seed_contradiction seed_ret_instance_for_class seed_ret_singleton_union hash_or_write_index_setter poly_aset_strbuf_int_arm bare_call_override_unify declared_param_reassigned_poly kw_nil_from_poly_hash inherited_class_keeps_narrowed_ivar nested_ivar nested_array_ivar nested_array_empty_rows nested_array_seed_conflict boundary module_clone_divergent nilable_return byref_string_param shared_handle_nonunique_callee colliding_class_pin return_hash_variant writer_poly_narrowing nilable_scalar_hash_key void_block_tail map_untyped_poly nilable_elem_array_return int_grows_bignum capture_civ_array memo_civ_hash block_param_hash_widen hash_kind_arg_boundary strbuf_ivar_write_value poly_array_ivar pinned_container nilable_arg_group_by inherited_pin_conflict override_family_ret untyped_array_ret yield_union_hash_obj nilable_scalar_ivar nilable_scalar_ret nilable_scalar_arg subclass_into_ancestor_slot seed_check seed_check_bad seed_contradiction seed_contradiction_arg contradicted_returns implicit_conv_no_method typed_slot_block_key typed_slot_compare_obj seeded_param_typed_array_mutation
+RBS_SEED_CHECKS := attr_writer_poly_value dyn_send_arm_seed_contradiction seed_ret_instance_for_class seed_ret_singleton_union hash_or_write_index_setter poly_aset_strbuf_int_arm bare_call_override_unify declared_param_reassigned_poly kw_nil_from_poly_hash inherited_class_keeps_narrowed_ivar nested_ivar nested_array_ivar nested_array_empty_rows nested_array_seed_conflict boundary module_clone_divergent nilable_return byref_string_param shared_handle_nonunique_callee colliding_class_pin return_hash_variant writer_poly_narrowing nilable_scalar_hash_key void_block_tail map_untyped_poly nilable_elem_array_return int_grows_bignum capture_civ_array memo_civ_hash block_param_hash_widen hash_kind_arg_boundary strbuf_ivar_write_value poly_array_ivar pinned_container nilable_arg_group_by inherited_pin_conflict override_family_ret untyped_array_ret yield_union_hash_obj nilable_scalar_ivar nilable_scalar_ret nilable_scalar_arg subclass_into_ancestor_slot ancestor_into_subclass_ret seed_check seed_check_bad seed_contradiction seed_contradiction_arg contradicted_returns implicit_conv_no_method typed_slot_block_key typed_slot_compare_obj seeded_param_typed_array_mutation
 RBS_SEED_RUN_CHECKS := hash_kind_widened_return module_typed_seed poly_dispatch_arm_arg_type nilable_scalar_yield_key nilable_scalar_deep_chain nilable_scalar_paths poly_index_hash_dispatch yield_site_scalar_tail poly_container_op_result untyped_param_two_shapes untyped_recv_string_surface seeded_hash_boundary_values seed_hash_value_kind seed_ret_replaced_def seed_ret_empty_literal untyped_array_ret_from_call nilable_ret_begin_rescue seeded_caller_binds_callee unrelated_setter_seed unrelated_merge_seed seeded_array_store_kind seeded_array_replace_kind seeded_param_poly_array_arg seeded_param_splat_elem seeded_param_nested_call_arg seeded_param_typed_array_arg
 RBS_SEED_RESULTS := $(patsubst %,build/rbs-seed-results/%.res,$(RBS_SEED_CHECKS)) \
                     $(patsubst %,build/rbs-seed-results/%.run,$(RBS_SEED_RUN_CHECKS))
@@ -2448,6 +2459,12 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	  "$$tmp/na" > "$$tmp/na.out" 2>/dev/null; \
 	  cmp -s "$$tmp/na.out" test/rbs-seed/nilable_scalar_arg.expected || { echo "rbs-seed-test: FAIL (#3465 nilable-scalar arg output mismatch)"; diff -u test/rbs-seed/nilable_scalar_arg.expected "$$tmp/na.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#3465 nilable-scalar arg: C did not compile)"; ok=0; fi; \
+	;; \
+	ancestor_into_subclass_ret) \
+	if $(SPINEL) test/rbs-seed/ancestor_into_subclass_ret.rb --rbs test/rbs-seed/sig -o "$$tmp/ais" >/dev/null 2>"$$tmp/ais.err"; then \
+	  echo "rbs-seed-test: FAIL (#7278 an ancestor returned under a subclass return seed compiled)"; ok=0; fi; \
+	[ "$$(grep -c 'AisRepo#restore is declared to return AisUser but this returns AisBase' "$$tmp/ais.err")" = 1 ] || { echo "rbs-seed-test: FAIL (#7278 the ancestor-into-subclass return was not reported once)"; sed -n 1,5p "$$tmp/ais.err"; ok=0; }; \
+	grep -q 'AisRepo#plain' "$$tmp/ais.err" && { echo "rbs-seed-test: FAIL (#7278 a subclass into an ancestor return was reported)"; ok=0; }; \
 	;; \
 	subclass_into_ancestor_slot) \
 	$(SPINEL) test/rbs-seed/subclass_into_ancestor_slot.rb --rbs test/rbs-seed/sig \
@@ -3179,7 +3196,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -Eq 'sp_Bus_poke_ram\(sp_Bus \*self, sp_int lv_addr, sp_int lv_data\)' "$$tmp/mcd.c" || { echo "infer-test: FAIL (a captured method called only with Integers through a dispatch table lost its sp_int parameters)"; grep -E 'sp_Bus_poke_ram\(' "$$tmp/mcd.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/dead_constructor_no_arm.rb -c --no-line-map -o "$$tmp/dc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile dead_constructor_no_arm)"; exit 1; }; \
 	grep -q 'sp_poly_add' "$$tmp/dc.c" && { echo "infer-test: FAIL (a class constructed only in dead code widened a poly receiver's field read to poly)"; ok=0; }; \
-	grep -Eq 'sp_int_add\(\(\{ sp_RbVal _t[0-9]+ = lv_d; sp_int _t[0-9]+ = (0|SP_INT_NIL); switch' "$$tmp/dc.c" || { echo "infer-test: FAIL (the field read of a boxed receiver did not stay an int switch, or its receiver is rooted for an arm that cannot run)"; ok=0; }; \
+	grep -Eq '(sp_int_add\(|sp_int _t[0-9]+ = )\(\{ sp_RbVal _t[0-9]+ = lv_d; sp_int _t[0-9]+ = (0|SP_INT_NIL); switch' "$$tmp/dc.c" || { echo "infer-test: FAIL (the field read of a boxed receiver did not stay an int switch, or its receiver is rooted for an arm that cannot run)"; ok=0; }; \
 	rounds=$$(SP_FIXPOINT_LOG=1 $(SPINEL) test/infer/fixpoint_converges.rb -c --no-line-map -o "$$tmp/fp.c" 2>&1 | sed -n 's/^\[fp\] rounds=\([0-9]*\).*/\1/p' | tail -1); \
 	case "$$rounds" in ''|*[!0-9]*) echo "infer-test: FAIL (no fixpoint round count -- SP_FIXPOINT_LOG gone?)"; ok=0;; \
 	  *) [ "$$rounds" -lt 128 ] || { echo "infer-test: FAIL (the inference fixpoint ran to its $$rounds-round cap: it stopped mid-oscillation, and where it stops decides which typing is emitted)"; ok=0; };; \

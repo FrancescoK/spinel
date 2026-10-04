@@ -104,6 +104,16 @@ static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
   return blk_tmp;
 }
 
+/* `, <proc>` after a call's receiver and arguments, when its callee `m`
+   takes its block as a proc parameter: the block the call site gives, or
+   NULL. A callee that yields takes none. */
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b) {
+  if (!m || !m->blk_param || !m->blk_param[0] || m->yields) return;
+  int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  if (blk_node >= 0) buf_printf(b, ", _t%d", emit_blk_proc_tmp(c, blk_node));
+  else buf_puts(b, ", NULL");
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -5172,6 +5182,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        boxed -- nil is a value in this slot, and a falsy one. */
     if (cty == TY_VOID || cty == TY_NIL) cty = TY_POLY;
     if (cty == TY_UNKNOWN) cty = TY_INT;
+    /* A `next v` of another class than the tail shares the slot: `next false`
+       into the Integer slot of `x if x > 0` was 0, which reads truthy, and the
+       element was kept. Carry both boxed. */
+    { TyKind nxv = block_next_value_ntype(c, nt_ref(c->nt, block, "body"));
+      if (nxv != TY_UNKNOWN && nxv != TY_VOID && nxv != TY_NIL && nxv != cty) cty = TY_POLY; }
     int cond_poly = (cty == TY_POLY);
     int tv = ++g_tmp;
     char tvbuf[24]; snprintf(tvbuf, sizeof tvbuf, "_t%d", tv);

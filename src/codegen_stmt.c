@@ -2408,6 +2408,17 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     }
   }
   if (emit_array_op_assign(c, lval, t, op, v, b)) return;
+  /* `x |= v` / `&=` / `^=` on a true/false local: TrueClass's and
+     FalseClass's operators answer a boolean from the operand's truthiness,
+     and always evaluate it (#7271) */
+  if (t == TY_BOOL && (sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"))) {
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_cond(c, v, &cb);
+    buf_printf(b, "%s = (sp_bool)((%s) %s ((%s) ? 1 : 0));\n", lval,
+               lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn), op, cb.p ? cb.p : "0");
+    free(cb.p);
+    return;
+  }
   /* `t += n` / `t -= n` on a Time: Time + Integer / Float and Time -
      Integer / Float exist (the binary emitter's sp_time_add_i / add_f /
      sub_i); the operator-assignment form fell through to the refusal (the
@@ -2615,12 +2626,24 @@ int static_isa_cond(Compiler *c, int pred) {
      yes is answered at run time, where the call emitter tests the slot. A
      no holds for nil too, and self is never nil. */
   int nilable = !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode;
-  if (rcls == target) return nilable ? -1 : 1;
-  if (sp_streq(nm, "instance_of?")) return 0;
+  /* the static class is only an upper bound: a slot of a class with a
+     subclass (and self in a method the subclass inherits) can hold an
+     instance of the subclass. instance_of? asks for the exact class, so its
+     yes is answered at run time, and so is any no that a subclass turns
+     into a yes. A yes of is_a? holds for every subclass and stays folded. */
+  int has_sub = class_has_subclass(c, rcls);
+  int exact = sp_streq(nm, "instance_of?");
+  if (rcls == target) return (nilable || (exact && has_sub)) ? -1 : 1;
+  if (has_sub && is_descendant(c, target, rcls)) return -1;
+  if (exact) return 0;
   if (is_descendant(c, rcls, target)) return nilable ? -1 : 1;
   /* a module the class (or a superclass) includes */
   if (comp_class_is_module(c, &c->classes[target]) &&
       class_includes_module_named(c, rcls, target_name)) return nilable ? -1 : 1;
+  /* a subclass can add any other module (with include, prepend, a module
+     that includes it, or an `extend` on one object), so is_a? of a module
+     is answered at run time when the class has a subclass */
+  if (has_sub && comp_class_is_module(c, &c->classes[target])) return -1;
   return 0;
 }
 
@@ -10607,7 +10630,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
   }
   if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return 1; }
   { int grecv = -1;
-    if (id != g_ivar_nil_guarded_id && ivar_nil_recv_guard(c, id, &grecv)) {
+    if (id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv)) {
       emit_ivar_nil_guard(c, id, grecv, b, indent);
       int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
       emit_stmt_inner(c, id, b, indent);

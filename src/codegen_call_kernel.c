@@ -689,6 +689,14 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_puts(b, "sp_argf_gets()");
       return 1;
     }
+    /* Kernel#readline is ARGF.readline: the same line, and EOFError where
+       gets answers nil (#7201) */
+    if (sp_streq(name, "readline") && ac == 0 && comp_bare_gets_is_argf(c)) {
+      int tl = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = sp_argf_gets(); if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d; })",
+                 tl, tl, tl);
+      return 1;
+    }
   }
 
   /* exit / abort as expressions (noreturn, emit as C statement-expression) */

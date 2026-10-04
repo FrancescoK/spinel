@@ -163,9 +163,12 @@ TyKind an_builtin_answer(Compiler *c, int id) {
    dispatch uses: the call re-inferred with its receiver pinned to `kind`.
    Only where a reopen is in play on the chain, so a program without one
    keeps the typing it had.
-   A poly answer that comes from a poly argument is declined: the emitter
-   unboxes the argument and emits the concrete result, which a poly answer
-   would leave unboxed in the slot.
+   A poly answer that comes from a poly argument is not what the emitter
+   produces: it unboxes the argument and emits the concrete result of the
+   kind's builtin row (String#include? on a boxed argument is a bool), so
+   that row's result answers the site; with no such row the site declines.
+   Declined, the yield kept one site's typing and a String site's bool was
+   read as an Array reopen's Symbol (`:never` for "abc".include?("b")).
    The answer is computed during analysis and recorded per (call, kind);
    codegen (yield_builtin_method_site_type) and any inference asked after
    analysis read the record, so the two agree and codegen re-infers nothing. */
@@ -202,8 +205,14 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   if (ft == TY_POLY) {
     int an = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    int poly_arg = 0;
     for (int k = 0; k < ac && av; k++)
-      if (comp_ntype(c, av[k]) == TY_POLY) ft = TY_UNKNOWN;
+      if (comp_ntype(c, av[k]) == TY_POLY) poly_arg = 1;
+    if (poly_arg) {
+      const BuiltinOp *op = bop_find(kind, nt_str(nt, id, "name"), ac, nt_ref(nt, id, "block") >= 0);
+      TyKind rr = op ? bop_result(op, kind) : TY_UNKNOWN;
+      ft = (rr == TY_POLY || rr == TY_VOID) ? TY_UNKNOWN : rr;
+    }
   }
   if (at < 0) {
     if (ysa_n == ysa_cap) {
@@ -1508,19 +1517,19 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   return 1;
 }
 
-/* The argument of obj.methods / public_methods / singleton_methods on an
-   instance of `cid`: 1 for none or a literal `true` (the whole list), 0 for a
-   literal `false` on an object with no singleton methods of its own, -1 for
-   anything else (left to the call's other paths). With `false`, `methods` and
-   `singleton_methods` answer the object's own singleton methods (none here)
-   and `public_methods` its class's own public instance methods. */
+/* The argument of obj.methods / public_methods / singleton_methods: 1 for
+   none or a literal `true` (the whole list), 0 for a literal `false` or
+   `nil` (the object's own: its singleton methods, and for public_methods
+   its class's own public instance methods too), 2 for any other value, whose
+   truth picks one of the two lists at run time; -1 for more than one. */
 int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv) {
+  (void)cid;
   if (argc == 0) return 1;
   if (argc != 1 || !argv) return -1;
-  if (nt_kind(c->nt, argv[0]) == NK_TrueNode) return 1;
-  if (nt_kind(c->nt, argv[0]) == NK_FalseNode && cid >= 0 && cid < c->nclasses &&
-      !c->classes[cid].is_singleton_of) return 0;
-  return -1;
+  NodeKind k = nt_kind(c->nt, argv[0]);
+  if (k == NK_TrueNode) return 1;
+  if (k == NK_FalseNode || k == NK_NilNode) return 0;
+  return 2;
 }
 
 /* Klass.singleton_methods: listable ahead of time when the class does not
@@ -4676,6 +4685,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name), fvia = UC_TOP;
+    /* in a block run by instance_eval, the receiver's own method answers
+       before a top-level def of the same name (#7213) */
+    { int iec = ie_class_of(c, id);
+      if (mi >= 0 && iec >= 0 && iec < c->nclasses && comp_method_in_chain(c, iec, name, NULL) >= 0) mi = -1; }
     if (mi < 0) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
     if (mi >= 0) { *out = an_user_call(c, id, mi, fvia, fvia == UC_TOP ? -1 : c->scopes[mi].class_id); return 1; }
     /* Kernel conversions */
@@ -4751,6 +4764,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (sp_streq(name, "sleep") && argc <= 1) { *out = TY_INT; return 1; }
     if (sp_streq(name, "gets") && argc == 0 && comp_bare_gets_is_argf(c))
       { *out = TY_STRING; return 1; }   /* ARGF's next line, or nil */
+    if (sp_streq(name, "readline") && argc == 0 && comp_bare_gets_is_argf(c))
+      { *out = TY_STRING; return 1; }   /* ARGF's next line; EOFError at its end */
   }
   return 0;
 }
@@ -6553,9 +6568,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (bmi < 0) { bmi = comp_included_method_index(c, name, id); bvia = UC_INCLUDED; }
     if (bmi >= 0) {
       Scope *bsc = comp_scope_of(c, id);
-      int bcls = bsc ? bsc->class_id : -1;
+      /* in a block run by instance_eval, self is the receiver (#7213) */
+      int biec = ie_class_of(c, id);
+      int bcls = biec >= 0 ? biec : bsc ? bsc->class_id : -1;
       int shadowed = bcls >= 0 && bcls < c->nclasses &&
-                     (bsc->is_cmethod
+                     ((biec < 0 && bsc->is_cmethod)
                         ? comp_cmethod_in_chain(c, bcls, name, NULL) >= 0
                         : (comp_method_in_chain(c, bcls, name, NULL) >= 0 ||
                            comp_is_reader(&c->classes[bcls], name)));
@@ -7177,6 +7194,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (rname && sp_streq(rname, "Process") &&
         (sp_streq(name, "waitpid2") || sp_streq(name, "wait2")) && argc <= 1)
       return TY_POLY_ARRAY;
+    /* Process.last_status is $?: the last child's Process::Status, or nil */
+    if (rname && sp_streq(rname, "Process") && sp_streq(name, "last_status") && argc == 0)
+      return TY_PROCESS_STATUS;
     /* Process.wait / waitpid answer the pid they reaped and set $? */
     if (rname && sp_streq(rname, "Process") &&
         (sp_streq(name, "wait") || sp_streq(name, "waitpid")) && argc <= 1)

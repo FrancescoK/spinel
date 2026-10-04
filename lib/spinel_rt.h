@@ -2965,6 +2965,7 @@ static int sp_bigint_fits_int(sp_Bigint *b) {
   return (sp_int)sp_bigint_to_int(b) != SP_INT_NIL;
 }
 static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_BIGINT) return sp_i64_to_int(sp_bigint_to_int((sp_Bigint *)v.v.p));   /* a 32-bit sp_int refuses what does not fit (RangeError); 64-bit keeps its wrap */
   if (v.tag == SP_TAG_STR) return (sp_int)strtoll(v.v.s ? v.v.s : sp_str_empty, NULL, 10);
   if (v.tag == SP_TAG_BOOL) return v.v.b ? 1 : 0;
@@ -3360,6 +3361,7 @@ static sp_float sp_poly_to_f(sp_RbVal v) {
    else has no #to_f and is NoMethodError (a user class that defines one has
    its own arm in the poly dispatch). */
 static sp_float sp_poly_to_f_meth(sp_RbVal v) {
+  if (SP_UNLIKELY(sp_poly_is_strbuf(v))) v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_NIL) return 0.0;
   if (v.tag == SP_TAG_STR) return sp_str_to_f_cruby(v.v.s ? v.v.s : sp_str_empty);
   if (v.tag == SP_TAG_FLT || v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT ||
@@ -4079,6 +4081,7 @@ static const char *sp_convert_src_name(sp_RbVal v) {
    unparseable String, matching CRuby's conversion methods. */
 static sp_int sp_poly_Integer(sp_RbVal v) {
   if (v.tag == SP_TAG_INT) return v.v.i;
+  if (SP_UNLIKELY(sp_poly_is_strbuf(v))) v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_BIGINT) {
     /* the Integer slot cannot carry a Bignum: the value when it fits, a
        loud RangeError otherwise, never a number cut to the slot's width */
@@ -4103,6 +4106,7 @@ static sp_int sp_poly_Integer(sp_RbVal v) {
   return 0;
 }
 static sp_float sp_poly_Float(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_FLT) return v.v.f;
   if (v.tag == SP_TAG_INT) return (sp_float)v.v.i;
   if (v.tag == SP_TAG_BIGINT) return sp_poly_to_f(v);
@@ -4248,6 +4252,8 @@ static sp_RbVal sp_poly_succ_m(sp_RbVal v, sp_bool allow_enum) {
    case. A class that does define #to_i never reaches here (poly dispatch gives
    it its own arm), and a builtin receiver carries a negative cls_id. */
 static sp_int sp_poly_to_i_meth(sp_RbVal v) {
+  /* a shared String handle converts as the String it holds (#7263) */
+  if (SP_UNLIKELY(sp_poly_is_strbuf(v))) v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) sp_raise_nomethod(sp_nomethod_msg("to_i", v));
   /* The call answers an sp_int, and a Bignum is one Integer that does not
      fit it: say so rather than hand back its low word (#4665). Promoting
@@ -7172,6 +7178,7 @@ else {
       memcpy(fmt_use, spec, sl); fmt_use[sl] = 0;
     }
     char tmp[256]; int wn = 0;
+    char *wide = NULL;   /* a field longer than tmp, formatted again into the heap */
     sp_RbVal v;
     if (have_named) v = named_v;
     else {
@@ -7226,7 +7233,10 @@ else {
             bfmt[bl++] = spec[fi];
         bfmt[bl++] = 's'; bfmt[bl] = 0;
         wn = snprintf(tmp, sizeof(tmp), bfmt, digits);
-        if (conv == 'X') for (char *q = tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
+        if (wn >= (int)sizeof(tmp) && (wide = (char *)malloc((size_t)wn + 1)) != NULL)
+          snprintf(wide, (size_t)wn + 1, bfmt, digits);
+        else if (wn >= (int)sizeof(tmp)) wn = (int)sizeof(tmp) - 1;
+        if (conv == 'X') for (char *q = wide ? wide : tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
       }
       else {
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
@@ -7240,8 +7250,22 @@ else {
       else { free(buf); sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Integer", sp_convert_src_name(v))); }
       /* the non-decimal bases go through our own formatter: C's printf drops
          the '+' and ' ' flags on them and has no two's-complement form */
-      if (conv == 'd' || conv == 'i') wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
-      else wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
+      if (conv == 'd' || conv == 'i') {
+        wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
+        if (wn >= (int)sizeof(tmp) && (wide = (char *)malloc((size_t)wn + 1)) != NULL)
+          snprintf(wide, (size_t)wn + 1, fmt_use, lv);
+        else if (wn >= (int)sizeof(tmp)) wn = (int)sizeof(tmp) - 1;
+      }
+      else {
+        wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
+        /* it stops at the buffer's end: a wider field is formatted again */
+        for (size_t wsz = sizeof(tmp) * 2; wn >= (int)(wsz / 2) && wsz <= ((size_t)1 << 30); wsz *= 2) {
+          char *w2 = (char *)realloc(wide, wsz);
+          if (!w2) { wn = (int)sizeof(tmp); free(wide); wide = NULL; break; }
+          wide = w2;
+          wn = sp_fmt_binary(spec, sl, conv, lv, wide, wsz);
+        }
+      }
       }
     }
 else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G' ||
@@ -7260,6 +7284,14 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       /* pinned "C" locale so the decimal point is always '.', not the process
          locale's separator (the printf field/flag machinery stays libc's) */
       else wn = sp_snprintf_ruby_float(tmp, sizeof(tmp), fmt_use, dv);
+      /* `%.2f` of 1e300 is over 300 characters: snprintf answered the full
+         length and tmp held only its first 255, and the copy below read past
+         it (DBL_MAX printed stack bytes) */
+      if (wn >= (int)sizeof(tmp) && isfinite(dv)) {
+        wide = (char *)malloc((size_t)wn + 1);
+        if (wide) sp_snprintf_ruby_float(wide, (size_t)wn + 1, fmt_use, dv);
+        else wn = (int)sizeof(tmp) - 1;
+      }
     }
 else if (conv == 's' || conv == 'p') {
       /* %s is to_s, %p is inspect -- for every tag (symbols, arrays, hashes,
@@ -7336,9 +7368,10 @@ else {
         sp_raise_cls("ArgumentError", "incomplete format specifier; use %% (double %) instead");
       return "";
     }
-    if (wn < 0) continue;
+    if (wn < 0) { free(wide); continue; }
     if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }
-    memcpy(buf + out, tmp, wn); out += wn;
+    memcpy(buf + out, wide ? wide : tmp, wn); out += wn;
+    free(wide);
   }
   buf[out] = 0;
   char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
@@ -11454,6 +11487,7 @@ static sp_RbVal sp_poly_with_m(sp_RbVal v, sp_RbVal ov) {
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'with' for %s", sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   if (v.tag == SP_TAG_NIL) return sp_box_rational(sp_rational_new(0, 1));
   if (v.tag == SP_TAG_INT) return sp_box_rational(sp_rational_new(v.v.i, 1));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return v;
@@ -11491,6 +11525,7 @@ static sp_RbVal sp_poly_rationalize_m(sp_RbVal v, int argc, sp_RbVal eps) {
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'rationalize' for %s", sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
   /* fl carries the per-component int/float flag inspect renders from, so it has
      to be set, not left as whatever the stack held. The typed path is the
      oracle here: `n.to_c` emits `(sp_Complex){n, 0, <1 for a Float, 0 for an

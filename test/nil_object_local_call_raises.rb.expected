@@ -1,0 +1,11 @@
+hello: undefined method 'hello' for nil
+v: undefined method 'v' for nil
+stmt: undefined method 'touch' for nil
+setter: undefined method 'v=' for nil
+assign: undefined method 'v' for nil
+interp: undefined method 'hello' for nil
+ternary: undefined method 'v' for nil
+3
+3
+global: undefined method 'v' for nil
+5

@@ -1188,6 +1188,21 @@ int main(int argc, char **argv) {
      exists in the build cache. A --link basename lib<name>.(a|so) counts as
      providing -l<name>, so one package source serves both worlds -- the
      Makefile's -L via ffi_cflags and spin's absolute --link paths. */
+  /* The OpenSSL library directory the build probed on a host whose
+     OpenSSL is keg-only (Homebrew): the package's -lssl/-lcrypto resolve
+     there, and an ELF binary finds it again at run time (#7191). */
+  if (ffi_links.p && SPINEL_OPENSSL_LIBDIR[0] &&
+      (strstr(ffi_links.p, "-lssl") || strstr(ffi_links.p, "-lcrypto"))) {
+    char ld[1100];
+    snprintf(ld, sizeof ld, "-L%s", SPINEL_OPENSSL_LIBDIR);
+    s_add_arg(&cmd, ld); s_add(&cmd, " "); bi_put(&bi, "lib", ld);
+#if !defined(__APPLE__)
+    if (!target_wasi) {
+      snprintf(ld, sizeof ld, "-Wl,-rpath,%s", SPINEL_OPENSSL_LIBDIR);
+      s_add_arg(&cmd, ld); s_add(&cmd, " "); bi_put(&bi, "lib", ld);
+    }
+#endif
+  }
   if (ffi_links.p) {
     char *ltoks = strdup(ffi_links.p);
     for (char *t = strtok(ltoks, " "); t; t = strtok(NULL, " ")) {

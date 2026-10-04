@@ -1126,6 +1126,17 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
      constant). Handled before the Class.new dispatch since they are not `new`. */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *tcn = nt_str(nt, recv, "name");
+    /* IO.popen is not implemented: refused at compile time, as an
+       unsupported API is, rather than a NoMethodError the first time the
+       line runs (#7199). A program's own IO.popen is its own. */
+    if (tcn && (sp_streq(tcn, "IO") || sp_streq(tcn, "File")) && sp_streq(name, "popen")) {
+      int ioc = comp_class_index(c, tcn);
+      if (ioc < 0 || comp_cmethod_in_chain(c, ioc, name, NULL) < 0) {
+        unsupported_feature(c, id, "IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)");
+        buf_puts(b, "sp_box_nil()");
+        return 1;
+      }
+    }
     /* Exception class-level: Cls.exception(msg) is Cls.new (#2740);
        Exception.to_tty? reports whether stderr is a terminal (#2757). */
     if (tcn && is_exc_name(tcn)) {
@@ -1575,6 +1586,11 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
                  topts, town, town, town);
       buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, targs, topts);
       buf_printf(b, " _r; })\n");
+      return 1;
+    }
+    /* Process.last_status is $? (#7196) */
+    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "last_status") && argc == 0) {
+      buf_puts(b, "sp_last_process_status()");
       return 1;
     }
     /* Process.waitpid2(pid) -> [pid, raw_status]: the runtime hands back a

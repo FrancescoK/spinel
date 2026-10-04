@@ -5,10 +5,11 @@
 # other half of the OpenSSL namespace that programs name, and there is no
 # reason to route them through a second implementation.
 #
-# Subset, and it is the same one `digest` has: the class-method forms only.
-# The incremental object API (`d = OpenSSL::Digest::SHA256.new; d << part`) is
-# not modelled, and neither is OpenSSL::Digest.new("SHA256") -- an algorithm
-# chosen by a runtime string cannot resolve to a C function at compile time.
+# The class-method forms (`OpenSSL::Digest::SHA256.hexdigest(data)`) and the
+# object (`OpenSSL::Digest.new("SHA256")`, `OpenSSL::Digest::SHA256.new`)
+# with update / << / digest / hexdigest / reset / digest_length / name. The
+# object buffers what it is given and hashes it whole when asked, over the
+# same one-shot functions: the runtime's hashes have no streaming state.
 module OpenSSL
   # CRuby's base for everything in this namespace; SSLError and DigestError
   # both descend from it, so `rescue OpenSSL::OpenSSLError` catches either.
@@ -33,23 +34,76 @@ module OpenSSL
     native_func :random_bin,      [:int],             :cbinstr, "sp_crypto_random_bin"
   end
 
-  module Digest
+  class Digest
     class DigestError < OpenSSLError
     end
 
-    module SHA256
+    # The one-shot hash of `data` under algorithm `name` (as CRuby spells it,
+    # any case), raw; the hashes the runtime carries, and DigestError for the
+    # rest, the class CRuby raises for an unknown algorithm.
+    def self.raw(name, data)
+      case name.to_s.upcase
+      when "SHA256" then Crypto.sha256_bin(data)
+      when "SHA1"   then Crypto.sha1_bin(data)
+      when "MD5"    then Crypto.md5_bin(data)
+      else raise DigestError, "Unsupported digest algorithm (#{name}).: unknown object name"
+      end
+    end
+
+    def self.length_of(name)
+      case name.to_s.upcase
+      when "SHA256" then 32
+      when "SHA1"   then 20
+      when "MD5"    then 16
+      else raise DigestError, "Unsupported digest algorithm (#{name}).: unknown object name"
+      end
+    end
+
+    def initialize(name, data = nil)
+      @name = name.to_s.upcase
+      Digest.length_of(@name)
+      @buf = String.new(encoding: Encoding::BINARY)
+      @buf << data if data
+    end
+
+    def name = @name
+    def digest_length = Digest.length_of(@name)
+    def block_length = 64
+
+    def update(data)
+      @buf << data
+      self
+    end
+    alias << update
+
+    def reset
+      @buf = String.new(encoding: Encoding::BINARY)
+      self
+    end
+
+    def digest(data = nil)
+      return Digest.raw(@name, data) if data
+      Digest.raw(@name, @buf)
+    end
+
+    def hexdigest(data = nil) = digest(data).unpack1("H*")
+
+    class SHA256 < Digest
+      def initialize(data = nil) = super("SHA256", data)
       def self.hexdigest(data) = Crypto.sha256_hex(data)
       def self.digest(data)    = Crypto.sha256_bin(data)
     end
 
-    module SHA1
+    class SHA1 < Digest
+      def initialize(data = nil) = super("SHA1", data)
       def self.hexdigest(data) = Crypto.sha1_hex(data)
       def self.digest(data)    = Crypto.sha1_bin(data)
     end
 
     # A legacy hash, carried because Active Storage's direct upload checks a
     # blob by its MD5 (#4631). Not for new designs.
-    module MD5
+    class MD5 < Digest
+      def initialize(data = nil) = super("MD5", data)
       def self.hexdigest(data) = Crypto.md5_hex(data)
       def self.digest(data)    = Crypto.md5_bin(data)
     end

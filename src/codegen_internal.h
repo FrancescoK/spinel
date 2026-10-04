@@ -163,7 +163,8 @@ int builtin_method_known(const char *cls, const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int name_is_enumerable_module_method(const char *m);
-int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all, Buf *b);
+int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all,
+                                   int arg, Buf *b);
 int scope_reads_callee(Compiler *c, int si);
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out);
 TyKind block_next_value_ntype(const Compiler *c, int node);
@@ -623,6 +624,7 @@ int  push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind 
 void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
 /* emit_args_filled over the arguments `argv[0..argc)`, a run of some call's
    arguments (`raise Cls, msg` passes Cls.new the message alone); `argsNode`
@@ -921,6 +923,7 @@ extern SpDiag *g_diags;
 extern int g_ndiags;
 extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driver */
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
+extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
@@ -1020,6 +1023,9 @@ void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *
 void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b);
 extern int g_ivar_nil_guarded_id;
 int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+/* the same for any receiver the call guards: an ivar as above, or a param or
+   local that can hold nil (codegen_call.c) */
+int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
