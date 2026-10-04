@@ -180,6 +180,8 @@ static void plan_check_observe(Compiler *c, int id, TyKind rt, const BuiltinOp *
 
 static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *) = {
   [BOPE_NONE] = NULL,
+  [BOPE_RANGE_CLONE] = emit_op_range_clone,
+  [BOPE_RANGE_FREEZE] = emit_op_range_freeze,
   [BOPE_TEMPLATE] = emit_op_template,
   [BOPE_PSTATUS_SUCCESS] = emit_op_pstatus_success,
   [BOPE_PSTATUS_EQ] = emit_op_pstatus_eq,

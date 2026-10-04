@@ -17,8 +17,8 @@
 #include "sp_types.h"   /* sp_Range */
 #include "sp_array.h"   /* sp_IntArray_from_range / _from_range_step */
 
-static inline sp_Range sp_range_new(sp_int f,sp_int l,sp_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;r.fend=0.0;r.fe=0;return r;}
-static inline sp_Range sp_range_new_step(sp_int f,sp_int l,sp_int e,sp_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;r.fend=0.0;r.fe=0;return r;}
+static inline sp_Range sp_range_new(sp_int f,sp_int l,sp_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;r.fend=0.0;r.fe=0;r.unfrozen=0;return r;}
+static inline sp_Range sp_range_new_step(sp_int f,sp_int l,sp_int e,sp_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;r.fend=0.0;r.fe=0;r.unfrozen=0;return r;}
 /* (1..2.5) / (1...2.5): an Integer begin with a finite Float end. The walk
    stops at the last Integer the end admits -- floor(end), or end - 1 for an
    excluded integral end -- and the end itself is kept for the readers that
