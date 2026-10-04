@@ -5359,6 +5359,14 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);
         buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
       }
+      else if (!res_poly && body_ty == TY_POLY && is_mapbang && !sp_streq(rk, "Int") && !sp_streq(rk, "Float")) {
+        /* map! writes back into the receiver's own typed array, and a
+           boxed block value (a proc's, `map!.with_index(&pr)`) may be any
+           class; the typed array cannot take it, and an unchecked store did
+           not build */
+        unsupported_feature(c, id, "map!.with_index with a block whose value is untyped, on a typed Array");
+        buf_puts(g_pre, "0");
+      }
       else if (!res_poly) emit_typed_sink_text(c, bb[bn - 1], sp_streq(rk, "Int") ? TY_INT : sp_streq(rk, "Float") ? TY_FLOAT : TY_UNKNOWN, vb.p ? vb.p : "", g_pre);
       else buf_puts(g_pre, vb.p ? vb.p : "");
       buf_puts(g_pre, ");\n");
