@@ -11510,17 +11510,29 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled) {\n");
   buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+    /* A reopened builtin's boxed values carry the builtin's own id, and its
+       methods take self as the reopening's signature does: activesupport's
+       Time#- is minus_with_coercion, on a Time by value. Only the kinds
+       boxed as one object id are reached by this switch. */
+    const char *bcase = NULL, *bself = NULL;
+    if (is_builtin_reopen(c->classes[k].name)) {
+      if (sp_streq(c->classes[k].name, "Time")) { bcase = "SP_BUILTIN_TIME"; bself = "*(sp_Time *)a.v.p"; }
+      else if (sp_streq(c->classes[k].name, "Range")) { bcase = "SP_BUILTIN_RANGE"; bself = "*(sp_Range *)a.v.p"; }
+      else continue;
+    }
+    else if (!c->classes[k].instantiated) continue;
     int any = 0;
     for (int u = 0; uops[u] && !any; u++)
       if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) any = 1;
     if (!any) continue;
     int cid = comp_class_index(c, c->classes[k].name);
-    buf_printf(b, "    case %d: {\n", cid);
+    if (bcase) buf_printf(b, "    case %s: {\n", bcase);
+    else buf_printf(b, "    case %d: {\n", cid);
     for (int u = 0; uops[u]; u++) {
       int defcls = -1;
       int mi = comp_method_in_chain(c, k, uops[u], &defcls);
       if (mi < 0) continue;
+      if (bcase && defcls != k) continue;   /* the reopening's own */
       Scope *m = &c->scopes[mi];
       /* only methods this TU actually emits: an unreachable / yielding /
          shadowed scope has no C function to call */
@@ -11538,6 +11550,13 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
       char callbuf[256];
       /* an alias (`alias + |`) resolves to its target's scope: name the C
          function after the RESOLVED method, not the queried operator */
+      if (bcase) {
+        Buf nb; memset(&nb, 0, sizeof nb);
+        emit_method_cname(c, m, &nb);
+        snprintf(callbuf, sizeof callbuf, "%s(%s, %s)", nb.p ? nb.p : "", bself, argbuf);
+        free(nb.p);
+      }
+      else
       snprintf(callbuf, sizeof callbuf, "sp_%s_%s(%s(sp_%s *)a.v.p, %s)",
                dcn, mc(m->name ? m->name : uops[u]), self_vt ? "*" : "", dcn, argbuf);
       buf_puts(b, "        *handled = TRUE; return ");
@@ -11548,7 +11567,7 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
        compare but not the equality still answers `a == b` as `(a <=> b) == 0`.
        Without an arm the boxed path fell through to identity and said false
        for two equal values (#3501). */
-    if (comp_method_in_chain(c, k, "==", NULL) < 0) {
+    if (!bcase && comp_method_in_chain(c, k, "==", NULL) < 0) {
       int cmp_defcls = -1;
       int cmp_mi = comp_method_in_chain(c, k, "<=>", &cmp_defcls);
       if (cmp_mi >= 0) {
@@ -15638,7 +15657,11 @@ char *codegen_program(const NodeTable *nt) {
        would only gain a dispatch table it has no use for. */
     static const char *const cops[] = { "<", ">", "<=", ">=", "<=>", NULL };
     for (int k = 0; k < c->nclasses && !g_has_user_binop; k++) {
-      if (!c->classes[k].instantiated) continue;
+      /* a reopened Time or Range is instantiated by the runtime itself, and
+         its operators reach boxed values through the table too */
+      const char *kn = c->classes[k].name;
+      int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
+      if (!c->classes[k].instantiated && !breopen) continue;
       for (int u = 0; uops[u]; u++)
         if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
       /* a `<=>` with no `==` is Comparable's equality, which the table
