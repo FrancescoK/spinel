@@ -8126,14 +8126,19 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
   int rmark = sp_poly_recur_push(SP_POLY_RECUR_JOIN, a, NULL);
   sp_String *s = sp_String_new("");
   SP_GC_ROOT(s);
+  int st = -1;   /* the joined encoding, part by part (sp_str_enc_step) */
   for (sp_int i = 0; i < a->len; i++) {
-    if (i > 0 && sep) sp_String_append_bin(s, sep);   /* byte-exact: a separator may hold a NUL */
+    if (i > 0 && sep) {
+      st = sp_str_enc_step(st, s->data, (size_t)s->len, sep, sp_str_byte_len(sep), sp_str_is_binary(sep));
+      sp_String_append_bin(s, sep);   /* byte-exact: a separator may hold a NUL */
+    }
     sp_RbVal e = a->data[i];
     /* a nested array joins recursively with the same separator (CRuby) */
-    if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id))
-      sp_String_append_bin(s, sp_poly_join(e, sep));
-    else
-      sp_String_append_bin(s, sp_poly_to_s(e));
+    const char *part = (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) ? sp_poly_join(e, sep)
+                                                                                : sp_poly_to_s(e);
+    SP_GC_ROOT_STR(part);
+    st = sp_str_enc_step(st, s->data, (size_t)s->len, part, sp_str_byte_len(part), sp_str_is_binary(part));
+    sp_String_append_bin(s, part);
   }
   /* Copy out of the sp_String builder: `s` is unrooted once this returns, so a
      later GC would sweep it and its finalizer free the fd-buffer, leaving a
@@ -8142,7 +8147,9 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
      no-op, so the buffer cannot be kept alive by marking it. Return a standalone
      heap string instead (#3151). */
   sp_poly_recur_pop(rmark);
-  return sp_str_from_bytes(s->data, (size_t)s->len);
+  const char *r = sp_str_from_bytes(s->data, (size_t)s->len);
+  if (st == 1 && r && *r) sp_str_mark_binary((char *)r);
+  return r;
 }
 /* join on a boxed array (poly value holding any array kind) */
 static const char *sp_poly_join(sp_RbVal a, const char *sep) {

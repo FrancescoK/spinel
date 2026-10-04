@@ -155,6 +155,23 @@ static inline char *sp_str_bin_from(char *r, const char *a) {
   return r;
 }
 
+/* One step of CRuby's encoding rule over a string built part by part (an
+   interpolation, Array#join): `state` is the encoding so far, -1 while only
+   US-ASCII parts (an Integer's to_s, nothing yet) have gone in, 0 UTF-8, 1
+   binary; `acc` holds the `acc_len` bytes already joined. A part in the same
+   encoding, or an ASCII-only one, keeps it; one whose high bytes meet an
+   ASCII-only run so far takes the run over; two runs with high bytes in
+   different encodings stay binary (see above). */
+int sp_str_enc_step(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin) {
+  if (state < 0) return part_len ? part_bin : -1;
+  if (part_bin == state || part_len == 0) return state;
+  for (size_t i = 0; i < part_len; i++)
+    if ((unsigned char)part[i] >= 0x80) {
+      for (size_t j = 0; j < acc_len; j++) if ((unsigned char)acc[j] >= 0x80) return 1;
+      return part_bin;
+    }
+  return state;
+}
 /* Whether a + b is binary, as CRuby's compatibility rule picks it: the
    operands' shared encoding, else the one an ASCII-only operand gives way
    to -- `String.new + "\u00e9"` is UTF-8 -- else binary (see above). */

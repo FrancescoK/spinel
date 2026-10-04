@@ -460,7 +460,28 @@ void emit_interp(Compiler *c, int id, Buf *b) {
   buf_puts(b, "; ");
   buf_printf(b, "char *_t%d = sp_str_alloc_raw(_cap%d + 1); ", rid, rid);
   buf_printf(b, "char *_t%d = _t%d; ", wpid, rid);
+  /* The result's encoding, part by part as CRuby picks it: the first part's,
+     taken over by a later part's high bytes (sp_str_enc_step). Only a String
+     part can be binary; without one the result is UTF-8. */
+  int eid = -1;
+  for (int k = 0; k < nwp && eid < 0; k++) if (wp[k].kind == WK_DYN) eid = ++g_tmp;
+  /* a leading literal makes it UTF-8 from the start */
+  int lead = -1;
+  for (int k = 0; k < nwp && lead < 0; k++)
+    if (wp[k].kind == WK_DYN || wp[k].kind == WK_LIT) {
+      if (wp[k].kind == WK_LIT && wp[k].lit_len == 0) continue;
+      lead = k;
+    }
+  int lead_lit = lead >= 0 && wp[lead].kind == WK_LIT;
+  if (eid >= 0) buf_printf(b, "int _e%d = %d; ", eid, lead_lit ? 0 : -1);
   for (int k = 0; k < nwp; k++) {
+    if (eid >= 0 && wp[k].kind == WK_LIT && wp[k].lit_len > 0 && !(lead_lit && k == lead))
+      buf_printf(b, "_e%d = sp_str_enc_step_i(_e%d, _t%d, (size_t)(_t%d - _t%d), \"%.*s\", %ld, 0); ",
+                 eid, eid, rid, wpid, rid, wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off,
+                 wp[k].lit_len);
+    else if (eid >= 0 && wp[k].kind == WK_DYN)
+      buf_printf(b, "_e%d = sp_str_enc_step_i(_e%d, _t%d, (size_t)(_t%d - _t%d), _t%d, _l%d, sp_str_is_binary(_t%d)); ",
+                 eid, eid, rid, wpid, rid, wp[k].tmp, wp[k].tmp, wp[k].tmp);
     switch (wp[k].kind) {
       case WK_LIT:
         if (wp[k].lit_len > 0)
@@ -482,8 +503,9 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         break;
     }
   }
-  buf_printf(b, "*_t%d = 0; sp_str_set_len(_t%d, (size_t)(_t%d - _t%d)); (const char *)_t%d; })",
-             wpid, rid, wpid, rid, rid);
+  buf_printf(b, "*_t%d = 0; sp_str_set_len(_t%d, (size_t)(_t%d - _t%d)); ", wpid, rid, wpid, rid);
+  if (eid >= 0) buf_printf(b, "if (_e%d == 1) sp_str_mark_binary(_t%d); ", eid, rid);
+  buf_printf(b, "(const char *)_t%d; })", rid);
   free(lits.p); free(decls.p); free(wp); free(flat);
 }
 
