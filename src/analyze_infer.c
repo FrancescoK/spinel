@@ -163,9 +163,12 @@ TyKind an_builtin_answer(Compiler *c, int id) {
    dispatch uses: the call re-inferred with its receiver pinned to `kind`.
    Only where a reopen is in play on the chain, so a program without one
    keeps the typing it had.
-   A poly answer that comes from a poly argument is declined: the emitter
-   unboxes the argument and emits the concrete result, which a poly answer
-   would leave unboxed in the slot.
+   A poly answer that comes from a poly argument is not what the emitter
+   produces: it unboxes the argument and emits the concrete result of the
+   kind's builtin row (String#include? on a boxed argument is a bool), so
+   that row's result answers the site; with no such row the site declines.
+   Declined, the yield kept one site's typing and a String site's bool was
+   read as an Array reopen's Symbol (`:never` for "abc".include?("b")).
    The answer is computed during analysis and recorded per (call, kind);
    codegen (yield_builtin_method_site_type) and any inference asked after
    analysis read the record, so the two agree and codegen re-infers nothing. */
@@ -202,8 +205,14 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out) 
   if (ft == TY_POLY) {
     int an = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    int poly_arg = 0;
     for (int k = 0; k < ac && av; k++)
-      if (comp_ntype(c, av[k]) == TY_POLY) ft = TY_UNKNOWN;
+      if (comp_ntype(c, av[k]) == TY_POLY) poly_arg = 1;
+    if (poly_arg) {
+      const BuiltinOp *op = bop_find(kind, nt_str(nt, id, "name"), ac, nt_ref(nt, id, "block") >= 0);
+      TyKind rr = op ? bop_result(op, kind) : TY_UNKNOWN;
+      ft = (rr == TY_POLY || rr == TY_VOID) ? TY_UNKNOWN : rr;
+    }
   }
   if (at < 0) {
     if (ysa_n == ysa_cap) {
