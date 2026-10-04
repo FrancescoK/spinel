@@ -13805,27 +13805,50 @@ void refl_emit_sym_array(Compiler *c, int cid, ReflNames *r, Buf *b) {
   buf_printf(b, "_t%d; })", ta);
 }
 
+/* The names obj.methods(false) / public_methods(false) /
+   singleton_methods(false) answer for an instance of `cid`: the singleton
+   methods the object has of its own (public and protected), and for
+   public_methods the public ones of its class's own besides. */
+static void refl_object_own_methods(Compiler *c, int cid, const char *name, ReflNames *r) {
+  int pub_only = sp_streq(name, "public_methods");
+  int k = cid;
+  if (c->classes[cid].is_singleton_of) {
+    refl_own_instance_methods(c, cid, 1, !pub_only, 0, 0, r);
+    k = c->classes[cid].is_singleton_of - 1;
+  }
+  if (pub_only && k >= 0) refl_own_instance_methods(c, k, 1, 0, 0, 0, r);
+}
+
 /* obj.methods / obj.public_methods / obj.singleton_methods on a typed user
    object: the class chain is static, so the list is too. The receiver is
-   evaluated for its effects. `all` is 0 for a literal `false` argument on an
-   object with no singleton methods (an_object_methods_all_arg): `methods` and
-   `singleton_methods` then answer none, and `public_methods` the class's own
-   public instance methods. */
-int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all, Buf *b) {
+   evaluated for its effects. `all` is an_object_methods_all_arg's answer:
+   1 the whole list, 0 the object's own (refl_object_own_methods), 2 the one
+   the truth of the argument `arg` picks at run time. */
+int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all,
+                                   int arg, Buf *b) {
   int pub = 1, prot = 0, sg = 0;
   if (sp_streq(name, "methods")) prot = 1;
   else if (sp_streq(name, "singleton_methods")) { prot = 1; sg = 1; }
   else if (!sp_streq(name, "public_methods")) return 0;
   if (!an_object_methods_listable(c, cid, name)) return 0;
-  ReflNames r = {0};
-  if (all) refl_object_methods(c, cid, pub, prot, sg, &r);
-  else if (sp_streq(name, "public_methods")) refl_own_instance_methods(c, cid, 1, 0, 0, 0, &r);
+  ReflNames ra = {0}, ro = {0};
+  if (all != 0) refl_object_methods(c, cid, pub, prot, sg, &ra);
+  if (all != 1) refl_object_own_methods(c, cid, name, &ro);
   buf_puts(b, "({ (void)(");
   emit_expr(c, recv, b);
   buf_puts(b, "); ");
-  refl_emit_sym_array(c, cid, &r, b);
+  if (all == 2) {
+    buf_puts(b, "(");
+    emit_cond(c, arg, b);
+    buf_puts(b, ") ? ");
+    refl_emit_sym_array(c, cid, &ra, b);
+    buf_puts(b, " : ");
+    refl_emit_sym_array(c, cid, &ro, b);
+  }
+  else refl_emit_sym_array(c, cid, all ? &ra : &ro, b);
   buf_puts(b, "; })");
-  refl_free(&r);
+  refl_free(&ra);
+  refl_free(&ro);
   return 1;
 }
 /* Does any user class answer respond_to?(qm) at run time, through a method of

@@ -1508,19 +1508,19 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   return 1;
 }
 
-/* The argument of obj.methods / public_methods / singleton_methods on an
-   instance of `cid`: 1 for none or a literal `true` (the whole list), 0 for a
-   literal `false` on an object with no singleton methods of its own, -1 for
-   anything else (left to the call's other paths). With `false`, `methods` and
-   `singleton_methods` answer the object's own singleton methods (none here)
-   and `public_methods` its class's own public instance methods. */
+/* The argument of obj.methods / public_methods / singleton_methods: 1 for
+   none or a literal `true` (the whole list), 0 for a literal `false` or
+   `nil` (the object's own: its singleton methods, and for public_methods
+   its class's own public instance methods too), 2 for any other value, whose
+   truth picks one of the two lists at run time; -1 for more than one. */
 int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv) {
+  (void)cid;
   if (argc == 0) return 1;
   if (argc != 1 || !argv) return -1;
-  if (nt_kind(c->nt, argv[0]) == NK_TrueNode) return 1;
-  if (nt_kind(c->nt, argv[0]) == NK_FalseNode && cid >= 0 && cid < c->nclasses &&
-      !c->classes[cid].is_singleton_of) return 0;
-  return -1;
+  NodeKind k = nt_kind(c->nt, argv[0]);
+  if (k == NK_TrueNode) return 1;
+  if (k == NK_FalseNode || k == NK_NilNode) return 0;
+  return 2;
 }
 
 /* Klass.singleton_methods: listable ahead of time when the class does not

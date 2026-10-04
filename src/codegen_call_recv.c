@@ -9327,7 +9327,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
          sp_streq(name, "singleton_methods")) &&
         an_object_methods_all_arg(c, ty_object_class(rt), argc, argv) >= 0 &&
         emit_object_methods_reflection(c, recv, ty_object_class(rt), name,
-                                       an_object_methods_all_arg(c, ty_object_class(rt), argc, argv), b))
+                                       an_object_methods_all_arg(c, ty_object_class(rt), argc, argv),
+                                       argc > 0 ? argv[0] : -1, b))
       return 1;
     if (emit_object_ivar_call(c, id, name, recv, rt, cid, argc, argv, b)) return 1;
     /* remove_instance_variable(:@x) returns the removed value. The fixed object
