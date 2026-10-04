@@ -26674,6 +26674,16 @@ int splat_local_sure_lit(Compiler *c, int x) {
   }
   return reads == seen ? lit : -1;
 }
+/* A binary operator takes its one operand whatever the receiver, and no
+   block moves that count. A splat into one -- `a.==(*rest)`, an operator
+   arm of `public_send(*args, &block)` -- passed the array itself as the
+   operand: == answered false and + raised TypeError. */
+static int splat_binary_operator(const char *name) {
+  static const char *const ops[] = { "==", "!=", "eql?", "equal?", "===", "=~", "<=>",
+    "<", "<=", ">", ">=", "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", NULL };
+  for (int i = 0; ops[i]; i++) if (sp_streq(name, ops[i])) return 1;
+  return 0;
+}
 /* How many arguments the builtin requires, for a splat whose length only the
    run time knows and that splat_dispatch_on_length declined (a block, `&.`, a
    user method of the name that cannot take every count). Only the required
@@ -26704,6 +26714,7 @@ static int splat_builtin_arity(const char *name) {
   };
   for (int i = 0; tab[i].name; i++)
     if (sp_streq(name, tab[i].name)) return tab[i].arity;
+  if (splat_binary_operator(name)) return 1;
   return -1;
 }
 /* Whether some user method of this name could not take `n` positional
@@ -26769,6 +26780,12 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
       if (variadic) *variadic = tab[i].variadic;
       return 1;
     }
+  if (splat_binary_operator(name)) {
+    if (lo) *lo = 1;
+    if (hi) *hi = 1;
+    if (variadic) *variadic = 0;
+    return 1;
+  }
   return 0;
 }
 /* A node that can be copied into each arm of the dispatch without being
@@ -26845,10 +26862,11 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
      beside a replacement, as CRuby does, so their two-argument arm is the
-     blockless call. Any other name keeps its splat. */
+     blockless call. An operator's one arm takes it as it stands. Any other
+     name keeps its splat. */
   int blk = nt_ref(nt, id, "block");
   int subst = sp_streq(cnm, "sub") || sp_streq(cnm, "sub!") || sp_streq(cnm, "gsub") || sp_streq(cnm, "gsub!");
-  if (blk >= 0 && !subst) return 0;
+  if (blk >= 0 && !subst && !splat_binary_operator(cnm)) return 0;
   if (blk >= 0) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
@@ -27197,7 +27215,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
       if (sp_streq(cnm, "insert") && sp_at > 0) continue;
       /* A block moves the required count (`sub(pat) { .. }` takes one
          argument, not two), so leave those alone. */
-      n =nt_ref(nt, id, "block") >= 0 ? -1 : splat_builtin_arity(cnm);
+      n = nt_ref(nt, id, "block") >= 0 && !splat_binary_operator(cnm) ? -1 : splat_builtin_arity(cnm);
       /* slice has no arity to expand to on purpose (see the table). Leave the
          splat as it stands rather than refusing the program: Hash#slice's
          emitter iterates it, which is what the call means. */
