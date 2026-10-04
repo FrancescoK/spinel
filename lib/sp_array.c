@@ -430,12 +430,6 @@ sp_float sp_FloatArray_max(sp_FloatArray*a){if(!a||a->len==0)return sp_float_nil
    CRuby's NaN/Infinity arms, is sp_float_sum_step in sp_array.h -- shared with
    the boxed fold so the two cannot drift. */
 sp_float sp_FloatArray_sum(sp_FloatArray*a,sp_float init){sp_float s=init,c=0.0;for(sp_int i=0;i<a->len;i++)sp_float_sum_step(&s,&c,a->data[i]);return s+c;}
-/* ...and the same sum from a FLOAT seed, which CRuby does not compensate: it
-   reaches the compensated loop only out of the exact phase, and a seed that is
-   already a Float never has one. `[0.1, 0.2, 0.3].sum(0.0)` is therefore
-   0.6000000000000001 where `.sum(0)` and `.sum` are 0.6. The boxed fold in
-   spinel_rt.h draws the same line; these two must not disagree. */
-sp_float sp_FloatArray_sum_plain(sp_FloatArray*a,sp_float init){sp_float s=init;for(sp_int i=0;i<a->len;i++)s+=a->data[i];return s;}
 void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){if(dst==src)return;if(dst->frozen){sp_raise_frozen_array_at(dst,SP_BUILTIN_FLT_ARRAY);return;}dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(sp_float)*dst->cap);h->size-=sizeof(sp_float)*dst->cap;void*nd=sp_pl_realloc(dst->data,sizeof(sp_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(sp_float*)nd;dst->cap=src->len;h->size+=sizeof(sp_float)*dst->cap;sp_gc_bytes_add(sizeof(sp_float)*dst->cap);}memcpy(dst->data,src->data,sizeof(sp_float)*src->len);dst->len=src->len;SP_MAY_NIL(dst)=SP_MAY_NIL(src);}
 /* a[start, len] / a[start..end] for FloatArray. Same negative-start and
    length-clamping semantics as sp_IntArray_slice. */
