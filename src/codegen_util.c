@@ -16,6 +16,7 @@ Buf *g_pre = NULL;
 jmp_buf g_unsup_recover;
 int g_unsup_armed = 0;
 int g_unsup_probe = 0;   /* silent emittability probe: longjmp without printing/exiting */
+int g_unsup_quiet = 0;   /* a refusal is recorded but not printed: the driver decides (orphan methods) */
 /* Collection is how every compile runs: a refusal stopped the run at the
    first one, and a program brought over from CRuby learned its gaps one
    compile at a time. Now each unit's refusals are reported and the next
@@ -440,6 +441,7 @@ static void diag_record(const char *file, int line, const char *msg) {
    is armed (the unit is abandoned), else out of the process. */
 static __attribute__((noreturn)) void unsup_leave(const char *file, int line, const char *msg) {
   diag_record(file, line, msg);
+  if (g_unsup_quiet && collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
   refuse_observe(msg);
   if (line > 0) fprintf(stderr, "spinel: %s:%d: %s\n", file, line, msg);
   else fprintf(stderr, "spinel: %s\n", msg);

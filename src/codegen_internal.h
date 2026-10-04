@@ -922,6 +922,7 @@ extern SpDiag *g_diags;
 extern int g_ndiags;
 extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driver */
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
+extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
