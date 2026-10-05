@@ -119,7 +119,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        an in-word count wrapped silently). Keyed on the cached node type so
        the two halves of the compiler cannot drift. */
     if (g_promote_mode && sp_streq(name, "<<") && rt == TY_INT &&
-        comp_ntype(c, id) == TY_POLY) {
+        repr_of(c, id).kind == RK_BOXED) {
       buf_puts(b, "sp_poly_shl(");
       emit_boxed(c, recv, b);
       buf_puts(b, ", ");
@@ -331,7 +331,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        there a failed comparison is CRuby's own answer. */
     if (lrt == TY_STRING && str_cmp_conv_shape(c, argv[0])) {
       int tr, to, ts, tc = ++g_tmp;
-      int boxed_out = comp_ntype(c, id) == TY_POLY;
+      int boxed_out = repr_of(c, id).kind == RK_BOXED;
       Buf rb = expr_buf(c, recv);
       if (boxed_out) buf_puts(b, "sp_box_int_or_nil(");
       emit_str_cmp_prologue(c, rb.p ? rb.p : "", argv[0], &tr, &to, &ts, b);
@@ -375,7 +375,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (lrt == TY_STRING && !recv_is_sym &&
         !str_cmp_conv_shape(c, argv[0]) &&
         (ty_is_object(lat) || lat == TY_POLY || lat == TY_UNKNOWN)) {
-      int boxed_out = comp_ntype(c, id) == TY_POLY;
+      int boxed_out = repr_of(c, id).kind == RK_BOXED;
       if (boxed_out) buf_puts(b, "sp_box_int_or_nil(");
       buf_puts(b, "sp_str_cmp_obj("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
@@ -446,7 +446,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          expression's own type is poly -- a `<=>` whose method has a `return
          nil` guard, so the slot is sp_RbVal -- box it, or the raw compare goes
          out through an sp_RbVal signature and the build fails (#3498). */
-      int cmp_poly = comp_ntype(c, id) == TY_POLY;
+      int cmp_poly = repr_of(c, id).kind == RK_BOXED;
       if (cmp_poly) buf_puts(b, "sp_box_int_or_nil(");
       emit_poly_cmp_ordered(c, "sp_poly_spaceship", recv, argv[0], b);
       if (cmp_poly) buf_puts(b, ")");
@@ -674,7 +674,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
       /* a poly operand is a Time or not at run time (#4465) */
-      if (comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[0]) == TY_UNKNOWN) {
+      if (repr_of(c, argv[0]).kind == RK_BOXED || comp_ntype(c, argv[0]) == TY_UNKNOWN) {
         int tt = ++g_tmp, tu = ++g_tmp;
         buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
@@ -806,7 +806,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                    rt != TY_VOID && rt != TY_EXCEPTION && rt != TY_IO;
   if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
       is_kind_query(name) &&
-      (comp_ntype(c, argv[0]) == TY_CLASS || comp_ntype(c, argv[0]) == TY_POLY) &&
+      (comp_ntype(c, argv[0]) == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
@@ -814,7 +814,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     buf_printf(b, "; ");
     /* a class read out of a boxed slot is checked: CRuby's TypeError */
     buf_printf(b, "sp_Class _t%d = ", k);
-    if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    if (repr_of(c, argv[0]).kind == RK_BOXED) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else emit_expr(c, argv[0], b);
     buf_printf(b, "; ");
     if (sp_streq(name, "instance_of?"))
@@ -1353,7 +1353,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (sp_streq(name, "<=")) cfn = "sp_poly_le";
     else if (sp_streq(name, ">=")) cfn = "sp_poly_ge";
     /* a user operator that answers a non-bool goes through the dispatch */
-    if (cfn && comp_ntype(c, id) == TY_POLY && user_defines_or_reads(c, name)) {
+    if (cfn && repr_of(c, id).kind == RK_BOXED && user_defines_or_reads(c, name)) {
       buf_printf(b, "sp_poly_relop_v(\"%s\", ", name); emit_boxed(c, recv, b); buf_puts(b, ", ");
       emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
