@@ -6468,6 +6468,8 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         buf_puts(out, srefP);
         return;
       }
+      /* --share-strings: a call answering the handle hands it over */
+      if (!late && emit_strbuf_call_handle(c, provided, out)) return;
       /* A parameter that is the handle because a Method reaches it (#6179):
          a literal or a temporary is a String nobody else holds, so the
          handle is made with its bytes inside the object, and `+"lit"`
@@ -7850,6 +7852,10 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
   TyKind at = repr_of(c, v).as_ty;
+  /* --share-strings: a value typed as the handle that renders as a String
+     of its own (`+"x"` stored where the handle is demanded, wrapped at the
+     store) is held as that String */
+  if (repr_share_rule(c) && at == TY_STRBUF && strbuf_fresh_renders_string(c, v)) at = TY_STRING;
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
      a variable's handle is taken too, just ahead, and recorded with the
@@ -10645,11 +10651,15 @@ TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name) {
    some descendant of which overrides the reader with a def: a switch on the
    runtime class, with an arm calling the def for each overriding descendant
    and the reader's text (`reader`, of type reader_ty) for the rest. 0 when no
-   descendant overrides it, or when the arms cannot agree on the call's type. */
+   descendant overrides it, or when the arms cannot agree on the call's type.
+   A reader of the shared handle (--share-strings) answers the handle itself:
+   emit_reader_override_handle. */
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name,
                                   const char *selfptr, const char *reader,
                                   TyKind reader_ty, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (reader_ty == TY_STRBUF && repr_share_rule(c) &&
+      emit_reader_override_handle(c, id, cid, name, selfptr, reader, b)) return 1;
   if (!reader_override_arms(c, id, cid, name, reader_ty)) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
   TyKind ret = repr_of(c, id).as_ty;
@@ -10674,6 +10684,49 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
   else buf_puts(b, reader);
   buf_printf(b, "; break; } _t%d; })", rtmp);
+  return 1;
+}
+
+/* --share-strings: emit_reader_override_dispatch for a reader whose ivar
+   holds the shared handle, read where the handle is wanted: the default
+   arm answers the slot (`slot`, an sp_String *), an overriding def's arm
+   the handle its method publishes when a path of it answers one
+   (Scope.ret_kinds), else a handle of its own around its String. */
+int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name,
+                                const char *selfptr, const char *slot, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* the call may be typed as the handle; every overriding def answers a
+     String (reader_override_arms' agreement, on the String kind) */
+  TyKind ret = comp_ntype(c, id);
+  if (nt_ref(nt, id, "block") >= 0 || (ret != TY_STRING && ret != TY_STRBUF)) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL), any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi < 0 || kmi == base_mi) continue;
+    if (dispatch_arm_scope(c, kmi) < 0 || c->scopes[kmi].ret != TY_STRING) return 0;
+    any = 1;
+  }
+  if (!any) return 0;
+  int argsNode = nt_ref(nt, id, "arguments");
+  int rtmp = ++g_tmp, htmp = ++g_tmp, ptmp = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = NULL; sp_String *_t%d = NULL; int _t%d = 0; _sp_ret_strbuf = NULL; switch (",
+             rtmp, htmp, ptmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kd = -1;
+    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    if (kmi0 < 0 || kmi0 == base_mi) continue;
+    nd_callee(c, g_nd_call_id, kmi0, kd, 1);
+    buf_printf(b, " case %d: _t%d = %d; ", k, ptmp, (c->scopes[kmi0].ret_kinds & SCOPE_RET_HANDLE) != 0);
+    emit_dispatch_arm_call(c, kd, dispatch_arm_scope(c, kmi0), selfptr, argsNode, -1,
+                           TY_STRING, TY_STRING, rtmp, b);
+  }
+  buf_printf(b, " default: _t%d = %s; break; } _t%d ? _t%d : _t%d && _t%d && _sp_ret_strbuf ? "
+                "(sp_String *)_sp_ret_strbuf : sp_String_new_shared(_t%d); })",
+             htmp, slot, htmp, htmp, rtmp, ptmp, rtmp);
   return 1;
 }
 

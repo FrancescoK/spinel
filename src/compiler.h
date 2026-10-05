@@ -266,12 +266,20 @@ typedef struct {
 #define POLY_LIFT_APPENDED 1
 #define POLY_LIFT_ZSUPER   2
 
+/* Scope.ret_kinds bits (--share-strings) */
+enum { SCOPE_RET_FRESH = 1, SCOPE_RET_HANDLE = 2 };
+
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
   int def_node;     /* DefNode id; -1 for top-level */
   int body;         /* StatementsNode id (-1 if empty) */
   int class_id;     /* owning class index, or -1 for free functions */
   int yields;       /* body contains a YieldNode (inlined at call sites) */
+  int ret_kinds;    /* --share-strings: what the return paths answer
+                       (an_tail_kinds), SCOPE_RET_FRESH and SCOPE_RET_HANDLE
+                       bits: a String of its own (so the handle a read
+                       inside the method published is not the answer), the
+                       shared handle */
   int reachable;    /* method name is referenced somewhere (else dead code) */
   int is_cmethod;   /* `def self.foo`: a class (singleton) method, no instance self */
   int is_module_function; /* `module_function`: ALSO a private instance method of
@@ -936,6 +944,11 @@ typedef struct {
      and the share classes that rule reads (share.h), rebuilt as the
      analysis goes. Off, nothing builds them and the C is unchanged. */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
+  /* [share_ret_clear_n] a return tail answering a String of its own in a
+     method another path of which answers the handle (share_ret_clears),
+     marked once the return kinds are final */
+  unsigned char *share_ret_clear;
+  int share_ret_clear_n;
   /* the route refusals the flag left to the rule (share_route_defer),
      checked against the final facts at seal */
   struct ShareRoute *share_route;
