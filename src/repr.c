@@ -583,6 +583,9 @@ static void repr_share_seal(Compiler *c) {
             c->share_borrows);
     share_facts_drop(closed);
   }
+  /* a route master refuses, left to the rule: refused as master does
+     unless the final facts share its String */
+  share_routes_check(c);
   if (bad >= 0) {
     const ShareHolder *sh = share_holder(c, bad);
     char nm[160];
