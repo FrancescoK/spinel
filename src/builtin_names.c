@@ -748,3 +748,28 @@ int is_nil_method(const char *n) {
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
   return 0;
 }
+
+/* The block-use facts tools/gen_builtin_arity_spec.rb generates (its BAB
+   rows): per method name, the positional counts 0..3, a bit each, at which
+   every builtin instance method of the name ignores a block it is given. */
+#define BAI(...)
+#define BAM(...)
+#define BAS(...)
+#define BAC(...)
+#define BAB(m, mask) {m, mask},
+static const struct { const char *m; unsigned mask; } builtin_block_ignored_tbl[] = {
+#include "builtin_arity.inc"
+  {NULL, 0}
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+#undef BAB
+
+int builtin_ignores_block(const char *name, int argc) {
+  if (!name || argc < 0 || argc > 3) return 0;
+  for (int i = 0; builtin_block_ignored_tbl[i].m; i++)
+    if (sp_streq(builtin_block_ignored_tbl[i].m, name)) return (builtin_block_ignored_tbl[i].mask >> argc) & 1;
+  return 0;
+}

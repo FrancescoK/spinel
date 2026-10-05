@@ -4683,6 +4683,62 @@ int desugar_array_at(Compiler *c) {
   return changed;
 }
 
+/* Does the program give `nm` a method of its own anywhere: an instance or
+   class method, an attr reader, a top-level def? */
+static int ignored_block_name_owned(Compiler *c, const char *nm) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_cmethod_in_chain(c, k, nm, NULL) >= 0 ||
+        comp_reader_in_chain(c, k, nm, NULL)) return 1;
+  return comp_method_index(c, nm) >= 0 || an_user_defines_or_reads(c, nm);
+}
+
+/* A literal block given to a builtin method that ignores it (`t.round { }`,
+   `[0.3, :x][k].rationalize { }`, `r.equal?(1) { }`): CRuby runs the call as
+   if no block were given, so the block is dropped here, ahead of inference,
+   and every receiver path (typed, boxed, nil-or-value, through an RBS
+   signature) gets the blockless call it already answers. The boxed dispatch
+   had no arm for the block form, and raised NoMethodError for a method the
+   receiver has.
+
+   Which methods ignore a block is CRuby's, generated into builtin_arity.inc
+   (builtin_ignores_block): the name ignores a block at this count in every
+   builtin class that has it. The block stays where the call can reach
+   something else: a name the program defines or reads anywhere, a program
+   with a method_missing, a call with no receiver, on self or on a constant
+   (a class method, which the generated fact does not cover), and a count a
+   splat, keywords or argument forwarding leaves open. A block argument
+   (`&pr`) stays too: CRuby calls its to_proc even when the method ignores
+   the block. */
+int desugar_ignored_blocks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, mm = -1;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int blk = nt_ref(nt, id, "block");
+    if (nt_kind(nt, blk) != NK_BlockNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    NodeKind rk = nt_kind(nt, recv);
+    if (recv < 0 || rk == NK_SelfNode || rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (!nm || !builtin_ignores_block(nm, argc)) continue;
+    int plain = 1;
+    for (int i = 0; i < argc && plain; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      const char *aty = nt_type(nt, argv[i]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
+          (aty && sp_streq(aty, "ForwardingArgumentsNode"))) plain = 0;
+    }
+    if (!plain || ignored_block_name_owned(c, nm)) continue;
+    if (mm < 0) mm = ignored_block_name_owned(c, "method_missing");
+    if (mm) break;
+    nt_node_set_ref(nt, id, "block", -1);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* The last statement of a block whose call any user class defines (a
    user `each`): an_value_dropped reads only the call's name, but that
    method can answer the block's value. */
