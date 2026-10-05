@@ -7443,6 +7443,33 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
   buf_printf(out, "_t%d", t);
 }
 
+/* True when a bare read `provided` (one arg_wants_root leaves unrooted) does
+   NOT reach the container parameter of type `pt` as itself: a read of another
+   kind -- a boxed value, a PolyArray into an Array[Float] parameter -- goes
+   through a converting entry (sp_poly_as_float_array, sp_poly_as_ptr_array,
+   ...) that builds a NEW container, rooted only inside the converter. The
+   read's own root does not reach the copy, and a callee that allocates before
+   it roots the parameter (sp_<C>_new) can collect it: the object then holds
+   freed memory. */
+int arg_read_converts(Compiler *c, TyKind pt, int provided) {
+  if (provided < 0 || pt == TY_POLY) return 0;
+  if (!(ty_is_array(pt) || ty_is_obj_array(pt) || ty_is_hash(pt))) return 0;
+  TyKind st = comp_ntype(c, provided);
+  return st != pt && st != TY_NIL && st != TY_UNKNOWN && st != TY_VOID;
+}
+
+/* Root a converted bare read across the call without moving its evaluation:
+   the temp is declared NULL and rooted in g_pre, and assigned where the
+   argument stands, so the read sees the value at its own position (the stale
+   capture arg_wants_root avoids for a hoisted read cannot happen). */
+void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out) {
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  emit_ctype(c, pt, g_pre);
+  buf_printf(g_pre, " _t%d = NULL; SP_GC_ROOT(_t%d);\n", t, t);
+  buf_printf(out, "(_t%d = %s)", t, expr);
+}
+
 /* Like emit_arg_or_default, but hoists a pointer-backed / poly argument into a
    g_pre temp and roots it before the call. A fresh allocation passed straight
    into a callee that allocates before it roots the parameter -- the canonical
@@ -7460,7 +7487,14 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *o
   /* a byref out-param arg is a slot address, not a heap value: it hoists its
      own rooted temp when one is needed (see emit_arg_or_default) */
   if (p && p->byref_out) { emit_arg_or_default(c, m, idx, provided, out); return; }
-  if (!arg_wants_root(c, pt, provided)) { emit_arg_or_default(c, m, idx, provided, out); return; }
+  if (!arg_wants_root(c, pt, provided)) {
+    if (!arg_read_converts(c, pt, provided)) { emit_arg_or_default(c, m, idx, provided, out); return; }
+    Buf cb; memset(&cb, 0, sizeof cb);
+    emit_arg_or_default(c, m, idx, provided, &cb);
+    emit_rooted_conversion(c, pt, cb.p ? cb.p : "NULL", out);
+    free(cb.p);
+    return;
+  }
   Buf ab; memset(&ab, 0, sizeof ab);
   emit_arg_or_default(c, m, idx, provided, &ab);
   emit_rooted_operand(c, pt, provided, ab.p ? ab.p : default_value_from_compiler(c, pt), out);
