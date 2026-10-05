@@ -114,6 +114,9 @@ ReprForm repr_box_form(const Compiler *c, Repr r);
 const char *repr_form_name(int form);
 /* --repr-check is on */
 extern int g_repr_check;
+/* --repr-check: ask repr_of of a node codegen is about to emit, whose
+   answer is dropped; the C must not change (repr_of changes nothing) */
+void repr_check_ask(const Compiler *c, int node);
 
 /* ---- Stores (R6) ----
    The C value class of a kind, what C allows between two of them: a store

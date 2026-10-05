@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
@@ -19985,6 +19986,7 @@ void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
 }
 void emit_call(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
+  if (g_repr_check) repr_check_ask(c, id);
   /* A call on a receiver that never hands back a value (a method whose
      every path raises): Ruby evaluates the receiver first, it raises, and
      neither the arguments nor the method run. Evaluate it for effect and

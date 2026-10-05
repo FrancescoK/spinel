@@ -132,6 +132,16 @@ static int an_nonblock_no_exception(Compiler *c, int id) {
    one, and codegen needs to know the builtin shape to emit its arm (#3459). */
 static int an_builtin_only = 0;
 int an_builtin_only_p(void) { return an_builtin_only; }
+/* Set while a pure read asks (an_pure_read_begin, analyze.h): the answer is
+   wanted, but nothing derived on the way is recorded. Codegen asks repr_of
+   while a view overrides a node's type, and nullable_int_value re-derives a
+   receiver's type: recorded, that answer replaced the view's for the rest
+   of the emission (a Range receiver re-entered as the IntArray it was
+   materialized into read back as the Range, and was materialized again
+   from its own temp). */
+static int an_pure_reads = 0;
+void an_pure_read_begin(void) { an_pure_reads++; }
+void an_pure_read_end(void) { an_pure_reads--; }
 /* What call `id` would be typed if no user class owned the name: the
    builtin answer alone. Nothing is cached and no node's type is written
    under the flag (see infer_type), so this is safe to ask after analysis --
@@ -616,6 +626,7 @@ static int narrow_memo_get(long key, int *hit) {
   *hit = 0; return 0;
 }
 static void narrow_memo_put(long key, int val) {
+  if (an_pure_reads) return;
   unsigned slot = (unsigned)((unsigned long)key % SP_NMEMO_SZ);
   g_nmemo[slot].gen = g_narrow_gen; g_nmemo[slot].key = key; g_nmemo[slot].val = (signed char)val;
 }
@@ -2031,7 +2042,7 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
-  if (!g_plan_check || an_builtin_only || id < 0 || id >= c->node_cap) return;
+  if (!g_plan_check || an_builtin_only || an_pure_reads || id < 0 || id >= c->node_cap) return;
   c->ucall_inf[id].mi = mi;
   c->ucall_inf[id].owner_ci = (short)owner_ci;
   c->ucall_inf[id].via = (unsigned char)via;
@@ -2045,7 +2056,7 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                              int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
-  if (g_plan_check && !an_builtin_only && op && op->result != TY_UNKNOWN &&
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && op && op->result != TY_UNKNOWN &&
       id >= 0 && id < c->node_cap)
     c->bop_inf[id] = op;
   return op;
@@ -2124,7 +2135,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          served by re-entering the emission, whose answer is a raw `const
          char *` for half these names and a boxed value for the other half
          (#4816). */
-      if (recv >= 0 && !an_builtin_only &&
+      if (recv >= 0 && !an_builtin_only && !an_pure_reads &&
           (poly_container_read_p(name) || poly_string_read_p(name)) &&
           nt_ref(nt, id, "block") < 0 && c->poly_builtin_ty &&
           id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
@@ -2542,7 +2553,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          recorded, a genuine Hash reaching `slice` beside a NodeSet#slice
          answering an object or an element had no arm and raised (#5114).
          Asked once per node per iteration, like the question below. */
-      if (found && !an_builtin_only && r == TY_POLY && recv >= 0 &&
+      if (found && !an_builtin_only && !an_pure_reads && r == TY_POLY && recv >= 0 &&
           c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
           (nat_found || an_user_defines_or_reads(c, name))) {
         long pk = narrow_key(4, id, "");
@@ -2594,7 +2605,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            is how the same gap came back three times. Only when it is not
            already set: the reads above ask a narrower question first and
            their answer is the one their arms were built against. */
-        if (bt != TY_UNKNOWN && bt != TY_VOID && c->poly_builtin_ty &&
+        if (bt != TY_UNKNOWN && bt != TY_VOID && c->poly_builtin_ty && !an_pure_reads &&
             id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
           c->poly_builtin_ty[id] = bt;
         if (bt != TY_UNKNOWN && bt != TY_VOID && bt != r) { *out = TY_POLY; return 1; }
@@ -2610,7 +2621,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           nt_ref(nt, id, "block") < 0) {
         TyKind bt = an_builtin_answer(c, id);
         if (bt != TY_UNKNOWN && bt != TY_VOID) {
-          if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+          if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
+              c->poly_builtin_ty[id] == TY_UNKNOWN)
             c->poly_builtin_ty[id] = bt;
           { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
         }
@@ -2839,7 +2851,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         TyKind ubt = uhit ? (TyKind)ucached : an_builtin_answer(c, id);
         if (!uhit) narrow_memo_put(uk, (int)ubt);
         if (ubt != TY_UNKNOWN && ubt != TY_VOID) {
-          if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+          if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
+              c->poly_builtin_ty[id] == TY_UNKNOWN)
             c->poly_builtin_ty[id] = ubt;
           { *out = TY_POLY; return 1; }
         }
@@ -3207,7 +3220,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = TY_IO;
+        if (blv && !an_pure_reads) blv->type = TY_IO;
         { *out = TY_POLY; return 1; }
       }
     }
@@ -3331,7 +3344,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
         const char *bp0 = block_param_name(c, blk, 0);
         Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
         LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
-        if (blv) blv->type = TY_STRING;
+        if (blv && !an_pure_reads) blv->type = TY_STRING;
       }
       { *out = TY_ARGF; return 1; }
     }
@@ -3346,7 +3359,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     const char *dp0 = block_param_name(c, dblk, 0);
     Scope *dbs = dp0 ? comp_scope_of(c, dblk) : NULL;
     LocalVar *dlv = (dbs && dp0) ? scope_local(dbs, dp0) : NULL;
-    if (dlv) dlv->type = TY_DIR;
+    if (dlv && !an_pure_reads) dlv->type = TY_DIR;
     { *out = TY_POLY; return 1; }   /* block form: the block's boxed value (File.open's rule) */
   }
   if (recv >= 0 && rt == TY_DIR) {
@@ -5727,7 +5740,8 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
     { *out = TY_POLY; return 1; }   /* a boxed argument: a Queue's flag or an Array's count */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
       (is_pop_shift(name))) {
-    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+    if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
+        c->poly_builtin_ty[id] == TY_UNKNOWN)
       c->poly_builtin_ty[id] = TY_POLY_ARRAY;   /* the dispatch's builtin default */
     for (int k = 0; k < c->nclasses; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) { *out = TY_POLY; return 1; }
@@ -5744,7 +5758,8 @@ static int infer_runtime_value_call(Compiler *c, int id, const NodeTable *nt, co
   if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
     /* what a String answers, for the dispatch's String arm when a class's
        own to_i makes the call poly (emit_poly_str_prearm) */
-    if (c->poly_builtin_ty && id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN)
+    if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap &&
+        c->poly_builtin_ty[id] == TY_UNKNOWN)
       c->poly_builtin_ty[id] = TY_INT;
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].is_native_class) {
@@ -6463,7 +6478,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
      would be with no user method: not the call's answer, so it neither
      clears nor makes the call's records */
-  if (g_plan_check && !an_builtin_only && id >= 0 && id < c->node_cap) {
+  if (g_plan_check && !an_builtin_only && !an_pure_reads && id >= 0 && id < c->node_cap) {
     c->bop_inf[id] = NULL;
     c->ucall_inf[id].via = UC_NONE;
   }
@@ -6734,7 +6749,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      method answered `{}` where CRuby answered an Array (#3952). */
   if (recv >= 0 && argc == 0 && (is_copy_alias(name)) &&
       infer_type(c, recv) == TY_POLY) {
-    if (c->poly_builtin_ty && id < c->node_cap) c->poly_builtin_ty[id] = TY_POLY;
+    if (c->poly_builtin_ty && !an_pure_reads && id < c->node_cap) c->poly_builtin_ty[id] = TY_POLY;
     return TY_POLY;
   }
 
@@ -8871,7 +8886,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
   { TyKind r; if (infer_yield_node(c, id, nt, nk, &r)) return r; }
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {
-    if (g_plan_check && id >= 0 && id < c->node_cap) c->ucall_inf[id].via = UC_NONE;
+    if (g_plan_check && !an_pure_reads && id >= 0 && id < c->node_cap) c->ucall_inf[id].via = UC_NONE;
     Scope *s = comp_scope_of(c, id);
     if (s->class_id < 0 || !s->name) return TY_UNKNOWN;
     const char *shadow = comp_super_shadow(c, s);
@@ -9263,7 +9278,9 @@ TyKind infer_type(Compiler *c, int id) {
     int sn_recv = nt_ref(c->nt, id, "receiver");
     if (sn_op && sp_streq(sn_op, "&.") && sn_recv >= 0) t = TY_POLY;
   }
-  if (!an_builtin_only) {
+  /* Nor is a pure read's answer recorded (an_pure_reads): it is asked after
+     the analysis, under whatever view codegen has open. */
+  if (!an_builtin_only && !an_pure_reads) {
     c->ntype[id] = t;
     /* the origin only when a consumer asked (--warn-widen, --emit-types):
        its ivar arm walks the program's ivar writes per read and its call
