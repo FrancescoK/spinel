@@ -8,3 +8,5 @@
 "can't modify frozen Symbol: :sym"
 "can't modify frozen Array: [3]"
 [true, true, [:@mark]]
+5
+5
