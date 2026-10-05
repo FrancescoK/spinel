@@ -180,9 +180,14 @@ int repr_str_shares(const Compiler *c, int holder);
 int repr_str_elems_share(const Compiler *c, int holder);
 /* the rule over a class's facts (SHF_*, the count of its holders) */
 int repr_str_class_shares(unsigned flags, int holders);
-/* The global a read or write node names, when it holds the shared handle
-   (TY_STRBUF + str_shared, under the flag); NULL otherwise. Its C slot is
-   gv_<name>. */
-LocalVar *repr_handle_gvar(const Compiler *c, int node);
+/* Does a read or write node name a global, a constant or a class variable
+   holding the shared handle (TY_STRBUF + str_shared, under the flag)?
+   repr_handle_static_ref writes its C slot (gv_<name>, cst_<name>,
+   cvar_<owner>_<name>). */
+int repr_handle_static(const Compiler *c, int node);
+/* a read such a slot can be: a global's, a constant's (bare or `A::B`), a
+   class variable's */
+int repr_static_read_kind(NodeKind k);
+int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap);
 
 #endif

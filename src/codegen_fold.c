@@ -6412,7 +6412,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
          a caller writing into its own afterwards went unseen. */
       NodeKind pk = nt_kind(c->nt, provided);
       int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode ||
-                  pk == NK_GlobalVariableReadNode) &&
+                  repr_static_read_kind(pk)) &&
                  arg_ran_first(provided, 0);
       if (late) {
         int th = ran_first_handle(provided);
@@ -7811,7 +7811,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   NodeKind vk = nt_kind(c->nt, v);
   int th = -1;
   if ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
-       vk == NK_GlobalVariableReadNode) &&
+       repr_static_read_kind(vk)) &&
       strbuf_slot_ref(c, v, sref, sizeof sref)) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
@@ -9803,15 +9803,30 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %s)", ct, idx);
   if (pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, raw, &eb);
   else buf_puts(&eb, raw);
+  /* --share-strings: a handle made around a plain String element is an
+     object nothing else holds until the callee roots it, and the call's
+     other arguments allocate first: it is made ahead of the call, in a
+     temp rooted for the statement */
+  int hoist = repr_share_rule(c) && pt == TY_STRBUF && g_pre;
+  Buf *vo = out, hb;
+  memset(&hb, 0, sizeof hb);
+  if (hoist) vo = &hb;
   if (need >= 0) {
     Buf db; memset(&db, 0, sizeof db);
     emit_arg_or_default(c, m, i, -1, &db);
-    buf_printf(out, "(%d < _t%d->len ? %s : %s)", need, ct, eb.p ? eb.p : "",
+    buf_printf(vo, "(%d < _t%d->len ? %s : %s)", need, ct, eb.p ? eb.p : "",
                db.p ? db.p : default_value_from_compiler(c, pt));
     free(db.p);
   }
-  else buf_puts(out, eb.p ? eb.p : raw);
+  else buf_puts(vo, eb.p ? eb.p : raw);
   free(eb.p);
+  if (hoist) {
+    int th = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+    buf_printf(out, "_t%d", th);
+    free(hb.p);
+  }
 }
 
 /* The splat a static layout spreads in place (ArgLayout.splat), evaluated
