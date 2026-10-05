@@ -517,7 +517,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         Buf bb; memset(&bb, 0, sizeof bb);
         emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, &nal);
         if (nal.open && nbn > 0) {
-          TyKind lt = comp_ntype(c, nbb[nbn - 1]);
+          TyKind lt = repr_of(c, nbb[nbn - 1]).as_ty;
           nal_vt = repr_of(c, id).kind == RK_BOXED && lt != TY_POLY ? TY_POLY : lt;
           if (nal_vt != TY_VOID && nal_vt != TY_NIL && nal_vt != TY_UNKNOWN &&
               (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
@@ -543,7 +543,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (!nexec && (block_keyword_name(c, nblk, 0) || block_kwrest_name(c, nblk)))
         emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL, NULL);
       view_unbind(sv_nargov);
-      TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
+      TyKind nbt = nbn > 0 ? repr_of(c, nbb[nbn - 1]).as_ty : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
       char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
       g_self = selfb; g_self_deref = ".";
@@ -632,7 +632,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           resolve_forwarded_block(c, blk) < 0 && !g_yield_proc_ref && !g_current_scope_is_lowered) {
         buf_printf(b, "(sp_raise_cls(\"%s\", \"%s\"), ", is_exec ? "LocalJumpError" : "ArgumentError",
                    is_exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
-        emit_ie_param_default(c, comp_ntype(c, id), b);
+        emit_ie_param_default(c, repr_of(c, id).as_ty, b);
         buf_puts(b, ")");
         return 1;
       }
@@ -644,7 +644,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int blk_body = nt_ref(nt, blk, "body");
       int ie_bn = 0; const int *ie_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &ie_bn) : NULL;
       int cls_id = ty_object_class(rtype);
-      TyKind body_ty = ie_bn > 0 ? comp_ntype(c, ie_bb[ie_bn - 1]) : TY_NIL;
+      TyKind body_ty = ie_bn > 0 ? repr_of(c, ie_bb[ie_bn - 1]).as_ty : TY_NIL;
       /* A value-carrying `next`/`break` bound to the splice can widen the
          result past the last expression's type (e.g. `next val + 1` is poly
          while the trailing `999` is int); size the temp to their union. */
@@ -1229,7 +1229,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     if (blk >= 0) {
-      TyKind rtype = comp_ntype(c, recv);
+      TyKind rtype = repr_of(c, recv).as_ty;
       const char *bp0 = block_param_name(c, blk, 0); if (bp0) bp0 = rename_local(bp0);
       int blk_body = nt_ref(nt, blk, "body");
       int then_bn = 0; const int *then_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &then_bn) : NULL;
@@ -1286,7 +1286,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       TyKind rrt = rrr.as_ty;
       if (rrt == TY_NIL) {
         /* nil&.foo always returns nil */
-        TyKind ret = comp_ntype(c, id);
+        TyKind ret = repr_of(c, id).as_ty;
         const char *dv = default_value_from_compiler(c, ret);
         buf_puts(b, dv ? dv : "0");
         return 1;
@@ -1350,7 +1350,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            result is inferred poly, force the call boxed; for a concretely-typed
            result, emit the natural form and default the nil arm to match. */
         int tsn = ++g_tmp;
-        TyKind ret2 = comp_ntype(c, id);
+        TyKind ret2 = repr_of(c, id).as_ty;
         Buf rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _sn%d = %s; SP_GC_ROOT_RBVAL(_sn%d);\n",
@@ -1476,7 +1476,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int sn_cont = needs_root(rrt) && rrt != TY_POLY && rrt != TY_STRING && !ty_is_object(rrt);
       if ((sn_obj || rrt == TY_STRING || sn_scalar || sn_cont) && g_sn_skip != id) {
         int tsn2 = ++g_tmp;
-        TyKind ret2 = comp_ntype(c, id);
+        TyKind ret2 = repr_of(c, id).as_ty;
         /* The temp lives in g_pre (statement scope), not an inline ({ }):
            the re-entered dispatch hoists its (substituted) receiver into
            g_pre too, which lands before the statement and must still see
@@ -1538,7 +1538,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          value arm still renders that bool: box it under its natural type or
          the slot it lands in disagrees (#4070). */
       {
-        TyKind ret3 = comp_ntype(c, id);
+        TyKind ret3 = repr_of(c, id).as_ty;
         TyKind nat3 = ret3 == TY_POLY ? infer_uncached(c, id) : ret3;
         if (ret3 == TY_POLY && g_sn_skip != id &&
             nat3 != TY_POLY && nat3 != TY_UNKNOWN && nat3 != TY_VOID) {
@@ -1596,7 +1596,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(&pb3, ") : sp_box_bool(sp_poly_case_eq(_t%d, ", tp3);
         buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()"); free(ab3.p); }
       buf_puts(&pb3, ")); })");
-      emit_unbox_text(c, comp_ntype(c, id), pb3.p ? pb3.p : "sp_box_nil()", b);
+      emit_unbox_text(c, repr_of(c, id).as_ty, pb3.p ? pb3.p : "sp_box_nil()", b);
       free(pb3.p);
       return 1;
     }
@@ -1772,7 +1772,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(b, "({ (void)("); emit_expr(c, bsrecv, b);
         buf_printf(b, "); sp_raise_cls(\"NoMethodError\", "
                       "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])); %s; })",
-                   bsnm, bscn, default_value_from_compiler(c, comp_ntype(c, id)));
+                   bsnm, bscn, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return 1;
       }
     }
@@ -1862,7 +1862,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_printf(b, "({ (void)("); emit_expr(c, rv0, b);
           buf_printf(b, "); sp_raise_cls(\"ArgumentError\","
                         " (&(\"\\xff\" \"can't unfreeze %s\")[1])); %s; })",
-                     icn, default_value_from_compiler(c, comp_ntype(c, id)));
+                     icn, default_value_from_compiler(c, repr_of(c, id).as_ty));
           return 1;
         }
         int t1 = ++g_tmp;
@@ -1870,7 +1870,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(b, "; sp_raise_cls(\"ArgumentError\", _t%d ?"
                       " (&(\"\\xff\" \"can't unfreeze TrueClass\")[1])"
                       " : (&(\"\\xff\" \"can't unfreeze FalseClass\")[1])); %s; })",
-                   t1, default_value_from_compiler(c, comp_ntype(c, id)));
+                   t1, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return 1;
       }
     }
