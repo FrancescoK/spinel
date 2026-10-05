@@ -70,6 +70,8 @@ typedef struct ShareFacts {
   int nmconst, cmconst;
   int unknown;
   int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
+  unsigned skip; int tag;   /* SPINEL_SHARE_STATS=4: unions with UNKNOWN at the sites of a
+                               tag set in skip are dropped; tag is the current site's */
   int union_stack_cap;
   int *union_stack;
   /* `k.new(...)` with k a class held in a variable reaches any initialize:
@@ -84,6 +86,11 @@ typedef struct ShareFacts {
   struct ShNamed { const char *name; int k; } *attr_r, *attr_w, *scope_nm;
   int nattr_r, nattr_w, nscope_nm, named_built;
 } ShareFacts;
+enum { UT_TARGET = 1, UT_BLKPARAM, UT_METHOD_REF, UT_DYN_IVAR, UT_SEND, UT_BSH_CALL, UT_RECVLESS,
+       UT_POLY_CALLABLE, UT_EXC, UT_SYMPROC, UT_FIBER, UT_THREAD, UT_BLOCK_VALUE, UT_STR_REOPEN,
+       UT_OPWRITE, UT_YIELD_TOP, UT_BREAK, UT_LAMBDA, UT_SELF_STR, UT_DYN_REACH, UT_IVARS_ALL,
+       UT_NONAME, UT_EXEC, UT_POLY_NEW, UT_NOROW, UT_SUPER, UT__N };
+
 
 /* ---- the union-find ---- */
 
@@ -130,6 +137,8 @@ static int sh_new(ShareFacts *F, int kind) {
   F->own[e] = 0;
   return e;
 }
+static int sh_tagset(ShareFacts *F, int t) { int o = F->tag; F->tag = t; return o; }
+static int sh_unk_val(ShareFacts *F, int t) { return ((F->skip >> t) & 1u) ? sh_new(F, SHK_VALUE) : F->unknown; }
 
 static void sh_union(ShareFacts *F, int a, int b) {
   if (a < 0 || b < 0) return;
@@ -143,7 +152,7 @@ static void sh_union(ShareFacts *F, int a, int b) {
     int y = F->union_stack[--sp], x = F->union_stack[--sp];
     int rx = sh_find(F, x), ry = sh_find(F, y);
     if (rx == ry) continue;
-    if (F->closed) {
+    if (F->closed || ((F->skip >> F->tag) & 1u)) {
       int ru = sh_find(F, F->unknown);
       if (rx == ru || ry == ru) continue;
     }
@@ -506,7 +515,7 @@ static void sh_target(ShareFacts *F, Compiler *c, int t, int v) {
   default:
     if (nt_type(nt, t) && sp_streq(nt_type(nt, t), "RequiredKeywordParameterNode")) goto sh_param;
     /* a call target (`o.x, y = ...`) or anything else: not followed */
-    sh_union(F, v, F->unknown);
+    { int o = sh_tagset(F, UT_TARGET); sh_union(F, v, F->unknown); F->tag = o; }
     return;
   }
 }
@@ -625,8 +634,10 @@ static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
     sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
   }
   if (m->blk_param || m->is_lowered_yield || m->is_proc_form) {
+    int o = sh_tagset(F, UT_BLKPARAM);
     sh_block_params(F, c, blk, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, blk), F->unknown);
+    F->tag = o;
   }
 }
 
@@ -741,7 +752,8 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
   return r;
 }
 
-static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
+static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk, int tag);
+
 
 /* The share-row semantics of builtin call n. Answers its value. */
 /* An iterator's block over a container's elements. Over a Hash (`hash`), a
@@ -905,14 +917,16 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
     return bv;
   case BSH_CALL:
-    return sh_unknown_call(F, c, n, blk);
+    return sh_unknown_call(F, c, n, blk, UT_BSH_CALL);
   case BSH_METHOD_REF:
     /* the method it names is called from wherever the Method goes; a
        define_method body is called with what the walk does not see */
     sh_dyn_name(F, argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL);
     if (lit_blk) {
+      int o = sh_tagset(F, UT_METHOD_REF);
       sh_block_params(F, c, blk, F->unknown, 1);
       sh_union(F, bv, F->unknown);
+      F->tag = o;
     }
     return -1;
   case BSH_IVAR_GET: case BSH_IVAR_SET: {
@@ -920,14 +934,18 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     TyKind rt = nt_ref(nt, n, "receiver") >= 0 ? c->ntype[nt_ref(nt, n, "receiver")] : TY_VOID;
     int cid = ty_is_object(rt) ? ty_object_class(rt) : rt == TY_VOID ? sh_ivar_owner(c, n) : -1;
     int iv = lit && cid >= 0 ? sh_ivar(F, c, cid, lit, n) : -1;
-    if (!lit || cid < 0) { F->dyn_ivars = 1; iv = F->unknown; }
-    if (share == BSH_IVAR_SET && nv >= 2) sh_ivar_store(F, c, iv, argc >= 2 ? argv[1] : -1, vals[1]);
+    if (!lit || cid < 0) { F->dyn_ivars = 1; iv = sh_unk_val(F, UT_DYN_IVAR); }
+    { int o = sh_tagset(F, UT_DYN_IVAR);
+      if (share == BSH_IVAR_SET && nv >= 2) sh_ivar_store(F, c, iv, argc >= 2 ? argv[1] : -1, vals[1]);
+      F->tag = o; }
     return iv;
   }
   case BSH_EXEC:
-    if (!lit_blk) return sh_unknown_call(F, c, n, blk);
-    sh_block_params(F, c, blk, F->unknown, 1);
-    for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+    if (!lit_blk) return sh_unknown_call(F, c, n, blk, UT_EXEC);
+    { int o = sh_tagset(F, UT_EXEC);
+      sh_block_params(F, c, blk, F->unknown, 1);
+      for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+      F->tag = o; }
     return bv;
   default:
     return -1;
@@ -953,15 +971,26 @@ static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int b
 
 /* A call the walk does not follow: what it is handed and what it answers
    are UNKNOWN. */
-static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
+static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk, int tag) {
+  /* SPINEL_SHARE_STATS=5: each call the walk does not follow, by tag */
+  { const char *st = getenv("SPINEL_SHARE_STATS");
+    if (st && st[0] == '5' && !F->skip && !F->closed) {
+      int r = nt_ref(c->nt, n, "receiver");
+      TyKind rt5 = r >= 0 ? c->ntype[r] : TY_VOID;
+      fprintf(stderr, "share-unknown-site: %s %s %s%s%s line %d\n", share_unknown_tag_name(tag), nt_str(c->nt, n, "name") ? nt_str(c->nt, n, "name") : "?",
+              r >= 0 ? ty_name(rt5) : "-", ty_is_object(rt5) ? ":" : "", ty_is_object(rt5) ? c->classes[ty_object_class(rt5)].name : "",
+              (int)nt_int(c->nt, n, "node_line", 0));
+    } }
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
+  int o = sh_tagset(F, tag);
   for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
   if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
     sh_block_params(F, c, blk, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, blk), F->unknown);
   }
-  return F->unknown;
+  F->tag = o;
+  return sh_unk_val(F, tag);
 }
 
 /* `Klass.new(...)`: the class's initialize, a Struct's members */
@@ -976,7 +1005,9 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   if (class_is_exc_subclass(c, cid)) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
+    int o = sh_tagset(F, UT_EXC);
     for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
+    F->tag = o;
   }
   if (ci->is_struct) {
     int vals[64];
@@ -999,7 +1030,7 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
-  if (!name) return F->unknown;
+  if (!name) return sh_unk_val(F, UT_NONAME);
   int recv = nt_ref(nt, n, "receiver");
   int blk = nt_ref(nt, n, "block");
   int args = nt_ref(nt, n, "arguments");
@@ -1021,14 +1052,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (sp_str_mutator(sym, 0)) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
-    else sh_union(F, sh_elem(F, rv), F->unknown);
+    else { int o = sh_tagset(F, UT_SYMPROC); sh_union(F, sh_elem(F, rv), F->unknown); F->tag = o; }
   }
 
   /* the reflective names */
   if (is_send_family(name)) {
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
     sh_dyn_name(F, lit);
-    return sh_unknown_call(F, c, n, blk);
+    return sh_unknown_call(F, c, n, blk, UT_SEND);
   }
   /* a C function the program binds (ffi_func, a package's native_func):
      it reads a String argument for the length of the call and keeps none */
@@ -1043,8 +1074,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      answers go where the walk does not follow. */
   int fb = an_fiber_new_block(c, n);
   if (fb >= 0) {
+    int o = sh_tagset(F, UT_FIBER);
     sh_block_params(F, c, fb, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, fb), F->unknown);
+    F->tag = o;
     return -1;
   }
   int tb = an_thread_arg_block(c, n);
@@ -1055,7 +1088,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     sh_block_params(F, c, tb, a, 1);
     /* Thread.new (a constant receiver; Fiber#resume's is the fiber) */
     if (nt_kind(nt, nt_ref(nt, n, "receiver")) == NK_ConstantReadNode) {
-      sh_union(F, sh_block_val(F, c, tb), F->unknown);
+      { int o = sh_tagset(F, UT_THREAD); sh_union(F, sh_block_val(F, c, tb), F->unknown); F->tag = o; }
       return -1;
     }
   }
@@ -1063,7 +1096,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a user method */
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
-  if (ntg < 0) return sh_unknown_call(F, c, n, blk);
+  if (ntg < 0) return sh_unknown_call(F, c, n, blk, UT_TARGET);
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
     int r = sh_new_call(F, c, n, recv, blk);
     if (r != -2) return r;
@@ -1102,7 +1135,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         }
         F->any_new_blk[F->nany_blk++] = blk;
       }
-      return sh_join(F, -1, rt == TY_CLASS ? -1 : sh_unknown_call(F, c, n, blk));
+      return sh_join(F, -1, rt == TY_CLASS ? -1 : sh_unknown_call(F, c, n, blk, UT_POLY_NEW));
     }
   }
   if (ntg > 0) {
@@ -1114,13 +1147,15 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
          yields goes where the walk does not follow */
       else if (blk >= 0 && c->scopes[tg[i]].yields) {
+        int o = sh_tagset(F, UT_BLOCK_VALUE);
         sh_union(F, sh_scope_holder(F, SHK_YIELD, tg[i]), F->unknown);
         sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
+        F->tag = o;
       }
       /* a method of a String reopen: self is the receiver */
       if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
           c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
-        sh_union(F, rv, F->unknown);
+        { int o = sh_tagset(F, UT_STR_REOPEN); sh_union(F, rv, F->unknown); F->tag = o; }
     }
     /* a poly receiver may be a builtin as well */
     if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
@@ -1148,13 +1183,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-    return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
+    return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk, UT_RECVLESS);
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
     /* a proc or a Method in the box: called with what it is handed */
     if (bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
-      sh_unknown_call(F, c, n, blk);
-      return sh_join(F, F->unknown, sh_container_default(F, c, n, rv, blk));
+      sh_unknown_call(F, c, n, blk, UT_POLY_CALLABLE);
+      return sh_join(F, sh_unk_val(F, UT_POLY_CALLABLE), sh_container_default(F, c, n, rv, blk));
     }
     /* any receiver it may be: an Array's or a Hash's row (a String's keeps
        its arguments least), or the container default */
@@ -1174,7 +1209,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (!s && fam != BOP_ANY_ARRAY && fam != BOP_ANY_HASH) s = bop_share(fam, name);
   if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_HASH ? 2 : fam == BOP_ANY_ARRAY);
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
-  return sh_unknown_call(F, c, n, blk);
+  return sh_unknown_call(F, c, n, blk, UT_NOROW);
 }
 
 static int sh_super(ShareFacts *F, Compiler *c, int n) {
@@ -1182,7 +1217,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
   int blk = nt_ref(nt, n, "block");
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
-  if (ntg < 0) return sh_unknown_call(F, c, n, blk);
+  if (ntg < 0) return sh_unknown_call(F, c, n, blk, UT_TARGET);
   int cur = sh_method_index(c, n);
   int r = -1;
   for (int i = 0; i < ntg; i++) {
@@ -1211,7 +1246,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
     r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
   }
-  if (ntg == 0) return sh_unknown_call(F, c, n, blk);
+  if (ntg == 0) return sh_unknown_call(F, c, n, blk, UT_SUPER);
   return r;
 }
 
@@ -1366,7 +1401,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     const char *rn = nt_str(nt, n, "read_name");
     int writer = 0;
     int iv = rn ? sh_attr_ivars(F, c, rn, n, &writer) : -1;
-    if (iv < 0) { sh_union(F, v, F->unknown); return F->unknown; }
+    if (iv < 0) { int o = sh_tagset(F, UT_OPWRITE); sh_union(F, v, F->unknown); F->tag = o; return sh_unk_val(F, UT_OPWRITE); }
     sh_ivar_store(F, c, iv, nt_ref(nt, n, "value"), v);
     return iv;
   }
@@ -1378,8 +1413,10 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int y = mi >= 0 ? sh_scope_holder(F, SHK_YIELD, mi) : F->unknown;
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
+    int o = sh_tagset(F, mi >= 0 ? F->tag : UT_YIELD_TOP);
     for (int i = 0; i < nv; i++) sh_union(F, y, vals[i]);
-    return mi >= 0 ? sh_scope_holder(F, SHK_BLKRET, mi) : F->unknown;
+    F->tag = o;
+    return mi >= 0 ? sh_scope_holder(F, SHK_BLKRET, mi) : sh_unk_val(F, UT_YIELD_TOP);
   }
   case NK_ReturnNode: {
     int mi = sh_method_index(c, n);
@@ -1395,13 +1432,18 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_BreakNode: case NK_NextNode: {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
+    int o = sh_tagset(F, UT_BREAK);
     for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+    F->tag = o;
     return -1;
   }
-  case NK_LambdaNode:
+  case NK_LambdaNode: {
+    int o = sh_tagset(F, UT_LAMBDA);
     sh_block_params(F, c, n, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, n), F->unknown);
+    F->tag = o;
     return -1;
+  }
   case NK_CallNode:
     return sh_call(F, c, n);
   case NK_SuperNode: case NK_ForwardingSuperNode:
@@ -1409,7 +1451,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_SelfNode: {
     Scope *s = comp_scope_of(c, n);
     int cid = s ? s->class_id : -1;
-    return cid >= 0 && cid == comp_class_index(c, "String") ? F->unknown : -1;
+    return cid >= 0 && cid == comp_class_index(c, "String") ? sh_unk_val(F, UT_SELF_STR) : -1;
   }
   default:
     return -1;
@@ -1852,10 +1894,13 @@ static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st) {
   if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1]);
 }
 
-static ShareFacts *sh_build(Compiler *c, int closed) {
+static ShareFacts *sh_build_skip(Compiler *c, int closed, unsigned skip);
+static ShareFacts *sh_build(Compiler *c, int closed) { return sh_build_skip(c, closed, 0); }
+static ShareFacts *sh_build_skip(Compiler *c, int closed, unsigned skip) {
   const NodeTable *nt = c->nt;
   ShareFacts *F = calloc(1, sizeof *F);
   F->closed = closed;
+  F->skip = skip;
   F->unknown = sh_new(F, SHK_UNKNOWN);
   F->flags[F->unknown] = SHF_UNKNOWN;
   F->elem[F->unknown] = F->unknown;
@@ -1903,6 +1948,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     int reach = F->dyn_all || sp_streq(m->name, "method_missing");
     for (int k = 0; k < F->ndyn && !reach; k++) reach = sp_streq(F->dyn[k], m->name);
     if (!reach) continue;
+    int o = sh_tagset(F, UT_DYN_REACH);
     for (int j = 0; j < m->nparams; j++)
       sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
     sh_union(F, sh_scope_holder(F, SHK_RET, mi), F->unknown);
@@ -1910,6 +1956,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
       sh_union(F, sh_scope_holder(F, SHK_YIELD, mi), F->unknown);
       sh_union(F, sh_scope_holder(F, SHK_BLKRET, mi), F->unknown);
     }
+    F->tag = o;
   }
   /* a Struct's members are read and written through `[]`, `to_a`, `each`
      and the rest, which the walk does not follow; every ivar when an ivar
@@ -1917,7 +1964,9 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     if (!ci->is_struct && !F->dyn_ivars) continue;
+    int o = sh_tagset(F, UT_IVARS_ALL);
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
+    F->tag = o;
   }
   sh_settle_lends(F, c);
   sh_finalize(F);
@@ -1937,6 +1986,15 @@ void share_facts_free(Compiler *c) {
 /* the same facts with what the walk does not follow left out: the stats'
    count of holders shared only because of UNKNOWN */
 ShareFacts *share_facts_build_closed(Compiler *c) { return sh_build(c, 1); }
+ShareFacts *share_facts_build_skip(Compiler *c, unsigned skip) { return sh_build_skip(c, 0, skip); }
+int share_unknown_tags(void) { return UT__N; }
+const char *share_unknown_tag_name(int t) {
+  static const char *const nm[UT__N] = { "-", "target", "blkparam", "method_ref", "dyn_ivar", "send",
+    "bsh_call", "recvless", "poly_callable", "exc", "symproc", "fiber", "thread", "block_value",
+    "str_reopen", "opwrite", "yield_top", "break", "lambda", "self_str", "dyn_reach", "ivars_all",
+    "noname", "exec", "poly_new", "norow", "super" };
+  return t > 0 && t < UT__N ? nm[t] : "?";
+}
 void share_facts_drop(ShareFacts *F) { sh_free(F); }
 
 int share_holder_count(const Compiler *c) { return c->share ? c->share->nh : 0; }
@@ -2141,7 +2199,11 @@ void share_routes_free(Compiler *c) {
 int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
   if (!F || !h) return 0;
   int i = h->kind == SHK_LOCAL ? sh_lookup(F, SHK_LOCAL, h->scope, h->local, NULL)
-        : h->kind == SHK_IVAR ? sh_lookup(F, SHK_IVAR, h->cid, -1, h->name) : -1;
+        : h->kind == SHK_IVAR ? sh_lookup(F, SHK_IVAR, h->cid, -1, h->name)
+        : -1;
+  if (h->kind == SHK_GVAR || h->kind == SHK_CVAR || h->kind == SHK_CONST)
+    for (int k = 0; k < F->nh && i < 0; k++)
+      if (F->h[k].kind == h->kind && F->h[k].name && h->name && sp_streq(F->h[k].name, h->name)) i = k;
   if (i < 0) return 0;
   int x = F->helem[i];
   while (F->parent[x] != x) x = F->parent[x];
