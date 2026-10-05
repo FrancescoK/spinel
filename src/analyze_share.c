@@ -1697,6 +1697,36 @@ static int sh_param_borrows(Compiler *c, int mi, int j, int **other) {
   return other[mi] && other[mi][p - m->locals] == 0;
 }
 
+/* Is call n a builtin String-keyed Hash call whose first argument is a key
+   it only compares, or copies to store? */
+static int sh_hash_key_call(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver");
+  const char *name = nt_str(nt, n, "name");
+  if (recv < 0 || !name) return 0;
+  TyKind rt = c->ntype[recv];
+  if (rt != TY_STR_INT_HASH && rt != TY_STR_STR_HASH && rt != TY_STR_POLY_HASH) return 0;
+  int tg[64];
+  if (sh_targets(c, n, tg, 64) > 0) return 0;
+  if (sp_streq(name, "[]=") || sp_streq(name, "store"))
+    return rt != TY_STR_POLY_HASH;
+  return sp_streq(name, "[]") || sp_streq(name, "key?") || sp_streq(name, "has_key?") ||
+         sp_streq(name, "include?") || sp_streq(name, "member?") || sp_streq(name, "fetch") ||
+         sp_streq(name, "delete");
+}
+
+/* Is call n one of the C functions the program binds? */
+static int sh_native_call(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver");
+  const char *name = nt_str(nt, n, "name");
+  if (recv < 0 || !name) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
+  const char *mod = nt_str(nt, recv, "name");
+  return mod && (ffi_find_func(c, mod, name) >= 0 || comp_native_find(c, mod, name) >= 0);
+}
+
 int share_mark_borrows(Compiler *c) {
   if (!c->share_strings) return 0;
   const NodeTable *nt = c->nt;
@@ -1743,11 +1773,31 @@ int share_mark_borrows(Compiler *c) {
     for (int i = 0; i < argc && cand < 0; i++)
       if (sh_handle_read(c, argv[i])) cand = i;
     if (cand < 0) continue;
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0) continue;
+    /* a C function the program binds (ffi_func, a package's native_func)
+       reads a String argument for the length of the call, keeps none, and
+       runs no Ruby code meanwhile */
+    if (sh_native_call(c, n)) {
+      int plain = 1;
+      for (int i = 0; i < argc && plain; i++)
+        plain = sh_handle_read(c, argv[i]) || sh_plain_operand(c, argv[i]);
+      for (int i = 0; i < argc && plain; i++)
+        if (sh_handle_read(c, argv[i])) { c->strbuf_read_raw[argv[i]] = 1; marked++; }
+      continue;
+    }
+    /* a String-keyed Hash's key: a lookup only compares it, and a store
+       copies it (sp_hash_key_str), as CRuby dups and freezes it */
+    if (sh_hash_key_call(c, n) && sh_handle_read(c, argv[0]) &&
+        sh_plain_operand(c, nt_ref(nt, n, "receiver"))) {
+      int plain = 1;
+      for (int i = 1; i < argc && plain; i++) plain = sh_plain_operand(c, argv[i]);
+      if (plain) { c->strbuf_read_raw[argv[0]] = 1; marked++; }
+      continue;
+    }
     int tg[64];
     int ntg = sh_targets(c, n, tg, 64);
     if (ntg == 0 || !sh_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
-    int blk = nt_ref(nt, n, "block");
-    if (blk >= 0) continue;
     for (int i = 0; i < argc; i++) {
       if (!sh_handle_read(c, argv[i])) {
         if (!sh_plain_operand(c, argv[i])) { ntg = 0; break; }
