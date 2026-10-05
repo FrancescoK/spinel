@@ -23893,6 +23893,28 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
     return 0;
   }
   if (is_proc_invoke(nm) && infer_type(c, rcv) == TY_PROC) return 1;
+  /* Reflection reads the same sentinel-backed slot as an ivar reader.
+     A boxed receiver can also lack the slot altogether. Keep that nil
+     through boxing, scalar operations and assignments to other locals. */
+  if (sp_streq(nm, "instance_variable_get")) {
+    int ca = nt_ref(nt, v, "arguments"), an = 0;
+    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+    if (an != 1) return 0;
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *sym = ak == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                    : ak == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (!sym || sym[0] != '@') return 0;
+    TyKind rt = infer_type(c, rcv);
+    if (rt == TY_POLY) return 1;
+    if (ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      if (comp_method_in_chain(c, cid, nm, NULL) >= 0) return 0;
+      ClassInfo *ci = &c->classes[cid];
+      int iv = comp_ivar_index(ci, sym);
+      return iv >= 0 && (!ci->is_struct || iv >= ci->nmembers) &&
+             (ci->ivar_types[iv] == TY_INT || ci->ivar_types[iv] == TY_FLOAT);
+    }
+  }
   return 0;
 }
 
