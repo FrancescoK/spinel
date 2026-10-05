@@ -16127,7 +16127,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
      `reverse_each` is the reversed one, through the constructor the typed
      array arm below uses. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      comp_ntype(c, recv) == TY_POLY && comp_ntype(c, id) == TY_ENUMERATOR &&
+      repr_of(c, recv).kind == RK_BOXED && comp_ntype(c, id) == TY_ENUMERATOR &&
       is_each_walk(name)) {
     /* a value that is no collection is the call's NoMethodError, where the
        Enumerator walked nil or a String as empty (sp_poly_enum_chk) */
@@ -16138,7 +16138,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   /* A blockless map or selecting call there is the same snapshot under its
      own #inspect name, as the typed array arm below builds it. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      comp_ntype(c, recv) == TY_POLY && comp_ntype(c, id) == TY_ENUMERATOR &&
+      repr_of(c, recv).kind == RK_BOXED && comp_ntype(c, id) == TY_ENUMERATOR &&
       poly_blockless_enum_name(name)) {
     int te = ++g_tmp;
     buf_printf(b, "({ sp_Enumerator *_t%d = sp_poly_blockless_enum(", te);
@@ -16195,7 +16195,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
      this one did not). A concretely-typed array receiver is not in doubt. */
   if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (ty_is_array(comp_ntype(c, recv)) || comp_ntype(c, recv) == TY_ENUMERATOR ||
-       (comp_ntype(c, recv) == TY_POLY && !user_defines_or_reads(c, name))) &&
+       (repr_of(c, recv).kind == RK_BOXED && !user_defines_or_reads(c, name))) &&
       (is_indexed_each(name))) {
     /* An Enumerator receiver (`arr.each.each_with_index`) is materialized to its
        element array first (#2487). */
@@ -16367,7 +16367,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); sp_enum_with_src(sp_Enumerator_new_from(_t%d), _t%d, SPL(\"%s\")); })",
                  ts, ts, ts, name);
     }
-    if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
@@ -16381,7 +16381,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     buf_printf(&eb, "sp_Enumerator_new_from_items(sp_enum_hash_side(");
     emit_boxed(c, recv, &eb);
     buf_printf(&eb, ", %d))", sp_streq(name, "each_key") ? 1 : 0);
-    if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
+    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_ENUMERATOR, eb.p, b);
     else buf_puts(b, eb.p);
     free(eb.p);
     return 1;
@@ -17964,7 +17964,7 @@ int subtree_may_reassign_state(Compiler *c, int id) {
        `[]` or a Hash's default block; with neither in the program it is a
        lookup (`@bg_pattern_lut[@bg_pattern]`, a poly array of arrays). */
     int boxed_index = nm && sp_streq(nm, "[]") && recv >= 0 && ac == 1 &&
-                      nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_POLY &&
+                      nt_ref(nt, id, "block") < 0 && repr_of(c, recv).kind == RK_BOXED &&
                       !any_class_defines(c, "[]") && !prog_has_hash_default_block(c);
     int alloc = 0;
     if (!typed_index && !boxed_index && !call_is_field_read(c, id, &alloc)) return 1;
@@ -20241,7 +20241,7 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
   }
   if (!any) return;
   int tg[64], n = 0;
-  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
+  if (recv >= 0 && repr_of(c, recv).kind == RK_BOXED) {
     for (int k = 0; k < c->nclasses && n < 64; k++) {
       if (!c->classes[k].instantiated) continue;
       int mi = comp_method_in_chain(c, k, name, NULL);
@@ -20804,8 +20804,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
      value, which the runtime then answers (#4522) */
   if (g_ndecide_cap > id && g_ndecide[id]) return;
   { int recv = nt_ref(c->nt, id, "receiver");
-    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_VOID;
-    nd_stamp(id, (rt == TY_POLY || rt == TY_UNKNOWN) ? ND_BOXED : ND_DIRECT); }
+    Repr rr = repr_of(c, recv);
+    TyKind rt = recv >= 0 ? rr.as_ty : TY_VOID;
+    nd_stamp(id, (rr.kind == RK_BOXED || rt == TY_UNKNOWN) ? ND_BOXED : ND_DIRECT); }
 }
 /* Ruby reads a call's receiver before it evaluates the arguments. The arms
    below emit the receiver inline and the arguments' preludes ahead of the
@@ -20850,8 +20851,9 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   if (!nt_int(nt, id, "was_at", 0)) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  TyKind rt = comp_ntype(c, recv);
-  if (rt == TY_POLY) {
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
+  if (rr.kind == RK_BOXED) {
     if (g_at_chk_id == id || sn_guard_pending(c, id)) return 0;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -22161,7 +22163,7 @@ static int push_arg_keeps_slot(Compiler *c, int id, TyKind art) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (comp_ntype(c, id) == TY_POLY && art != TY_POLY_ARRAY) return 0;
+  if (repr_of(c, id).kind == RK_BOXED && art != TY_POLY_ARRAY) return 0;
   if (sp_streq(ty, "IntegerNode") || sp_streq(ty, "FloatNode") ||
       sp_streq(ty, "StringNode") || sp_streq(ty, "SymbolNode") ||
       sp_streq(ty, "NilNode") || sp_streq(ty, "TrueNode") || sp_streq(ty, "FalseNode") ||
