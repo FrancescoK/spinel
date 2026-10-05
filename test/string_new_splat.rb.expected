@@ -1,0 +1,10 @@
+"abcd"
+false
+""
+false
+"wrong number of arguments (given 2, expected 0..1)"
+"lit"
+false
+"xyz"
+["xy"]
+#<Encoding:BINARY (ASCII-8BIT)>
