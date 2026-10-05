@@ -4978,6 +4978,42 @@ int an_class_includes_enumerable(Compiler *c, int ci) {
   }
   return anh_has(&g_enum_cls, cn);
 }
+/* Enumerable reaches class `ci` through itself, a superclass, or a module
+   any of those includes (and a module it includes in turn). The minmax gate
+   asks it once per call site; an_class_includes_enumerable alone sees only
+   a class whose own body includes Enumerable. */
+static int an_enum_reaches(Compiler *c, int ci, int depth) {
+  const NodeTable *nt = c->nt;
+  if (ci < 0 || ci >= c->nclasses || depth > 32) return 0;
+  for (int cur = ci; cur >= 0 && cur < c->nclasses; cur = c->classes[cur].parent) {
+    if (an_class_includes_enumerable(c, cur)) return 1;
+    for (int id = 0; id < nt->count; id++) {
+      int k = nt_kind(nt, id);
+      if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!cn || comp_class_index(c, cn) != cur) continue;
+      int body = nt_ref(nt, id, "body");
+      int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int s2 = 0; s2 < bn; s2++) {
+        if (nt_kind(nt, stmts[s2]) != NK_CallNode || nt_ref(nt, stmts[s2], "receiver") >= 0) continue;
+        const char *nm = nt_str(nt, stmts[s2], "name");
+        if (!nm || !sp_streq(nm, "include")) continue;
+        int an = 0, anode = nt_ref(nt, stmts[s2], "arguments");
+        const int *aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+        for (int j = 0; j < an; j++) {
+          const char *mn = nt_str(nt, aa[j], "name");
+          if (!mn) continue;
+          if (sp_streq(mn, "Enumerable")) return 1;
+          int mi = comp_class_index(c, mn);
+          if (mi >= 0 && mi != cur && an_enum_reaches(c, mi, depth + 1)) return 1;
+        }
+      }
+    }
+    if (c->classes[cur].parent == cur) break;
+  }
+  return 0;
+}
 static int class_body_includes_enumerable(const NodeTable *nt, int id) {
   int body = nt_ref(nt, id, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -8212,10 +8248,11 @@ int desugar_enum_method_recv(Compiler *c) {
     }
     if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
     /* minmax only where Enumerable really is: a Struct, or a class that mixes
-       it in (whose own minmax builtins/enumerable.rb also answers); a class
-       with a bare #each keeps its NoMethodError */
+       it in, itself, through a superclass or through an included module
+       (whose own minmax builtins/enumerable.rb also answers); a class with a
+       bare #each keeps its NoMethodError */
     if (sp_streq(nm, "minmax") && !c->classes[cid].is_struct &&
-        !an_class_includes_enumerable(c, cid)) continue;
+        !an_enum_reaches(c, cid, 0)) continue;
     /* a Struct/Data class serves these natively in the struct emit section
        (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
        element array would change their semantics */
