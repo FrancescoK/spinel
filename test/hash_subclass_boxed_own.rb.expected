@@ -1,0 +1,24 @@
+Opts
+[Opts, Hash, Enumerable]
+true
+true
+true
+false
+true
+true
+true
+true
+opts
+true
+true
+true
+Opts
+"x"
+"x"
+[:@src]
+"opts"
+2
+[:a, :b]
+false
+false
+true

@@ -1,0 +1,38 @@
+true
+1
+"x"
+"x@1!"
+2
+[:verbose, :name]
+{verbose: true, name: "x"}
+Options
+true
+false
+true
+verbose=true
+name=x
+[:verbose, :name]
+Options
+3
+"x@3!"
+{verbose: true, name: "x", level: 3}
+Hash
+{verbose: true, name: "x"}
+Hash
+{name: "x"}
+true
+true
+an Options
+{verbose: true, name: "x"}
+{verbose: true, name: "x"}
+1
+"opts"
+{}
+"{}"
+true
+true
+true
+{a: 2, b: 1}
+Counter
+true
+:a

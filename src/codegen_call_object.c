@@ -2387,7 +2387,7 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
    re-enters the emitters under the kind the inference pinned it to
    (infer_bsub_call), as a boxed receiver's face does (emit_face_arm). A
    call whose answer is its receiver answers the instance. */
-typedef struct { int bound, vr, vf, vi, nv, views[16], form; TyKind nat; } BsubView;
+typedef struct { int bound, vr, vf, vi, nv, views[16], form, recv, cid; TyKind nat, kind; } BsubView;
 
 /* Bind node n, a builtin subclass instance, to its builtin -- the same
    pointer cast -- evaluating anything but a variable once, ahead of the
@@ -2419,7 +2419,8 @@ static int bsub_view_open(Compiler *c, int id, BsubView *v) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
-  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN; v->form = BSR_PLAIN;
+  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = v->kind = TY_UNKNOWN;
+  v->form = BSR_PLAIN; v->recv = recv; v->cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
   if (comp_bsub_call(c, id, rt, &k) && comp_bsub_info(comp_ty_bsub_base(c, rt))->kind_of(k)) {
     v->bound = bsub_bind(c, recv);
     v->vr = view_push(c, recv, k);
@@ -2435,6 +2436,18 @@ static int bsub_view_open(Compiler *c, int id, BsubView *v) {
       v->nat = comp_bsub_self_kind(c, id, rt, k);
       v->vi = view_push(c, id, v->nat);
     }
+    /* a call answering a new object of the receiver's class (Hash#merge):
+       the builtin's answer, which emit_bsub_call copies into a copy of the
+       instance -- where the inference typed the call as the instance
+       (infer_bsub_call: the answer is the builtin's own kind) */
+    else if (v->form == BSR_COPY) {
+      if (comp_ntype(c, id) == rt) {
+        v->nat = k;
+        v->vi = view_push(c, id, v->nat);
+      }
+      else v->form = BSR_PLAIN;
+    }
+    v->kind = k;
     rt = k;
   }
   int args = nt_ref(nt, id, "arguments"), an = 0;
@@ -2456,6 +2469,30 @@ static void bsub_view_close(Compiler *c, BsubView *v) {
   view_unbind(v->bound);
 }
 
+/* A copy's answer (BSR_COPY): the builtin's answer _r, and a copy of the
+   receiver, its ivars and its builtin's state (sp_X__dup, no
+   initialize_copy, as CRuby's Hash#merge makes one) made to hold _r's (the
+   kind's replace). */
+static void emit_bsub_copy_result(Compiler *c, int id, BsubView *v, const char *cn, Buf *b) {
+  int cid = v->cid;
+  const BsubKind *kr = bsub_kind_row(c, cid);
+  int r = ++g_tmp;
+  buf_printf(b, "({ %s *_t%d = ", kr->ctype, r);
+  emit_call(c, id, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", r);
+  /* the copy is of the class the receiver carries, when a subclass's
+     instance can be behind it */
+  int o = ++g_tmp, d = ++g_tmp;
+  buf_printf(b, "sp_%s *_t%d = (sp_%s *)(", cn, o, cn);
+  emit_expr(c, v->recv, b);
+  buf_printf(b, "); sp_%s *_t%d = ", cn, d);
+  for (int k = 0; k < c->nclasses; k++)
+    if (k != cid && is_descendant(c, k, cid) && c->classes[k].instantiated)
+      buf_printf(b, "_t%d->cls_id == %d ? (sp_%s *)sp_%s__dup(_t%d, 0) : ", o, k, cn, c->classes[k].c_name, o);
+  buf_printf(b, "(sp_%s *)sp_%s__dup(_t%d, 0); %s(&_t%d->%s, _t%d); _t%d; })",
+             cn, cn, o, kr->replace, d, bsub_field(c, cid), r, d);
+}
+
 int emit_bsub_call(Compiler *c, int id, Buf *b) {
   if (!c->has_bsub) return 0;
   int kb = BSUB_NONE, ka = comp_bsub_kernel_conv(c, id, &kb);
@@ -2465,7 +2502,9 @@ int emit_bsub_call(Compiler *c, int id, Buf *b) {
   BsubView v;
   if (!bsub_view_open(c, id, &v)) return 0;
   const char *cn = recv >= 0 && ty_is_object(rt) ? c->classes[ty_object_class(rt)].c_name : NULL;
-  if (v.vi >= 0 && v.nat == TY_POLY) {
+  if (v.form == BSR_COPY)
+    emit_bsub_copy_result(c, id, &v, cn, b);
+  else if (v.vi >= 0 && v.nat == TY_POLY) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_call(c, id, b);

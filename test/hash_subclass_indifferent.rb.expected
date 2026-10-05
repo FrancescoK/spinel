@@ -1,0 +1,35 @@
+1
+1
+2
+2
+true
+true
+false
+1
+0
+{"a" => 1, "b" => 2}
+{"c" => 3, "d" => 4}
+3
+4
+HashWithIndifferentAccess
+5
+1
+false
+1
+{"b" => 2}
+5
+5
+HashWithIndifferentAccess
+1
+Hash
+{b: 2}
+HashWithIndifferentAccess
+{"b" => 2, "z" => 26}
+{"b" => 2}
+true
+true
+[["b", 2]]
+1
+["b"]
+[2]
+false
