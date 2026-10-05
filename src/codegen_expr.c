@@ -1039,7 +1039,7 @@ void emit_orw_guard(Compiler *c, int v, TyKind slot, const char *cond, const cha
 /* The guarded store of `REF ||= v` / `REF &&= v` on a shared-handle String
    slot: the RHS goes in as a handle (an alias by handle, anything else
    freshly wrapped), its setup spliced inside the guard. */
-static void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b) {
+void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b) {
   Buf vpre; memset(&vpre, 0, sizeof vpre);
   Buf vval; memset(&vval, 0, sizeof vval);
   Buf *saved_pre = g_pre; g_pre = &vpre;
@@ -1931,6 +1931,20 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
 }
 
 /* Instance-variable reads, class- and global-variable reads and writes, and the $1 / $& references (emit_expr_node's arms, in their order) */
+/* A read of a shared-mutable String slot (an ivar's or a global's, `sref`):
+   a marked read yields the live HANDLE, an ordinary read a GC copy of the
+   current contents (NULL stays nil) (#3227). */
+static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref, Buf *b) {
+  if (rp.handle) buf_printf(b, "%s", sref);
+  /* a parameter that only reads the bytes for the length of the call
+     takes the live buffer (#7482) */
+  else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
+    buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", sref, sref);
+  else if (repr_share_rule(c)) buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+  else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                  sref, sref, sref);
+}
+
 static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
@@ -1965,18 +1979,11 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     /* a shared-mutable string slot: a marked read yields the live HANDLE, an
        ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
     { char srefI[1024];
-      int svm = rp.handle;
       int vsm = view_push_repr(c, id, VR_STRBUF_BOX, 1);   /* let slot_ref resolve regardless of mark */
       int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
       view_pop(c, vsm);
       if (is_sb) {
-        if (svm) buf_printf(b, "%s", srefI);
-        /* a parameter that only reads the bytes for the length of the call
-           takes the live buffer (#7482) */
-        else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
-          buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", srefI, srefI);
-        else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                        srefI, srefI, srefI);
+        emit_strbuf_slot_read(c, id, rp, srefI, b);
         return 1;
       } }
     if (cs && cs->is_cmethod && cs->class_id >= 0)
@@ -2060,6 +2067,13 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       buf_printf(b, "(gv_%s = sp_str_concat(gv_%s, ", rn, rn);
       emit_str_expr(c, v, b); buf_puts(b, "))");
     }
+    /* a global holding the shared handle: `+=` makes a new String, and the
+       value is its read */
+    else if (repr_of_slot(c, lv).kind == RK_STRBUF && op && sp_streq(op, "+")) {
+      buf_printf(b, "({ gv_%s = sp_String_new_shared(sp_str_concat(sp_String_cstr(gv_%s), ", rn, rn);
+      emit_str_expr(c, v, b);
+      buf_printf(b, ")); sp_String_cstr(gv_%s); })", rn);
+    }
     else if (emit_array_op_assign_value(c, gref, lv->type, op, v, b)) { }
     else if (emit_poly_op_assign_value(c, gref, lv->type, op, v, b)) { }
     else if (emit_scalar_op_assign_value(c, gref, lv->type, op, v, lv->nullable_int, b)) { }
@@ -2078,7 +2092,14 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (!lv) { unsupported(c, id, "global variable write (unregistered global)"); return 1; }
     buf_puts(b, "({ ");
     emit_stmt_inner(c, id, b, 0);
-    buf_printf(b, "gv_%s; })", rn);
+    if (repr_of_slot(c, lv).kind == RK_STRBUF) {
+      /* a global holding the shared handle: the handle where a handle is
+         asked for, else its read face */
+      char sref[256]; snprintf(sref, sizeof sref, "gv_%s", rn);
+      emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      buf_puts(b, "; })");
+    }
+    else buf_printf(b, "gv_%s; })", rn);
     return 1;
   }
   if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
@@ -2191,7 +2212,14 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     }
     if (nm && nm[0] == '$') {
       const char *rn = comp_resolve_gvar(c, nm + 1);
-      if (comp_gvar(c, rn)) { buf_printf(b, "gv_%s", rn); return 1; }
+      LocalVar *gv = comp_gvar(c, rn);
+      /* --share-strings: a global holding the shared handle (#6765) */
+      if (gv && repr_of_slot(c, gv).kind == RK_STRBUF) {
+        char sref[256]; snprintf(sref, sizeof sref, "gv_%s", rn);
+        emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+        return 1;
+      }
+      if (gv) { buf_printf(b, "gv_%s", rn); return 1; }
     }
     unsupported(c, id, "global variable read");
   }
