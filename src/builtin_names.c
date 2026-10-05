@@ -805,10 +805,10 @@ int is_nil_method(const char *n) {
   return 0;
 }
 
-/* An Array subclass instance's questions about the object itself rather
+/* A builtin subclass instance's questions about the object itself rather
    than its elements (#7449): the class's own answers, through the object
    paths. dup and clone keep the class and copy the elements. */
-int is_arysub_object_name(const char *n) {
+int is_bsub_object_name(const char *n) {
   static const char *const names[] = {
     "class", "singleton_class", "is_a?", "kind_of?", "instance_of?", "respond_to?",
     "equal?", "object_id", "__id__", "dup", "clone", "itself", "tap", "then",
@@ -821,9 +821,9 @@ int is_arysub_object_name(const char *n) {
   return 0;
 }
 
-/* The Object methods an Array subclass instance answers as its Array
+/* The Object methods a builtin subclass instance answers as its builtin
    (#7449): to_enum and enum_for walk its elements, frozen? reads the
-   Array's frozen flag, != negates Array#==. */
-int is_arysub_kernel_name(const char *n) {
+   builtin's frozen state, != negates the builtin's ==. */
+int is_bsub_kernel_name(const char *n) {
   return sp_streq(n, "to_enum") || sp_streq(n, "enum_for") || sp_streq(n, "frozen?") || sp_streq(n, "!=");
 }
