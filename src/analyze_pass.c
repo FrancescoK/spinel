@@ -5796,7 +5796,11 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
 
    Every call in the walk that may write the analysis state starts a new
    generation (wbas_touch), whether or not it reports a change: the pin a
-   local re-derived from its writes takes again writes without one. A walk
+   local re-derived from its writes takes again writes without one. A
+   parameter's boxed_push_elem and boxed_known_elem are the exception: the
+   walk reads them only where it joins its element kind into them, and the
+   join only grows, so a visit recorded as changing nothing still changes
+   nothing after one. A walk
    from outside opens and closes one too, except within infer_param_types
    (wbas_share_begin), whose call sites hand the same locals to one
    parameter after another: there a generation also ends wherever the pass
@@ -5984,7 +5988,7 @@ static int widen_boxed_local_sources(Compiler *c, Scope *sc, const char *nm, Loc
     for (int e = 0; e < 2; e++) {
       TyKind was = *ev[e];
       TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
-      if (now != was) { *ev[e] = now; ch = 1; wbas_touch(); }
+      if (now != was) { *ev[e] = now; ch = 1; }
     }
     return ch;
   }
