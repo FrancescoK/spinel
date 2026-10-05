@@ -1428,6 +1428,12 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) &&
       nt_kind(c->nt, n) != NK_StatementsNode && nt_kind(c->nt, n) != NK_ParenthesesNode)
     v = -1;
+  /* a fresh container a call answers (`s.split(",")`, `h.keys`) is a value
+     of its own: what iterates it binds its elements, which nothing else
+     names until then */
+  if (v < 0 && nt_kind(c->nt, n) == NK_CallNode && c->ntype[n] != TY_UNKNOWN &&
+      (ty_is_array(c->ntype[n]) || ty_is_hash(c->ntype[n])) && sh_may_hold(c->ntype[n]))
+    v = sh_new(F, SHK_VALUE);
   if (v >= 0 && nt_kind(c->nt, n) == NK_CallNode && !F->unused[n]) F->flags[sh_find(F, v)] |= SHF_OUT;
   F->nval[n] = v;
   return v;
