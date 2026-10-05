@@ -30,6 +30,9 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"partition", PF_STRING, 1, 1, 0}, {"rpartition", PF_STRING, 1, 1, 0},
   {"hex", PF_STRING, 0, 0, 0}, {"oct", PF_STRING, 0, 0, 0}, {"tr_s", PF_STRING, 2, 2, 0},
   {"crypt", PF_STRING, 1, 1, 0}, {"casecmp", PF_STRING, 1, 1, 0}, {"casecmp?", PF_STRING, 1, 1, 0},
+  /* strip and its sides with CRuby 4.0's selectors (the zero-argument forms
+     keep their own arms) */
+  {"strip", PF_STRING, 1, -1, -1}, {"lstrip", PF_STRING, 1, -1, -1}, {"rstrip", PF_STRING, 1, -1, -1},
   /* The names Integer alone owns -- and step, which a Float receiver owns
      too: two owners, dispatched on the box's tag at run time, so a boxed
      `2.5.step(9, 3)` reaches the Float emitter rather than being truncated
