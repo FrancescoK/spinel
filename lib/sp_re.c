@@ -829,10 +829,13 @@ sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_
    sp_re_match / sp_re_match_poly). NULL (nil) when the last match failed, the
    name is unknown, or the group did not participate. Used by `/(?<n>..)/ =~ s`
    named-capture local binding (MatchWriteNode). */
+/* A name the pattern has no group for is CRuby's IndexError; the callers
+   ask only once the pattern matched, so a failed match stays nil. */
 const char *sp_re_named_capture(const mrb_regexp_pattern *pat, const char *name) {
   if (!pat || !name || !sp_re_last_str) return NULL;
   int g = re_named_group(pat, name);
-  if (g < 0 || (g * 2) + 1 >= 64) return NULL;
+  if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
+  if ((g * 2) + 1 >= 64) return NULL;
   int b = sp_re_caps[g * 2], e = sp_re_caps[(g * 2) + 1];
   /* e < b also covers e < 0 once b >= 0; guards against a malformed register
      state yielding a negative len that would cast to a huge size_t. */
