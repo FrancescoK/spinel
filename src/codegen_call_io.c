@@ -161,10 +161,27 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                  tio3, tfs, tpa);
       return 1;
     }
+    /* rewind takes no argument, an Enumerator's or a stream's: given one,
+       CRuby raises ArgumentError for either and NoMethodError for any other
+       receiver (sp_poly_as_io's), once the arguments have run. The stream
+       arm below took such a call and answered its sp_int into the boxed
+       slot, which did not build. */
+    if (!iocand && is_rewind_name(name) && argc > 0 && !call_has_splat_arg(nt, argv, argc)) {
+      int tv = ++g_tmp;
+      char msg[96]; arity_message(msg, sizeof msg, argc, 0, 0, NULL);
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+      buf_printf(b, "if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) (void)sp_poly_as_io(_t%d, \"rewind\");"
+                    " sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })",
+                 tv, tv, tv, msg, raise_tail_value(comp_ntype(c, id)));
+      return 1;
+    }
     /* rewind on a boxed value: an Enumerator rewinds and answers itself,
        a stream answers its 0. It took the stream arm alone, and an
        Enumerator read back out of a container raised NoMethodError. */
-    if (!iocand && sp_streq(name, "rewind") && argc == 0) {
+    if (!iocand && is_rewind_name(name) && argc == 0) {
       int tv = ++g_tmp;
       int boxed = repr_of(c, id).kind == RK_BOXED;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
