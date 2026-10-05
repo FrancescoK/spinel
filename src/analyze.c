@@ -5446,8 +5446,13 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           nt_node_set_str(nt, call, "name", mname);
           nt_node_set_ref(nt, call, "receiver", cur);
           nt_node_set_ref(nt, call, "arguments", one);
-          /* a conflict block applies at every merge step */
-          if (mblk >= 0) nt_node_set_ref(nt, call, "block", mblk);
+          /* a conflict block applies at every merge step; a `break` in it
+             leaves the whole call, so an inner step is no break target of
+             its own (call_breaks) and its break reaches the outer call's */
+          if (mblk >= 0) {
+            nt_node_set_ref(nt, call, "block", mblk);
+            nt_node_set_str(nt, call, "merge_fold_step", "1");
+          }
           cur = call;
         }
         if (cur >= 0) {
