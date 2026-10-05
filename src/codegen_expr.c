@@ -1373,7 +1373,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (g_repr_check) repr_check_ask(c, id);
   g_expr_depth++;
-  emit_expr_node(c, id, b);
+  /* an Array subclass instance read where an Array is wanted -- a splat, a
+     destructuring, a `for` collection, an element write that is no call --
+     is typed as its Array (an_ary_viewed): the same pointer, cast to the
+     Array it starts with (#7449) */
+  if (an_ary_viewed(c, id) && array_new_copies(comp_ntype(c, id))) {
+    buf_printf(b, "((%s)(", c_type_name(comp_ntype(c, id)));
+    emit_expr_node(c, id, b);
+    buf_puts(b, "))");
+  }
+  else emit_expr_node(c, id, b);
   g_expr_depth--;
 }
 
