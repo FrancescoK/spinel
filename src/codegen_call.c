@@ -811,13 +811,12 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "block") < 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  /* Both views have to say poly. comp_ntype is what the element-loop emitters
-     themselves consult, so declining on anything else keeps a Range or a typed
-     array on its own path; infer_type is what a_block_is_lifted used to decide
-     the capture cells, and a call routed here whose captures analyze left
-     uncelled cannot be emitted at all. */
-  if (recv < 0 || comp_ntype(c, recv) != TY_POLY ||
-      infer_type(c, recv) != TY_POLY) return 0;
+  /* The receiver's settled type has to say poly. It is what the element-loop
+     emitters themselves consult, so declining on anything else keeps a Range
+     or a typed array on its own path; and it is what a_block_is_lifted read
+     when the analysis's last capture pass decided the capture cells, so a
+     call routed here has them celled. */
+  if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!poly_enum_op_for(name)) return 0;
   /* A block whose body yields can only be SPLICED: routing it to the dispatch
@@ -2475,7 +2474,7 @@ int emit_lazy_size_expr(Compiler *c, int id, Buf *b) {
     cur = nt_ref(nt, cur, "receiver");
   }
   if (lazy_src < 0) return 0;
-  TyKind st = infer_type(c, lazy_src);
+  TyKind st = comp_ntype(c, lazy_src);
   int src_is_range = (st == TY_RANGE);
   /* an empty `[]` literal source infers UNKNOWN; treat any ArrayNode as an array */
   int src_is_arr = ty_is_array(st) ||
@@ -2668,7 +2667,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   }
   if (lazy_src < 0) return 0;
 
-  TyKind st = infer_type(c, lazy_src);
+  TyKind st = comp_ntype(c, lazy_src);
   int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
   int src_is_enum = (st == TY_ENUMERATOR);
   /* a boxed source streams as an Enumerator over it (sp_poly_lazy_src) */
@@ -7477,7 +7476,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
           continue;
         }
-        TyKind at = infer_type(c, argv[a]);
+        TyKind at = comp_ntype(c, argv[a]);
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
@@ -7559,7 +7558,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         for (int e = 0; e < kwn; e++) {
           int val = nt_ref(nt, kwels[e], "value");
           kwtmp[e] = ++g_tmp;
-          TyKind at = val >= 0 ? infer_type(c, val) : TY_NIL;
+          TyKind at = val >= 0 ? comp_ntype(c, val) : TY_NIL;
           if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
             kwty[e] = TY_POLY;
             if (val >= 0) emit_poly_arg_temp(c, val, TY_POLY, 1, kwtmp[e], ran, b);
@@ -7618,7 +7617,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_printf(b, " _t%d = ", tr);
         if (is_fetch && argc == 2) {
           char dn[40]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-          if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b);
+          if (ret == TY_POLY) emit_boxed_text(c, comp_ntype(c, argv[1]), dn, b);
           else buf_puts(b, dn);
         }
         else buf_puts(b, is_scalar_ret(ret) ? default_value_from_compiler(c, ret) : "0");
@@ -23346,7 +23345,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
       int uargc = 0; const int *uargv = call_args(nt, id, &uargc);
       int has_nil = 0;
       for (int a = 0; a < uargc; a++) {
-        TyKind at = infer_type(c, uargv[a]);
+        TyKind at = comp_ntype(c, uargv[a]);
         const char *anty = nt_type(nt, uargv[a]);
         if (at == TY_NIL || (anty && sp_streq(anty, "NilNode"))) { has_nil = 1; break; }
       }
