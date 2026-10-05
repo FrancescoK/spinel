@@ -2102,7 +2102,11 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "sp_int");
       buf_printf(g_pre, " _t%d = ", atmp[k]);
       store_check(c, argv[k], storable ? at : TY_INT, "a block or proc argument's temp", g_pre);
-      buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "");
+      /* --share-strings: a String of its own the rule shares with the
+         block's parameter: a handle of its own around it */
+      if (repr_share_rule(c) && at == TY_STRBUF && strbuf_fresh_renders_string(c, argv[k]))
+        buf_printf(g_pre, "sp_String_new_shared(%s);\n", vb.p ? vb.p : "NULL");
+      else buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "");
       /* Root a GC-managed temp: a later argument's evaluation, or sp_proc_call
          itself, can allocate and collect before the callee reads the value back
          from the (un-scanned) side-channel. Use the type-correct macro. */
