@@ -5455,6 +5455,25 @@ static sp_RbVal sp_poly_remainder(sp_RbVal a, sp_RbVal b) {
 /* Numeric#coerce: [other, self], both lifted to the wider of the two kinds.
    The numeric protocol's entry point, so a boxed receiver has to answer it. */
 static sp_RbVal sp_poly_coerce(sp_RbVal a, sp_RbVal b) {
+  /* Rational#coerce: a Float makes both Floats, an Integer becomes a
+     Rational and a Rational stays one; any other operand is TypeError */
+  if (sp_poly_is_rat_kind(a)) {
+    sp_PolyArray *ro = sp_PolyArray_new(); SP_GC_ROOT(ro);
+    if (b.tag == SP_TAG_FLT) {
+      sp_PolyArray_push(ro, b);
+      sp_PolyArray_push(ro, sp_box_float(sp_poly_to_f_with_rational(a)));
+      return sp_box_poly_array(ro);
+    }
+    sp_RbVal x = b;
+    if (b.tag == SP_TAG_INT) x = sp_box_rational(sp_rational_new(b.v.i, 1));
+    else if (b.tag == SP_TAG_BIGINT) x = sp_box_brat((sp_Bigint *)b.v.p, sp_bigint_new_int(1));
+    else if (!sp_poly_is_rat_kind(b))
+      sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Rational", sp_poly_class_name(b)));
+    SP_GC_ROOT_RBVAL(x);
+    sp_PolyArray_push(ro, x);
+    sp_PolyArray_push(ro, a);
+    return sp_box_poly_array(ro);
+  }
   if (!sp_poly_numeric_p(a)) sp_raise_poly_nomethod("coerce", a);
   sp_PolyArray *out = sp_PolyArray_new();
   SP_GC_ROOT(out);
