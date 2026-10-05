@@ -8224,11 +8224,15 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int en = 0; const int *els = nt_arr(nt, argv[0], "elements", &en);
       for (int e = 0; e < en && ok; e++) {
         const char *ety = nt_type(nt, els[e]);
-        if (!ety || !sp_streq(ety, "SymbolNode")) { ok = 0; break; }
+        if (!ety || !sp_streq(ety, "SymbolNode")) ok = 0;
+      }
+      /* as CRuby: more keys than members is {}, and the first key naming no
+         member ends the hash there -- it is not an error (#2974) */
+      for (int e = 0; ok && en <= sc->nmembers && e < en; e++) {
         char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, els[e], "value"));
         int mi2 = comp_member_index(sc, ivn);
         if (nkey >= 64) { ok = 0; break; }
-        if (mi2 < 0) continue;   /* a non-member key is omitted, not an error (#2974) */
+        if (mi2 < 0) break;
         keyed[nkey++] = mi2;
       }
     }
