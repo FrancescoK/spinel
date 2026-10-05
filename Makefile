@@ -963,14 +963,17 @@ re-lit-test: $(SPINEL)
 # --share-strings (#6765): test/share/*.rb hold answers only the flag gives
 # (the default build refuses them or answers with a copy), so `make test`
 # leaves them out. Each runs under the flag, as do the top-level
-# test/share_strings_*.rb, plain and with GC stress, against its CRuby
-# .expected. gate-props runs it.
+# test/share_strings_*.rb and the test/reject programs test/share/reject.list
+# names (the String routes the default build refuses, #6179's), plain and
+# with GC stress, against its CRuby .expected (a test/reject program's in
+# test/share/reject/). gate-props runs it.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb; do \
+	for t in test/share/*.rb test/share_strings_*.rb $$(cat test/share/reject.list); do \
+	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
-	    "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
-	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
+	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
+	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
 	rm -rf "$$tmp"; \
