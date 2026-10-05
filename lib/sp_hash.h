@@ -116,6 +116,7 @@ sp_PolyArray*sp_IntStrHash_to_a(sp_IntStrHash*h);
 
 /* ---- sp_str_sub_str_str_hash relocated from spinel_rt.h (0 optcarrot uses). ---- */
 const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h);
+const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h);
 
 /* ---- Regexp#gsub/#sub with a replacement Hash: relocated from
    spinel_rt.h (0 optcarrot uses). Needs mrb_regexp_pattern/re_exec
