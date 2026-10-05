@@ -525,7 +525,9 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   }
   if (ty_is_array(recv)) {
     TyKind e = ty_array_elem(recv);
-    if (ty_is_array_elem_iter(name) || sp_streq(name, "to_h")) { BY_PUT(0, e); return 1; }
+    /* uniq and uniq! key each element by the block's value */
+    if (ty_is_array_elem_iter(name) || sp_streq(name, "to_h") ||
+        sp_streq(name, "uniq") || sp_streq(name, "uniq!")) { BY_PUT(0, e); return 1; }
     if (sp_streq(name, "each_with_index")) { BY_PUT(0, e); BY_PUT(1, TY_INT); return 2; }
     return 0;
   }
