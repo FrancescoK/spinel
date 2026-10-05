@@ -2193,7 +2193,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
 }
 
 /* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
-static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
+static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
@@ -2201,9 +2201,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
-                      " \"uninitialized constant %s\"), cst_%s) : cst_%s)", nm, nm, nm, nm);
+                      " \"uninitialized constant %s\"), %scst_%s) : %scst_%s)",
+                   nm, nm, slot ? "&" : "", nm, slot ? "&" : "", nm);
       }
-      else buf_printf(b, "cst_%s", nm);
+      else buf_printf(b, "%scst_%s", slot ? "&" : "", nm);
       return 1;
     }
     /* `include Math` exposes the module's bare constants (#2600) */
@@ -2377,9 +2378,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         else emit_expr(c, par_idc, b);
         buf_puts(b, "; ");
         emit_ctype(c, ct, b);
-        buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr, default_value_from_compiler(c, ct), tk);
+        buf_printf(b, " %s_t%d = %s; switch (_t%d.cls_id) {", slot ? "*" : "", tr,
+                   slot ? "NULL" : default_value_from_compiler(c, ct), tk);
         for (int i = 0; i < nc; i++)
-          buf_printf(b, " case %d: _t%d = cst_%s; break;", ccls[i], tr, ckey[i]);
+          buf_printf(b, " case %d: _t%d = %scst_%s; break;", ccls[i], tr, slot ? "&" : "", ckey[i]);
         /* A class with no such constant is CRuby's NameError, not the
            leaf-named constant of some unrelated scope. */
         buf_printf(b, " default: sp_raise_cls(\"NameError\", sp_sprintf("
@@ -2390,7 +2392,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     } }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
-    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return 1; }
+    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "%scst_%s", slot ? "&" : "", nm); return 1; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }
     /* well-known module constants */
@@ -2564,6 +2566,11 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     return 1;
   }
   return 0;
+}
+
+/* Select the persistent slot with the same lookup and guards as a read. */
+void emit_constant_slot(Compiler *c, int id, Buf *b) {
+  emit_constant_expr(c, id, b, c->nt, nt_type(c->nt, id), 1);
 }
 
 /* A defined?(...) expression (emit_expr_node's arms, in their order) */
@@ -4323,7 +4330,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
   }
   if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
-  if (emit_constant_expr(c, id, b, nt, ty)) return;
+  if (emit_constant_expr(c, id, b, nt, ty, 0)) return;
   if (emit_defined_expr(c, id, b, nt, ty)) return;
   if (sp_streq(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
