@@ -4629,27 +4629,20 @@ static void gc_wb_cells(Compiler *c, Buf *b) {
 
    Decided on the emitted text, like everything else in this pass, and only
    when the value is the whole right-hand side: `NULL`, `sp_box_nil()`, or
-   exactly what emit_frozen_literal_open_a and _close write. Anything else,
+   exactly what emit_frozen_literal writes. Anything else,
    `sp_str_dup(<literal>)` included, keeps its barrier.
 
    Answers where the value ends, 0 for no. The scan goes on from there: a
-   store it wraps is stepped over whole, and the text of a literal it leaves
-   bare must be too, since a Ruby string can spell a store. */
+   store it wraps is stepped over whole. */
 static size_t wb_value_never_young(const Buf *b, size_t q) {
-  static const char open[] = "({ static struct { sp_str_hdr h; unsigned char m; char d[";
-  static const char mark[] = ", 0xf1, ", shut[] = "\" }; _fzl_", data[] = ".d; })";
-  size_t on = sizeof open - 1, mn = sizeof mark - 1, sn = sizeof shut - 1, dn = sizeof data - 1;
+  static const char fzl[] = "((char *)_fzl_", data[] = ".d)";
+  size_t fn = sizeof fzl - 1, dn = sizeof data - 1;
   const char *p = b->p + q + 1, *end = b->p + b->len;
   while (p < end && *p == ' ') p++;
   if (!strncmp(p, "NULL", 4)) p += 4;
   else if (!strncmp(p, "sp_box_nil()", 12)) p += 12;
-  else if (!strncmp(p, open, on)) {
-    const char *s = p + on;
-    while (s < end && *s != '"' && *s != '(' && *s != ')') s++;   /* the header initializer has neither */
-    if (s >= end || *s != '"' || (size_t)(s - p) < mn || strncmp(s - mn, mark, mn)) return 0;
-    for (s++; s < end && *s != '"'; s++) if (*s == '\\') s++;
-    if (s >= end || strncmp(s, shut, sn)) return 0;
-    s += sn;
+  else if (!strncmp(p, fzl, fn) && isdigit((unsigned char)p[fn])) {
+    const char *s = p + fn;
     while (s < end && isdigit((unsigned char)*s)) s++;
     if (strncmp(s, data, dn)) return 0;
     p = s + dn;
@@ -15433,6 +15426,8 @@ char *codegen_program(const NodeTable *nt) {
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
   buf_puts(&b, "#include \"spinel_rt.h\"\n");
+  /* the frozen literals' file-scope objects go here, once the unit is done */
+  size_t fzl_at = b.len;
   emit_ffi_decls(c, &b);
   emit_sym_class_name_rt(c, &b);
   /* Threaded-runtime marker: the driver greps for this and links the
@@ -16181,6 +16176,10 @@ char *codegen_program(const NodeTable *nt) {
      constructors and main are emitted by different paths, and hooking them one
      at a time left a quarter of the stores bare. */
   gc_wb_insert(c, &b, 0);
+  { Buf fz; memset(&fz, 0, sizeof fz);
+    fzl_emit_defs(b.p ? b.p : "", &fz);
+    if (fz.len) buf_splice(&b, fzl_at, fz.p);
+    free(fz.p); }
   if (g_line_map) line_map_reanchor(&b);
   free(g_procs.p); free(g_proc_protos.p);
   free(g_pd_protos.p); free(g_pd_defs.p);

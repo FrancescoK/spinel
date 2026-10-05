@@ -432,16 +432,18 @@ void emit_interp(Compiler *c, int id, Buf *b) {
 
   if (ndyn_or_scalar == 0) {
     /* adjacent literals ("a" "b") fold to one literal: frozen per the
-       InterpolatedStringNode's own file pragma flag. A frozen fold carries
-       the full static header object -- the bare "\xf1" prefix promises an
-       sp_str_hdr that would not exist (#1749 family). */
+       InterpolatedStringNode's own file pragma flag. A frozen fold is the
+       same object as the literal of its bytes, with the full static header
+       -- the bare "\xf1" prefix promises an sp_str_hdr that would not exist
+       (#1749 family). */
     if (nt_int(c->nt, id, "fzl", 0)) {
       size_t raw3 = 0;
       for (int k = 0; k < nwp; k++) raw3 += (size_t)wp[k].lit_len;
-      int fid3 = emit_frozen_literal_open(b, raw3);
+      Buf e; memset(&e, 0, sizeof e);
       for (int k = 0; k < nwp; k++)
-        buf_printf(b, "%.*s", wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off);
-      emit_frozen_literal_close(b, fid3);
+        buf_printf(&e, "%.*s", wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off);
+      emit_frozen_literal(b, e.p, e.len, raw3);
+      free(e.p);
     }
     else {
       buf_puts(b, "(&(\"\\xff\" \"");

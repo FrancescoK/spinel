@@ -3426,35 +3426,99 @@ void emit_c_escaped(Buf *b, const char *s) {
    `frozen?` is true and mutation raises FrozenError. Synthesized strings
    (symbol names, ivar names, ...) go through emit_str_literal, which is never
    frozen: the pragma only affects literals written in the source. */
-/* Open/close a static frozen-literal object around caller-streamed escaped
-   bytes. The 0xf1 marker promises a REAL sp_str_hdr immediately in front of
-   the data (hash cache, mutation guards), so every frozen literal -- single
-   or an adjacent-literal fold -- must carry this header (#1749). */
-int emit_frozen_literal_open(Buf *b, size_t raw_len) {
-  return emit_frozen_literal_open_a(b, raw_len, 0);
+/* A frozen literal is one static object per distinct content, defined at
+   file scope, so every occurrence of the same bytes is the same object: CRuby
+   with frozen string literals gives `"x".equal?("x")` true, and a
+   compare_by_identity Hash keyed by "x" in two methods has one entry.
+
+   The 0xf1 marker promises a REAL sp_str_hdr immediately in front of the data
+   (hash cache, mutation guards), so every frozen literal -- single or an
+   adjacent-literal fold -- carries this header (#1749). `ascii7` says every
+   byte is below 0x80, which is what lets the runtime index the literal by
+   byte (sp_str_fixed_width wants the bit AND a known length, #4239); it is
+   read off the escaped text, where a byte from 0x80 up is a `\2xx` or `\3xx`
+   escape, so two spellings of the same bytes can never disagree on it.
+
+   A site emits a reference; the definitions are kept here, keyed by the
+   escaped text (emit_c_escaped_n and the interpolation fold escape the same
+   way), and fzl_emit_defs writes the ones the finished unit still names. */
+typedef struct { char *esc; size_t esc_len, raw_len; unsigned hash; } FzlLit;
+static FzlLit *g_fzl;
+static int g_fzl_n, g_fzl_cap;
+static int *g_fzl_slot;            /* open addressing over g_fzl, -1 empty */
+static int g_fzl_slots;
+
+static unsigned fzl_hash(const char *s, size_t n) {
+  unsigned h = 2166136261u;
+  for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 16777619u; }
+  return h;
 }
-/* `ascii7` says every byte is below 0x80, which the caller knows from the
-   bytes it is about to stream. Recording it in the header is what lets the
-   runtime index this literal by byte -- sp_str_fixed_width wants the bit AND
-   a known length, and a literal has always carried the length. Without it a
-   frozen literal was walked to find every character index, and the byte-load
-   fold for `s[i] == "c"` had no way to prove itself safe (#4239). */
-int emit_frozen_literal_open_a(Buf *b, size_t raw_len, int ascii7) {
-  static int g_fzl_ctr = 0;
-  int id = g_fzl_ctr++;
-  size_t dl = raw_len + 1;
-  buf_printf(b, "({ static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
-                "{ { NULL, %zu%s, %zu, 0 }, 0xf1, \"", dl, id, dl,
-             ascii7 ? " | SP_STR_SIZE_ASCII7" : "", raw_len);
-  return id;
+static void fzl_rehash(void) {
+  int ns = g_fzl_slots ? g_fzl_slots * 2 : 1024;
+  free(g_fzl_slot);
+  g_fzl_slot = malloc(sizeof(int) * (size_t)ns);
+  for (int i = 0; i < ns; i++) g_fzl_slot[i] = -1;
+  g_fzl_slots = ns;
+  for (int k = 0; k < g_fzl_n; k++) {
+    int i = (int)(g_fzl[k].hash & (unsigned)(ns - 1));
+    while (g_fzl_slot[i] >= 0) i = (i + 1) & (ns - 1);
+    g_fzl_slot[i] = k;
+  }
 }
-/* Every byte below 0x80 -- the compile-time half of the ASCII7 bit above. */
-int bytes_are_ascii7(const char *s, size_t n) {
-  for (size_t i = 0; i < n; i++) if ((unsigned char)s[i] >= 0x80) return 0;
+static int fzl_esc_ascii7(const char *e, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (e[i] == '\\') { i++; if (i < n && (e[i] == '2' || e[i] == '3')) return 0; }
   return 1;
 }
-void emit_frozen_literal_close(Buf *b, int id) {
-  buf_printf(b, "\" }; _fzl_%d.d; })", id);
+void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len) {
+  if (!esc) esc = "";
+  unsigned h = fzl_hash(esc, esc_len);
+  if ((g_fzl_n + 1) * 2 > g_fzl_slots) fzl_rehash();
+  int i = (int)(h & (unsigned)(g_fzl_slots - 1));
+  for (; g_fzl_slot[i] >= 0; i = (i + 1) & (g_fzl_slots - 1)) {
+    FzlLit *f = &g_fzl[g_fzl_slot[i]];
+    if (f->hash == h && f->esc_len == esc_len && !memcmp(f->esc, esc, esc_len)) break;
+  }
+  int id = g_fzl_slot[i];
+  if (id < 0) {
+    if (g_fzl_n == g_fzl_cap) {
+      g_fzl_cap = g_fzl_cap ? g_fzl_cap * 2 : 256;
+      g_fzl = realloc(g_fzl, sizeof *g_fzl * (size_t)g_fzl_cap);
+    }
+    id = g_fzl_n++;
+    g_fzl[id].esc = malloc(esc_len + 1);
+    memcpy(g_fzl[id].esc, esc, esc_len);
+    g_fzl[id].esc[esc_len] = 0;
+    g_fzl[id].esc_len = esc_len; g_fzl[id].raw_len = raw_len; g_fzl[id].hash = h;
+    g_fzl_slot[i] = id;
+  }
+  buf_printf(b, "((char *)_fzl_%d.d)", id);
+}
+/* The definitions of the literals the unit `t` names, in the order they were
+   first met. A literal only a discarded emission named (a speculative arm, an
+   abandoned unit) is left out. Resets the table for the next unit. */
+void fzl_emit_defs(const char *t, Buf *out) {
+  char *used = calloc((size_t)g_fzl_n + 1, 1);
+  for (const char *p = t; p && (p = strstr(p, "_fzl_")); ) {
+    p += 5;
+    if (!isdigit((unsigned char)*p)) continue;
+    long k = 0;
+    while (isdigit((unsigned char)*p)) k = k * 10 + (*p++ - '0');
+    if (k < g_fzl_n) used[k] = 1;
+  }
+  for (int k = 0; k < g_fzl_n; k++) {
+    FzlLit *f = &g_fzl[k];
+    if (used[k])
+      buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
+                      "{ { NULL, %zu%s, %zu, 0 }, 0xf1, \"%s\" };\n",
+                 f->raw_len + 1, k, f->raw_len + 1,
+                 fzl_esc_ascii7(f->esc, f->esc_len) ? " | SP_STR_SIZE_ASCII7" : "",
+                 f->raw_len, f->esc);
+    free(f->esc);
+  }
+  free(used);
+  free(g_fzl); g_fzl = NULL; g_fzl_n = g_fzl_cap = 0;
+  free(g_fzl_slot); g_fzl_slot = NULL; g_fzl_slots = 0;
 }
 static int round_kw_elem(Compiler *c, const RoundKw *o, int e, int *is_splat, int *opaque) {
   const NodeTable *nt = c->nt;
@@ -3566,10 +3630,10 @@ void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
      string exactly (hdr | marker | bytes), the hash cache write hits our
      own static storage, and next=NULL keeps it off the sweep list. */
   if (frozen) {
-    int id = emit_frozen_literal_open_a(b, content ? len : 0,
-                                       content && len ? bytes_are_ascii7(content, len) : 1);
-    if (content && len) emit_c_escaped_n(b, content, len);
-    emit_frozen_literal_close(b, id);
+    Buf e; memset(&e, 0, sizeof e);
+    if (content && len) emit_c_escaped_n(&e, content, len);
+    emit_frozen_literal(b, e.p, e.len, content ? len : 0);
+    free(e.p);
     return;
   }
   if (!content || len == 0) { buf_printf(b, "(&(\"%s\")[1])", mk); return; }
@@ -3612,8 +3676,8 @@ void emit_str_literal(Buf *b, const char *content) {
    equal literals into one address, making `"abc".equal?("abc")` true. A
    re-evaluated occurrence (a literal in a loop) still yields one address --
    the frozen-string-literal semantics spinel's immutable strings already have.
-   Frozen and NUL-containing literals keep their existing per-site forms
-   (_fzl_N / sp_str_from_bytes), which are already identity-correct. */
+   A frozen literal is one object per content (_fzl_N), and a NUL-containing
+   one is built by sp_str_from_bytes. */
 void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen) {
   static int g_slit_ctr = 0;
   if (frozen || (content && len > strlen(content))) {
