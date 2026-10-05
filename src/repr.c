@@ -97,6 +97,8 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
   if (t == TY_STRING) {
+    /* a global holding the handle (--share-strings): its read boxes it */
+    if (k == NK_GlobalVariableReadNode) return repr_handle_gvar(c, node) ? RS_HANDLE : RS_NONE;
     /* a local promoted to the handle after the node types were final */
     if (k != NK_LocalVariableReadNode) return RS_NONE;
     const char *ln = nt_str(nt, node, "name");
@@ -119,6 +121,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
     if (iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF) return RS_HANDLE;
   }
+  /* a global holding the handle (--share-strings) */
+  if ((k == NK_GlobalVariableReadNode || k == NK_GlobalVariableWriteNode) && repr_handle_gvar(c, node))
+    return RS_HANDLE;
   /* an ivar write's value is the slot */
   if (k == NK_InstanceVariableWriteNode) return RS_HANDLE;
   /* an element a boxed container hands out is a boxed handle already */
@@ -467,6 +472,19 @@ void repr_seal(Compiler *c) {
 int repr_sealed(void) { return repr_sealed_flag; }
 
 /* ---- --share-strings (#6765) ---- */
+
+LocalVar *repr_handle_gvar(const Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k != NK_GlobalVariableReadNode && k != NK_GlobalVariableWriteNode && k != NK_GlobalVariableOrWriteNode &&
+      k != NK_GlobalVariableAndWriteNode && k != NK_GlobalVariableOperatorWriteNode)
+    return NULL;
+  const char *gn = nt_str(nt, node, "name");
+  const char *rn = gn && gn[0] == '$' ? comp_resolve_gvar((Compiler *)c, gn + 1) : NULL;
+  LocalVar *gv = rn ? comp_gvar((Compiler *)c, rn) : NULL;
+  return gv && repr_of_slot(c, gv).kind == RK_STRBUF && gv->str_shared ? gv : NULL;
+}
 
 int repr_str_class_shares(unsigned flags, int holders) {
   if (!(flags & SHF_MUT)) return 0;
