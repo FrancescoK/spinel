@@ -11582,6 +11582,16 @@ static const char *sp_poly_to_name(sp_RbVal k) {
   if (!n) sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
   return n;
 }
+/* Builtin values have no ivar slots, but reflection still validates a
+   dynamic name before answering nil/false or raising for a frozen set. */
+static void sp_ivar_name_check(sp_RbVal value) {
+  SP_GC_ROOT_RBVAL(value);
+  const char *name = sp_poly_to_name(value);
+  SP_GC_ROOT_STR(name);
+  if (name[0] != '@' || !sp_sym_plain_name_p(name + 1, FALSE) ||
+      sp_str_byte_len(name) != strlen(name) || !sp_str_valid_encoding(name))
+    sp_raise_cls("NameError", sp_sprintf("'%s' is not allowed as an instance variable name", name));
+}
 /* The member of the `n` a Struct constructor's keyword key that is not a
    Symbol or String indexes, as CRuby's rb_struct_pos takes one: converted
    as an Integer argument is (a Float truncating, nil a TypeError, a Bignum
