@@ -1027,6 +1027,83 @@ sp_int sp_int_round_half(sp_int v, sp_int nd, int mode) {
   return q * f;
 }
 
+sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src);
+
+static const char *sp_typed_elem_class(sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_INT: case SP_TAG_BIGINT: return "Integer";
+    case SP_TAG_FLT: return "Float";
+    case SP_TAG_STR: return "String";
+    case SP_TAG_SYM: return "Symbol";
+    case SP_TAG_BOOL: return v.v.i ? "true" : "false";
+    default: return "Object";
+  }
+}
+
+SP_NORETURN static void sp_typed_replace_elem_error(sp_RbVal v, const char *kind) {
+  char msg[160];
+  snprintf(msg, sizeof msg, "cannot store %s into an Array[%s]: a typed array holds one kind of element",
+           sp_typed_elem_class(v), kind);
+  sp_raise_cls("TypeError", msg);
+  abort();
+}
+
+/* A typed array replaced from an array of another kind takes each element as
+   the boxed []= stores one: its own kind, nil as its nil, an Integer into a
+   Float array; any other element raises before the receiver changes. */
+static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(src);
+  sp_PolyArray *els = sp_PolyArray_new(); SP_GC_ROOT(els);
+  sp_poly_replace(sp_box_poly_array(els), src);
+  switch (recv.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: {
+      sp_IntArray *st = sp_IntArray_new(); SP_GC_ROOT(st);
+      for (sp_int i = 0; i < els->len; i++) {
+        sp_RbVal e = els->data[i];
+        if (e.tag == SP_TAG_INT) sp_IntArray_push(st, e.v.i);
+        else if (e.tag == SP_TAG_NIL) sp_IntArray_push(st, SP_INT_NIL);
+        else sp_typed_replace_elem_error(e, "Integer");
+      }
+      sp_IntArray_replace((sp_IntArray *)recv.v.p, st);
+      break;
+    }
+    case SP_BUILTIN_FLT_ARRAY: {
+      sp_FloatArray *st = sp_FloatArray_new(); SP_GC_ROOT(st);
+      for (sp_int i = 0; i < els->len; i++) {
+        sp_RbVal e = els->data[i];
+        if (e.tag == SP_TAG_FLT) sp_FloatArray_push(st, e.v.f);
+        else if (e.tag == SP_TAG_INT) sp_FloatArray_push(st, (sp_float)e.v.i);
+        else if (e.tag == SP_TAG_NIL) sp_FloatArray_push(st, sp_float_nil());
+        else sp_typed_replace_elem_error(e, "Float");
+      }
+      sp_FloatArray_replace((sp_FloatArray *)recv.v.p, st);
+      break;
+    }
+    case SP_BUILTIN_STR_ARRAY: {
+      sp_StrArray *st = sp_StrArray_new(); SP_GC_ROOT(st);
+      for (sp_int i = 0; i < els->len; i++) {
+        sp_RbVal e = els->data[i];
+        if (e.tag == SP_TAG_STR) sp_StrArray_push(st, e.v.s);
+        else if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF)
+          sp_StrArray_push(st, sp_str_dup_external(sp_String_cstr((sp_String *)e.v.p)));
+        else if (e.tag == SP_TAG_NIL) sp_StrArray_push(st, NULL);
+        else sp_typed_replace_elem_error(e, "String");
+      }
+      sp_StrArray_replace((sp_StrArray *)recv.v.p, st);
+      break;
+    }
+    case SP_BUILTIN_PTR_ARRAY: {
+      sp_PtrArray *d = (sp_PtrArray *)recv.v.p;
+      if (d->frozen) { sp_raise_frozen_array_at(d, SP_BUILTIN_PTR_ARRAY); return; }
+      for (sp_int i = 0; i < els->len; i++) (void)sp_PtrArray_elem_unbox(d, els->data[i]);
+      sp_gc_wb((void *)d);
+      d->len = 0;
+      for (sp_int i = 0; i < els->len; i++) sp_PtrArray_push(d, sp_PtrArray_elem_unbox(d, els->data[i]));
+      break;
+    }
+  }
+}
+
 sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src) {SP_GC_ROOT_RBVAL(recv);SP_GC_ROOT_RBVAL(src);
   if (recv.tag != SP_TAG_OBJ) return recv;
   /* String#replace on a shared-mutable handle: swap the buffer contents in
@@ -1057,6 +1134,12 @@ sp_RbVal sp_poly_replace(sp_RbVal recv, sp_RbVal src) {SP_GC_ROOT_RBVAL(recv);SP
     d->len = 0;
     for (sp_int i = 0; i < sa->len; i++) sp_PtrArray_push(d, sa->data[i]);
   }
+  else if ((recv.cls_id == SP_BUILTIN_INT_ARRAY || recv.cls_id == SP_BUILTIN_FLT_ARRAY ||
+            recv.cls_id == SP_BUILTIN_STR_ARRAY || recv.cls_id == SP_BUILTIN_PTR_ARRAY) &&
+           (src.cls_id == SP_BUILTIN_INT_ARRAY || src.cls_id == SP_BUILTIN_FLT_ARRAY ||
+            src.cls_id == SP_BUILTIN_STR_ARRAY || src.cls_id == SP_BUILTIN_PTR_ARRAY ||
+            src.cls_id == SP_BUILTIN_POLY_ARRAY))
+    sp_typed_array_replace_boxed(recv, src);
   else if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
     sp_PolyArray *d = (sp_PolyArray *)recv.v.p;
     d->len = 0;
