@@ -11959,9 +11959,11 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      receiver has its own emitter that does not materialize one; a poly
      receiver only learns it is a String at run time, so it pays the array
      and yields out of it. Answers the receiver's string, as String#each_char
-     answers self (#3402). */
-  if (sp_streq(name, "each_char") && argc == 0 && nt_ref(nt, id, "block") >= 0 &&
-      !user_defines_or_reads(c, "each_char") && !user_defines_or_reads(c, "chars")) {
+     answers self (#3402). each_line { } walks the array #lines answers the
+     same way. */
+  if ((sp_streq(name, "each_char") || sp_streq(name, "each_line")) && argc == 0 &&
+      nt_ref(nt, id, "block") >= 0 && !user_defines_or_reads(c, name) &&
+      !user_defines_or_reads(c, sp_streq(name, "each_char") ? "chars" : "lines")) {
     int eblk = nt_ref(nt, id, "block");
     const char *ebp = block_param_name(c, eblk, 0);
     const char *ebpn = ebp ? rename_local(ebp) : NULL;
@@ -11970,7 +11972,8 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     int ts = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
     buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
-    buf_printf(b, " sp_StrArray *_t%d = sp_str_chars(_t%d); SP_GC_ROOT(_t%d);", ta, ts, ta);
+    buf_printf(b, " sp_StrArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);",
+               ta, sp_streq(name, "each_char") ? "sp_str_chars" : "sp_str_lines", ts, ta);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
     if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
     for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
