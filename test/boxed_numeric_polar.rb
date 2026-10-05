@@ -1,3 +1,4 @@
+# spinel: int64
 # polar on a number read out of a mixed Array answers [abs, arg] like a
 # plain one; a value of another kind still has no polar.
 p [12, :a][0].polar
