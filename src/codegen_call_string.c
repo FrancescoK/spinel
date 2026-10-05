@@ -1150,9 +1150,24 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
       if (!*sfx) {
+        int literals = 1;
+        for (int i = 0; i < argc; i++)
+          if (nt_kind(nt, argv[i]) != NK_SymbolNode) literals = 0;
+        int first = g_tmp + 1;
+        if (!literals) {
+          g_tmp += argc;
+          for (int i = 0; i < argc; i++) {
+            buf_printf(b, "sp_RbVal _t%d = ", first + i); emit_boxed(c, argv[i], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", first + i);
+          }
+        }
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d)) "
                       "sp_case_opts_check(%d, (sp_RbVal[]){", tv, tv, tv, argc);
-        for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
+        for (int i = 0; i < argc; i++) {
+          if (i) buf_puts(b, ", ");
+          if (literals) emit_boxed(c, argv[i], b);
+          else buf_printf(b, "_t%d", first + i);
+        }
         buf_printf(b, "}, %s, _t%d); ", x->op->arg, tv);
       }
       buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
