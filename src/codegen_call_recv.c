@@ -1757,7 +1757,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, "sp_%sArray_get(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     /* a splat is its one element (emit_int_expr_ex), not a boxed index */
-    if (comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    if (repr_of(c, argv[0]).kind == RK_BOXED && nt_kind(nt, argv[0]) != NK_SplatNode) {
       /* a checked conversion, not a raw `.v.i`: the union read assumed
          the box held an Integer, so a boxed user object indexed by its
          pointer bits and the read answered a wrong element in silence;
