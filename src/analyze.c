@@ -30045,6 +30045,9 @@ static void an_phase_desugar_register(Compiler *c) {
      the receiver-taking top-level functions before any scope is built */
   desugar_builtins(c);
   desugar_stored_enum_each(c);
+  /* ahead of the per-call-site copies below, which its calls take as a
+     written `v + x` does */
+  desugar_reopened_op_write(c);          /* v += x with Integer#+ reopened -> v = v + x */
   /* builtins/integer.rb, float.rb, comparable.rb: the same idea, one more
      container per file (analyze_desugar.c's sp_bx_* table) */
   desugar_builtin_scalar_defs(c);
