@@ -581,3 +581,35 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   }
   return 1;
 }
+
+/* The keyword is structural, so the Range row delegates its emission here. */
+int emit_op_range_clone(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, x->id, "arguments"), argc = 0;
+  const int *argv = nt_arr(nt, args, "arguments", &argc);
+  if (!argv || argc != 1) return 0;
+  if (nt_kind(nt, argv[0]) != NK_KeywordHashNode) return 0;
+  int fv = kwh_lookup(nt, argv[0], "freeze");
+  int fk = fv >= 0 ? nt_kind(nt, fv) : NK_NilNode;
+  if (fk != NK_TrueNode && fk != NK_FalseNode && fk != NK_NilNode) return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(x->rt), t);
+  emit_expr(c, x->recv, b);
+  buf_puts(b, "; ");
+  if (fk != NK_NilNode) buf_printf(b, "_t%d.unfrozen = %d; ", t, fk == NK_FalseNode);
+  buf_printf(b, "_t%d; })", t);
+  return 1;
+}
+
+int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(x->rt), t);
+  emit_expr(c, x->recv, b);
+  buf_printf(b, "; _t%d.unfrozen = 0; ", t);
+  int rk = nt_kind(c->nt, x->recv);
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+    emit_expr(c, x->recv, b); buf_printf(b, " = _t%d; ", t);
+  }
+  buf_printf(b, "_t%d; })", t);
+  return 1;
+}

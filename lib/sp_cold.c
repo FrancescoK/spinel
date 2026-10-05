@@ -3263,6 +3263,43 @@ const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v) {SP_GC_ROOT_ST
    (resolved at final link against the generated TU). ---- */
 #include "sp_range.h"
 
+/* The caller has checked the boxed Range kind and its non-NULL payload. */
+sp_RbVal sp_range_dup(sp_RbVal v, int keep_frozen) {
+  switch (v.cls_id) {
+    case SP_BUILTIN_RANGE: {
+      sp_Range r = *(sp_Range *)v.v.p;
+      if (!keep_frozen) r.unfrozen = 1;
+      return sp_box_range(r);
+    }
+    case SP_BUILTIN_FLOAT_RANGE: {
+      sp_FloatRange r = *(sp_FloatRange *)v.v.p;
+      if (!keep_frozen) r.unfrozen = 1;
+      return sp_box_frange(r);
+    }
+    case SP_BUILTIN_STR_RANGE: {
+      sp_StrRange r = *(sp_StrRange *)v.v.p;
+      if (!keep_frozen) r.unfrozen = 1;
+      return sp_box_srange(r);
+    }
+  }
+  return v;
+}
+void sp_range_freeze(sp_RbVal v) {
+  switch (v.cls_id) {
+    case SP_BUILTIN_RANGE: ((sp_Range *)v.v.p)->unfrozen = 0; break;
+    case SP_BUILTIN_FLOAT_RANGE: ((sp_FloatRange *)v.v.p)->unfrozen = 0; break;
+    case SP_BUILTIN_STR_RANGE: ((sp_StrRange *)v.v.p)->unfrozen = 0; break;
+  }
+}
+sp_bool sp_range_frozen(sp_RbVal v) {
+  switch (v.cls_id) {
+    case SP_BUILTIN_RANGE: return !((sp_Range *)v.v.p)->unfrozen;
+    case SP_BUILTIN_FLOAT_RANGE: return !((sp_FloatRange *)v.v.p)->unfrozen;
+    case SP_BUILTIN_STR_RANGE: return !((sp_StrRange *)v.v.p)->unfrozen;
+  }
+  return TRUE;
+}
+
 /* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
    SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path
    inlines this same check via compile_range_method_expr; poly-recv
@@ -3519,11 +3556,11 @@ sp_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
 /* Float range (1.0..3.0). Endpoints stay sp_float, so cover?/include?/begin/end
    are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
 sp_FloatRange sp_frange_new(sp_float f, sp_float l, sp_int e) {
-  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = 0; return r;
+  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = 0; r.unfrozen = 0; return r;
 }
 /* Same, recording which bound was written as absent rather than infinite. */
 sp_FloatRange sp_frange_new_o(sp_float f, sp_float l, sp_int e, sp_int om) {
-  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = om; return r;
+  sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = om; r.unfrozen = 0; return r;
 }
 sp_bool sp_frange_cover(sp_FloatRange r, sp_float x) {
   if (r.first != -HUGE_VAL && x < r.first) return 0;
@@ -3558,7 +3595,7 @@ sp_float sp_frange_max(sp_FloatRange r) {
    it became a value of its own (#3064). A NULL endpoint is a nil bound: the
    range is beginless or endless. */
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
-  sp_StrRange r; r.first = f; r.last = l; r.excl = e; return r;
+  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
   if (!r.first) sp_raise_cls("TypeError", "can't iterate from NilClass");

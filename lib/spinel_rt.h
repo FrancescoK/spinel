@@ -10475,6 +10475,10 @@ static sp_RbVal sp_poly_fetch(sp_RbVal recv, sp_RbVal key, int has_dflt, sp_RbVa
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);  /* fwd */
 static void (*sp_user_init_copy_hook)(sp_RbVal, sp_RbVal) = NULL;
 static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
+    return sp_range_dup(v, keep_frozen);
+
   /* Hash#dup/#clone on a boxed hash: a shallow copy of the same variant. The
      hash went out as-is, so a `dup` taken to keep the caller's hash intact
      aliased it and every write through the copy landed in the original
@@ -10612,6 +10616,8 @@ static inline sp_RbVal sp_poly_freeze(sp_RbVal v) {
     /* the array mutators test the array's own field, not the header bit, so
        a boxed array frozen here went on taking pushes (found under #4486) */
     if (v.v.p) switch (v.cls_id) {
+      case SP_BUILTIN_RANGE: case SP_BUILTIN_FLOAT_RANGE: case SP_BUILTIN_STR_RANGE:
+        sp_range_freeze(v); break;
       case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: ((sp_IntArray *)v.v.p)->frozen = 1; break;
       case SP_BUILTIN_FLT_ARRAY:  ((sp_FloatArray *)v.v.p)->frozen = 1; break;
       case SP_BUILTIN_STR_ARRAY:  ((sp_StrArray *)v.v.p)->frozen = 1; break;
@@ -10624,6 +10630,11 @@ static inline sp_RbVal sp_poly_freeze(sp_RbVal v) {
   return v;
 }
 static inline sp_bool sp_poly_frozen(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p) switch (v.cls_id) {
+    case SP_BUILTIN_RANGE: case SP_BUILTIN_FLOAT_RANGE: case SP_BUILTIN_STR_RANGE:
+      return sp_range_frozen(v);
+  }
+
   /* a Range is frozen, whatever its kind */
   if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE)) return TRUE;
   if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_is_frozen_val(v.v.s) : TRUE;

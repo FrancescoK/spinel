@@ -686,6 +686,15 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "equal?", 1, 1, BF_ANY, TY_UNKNOWN, BOPE_TEMPLATE, "((void)($r), 0)" },
 #undef RAT_IR
 
+  /* Range copies carry their own frozen state, even though their endpoints
+     remain value fields. Zero is the frozen state of a fresh constructor.
+     Stage 1 sits at the Object freeze/copy protocol, before its identity arm. */
+  { TY_RANGE, "frozen?", 0, 0, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "!($r).unfrozen", 0, 0, 0, 1 },
+  { TY_RANGE, "dup", 0, 0, BF_ANY, TY_RANGE, BOPE_TEMPLATE, "({ sp_Range _t$t = $r; _t$t.unfrozen = 1; _t$t; })", 0, 0, 0, 1 },
+  { TY_RANGE, "clone", 0, 0, BF_ANY, TY_RANGE, BOPE_TEMPLATE, "$r", 0, 0, 0, 1 },
+  { TY_RANGE, "clone", 1, 1, BF_ANY, TY_RANGE, BOPE_RANGE_CLONE, NULL, 0, 0, 0, 1 },
+  { TY_RANGE, "freeze", 0, 0, BF_ANY, TY_RANGE, BOPE_RANGE_FREEZE, NULL, 0, 0, 0, 1 },
+
   /* String range ("a".."e"): the endpoints answer natively (with a count,
      the materialized prefix); every traversal rides the element array
      (#3064). step(n) / %(n) is an Enumerator over every nth member (#3671).
@@ -705,11 +714,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_STR_RANGE, "max",          1,   1, BF_NONE, TY_STR_ARRAY,   BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_StrArray *_t$t = sp_srange_to_a(_t$T); SP_GC_ROOT(_t$t); sp_int _t$u = $i0; if (_t$u < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_StrArray_reverse_bang(_t$t); sp_StrArray_slice(_t$t, 0, _t$u); })", 0 },
   { TY_STR_RANGE, "exclude_end?", 0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; (sp_bool)_t$T.excl; })", 0 },
   { TY_STR_RANGE, "class",        0,   0, BF_ANY,  TY_CLASS,       BOPE_TEMPLATE, "((void)($r), ((sp_Class){0, SPL(\"Range\")}))", 0 },
-  { TY_STR_RANGE, "frozen?",      0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (sp_bool)1)", 0 },
-  { TY_STR_RANGE, "freeze",       0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "$r", 0 },
+  { TY_STR_RANGE, "frozen?",      0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "!($r).unfrozen", 0, 0, 0, 1 },
+  { TY_STR_RANGE, "freeze",       0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_RANGE_FREEZE, NULL, 0, 0, 0, 1 },
   { TY_STR_RANGE, "itself",       0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "$r", 0 },
-  { TY_STR_RANGE, "dup",          0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "$r", 0 },
-  { TY_STR_RANGE, "clone",        0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "$r", 0 },
+  { TY_STR_RANGE, "dup",          0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "({ sp_StrRange _t$t = $r; _t$t.unfrozen = 1; _t$t; })", 0, 0, 0, 1 },
+  { TY_STR_RANGE, "clone",        0,   0, BF_ANY,  TY_STR_RANGE,   BOPE_TEMPLATE, "$r", 0, 0, 0, 1 },
+  { TY_STR_RANGE, "clone",        1,   1, BF_ANY,  TY_STR_RANGE, BOPE_RANGE_CLONE, NULL, 0, 0, 0, 1 },
   { TY_STR_RANGE, "begin",        1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "end",          1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "min",          1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
@@ -778,11 +788,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT_RANGE, "inspect",      0,   0, BF_ANY,  TY_STRING,      BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_frange_inspect(_t$T); })", 0 },
   { TY_FLOAT_RANGE, "step",         1,   1, BF_NONE, TY_FLOAT_ARRAY, BOPE_TEMPLATE, "({ sp_FloatRange _t$T = $r; sp_FloatArray_from_step(_t$T.first, _t$T.last, $f0, _t$T.excl); })", 0 },
   { TY_FLOAT_RANGE, "class",        0,   0, BF_ANY,  TY_CLASS,       BOPE_TEMPLATE, "((void)($r), ((sp_Class){0, SPL(\"Range\")}))", 0 },
-  { TY_FLOAT_RANGE, "frozen?",      0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (sp_bool)1)", 0 },
-  { TY_FLOAT_RANGE, "freeze",       0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
+  { TY_FLOAT_RANGE, "frozen?",      0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "!($r).unfrozen", 0, 0, 0, 1 },
+  { TY_FLOAT_RANGE, "freeze",       0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_RANGE_FREEZE, NULL, 0, 0, 0, 1 },
   { TY_FLOAT_RANGE, "itself",       0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
-  { TY_FLOAT_RANGE, "dup",          0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
-  { TY_FLOAT_RANGE, "clone",        0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0 },
+  { TY_FLOAT_RANGE, "dup",          0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "({ sp_FloatRange _t$t = $r; _t$t.unfrozen = 1; _t$t; })", 0, 0, 0, 1 },
+  { TY_FLOAT_RANGE, "clone",        0,   0, BF_ANY,  TY_FLOAT_RANGE, BOPE_TEMPLATE, "$r", 0, 0, 0, 1 },
+  { TY_FLOAT_RANGE, "clone",        1,   1, BF_ANY,  TY_FLOAT_RANGE, BOPE_RANGE_CLONE, NULL, 0, 0, 0, 1 },
   { TY_FLOAT_RANGE, "nil?",         0,   0, BF_ANY,  TY_BOOL,        BOPE_TEMPLATE, "((void)($r), (sp_bool)0)", 0 },  /* a Range value is never nil */
   { TY_FLOAT_RANGE, "first",        0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
   { TY_FLOAT_RANGE, "last",         0, 127, BF_ANY,  TY_UNKNOWN,     BOPE_TEMPLATE, "({ sp_frange_iter_raise($r, 0); sp_box_nil(); })", 0 },  /* first(n)/last(n) iterate */
