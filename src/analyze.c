@@ -7132,14 +7132,20 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       if (comp_method_in_class(c, ci, "to_h") >= 0) user_to_h = 1;
     if (trecv >= 0 && !user_to_h && infer_type(c, trecv) == TY_POLY) {
       int mapc = nt_new_node(nt, "CallNode");
-      if (mapc >= 0) {
+      /* a Struct or Data value maps over its [member, value] pairs, not its
+         values: the receiver is read through __to_h_subject first */
+      int subj = nt_new_node(nt, "CallNode");
+      if (mapc >= 0 && subj >= 0) {
+        nt_node_set_str(nt, subj, "name", "__to_h_subject");
+        nt_node_set_ref(nt, subj, "receiver", trecv);
         nt_node_set_str(nt, mapc, "name", "map");
-        nt_node_set_ref(nt, mapc, "receiver", trecv);
+        nt_node_set_ref(nt, mapc, "receiver", subj);
         nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
         nt_node_set_ref(nt, id, "receiver", mapc);
         nt_node_set_ref(nt, id, "block", -1);
         comp_grow_node_arrays(c);
         c->nscope[mapc] = c->nscope[id];
+        c->nscope[subj] = c->nscope[id];
         *changed = 1;
         return 1;
       }
