@@ -115,6 +115,8 @@ int share_node_anchored(const Compiler *c, int n);
    from the final facts. */
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg);
 void share_routes_check(Compiler *c);
+/* how many kept routes the final facts fail (SPINEL_SHARE_STATS) */
+int share_routes_failing(Compiler *c);
 void share_routes_free(Compiler *c);
 
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
