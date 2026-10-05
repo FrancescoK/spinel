@@ -6204,15 +6204,20 @@ static sp_bool sp_case_splat_match(sp_RbVal scrut, sp_RbVal arr) {
   return FALSE;
 }
 /* `break *x` / `next *x`: Ruby's splat-to-array -- nil becomes [], an array
-   stays itself, a hash spreads its pairs, any other value wraps in a
+   stays itself, a hash spreads its pairs, an Integer or String Range its
+   members and an Enumerator the items it yields; any other value wraps in a
    one-element array. */
 static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);
 static sp_PolyArray *sp_poly_to_a_arr_as(sp_RbVal v, const char *m, int nil_ok);
 static sp_RbVal sp_poly_enum_chk(sp_RbVal v, const char *m);
+static sp_PolyArray *sp_enum_items_from(sp_RbVal v);
 static sp_RbVal sp_splat_to_array(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return sp_box_poly_array(sp_PolyArray_new());
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
   if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return sp_box_poly_array(sp_poly_to_a_arr(v));
+  if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+                              (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
+    return sp_box_poly_array(sp_enum_items_from(v));
   { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); sp_PolyArray_push(r, v); return sp_box_poly_array(r); }
 }
 static sp_RbVal sp_poly_arr_get(sp_RbVal a, sp_int i) {
