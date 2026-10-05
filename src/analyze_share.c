@@ -1176,7 +1176,23 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
     return bv;
   case BSH_CALL:
-    if (rv >= 0 && !lit_blk) return sh_callsite_new(F, rv, vals, nv);
+    if (rv >= 0 && !lit_blk) {
+      /* a String of its own handed to the callable is a value of its own,
+         so it joins the class of the parameter it binds */
+      int fresh = 0;
+      for (int i = 0; i < argc; i++) {
+        NodeKind ak = nt_kind(nt, argv[i]);
+        if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) continue;
+        /* (a call answering its receiver, `"q".freeze`, answers that String) */
+        if (F->nval[argv[i]] == -1 && (c->ntype[argv[i]] == TY_STRING || c->ntype[argv[i]] == TY_STRBUF) &&
+            !(nt_kind(nt, argv[i]) == NK_CallNode && str_self_call(nt, argv[i]))) {
+          F->nval[argv[i]] = sh_new(F, SHK_VALUE);
+          fresh = 1;
+        }
+      }
+      if (fresh) nv = sh_args_vals(F, c, n, vals, 64);
+      return sh_callsite_new(F, rv, vals, nv);
+    }
     return sh_unknown_call(F, c, n, blk, UT_BSH_CALL);
   case BSH_METHOD_REF:
     /* `method(:m)`, `o.method(:m)`: a Method of the m the receiver's class

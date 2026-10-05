@@ -6831,9 +6831,13 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
       for (int pj = 0; pj < np; pj++) {
         const char *pn = rename_local(block_param_name(c, blk, pj));
+        char src[160];
+        snprintf(src, sizeof src, "(_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL",
+                 trow, trow, pj, trow, pj, trow, pj);
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "lv_%s = (_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL;\n",
-                   pn, trow, trow, pj, trow, pj, trow, pj);
+        /* a group the rule shares takes a handle of its own (--share-strings) */
+        emit_elem_param_bind(c, blk, pj, NULL, pn, "Str", TY_UNKNOWN, src, g_pre);
+        buf_puts(g_pre, ";\n");
       }
     }
     else if (block_param_name(c, blk, 0)) {
