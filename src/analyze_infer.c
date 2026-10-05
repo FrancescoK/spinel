@@ -1005,12 +1005,22 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node) {
   return bn && is_block_loop_method(bn);
 }
 
+/* A row that is an empty container with no kind of its own: `[]`, `{}`, a
+   bare `Array.new` or `Hash.new`. It is built boxed, as a poly array or a
+   hash, so a table holding one is not a table of Integer Arrays, whose rows
+   are read as sp_IntArray without a test. A row whose type is merely not
+   settled yet stays open. */
+static int an_row_open_empty(Compiler *c, int row) {
+  return comp_ntype(c, row) == TY_UNKNOWN && node_is_empty_container(c->nt, row);
+}
+
 static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
   int en = 0;
   const int *els = nt_arr(c->nt, arr, "elements", &en);
   for (int e = 0; e < en; e++) {
     TyKind et = comp_ntype(c, els[e]);
     if (et == TY_INT_ARRAY) { *saw = 1; continue; }
+    if (an_row_open_empty(c, els[e])) return 0;
     if (et == TY_NIL || et == TY_UNKNOWN) continue;
     return 0;
   }
@@ -1056,6 +1066,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
         }
         TyKind vt = comp_ntype(c, av[a]);
         if (vt == TY_INT_ARRAY) { saw = 1; continue; }
+        if (an_row_open_empty(c, av[a])) return 0;
         if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
         return 0;
       }
@@ -1085,6 +1096,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
         if (bn <= 0) return 0;
         TyKind et = comp_ntype(c, bb[bn - 1]);
         if (et == TY_INT_ARRAY) { saw = 1; continue; }
+        if (an_row_open_empty(c, bb[bn - 1])) return 0;
         if (et == TY_NIL || et == TY_UNKNOWN) continue;
         return 0;
       }
@@ -1177,6 +1189,7 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
       if (an < 2) continue;
       TyKind vt = comp_ntype(c, av[1]);
       if (vt == TY_INT_ARRAY) { saw = 1; continue; }
+      if (an_row_open_empty(c, av[1])) return 0;
       if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
       return 0;
     }
