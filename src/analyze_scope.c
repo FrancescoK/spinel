@@ -4870,6 +4870,8 @@ static void mark_builtin_subclasses(Compiler *c) {
     if (base && comp_class_index(c, par) < 0) {
       c->classes[i].bsub_base = base;
       c->classes[i].bsub_root = r + 1;
+      /* a builtin no store is evidence about embeds its settled kind */
+      if (comp_bsub_info(base)->evidence == BSE_NONE) c->classes[i].bsub_kind = comp_bsub_info(base)->settled_kind;
       c->has_bsub = 1;
     }
   }

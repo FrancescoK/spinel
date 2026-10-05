@@ -11960,15 +11960,18 @@ static void emit_bsub_copies(Compiler *c, Buf *b) {
 /* sp_bsub_dup_dispatch (sp_bsub_dup_hook): dup / clone of a builtin
    subclass instance held in a boxed value (#7449). The box is its builtin's,
    which the runtime's dup would copy as a plain one; the class its scan
-   names (sp_bsub_cls_of) makes its own copy (sp_X__copy). */
+   names (sp_bsub_cls_of) makes its own copy (sp_X__copy). keep_frozen 2
+   asks for the copy a builtin's method makes of its receiver (Hash#merge,
+   sp_bsub_hash_copy): no initialize_copy, not frozen (sp_X__dup). */
 static void emit_bsub_dup_dispatch(Compiler *c, Buf *b) {
   emit_bsub_copies(c, b);
   buf_puts(b, "static sp_RbVal sp_bsub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled) {\n"
               "  switch (sp_bsub_cls_of(v)) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].bsub_root <= 0) continue;
-    buf_printf(b, "    case %d: { sp_RbVal r = v; r.v.p = sp_%s__copy(v.v.p, keep_frozen ? 1 : 0); *handled = TRUE; return r; }\n",
-               k, c->classes[k].c_name);
+    buf_printf(b, "    case %d: { sp_RbVal r = v; r.v.p = keep_frozen == 2 ? sp_%s__dup(v.v.p, 0) "
+                  ": sp_%s__copy(v.v.p, keep_frozen ? 1 : 0); *handled = TRUE; return r; }\n",
+               k, c->classes[k].c_name, c->classes[k].c_name);
   }
   buf_puts(b, "    default: return v;\n  }\n}\n");
 }

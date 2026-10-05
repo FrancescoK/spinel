@@ -1,6 +1,7 @@
 #include "compiler.h"
 #include "share.h"
 #include "builtin_names.h"
+#include "builtin_ops.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -837,7 +838,6 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   return -1;
 }
 
-
 /* The builtins a program class can subclass (#7449). A subclass nothing is
    ever put into embeds the row's settled kind -- an Array holds boxed
    values, as an empty `[]` that never settles does. */
@@ -857,11 +857,25 @@ static const BsubKind bsub_array_kinds[] = {
     "sp_PolyArray_inspect", "sp_PolyArray_dup" },
   { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
+/* A Hash subclass always embeds the general Hash: its default value and
+   default proc, which any value can be, and the keys a convert_key-style
+   override turns into anything, need its slots; the replace a dup makes
+   takes the default along (sp_PolyPolyHash_replace_all). */
+static const BsubKind bsub_hash_kinds[] = {
+  { TY_POLY_POLY_HASH, "sp_PolyPolyHash", "SP_BUILTIN_POLY_POLY_HASH", "sp_PolyPolyHash_init_embedded",
+    "sp_PolyPolyHash_fin", "sp_PolyPolyHash_scan", "sp_PolyPolyHash_replace_all", "sp_PolyPolyHash_inspect",
+    "sp_PolyPolyHash_inspect", "sp_PolyPolyHash_dup" },
+  { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
 static const BsubBase bsub_bases[BSUB_NBASES] = {
   [BSUB_ARRAY]  = { "Array", "ary", array_new_copies, TY_POLY_ARRAY, 1,
                     BSE_ELEMENTS, BSB_ARRAY_LITERAL, "sp_poly_is_array_kind($v.cls_id)",
                     "$v.frozen", "$v.frozen = $x", bsub_array_kinds },
-  [BSUB_HASH]   = { "Hash", NULL, NULL, TY_UNKNOWN, 1, BSE_NONE, BSB_NONE, NULL, NULL, NULL, NULL },
+  /* a Hash's frozen state is its GC header's, the instance's own */
+  [BSUB_HASH]   = { "Hash", "hash", ty_is_hash, TY_POLY_POLY_HASH, 1,
+                    BSE_NONE, BSB_HASH_PAIRS, "sp_poly_is_hash_kind($v.cls_id)",
+                    "sp_gc_is_frozen((void *)&$v)",
+                    "((sp_gc_hdr *)((char *)&$v - sizeof(sp_gc_hdr)))->frozen = ($x)", bsub_hash_kinds },
   [BSUB_STRING] = { "String", NULL, NULL, TY_UNKNOWN, 0, BSE_NONE, BSB_NONE, NULL, NULL, NULL, NULL },
 };
 const BsubBase *comp_bsub_info(int base) {
@@ -896,6 +910,11 @@ int comp_bsub_method_name(int base, const char *n) {
   return bb && bb->kinds && (builtin_instance_method_known(bb->name, n) || is_bsub_kernel_name(n));
 }
 
+/* Does some class of the program subclass builtin `base`? */
+int comp_has_bsub_base(Compiler *c, int base) {
+  for (int k = 0; c->has_bsub && k < c->nclasses; k++) if (c->classes[k].bsub_base == base) return 1;
+  return 0;
+}
 int comp_bsub_root(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses ? c->classes[cid].bsub_root - 1 : -1;
 }
@@ -985,14 +1004,17 @@ TyKind comp_bsub_self_kind(Compiler *c, int id, TyKind rt, TyKind k) {
 }
 /* What the builtin's answer to call `id` on rt, a builtin subclass
    instance, is on the instance (#7449): the instance itself where the
-   builtin answers its receiver, a plain copy of the builtin where the
-   builtin answers its receiver only when the receiver's class is exactly
-   the builtin, else the answer as it is. A copy carrying the receiver's
-   class (BOPF_COPY_CLASS: dup, clone) is the object paths'
-   (is_bsub_object_name). */
+   builtin answers its receiver; a copy of the instance -- its class, its
+   ivars, its builtin's state -- holding the builtin's answer where the
+   builtin answers a new object of the receiver's class (Hash#merge,
+   #compact); a plain copy of the builtin where the builtin answers its
+   receiver only when the receiver's class is exactly the builtin (to_a,
+   Hash#to_h); else the answer as it is. dup and clone, which copy too,
+   are the object paths' (is_bsub_object_name). */
 int comp_bsub_result_form(Compiler *c, int id, TyKind rt) {
   int f = comp_bsub_answer(c, id, rt);
   if (f & (BOPF_SELF | BOPF_SELF_OR_NIL)) return BSR_SELF;
+  if (f & BOPF_COPY_CLASS) return BSR_COPY;
   if (f & BOPF_SELF_EXACT) return BSR_PLAIN_COPY;
   return BSR_PLAIN;
 }
@@ -1002,14 +1024,15 @@ int comp_bsub_result_form(Compiler *c, int id, TyKind rt) {
    builtin, so each is its Array (Hash, String) (#7449): the methods of a
    receiver of the same builtin that compare, combine or copy another
    (BOPF_ARGS_BUILTIN) -- not the stores, which keep the instance itself as
-   an element -- and Kernel#puts, which prints an Array's elements. */
+   an element -- and Kernel#puts, which prints an Array's elements and a
+   Hash's inspect. */
 int comp_bsub_args_viewed(Compiler *c, int id, TyKind rt, int base) {
   const NodeTable *nt = c->nt;
   const char *n = nt_str(nt, id, "name");
+  const BsubBase *bb = comp_bsub_info(base);
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
-    return base == BSUB_ARRAY && sp_streq(n, "puts") && comp_method_index(c, n) < 0;
-  const BsubBase *bb = comp_bsub_info(base);
+    return bb && bb->enumerable && sp_streq(n, "puts") && comp_method_index(c, n) < 0;
   return bb && bb->kind_of(rt) && bsub_call_flags(c, id, base, 1);
 }
 

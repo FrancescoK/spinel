@@ -868,6 +868,10 @@ sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n, const unsi
 sp_RbVal sp_poly_to_h_m(sp_RbVal v)
 {
   if (v.tag == SP_TAG_NIL) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
+  /* a Hash subclass instance's to_h is a plain Hash of its pairs and
+     default, as CRuby's (#7449) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_POLY_HASH && sp_bsub_cls_fn && sp_bsub_cls_fn(v) >= 0)
+    return sp_box_obj(sp_PolyPolyHash_dup((sp_PolyPolyHash *)v.v.p), SP_BUILTIN_POLY_POLY_HASH);
   if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
   /* an OpenStruct (an OpenStruct|nil union reaches here boxed): its member
      table is already a symbol-keyed hash (#3282) */
@@ -1040,7 +1044,24 @@ sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b)
       sp_PolyPolyHash_set(r, sp_poly_arr_get(pair, 0), sp_poly_arr_get(pair, 1));
     }
   }
-  return r;
+  return sp_bsub_hash_copy(a, r);
+}
+
+/* The answer of a Hash method CRuby makes a copy of the receiver's class
+   (merge, compact) for receiver `recv`: a Hash subclass instance answers a
+   copy of itself (sp_bsub_dup_hook's mode 2: its class, ivars and default,
+   without initialize_copy) holding
+   the pairs of `ans`, any other receiver `ans` itself (#7449). */
+sp_PolyPolyHash *sp_bsub_hash_copy(sp_RbVal recv, sp_PolyPolyHash *ans) {
+  if (!sp_bsub_cls_fn || !sp_bsub_dup_hook || recv.tag != SP_TAG_OBJ || recv.cls_id != SP_BUILTIN_POLY_POLY_HASH ||
+      sp_bsub_cls_fn(recv) < 0)
+    return ans;
+  SP_GC_ROOT(ans);
+  sp_bool handled = FALSE;
+  sp_RbVal d = sp_bsub_dup_hook(recv, 2, &handled);   /* no initialize_copy, as CRuby's merge */
+  if (!handled) return ans;
+  SP_GC_ROOT_RBVAL(d);
+  return sp_PolyPolyHash_replace((sp_PolyPolyHash *)d.v.p, ans);
 }
 
 sp_RbVal sp_poly_hash_slice(sp_RbVal v, int n, sp_RbVal *keys)

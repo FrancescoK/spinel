@@ -1216,7 +1216,7 @@ enum { BSUB_NONE = 0, BSUB_ARRAY, BSUB_HASH, BSUB_STRING, BSUB_NBASES };
 /* how a store into an instance is evidence about the kind it embeds */
 enum { BSE_NONE, BSE_ELEMENTS, BSE_KEYED };
 /* what `X[a, b]` builds before it becomes the instance's contents */
-enum { BSB_NONE, BSB_ARRAY_LITERAL, BSB_CLASS_CALL };
+enum { BSB_NONE, BSB_ARRAY_LITERAL, BSB_CLASS_CALL, BSB_HASH_PAIRS };
 /* One kind the builtin can embed: its C spellings. */
 typedef struct {
   TyKind kind;             /* TY_INT_ARRAY */
@@ -1225,7 +1225,7 @@ typedef struct {
   const char *init;        /* sets an embedded one up: "sp_IntArray_init_embedded" */
   const char *fin;         /* the finalizer the instance is allocated with, or NULL */
   const char *scan;        /* marks its references (the instance's scan calls it), or NULL */
-  const char *replace;     /* (dst, src): dup's copy of the contents */
+  const char *replace;     /* (dst, src): dup's copy of the contents (a Hash's default with them) */
   const char *inspect;     /* p of the instance */
   const char *to_s;        /* to_s of the instance, where it is printed */
   const char *dup;         /* a plain copy of the builtin (BSR_PLAIN_COPY), or NULL */
@@ -1255,6 +1255,8 @@ int        comp_bsub_base_of_kind(TyKind t);       /* the BSUB_* whose kinds inc
    none); the kind of the builtin the chain's instances embed, the row's
    settled_kind once the inference is past its optimistic stage with nothing
    seen. */
+/* Does some class of the program subclass builtin `base`? */
+int        comp_has_bsub_base(Compiler *c, int base);
 int        comp_bsub_root(Compiler *c, int cid);
 int        comp_ty_bsub_root(Compiler *c, TyKind t);
 int        comp_bsub_base(Compiler *c, int cid);
@@ -1277,7 +1279,7 @@ int        comp_bsub_name_is_builtin(Compiler *c, int cid, const char *n);
 /* the kind the builtin's emitter answers a call answering its receiver
    with, k the embedded builtin's kind */
 TyKind     comp_bsub_self_kind(Compiler *c, int id, TyKind rt, TyKind k);
-enum { BSR_PLAIN, BSR_SELF, BSR_PLAIN_COPY };
+enum { BSR_PLAIN, BSR_SELF, BSR_COPY, BSR_PLAIN_COPY };
 int        comp_bsub_result_form(Compiler *c, int id, TyKind rt);
 /* call `id` on a receiver of type rt reads an argument of builtin base's
    subclass as that builtin (BOPF_ARGS_BUILTIN, or puts) */
