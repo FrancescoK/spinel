@@ -5,6 +5,7 @@ test/reject/string_append_through_kept_block_index.rb
 test/reject/string_append_through_new_global.rb
 test/reject/string_append_through_proc_keyword.rb
 test/reject/string_array_rebound_iterator_alias.rb
+test/reject/string_boxed_local_iterator_element.rb
 test/reject/string_chained_index_append.rb
 test/reject/string_cvar_boxed_param.rb
 test/reject/string_duplicate_keyword_variable.rb

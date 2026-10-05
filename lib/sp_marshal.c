@@ -9,6 +9,7 @@
 #include "sp_marshal.h"   /* sp_gc.h: sp_RbVal, hooks, SP_GC_ROOT, cls_ids */
 #include "sp_alloc.h"     /* sp_str_alloc_raw, sp_str_set_len, sp_str_byte_len, sp_float_to_s */
 #include "sp_dtoa.h"      /* sp_format_float / sp_read_float (locale-independent) */
+#include "sp_string.h"    /* sp_String_cstr (a shared String handle, sp_marshal_dump_h) */
 #include <string.h>
 #include <math.h>
 
@@ -144,6 +145,9 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
         sp_mar_b(b, '['); sp_mar_long(b, 2);
         sp_mar_w(b, mk_int(q[0])); sp_mar_w(b, mk_int(q[1]));
       }
+      /* only under sp_marshal_dump_h: a shared String handle is its String */
+      else if (b->handles && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+        sp_mar_w(b, mk_str(sp_String_cstr((sp_String *)v.v.p)));
       else {
         int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
         if (kind == 1) {  /* array */
@@ -191,6 +195,25 @@ const char *sp_marshal_dump(sp_RbVal v) {
   sp_str_set_len(out, b.len);
   /* a marshalled stream is bytes, and CRuby names it ASCII-8BIT: without the
      tag #length counts UTF-8 units over binary data and [] slices by them */
+  sp_str_mark_binary(out);
+  for (int i = 0; i < b.nws; i++) free(b.wsyms[i]);
+  free(b.wsyms);
+  free(b.p); free(b.lptr); free(b.lid);
+  return out;
+}
+
+/* sp_marshal_dump for a program built --share-strings, whose boxes may hold
+   shared String handles (SP_BUILTIN_STRBUF): each dumps as the String it
+   holds. sp_marshal_dump keeps master's behaviour. */
+const char *sp_marshal_dump_h(sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_mar_buf b; memset(&b, 0, sizeof b);
+  b.handles = 1;
+  sp_mar_b(&b, 4); sp_mar_b(&b, 8);
+  sp_mar_w(&b, v);
+  char *out = sp_str_alloc_raw(b.len + 1);
+  memcpy(out, b.p, b.len); out[b.len] = 0;
+  sp_str_set_len(out, b.len);
   sp_str_mark_binary(out);
   for (int i = 0; i < b.nws; i++) free(b.wsyms[i]);
   free(b.wsyms);

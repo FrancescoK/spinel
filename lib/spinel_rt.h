@@ -10935,6 +10935,15 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   }
   return val;
 }
+/* sp_poly_set_poly for --share-strings, where a String key may come boxed
+   as its shared handle: a hash keys by the String's value (its own copy, as
+   every String key is), so the handle is read through before the store. Any
+   other receiver -- a user []= among them -- takes the key as it is. */
+static sp_RbVal sp_poly_set_poly_h(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  if (sp_poly_is_strbuf(key) && v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))
+    key = sp_poly_strbuf_deref(key);
+  return sp_poly_set_poly(v, key, val);
+}
 
 /* The multi-set forms of String#count/#delete/#squeeze, through a value only
    known at run time: the typed receiver resolves to sp_str_*_n, and a boxed
