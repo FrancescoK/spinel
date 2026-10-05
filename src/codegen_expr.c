@@ -4433,9 +4433,10 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       for (int p = 0; p < 2; p++) {
         int v = parts[p];
         if (v < 0 || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, v)) continue;
-        TyKind vt = comp_ntype(c, v);
+        Repr rp = repr_of(c, v);
+        TyKind vt = rp.as_ty;
         if (vt == TY_UNKNOWN || vt == TY_NIL || vt == TY_VOID ||
-            ty_is_struct_valued(vt) || comp_ty_value_obj(c, vt)) continue;
+            rp.kind == RK_STRUCT || rp.kind == RK_VOBJ) continue;
         Buf vb; memset(&vb, 0, sizeof vb);
         emit_expr(c, v, &vb);
         int t = ++g_tmp;
