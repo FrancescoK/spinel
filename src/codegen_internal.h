@@ -757,6 +757,8 @@ int rest_shortfall_required(Compiler *c, Scope *m);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
 int hash_key_misses(Compiler *c, int key, TyKind kt);
 int hash_nil_key_stored(Compiler *c, int key, TyKind kt);
+/* The runtime `[]=` for a boxed receiver and a boxed key. */
+const char *poly_set_poly_fn(const Compiler *c);
 /* The runtime `[]` for a boxed receiver and a boxed key. */
 const char *poly_index_poly_fn(const Compiler *c);
 /* A read of a shared-mutable String slot `sref` as node id reads it. */

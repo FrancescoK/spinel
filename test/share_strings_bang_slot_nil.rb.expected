@@ -1,0 +1,6 @@
+["AAA", nil, "AAA"]
+[nil, "Bb", "Bb"]
+["c", nil, "c"]
+[nil, "Q"]
+"Q"
+["aBc", "aBc", nil, nil, "xyz"]
