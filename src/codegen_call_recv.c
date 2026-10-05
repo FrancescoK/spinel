@@ -549,10 +549,13 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                  ti, ti, k, trecv, ti);
     if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+    /* the block's value by Ruby's truthiness: an Integer 0 is a hit, and
+       a boxed value is no C scalar (read raw, 0 missed and a boxed value
+       did not build) */
     Buf cb; memset(&cb, 0, sizeof cb);
     { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
       int sv = g_indent; g_indent++;
-      emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
+      emit_iter_step_cond(c, &st, 0, &cb); g_indent = sv; }
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (%s) { _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
     free(cb.p);
