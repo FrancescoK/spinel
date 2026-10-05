@@ -1605,6 +1605,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       is_index_query(name) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_POLY; return 1; }
+  /* difference / union / intersection on a poly value: the boxed result of
+     the - | & fold codegen emits for an Array receiver */
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && is_named_set_operator(name) &&
+      !an_user_defines_or_reads(c, name))
+    { *out = TY_POLY; return 1; }
   /* String#chars on a poly value (a String read out of a container / pair):
      an array of single-char strings (#2909). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&

@@ -1562,6 +1562,30 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_printf(b, ", %d)%s", bop, se ? "; })" : "");
     return 1;
   }
+  /* poly.difference / union / intersection: the named forms of - | & over
+     one or more arrays, folded left to right, for an Array receiver only --
+     another kind's - or | is no set operation, and it has no such method */
+  if (recv >= 0 && argc >= 1 && comp_ntype(c, recv) == TY_POLY &&
+      is_named_set_operator(name) && !user_defines_or_reads(c, name)) {
+    int splat = 0;
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
+    if (!splat) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
+                    " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                    " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", t, t, t, name, t);
+      for (int a = 0; a < argc; a++) {
+        if (sp_streq(name, "difference")) buf_printf(b, " _t%d = sp_poly_sub(_t%d, ", t, t);
+        else buf_printf(b, " _t%d = sp_poly_bitop(_t%d, ", t, t);
+        emit_boxed(c, argv[a], b);
+        if (sp_streq(name, "difference")) buf_puts(b, ");");
+        else buf_printf(b, ", %d);", sp_streq(name, "union") ? 1 : 0);
+      }
+      buf_printf(b, " _t%d; })", t);
+      return 1;
+    }
+  }
   /* `poly >> n`: through sp_poly_shr, which keeps a bignum receiver in bignum
      space. Truncating to int64 here made a positive value past 2^63 negative,
      turning the shift arithmetic and diverging a masked xorshift from CRuby for
