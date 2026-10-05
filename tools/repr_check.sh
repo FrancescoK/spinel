@@ -17,7 +17,9 @@
 #   coerce-view    an override of the node's type is active
 #   coerce-conflict  the store and the prediction disagree
 # The counts are reported and the commonest conflict shapes listed. The run
-# fails on a conflict, and when the C differs with the flag.
+# fails on a conflict, and when the C differs with the flag. The flag also
+# has codegen ask repr_of of every node it emits (repr_check_ask), so a
+# repr_of that changes anything codegen reads next shows as differing C.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2
