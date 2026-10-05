@@ -2143,6 +2143,11 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     }
     case SP_TAG_BIGINT: return SPL("Integer");
     case SP_TAG_OBJ:
+      /* an Array subclass instance boxed as its Array (#7449) */
+      if (sp_arysub_cls_fn && sp_obj_cls_name_fn) {
+        int k = sp_arysub_cls_fn(v);
+        if (k >= 0) return sp_obj_cls_name_fn(k);
+      }
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
         case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
@@ -2495,6 +2500,8 @@ static sp_Class sp_poly_class_val(sp_RbVal v) {
      the switch fell through and the call returned nil (#4020). The name still
      leads for display; sp_class_to_s reads it first. */
   r.cls_id = (v.tag == SP_TAG_OBJ && v.cls_id >= 0) ? (int)v.cls_id : -1;
+  /* an Array subclass instance boxed as its Array (#7449) */
+  if (sp_arysub_cls_fn && r.cls_id < 0) { int k = sp_arysub_cls_fn(v); if (k >= 0) r.cls_id = k; }
   r.name = sp_poly_class_name(v);
   return r;
 }
