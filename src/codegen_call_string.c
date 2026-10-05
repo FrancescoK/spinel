@@ -1079,6 +1079,33 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* An unbound prepend operand can emit a prelude of its own. Capture each
+   operand and its prelude together before concatenating their values. */
+static void emit_string_prepend_ordered(Compiler *c, int recv_tmp, int argc,
+                                        const int *argv, Buf *b) {
+  int *temps = malloc(sizeof(int) * argc);
+  buf_printf(b, " SP_GC_ROOT(_t%d);", recv_tmp);
+  for (int j = 0; j < argc; j++) {
+    Buf arg = {0};
+    Buf *pre = g_pre;
+    g_pre = b;
+    emit_str_expr(c, argv[j], &arg);
+    g_pre = pre;
+    temps[j] = ++g_tmp;
+    buf_printf(b, " const char *_t%d = %s; SP_GC_ROOT(_t%d);",
+               temps[j], arg.p, temps[j]);
+    free(arg.p);
+  }
+  int result = ++g_tmp;
+  buf_printf(b, " const char *_t%d = ", result);
+  for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+  buf_printf(b, "_t%d", temps[0]);
+  for (int j = 1; j < argc; j++) buf_printf(b, ", _t%d)", temps[j]);
+  buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);",
+             recv_tmp, recv_tmp, result);
+  free(temps);
+}
+
 int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
   if (is_string_append_or_prepend(name) && argc >= 1) {
@@ -1098,12 +1125,18 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
         else buf_puts(b, sref0);
         buf_puts(b, ";");
         if (!is_append_concat(name)) {
-          int tp3 = ++g_tmp;
-          buf_printf(b, " const char *_t%d = ", tp3);
-          for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
-          emit_str_expr(c, argv[0], b);
-          for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
-          buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
+          int ordered = 0;
+          for (int j = 0; j < argc && argc > 1; j++)
+            if (!arg_ran_first(argv[j], 0) && !subtree_is_pure_read(c, argv[j])) ordered = 1;
+          if (ordered) emit_string_prepend_ordered(c, tb2, argc, argv, b);
+          else {
+            int tp3 = ++g_tmp;
+            buf_printf(b, " const char *_t%d = ", tp3);
+            for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+            emit_str_expr(c, argv[0], b);
+            for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+            buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
+          }
         }
         else {
           for (int j = 0; j < argc; j++) {
