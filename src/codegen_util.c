@@ -3756,16 +3756,18 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
    build ({1 => 2}.dig("a"), .fetch("a"), .except(obj)). The same kinds a
    poly key of another tag already misses on. A user object is a miss
    without asking whether its class defines #eql? and #hash: a typed table
-   holds no objects, so nothing in it can be eql? to one. */
+   holds no objects, so nothing in it can be eql? to one. The by-value kinds
+   (a Range, a Time, a Complex, a Rational...) are asked of their traits
+   row: none is a String, a Symbol or an Integer, and Complex(1, 0).eql?(1)
+   is false. */
 int hash_key_misses(Compiler *c, int key, TyKind kt) {
   TyKind actual = comp_ntype(c, key);
   if (kt == TY_POLY || actual == kt || actual == TY_POLY || actual == TY_UNKNOWN) return 0;
   if (kt == TY_STRING && actual == TY_STRBUF) return 0;
   return actual == TY_NIL || actual == TY_BOOL || actual == TY_INT ||
          actual == TY_BIGINT || actual == TY_FLOAT || actual == TY_SYMBOL ||
-         actual == TY_STRING || actual == TY_STRBUF || actual == TY_RANGE ||
-         actual == TY_FLOAT_RANGE || actual == TY_STR_RANGE || actual == TY_TIME ||
-         actual == TY_REGEX || ty_is_array(actual) || ty_is_hash(actual) ||
+         actual == TY_STRING || actual == TY_STRBUF || actual == TY_REGEX ||
+         ty_is_struct_valued(actual) || ty_is_array(actual) || ty_is_hash(actual) ||
          ty_is_object(actual);
 }
 

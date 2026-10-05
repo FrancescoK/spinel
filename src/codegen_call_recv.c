@@ -433,6 +433,8 @@ const char *conv_builtin_class_name(TyKind t) {
   if (t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE) return "Range";
   if (t == TY_PROC) return "Proc";
   if (t == TY_TIME) return "Time";
+  if (t == TY_COMPLEX) return "Complex";
+  if (t == TY_RATIONAL) return "Rational";
   if (ty_is_hash(t)) return "Hash";
   return "Object";
 }
@@ -445,7 +447,7 @@ int conv_to_ary_impossible(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
          t == TY_FLOAT || t == TY_SYMBOL || t == TY_PROC || t == TY_TIME ||
          t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
-         ty_is_hash(t);
+         t == TY_COMPLEX || t == TY_RATIONAL || ty_is_hash(t);
 }
 
 /* The shared-mutable shim over an IVAR receiver, in expression position. The
@@ -627,9 +629,22 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
         continue;
       }
     }
+    /* A Complex, a Rational or a Time responds to no :each either, and
+       its class is settled: CRuby's TypeError, named as the object arm
+       above names it. Read as an array, its struct stopped the C build;
+       boxed into sp_zip_arg, the send of :each answered NoMethodError. */
+    if (at[j] == TY_COMPLEX || at[j] == TY_RATIONAL || at[j] == TY_TIME) {
+      buf_printf(b, " sp_PolyArray *_t%d = ({ (void)(", tb[j]); emit_expr(c, argv[j], b);
+      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"wrong argument type %s (must respond to :each)\"); (sp_PolyArray *)0; });",
+                 conv_builtin_class_name(at[j]));
+      at[j] = TY_POLY_ARRAY;
+      continue;
+    }
     if (at[j] == TY_NIL || at[j] == TY_BOOL || at[j] == TY_INT ||
         at[j] == TY_FLOAT || at[j] == TY_STRING || at[j] == TY_STRBUF ||
         at[j] == TY_SYMBOL || at[j] == TY_VOID || ty_is_object(at[j]) ||
+        /* a String Range enumerates as Range#each */
+        at[j] == TY_STR_RANGE ||
         /* a Hash or an Enumerator DOES respond to :each; the same helper
            materializes it, where the typed line below spelled the slot
            sp_PolyArray* and assigned an sp_SymPolyHash* to it */
@@ -5525,7 +5540,10 @@ else {
             unsupported_feature(c, id, "Hash#merge with a #to_hash of another layout than the receiver");
             return 0;
           }
-          const char *mcn = conv_cls_name_of(c, at);
+          /* conv_cls_name_of leaves a Complex and a Rational to the numeric
+             slots, which convert them; neither has a #to_hash */
+          const char *mcn = at == TY_COMPLEX || at == TY_RATIONAL ? conv_builtin_class_name(at)
+                                                                  : conv_cls_name_of(c, at);
           if (mcn) {
             buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)("); emit_expr(c, argv[0], b);
             buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Hash\"); (%s)0; })", mcn, c_type_name(rt));
@@ -13451,9 +13469,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_pack("); emit_expr(c, recv, b);
     buf_puts(b, ", ");
-    /* a boxed format unboxes to the const char * slot */
+    /* a boxed format unboxes to the const char * slot, and a format of
+       another class takes the String slot's conversion, as the typed
+       receiver's arm does (a TypeError, or the refusal of a Rational) */
     TyKind fmt_t = comp_ntype(c, argv[0]);
-    if (fmt_t == TY_POLY || fmt_t == TY_UNKNOWN) emit_str_expr(c, argv[0], b);
+    if (fmt_t != TY_STRING) emit_str_expr(c, argv[0], b);
     else emit_expr(c, argv[0], b);
     buf_puts(b, ")");
     return 1;
