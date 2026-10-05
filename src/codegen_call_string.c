@@ -1156,6 +1156,20 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
             buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
           }
         }
+        /* --share-strings: several arguments are each taken as they were
+           before any is appended (one may be the receiver itself), as
+           emit_str_concat_handle's statement form takes them */
+        else if (repr_share_rule(c) && argc > 1) {
+          int base = g_tmp + 1; g_tmp += argc;
+          char rt[48]; snprintf(rt, sizeof rt, "sp_String_cstr(_t%d)", tb2);
+          for (int j = 0; j < argc; j++) {
+            int boxed = repr_of(c, argv[j]).kind == RK_BOXED;
+            buf_printf(b, " const char *_t%d = %s", base + j, boxed ? "sp_str_concat(" : "");
+            emit_str_append_arg(c, argv[j], rt, b);
+            buf_printf(b, "%s; SP_GC_ROOT_STR(_t%d);", boxed ? ", \"\")" : "", base + j);
+          }
+          for (int j = 0; j < argc; j++) buf_printf(b, " sp_String_append(_t%d, _t%d);", tb2, base + j);
+        }
         else {
           for (int j = 0; j < argc; j++) {
             buf_printf(b, " sp_String_append(_t%d, ", tb2);
