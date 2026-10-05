@@ -98,7 +98,11 @@ static NFIvar *nf_ivar_slot(NF *f, int cls, const char *name) {
     if (f->iv[j].cls == cls && sp_streq(f->iv[j].name, name)) return &f->iv[j];
     j = (j + 1) & (unsigned)(f->iv_cap - 1);
   }
-  f->iv[j].cls = cls; f->iv[j].name = name; f->iv[j].wr = 0; f->iv[j].init = 0;
+  /* The table lives for the whole pass, and some callers build the name in a
+     stack buffer (an attr reader's or writer's "@name"): keep a copy. */
+  char *own = strdup(name);
+  if (!own) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  f->iv[j].cls = cls; f->iv[j].name = own; f->iv[j].wr = 0; f->iv[j].init = 0;
   f->iv[j].val = 0; f->iv[j].val_round = -1;
   f->iv_n++;
   return &f->iv[j];
@@ -1332,6 +1336,7 @@ void an_nil_facts(Compiler *c) {
   }
   nf_free_lists(c, yields, nyields);
   nf_free_lists(c, rets, nrets);
+  for (int k = 0; k < f.iv_cap; k++) free((char *)f.iv[k].name);
   free(f.par); free(f.dp.pos); free(f.dp.done); free(f.def_mi); free(f.iv); free(f.dyn); free(f.rg);
   free(f.pl_mi); free(f.pl_owner); free(f.pl_disp); free(f.yield_nil); free(f.byname);
   free(f.kid_head); free(f.kid_next); free(f.kid_to); free(f.dfs); free(f.seen);
