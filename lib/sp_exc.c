@@ -1,5 +1,6 @@
 /* sp_exc.c -- cold sp_Exception ops (see sp_exc.h). 0 optcarrot uses. */
 #include "sp_exc.h"
+#include "sp_exc_ctx.h"
 #include <errno.h>
 
 /* Check if exception class name `raised` is the same as or a subclass of
@@ -932,4 +933,69 @@ SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *n
   const char *msg = sp_sprintf("%s keyword%s: %s", kind, count > 1 ? "s" : "", names);
   SP_GC_ROOT_STR(msg);
   sp_raise_cls("ArgumentError", msg);
+}
+
+/* Exception#is_a?(ClassName): checks class name and known hierarchy. */
+sp_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
+  sp_Exception *e = (sp_Exception *)ve;
+  if (!e || !cn) return 0;
+  /* one authority for "does this level answer to cn", modules included: the
+     matcher rescue arms use. Without it #is_a?(SomeModule) said false where
+     `rescue SomeModule` said yes (#3366 follow-up). */
+  cn = sp_exc_canonical_name(cn);
+  if (sp_exc_cls_matches(e->cls_name, cn)) return 1;
+  /* find the exception's class chain and check if cn appears in it */
+  const char *cls = e->cls_name;
+  int used_parent = 0;
+  for (int depth = 0; depth < 20 && cls; depth++) {
+    if (!strcmp(cls, cn)) return 1;
+    const char *parent = sp_exc_parent_of_name(cls);
+    if (!parent) {
+      /* unknown (user) class: try user hierarchy first */
+      if (sp_user_exc_parent_fn) { parent = sp_user_exc_parent_fn(cls); }
+      if (!parent) {
+        if (!used_parent && e->parent_cls_name) {
+          cls = e->parent_cls_name;
+          used_parent = 1;
+          continue;
+        }
+        if (!strcmp(cn, "Exception")) return 1;
+        if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject")) return 1;
+        break;
+      }
+    }
+    cls = parent;
+  }
+  if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel")) return 1;
+  return 0;
+}
+
+/* Each of the fixed-depth handler stacks in spinel_rt.h fails the same way when
+   a program nests deeper than its array holds; see the comment there. */
+SP_NORETURN SP_COLD void sp_stack_too_deep(void) {
+  fputs("stack level too deep (SystemStackError)\n", stderr);
+  exit(1);
+}
+
+/* The per-fiber handler context (lib/sp_exc_ctx.h): the operations that touch
+   only the context itself. */
+void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
+void sp_exc_ctx_free(void *p) {
+  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+  if (!x) return;
+  free(x->es); free(x->em); free(x->ec); free(x->eo);
+  free(x->cs); free(x->ct); free(x->ctk); free(x->cv); free(x->cet);
+  free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand);
+  free(x->rrf); free(x->rrem); free(x->rrcm); free(x->rrbm);
+  free(x->erm); free(x->ersm); free(x->crm); free(x);
+}
+void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carried exc objects */
+  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+  if (!x) return;
+  for (int i = 0; i < x->en; i++) if (x->eo[i]) sp_gc_mark(x->eo[i]);
+  /* a suspended fiber's proc-return chain (nodes on its preserved C stack) may
+     carry an in-flight return value; mark each so it survives a GC during yield. */
+  for (sp_proc_home *h = x->prhead; h; h = h->prev) sp_mark_rbval(h->val);
+  for (int i = 0; i < x->bn; i++) sp_mark_rbval(x->bv[i]);   /* carried break scopes */
+  for (int i = 0; i < x->rn; i++) if (x->shand[i]) sp_gc_mark(x->shand[i]);  /* handled excs */
 }

@@ -20,6 +20,7 @@
 #include "sp_proc.h"    /* sp_Proc/sp_Curry + cold ops (lib/sp_proc.c) */
 static const char *sp_method_desc_cstr(sp_BoundMethod *m);
 #include "sp_exc.h"     /* sp_Exception + cold ops (lib/sp_exc.c) */
+#include "sp_exc_ctx.h" /* per-fiber handler context + sp_proc_home (lib/sp_exc.c) */
 sp_RbVal sp_env_shift(void);
 sp_int sp_env_size(void);
 sp_StrStrHash *sp_env_to_h(void);
@@ -10911,7 +10912,6 @@ static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
 /* is_a?/kind_of? for a poly value against a BUILTIN class named `cn`. The
    caller (codegen) routes here only when `cn` is a known builtin; a user-class
    target is resolved inline via sp_class_le on the boxed object's cls_id. */
-static sp_int sp_exc_is_a(volatile struct sp_Exception_s *ve, const char *cn);  /* fwd (#3096) */
 extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table */
 static int (*sp_poly_is_a_hook)(sp_RbVal, sp_Class) = NULL;
 static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
@@ -13045,10 +13045,7 @@ static void sp_rescue_push(void *e) {
    Ruby SystemStackError -- catching one needs a handler slot, which is exactly
    what has run out. (sp_rescue_push above keeps its own older wording, which
    names the nesting that overflowed.) */
-SP_NORETURN SP_COLD static void sp_stack_too_deep(void) {
-  fputs("stack level too deep (SystemStackError)\n", stderr);
-  exit(1);
-}
+SP_NORETURN SP_COLD void sp_stack_too_deep(void);   /* lib/sp_exc.c */
 /* Guard an exception-frame arm. Every arm stores into sp_exc_rootmark
    [sp_exc_top] (or sp_exc_msg[sp_exc_top]) before it bumps sp_exc_top, so what
    the check must precede is that first indexed store, not the ++; it opens the
@@ -13883,40 +13880,6 @@ SP_NORETURN void sp_raise_stop_iteration(sp_RbVal result) {
   sp_raise_cls("StopIteration", msg);
 }
 #endif
-/* Exception#is_a?(ClassName): checks class name and known hierarchy. */
-static sp_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
-  sp_Exception *e = (sp_Exception *)ve;
-  if (!e || !cn) return 0;
-  /* one authority for "does this level answer to cn", modules included: the
-     matcher rescue arms use. Without it #is_a?(SomeModule) said false where
-     `rescue SomeModule` said yes (#3366 follow-up). */
-  cn = sp_exc_canonical_name(cn);
-  if (sp_exc_cls_matches(e->cls_name, cn)) return 1;
-  /* find the exception's class chain and check if cn appears in it */
-  const char *cls = e->cls_name;
-  int used_parent = 0;
-  for (int depth = 0; depth < 20 && cls; depth++) {
-    if (!strcmp(cls, cn)) return 1;
-    const char *parent = sp_exc_parent_of_name(cls);
-    if (!parent) {
-      /* unknown (user) class: try user hierarchy first */
-      if (sp_user_exc_parent_fn) { parent = sp_user_exc_parent_fn(cls); }
-      if (!parent) {
-        if (!used_parent && e->parent_cls_name) {
-          cls = e->parent_cls_name;
-          used_parent = 1;
-          continue;
-        }
-        if (!strcmp(cn, "Exception")) return 1;
-        if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject")) return 1;
-        break;
-      }
-    }
-    cls = parent;
-  }
-  if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel")) return 1;
-  return 0;
-}
 
 /* a reason/tag staged as a plain string interns back to the Symbol it names */
 static sp_RbVal sp_exc_sym_slot(sp_RbVal v) {
@@ -13969,7 +13932,7 @@ void sp_bigint_raise_zerodiv(const char *msg);
 #else
 void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError", msg); }
 #endif
-/* sp_exc_is_a: see earlier definition (takes volatile sp_Exception *) */
+/* sp_exc_is_a: lib/sp_exc.c (takes volatile sp_Exception *) */
 
 /* A non-local control-flow unwind -- a proc `return` or a `throw` -- runs the
    `ensure` blocks it passes over before delivering to its target, like an
@@ -14164,15 +14127,8 @@ static void sp_mark_brk_vals(void) {
    home. The `exc_top` field records the exception-handler depth at the method's
    entry so intervening ensures run and so an exception that unwinds the home pops
    the node (sp_handler_stacks_unwind). */
-typedef struct sp_proc_home {
-  jmp_buf jb;                 /* the home method's setjmp target (on its C stack) */
-  sp_RbVal val;               /* the in-flight return value (nil until delivered) */
-  int exc_top;                /* sp_exc_top at the method's entry */
-  int catch_top;              /* sp_catch_top at the method's entry */
-  int recur_mark;             /* walk-path depth at the method's entry (see sp_poly_recur_mark) */
-  sp_int id;                 /* fresh id captured by the home's returning procs */
-  struct sp_proc_home *prev;  /* enclosing home, forming the per-fiber chain */
-} sp_proc_home;
+/* sp_proc_home itself is in lib/sp_exc_ctx.h, beside the fiber context that
+   carries the chain head. */
 /* sp_proc_ret_head is the current fiber's chain of in-flight proc-return homes,
    swapped per fiber by sp_exc_ctx_save/load -- per-worker (SP_TLS) under N>1 like
    the exception stack. sp_proc_home_seq stays a single shared counter so home ids
@@ -14310,46 +14266,10 @@ static void sp_unwind_resume(void) {
    outgoing fiber's context and loads the incoming fiber's at each switch; the
    arrays then never alias across fibers. Only the active prefix is copied
    (top == 0 for a fiber that never rescues, e.g. optcarrot's PPU, so it is
-   free there). These are non-static: reached by name from libspinel_rt.a. */
-typedef struct {
-  jmp_buf *es; const char **em; const char **ec; void **eo; int en, ecap;
-  jmp_buf *cs; const char **ct; unsigned char *ctk; sp_RbVal *cv; int *cet;  int cn, ccap;
-  jmp_buf *bs; sp_RbVal *bv; sp_int *bser; int *bet;     int bn, bcap;  /* break scopes */
-  sp_proc_home *prhead;  /* this fiber's proc-return chain head (nodes on its C stack) */
-  int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
-  void **shand; int rn, rcap;        /* sp_exc_handling prefix [0..sp_rescue_sp) */
-  void *pcause;                      /* sp_pending_cause */
-  sp_poly_recur_frame *rrf; int rrn, rrcap;  /* sp_poly_recur_stack prefix [0..sp_poly_recur_top) */
-  int *rrem, *rrcm, *rrbm;           /* the walk-path marks of the exception, catch and break arms */
-  int *erm, *ersm, *crm;             /* the GC-root and rescue-stack watermarks of the exception
-                                        arms and the GC-root watermark of the catch arms: what a
-                                        handler restores sp_gc_nroots / sp_rescue_sp to. They are
-                                        per worker like the arms, so without travelling with the
-                                        context a green thread that parked inside a begin and
-                                        resumed after another fiber's arm sat at the same index
-                                        restored the OTHER fiber's watermark: a raise's dead root
-                                        stayed on the list and the next collection read a stack
-                                        slot that was no longer a string (#4546) */
-} sp_exc_ctx_t;
+   free there). These are non-static: reached by name from libspinel_rt.a.
+   sp_exc_ctx_t and its new/free/mark are in lib/sp_exc_ctx.h / lib/sp_exc.c:
+   they touch only the context, where save/load below read the TU's stacks. */
 
-#ifdef SPINEL_EXT_HOST
-void *sp_exc_ctx_new(void);
-#else
-void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
-#endif
-#ifdef SPINEL_EXT_HOST
-void sp_exc_ctx_free(void *p);
-#else
-void sp_exc_ctx_free(void *p) {
-  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
-  if (!x) return;
-  free(x->es); free(x->em); free(x->ec); free(x->eo);
-  free(x->cs); free(x->ct); free(x->ctk); free(x->cv); free(x->cet);
-  free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand);
-  free(x->rrf); free(x->rrem); free(x->rrcm); free(x->rrbm);
-  free(x->erm); free(x->ersm); free(x->crm); free(x);
-}
-#endif
 #ifdef SPINEL_EXT_HOST
 void sp_exc_ctx_save(void *p);
 #else
@@ -14450,20 +14370,6 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   for (int i = 0; i < x->rrn; i++) sp_poly_recur_stack[i] = x->rrf[i];
   sp_poly_recur_top = x->rrn;
   sp_poly_recur_ixtop = 0;   /* the index described the other context's frames */
-}
-#endif
-#ifdef SPINEL_EXT_HOST
-void sp_exc_ctx_mark(void *p);
-#else
-void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carried exc objects */
-  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
-  if (!x) return;
-  for (int i = 0; i < x->en; i++) if (x->eo[i]) sp_gc_mark(x->eo[i]);
-  /* a suspended fiber's proc-return chain (nodes on its preserved C stack) may
-     carry an in-flight return value; mark each so it survives a GC during yield. */
-  for (sp_proc_home *h = x->prhead; h; h = h->prev) sp_mark_rbval(h->val);
-  for (int i = 0; i < x->bn; i++) sp_mark_rbval(x->bv[i]);   /* carried break scopes */
-  for (int i = 0; i < x->rn; i++) if (x->shand[i]) sp_gc_mark(x->shand[i]);  /* handled excs */
 }
 #endif
 /* Trampoline base handler (#1474): the fiber trampoline arms a copy of its own
