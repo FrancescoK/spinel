@@ -5274,14 +5274,13 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     else if (cgt && sp_streq(cgt, "StringNode")) cgn = nt_str(nt, argv[0], "content");
     /* const_get(name, false) searches only the receiver's own constants, so an
        inherited one is a NameError, not that constant's type (#3762) */
+    const char *cg_rnm = cgn ? const_get_recv_name(c, id, recv) : NULL;
     if (cgn && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
-      const char *cg_rty = nt_type(nt, recv);
-      const char *cg_rnm = (cg_rty && (sp_streq(cg_rty, "ConstantReadNode") ||
-                                       sp_streq(cg_rty, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
       if (cg_rnm && !const_owned_by_class(c, cg_rnm, cgn)) { *out = TY_POLY; return 1; }
     }
-    /* a CLASS or module name answers the class object itself (#3969) */
-    if (cgn && comp_class_index(c, cgn) >= 0) { *out = TY_CLASS; return 1; }
+    /* a CLASS or module name answers the class object itself (#3969) --
+       unless a value constant of that leaf is the receiver's own */
+    if (cgn && comp_class_index(c, cgn) >= 0 && !const_get_takes_value(c, cg_rnm, cgn)) { *out = TY_CLASS; return 1; }
     if (cgn) { LocalVar *cv = comp_const(c, cgn); if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; } { *out = TY_POLY; return 1; } }
   }
   if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) { *out = TY_BOOL; return 1; }

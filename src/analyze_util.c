@@ -1024,13 +1024,13 @@ static int cn_body_writes_const(const NodeTable *nt, int root, const char *const
   }
   return 0;
 }
-int const_owned_by_class(Compiler *c, const char *clsname, const char *constname) {
+/* Is value constant CONSTNAME written directly in the body of class or
+   module CLSNAME? */
+static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
   const NodeTable *nt = c->nt;
-  if (!clsname || !constname) return 0;
-  if (sp_streq(clsname, "Object") && const_name_resolves_top_level(c, constname)) return 1;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ClassNode")) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     /* a ClassNode carries its name through constant_path, not a name field */
     int cp = nt_ref(nt, id, "constant_path");
     const char *n = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
@@ -1039,6 +1039,36 @@ int const_owned_by_class(Compiler *c, const char *clsname, const char *constname
     if (body >= 0 && cn_body_writes_const(nt, body, constname, 1)) return 1;
   }
   return 0;
+}
+/* Does class or module CLSNAME hold constant CONSTNAME itself -- a value
+   written in its body, or a class or module nested in it? */
+int const_owned_by_class(Compiler *c, const char *clsname, const char *constname) {
+  if (!clsname || !constname) return 0;
+  if (sp_streq(clsname, "Object") && const_name_resolves_top_level(c, constname)) return 1;
+  if (const_value_owned(c, clsname, constname)) return 1;
+  int k = comp_class_index(c, constname), o = comp_class_index(c, clsname);
+  return k >= 0 && o >= 0 && c->classes[k].enclosing_class == o;
+}
+/* The module a `recv.const_get` searches, by name: a constant receiver's, or
+   for `self` the class or module whose method or body the call is in. */
+const char *const_get_recv_name(Compiler *c, int call, int recv) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return nt_str(nt, recv, "name");
+  if (rk == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, call);
+    if (s && s->class_id >= 0 && s->class_id < c->nclasses) return c->classes[s->class_id].name;
+  }
+  return NULL;
+}
+/* `R.const_get(:N)` with N both a class and a value constant of the program
+   (constants live in one flat namespace, keyed by the leaf): the value when
+   R holds it, else the class. With only one of them, that one. */
+int const_get_takes_value(Compiler *c, const char *rnm, const char *cgn) {
+  LocalVar *cv = comp_const(c, cgn);
+  if (!cv || cv->type == TY_UNKNOWN) return 0;
+  if (comp_class_index(c, cgn) < 0) return 1;
+  return rnm && const_value_owned(c, rnm, cgn);
 }
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an
