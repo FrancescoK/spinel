@@ -9038,12 +9038,18 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
        hold it, through the upcast: with `@left` settled as Node, a Column
        stored through `obj.left = col` lost every arm and raised
        NoMethodError for a writer the receiver has. */
-    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at)) continue;
+    /* --share-strings: a String into a slot that is the shared handle
+       takes a handle of its own around it */
+    int to_handle = repr_share_rule(c) && ivt == TY_STRBUF && (at == TY_STRING || at == TY_POLY || at == TY_NIL);
+    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at) && !to_handle) continue;
     buf_printf(b, " case %d: ", k);
     { char opn[64]; snprintf(opn, sizeof opn, "((sp_%s *)%s)", c->classes[k].c_name, objp);
       emit_frozen_obj_guard(c, k, opn, b); }
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
-    if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
+    if (to_handle && at == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", src);
+    else if (to_handle && at == TY_POLY) buf_printf(b, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", src, src);
+    else if (to_handle) buf_puts(b, "NULL");
+    else if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
     else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
     buf_puts(b, "; break;");
