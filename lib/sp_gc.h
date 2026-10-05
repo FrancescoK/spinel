@@ -646,6 +646,11 @@ extern int (*sp_obj_conv_fn)(int cls_id, void *p, int which, sp_RbVal *out);
 /* Ruby class name for a user cls_id (the generated id->name table), so a
    runtime TU can word a TypeError the way CRuby does. */
 extern const char *(*sp_obj_cls_name_fn)(int cls_id);
+/* The user class of a builtin subclass instance boxed as its builtin (an
+   Array subclass instance boxed as its Array, #7449): the program's own
+   scan-function table names it, -1 for a plain one. NULL in a program with
+   no such class. */
+extern int (*sp_bsub_cls_fn)(sp_RbVal v);
 /* Is user class `sub` the class `super` or a descendant of it? The generated
    class bank installs it; NULL means only an exact id can be trusted. A
    pointer array of one class checks a stored object against it (#4486). */
