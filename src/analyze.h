@@ -35,8 +35,9 @@ extern int g_plan_check;
    stderr. Off in every normal build; the C is the same either way. */
 extern int g_nil_check;
 
-/* The nil fact (analyze_nil.c, #7444): whether an object-typed value may be
-   nil, decided once by the analysis for every node and every slot (a local,
+/* The nil fact (analyze_nil.c, #7444): whether an object-typed value, or a
+   builtin one held as a pointer (nil_fact_tracked), may be nil, decided once
+   by the analysis for every node and every slot (a local,
    a parameter, a block parameter, a global, a constant, an ivar, a method's
    value). an_phase_value_types computes it, ahead of the value-type
    selection. nil_fact_node answers for a node, nil_fact_ivar for ivar `ivn`
@@ -46,15 +47,20 @@ enum { NF_UNKNOWN, NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED /* not nil past a guard */
 void an_nil_facts(Compiler *c);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
-/* where a nil comes from: a node's (nil_fact_why), a slot's flag itself */
+/* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.
+   A value with several sources is reported with the first in this order:
+   the nils the program writes, then the ones the analysis cannot bound. */
 enum {
   NFW_NONE,      /* not nil */
   NFW_NIL,       /* a nil written: a literal, an empty body, a bare return */
   NFW_NO_ELSE,   /* an if, unless or case with no branch for the other case */
   NFW_SAFE_NAV,  /* a `&.` call */
-  NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash) */
-  NFW_UNSET,     /* a read that can run before any write (a local, a global,
-                    the main object's ivar, a `||=` slot) */
+  NFW_UNSET,     /* a local's read that can run before any write (the
+                    definite-assignment walk, a `||=` slot) */
+  NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash,
+                    String) */
+  NFW_GLOBAL,    /* a global, or the main object's ivar, read where no write
+                    can be shown to run first (a method's read of one) */
   NFW_IVAR,      /* an ivar some class's initialize does not set first, or one
                     of a class or a module */
   NFW_CALLER,    /* a parameter a caller the analysis does not see binds (a
@@ -65,6 +71,9 @@ enum {
 };
 int nil_fact_why(const Compiler *c, int node);
 const char *nil_fact_why_name(int why);
+/* Does the fact track a value of type t: an object, or a builtin held as a
+   pointer that is NULL for nil (a String, an Array, a Hash, an IO)? */
+int nil_fact_tracked(TyKind t);
 
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
