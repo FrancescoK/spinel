@@ -13159,13 +13159,10 @@ int desugar_body_ivars(Compiler *c) {
  * it, and a program without either emits what it emitted before. */
 enum { BIV_NONE, BIV_TABLE, BIV_FROZEN, BIV_STRING };
 static int biv_mode(const char *cn) {
-  static const char *const T[] = { "Array", "Hash", "Random", NULL };
-  static const char *const F[] = { "Integer", "Float", "Symbol", "NilClass", "TrueClass", "FalseClass",
-                                   "Range", NULL };
   if (!cn) return BIV_NONE;
-  if (str_in(cn, T)) return BIV_TABLE;
-  if (str_in(cn, F)) return BIV_FROZEN;
-  return sp_streq(cn, "String") ? BIV_STRING : BIV_NONE;
+  if (is_bivar_keyed_class(cn)) return BIV_TABLE;
+  if (is_frozen_value_class(cn)) return BIV_FROZEN;
+  return is_string_class_name(cn) ? BIV_STRING : BIV_NONE;
 }
 
 /* `name(:@x[, v])` on self, in place of node `id` */
@@ -13200,12 +13197,12 @@ static int biv_frozen_literal(const NodeTable *nt, int r) {
 static int biv_is_reflective_set(const NodeTable *nt, int call) {
   const char *nm = nt_str(nt, call, "name");
   if (!nm) return 0;
-  if (sp_streq(nm, "instance_variable_set")) return 1;
-  if (!sp_streq(nm, "send") && !sp_streq(nm, "public_send") && !sp_streq(nm, "__send__")) return 0;
+  if (is_ivar_set_name(nm)) return 1;
+  if (!is_send_family(nm)) return 0;
   int an = nt_ref(nt, call, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   const char *sn = ac > 0 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL;
-  return sn && sp_streq(sn, "instance_variable_set");
+  return sn && is_ivar_set_name(sn);
 }
 static int biv_is_self_or_implicit(const NodeTable *nt, int call) {
   int r = nt_ref(nt, call, "receiver");
