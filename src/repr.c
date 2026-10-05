@@ -648,6 +648,7 @@ static void repr_share_seal(Compiler *c) {
   int bad = -1, bad_elems = 0;
   int n_str = 0, n_shared = 0, n_kind[SHK_UNKNOWN + 1] = {0}, n_param = 0, n_elems = 0;
   int n_route_only = 0, n_unknown = 0;
+  int n_seal = 0;   /* the checks below that fail: holders, literals, routes */
   const char *stats = getenv("SPINEL_SHARE_STATS");
   struct ShareFacts *closed = stats ? share_facts_build_closed(c) : NULL;
   for (int h = 0; h < nh; h++) {
@@ -655,7 +656,7 @@ static void repr_share_seal(Compiler *c) {
     int ec = repr_share_elems_carried(c, sh);
     if (ec >= 0 && repr_str_elems_share(c, h)) {
       n_elems++;
-      if (!ec && bad < 0) { bad = h; bad_elems = 1; }
+      if (!ec) { n_seal++; if (bad < 0) { bad = h; bad_elems = 1; } }
     }
     int carried = repr_share_carried(c, sh);
     if (carried < 0) continue;
@@ -674,13 +675,13 @@ static void repr_share_seal(Compiler *c) {
     n_kind[sh->kind]++;
     if (sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].is_param) n_param++;
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
-    if (!carried && bad < 0) bad = h;
+    if (!carried) { n_seal++; if (bad < 0) bad = h; }
   }
   /* a container literal no holder names, whose elements the rule shares
      only once the facts settle after the fixpoint, kept a typed String
      form: its elements would be copies */
   int bad_lit = -1;
-  for (int n = 0; n < c->nt->count && bad_lit < 0; n++) {
+  for (int n = 0; n < c->nt->count; n++) {
     NodeKind k = nt_kind(c->nt, n);
     if (k != NK_ArrayNode && k != NK_HashNode) continue;
     TyKind t = c->ntype[n];
@@ -690,9 +691,12 @@ static void repr_share_seal(Compiler *c) {
        the holder that keeps it; one nothing can reach again once its
        expression is done (`p [a, b]`) keeps no name for its copies */
     if (ne > 0 && (t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH) && share_node_elems_share(c, n) &&
-        share_node_anchored(c, n))
-      bad_lit = n;
+        share_node_anchored(c, n)) {
+      n_seal++;
+      if (bad_lit < 0) bad_lit = n;
+    }
   }
+  n_seal += share_routes_failing(c);
   if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
   if (stats && stats[0] == '2')
     for (int h = 0; h < nh; h++) {
@@ -707,10 +711,10 @@ static void repr_share_seal(Compiler *c) {
     }
   if (stats) {
     fprintf(stderr, "share-stats: string-holders=%d shared=%d local=%d (param=%d) ivar=%d gvar=%d "
-            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d borrows=%d\n",
+            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d borrows=%d seal=%d\n",
             n_str, n_shared, n_kind[SHK_LOCAL], n_param, n_kind[SHK_IVAR], n_kind[SHK_GVAR],
             n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only, bad >= 0,
-            c->share_borrows);
+            c->share_borrows, n_seal);
     share_facts_drop(closed);
   }
   /* a route master refuses, left to the rule: refused as master does
