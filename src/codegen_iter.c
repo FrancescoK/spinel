@@ -5069,7 +5069,8 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       clv0->type = et;
       for (int j = 0; j < sb_bn; j++) infer_type(c, sb_bb[j]);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
-      emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      { char src[64]; snprintf(src, sizeof src, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
+        emit_indent(b, spIndent); emit_str_param_decl(c, block, p0_orig, p0, src, 0, b); buf_puts(b, "\n"); }
       emit_loop_body(c, body, b, spIndent);
       spIndent--;
       emit_indent(b, spIndent); buf_puts(b, "}\n");
@@ -5123,7 +5124,8 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       clv0->type = et;
       for (int j = 0; j < scb_bn; j++) infer_type(c, scb_bb[j]);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
-      emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      { char src[64]; snprintf(src, sizeof src, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
+        emit_indent(b, bodyIndent); emit_str_param_decl(c, block, p0_orig, p0, src, 0, b); buf_puts(b, "\n"); }
       emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
@@ -5206,7 +5208,8 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
           slv->type = TY_STRING;
           for (int j = 0; j < sbn; j++) infer_type(c, sbb[j]);
           emit_indent(b, indent + 1);
-          buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          { char src[64]; snprintf(src, sizeof src, "sp_StrArray_get(_t%d, _t%d)", ta, ti);
+            emit_str_param_decl(c, block, p0_orig, p0, src, 0, b); buf_puts(b, "\n"); }
           emit_loop_body(c, body, b, indent + 1);
           slv->type = saved;
         }
