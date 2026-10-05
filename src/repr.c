@@ -33,9 +33,12 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
 }
 
 /* The layout of a value stored as t that its type names and its kind does
-   not: an Integer is an sp_int scalar, and one held big an sp_Bigint *
+   not: every Array is a pointer, and which container it points to -- what
+   it holds its elements as (ty_array_elem) -- decides the helpers a call on
+   it takes; an Integer is an sp_int scalar, and one held big an sp_Bigint *
    pointer, which takes the Bignum helpers. */
 static void repr_layout(Repr *r, TyKind t) {
+  r->elem = ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
   r->big = t == TY_BIGINT;
 }
 
@@ -187,7 +190,7 @@ int repr_local_nullable_int(Compiler *c, int node) {
 Repr repr_of(const Compiler *c, int node) {
   Repr r;
   memset(&r, 0, sizeof r);
-  r.ty = r.as_ty = r.narrowed = TY_UNKNOWN;
+  r.ty = r.as_ty = r.narrowed = r.elem = TY_UNKNOWN;
   r.kind = RK_NONE;
   if (node < 0 || node >= c->nt->count) return r;
   r.ty = c->ntype[node];
@@ -243,7 +246,9 @@ ReprForm repr_box_form(const Compiler *c, Repr r) {
   (void)c;
   if (t == TY_STRING) return RF_STR;
   if (r.big) return RF_BIGINT;
-  if (ty_is_ptr_array(t)) return RF_PTR_ARRAY;
+  /* an Array of pointers (objects, nested Arrays) is stamped with what its
+     elements are */
+  if (ty_is_object(r.elem) || ty_is_array(r.elem)) return RF_PTR_ARRAY;
   if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
   return RF_NULLABLE;
 }
@@ -398,7 +403,7 @@ void repr_check_ask(const Compiler *c, int node) {
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   Repr r;
   memset(&r, 0, sizeof r);
-  r.ty = r.as_ty = r.narrowed = TY_UNKNOWN;
+  r.ty = r.as_ty = r.narrowed = r.elem = TY_UNKNOWN;
   r.kind = RK_NONE;
   if (!lv) return r;
   r.ty = r.as_ty = lv->type;

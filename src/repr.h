@@ -33,6 +33,9 @@ typedef struct {
                              the handle under a strbuf mark or demand) */
   TyKind narrowed;        /* a read narrowed past a nil guard: its non-nil
                              type, or TY_UNKNOWN */
+  TyKind elem;            /* an Array: the type its C container holds each
+                             element as (an IntArray's Integer, a PolyArray's
+                             box, an object array's class); else TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
   unsigned may_nil:1;     /* the value can be nil in this representation;
                              for a user object, the nil fact (analyze_nil.c,
