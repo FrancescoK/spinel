@@ -2630,6 +2630,28 @@ static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope
   return 0;
 }
 
+/* A store or a push on an Array subclass instance (#7449) is evidence about
+   the Array its class embeds: folded into the root class's ary_kind, as a
+   local's is into the local. An index is an Integer there or the store
+   raises, so an element store reads as a push of its value; a fold that
+   would leave no Array kind the instance can embed widens to boxed elements.
+   A store the class's own method takes is no evidence about the Array.
+   Answers whether the receiver was such an instance. */
+static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push, int is_splice,
+                                     TyKind vt, int *changed) {
+  TyKind rt = infer_type(c, recv), k;
+  int root = comp_ty_ary_root(c, rt);
+  if (root < 0) return 0;
+  if (nt_kind(c->nt, id) == NK_CallNode ? !comp_arysub_call(c, id, rt, &k)
+                                        : comp_method_in_chain(c, ty_object_class(rt), "[]=", NULL) >= 0)
+    return 1;
+  TyKind *slot = &c->classes[root].ary_kind, was = *slot, now = was;
+  fold_container_evidence(&now, is_push || !is_splice, is_splice && !is_push, TY_INT, vt);
+  if (now != was && !array_new_copies(now)) now = TY_POLY_ARRAY;
+  if (now != was) { *slot = now; *changed = 1; }
+  return 1;
+}
+
 /* infer_write_types's pass that folds container usage into a local's type:
    an empty [] or {} takes its element, key and value types from how it is
    filled (answers whether it changed a type) */
@@ -2672,7 +2694,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            keeps the push promotion. */
         if (sp_streq(name, "<<") && recv >= 0 &&
             (an_user_defines_method(c, "<<") || an_native_defines_method(c, "<<")) &&
-            !recv_has_array_write(c, recv)) continue;
+            !recv_has_array_write(c, recv) && comp_ty_ary_root(c, infer_type(c, recv)) < 0) continue;
         is_push = 1; elem_argv = argv; elem_an = an; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
         if (an == 1) vnode = argv[0];
@@ -2702,7 +2724,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else if (name && sp_streq(name, "replace") && an == 1 && recv >= 0 &&
                ty_is_array(infer_type(c, argv[0])) &&
-               recv_has_array_write(c, recv)) {
+               (recv_has_array_write(c, recv) || comp_ty_ary_root(c, infer_type(c, recv)) >= 0)) {
         /* replace(other) makes the other's elements the receiver's WHOLE
            contents, which is the same evidence about what it holds -- and a
            local's static type is an upper bound, so the union answers here as
@@ -2928,6 +2950,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (recv < 0) continue;
     if (elem_splat_index && nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rty = nt_type(nt, recv);
+    if ((is_push || is_idx_write) && !elem_splat_index &&
+        arysub_container_evidence(c, id, recv, is_push, is_splice, (TyKind)vt, &changed)) continue;
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,
        and so does a write through a getter whose value is that or-write.
        Without this the write was no evidence, the empty literal left @h
@@ -13827,6 +13851,7 @@ int infer_block_params(Compiler *c) {
 
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
+    { TyKind ak; if (comp_arysub_call(c, id, rt, &ak)) rt = ak; }   /* an Array subclass walks its Array (#7449) */
     /* A Range Enumerable served by materializing to an int array (each_slice/
        each_cons block forms, ...): type the block params as the array version,
        matching infer_call's redispatch and the codegen mirrors. */

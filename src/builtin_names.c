@@ -720,3 +720,44 @@ int is_builtin_reopen_name(const char *name) {
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
          sp_streq(name, "Random");
 }
+
+/* An Array subclass instance's questions about the object itself rather
+   than its elements (#7449): the class's own answers, through the object
+   paths. dup and clone keep the class and copy the elements. */
+int is_arysub_object_name(const char *n) {
+  static const char *const names[] = {
+    "class", "singleton_class", "is_a?", "kind_of?", "instance_of?", "respond_to?",
+    "equal?", "object_id", "__id__", "dup", "clone", "itself", "tap", "then",
+    "yield_self", "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "instance_variables", "remove_instance_variable",
+    "send", "public_send", "__send__", "method", "public_method", "methods",
+    "public_methods", "singleton_methods", "define_singleton_method", "extend",
+    "instance_eval", "instance_exec", "nil?", "!", "display", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}
+
+/* Array's methods whose answer is the receiver itself: the mutators that
+   answer self (a `!` method that changes nothing answers nil), and given a
+   block the walks (#7449). */
+int is_array_self_result_name(const char *n, int has_blk) {
+  static const char *const always[] = {
+    "<<", "push", "append", "unshift", "prepend", "insert", "concat", "replace",
+    "clear", "fill", "map!", "collect!", "keep_if", "delete_if", "sort!", "sort_by!",
+    "reverse!", "rotate!", "shuffle!", "select!", "filter!", "reject!", "uniq!",
+    "compact!", "flatten!", "freeze", "to_ary", NULL };
+  static const char *const walks[] = {
+    "each", "each_index", "each_with_index", "reverse_each", "each_entry",
+    "each_slice", "each_cons", NULL };
+  for (int i = 0; always[i]; i++) if (sp_streq(n, always[i])) return 1;
+  for (int i = 0; has_blk && walks[i]; i++) if (sp_streq(n, walks[i])) return 1;
+  return 0;
+}
+
+/* Array's methods that store their arguments as elements, keeping each as
+   the value it is, where the others read an Array argument as an Array
+   (#7449, comp_arysub_args_viewed). */
+int is_array_element_store_name(const char *n) {
+  return is_push_alias(n) || sp_streq(n, "unshift") || sp_streq(n, "prepend") ||
+         sp_streq(n, "insert") || sp_streq(n, "[]=") || sp_streq(n, "fill") || sp_streq(n, "store");
+}

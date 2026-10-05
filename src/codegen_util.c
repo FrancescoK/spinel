@@ -4349,10 +4349,12 @@ void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b) {
   if (cid < 0 || cid >= c->nclasses) return;
   if (!c->classes[cid].freeze_observed || c->classes[cid].is_value_type) return;
   const char *rn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+  /* an Array subclass instance is frozen as its Array is (#7449) */
+  if (c->classes[cid].ary_root > 0) buf_printf(b, "if ((%s)->ary.frozen) ", selfexpr);
+  else buf_printf(b, "if (sp_gc_is_frozen((void *)%s)) ", selfexpr);
   buf_printf(b,
-      "if (sp_gc_is_frozen((void *)%s)) "
       "sp_raise_frozen_obj(sp_box_obj((void *)%s, %d), (&(\"\\xff\" \"can't modify frozen %s\")[1])); ",
-      selfexpr, selfexpr, cid, rn);
+      selfexpr, cid, rn);
 }
 
 /* `_t<tmp>` when the node was already evaluated into that temp, or the

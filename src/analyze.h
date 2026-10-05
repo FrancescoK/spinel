@@ -194,6 +194,9 @@ extern int g_ret_no_new_poly;
 /* Recompute a node's type without consulting the cache (used by the break
    wrapper with g_infer_ignore_brk set to recover the normal result type). */
 TyKind infer_uncached(Compiler *c, int id);
+/* infer_type answered node id as an Array subclass instance's Array (#7449) */
+void an_ary_viewed_mark(Compiler *c, int id);
+int an_ary_viewed(int id);
 /* Pin/read the receiver node the inference should answer as `kind` while
    codegen re-enters a typed emitter for a boxed receiver (the face table in
    types.h). Node -1 clears the pin. */
