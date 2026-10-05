@@ -12272,7 +12272,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         buf_puts(b, ", "); emit_boxed(c, argv[0], b);
       }
       else {
-        buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);
+        buf_printf(b, "%s(", poly_set_poly_fn(c)); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, argv[0], b);
       }
     }

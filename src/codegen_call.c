@@ -6154,7 +6154,7 @@ int emit_poly_aset_default(Compiler *c, const char *name, int argc, const int *a
   Buf vb; memset(&vb, 0, sizeof vb);
   emit_boxed_text(c, atmp_ty[0], k0, &kb);
   emit_boxed_text(c, atmp_ty[1], v0, &vb);
-  buf_printf(b, " sp_poly_set_poly(_t%d, %s, %s); _t%d = ", tv, kb.p, vb.p, tr);
+  buf_printf(b, " %s(_t%d, %s, %s); _t%d = ", poly_set_poly_fn(c), tv, kb.p, vb.p, tr);
   if (ret == atmp_ty[1]) buf_puts(b, v0);
   else if (ret == TY_POLY) buf_puts(b, vb.p);
   else emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, vb.p, b);
