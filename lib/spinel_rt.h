@@ -4796,11 +4796,28 @@ typedef sp_bool (*sp_obj_eq_fn)(sp_RbVal a, sp_RbVal b);
 static sp_obj_eq_fn sp_obj_eq_hook = NULL;
 /* The == arms that can walk back into the pair they started from (below). */
 static sp_bool sp_poly_eq_deep(sp_RbVal a, sp_RbVal b);
+/* An Integer Range and a Float Range are == when their ends are equal as
+   numbers (an omitted end only to an omitted one) and both exclude the end
+   or both include it: (1..10) == (1.0..10.0), as Range#== compares ends by ==. */
+static sp_bool sp_range_frange_eq(sp_Range r, sp_FloatRange f) {
+  int rb = r.first == INTPTR_MIN, re = !r.fe && r.last == INTPTR_MAX;
+  int fb = (f.omitted & SP_FRANGE_NO_BEGIN) != 0, fe = (f.omitted & SP_FRANGE_NO_END) != 0;
+  if (rb != fb || re != fe) return FALSE;
+  if (!rb && (sp_float)r.first != f.first) return FALSE;
+  if (!re && sp_range_end_num(r) != f.last) return FALSE;
+  return sp_range_excl_end(r) == (f.excl != 0);
+}
 static SP_NOINLINE sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b) {
   /* a user class's own == answers before any builtin reading, the way its
      other operators now do; the field-wise hook below stays the default for
      a class that does not define one (#3501) */
   { sp_RbVal _u; if (sp_poly_user_cmp("==", a, b, &_u)) return sp_poly_truthy(_u); }
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && a.v.p && b.v.p) {
+    if (a.cls_id == SP_BUILTIN_RANGE && b.cls_id == SP_BUILTIN_FLOAT_RANGE)
+      return sp_range_frange_eq(*(sp_Range *)a.v.p, *(sp_FloatRange *)b.v.p);
+    if (a.cls_id == SP_BUILTIN_FLOAT_RANGE && b.cls_id == SP_BUILTIN_RANGE)
+      return sp_range_frange_eq(*(sp_Range *)b.v.p, *(sp_FloatRange *)a.v.p);
+  }
   /* Ruby 3.2's Process::Status#== compares the status word (to_i) with the
      other side, and Integer#== hands a non-number back to it, so `$? == 0`
      and `0 == $?` both read the word; two statuses compare their words */
@@ -10757,6 +10774,11 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
        dedupe here (#2884). */
     return FALSE;
   }
+  /* an Integer Range and a Float Range: an Integer begin is never eql? to a
+     Float one, though the two may be == */
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
+      ((a.cls_id == SP_BUILTIN_RANGE && b.cls_id == SP_BUILTIN_FLOAT_RANGE) ||
+       (a.cls_id == SP_BUILTIN_FLOAT_RANGE && b.cls_id == SP_BUILTIN_RANGE))) return FALSE;
   /* Range#eql? compares endpoints with eql?, so an Integer bound is not eql?
      to the same Float bound. A mixed literal like (0..1.0) is carried on the
      integer representation with its Float end marked (fe), which
