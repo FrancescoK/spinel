@@ -2464,6 +2464,12 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(b, " _t%d; })", ta);
         return 1;
       }
+      /* a Class value known only at run time: the generated answer that a
+         boxed one gets (sp_cls_subclasses, over the same class graph) */
+      if (comp_ntype(c, recv) == TY_CLASS) {
+        buf_puts(b, "sp_cls_subclasses(sp_box_class("); emit_expr(c, recv, b); buf_puts(b, "))");
+        return 1;
+      }
     }
     /* a named class/module value is never a singleton class (spinel has no
        singleton-class objects), so #singleton_class? is always false. */

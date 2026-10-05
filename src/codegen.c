@@ -13374,8 +13374,11 @@ static void scan_prologue_features(Compiler *c) {
     const char *nty = nt_type(c->nt, nid);
     if (!nty || !sp_streq(nty, "CallNode")) continue;
     int nrv = nt_ref(c->nt, nid, "receiver");
-    if (nrv < 0 || (comp_ntype(c, nrv) != TY_POLY && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     const char *nnm = nt_str(c->nt, nid, "name");
+    /* and #subclasses on a Class value no constant names */
+    if (nrv >= 0 && comp_ntype(c, nrv) == TY_CLASS && nnm && sp_streq(nnm, "subclasses") &&
+        nt_kind(c->nt, nrv) != NK_ConstantReadNode) { g_gen_cls_answers = 1; break; }
+    if (nrv < 0 || (comp_ntype(c, nrv) != TY_POLY && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     if (nnm && (sp_streq(nnm, "subclasses") || sp_streq(nnm, "allocate") ||
                 sp_streq(nnm, "members") || sp_streq(nnm, "keyword_init?")))
       g_gen_cls_answers = 1;
