@@ -230,10 +230,9 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (recv >= 0 && ty_is_array(rt) && emit_builtin_op_stage(c, id, recv, rt, name, 5, b)) return 1;
 
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
-    /* Re-infer when stale cache has TY_POLY (e.g. block params temporarily pinned to element type). */
-    TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? infer_type(c, recv) : rt;
-    TyKind at = comp_ntype(c, argv[0]);
-    TyKind lat = (at == TY_POLY || at == TY_UNKNOWN) ? infer_type(c, argv[0]) : at;
+    /* the receiver's own settled type where the dispatch type is poly */
+    TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? comp_ntype(c, recv) : rt;
+    TyKind lat = comp_ntype(c, argv[0]);
     /* nil <=> nil is 0; nil <=> anything-else is nil (#2383) */
     if (lrt == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -299,8 +298,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* Symbol#<=> is defined only between Symbols; a String (or any other
        non-Symbol) operand is not comparable and answers nil (#3081). A Symbol
        receiver can reach here typed as a string (it prints as its name), so
-       ask the inferred receiver type rather than trusting lrt alone. */
-    if ((lrt == TY_SYMBOL || infer_type(c, recv) == TY_SYMBOL) &&
+       ask the receiver's own type rather than trusting lrt alone. */
+    if ((lrt == TY_SYMBOL || comp_ntype(c, recv) == TY_SYMBOL) &&
         lat != TY_SYMBOL && lat != TY_POLY && lat != TY_UNKNOWN) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_puts(b, "), (void)("); emit_expr(c, argv[0], b);
@@ -356,14 +355,14 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        node kind nor the inferred type says Symbol on its own. All three
        spellings are asked. */
     { const char *rvt_s = nt_type(nt, recv);
-      int recv_is_sym = (infer_type(c, recv) == TY_SYMBOL) ||
+      int recv_is_sym = (comp_ntype(c, recv) == TY_SYMBOL) ||
                         (rvt_s && sp_streq(rvt_s, "SymbolNode"));
       if (!recv_is_sym && rvt_s && sp_streq(rvt_s, "CallNode")) {
         const char *rcn = nt_str(nt, recv, "name");
         int rr = nt_ref(nt, recv, "receiver");
         const char *rrt = rr >= 0 ? nt_type(nt, rr) : NULL;
         if (rcn && sp_streq(rcn, "to_s") &&
-            ((rrt && sp_streq(rrt, "SymbolNode")) || (rr >= 0 && infer_type(c, rr) == TY_SYMBOL)))
+            ((rrt && sp_streq(rrt, "SymbolNode")) || (rr >= 0 && comp_ntype(c, rr) == TY_SYMBOL)))
           recv_is_sym = 1;
       }
     if (lrt == TY_STRING && !recv_is_sym &&
