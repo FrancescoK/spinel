@@ -142,6 +142,18 @@ spinel: test/reject/class_named_like_builtin_module.rb:5: unsupported class name
 spinel: test/reject/class_named_like_builtin_module_path.rb:7: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_named_like_builtin_module_path.rb [promote] rc=1
 spinel: test/reject/class_named_like_builtin_module_path.rb:7: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_monitor.rb [default] rc=1
+spinel: test/reject/class_named_like_monitor.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
+== test/reject/class_named_like_monitor.rb [promote] rc=1
+spinel: test/reject/class_named_like_monitor.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
+== test/reject/class_named_like_monitor_path.rb [default] rc=1
+spinel: test/reject/class_named_like_monitor_path.rb:3: unsupported class name 'Monitor': collides with the builtin class of that name
+== test/reject/class_named_like_monitor_path.rb [promote] rc=1
+spinel: test/reject/class_named_like_monitor_path.rb:3: unsupported class name 'Monitor': collides with the builtin class of that name
+== test/reject/class_named_like_open_struct.rb [default] rc=1
+spinel: test/reject/class_named_like_open_struct.rb:7: unsupported class name 'OpenStruct': collides with the builtin class of that name
+== test/reject/class_named_like_open_struct.rb [promote] rc=1
+spinel: test/reject/class_named_like_open_struct.rb:7: unsupported class name 'OpenStruct': collides with the builtin class of that name
 == test/reject/class_paren_superclass_rescue.rb [default] rc=1
 spinel: test/reject/class_paren_superclass_rescue.rb:8: unsupported superclass expression (RescueModifierNode): write the superclass as a constant
 == test/reject/class_paren_superclass_rescue.rb [promote] rc=1
@@ -174,6 +186,58 @@ spinel: test/reject/class_reopens_builtin_module_kernel.rb:3: Kernel is not a cl
 spinel: test/reject/class_reopens_builtin_module_rooted.rb:5: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_reopens_builtin_module_rooted.rb [promote] rc=1
 spinel: test/reject/class_reopens_builtin_module_rooted.rb:5: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_reopens_condition_variable.rb [default] rc=1
+spinel: test/reject/class_reopens_condition_variable.rb:3: reopening the builtin class ConditionVariable is not supported
+== test/reject/class_reopens_condition_variable.rb [promote] rc=1
+spinel: test/reject/class_reopens_condition_variable.rb:3: reopening the builtin class ConditionVariable is not supported
+== test/reject/class_reopens_encoding.rb [default] rc=1
+spinel: test/reject/class_reopens_encoding.rb:2: reopening the builtin class Encoding is not supported
+== test/reject/class_reopens_encoding.rb [promote] rc=1
+spinel: test/reject/class_reopens_encoding.rb:2: reopening the builtin class Encoding is not supported
+== test/reject/class_reopens_monitor.rb [default] rc=1
+spinel: test/reject/class_reopens_monitor.rb:3: reopening the builtin class Monitor is not supported
+== test/reject/class_reopens_monitor.rb [promote] rc=1
+spinel: test/reject/class_reopens_monitor.rb:3: reopening the builtin class Monitor is not supported
+== test/reject/class_reopens_monitor_empty.rb [default] rc=1
+spinel: test/reject/class_reopens_monitor_empty.rb:2: reopening the builtin class Monitor is not supported
+== test/reject/class_reopens_monitor_empty.rb [promote] rc=1
+spinel: test/reject/class_reopens_monitor_empty.rb:2: reopening the builtin class Monitor is not supported
+== test/reject/class_reopens_mutex.rb [default] rc=1
+spinel: test/reject/class_reopens_mutex.rb:3: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex.rb [promote] rc=1
+spinel: test/reject/class_reopens_mutex.rb:3: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_alias.rb [default] rc=1
+spinel: test/reject/class_reopens_mutex_alias.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_alias.rb [promote] rc=1
+spinel: test/reject/class_reopens_mutex_alias.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_in_thread.rb [default] rc=1
+spinel: test/reject/class_reopens_mutex_in_thread.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_in_thread.rb [promote] rc=1
+spinel: test/reject/class_reopens_mutex_in_thread.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_path.rb [default] rc=1
+spinel: test/reject/class_reopens_mutex_path.rb:2: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_path.rb [promote] rc=1
+spinel: test/reject/class_reopens_mutex_path.rb:2: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_rooted.rb [default] rc=1
+spinel: test/reject/class_reopens_mutex_rooted.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_mutex_rooted.rb [promote] rc=1
+spinel: test/reject/class_reopens_mutex_rooted.rb:4: reopening the builtin class Mutex is not supported
+== test/reject/class_reopens_open_struct.rb [default] rc=1
+spinel: test/reject/class_reopens_open_struct.rb:5: reopening the builtin class OpenStruct is not supported
+== test/reject/class_reopens_open_struct.rb [promote] rc=1
+spinel: test/reject/class_reopens_open_struct.rb:5: reopening the builtin class OpenStruct is not supported
+== test/reject/class_reopens_queue.rb [default] rc=1
+spinel: test/reject/class_reopens_queue.rb:2: reopening the builtin class Queue is not supported
+== test/reject/class_reopens_queue.rb [promote] rc=1
+spinel: test/reject/class_reopens_queue.rb:2: reopening the builtin class Queue is not supported
+== test/reject/class_reopens_queue_in_object.rb [default] rc=1
+spinel: test/reject/class_reopens_queue_in_object.rb:4: reopening the builtin class Queue is not supported
+== test/reject/class_reopens_queue_in_object.rb [promote] rc=1
+spinel: test/reject/class_reopens_queue_in_object.rb:4: reopening the builtin class Queue is not supported
+== test/reject/class_reopens_sized_queue.rb [default] rc=1
+spinel: test/reject/class_reopens_sized_queue.rb:2: reopening the builtin class SizedQueue is not supported
+== test/reject/class_reopens_sized_queue.rb [promote] rc=1
+spinel: test/reject/class_reopens_sized_queue.rb:2: reopening the builtin class SizedQueue is not supported
 == test/reject/class_superclass_method_call.rb [default] rc=1
 spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_superclass_method_call.rb [promote] rc=1
@@ -590,6 +654,14 @@ spinel: 1 refusal, nothing written
 == test/reject/method_of_package_native_func.rb [promote] rc=1
 spinel: test/reject/method_of_package_native_func.rb:8: Base64.method(:strict_decode64) is not supported: a Method object of a package's native function has no compiled function to bind. Call Base64.strict_decode64 directly, or wrap it in a lambda
 spinel: 1 refusal, nothing written
+== test/reject/module_named_like_monitor.rb [default] rc=1
+spinel: test/reject/module_named_like_monitor.rb:2: Monitor is not a module (TypeError)
+== test/reject/module_named_like_monitor.rb [promote] rc=1
+spinel: test/reject/module_named_like_monitor.rb:2: Monitor is not a module (TypeError)
+== test/reject/module_named_like_open_struct.rb [default] rc=1
+spinel: test/reject/module_named_like_open_struct.rb:5: OpenStruct is not a module (TypeError)
+== test/reject/module_named_like_open_struct.rb [promote] rc=1
+spinel: test/reject/module_named_like_open_struct.rb:5: OpenStruct is not a module (TypeError)
 == test/reject/new_receiver_class_chain_still_reached.rb [default] rc=1
 spinel: test/reject/new_receiver_class_chain_still_reached.rb:5: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written

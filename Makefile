@@ -1575,6 +1575,30 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/bm.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/bm.out"; ok=0; }; fi; \
 	done; \
+	for spec in "class_reopens_monitor:reopening the builtin class Monitor is not supported" \
+	            "class_reopens_monitor_empty:reopening the builtin class Monitor is not supported" \
+	            "class_reopens_mutex:reopening the builtin class Mutex is not supported" \
+	            "class_reopens_mutex_path:reopening the builtin class Mutex is not supported" \
+	            "class_reopens_mutex_alias:reopening the builtin class Mutex is not supported" \
+	            "class_reopens_mutex_rooted:reopening the builtin class Mutex is not supported" \
+	            "class_reopens_mutex_in_thread:reopening the builtin class Mutex is not supported" \
+	            "class_reopens_queue_in_object:reopening the builtin class Queue is not supported" \
+	            "class_named_like_monitor:unsupported class name 'Monitor': collides with the builtin class of that name" \
+	            "class_named_like_monitor_path:unsupported class name 'Monitor': collides with the builtin class of that name" \
+	            "class_named_like_open_struct:unsupported class name 'OpenStruct': collides with the builtin class of that name" \
+	            "module_named_like_monitor:Monitor is not a module (TypeError)" \
+	            "module_named_like_open_struct:OpenStruct is not a module (TypeError)" \
+	            "class_reopens_queue:reopening the builtin class Queue is not supported" \
+	            "class_reopens_sized_queue:reopening the builtin class SizedQueue is not supported" \
+	            "class_reopens_condition_variable:reopening the builtin class ConditionVariable is not supported" \
+	            "class_reopens_open_struct:reopening the builtin class OpenStruct is not supported" \
+	            "class_reopens_encoding:reopening the builtin class Encoding is not supported"; do \
+	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/nc.c" >"$$tmp/nc.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: a builtin class built in C was reopened)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/nc.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/nc.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/superclass_mismatch.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/s.c" >"$$tmp/s.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a class reopened with another superclass compiled)"; ok=0; \
