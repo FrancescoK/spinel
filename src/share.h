@@ -74,6 +74,36 @@ int share_elem_holders(const Compiler *c, int e);
    instead of a copy (#7482). Answers how many it marked. */
 int share_mark_borrows(Compiler *c);
 
+/* A master route refusal: a String handed along a route that would copy
+   it. Under --share-strings the route is the rule's, as share_route_defer
+   says. */
+typedef struct ShareRoute {
+  int site;            /* the node the refusal names */
+  int value, elems;    /* the String handed along (elems: the Strings the
+                          container `value` names holds) */
+  int to, to_elems;    /* the holder it reaches: node `to`'s value (to_elems:
+                          its elements), or with to_name, that local in the
+                          scope of node `to`; -1 none */
+  const char *to_name;
+  int carry;           /* the node that hands the String along, or -1 */
+  char *msg;           /* (a kept route's message) */
+} ShareRoute;
+ShareRoute share_route(int site, int value, int elems);
+
+/* A master route-refusal site asks this first. With the flag off it answers
+   0 and the site refuses as before. With it on, the route is the rule's,
+   and it passes when the facts see it (the String and the holder it
+   reaches in one class) and either the rule does not share that class (no
+   other name can see the copy) or it does and `carry` hands over the
+   handle; every other holder of a shared class holds the handle or is
+   refused by name at seal. Asked while the analysis runs, the facts are not
+   final yet: the route is kept, and repr_seal refuses it with `msg` unless
+   the final facts pass (share_routes_check). Asked from codegen, it answers
+   from the final facts. */
+int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg);
+void share_routes_check(Compiler *c);
+void share_routes_free(Compiler *c);
+
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
 void share_dump_unknown_mutations(Compiler *c);
 
