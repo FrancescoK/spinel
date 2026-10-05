@@ -28459,8 +28459,20 @@ static void an_heap_captured_classes(Compiler *c) {
    takes its arguments as `.call` does, so the evidence for its parameters
    has to count the call (below). The containers a Method is stored into
    are found once (an_method_holders_build): a local by its scope and name,
-   an instance variable by its name. */
-typedef struct { int n, cap; int *scope; const char **name; } AnMethodHolders;
+   an instance variable by its name.
+
+   Both walks follow every write of a local, to depth 4, and the writes of
+   one local reach the same values again and again: unmemoized, a function
+   of W writes to one local walked W^4 paths. The answer for a node at a
+   depth is fixed while the holders are, and one found at a depth holds
+   higher up too, where the walk has more depth left: `memo` keeps, per walk
+   and node, one more than the deepest depth it was found to hold at (low
+   nibble) and the shallowest it was found not to (high nibble), and is
+   cleared when a holder is added (`memo_n`). */
+typedef struct {
+  int n, cap; int *scope; const char **name;
+  unsigned char *memo[2]; int memo_cap, memo_n;
+} AnMethodHolders;
 static void an_method_holders_add(AnMethodHolders *h, int scope, const char *name) {
   if (!name) return;
   if (h->n == h->cap) {
@@ -28476,10 +28488,41 @@ static int an_method_holders_has(const AnMethodHolders *h, int scope, const char
     if (h->scope[i] == scope && sp_streq(h->name[i], name)) return 1;
   return 0;
 }
-static int an_poly_may_be_method(Compiler *c, const AnMethodHolders *mh, int v, int depth);
-static int an_container_holds_method(Compiler *c, const AnMethodHolders *mh, int a, int depth) {
-  const NodeTable *nt = c->nt;
+/* -1 when the memo does not know walk `f`'s answer for node `v` at `depth` */
+static int an_method_memo_get(Compiler *c, AnMethodHolders *mh, int f, int v, int depth) {
+  if (mh->memo_n != mh->n || mh->memo_cap < c->nt->count) {
+    if (mh->memo_cap < c->nt->count) {
+      for (int k = 0; k < 2; k++) {
+        free(mh->memo[k]);
+        mh->memo[k] = (unsigned char *)malloc((size_t)c->nt->count);
+        if (!mh->memo[k]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      mh->memo_cap = c->nt->count;
+    }
+    for (int k = 0; k < 2; k++) memset(mh->memo[k], 0, (size_t)mh->memo_cap);
+    mh->memo_n = mh->n;
+  }
+  unsigned char m = mh->memo[f][v];
+  if ((m & 15) && depth <= (m & 15) - 1) return 1;
+  if ((m >> 4) && depth >= (m >> 4) - 1) return 0;
+  return -1;
+}
+static int an_method_memo_put(AnMethodHolders *mh, int f, int v, int depth, int got) {
+  unsigned char *m = &mh->memo[f][v];
+  if (got) { if (depth + 1 > (*m & 15)) *m = (unsigned char)((*m & 0xf0) | (depth + 1)); }
+  else if (!(*m >> 4) || depth + 1 < (*m >> 4)) *m = (unsigned char)((*m & 15) | ((depth + 1) << 4));
+  return got;
+}
+static int an_poly_may_be_method(Compiler *c, AnMethodHolders *mh, int v, int depth);
+static int an_container_holds_method_1(Compiler *c, AnMethodHolders *mh, int a, int depth);
+static int an_container_holds_method(Compiler *c, AnMethodHolders *mh, int a, int depth) {
   if (a < 0 || depth > 4) return 0;
+  int got = an_method_memo_get(c, mh, 0, a, depth);
+  if (got >= 0) return got;
+  return an_method_memo_put(mh, 0, a, depth, an_container_holds_method_1(c, mh, a, depth));
+}
+static int an_container_holds_method_1(Compiler *c, AnMethodHolders *mh, int a, int depth) {
+  const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, a);
   if (k == NK_ArrayNode) {
     int en = 0; const int *ev = nt_arr(nt, a, "elements", &en);
@@ -28506,9 +28549,15 @@ static int an_container_holds_method(Compiler *c, const AnMethodHolders *mh, int
   }
   return 0;
 }
-static int an_poly_may_be_method(Compiler *c, const AnMethodHolders *mh, int v, int depth) {
-  const NodeTable *nt = c->nt;
+static int an_poly_may_be_method_1(Compiler *c, AnMethodHolders *mh, int v, int depth);
+static int an_poly_may_be_method(Compiler *c, AnMethodHolders *mh, int v, int depth) {
   if (v < 0 || depth > 4) return 0;
+  int got = an_method_memo_get(c, mh, 1, v, depth);
+  if (got >= 0) return got;
+  return an_method_memo_put(mh, 1, v, depth, an_poly_may_be_method_1(c, mh, v, depth));
+}
+static int an_poly_may_be_method_1(Compiler *c, AnMethodHolders *mh, int v, int depth) {
+  const NodeTable *nt = c->nt;
   if (c->ntype[v] == TY_METHOD) return 1;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_LocalVariableReadNode) {
@@ -31231,7 +31280,7 @@ static void an_phase_method_backstops(Compiler *c) {
         dyn_seen[k] = 1;
       }
     }
-    free(mholders.scope); free(mholders.name);
+    free(mholders.scope); free(mholders.name); free(mholders.memo[0]); free(mholders.memo[1]);
   }
   int msym_pinned = 0;
   for (int s = 0; s < c->nscopes; s++) {
