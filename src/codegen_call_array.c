@@ -1852,6 +1852,36 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
 /* an Array receiver: a store in expression position (a[i] = v, a[i, n] = src, a[range] = src),
    sum and the other methods of an empty literal, then the Array emitters (emit_array_call) */
 int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
+  /* shuffle / shuffle! / sample with `random: g`: the draws come from g, where
+     the keyword was dropped (sample) or the call refused (shuffle) */
+  if (recv >= 0 && ty_is_array(rt) && argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode &&
+      (sp_streq(name, "shuffle") || sp_streq(name, "shuffle!") || sp_streq(name, "sample"))) {
+    int g = struct_kwarg_value(c, argv[0], "random");
+    int nel = 0; nt_arr(nt, argv[0], "elements", &nel);
+    if (g >= 0 && nel == 1 && comp_ntype(c, g) == TY_RANDOM) {
+      int ta = ++g_tmp, tg = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Random *_t%d = ", ta, tg); emit_expr(c, g, b);
+      buf_puts(b, "; ");
+      char call[96];
+      if (sp_streq(name, "shuffle!")) {
+        buf_printf(b, "sp_poly_shuffle_bang_r(_t%d, _t%d); ", ta, tg);
+        snprintf(call, sizeof call, "_t%d", ta);
+        emit_unbox_text(c, rt, call, b);
+      }
+      else if (sp_streq(name, "shuffle")) {
+        snprintf(call, sizeof call, "sp_poly_shuffle_r(_t%d, _t%d)", ta, tg);
+        emit_unbox_text(c, rt, call, b);
+      }
+      else {
+        TyKind et = comp_ntype(c, id);
+        snprintf(call, sizeof call, "sp_poly_sample_r(_t%d, _t%d)", ta, tg);
+        if (et == TY_POLY) buf_puts(b, call); else emit_unbox_text(c, et, call, b);
+      }
+      buf_puts(b, "; })");
+      return 1;
+    }
+  }
   /* `arr[i] = v` in expression position: do the store, evaluate to the rhs
      (Ruby []= returns the assigned value). The statement form is emitted
      elsewhere; this covers rvalue chains like `b = arr[i] = v`. */
