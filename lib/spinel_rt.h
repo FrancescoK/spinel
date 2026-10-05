@@ -3696,6 +3696,11 @@ static SP_UNUSED sp_RbVal sp_float_clamp_range(double x, sp_Range r) {
   if (r.first != INTPTR_MIN && (r.fe || r.last != INTPTR_MAX) &&
       (r.fe ? sp_int_flt_cmp(r.first, r.fend) == 1 : r.first > r.last))
     sp_raise_cls("ArgumentError", "min argument must be less than or equal to max argument");
+  /* a NaN receiver compares with no bound: CRuby names the begin, or the
+     end of a beginless range */
+  if (x != x)
+    sp_raise_cls("ArgumentError", sp_sprintf("comparison of Float with %s failed",
+                 r.first != INTPTR_MIN ? sp_int_to_s(r.first) : r.fe ? sp_float_to_s(r.fend) : sp_int_to_s(r.last)));
   /* x against the Integer bounds exactly (#7505) */
   if (r.first != INTPTR_MIN && sp_int_flt_cmp(r.first, x) == 1) return sp_box_int(r.first);
   if (r.fe) return x > r.fend ? sp_box_float(r.fend) : sp_box_float(x);

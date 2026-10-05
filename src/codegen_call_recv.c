@@ -7646,6 +7646,13 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         }
         if (excl3 && fhi >= 0)
           buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
+        /* a NaN receiver compares with no bound: CRuby names the begin, or
+           the end of a beginless range */
+        if (flo >= 0 || fhi >= 0) {
+          int nb = flo >= 0 ? tlo : thi, nf = flo >= 0 ? lo_f : hi_f;
+          buf_printf(b, " if (_t%d != _t%d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"comparison of Float with %%s failed\", %s(_t%d)));",
+                     tf3, tf3, nf ? "sp_float_to_s" : "sp_int_to_s", nb);
+        }
         buf_puts(b, " ");
         if (flo >= 0)
           buf_printf(b, "(_t%d < (double)_t%d) ? %s(_t%d) : ", tf3, tlo,
