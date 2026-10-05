@@ -164,25 +164,20 @@ jobs:
           echo "corpus slice: $shard"
           make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=$shard ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
 
-      # Inference/allocation property gates. These assert the SHAPE of the
-      # generated C -- that a slot keeps its typed representation, that the
-      # alloc report keeps its format -- which the output diffs above cannot
-      # see: a boxed hash still prints the right answer. They lived only in the
-      # local `make check` target, so an Int-keyed hash lost its typed variant
-      # and stayed that way for weeks with CI green throughout. Linux/gcc only:
-      # what they read is compiler- and OS-independent.
-      - name: Run inference and allocation property gates
+      # spin's end-to-end check: it builds real projects, which a clean
+      # checkout on another machine is worth seeing. Linux/gcc only.
+      #
+      # alloc-report-test, infer-test and scale-test ran here too. What they
+      # read is the generated C and a count of the front end's work, neither
+      # of which depends on the machine or the C compiler, and `make gate`
+      # runs all three before every push to master (gate-props), so the lane
+      # only repeated an answer already known: about 3.5 minutes a run. They
+      # were put here when the pre-push gate did not include them (an Int-
+      # keyed hash lost its typed variant for weeks with CI green); it has
+      # since.
+      - name: Run spin's end-to-end check
         if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc' && matrix.shard == 1
-        run: make alloc-report-test infer-test spin-check
-
-      # The front end's scaling, as a work ratio between a program and one four
-      # times its size (see scale-test in the Makefile). A per-node rescan of
-      # the node table has come back four times, each found weeks late by hand
-      # profiling (rubys/roundhouse#72); this makes the next one a red build.
-      # The count is deterministic, so one lane is enough.
-      - name: Run the front-end scaling test
-        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc' && matrix.shard == 1
-        run: make -j$(getconf _NPROCESSORS_ONLN) build/spinel-work && make scale-test
+        run: make spin-check
 
       # Benchmark integration test. Compiles every benchmark/*.rb through
       # the full pipeline (cc -Werror) and diffs the output against CRuby.
