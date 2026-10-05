@@ -1337,7 +1337,7 @@ int poly_blockless_enum_name(const char *name) {
 }
 
 /* A call written `recv&.name`. */
-static int call_is_safe_nav(const NodeTable *nt, int id) {
+int call_is_safe_nav(const NodeTable *nt, int id) {
   const char *op = nt_str(nt, id, "call_operator");
   return op && sp_streq(op, "&.");
 }

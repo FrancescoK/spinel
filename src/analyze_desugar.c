@@ -13878,6 +13878,145 @@ int desugar_const_attr_op_assign(Compiler *c) {
   return changed;
 }
 
+/* ---- `t op= x` whose operator a program reopened ----
+   `t op= x` is `t = t op x`: Ruby calls the value's `op`, and a program
+   that reopened a builtin class with its own (`class Integer; def +(o)`)
+   gets that method, as `t = t + x` does. The operator-write emitters
+   apply the builtin operator, so `v = 1; v += 2` answered 3 where CRuby
+   answers the reopening's 42. An operator-write whose operator some
+   builtin class's reopening defines becomes the plain write and call:
+
+     v op= x        ->  v = v op x          (a local, ivar, class
+                                             variable, global, constant)
+     r[k] op= x     ->  r[k] = r[k] op x
+     r.a op= x      ->  r.a = r.a op x
+
+   with the receiver and the key evaluated once, through a fresh local
+   unless they are variables or literals (ix_pure); a key list other than
+   one plain argument is left alone. `||=` and `&&=` call no operator, and
+   `r&.a op= x` is already an op-write on a bound receiver
+   (desugar_safe_nav_attr_write). From there the calls
+   are ordinary calls: this runs before desugar_builtin_scalar_defs, so they
+   get the per-call-site copies a written `v + x` gets, and the call plan
+   binds the rest the same way. The gate reads the program's text only,
+   since no class is registered yet: a class body of a builtin class's name
+   with a def of an operator that builtin class has (builtin_method_known).
+   The rewrite is what Ruby means for a value of any class, so one of a
+   class that did not reopen the operator still gets the builtin answer. */
+static int ow_reopened(const NodeTable *nt, const char *op) {
+  NT_FOREACH_KIND(nt, NK_ClassNode, k) {
+    int cp = nt_ref(nt, k, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cn || !builtin_method_known(cn, op)) continue;
+    int body = nt_ref(nt, k, "body"), bn = 0;
+    const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    for (int j = 0; j < bn; j++)
+      if (nt_kind(nt, bb[j]) == NK_DefNode && nt_ref(nt, bb[j], "receiver") < 0 &&
+          nt_str(nt, bb[j], "name") && sp_streq(nt_str(nt, bb[j], "name"), op)) return 1;
+  }
+  return 0;
+}
+/* n read twice: n and a clone when it is pure, else two reads of a local
+   `__ow<role>_N` that a write appended to pre[] assigns n to */
+static void ow_twice(Compiler *c, NodeTable *nt, int id, int n, char role, int *pre, int *npre,
+                     int *first, int *second) {
+  if (ix_pure(nt, n)) { *first = n; *second = nt_clone_subtree(nt, n); return; }
+  char tn[64]; snprintf(tn, sizeof tn, "__ow%c_%s", role, comp_node_tag(c, id));
+  int w = nt_new_node(nt, "LocalVariableWriteNode");
+  *first = nt_new_node(nt, "LocalVariableReadNode");
+  *second = nt_new_node(nt, "LocalVariableReadNode");
+  if (w < 0 || *first < 0 || *second < 0) { *first = *second = -1; return; }
+  nt_node_set_str(nt, w, "name", tn); nt_node_set_int(nt, w, "depth", 0);
+  nt_node_set_ref(nt, w, "value", n);
+  for (int r = 0; r < 2; r++) {
+    int rd = r ? *second : *first;
+    nt_node_set_str(nt, rd, "name", tn); nt_node_set_int(nt, rd, "depth", 0);
+  }
+  pre[(*npre)++] = w;
+}
+int desugar_reopened_op_write(Compiler *c) {
+  static const struct { NodeKind k; const char *write, *read; } vars[] = {
+    { NK_LocalVariableOperatorWriteNode,    "LocalVariableWriteNode",    "LocalVariableReadNode" },
+    { NK_InstanceVariableOperatorWriteNode, "InstanceVariableWriteNode", "InstanceVariableReadNode" },
+    { NK_ClassVariableOperatorWriteNode,    "ClassVariableWriteNode",    "ClassVariableReadNode" },
+    { NK_GlobalVariableOperatorWriteNode,   "GlobalVariableWriteNode",   "GlobalVariableReadNode" },
+    { NK_ConstantOperatorWriteNode,         "ConstantWriteNode",         "ConstantReadNode" },
+  };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* the answer per operator, asked once: a scan of every class body per
+     operator-write would grow with the program twice over */
+  char memo_op[24][8]; int memo_ans[24], nmemo = 0;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int f = -1, attr = nt_type(nt, id) && sp_streq(nt_type(nt, id), "CallOperatorWriteNode");
+    for (int j = 0; j < (int)(sizeof vars / sizeof vars[0]); j++) if (vars[j].k == k) f = j;
+    if (f < 0 && k != NK_IndexOperatorWriteNode && !attr) continue;
+    const char *bop = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    if (!bop || v < 0 || strlen(bop) >= sizeof memo_op[0]) continue;
+    int m = 0;
+    while (m < nmemo && !sp_streq(memo_op[m], bop)) m++;
+    if (m == nmemo) {
+      if (nmemo == 24) continue;
+      snprintf(memo_op[m], sizeof memo_op[0], "%s", bop);
+      memo_ans[m] = ow_reopened(nt, bop);
+      nmemo++;
+    }
+    if (!memo_ans[m]) continue;
+    char op[8]; snprintf(op, sizeof op, "%s", bop);
+    if (f >= 0) {
+      int rd = nt_new_node(nt, vars[f].read);
+      if (rd < 0) continue;
+      nt_node_set_str(nt, rd, "name", nt_str(nt, id, "name"));
+      if (k == NK_LocalVariableOperatorWriteNode) nt_node_set_int(nt, rd, "depth", nt_int(nt, id, "depth", 0));
+      int call = ca_attr_call(nt, rd, op, v);
+      if (call < 0) continue;
+      nt_node_set_type(nt, id, vars[f].write);
+      nt_node_set_ref(nt, id, "value", call);
+      changed = 1;
+      continue;
+    }
+    int recv = nt_ref(nt, id, "receiver"), pre[3], npre = 0, r1, r2, store = -1;
+    if (recv < 0 || nt_ref(nt, id, "block") >= 0 || call_is_safe_nav(nt, id)) continue;
+    if (k == NK_IndexOperatorWriteNode) {
+      int args = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an != 1) continue;
+      NodeKind ak = nt_kind(nt, av[0]);
+      if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
+      int key = av[0], k1, k2;
+      ow_twice(c, nt, id, recv, 'r', pre, &npre, &r1, &r2);
+      ow_twice(c, nt, id, key, 'k', pre, &npre, &k1, &k2);
+      if (r1 < 0 || r2 < 0 || k1 < 0 || k2 < 0) continue;
+      int read = ix_index_call(nt, "[]", r1, k1, -1);
+      int opc = read >= 0 ? ix_index_call(nt, op, read, v, -1) : -1;
+      store = opc >= 0 ? ix_index_call(nt, "[]=", r2, k2, opc) : -1;
+    }
+    else {
+      const char *an = nt_str(nt, id, "name");
+      if (!an) continue;
+      char rn[256], wn[260];
+      snprintf(rn, sizeof rn, "%s", an); snprintf(wn, sizeof wn, "%s=", an);
+      ow_twice(c, nt, id, recv, 'r', pre, &npre, &r1, &r2);
+      if (r1 < 0 || r2 < 0) continue;
+      int read = ca_attr_call(nt, r1, rn, -1);
+      int opc = read >= 0 ? ca_attr_call(nt, read, op, v) : -1;
+      store = opc >= 0 ? ca_attr_call(nt, r2, wn, opc) : -1;
+    }
+    if (store < 0) continue;
+    pre[npre++] = store;
+    int st = nt_new_node(nt, "StatementsNode");
+    if (st < 0) continue;
+    nt_node_set_arr(nt, st, "body", pre, npre);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", st);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- the ffi gem's attach_function ----
  *
  * `attach_function :name, [types], :ret` in a module that extends
