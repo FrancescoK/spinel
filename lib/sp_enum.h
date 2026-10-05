@@ -63,6 +63,11 @@ typedef struct {
   sp_bool endless;                       /* an argless #cycle: the items are one round, and
                                              #next / #peek start over at their end, so the
                                              enumerator never stops (sp_gc_alloc zero-fills) */
+  sp_bool is_bsearch;                    /* Array#bsearch enum_for: items are candidates,
+                                             with the block result steering the search */
+  sp_int bsearch_lo, bsearch_hi, bsearch_mid;
+  sp_bool bsearch_waiting;
+  sp_RbVal bsearch_result;
   unsigned char yields_pair;             /* SP_PAIR_EACH: each item is the two values one step
                                              yields (each_with_index, with_index,
                                              each_with_object, with_object) packed as an Array,

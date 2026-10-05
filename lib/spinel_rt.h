@@ -14448,6 +14448,19 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   }
   return sp_PolyArray_new();
 }
+/* Array#bsearch without a block returns an Enumerator whose size is unknown.
+   Its receiver remains the source shown by Enumerator#inspect. */
+sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items);
+sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth);
+static sp_Enumerator *sp_poly_bsearch_enum(sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *items = sp_enum_items_from(v); SP_GC_ROOT(items);
+  sp_Enumerator *e = sp_Enumerator_new_from_items(items); SP_GC_ROOT(e);
+  sp_enum_with_src(e, v, SPL("bsearch"));
+  e->is_bsearch = TRUE; e->bsearch_lo = 0; e->bsearch_hi = items->len - 1;
+  e->bsearch_mid = -1; e->bsearch_result = sp_box_nil();
+  return e;
+}
 /* The items each_with_index walks on a boxed receiver: an Array's elements,
    and a Hash's [key, value] pairs, a Range's members or an Enumerator's
    values (sp_enum_items_from); anything else, as before, none. */
@@ -15992,6 +16005,44 @@ sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args);
 #else
 sp_int sp_proc_call(sp_Proc *p, sp_int argc, sp_int *args) { if (!p || !p->fn) return 0; _sp_proc_blk = NULL; if (!args) { sp_int noargs[16] = {0}; return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, 0, noargs); } return ((sp_int (*)(void *, sp_int, sp_int *))p->fn)(p->cap, argc, args); }
 #endif
+/* Enumerator#each on Array#bsearch runs the saved search with the consumer's
+   block as its predicate, returning the selected element (or nil). */
+static sp_RbVal sp_enum_bsearch_each_proc(sp_Enumerator *e, sp_Proc *blk) {
+  SP_GC_ROOT(e); SP_GC_ROOT(blk);
+  if (!e || !e->items || !blk) return sp_box_nil();
+  sp_int lo = 0, hi = e->items->len - 1;
+  sp_RbVal found = sp_box_nil(); SP_GC_ROOT_RBVAL(found);
+  while (lo <= hi) {
+    sp_int mid = lo + (hi - lo) / 2;
+    sp_RbVal item = e->items->data[mid]; SP_GC_ROOT_RBVAL(item);
+    sp_int slots[16] = {0};
+    _sp_proc_poly_args[0] = item;
+    _sp_proc_poly_ret = sp_box_nil();
+    sp_proc_call(blk, 1, slots);
+    sp_RbVal result = _sp_proc_poly_ret; SP_GC_ROOT_RBVAL(result);
+    if (result.tag != SP_TAG_INT && result.tag != SP_TAG_FLT &&
+        result.tag != SP_TAG_BOOL && result.tag != SP_TAG_NIL)
+      sp_raise_cls("TypeError", "wrong argument type for Array#bsearch block");
+    if (result.tag == SP_TAG_INT) {
+      if (result.v.i == 0) { found = item; hi = mid - 1; }
+      else if (result.v.i < 0) hi = mid - 1;
+      else lo = mid + 1;
+    }
+    else if (result.tag == SP_TAG_FLT) {
+      if (result.v.f == 0.0) { found = item; hi = mid - 1; }
+      else if (result.v.f < 0.0) hi = mid - 1;
+      else lo = mid + 1;
+    }
+    else if (result.tag != SP_TAG_NIL && !(result.tag == SP_TAG_BOOL && !result.v.b)) {
+      found = item; hi = mid - 1;
+    }
+    else lo = mid + 1;
+  }
+  e->bsearch_lo = 0; e->bsearch_hi = e->items->len - 1;
+  e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil();
+  e->peeked = FALSE;
+  return found;
+}
 /* sp_proc_call with a block: `pr.call(x) { }` or `pr.call(x, &b)` */
 static inline sp_int sp_proc_call_blk(sp_Proc *p, sp_Proc *blk, sp_int argc, sp_int *args) {
   if (!p || !p->fn) return 0;

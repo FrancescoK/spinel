@@ -4310,14 +4310,29 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
       nt_ref(nt, recv, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR &&
       comp_ntype(c, id) == TY_POLY) {
+    int enum_node = nt_ref(nt, recv, "receiver");
     int tres = ++g_tmp;
     Buf wb; memset(&wb, 0, sizeof wb);
     g_enum_walk_res = tres;
     int wok = emit_iteration_stmt(c, id, &wb, 0);
     g_enum_walk_res = 0;
     if (!wok) { free(wb.p); return 0; }
-    buf_printf(b, "({ sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); %s _t%d; })",
-               tres, tres, wb.p ? wb.p : "", tres);
+    if (sp_streq(name, "each")) {
+      Buf eb; memset(&eb, 0, sizeof eb); emit_boxed(c, enum_node, &eb);
+      Buf pb; memset(&pb, 0, sizeof pb); emit_proc_literal(c, block, &pb);
+      int tenum = ++g_tmp, tproc = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR && _t%d.v.p && ((sp_Enumerator *)_t%d.v.p)->is_bsearch) { sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _t%d = sp_enum_bsearch_each_proc((sp_Enumerator *)_t%d.v.p, _t%d); } else { %s } _t%d; })",
+                 tenum, eb.p ? eb.p : "sp_box_nil()", tenum,
+                 tres, tres, tenum, tenum, tenum, tenum,
+                 tproc, pb.p ? pb.p : "NULL", tproc,
+                 tres, tenum, tproc,
+                 wb.p ? wb.p : "", tres);
+      free(eb.p); free(pb.p);
+    }
+    else {
+      buf_printf(b, "({ sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); %s _t%d; })",
+                 tres, tres, wb.p ? wb.p : "", tres);
+    }
     free(wb.p);
     return 1;
   }
