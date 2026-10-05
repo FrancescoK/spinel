@@ -4290,6 +4290,35 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "; })");
     return 1;
   }
+  /* poly.each_line(sep / chomp: ...): the lines the same arguments give
+     lines; blockless, that array (as the argumentless poly.each_line), and
+     with a block each one yielded and the receiver answered, as
+     poly.each_line { } does */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "each_line") &&
+      poly_lines_args(c, argc, argv) &&
+      !user_defines_or_reads(c, "each_line") && !user_defines_or_reads(c, "lines")) {
+    int tl = ++g_tmp, ta = ++g_tmp;
+    char rl[32]; snprintf(rl, sizeof rl, "_t%d", tl);
+    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", tl); emit_expr(c, recv, b);
+    buf_printf(b, ", \"each_line\"); SP_GC_ROOT(_t%d); sp_StrArray *_t%d = ", tl, ta);
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else str_arms_convert(c, id, b, nt, "lines", recv, argc, argv, TY_UNKNOWN, rl);
+    buf_printf(b, "; SP_GC_ROOT(_t%d);", ta);
+    int eblk = nt_ref(nt, id, "block");
+    if (eblk < 0) { buf_printf(b, " _t%d; })", ta); return 1; }
+    const char *ebp = block_param_name(c, eblk, 0);
+    const char *ebpn = ebp ? rename_local(ebp) : NULL;
+    int ebody = nt_ref(nt, eblk, "body");
+    int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
+    int ti = ++g_tmp;
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
+    if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
+    for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
+    buf_printf(b, " } _t%d; })", tl);
+    return 1;
+  }
   /* `poly.map! { |x| ... }` / `collect!` where poly is an array read out of a
      container: coerce to a poly array and rewrite each element in place with
      the block result, returning the (mutated) array (#3162). */

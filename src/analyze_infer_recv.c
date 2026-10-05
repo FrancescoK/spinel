@@ -1628,6 +1628,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "lines") && nt_ref(nt, id, "block") < 0 &&
       poly_lines_args(c, argc, argv))
     { *out = an_user_defines_or_reads(c, name) ? TY_POLY : TY_STR_ARRAY; return 1; }
+  /* ...and each_line with those arguments and no block: the same Array,
+     as the argumentless poly.each_line materializes */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "each_line") && nt_ref(nt, id, "block") < 0 &&
+      poly_lines_args(c, argc, argv))
+    { *out = (an_user_defines_or_reads(c, name) || an_user_defines_or_reads(c, "lines")) ? TY_POLY : TY_STR_ARRAY; return 1; }
   /* A blockless grouping enumerator on a boxed Array -- an Array read out of a
      container -- materializes to the groups themselves, an Array of Arrays. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -1661,7 +1666,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   /* poly.each_char { |c| } / each_line { |l| }: the block param is a String
      (one char, one line) and the call answers the receiver's string, as
      String#each_char answers self (#3402). */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+  if (recv >= 0 && rt == TY_POLY &&
+      (argc == 0 || (sp_streq(name, "each_line") && poly_lines_args(c, argc, argv))) &&
       (sp_streq(name, "each_char") || sp_streq(name, "each_line")) &&
       nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, name) &&
       !an_user_defines_or_reads(c, sp_streq(name, "each_char") ? "chars" : "lines")) {
