@@ -117,6 +117,20 @@ for n in names:
         cbase = " ".join(l.strip() for l in read(os.path.join(d, "cbase.txt")).splitlines() if l.strip())
         if cbase:
             print(f"- C diff, the base's side: {cbase}")
+        # the cost tools (#7501): each one's summary line, then its detail
+        for f, tag in (("repr_diff.txt", "representation"), ("c_costs.txt", "C costs"),
+                       ("alloc_diff.txt", "allocations")):
+            lines = read(os.path.join(d, f)).rstrip().splitlines()
+            if not lines:
+                continue
+            print(f"- {tag}: {lines[0]}")
+            # the strongest signal on its own line
+            for l in lines[1:]:
+                if l.startswith("a new O(len) operation") and not l.endswith(": none"):
+                    print(f"- **{l}**")
+            if len(lines) > 1:
+                print("  ```text\n" + "\n".join("  " + l for l in lines[1:61]) +
+                      ("\n  ..." if len(lines) > 61 else "") + "\n  ```")
     if ("scale", n, 0) in jobs:
         d = jobs[("scale", n, 0)]
         spin = read(os.path.join(d, "spin.txt")).strip()

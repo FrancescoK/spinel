@@ -1,7 +1,8 @@
 name: verify
 # The per-branch checks of a fix, off the local machine: the suite in
-# slices, infer-test, both probes, the corpus C diff against BASE, and a
-# new test under --int-overflow=promote and SPINEL_GC_STRESS=1. Edit
+# slices, infer-test, both probes, the corpus C diff against BASE with the
+# cost tools over the programs it changes (repr_diff, c_costs, alloc_diff),
+# and a new test under --int-overflow=promote and SPINEL_GC_STRESS=1. Edit
 # verify.conf and push this branch, or dispatch by hand.
 #
 # Each sha is built once, by the build job, and the legs unpack its tree.
@@ -278,6 +279,23 @@ jobs:
             xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cbase1.sh" "$b/spinel" "$C" < "$RUNNER_TEMP/recompute.txt" || true
             xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$C" "$h/spinel" "$out" < "$out/programs.txt" || true
             touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
+            # The cost tools (#7501) over the programs whose C changed: which
+            # slots changed representation, which costly constructs the C
+            # gained or lost (in loops and out), and what the two builds
+            # allocate when run. The head's own copies when it has them,
+            # else this branch's: costguard/ holds tools/repr_diff.sh,
+            # c_costs.sh and alloc_diff.sh as of cost-guard ace7e8925, until
+            # matz/spinel has them. A report, never a failure.
+            ct="$h/tools"; [ -f "$ct/c_costs.sh" ] || ct="$GITHUB_WORKSPACE/costguard"
+            if [ -s "$out/changed.txt" ]; then
+              REPR_DIFF_JOBS=$(nproc) bash "$ct/repr_diff.sh" "$b/spinel" "$h/spinel" $(cat "$out/changed.txt") > "$out/repr_diff.txt" 2>&1 || true
+              C_COSTS_JOBS=$(nproc) bash "$ct/c_costs.sh" "$b/spinel" "$h/spinel" $(cat "$out/changed.txt") > "$out/c_costs.txt" 2>&1 || true
+              # each program is built and run on both sides: the first
+              # ALLOC_MAX changed programs, and the report says when cut
+              amax=${ALLOC_MAX:-400}; n=$(wc -l < "$out/changed.txt")
+              ALLOC_DIFF_JOBS=$(nproc) bash "$ct/alloc_diff.sh" "$b/spinel" "$h/spinel" $(head -n "$amax" "$out/changed.txt") > "$out/alloc_diff.txt" 2>&1 || true
+              if [ "$n" -gt "$amax" ]; then echo "  (the first $amax of $n changed programs)" >> "$out/alloc_diff.txt"; fi
+            fi
             if [ "$CBASE_HIT" = true ]; then
               echo "  (cache $BASE_KEY)" >> "$out/cbase.txt"
             else
