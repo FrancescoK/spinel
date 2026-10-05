@@ -15618,6 +15618,42 @@ static void sbd_memo_done(int kind, int owner, const char *name, int depth, unsi
   if (e) { e->gen = gen0; e->depth = depth; }
 }
 
+/* Does method `mi` mutate or append to its parameter `pi` in place -- asked
+   by the demand block for every argument of every call site that resolves
+   to `mi`. The answer depends on the method, not the call, so it is kept
+   per (method, parameter) while nothing has changed (the memo's
+   generation): a large program asked the same few methods once per call
+   site, and the deep append walk behind the question was the block's
+   largest cost. */
+static unsigned *sbd_pa_gen;
+static signed char *sbd_pa_ans;
+static int *sbd_pa_ofs, sbd_pa_nscopes, sbd_pa_n;
+static int an_param_appended_deep(Compiler *c, int mi, int j);
+static int sbd_param_appends(Compiler *c, int mi, int j) {
+  if (sbd_pa_nscopes != c->nscopes || !sbd_pa_ofs) {   /* -1 at each block entry */
+    free(sbd_pa_gen); free(sbd_pa_ans); free(sbd_pa_ofs);
+    sbd_pa_gen = NULL; sbd_pa_ans = NULL; sbd_pa_n = 0;
+    sbd_pa_ofs = malloc(((size_t)c->nscopes + 1) * sizeof(int));
+    if (sbd_pa_ofs) {
+      sbd_pa_ofs[0] = 0;
+      for (int i = 0; i < c->nscopes; i++)
+        sbd_pa_ofs[i + 1] = sbd_pa_ofs[i] + (c->scopes[i].nparams > 0 ? c->scopes[i].nparams : 0);
+      sbd_pa_n = sbd_pa_ofs[c->nscopes];
+      sbd_pa_gen = calloc((size_t)(sbd_pa_n > 0 ? sbd_pa_n : 1), sizeof(unsigned));
+      sbd_pa_ans = malloc((size_t)(sbd_pa_n > 0 ? sbd_pa_n : 1));
+    }
+    sbd_pa_nscopes = c->nscopes;
+  }
+  int k = -1;
+  if (sbd_pa_gen && sbd_pa_ans && mi >= 0 && mi < c->nscopes && j >= 0 &&
+      sbd_pa_ofs[mi] + j < sbd_pa_ofs[mi + 1])
+    k = sbd_pa_ofs[mi] + j;
+  if (k >= 0 && sbd_pa_gen[k] == sbd_gen) return sbd_pa_ans[k];
+  int ans = an_param_mutated_in_place(c, mi, j) || an_param_appended_deep(c, mi, j);
+  if (k >= 0) { sbd_pa_gen[k] = sbd_gen; sbd_pa_ans[k] = (signed char)ans; }
+  return ans;
+}
+
 /* The writes of a poly local, ivar or global, each demanded in turn: the
    variable is another name for whatever was written to it. */
 static int strbuf_demand_local_writes(Compiler *c, const char *vn, Scope *vs, int depth) {
@@ -17142,6 +17178,7 @@ static int promote_shared_stored_strings(Compiler *c) {
      values written to it into handles. */
   if (!g_infer_optimistic) {
     sbd_memo_begin();
+    sbd_pa_nscopes = -1;   /* parameter counts are re-read each run */
     for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *pn = nt_str(nt, w, "name");
@@ -17184,7 +17221,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       for (int j = 0; j < c->scopes[cmi].nparams; j++) {
         int aj = arg_layout_param_node(c, &c->scopes[cmi], u, j, NULL);
         if (aj < 0 || infer_type(c, aj) != TY_POLY) continue;
-        if (!an_param_mutated_in_place(c, cmi, j) && !an_param_appended_deep(c, cmi, j)) continue;
+        if (!sbd_param_appends(c, cmi, j)) continue;
         changed |= strbuf_demand_value_leaves(c, aj, 0);
       }
     }
