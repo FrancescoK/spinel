@@ -4107,6 +4107,30 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* The sign a sort, min or max comparator block answers for elements `ea`
+   and `eb` (C texts of type `et`), from the C answer `ans` of type `cmp_ty`, `boxed` when it is a boxed value.
+   A nil answer says the two do not compare, which CRuby reports as
+   "comparison of A with b failed" (rb_cmpint): a boxed answer is tested by
+   sp_poly_cmp_ans, and an Integer one that can be nil (`a <=> b` of two
+   boxed or Float operands, `cond ? a <=> b : nil`) by its sentinel, the
+   elements boxed only on that path. An answer that is never nil is the sign
+   as it is. */
+static void emit_cmp_block_sign(Compiler *c, int tail, TyKind cmp_ty, int boxed, const char *ans,
+                                TyKind et, const char *ea, const char *eb, Buf *out) {
+  int nil_int = !boxed && cmp_ty == TY_INT && tail >= 0 && repr_nil_scalar(c, tail, TY_INT);
+  if (!boxed && !nil_int) { buf_printf(out, "(%s)", ans); return; }
+  Buf ba; memset(&ba, 0, sizeof ba); emit_boxed_text(c, et, ea, &ba);
+  Buf bb; memset(&bb, 0, sizeof bb); emit_boxed_text(c, et, eb, &bb);
+  if (boxed)
+    buf_printf(out, "sp_poly_cmp_ans(%s, %s, %s)", ans, ba.p ? ba.p : "sp_box_nil()", bb.p ? bb.p : "sp_box_nil()");
+  else {
+    int t = ++g_tmp;
+    buf_printf(out, "({ sp_int _t%d = %s; if (_t%d == SP_INT_NIL) sp_poly_cmp_ans(sp_box_nil(), %s, %s); _t%d; })",
+               t, ans, t, ba.p ? ba.p : "sp_box_nil()", bb.p ? bb.p : "sp_box_nil()", t);
+  }
+  free(ba.p); free(bb.p);
+}
+
 /* sort { |a, b| a <=> b } as an expression: stable bubble sort of a copy,
    ordered by the comparator block (which yields the <=> sign). Returns 1 if
    handled. */
@@ -4139,13 +4163,17 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   /* the comparator answers the <=> sign; a boxed answer -- a poly element, or
-     a user <=> anywhere in the program -- is unwrapped (#3622) */
-  if (bn < 1) return 0;
-  Repr cmp_r = repr_of(c, bb[bn - 1]);
-  TyKind cmp_ty = cmp_r.as_ty;
-  int cmp_boxed = cmp_r.kind == RK_BOXED;
-  if (cmp_ty != TY_INT && !cmp_boxed) return 0;
-  const char *cmp_o = cmp_boxed ? "sp_poly_to_i(" : "(";
+     a user <=> anywhere in the program -- is unwrapped (#3622). One that is
+     always nil (`{ nil }`, an empty block) is taken boxed, and raises for the
+     first pair; a block argument (`&:<=>`) has no body here, and a later arm
+     takes it. */
+  if (bn < 1 && nt_kind(nt, block) != NK_BlockNode) return 0;
+  TyKind cmp_ty = TY_NIL;
+  int cmp_boxed = 0;
+  if (bn > 0) { Repr cmp_r = repr_of(c, bb[bn - 1]); cmp_ty = cmp_r.as_ty; cmp_boxed = cmp_r.kind == RK_BOXED; }
+  int nil_cmp = !cmp_boxed && cmp_ty == TY_NIL;
+  if (nil_cmp) cmp_boxed = 1;
+  else if (cmp_ty != TY_INT && !cmp_boxed) return 0;
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   if (hash_sort) emit_hash_pairs_expr(c, recv, rt, hn, &rb); else emit_expr(c, recv, &rb);
@@ -4205,19 +4233,15 @@ else {
   if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, ta); }
   if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tb); }
   buf_puts(g_pre, "\n");
-  IterStep st; emit_iter_step_open(c, block, 0, g_indent, &st);
+  IterStep st; emit_iter_step_open(c, block, nil_cmp, g_indent, &st);
   Buf cb; memset(&cb, 0, sizeof cb); emit_iter_step_tail(c, &st, &cb);
   emit_indent(g_pre, g_indent);
   /* take from the left on a tie, so equal elements keep their order */
-  if (cmp_boxed) {
-    /* a nil answer is the ArgumentError CRuby raises for the pair */
-    char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", ta); snprintf(eb, sizeof eb, "_t%d", tb);
-    Buf ba; memset(&ba, 0, sizeof ba); emit_boxed_text(c, et, ea, &ba);
-    Buf bb2; memset(&bb2, 0, sizeof bb2); emit_boxed_text(c, et, eb, &bb2);
-    buf_printf(g_pre, "sp_int _t%d = sp_poly_cmp_ans(%s, %s, %s);\n", tc, cb.p ? cb.p : "sp_box_nil()", ba.p ? ba.p : "sp_box_nil()", bb2.p ? bb2.p : "sp_box_nil()");
-    free(ba.p); free(bb2.p);
-  }
-  else buf_printf(g_pre, "sp_int _t%d = %s%s);\n", tc, cmp_o, cb.p ? cb.p : "0");
+  char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", ta); snprintf(eb, sizeof eb, "_t%d", tb);
+  Buf sg; memset(&sg, 0, sizeof sg);
+  emit_cmp_block_sign(c, bn > 0 ? bb[bn - 1] : -1, cmp_ty, cmp_boxed, cb.p ? cb.p : "sp_box_nil()", et, ea, eb, &sg);
+  buf_printf(g_pre, "sp_int _t%d = %s;\n", tc, sg.p);
+  free(sg.p);
   free(cb.p);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if (_t%d > 0) { _t%d[_t%d++] = _t%d; _t%d++; }\nelse { _t%d[_t%d++] = _t%d; _t%d++; }\n",
@@ -4310,13 +4334,16 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   /* the comparator answers the <=> sign; a boxed answer -- a poly element, or
-     a user <=> anywhere in the program -- is unwrapped (#3622) */
-  if (bn < 1) return 0;
-  Repr cmp_r = repr_of(c, bb[bn - 1]);
-  TyKind cmp_ty = cmp_r.as_ty;
-  int cmp_boxed = cmp_r.kind == RK_BOXED;
-  if (cmp_ty != TY_INT && !cmp_boxed) return 0;
-  const char *cmp_o = cmp_boxed ? "sp_poly_to_i(" : "(";
+     a user <=> anywhere in the program -- is unwrapped (#3622). One that is
+     always nil is taken boxed, and raises for the first pair; a block
+     argument has no body here, and a later arm takes it. */
+  if (bn < 1 && nt_kind(nt, block) != NK_BlockNode) return 0;
+  TyKind cmp_ty = TY_NIL;
+  int cmp_boxed = 0;
+  if (bn > 0) { Repr cmp_r = repr_of(c, bb[bn - 1]); cmp_ty = cmp_r.as_ty; cmp_boxed = cmp_r.kind == RK_BOXED; }
+  int nil_cmp = !cmp_boxed && cmp_ty == TY_NIL;
+  if (nil_cmp) cmp_boxed = 1;
+  else if (cmp_ty != TY_INT && !cmp_boxed) return 0;
   int trv = ++g_tmp, tn = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
   /* the length is hoisted once, but every turn takes its element out of this
      temp after the comparator has run, and the comparator is user code that
@@ -4354,20 +4381,15 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (p0) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te); }
   if (p1) { emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;", p1, tacc); }
   buf_puts(g_pre, "\n");
-  IterStep st; emit_iter_step_open(c, block, 0, g_indent, &st);
+  IterStep st; emit_iter_step_open(c, block, nil_cmp, g_indent, &st);
   Buf cm; memset(&cm, 0, sizeof cm); emit_iter_step_tail(c, &st, &cm);
   g_indent--;
   emit_indent(g_pre, g_indent);
-  if (cmp_boxed) {
-    /* a nil answer is the ArgumentError CRuby raises for the pair */
-    char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", te); snprintf(eb, sizeof eb, "_t%d", tacc);
-    Buf ba; memset(&ba, 0, sizeof ba); emit_boxed_text(c, et, ea, &ba);
-    Buf bb2; memset(&bb2, 0, sizeof bb2); emit_boxed_text(c, et, eb, &bb2);
-    buf_printf(g_pre, "if (sp_poly_cmp_ans(%s, %s, %s) %c 0) _t%d = _t%d;\n", cm.p ? cm.p : "sp_box_nil()",
-               ba.p ? ba.p : "sp_box_nil()", bb2.p ? bb2.p : "sp_box_nil()", is_min ? '<' : '>', tacc, te);
-    free(ba.p); free(bb2.p);
-  }
-  else buf_printf(g_pre, "if (%s%s) %c 0) _t%d = _t%d;\n", cmp_o, cm.p ? cm.p : "0", is_min ? '<' : '>', tacc, te);
+  char ea[32], eb[32]; snprintf(ea, sizeof ea, "_t%d", te); snprintf(eb, sizeof eb, "_t%d", tacc);
+  Buf sg; memset(&sg, 0, sizeof sg);
+  emit_cmp_block_sign(c, bn > 0 ? bb[bn - 1] : -1, cmp_ty, cmp_boxed, cm.p ? cm.p : "sp_box_nil()", et, ea, eb, &sg);
+  buf_printf(g_pre, "if (%s %c 0) _t%d = _t%d;\n", sg.p, is_min ? '<' : '>', tacc, te);
+  free(sg.p);
   free(cm.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (lv_p0) lv_p0->type = saved_p0;
