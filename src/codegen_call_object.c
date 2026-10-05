@@ -1951,16 +1951,64 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   return 0;
 }
 
+/* The name an ivar access names, as an sp_sym: a Symbol literal is one, and a
+   name computed at run time is checked there (sp_bivar_name) */
+static void emit_bivar_name(Compiler *c, int arg, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (nt_kind(c->nt, arg) == NK_SymbolNode) { emit_expr(c, arg, b); return; }
+  if (at == TY_SYMBOL) { buf_puts(b, "sp_bivar_name("); emit_expr(c, arg, b); buf_puts(b, ")"); return; }
+  if (at == TY_STRING) { buf_puts(b, "sp_bivar_name(sp_sym_intern("); emit_str_expr(c, arg, b); buf_puts(b, "))"); return; }
+  unsupported_feature(c, arg, "an instance variable name that is neither a Symbol nor a String");
+}
+
+/* An ivar access the runtime's map answers (sp_bivar_*): the receiver, the
+   name and the value run first, in that order; a set answers its value in
+   the call's representation. */
+static int emit_bivar_table_op(Compiler *c, const BopCtx *x, char op, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int id = x->id, argc;
+  const int *argv = call_args(nt, id, &argc);
+  int tv = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, x->recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  if (op == 'l') { buf_printf(b, "sp_bivar_list(_t%d); })", tv); return 1; }
+  const char *sym = nt_kind(nt, argv[0]) == NK_SymbolNode ? nt_str(nt, argv[0], "value") : NULL;
+  if (sym && (sym[0] != '@' || sym[1] == '@'))
+    buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
+  buf_printf(b, "sp_sym _k%d = ", tv); emit_bivar_name(c, argv[0], b); buf_puts(b, "; ");
+  if (op == 'd') { buf_printf(b, "sp_bivar_defined(_t%d, _k%d); })", tv, tv); return 1; }
+  char res[48];
+  if (op == 's') {
+    buf_printf(b, "sp_RbVal _v%d = ", tv); emit_boxed(c, argv[1], b);
+    buf_printf(b, "; sp_bivar_set(_t%d, _k%d, _v%d); ", tv, tv, tv);
+    snprintf(res, sizeof res, "_v%d", tv);
+  }
+  else snprintf(res, sizeof res, "sp_bivar_get(_t%d, _k%d)", tv, tv);
+  Repr rp = repr_of(c, id);
+  if (rp.kind != RK_BOXED && rp.kind != RK_NONE) emit_unbox_text(c, rp.as_ty, res, b);
+  else buf_puts(b, res);
+  buf_puts(b, "; })");
+  return 1;
+}
+
 int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int id = x->id, recv = x->recv, argc;
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = repr_of(c, recv).ty;
+  /* a builtin class's own ivar, and the reflection on a value whose ivars
+     the runtime's map holds once the program can store one */
+  if (x->op->arg[0] == 'b') return emit_bivar_table_op(c, x, x->op->arg[1], b);
+  if (c->bivar_table && ty_bivar_keyed(rt)) return emit_bivar_table_op(c, x, x->op->arg[0], b);
   /* A set raises on a frozen kind, or is refused where no ivar slot exists.
      The receiver and arguments run first, including before a bad name. */
   int is_set = x->op->arg[0] == 's';
   int frozen_kind = rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_NIL || rt == TY_SYMBOL ||
                     rt == TY_BIGINT || rt == TY_RANGE;
+  if (is_set && !frozen_kind && (rt == TY_STRING || rt == TY_STRBUF))
+    unsupported_feature(c, id, "an instance variable set on a String (`@x = v` in a String method, or "
+                               "instance_variable_set): Spinel copies a String between its representations "
+                               "and keeps no identity for the variable to live on; see docs/limitations.md");
   if (is_set && !frozen_kind)
     unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
                                "instance variables for a builtin value, so the variable has no slot to live in");
@@ -1983,9 +2031,12 @@ int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
   /* a literal name with no `@` is NameError before anything else */
   if (argc >= 1 && sym && sym[0] != '@')
     buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
+  /* the prefix is rooted: the receiver's inspect allocates before the
+     message is built, and a collection there freed it */
   if (is_set)
-    buf_printf(b, "sp_raise_frozen_obj(_t%d, sp_str_concat((&(\"\\xff\" \"can't modify frozen \")[1]), "
-                  "sp_poly_class_name(_t%d))); ", tv, tv);
+    buf_printf(b, "const char *_w%d = sp_str_concat((&(\"\\xff\" \"can't modify frozen \")[1]), "
+                  "sp_poly_class_name(_t%d)); SP_GC_ROOT_STR(_w%d); sp_raise_frozen_obj(_t%d, _w%d); ",
+               tv, tv, tv, tv, tv);
   if (x->op->arg[0] == 'l') buf_puts(b, "sp_PolyArray_new(); })");
   else if (x->op->arg[0] == 'd') buf_puts(b, "(sp_bool)0; })");
   else {
@@ -2021,7 +2072,7 @@ int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_puts(b, "), stdout))");
     return 1;
   }
-  if (recv >= 0 && ty_builtin_ivar_less(rt) &&
+  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name)) &&
       emit_builtin_op(c, id, recv, BOP_IVAR_LESS, name, b)) return 1;
   /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
      the layout answers at compile time */

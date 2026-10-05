@@ -1,0 +1,47 @@
+# The reflection on a value whose class Spinel cannot see statically -- a
+# parameter given a Hash at one site and a program object at another --
+# reaches the builtin value's own ivars, as CRuby's does: the set used to
+# be dropped and the get answered nil. A frozen value or an immediate
+# raises FrozenError. (The call-binding probe's case 542.)
+
+class Q
+  def inspect = "q"
+end
+
+class B
+  def m(p1 = Q.new, p2 = Q.new, p3, k1: 70)
+    [(p1.instance_variable_set(:@z, 7) rescue nil; p1.instance_variable_get(:@z)), p2, p3, k1]
+  end
+end
+
+class C < B
+  def m
+    s = [{ v: 1 }, 2]
+    h = nil
+    blk = proc { :blk }
+    super(*s, **h, &blk)
+  end
+end
+
+p C.new.m
+p B.new.m(3)
+
+def mark(x, v)
+  x.instance_variable_set(:@mark, v)
+  [x.instance_variable_get(:@mark), x.instance_variable_defined?(:@mark), x.instance_variables]
+end
+
+p mark([1, 2], :arr)
+p mark({a: 1}, :hash)
+p mark(Q.new, :obj)
+p mark(Random.new(1), :rng)
+p((mark(5, :int) rescue $!.message))
+p((mark(:sym, :s) rescue $!.message))
+p((mark([3].freeze, :f) rescue $!.message))
+
+class ReportedError < StandardError; end
+begin
+  raise ReportedError, "bad"
+rescue => e
+  p mark(e, true)
+end

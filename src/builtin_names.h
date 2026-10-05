@@ -96,6 +96,7 @@ int is_take_drop(const char *n); /* drop take */
 int is_byte_codepoint_each(const char *n); /* each_byte each_codepoint */
 int is_with_index_alias(const char *n); /* each_with_index with_index */
 int is_freeze_family(const char *n); /* freeze frozen? */
+int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
 int is_nonblock_io(const char *n); /* read_nonblock write_nonblock */
 
 int is_mul_or_pow(const char *n); /* * ** */

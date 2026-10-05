@@ -13134,6 +13134,236 @@ int desugar_body_ivars(Compiler *c) {
   return changed;
 }
 
+/* ---- instance variables in a builtin class's methods ----------------------
+ *
+ *   class Array;   def tag = (@tag ||= :t);  end
+ *   class Random;  def pick(a = @x) = a;     end
+ *   class Integer; def mark(v) = (@m = v);   end
+ *
+ * A builtin value has no ivar slots, so `@x` in its class's method is no
+ * field. CRuby keeps such an ivar in a table keyed by the object; so does the
+ * runtime (sp_bivar_*, lib/sp_gc.c's map) for the values whose identity
+ * Spinel keeps -- an Array, a Hash, a Random:
+ *
+ *   @x -> self.__bivar_get(:@x)    @x = v -> self.__bivar_set(:@x, v)
+ *
+ * An immediate, a Range and every other frozen kind holds none: a read is
+ * nil and a write is the reflective set, which raises FrozenError. A String
+ * is copied between its representations, so a write to one is the
+ * reflective set too, which refuses it (emit_op_ivar_reflection). `@x op=`,
+ * `||=` and `&&=` are lowered to the read and the write first, CRuby's own
+ * definition; attr_reader/writer/accessor in such a class become the defs
+ * they stand for. Blocks whose self changes, nested defs and class bodies
+ * are left alone. A write that lands in the map, or a reflective set on
+ * anything but self, sets Compiler.bivar_table: inference and codegen read
+ * it, and a program without either emits what it emitted before. */
+enum { BIV_NONE, BIV_TABLE, BIV_FROZEN, BIV_STRING };
+static int biv_mode(const char *cn) {
+  static const char *const T[] = { "Array", "Hash", "Random", NULL };
+  static const char *const F[] = { "Integer", "Float", "Symbol", "NilClass", "TrueClass", "FalseClass",
+                                   "Range", NULL };
+  if (!cn) return BIV_NONE;
+  if (str_in(cn, T)) return BIV_TABLE;
+  if (str_in(cn, F)) return BIV_FROZEN;
+  return sp_streq(cn, "String") ? BIV_STRING : BIV_NONE;
+}
+
+/* `name(:@x[, v])` on self, in place of node `id` */
+static void biv_self_call(NodeTable *nt, int id, const char *name, const char *iv, int v) {
+  char ivb[256], nb[64];
+  snprintf(ivb, sizeof ivb, "%s", iv);
+  snprintf(nb, sizeof nb, "%s", name);
+  int sym = fwd_new_node_like(nt, id, "SymbolNode");
+  nt_node_set_str(nt, sym, "value", ivb);
+  int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+  int av[2] = { sym, v };
+  nt_node_set_arr(nt, args, "arguments", av, v >= 0 ? 2 : 1);
+  int self = fwd_new_node_like(nt, id, "SelfNode");
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_str(nt, id, "name", nb);
+  nt_node_set_ref(nt, id, "receiver", self);
+  nt_node_set_ref(nt, id, "arguments", args);
+  nt_node_set_ref(nt, id, "block", -1);
+  if (line) nt_node_set_int(nt, id, "node_line", line);
+  if (file) nt_node_set_int(nt, id, "node_file", file);
+}
+
+/* a literal of a kind that holds no ivars: the set on it only raises */
+static int biv_frozen_literal(const NodeTable *nt, int r) {
+  NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
+  return k == NK_IntegerNode || k == NK_FloatNode || k == NK_NilNode || k == NK_TrueNode ||
+         k == NK_FalseNode || k == NK_SymbolNode || k == NK_StringNode || k == NK_RangeNode ||
+         k == NK_RationalNode || k == NK_ImaginaryNode;
+}
+static int biv_is_self_or_implicit(const NodeTable *nt, int call) {
+  int r = nt_ref(nt, call, "receiver");
+  return r < 0 || nt_kind(nt, r) == NK_SelfNode;
+}
+
+static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
+    return;
+  if (k == NK_CallNode && cbi_self_changing_block(nt, node)) {
+    /* the receiver and arguments are this method's code, a block is not */
+    biv_rewrite(c, nt, nt_ref(nt, node, "receiver"), mode);
+    int an = nt_ref(nt, node, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int i = 0; i < ac; i++)
+      if (nt_kind(nt, av[i]) != NK_BlockArgumentNode && nt_kind(nt, av[i]) != NK_LambdaNode)
+        biv_rewrite(c, nt, av[i], mode);
+    return;
+  }
+  if (k == NK_CallNode && mode == BIV_TABLE && biv_is_self_or_implicit(nt, node) &&
+      nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), "instance_variable_set"))
+    c->bivar_table = 1;
+  if (k == NK_InstanceVariableTargetNode)
+    unsupported_feature(c, node, "an instance variable of a builtin value as a multiple-assignment target: "
+                                 "assign it on its own (`@a = x`)");
+  if (k == NK_DefinedNode) {
+    int v = nt_ref(nt, node, "value");
+    if (v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode && nt_str(nt, v, "name")) {
+      if (mode != BIV_TABLE) { nt_node_reset(nt, node, "NilNode"); return; }
+      /* defined?(@x): "instance-variable" when the value holds it, else nil */
+      char ivb[256]; snprintf(ivb, sizeof ivb, "%s", nt_str(nt, v, "name"));
+      biv_self_call(nt, v, "__bivar_defined", ivb, -1);
+      int st = fwd_new_node_like(nt, node, "StatementsNode");
+      int lit = str_node_like(nt, node, "instance-variable");
+      nt_node_set_arr(nt, st, "body", &lit, 1);
+      int els = fwd_new_node_like(nt, node, "ElseNode");
+      int est = fwd_new_node_like(nt, node, "StatementsNode");
+      int nl = fwd_new_node_like(nt, node, "NilNode");
+      nt_node_set_arr(nt, est, "body", &nl, 1);
+      nt_node_set_ref(nt, els, "statements", est);
+      nt_node_reset(nt, node, "IfNode");
+      nt_node_set_ref(nt, node, "predicate", v);
+      nt_node_set_ref(nt, node, "statements", st);
+      nt_node_set_ref(nt, node, "subsequent", els);
+      return;
+    }
+  }
+  /* children first: a write's value is code of its own */
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) biv_rewrite(c, nt, nt_ref_at(nt, node, i), mode);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    int *cp = cnt > 0 ? malloc(sizeof(int) * (size_t)cnt) : NULL;
+    if (cnt > 0) memcpy(cp, ids, sizeof(int) * (size_t)cnt);
+    for (int j = 0; j < cnt; j++) biv_rewrite(c, nt, cp[j], mode);
+    free(cp);
+  }
+  const char *iv = nt_str(nt, node, "name");
+  if (!iv || iv[0] != '@' || iv[1] == '@') return;
+  char ivb[256]; snprintf(ivb, sizeof ivb, "%s", iv);
+  if (k == NK_InstanceVariableReadNode) {
+    if (mode == BIV_TABLE) biv_self_call(nt, node, "__bivar_get", ivb, -1);
+    else {
+      long long line = nt_int(nt, node, "node_line", 0);
+      nt_node_reset(nt, node, "NilNode");
+      if (line) nt_node_set_int(nt, node, "node_line", line);
+    }
+  }
+  else if (k == NK_InstanceVariableWriteNode) {
+    int v = nt_ref(nt, node, "value");
+    if (mode == BIV_TABLE) { biv_self_call(nt, node, "__bivar_set", ivb, v); c->bivar_table = 1; }
+    else biv_self_call(nt, node, "instance_variable_set", ivb, v);
+  }
+}
+
+/* one instance method of the class: its parameters' defaults and its body */
+static void biv_def(Compiler *c, NodeTable *nt, int d, int mode) {
+  int ps = nt_ref(nt, d, "parameters"), body = nt_ref(nt, d, "body");
+  cbi_lower_op_writes(nt, ps);
+  cbi_lower_op_writes(nt, body);
+  biv_rewrite(c, nt, ps, mode);
+  biv_rewrite(c, nt, body, mode);
+}
+
+/* `attr_accessor :a` -> `def a = @a` and `def a=(val) = (@a = val)`, ahead
+   of the rewrite; 0 when the call is no plain attr declaration */
+static int biv_attr_defs(NodeTable *nt, int call, int **defs, int *nd) {
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm || nt_ref(nt, call, "receiver") >= 0 || nt_ref(nt, call, "block") >= 0) return 0;
+  int reader = is_attr_reader_family(nm), writer = is_attr_writer_family(nm);
+  if (!reader && !writer) return 0;
+  int an = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (ac < 1) return 0;
+  for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) != NK_SymbolNode || !nt_str(nt, av[i], "value")) return 0;
+  long long line = nt_int(nt, call, "node_line", 0);
+  for (int i = 0; i < ac; i++) {
+    char base[240], ivn[256], wn[256];
+    snprintf(base, sizeof base, "%s", nt_str(nt, av[i], "value"));
+    snprintf(ivn, sizeof ivn, "@%s", base);
+    snprintf(wn, sizeof wn, "%s=", base);
+    if (reader) {
+      int rd = fwd_new_node_like(nt, call, "InstanceVariableReadNode");
+      nt_node_set_str(nt, rd, "name", ivn);
+      int d = ma_def(nt, base, 0, 0, rd, line);
+      if (d >= 0) xc_push(defs, nd, d);
+    }
+    if (writer) {
+      int wr = fwd_new_node_like(nt, call, "InstanceVariableWriteNode");
+      nt_node_set_str(nt, wr, "name", ivn);
+      nt_node_set_ref(nt, wr, "value", local_read_like(nt, call, "val"));
+      int d = ma_def(nt, wn, 0, 1, wr, line);
+      if (d >= 0) xc_push(defs, nd, d);
+    }
+  }
+  return 1;
+}
+
+int desugar_builtin_ivars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* a reflective set on anything but self, or a literal that holds none,
+     can reach a builtin value */
+  for (int id = 0; id < n0; id++)
+    if (nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") &&
+        sp_streq(nt_str(nt, id, "name"), "instance_variable_set") && !biv_is_self_or_implicit(nt, id) &&
+        !biv_frozen_literal(nt, nt_ref(nt, id, "receiver")))
+      c->bivar_table = 1;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ClassNode || nt_ref(nt, m, "superclass") >= 0) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+    int mode = biv_mode(nt_str(nt, cp, "name"));
+    int body = nt_ref(nt, m, "body");
+    if (mode == BIV_NONE || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    /* `module Text; class String` is the program's own class */
+    if (engine_lexically_nested(nt, m)) continue;
+    int bn = 0; const int *bs0 = nt_arr(nt, body, "body", &bn);
+    int *bs = malloc(sizeof(int) * (size_t)(bn ? bn : 1));
+    memcpy(bs, bs0, sizeof(int) * (size_t)bn);
+    int *nb = NULL, nnb = 0, attrs = 0;
+    for (int k = 0; k < bn; k++) {
+      if (nt_kind(nt, bs[k]) == NK_CallNode && biv_attr_defs(nt, bs[k], &nb, &nnb)) { attrs = 1; continue; }
+      xc_push(&nb, &nnb, bs[k]);
+    }
+    if (attrs) { nt_node_set_arr(nt, body, "body", nb, nnb); changed = 1; }
+    for (int k = 0; k < nnb; k++) {
+      int d = nb[k];
+      /* `private def m ...`: the def is the call's argument */
+      if (nt_kind(nt, d) == NK_CallNode && nt_str(nt, d, "name") &&
+          is_visibility_or_module_function(nt_str(nt, d, "name"))) {
+        int an = nt_ref(nt, d, "arguments"), ac = 0;
+        const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+        d = ac == 1 ? av[0] : -1;
+      }
+      if (d < 0 || nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) continue;
+      int before = nt->count;
+      biv_def(c, nt, d, mode);
+      if (nt->count != before) changed = 1;
+    }
+    free(nb); free(bs);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- a method on Object, overridden in builtin classes --------------------
  *
  *   class Object;    def ffi_yajl(g, s) ... to_json ... end; end
