@@ -789,3 +789,5 @@ int array_unseen_add_kind(const char *n) {
   if (sp_streq(n, "prepend")) return ARRAY_ADD_PREPEND;
   return ARRAY_ADD_NONE;
 }
+
+int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
