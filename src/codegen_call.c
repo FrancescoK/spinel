@@ -10605,6 +10605,37 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
   buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
 }
 
+/* Array.new(x) of an Array x is a copy of it (#7449): of a typed one by its
+   kind's copy constructor, and of a boxed x decided at run time -- a copy
+   when it is an Array, else x nils, as Array.new(n) builds. 0 for any other
+   x, which the size arm takes. */
+static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (array_new_copies(at)) {
+    buf_printf(b, "sp_%sArray_dup(", at == TY_POLY_ARRAY ? "Poly" : array_kind(at));
+    emit_expr(c, arg, b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  if (at != TY_POLY) return 0;
+  int tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, arg, &vb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, vb.p ? vb.p : "sp_box_nil()", tv);
+  free(vb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tr, tr);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) _t%d = sp_PolyArray_dup(sp_poly_to_poly_array(_t%d));\n",
+             tv, tv, tr, tv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "else { sp_int _t%d = sp_poly_to_i(_t%d); if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");"
+                    " _t%d = sp_PolyArray_new(); for (sp_int _i = 0; _i < _t%d; _i++) sp_PolyArray_push(_t%d, sp_box_nil()); }\n",
+             ti, tv, ti, tr, ti, tr);
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
 /* A .new call (and the default-hash form): user classes, Struct and Data, the builtin constructors (emit_class_new_call's arms, in their order) */
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
@@ -11208,6 +11239,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (cn && sp_streq(cn, "Array") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       buf_puts(b, "sp_PolyArray_new()"); { *out = 1; return 1; }
     }
+    if (cn && sp_streq(cn, "Array") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        emit_array_new_from_value(c, argv[0], b)) { *out = 1; return 1; }
     if (cn && sp_streq(cn, "Array") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       /* Array.new(n) -> PolyArray of n nils */
       int tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
