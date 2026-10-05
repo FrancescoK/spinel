@@ -36,10 +36,14 @@ static int emit_splat_io(Compiler *c, int arg, const char *fn, Buf *b, int inden
   if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "SplatNode")) {
     int sx = nt_ref(c->nt, arg, "expression");
     if (sx >= 0) {
+      /* sp_splat_to_array: a value that is no Array is the one argument, a
+         Range or an Enumerator its members, nil none. The array may be
+         fresh, and printing allocates. */
+      int t = ++g_tmp;
       emit_indent(b, indent);
-      buf_puts(b, fn);
+      buf_printf(b, "{ sp_RbVal _t%d = sp_splat_to_array(", t);
       emit_boxed(c, sx, b);
-      buf_puts(b, ");\n");
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); %s_t%d); }\n", t, fn, t);
       return 1;
     }
   }
@@ -690,9 +694,9 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
     g_pre = &apre; g_indent = indent + 2;
     if (nt_type(c->nt, a) && sp_streq(nt_type(c->nt, a), "SplatNode")) {
       int sx = nt_ref(c->nt, a, "expression");
-      buf_printf(&abody, "sp_PolyArray_concat_into(_t%d, ", t);
+      buf_printf(&abody, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
       if (sx >= 0) emit_boxed(c, sx, &abody); else buf_puts(&abody, "sp_box_nil()");
-      buf_puts(&abody, ");\n");
+      buf_puts(&abody, "));\n");
     }
     else {
       buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, a, &abody); buf_puts(&abody, ");\n");
