@@ -12829,8 +12829,15 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
           int re_n2 = 0;
           const int *re_els2 = nt_arr(nt, recv, "elements", &re_n2);
           TyKind common_at = TY_UNKNOWN;
-          for (int ri = 0; ri < re_n2; ri++)
-            common_at = ty_unify(common_at, infer_type(c, re_els2[ri]));
+          for (int ri = 0; ri < re_n2; ri++) {
+            TyKind row_at = infer_type(c, re_els2[ri]);
+            /* An empty `[]` row has no kind of its own and is built boxed, as
+               a poly array. Left open it unified away, the parameters took
+               the other rows' element type, and the loop read that row as a
+               typed array: `[[1, 2], []].each { |a, b| }` bound 0 and 0. */
+            if (row_at == TY_UNKNOWN && node_is_empty_container(nt, re_els2[ri])) row_at = TY_POLY;
+            common_at = ty_unify(common_at, row_at);
+          }
           if (ty_is_array(common_at)) inner_elem = ty_array_elem(common_at);
           else inner_elem = TY_POLY;
         }
