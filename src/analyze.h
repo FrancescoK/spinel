@@ -29,6 +29,43 @@ extern int g_promote_mode;
    choose. Off in every normal build. */
 extern int g_plan_check;
 
+/* Set by main.c from --nil-check (#7444): the nil fact the analysis decides
+   (analyze_nil.c) is held against the answers the helpers that decide it
+   today give, at each place they answer, and every disagreement reported on
+   stderr. Off in every normal build; the C is the same either way. */
+extern int g_nil_check;
+
+/* The nil fact (analyze_nil.c, #7444): whether an object-typed value may be
+   nil, decided once by the analysis for every node and every slot (a local,
+   a parameter, a block parameter, a global, a constant, an ivar, a method's
+   value). an_phase_value_types computes it, ahead of the value-type
+   selection. nil_fact_node answers for a node, nil_fact_ivar for ivar `ivn`
+   (with its '@') of class cid; the slots carry LocalVar.obj_may_nil and
+   Scope.ret_obj_may_nil. repr_of and repr_of_slot read them into may_nil. */
+enum { NF_UNKNOWN, NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED /* not nil past a guard */ };
+void an_nil_facts(Compiler *c);
+int nil_fact_node(const Compiler *c, int node);
+int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
+/* where a nil comes from: a node's (nil_fact_why), a slot's flag itself */
+enum {
+  NFW_NONE,      /* not nil */
+  NFW_NIL,       /* a nil written: a literal, an empty body, a bare return */
+  NFW_NO_ELSE,   /* an if, unless or case with no branch for the other case */
+  NFW_SAFE_NAV,  /* a `&.` call */
+  NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash) */
+  NFW_UNSET,     /* a read that can run before any write (a local, a global,
+                    the main object's ivar, a `||=` slot) */
+  NFW_IVAR,      /* an ivar some class's initialize does not set first, or one
+                    of a class or a module */
+  NFW_CALLER,    /* a parameter a caller the analysis does not see binds (a
+                    send, a method(:m), a proc or a lambda, a callback) */
+  NFW_OPAQUE,    /* a value the analysis does not model: a builtin's answer, a
+                    splat's element, a pattern's binding, a yield's value */
+  NFW_GUARDED    /* (nil_fact_why only) not nil: a guard narrowed the read */
+};
+int nil_fact_why(const Compiler *c, int node);
+const char *nil_fact_why_name(int why);
+
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
 extern int g_final_bind_pass;

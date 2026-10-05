@@ -64,6 +64,15 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
+/* The definite-assignment walk (analyze.c), shared with the nil facts
+   (analyze_nil.c): the program's parent map, each statement's place in its
+   list (filled one list at a time, -1 for a node not in its parent's list),
+   whether a read of local `nm` can run before any write of it, and the
+   per-list memo the walk keeps, freed once a pass is done with it. */
+typedef struct { int *pos; char *done; } DUPos;
+int *du_parent_map(const NodeTable *nt);
+int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm);
+void du_memo_free(void);
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name);

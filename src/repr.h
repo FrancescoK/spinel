@@ -34,7 +34,9 @@ typedef struct {
   TyKind narrowed;        /* a read narrowed past a nil guard: its non-nil
                              type, or TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
-  unsigned may_nil:1;     /* the value can be nil in this representation */
+  unsigned may_nil:1;     /* the value can be nil in this representation;
+                             for a user object, the nil fact (analyze_nil.c,
+                             #7444): nothing reads it for one yet */
   unsigned handle:1;      /* a read that yields the shared String handle */
   unsigned demand:1;      /* stored as the handle without moving the type */
   unsigned read_raw:1;    /* a handle read whose consumer only reads bytes */

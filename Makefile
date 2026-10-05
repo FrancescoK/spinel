@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all hooks gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all hooks gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test nil-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -279,7 +279,7 @@ build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codege
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
-               build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/repr.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
+               build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/repr.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
                build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
@@ -3517,6 +3517,18 @@ plan-check-test: $(SPINEL)
 
 repr-check-test: $(SPINEL)
 	@tools/repr_check.sh
+
+# nil-check (#7444): the analysis's nil fact held against the answers the
+# codegen helpers give today. #7444's shapes (test/nil_check/) must report
+# as recorded; over the corpus nothing may be HELPER-ONLY, and the C must be
+# the same with the flag.
+nil-check-test: $(SPINEL)
+	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-nil-check-shapes.XXXXXX"); \
+	$(SPINEL) -c --nil-check test/nil_check/shapes.rb -o "$$tmp/shapes.c" 2>&1 | grep '^nil-check:' > "$$tmp/got"; \
+	if diff -u test/nil_check/shapes.nil-check "$$tmp/got"; then echo "nil-check: shapes pass"; \
+	else echo "nil-check: shapes FAIL"; rm -rf "$$tmp"; exit 1; fi; \
+	rm -rf "$$tmp"
+	@tools/nil_check.sh
 
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)

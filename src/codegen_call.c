@@ -18462,6 +18462,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || id == g_ivar_nil_guarded_id) return 0;
+  if (g_nil_check) nil_check_seen(id);
   if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || nil_answers_call(nm)) return 0;
@@ -18511,6 +18512,140 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
     return 0;
   *recv_out = recv;
   return 1;
+}
+
+/* ---- --nil-check (#7444) ----
+   The analysis decides once whether an object may be nil (the nil fact,
+   analyze_nil.c); today the guards above decide it again where they are
+   asked. The check holds the two answers side by side, after the program is
+   emitted, so asking changes no C:
+     recv   each call nil_recv_guard decided on an object receiver whose
+            class answers the name: the guard's answer, against the
+            receiver's fact
+     ret    each method whose value is an object: method_ret_nilable,
+            against the method's fact
+     local  each object local: local_obj_nil_written, against its slot's
+     param  each object parameter: obj_nilable, against its slot's
+   AGREE: the same answer. FACT-ONLY: the fact says the value may be nil and
+   the helper does not (a nil the helper misses, or the fact's imprecision),
+   reported with where the fact's nil comes from (nil_fact_why_name).
+   HELPER-ONLY: the helper sees a nil the fact does not (the fact is wrong).
+   GUARDED: the helper sees the slot's nil at a read a guard of it proves is
+   not nil (`b.v if b`), which the fact narrows and the helper does not.
+   INIT-SET: the helper guards an ivar only `||=` writes (ivar_nil_recv_guard)
+   and the fact sees initialize set it, to a value that is not nil. */
+static unsigned char *g_nil_seen;
+static int g_nil_seen_cap;
+void nil_check_seen(int id) {
+  if (id < 0) return;
+  if (id >= g_nil_seen_cap) {
+    int ncap = g_nil_seen_cap ? g_nil_seen_cap : 1024;
+    while (ncap <= id) ncap *= 2;
+    g_nil_seen = realloc(g_nil_seen, (size_t)ncap);
+    memset(g_nil_seen + g_nil_seen_cap, 0, (size_t)(ncap - g_nil_seen_cap));
+    g_nil_seen_cap = ncap;
+  }
+  g_nil_seen[id] = 1;
+}
+
+enum { NC_AGREE, NC_FACT_ONLY, NC_HELPER_ONLY, NC_GUARDED, NC_INIT_SET };
+static const char *const nc_verdict[] = { "AGREE", "FACT-ONLY", "HELPER-ONLY", "GUARDED", "INIT-SET" };
+
+static int nil_check_verdict(int helper, int why) {
+  int fact = why != NFW_NONE && why != NFW_GUARDED;
+  if (helper == fact) return NC_AGREE;
+  return fact ? NC_FACT_ONLY : why == NFW_GUARDED ? NC_GUARDED : NC_HELPER_ONLY;
+}
+
+/* what a receiver is, for the report */
+static const char *nil_check_recv_kind(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int r = unwrap_parens(c, recv);
+  switch (nt_kind(nt, r)) {
+  case NK_LocalVariableReadNode: {
+    const char *ln = nt_str(nt, r, "name");
+    Scope *sc = ln ? comp_scope_of(c, r) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, ln) : NULL;
+    return !lv ? "local" : lv->is_param ? "param" : lv->is_block_param ? "block-param" : "local";
+  }
+  case NK_InstanceVariableReadNode: return "ivar";
+  case NK_GlobalVariableReadNode: return "gvar";
+  case NK_ConstantReadNode: case NK_ConstantPathNode: return "const";
+  case NK_CallNode: {
+    if (cplan_user(c, r)->mi >= 0) return "call";
+    int rr = nt_ref(nt, r, "receiver");
+    TyKind rrt = rr >= 0 ? comp_ntype(c, rr) : TY_UNKNOWN;
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && ty_is_object(rrt) && comp_reader_in_chain(c, ty_object_class(rrt), rn, NULL)) return "reader";
+    return "builtin-call";
+  }
+  case NK_SuperNode: case NK_ForwardingSuperNode: return "super";
+  case NK_YieldNode: return "yield";
+  default: return nt_type(nt, r) ? nt_type(nt, r) : "?";
+  }
+}
+
+void nil_check_report(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n[4][5];
+  memset(n, 0, sizeof n);
+  for (int id = 0; id < g_nil_seen_cap && id < nt->count; id++) {
+    if (!g_nil_seen[id] || nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "call_operator");
+    if (recv < 0 || !nm || (op && sp_streq(op, "&."))) continue;
+    TyKind rt = comp_ntype(c, recv);
+    if (!ty_is_object(rt)) continue;
+    int cid = ty_object_class(rt);
+    if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL) &&
+        !nil_guard_writer(c, cid, nm))
+      continue;
+    int gr = -1;
+    int helper = nil_recv_guard(c, id, &gr) ? 1 : 0;
+    int why = nil_fact_why(c, recv);
+    int v = nil_check_verdict(helper, why);
+    if (v == NC_HELPER_ONLY && nt_kind(nt, recv) == NK_InstanceVariableReadNode && gr == recv) v = NC_INIT_SET;
+    n[0][v]++;
+    if (v == NC_AGREE) continue;
+    fprintf(stderr, "nil-check: recv %s %s%s%s why=%s line %lld: %s\n", nc_verdict[v],
+            nil_check_recv_kind(c, recv), comp_ty_value_obj(c, rt) ? " by-value" : "",
+            nil_answers_call(nm) ? " nil-answers" : "", nil_fact_why_name(why),
+            (long long)nt_int(nt, id, "node_line", 0), nm);
+  }
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (m->def_node < 0 || !m->reachable) continue;
+    /* `new` drops initialize's value */
+    if (ty_is_object(m->ret) && !(m->name && sp_streq(m->name, "initialize"))) {
+      int v = nil_check_verdict(method_ret_nilable(c, mi, 0) ? 1 : 0, m->ret_obj_may_nil);
+      n[1][v]++;
+      if (v != NC_AGREE)
+        fprintf(stderr, "nil-check: ret %s why=%s line %lld: %s\n", nc_verdict[v],
+                nil_fact_why_name(m->ret_obj_may_nil),
+                (long long)nt_int(nt, m->def_node, "node_line", 0), m->name ? m->name : "?");
+    }
+  }
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (si > 0 && (sc->def_node < 0 || !sc->reachable)) continue;
+    for (int k = 0; k < sc->nlocals; k++) {
+      LocalVar *lv = &sc->locals[k];
+      if (!ty_is_object(lv->type) || lv->is_block_param || !lv->name) continue;
+      int helper = lv->is_param ? lv->obj_nilable != 0 : local_obj_nil_written(c, sc, lv->name, lv);
+      int cat = lv->is_param ? 3 : 2;
+      int v = nil_check_verdict(helper ? 1 : 0, lv->obj_may_nil);
+      n[cat][v]++;
+      if (v != NC_AGREE)
+        fprintf(stderr, "nil-check: %s %s why=%s %s#%s\n", cat == 3 ? "param" : "local", nc_verdict[v],
+                nil_fact_why_name(lv->obj_may_nil), sc->name ? sc->name : "<main>", lv->name);
+    }
+  }
+  static const char *const cats[] = { "recv", "ret", "local", "param" };
+  for (int k = 0; k < 4; k++)
+    fprintf(stderr, "nil-check: count %s agree %d fact-only %d helper-only %d guarded %d init-set %d\n", cats[k],
+            n[k][NC_AGREE], n[k][NC_FACT_ONLY], n[k][NC_HELPER_ONLY], n[k][NC_GUARDED], n[k][NC_INIT_SET]);
+  free(g_nil_seen); g_nil_seen = NULL; g_nil_seen_cap = 0;
 }
 
 /* An operator whose right operand reassigns its local left operand,

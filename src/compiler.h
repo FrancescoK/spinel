@@ -108,6 +108,13 @@ typedef struct {
   int obj_nil_written; /* codegen's memo for an object-typed local: 1 when a
                        write in its scope stores nil, 2 when none does, 0 not
                        yet asked (#7262) */
+  int obj_may_nil;  /* (object-typed slots: locals, parameters, block
+                       parameters, globals, constants) the nil fact
+                       (analyze_nil.c, #7444): a read of the slot may answer
+                       nil -- a write stores a value that may be nil, a read
+                       can run before any write, a call site binds nil. Read
+                       through repr_of_slot's may_nil. Nonzero: where the
+                       nil comes from (NFW_*, analyze.h). */
   int box_nullable; /* an int parameter bound from an ivar that can be read
                        before anything assigned it: only BOXING it has to
                        yield nil. Kept apart from nullable_int, which also
@@ -357,6 +364,9 @@ typedef struct {
                            methods (`def pass(x) = x.p_`) and methods whose value
                            is their block's (`def key_of(x) = yield x`), which no
                            RBS signature covers (#3505). */
+  int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
+                          #7444): its body's value or a `return` may be nil;
+                          nonzero, where the nil comes from (NFW_*) */
   TyKind ret_oa_pin;   /* the pointer-array return type the narrowing pass gave
                           this method, re-asserted every round for the same
                           reason LocalVar.oa_pin is. TY_UNKNOWN = not narrowed. */
@@ -443,6 +453,12 @@ typedef struct {
                                      write pass replaced the narrowed type with
                                      something strictly worse. */
   int nivars, civars;
+  unsigned char *ivar_obj_may_nil; /* the nil fact per ivar (analyze_nil.c,
+                                     #7444), indexed as ivars was when the
+                                     analysis computed it, so read by name
+                                     (nil_fact_ivar); n_ivar_obj_may_nil
+                                     entries */
+  int n_ivar_obj_may_nil;
   char **rbs_pin_ivars; /* ivar names (incl '@') pinned by an --rbs seed: the
                            fixpoint must not widen their type */
   int n_rbs_pin_ivars, c_rbs_pin_ivars;
@@ -709,6 +725,10 @@ typedef struct {
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */
+  unsigned char *nil_fact; /* [nil_fact_n] the nil fact per node (analyze_nil.c,
+                        #7444): NF_MAY_NIL when the node's value may be nil,
+                        NF_NOT_NIL when it cannot; read through nil_fact_node */
+  int nil_fact_n;
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */
