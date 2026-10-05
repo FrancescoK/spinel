@@ -422,11 +422,13 @@ int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b) {
    that used to hang inspect (#2374). Either way the other's default value
    and default proc come with its entries, as in CRuby
    (`Hash.new(1).replace(b: 2).default` is nil); they stayed the receiver's.
+   A lowered bang transform keeps the receiver's defaults instead.
    Any other argument is left to the arms after the lookup. */
 int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   TyKind rt = x->rt;
   const char *hn = ty_hash_cname(rt);
+  int keep_default = nt_str(c->nt, x->id, "bang_splice") != NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   if (comp_ntype(c, argv[0]) == rt) {
@@ -435,11 +437,14 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
     buf_printf(b, " SP_GC_ROOT(_t%d); %s _t%d = ", trp, c_type_name(rt), to); emit_expr(c, argv[0], b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash_replace(_t%d, _t%d);", to, hn, trp, to);
-    buf_printf(b, " if (_t%d && _t%d) { sp_gc_wb((void *)_t%d); _t%d->default_v = _t%d->default_v;",
-               trp, to, trp, trp, to);
-    if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)   /* the dproc variants */
-      buf_printf(b, " _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", trp, to, trp, to);
-    buf_printf(b, " } _t%d; })", trp);
+    if (!keep_default) {
+      buf_printf(b, " if (_t%d && _t%d) { sp_gc_wb((void *)_t%d); _t%d->default_v = _t%d->default_v;",
+                 trp, to, trp, trp, to);
+      if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)   /* the dproc variants */
+        buf_printf(b, " _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", trp, to, trp, to);
+      buf_puts(b, " }");
+    }
+    buf_printf(b, " _t%d; })", trp);
     return 1;
   }
   if (rt == TY_POLY_POLY_HASH && ty_is_hash(comp_ntype(c, argv[0]))) {
@@ -447,7 +452,7 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); (void)sp_poly_hash_replace(sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH), ", th, th);
     emit_boxed(c, argv[0], b);
-    buf_printf(b, ", 0); _t%d; })", th);
+    buf_printf(b, ", %d); _t%d; })", keep_default, th);
     return 1;
   }
   return 0;
