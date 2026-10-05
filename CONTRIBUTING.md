@@ -24,6 +24,26 @@ please rebase onto the current `master`, run `make gate` again and push.
 Many pull requests touch the same functions, so keep a branch small and
 rebase it early rather than late.
 
+## The gate in the commit
+
+Run `make hooks` once: it points git at the hooks in `tools/hooks`. When
+`make gate` passes, it records the tree it tested and the `master` it was
+merged with. `git commit --amend --no-edit` then adds a trailer such as
+
+```
+Gate: green tree c5355fd0df33 master c55f919a6452 (linux-aarch64 gcc-14.2.0) tests 5642/0
+```
+
+The trailer goes only on a commit that, merged with that `master`, gives
+exactly the tested tree; a commit that changed after the gate loses it.
+`ruby tools/gate.rb verify <commit>` checks it the same way. The pre-commit
+hook (`ruby tools/gate.rb check`) refuses a commit that grows
+`emit_call_body` or any function over 1,000 lines, adds a test whose
+`.expected` differs from CRuby run with `--enable-frozen-string-literal`, or
+writes to a fixed `/tmp` path. Where the gate can't pass natively, `ruby
+tools/gate.rb linux` runs it in a Linux container on this branch merged with
+`master`, and records the same stamp.
+
 ## What the review checks
 
 - **Same answer as CRuby.** Compare a new test's output with CRuby 4.0
