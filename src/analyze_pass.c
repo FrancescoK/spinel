@@ -2796,6 +2796,17 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         knode = argv[0]; vnode = argv[1];
       }
+      else if (name && is_hash_default_setter(name) && an == 1 && recv >= 0 &&
+               ty_is_hash(infer_type(c, recv)) && nt_kind(nt, argv[0]) != NK_NilNode) {
+        /* the default is a value the Hash answers (`h[missing]`), so it is
+           value evidence as a store is, under the key the Hash has. A nil
+           literal is none: a missing key already answers nil, and a typed
+           Hash keeps a nil default in its values' slot
+           (emit_op_hash_set_default). A local that holds nil reaches the
+           setter boxed, so it still counts. */
+        is_idx_write = 1; kt = ty_hash_key(infer_type(c, recv)); vt = infer_type(c, argv[0]);
+        vnode = argv[0];
+      }
       else if (name && (is_hash_merge_bang(name)) && an >= 1) {
         /* merging hashes into an empty-{} local writes their keys/values:
            key+value evidence exactly like []= (#2434) */

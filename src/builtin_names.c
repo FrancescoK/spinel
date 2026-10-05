@@ -264,6 +264,10 @@ int is_store_alias(const char *n) {
   return sp_streq(n, "[]=") || sp_streq(n, "store");
 }
 
+int is_hash_default_setter(const char *n) {
+  return sp_streq(n, "default=");
+}
+
 int is_hash_merge_bang(const char *n) {
   return sp_streq(n, "merge!") || sp_streq(n, "update");
 }
