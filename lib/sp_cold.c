@@ -3557,7 +3557,13 @@ else{while(u>0){sp_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;i
    form). Two wrappers keep call-site emit local. */
 const char *sp_int_opt_inspect(sp_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
 const char *sp_int_opt_to_s(sp_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
+SP_NORETURN void sp_raise_nil_int_op(sp_int a, sp_int b, const char *op);
 sp_int sp_int_pow(sp_int base, sp_int exp) {
+  /* A nil operand (the SP_INT_NIL sentinel, INTPTR_MIN) raises as it does for
+     the other operators (SP_INT_NIL_CK, which sp_idiv and sp_imod run): ahead
+     of the exponent's sign, since the sentinel is negative, so `3 ** nil`
+     answered RangeError "negative exponent" and `nil ** 2` an overflow. */
+  if (SP_UNLIKELY(base == SP_INT_NIL || exp == SP_INT_NIL)) sp_raise_nil_int_op(base, exp, "**");
   if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
   /* Exact square-and-multiply (the old pow(double) round-trip lost precision
      above 2^53 and saturated on overflow). Overflow follows the +/-/* mode:
