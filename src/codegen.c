@@ -8372,6 +8372,8 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_puts(b, "  ");
       emit_ivar_field_ctype(c, ci->ivar_types[i], b);
       buf_printf(b, " iv_%s;\n", iv_c(ci->ivars[i] + 1));
+      if (ivar_set_kind(c, cid, ci->ivars[i]) == 3)
+        buf_printf(b, "  sp_bool _sp_set_%s;\n", iv_c(ci->ivars[i] + 1));
     }
     buf_puts(b, "};\n");
     return;
@@ -8386,6 +8388,8 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     /* ivar name includes '@'; strip it for the field (mangled for a member
        like `verbose?` whose raw name is not a valid C identifier) */
     buf_printf(b, " iv_%s;\n", iv_c(ci->ivars[i] + 1));
+    if (ivar_set_kind(c, cid, ci->ivars[i]) == 3)
+      buf_printf(b, "  sp_bool _sp_set_%s;\n", iv_c(ci->ivars[i] + 1));
   }
   buf_puts(b, "};\n");
 }
@@ -9999,7 +10003,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     /* an ivar nothing has set yet is not shown (ivar_set_kind): with one
        such, the separator ahead of each shown ivar is decided at run time */
     int any1 = 0;
-    for (int j = 0; j < ci->nivars && !any1; j++) any1 = ivar_set_kind(c, i, ci->ivars[j]) == 1;
+    for (int j = 0; j < ci->nivars && !any1; j++) any1 = (ivar_set_kind(c, i, ci->ivars[j]) & 1);
     if (any1) buf_puts(b, "      int _ivsep = 0; (void)_ivsep;\n");
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
@@ -10063,12 +10067,24 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
-    buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
+    int tracked = 0;
+    for (int j = 0; j < ci->nivars; j++) tracked += ivar_set_kind(c, i, ci->ivars[j]) == 3;
+    if (tracked) {
+      buf_printf(b, "      sp_mar_long(b, %d", ci->nivars - tracked);
+      for (int j = 0; j < ci->nivars; j++)
+        if (ivar_set_kind(c, i, ci->ivars[j]) == 3)
+          buf_printf(b, " + !!o->_sp_set_%s", iv_c(ci->ivars[j] + 1));
+      buf_puts(b, ");\n");
+    }
+    else buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+      int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
+      if (present) buf_printf(b, "      if (o->_sp_set_%s) {\n", iv_c(ci->ivars[j] + 1));
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
+      if (present) buf_puts(b, "      }\n");
     }
     buf_puts(b, "      return 1;\n    }\n");
   }
@@ -10090,10 +10106,13 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, "      const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(iv, k).v.i);\n");
       buf_puts(b, "      sp_RbVal val = sp_PolyArray_get(iv, k + 1); (void)val; (void)nm;\n");
       for (int j = 0; j < ci->nivars; j++) {
-        buf_printf(b, "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
+        int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
+        buf_printf(b, present ? "      %sif (!strcmp(nm, \"%s\")) { o->iv_%s = " :
+                                "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
                    j ? "else " : "", ci->ivars[j], iv_c(ci->ivars[j] + 1));
         emit_marshal_unbox_ivar(c, ci->ivar_types[j], b);
         buf_puts(b, ";\n");
+        if (present) buf_printf(b, "      o->_sp_set_%s = TRUE; }\n", iv_c(ci->ivars[j] + 1));
       }
       buf_puts(b, "    }\n");
     }
