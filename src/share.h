@@ -74,6 +74,9 @@ int share_elem_holders(const Compiler *c, int e);
    instead of a copy (#7482). Answers how many it marked. */
 int share_mark_borrows(Compiler *c);
 
+/* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
+void share_dump_unknown_mutations(Compiler *c);
+
 /* The stats' second build, with every union with UNKNOWN dropped: would
    the holder with h's key share without what the walk does not follow? */
 struct ShareFacts *share_facts_build_closed(Compiler *c);
