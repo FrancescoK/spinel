@@ -1628,6 +1628,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a Method of a builtin module function compiled)"; ok=0; \
 	else grep -q "ENV.method(:each) is not supported: a Method object of a builtin module" "$$tmp/mb.out" || \
 	  { echo "reject-test: FAIL (a Method of a builtin module function refused without saying why)"; sed -n 1,5p "$$tmp/mb.out"; ok=0; }; fi; \
+	t=test/reject/method_of_package_native_func.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mn.c" >"$$tmp/mn.out" 2>&1; then \
+	  echo "reject-test: FAIL (a Method of a package native_func compiled)"; ok=0; \
+	else grep -q "Base64.method(:strict_decode64) is not supported: a Method object of a package's native function" "$$tmp/mn.out" || \
+	  { echo "reject-test: FAIL (a Method of a package native_func refused without saying why)"; sed -n 1,5p "$$tmp/mn.out"; ok=0; }; fi; \
 	for t in test/reject/compare_by_identity_chained*.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/cbi.c" >"$$tmp/cbi.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t: a call chained onto compare_by_identity compiled)"; ok=0; \

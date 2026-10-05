@@ -685,6 +685,17 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_ntype(c, recv);
   const char *shn = ty_hash_cname(rt);
   if (!shn) return 0;
+  /* desugar_reduce_proc_arg gives a Proc, lambda or Method block argument a
+     block that calls it; any other `&expr` has no body to inline, and read
+     as an empty block every value became nil */
+  if (nt_kind(nt, block) == NK_BlockArgumentNode) {
+    char msg[256];
+    snprintf(msg, sizeof msg, "%s with this block argument (pass a block, or a Proc, lambda or Method held in a variable)",
+             name);
+    unsupported(c, id, msg);
+    buf_puts(b, "NULL");
+    return 1;
+  }
   TyKind dt = comp_ntype(c, id);
   const char *dhn = ty_hash_cname(dt);
   /* a call typed boxed (a dispatch's builtin arm asks this way): build the

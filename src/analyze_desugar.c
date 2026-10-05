@@ -2447,7 +2447,10 @@ int desugar_hash_iter_with_index(Compiler *c) {
 
 /* reduce(&pr) -> reduce { |a, b| pr.call(a, b) }, and so for the comparators
    sort, sort!, min, max and minmax, whose emitters read a block's body too
-   and ran a Proc block argument as if no block were given. */
+   and ran a Proc block argument as if no block were given. transform_values
+   and transform_keys take one parameter (`{ |v| pr.call(v) }`); their emitter
+   read a Proc, lambda or Method block argument as an empty block, and every
+   value became nil. */
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2457,7 +2460,9 @@ int desugar_reduce_proc_arg(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && !sp_streq(nm, "sort") &&
                 !sp_streq(nm, "sort!") && !sp_streq(nm, "min") && !sp_streq(nm, "max") &&
-                !sp_streq(nm, "minmax"))) continue;
+                !sp_streq(nm, "minmax") && !sp_streq(nm, "transform_values") &&
+                !sp_streq(nm, "transform_keys"))) continue;
+    int arity = sp_streq(nm, "transform_values") || sp_streq(nm, "transform_keys") ? 1 : 2;
     if (nt_ref(nt, id, "receiver") < 0) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
@@ -2474,7 +2479,19 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int simple = exty && (sp_streq(exty, "LocalVariableReadNode") ||
                           sp_streq(exty, "InstanceVariableReadNode") ||
                           sp_streq(exty, "LambdaNode"));
-    if (!simple || infer_type(c, ex) != TY_PROC) continue;
+    /* `&method(:m)` / `&Mod.method(:m)` written in place: building the
+       Method has no effect, so calling it per element answers as the one
+       CRuby builds once */
+    if (!simple && arity == 1 && nt_kind(nt, ex) == NK_CallNode && exty &&
+        sp_streq(nt_str(nt, ex, "name") ? nt_str(nt, ex, "name") : "", "method")) {
+      int ea = nt_ref(nt, ex, "arguments"), en = 0;
+      const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &en) : NULL;
+      simple = en == 1 && eav && nt_kind(nt, eav[0]) == NK_SymbolNode && nt_ref(nt, ex, "block") < 0;
+    }
+    TyKind ext = simple ? infer_type(c, ex) : TY_UNKNOWN;
+    /* a Method (`&method(:m)`, held in a local) calls the same way, for the
+       one-parameter transforms */
+    if (!(ext == TY_PROC || (arity == 1 && ext == TY_METHOD))) continue;
     /* the method's own `&b` handed on is nil when its caller gave no block,
        and a comparator then compares by <=>: the forward keeps it */
     if (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && nt_kind(nt, ex) == NK_LocalVariableReadNode) {
@@ -2486,7 +2503,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int base = nt->count;
     char pn[2][64]; int reqs[2], reads[2];
     int ok = 1;
-    for (int k = 0; k < 2 && ok; k++) {
+    for (int k = 0; k < arity && ok; k++) {
       snprintf(pn[k], sizeof pn[k], "__fold_%s_%d", comp_node_tag(c, id), k);
       reqs[k] = nt_new_node(nt, "RequiredParameterNode");
       reads[k] = nt_new_node(nt, "LocalVariableReadNode");
@@ -2502,9 +2519,9 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int body = nt_new_node(nt, "StatementsNode");
     int blocknode = nt_new_node(nt, "BlockNode");
     if (params < 0 || bparams < 0 || callargs < 0 || callnode < 0 || body < 0 || blocknode < 0) continue;
-    nt_node_set_arr(nt, params, "requireds", reqs, 2);
+    nt_node_set_arr(nt, params, "requireds", reqs, arity);
     nt_node_set_ref(nt, bparams, "parameters", params);
-    nt_node_set_arr(nt, callargs, "arguments", reads, 2);
+    nt_node_set_arr(nt, callargs, "arguments", reads, arity);
     nt_node_set_ref(nt, callnode, "receiver", ex);
     nt_node_set_str(nt, callnode, "name", "call");
     nt_node_set_ref(nt, callnode, "arguments", callargs);
@@ -2518,7 +2535,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     Scope *bs = comp_scope_of(c, blocknode);
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < arity; k++) {
       LocalVar *lv = scope_local_intern(bs, pn[k]);
       if (lv) lv->is_block_param = 1;
     }

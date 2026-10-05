@@ -961,7 +961,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (sp_streq(name, "method") && method_sym_arg(c, id) != NULL) {
     const char *sym = method_sym_arg(c, id);
     int mi = method_obj_target_mi(c, id);
-    if (mi < 0 && emit_method_obj_on_constant(c, id, recv, sym, b)) return 1;
+    if ((mi < 0 || method_obj_of_native_func(c, recv, sym)) &&
+        emit_method_obj_on_constant(c, id, recv, sym, b)) return 1;
     /* A poly receiver has no statically-known class, so method_obj_target_mi
        resolves nothing (mi < 0), there is no callable address to bind, and
        the boxed sp_RbVal is not a C pointer: the `(void *)(<expr>)` self slot

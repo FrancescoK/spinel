@@ -23213,6 +23213,18 @@ void emit_fiber_storage_key(Compiler *c, int key, Buf *b) {
    is refused here, at the call. A constant defined nowhere raises the
    NameError of its read, as CRuby does, instead of the same invalid C.
    Answers 0 for any other receiver. */
+/* `Const.method(:sym)` naming a package's native_func (Base64.strict_decode64):
+   a C symbol too, with no Method to bind. Its module is a user module, so the
+   Method took the user method path and was bound to Object, and calling it
+   answered nil or NoMethodError (#7554); emit_method_obj_on_constant refuses
+   it as it does a builtin module's function. */
+int method_obj_of_native_func(Compiler *c, int recv, const char *sym) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode &&
+                   nt_kind(nt, recv) != NK_ConstantPathNode)) return 0;
+  const char *rcn = nt_str(nt, recv, "name");
+  return rcn && sym && comp_native_find(c, rcn, sym) >= 0;
+}
 int emit_method_obj_on_constant(Compiler *c, int id, int recv, const char *sym, Buf *b) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || (nt_kind(nt, recv) != NK_ConstantReadNode &&
@@ -23220,6 +23232,14 @@ int emit_method_obj_on_constant(Compiler *c, int id, int recv, const char *sym, 
   const char *rcn = nt_str(nt, recv, "name");
   if (!rcn) return 0;
   int rci = comp_class_index(c, rcn);
+  if (method_obj_of_native_func(c, recv, sym)) {
+    char msg[512];
+    snprintf(msg, sizeof msg,
+             "%s.method(:%s) is not supported: a Method object of a package's native function "
+             "has no compiled function to bind. Call %s.%s directly, or wrap it in a lambda",
+             rcn, sym, rcn, sym);
+    unsupported_feature(c, id, msg);
+  }
   if ((rci >= 0 && !is_builtin_reopen(c->classes[rci].name)) || comp_const(c, rcn)) return 0;
   /* the CRuby constants spinel models only as call receivers, beside the
      builtin class and module table */

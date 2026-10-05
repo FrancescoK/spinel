@@ -566,6 +566,12 @@ spinel: 1 refusal, nothing written
 == test/reject/method_of_builtin_module.rb [promote] rc=1
 spinel: ENV.method(:each) is not supported: a Method object of a builtin module or class function has no compiled function to bind. Call ENV.each directly, or wrap it in a lambda
 spinel: 1 refusal, nothing written
+== test/reject/method_of_package_native_func.rb [default] rc=1
+spinel: Base64.method(:strict_decode64) is not supported: a Method object of a package's native function has no compiled function to bind. Call Base64.strict_decode64 directly, or wrap it in a lambda
+spinel: 1 refusal, nothing written
+== test/reject/method_of_package_native_func.rb [promote] rc=1
+spinel: Base64.method(:strict_decode64) is not supported: a Method object of a package's native function has no compiled function to bind. Call Base64.strict_decode64 directly, or wrap it in a lambda
+spinel: 1 refusal, nothing written
 == test/reject/new_receiver_class_chain_still_reached.rb [default] rc=1
 spinel: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
