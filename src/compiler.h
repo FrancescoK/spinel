@@ -929,6 +929,7 @@ typedef struct {
      analysis goes. Off, nothing builds them and the C is unchanged. */
   int share_strings;
   struct ShareFacts *share;
+  unsigned share_sig;   /* the types the facts were last applied over */
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);
