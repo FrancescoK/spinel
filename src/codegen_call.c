@@ -12235,6 +12235,14 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
       }
+      /* typed boxed, the call answers the program's == value itself */
+      if (comp_ntype(c, id) == TY_POLY) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_poly_eq_value(_t%d, _t%d, %d); })", ta, tb, eq ? 0 : 1);
+        return 1;
+      }
       emit_poly_eq_ordered(c, recv, argv[0], eq, b);
       return 1;
     }
