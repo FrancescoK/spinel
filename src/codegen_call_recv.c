@@ -11018,17 +11018,25 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_STR_RANGE) {
     TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     int tr = ++g_tmp;
+    /* a Range that no name holds sits in its temp while the argument is
+       made: when that may allocate, the temp's two ends are rooted first */
+    int hold = argc == 1 && !arg_ran_first(recv, 0) && !subtree_is_pure_read(c, recv) &&
+               operand_may_allocate(c, argv[0]);
     if (is_range_membership(name) && argc == 1) {
       const char *fn = is_membership_alias(name) ?
                        "sp_srange_include" : "sp_srange_cover";
       if (a0 == TY_STRING) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; %s(_t%d, ", fn, tr); emit_str_expr(c, argv[0], b);
+        buf_puts(b, "; ");
+        if (hold) { emit_gc_root_tmp_refs(c, rt, tr, b); buf_puts(b, " "); }
+        buf_printf(b, "%s(_t%d, ", fn, tr); emit_str_expr(c, argv[0], b);
         buf_puts(b, "); })"); return 1;
       }
       if (a0 == TY_POLY) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
+        buf_puts(b, "; ");
+        if (hold) { emit_gc_root_tmp_refs(c, rt, tr, b); buf_puts(b, " "); }
+        buf_printf(b, "sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
         buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
                       " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
         return 1;
@@ -11039,7 +11047,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       if (a0 == TY_STR_RANGE) {
         int tr2 = ++g_tmp;
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_StrRange _t%d = ", tr2); emit_expr(c, argv[0], b);
+        buf_puts(b, "; ");
+        if (hold) { emit_gc_root_tmp_refs(c, rt, tr, b); buf_puts(b, " "); }
+        buf_printf(b, "sp_StrRange _t%d = ", tr2); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_srange_eq(_t%d, _t%d); })", tr, tr2); return 1;
       }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;

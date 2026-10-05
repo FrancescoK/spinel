@@ -8177,6 +8177,8 @@ static void emit_arg_temp(Compiler *c, int v) {
   buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : default_value_from_compiler(c, at));
   if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
+  /* a String Range is two Strings by value, each rooted as a local's are */
+  else if (at == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, t, g_pre); }
   buf_puts(g_pre, "\n");
   free(hb.p);
   ran_first_bind(v, t, th);
@@ -10623,7 +10625,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       int has_storage = ty_is_object(at) || c_type_name(at) != NULL;
       int seq = (has_storage && n_se >= 2 && k < last_se &&
                  subtree_has_side_effect(c, argv[k]));
-      int root = (at == TY_POLY || needs_root(at));
+      /* a String Range is two Strings by value, each rooted as a local's are */
+      int root = (at == TY_POLY || needs_root(at) || at == TY_STR_RANGE);
       if (!root && !seq) continue;
       const char *aty = nt_type(nt, argv[k]);
       /* a splat at/after the rest slot (splat_idx only marks splats needing
@@ -10698,7 +10701,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
 else {
         emit_ctype(c, at, g_pre);
         buf_printf(g_pre, " _t%d = %s;", ht, hb.p ? hb.p : "0");
-        if (root) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
+        if (root && at == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, ht, g_pre); }
+        else if (root) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ht);
         buf_puts(g_pre, "\n");
       }
       free(hb.p);
@@ -11663,6 +11667,8 @@ else {
         if (held) {}
         else if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
         else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
+        /* a String Range is two Strings by value, each rooted as a local's are */
+        else if (att == TY_STR_RANGE) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, att, atmp[k], g_pre); buf_puts(g_pre, "\n"); }
       }
       if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
         /* alias the temp (already rooted) under the rename's spelling, and

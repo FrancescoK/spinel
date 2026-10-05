@@ -7194,6 +7194,10 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
     else if (needs_root(lv->type) && !comp_ty_value_obj(c, lv->type)) {
       emit_indent(b, din); buf_printf(b, "SP_GC_ROOT(lv_%s);\n", rn);
     }
+    /* two GC strings by value; see emit_local_decl */
+    else if (lv->type == TY_STR_RANGE) {
+      emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);\n", rn, rn);
+    }
     return;
   }
   emit_indent(b, din);
