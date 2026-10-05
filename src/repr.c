@@ -80,7 +80,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   NodeKind k = nt_kind(nt, node);
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
-    if (k == NK_GlobalVariableReadNode) return repr_handle_gvar(c, node) ? RS_HANDLE : RS_NONE;
+    if (repr_static_read_kind(k)) return repr_handle_static(c, node) ? RS_HANDLE : RS_NONE;
     /* a local promoted to the handle after the node types were final */
     if (k != NK_LocalVariableReadNode) return RS_NONE;
     const char *ln = nt_str(nt, node, "name");
@@ -104,7 +104,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF) return RS_HANDLE;
   }
   /* a global holding the handle (--share-strings) */
-  if ((k == NK_GlobalVariableReadNode || k == NK_GlobalVariableWriteNode) && repr_handle_gvar(c, node))
+  if ((repr_static_read_kind(k) || k == NK_GlobalVariableWriteNode) && repr_handle_static(c, node))
     return RS_HANDLE;
   /* an ivar write's value is the slot */
   if (k == NK_InstanceVariableWriteNode) return RS_HANDLE;
@@ -413,6 +413,7 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   if (ty_is_object(lv->type) && lv->obj_may_nil) r.may_nil = 1;
   /* str_shared refines TY_STRBUF; it can outlive that storage type */
   if (lv->type == TY_STRBUF && lv->str_shared) r.handle = 1;
+  r.elems_handle = lv->elems_shared && lv->type == TY_POLY_ARRAY;
   r.kind = (unsigned char)k;
   r.dyn_cls = repr_dyn_cls(c, lv->type);
   return r;
@@ -446,17 +447,70 @@ int repr_sealed(void) { return repr_sealed_flag; }
 
 /* ---- --share-strings (#6765) ---- */
 
-LocalVar *repr_handle_gvar(const Compiler *c, int node) {
+int repr_static_read_kind(NodeKind k) {
+  return k == NK_GlobalVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode ||
+         k == NK_ClassVariableReadNode;
+}
+static int repr_const_node(NodeKind k) {
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode || k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode ||
+         k == NK_ConstantAndWriteNode || k == NK_ConstantOperatorWriteNode;
+}
+static int repr_cvar_node(NodeKind k) {
+  return k == NK_ClassVariableReadNode || k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode ||
+         k == NK_ClassVariableAndWriteNode || k == NK_ClassVariableOperatorWriteNode;
+}
+/* The class variable node `node` names, by the read emitter's rule
+   (cvar_global_slot): its owning class and index, or 0. */
+static int repr_cvar_slot(const Compiler *c, int node, int *cid, int *idx) {
+  const char *nm = nt_str(c->nt, node, "name");
+  Scope *s = comp_scope_of((Compiler *)c, node);
+  if (!nm || !s) return 0;
+  int k = s->class_id;
+  if (k < 0 && c->node_cbody && node < c->node_cap) k = c->node_cbody[node];
+  if (k < 0) k = comp_class_index((Compiler *)c, "Toplevel");
+  if (k < 0) return 0;
+  k = comp_cvar_owner((Compiler *)c, k, nm);
+  int i = comp_cvar_index(&c->classes[k], nm);
+  if (i < 0) return 0;
+  *cid = k; *idx = i;
+  return 1;
+}
+static LocalVar *repr_static_var(const Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (node < 0) return NULL;
   NodeKind k = nt_kind(nt, node);
-  if (k != NK_GlobalVariableReadNode && k != NK_GlobalVariableWriteNode && k != NK_GlobalVariableOrWriteNode &&
-      k != NK_GlobalVariableAndWriteNode && k != NK_GlobalVariableOperatorWriteNode)
-    return NULL;
-  const char *gn = nt_str(nt, node, "name");
-  const char *rn = gn && gn[0] == '$' ? comp_resolve_gvar((Compiler *)c, gn + 1) : NULL;
-  LocalVar *gv = rn ? comp_gvar((Compiler *)c, rn) : NULL;
-  return gv && repr_of_slot(c, gv).kind == RK_STRBUF && gv->str_shared ? gv : NULL;
+  if (k == NK_GlobalVariableReadNode || k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableOrWriteNode ||
+      k == NK_GlobalVariableAndWriteNode || k == NK_GlobalVariableOperatorWriteNode) {
+    const char *gn = nt_str(nt, node, "name");
+    const char *rn = gn && gn[0] == '$' ? comp_resolve_gvar((Compiler *)c, gn + 1) : NULL;
+    return rn ? comp_gvar((Compiler *)c, rn) : NULL;
+  }
+  if (repr_const_node(k)) {
+    const char *cn = nt_str(nt, node, "name");
+    return cn ? comp_const((Compiler *)c, cn) : NULL;
+  }
+  return NULL;
+}
+int repr_handle_static(const Compiler *c, int node) {
+  if (node < 0) return 0;
+  if (repr_cvar_node(nt_kind(c->nt, node))) {
+    int cid, idx;
+    if (!repr_cvar_slot(c, node, &cid, &idx)) return 0;
+    const ClassInfo *ci = &c->classes[cid];
+    return ci->cvar_types[idx] == TY_STRBUF && ci->cvar_str_shared && ci->cvar_str_shared[idx];
+  }
+  LocalVar *lv = repr_static_var(c, node);
+  return lv && repr_of_slot(c, lv).kind == RK_STRBUF && lv->str_shared;
+}
+int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap) {
+  if (!repr_handle_static(c, node)) return 0;
+  NodeKind k = nt_kind(c->nt, node);
+  if (repr_cvar_node(k)) {
+    int cid, idx;
+    repr_cvar_slot(c, node, &cid, &idx);
+    snprintf(out, cap, "cvar_%s_%s", c->classes[cid].name, c->classes[cid].cvars[idx] + 2);
+  }
+  else snprintf(out, cap, "%s_%s", repr_const_node(k) ? "cst" : "gv", repr_static_var(c, node)->name);
+  return 1;
 }
 
 int repr_str_class_shares(unsigned flags, int holders) {
@@ -502,8 +556,24 @@ static int repr_share_carried(Compiler *c, const ShareHolder *h) {
     shared = gv->str_shared;
     break;
   }
-  case SHK_CVAR: case SHK_CONST:
-    t = h->node >= 0 ? c->ntype[h->node] : TY_UNKNOWN;
+  case SHK_CONST: {
+    LocalVar *cv = h->name ? comp_const(c, h->name) : NULL;
+    if (!cv) return -1;
+    t = cv->type;
+    shared = cv->str_shared;
+    break;
+  }
+  case SHK_CVAR:
+    /* every class with a class variable of the name (the facts key it by
+       name alone) */
+    for (int k = 0; k < c->nclasses; k++) {
+      int i = h->name ? comp_cvar_index(&c->classes[k], h->name) : -1;
+      if (i < 0) continue;
+      TyKind ct = c->classes[k].cvar_types[i];
+      if (ct == TY_POLY) return 1;
+      if (ct == TY_STRBUF && c->classes[k].cvar_str_shared[i]) { t = ct; shared = 1; }
+      else if (ct == TY_STRING || ct == TY_STRBUF) return 0;
+    }
     break;
   default:
     return -1;
@@ -577,6 +647,23 @@ static void repr_share_seal(Compiler *c) {
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
     if (!carried && bad < 0) bad = h;
   }
+  /* a container literal no holder names, whose elements the rule shares
+     only once the facts settle after the fixpoint, kept a typed String
+     form: its elements would be copies */
+  int bad_lit = -1;
+  for (int n = 0; n < c->nt->count && bad_lit < 0; n++) {
+    NodeKind k = nt_kind(c->nt, n);
+    if (k != NK_ArrayNode && k != NK_HashNode) continue;
+    TyKind t = c->ntype[n];
+    int ne = 0;
+    nt_arr(c->nt, n, "elements", &ne);
+    /* an empty one holds no String yet: what is stored later goes through
+       the holder that keeps it; one nothing can reach again once its
+       expression is done (`p [a, b]`) keeps no name for its copies */
+    if (ne > 0 && (t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH) && share_node_elems_share(c, n) &&
+        share_node_anchored(c, n))
+      bad_lit = n;
+  }
   if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
   if (stats && stats[0] == '2')
     for (int h = 0; h < nh; h++) {
@@ -600,6 +687,10 @@ static void repr_share_seal(Compiler *c) {
   /* a route master refuses, left to the rule: refused as master does
      unless the final facts share its String */
   share_routes_check(c);
+  if (bad < 0 && bad_lit >= 0)
+    unsupported_feature(c, bad_lit, "under --share-strings, the Strings this literal holds are shared with "
+                        "another name and changed in place, and a typed String container cannot hold the "
+                        "shared handle yet (#6765)");
   if (bad >= 0) {
     const ShareHolder *sh = share_holder(c, bad);
     char nm[160];

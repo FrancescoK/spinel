@@ -6401,7 +6401,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
          a caller writing into its own afterwards went unseen. */
       NodeKind pk = nt_kind(c->nt, provided);
       int late = (pk == NK_LocalVariableReadNode || pk == NK_InstanceVariableReadNode ||
-                  pk == NK_GlobalVariableReadNode) &&
+                  repr_static_read_kind(pk)) &&
                  arg_ran_first(provided, 0);
       if (late) {
         int th = ran_first_handle(provided);
@@ -7800,7 +7800,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   NodeKind vk = nt_kind(c->nt, v);
   int th = -1;
   if ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
-       vk == NK_GlobalVariableReadNode) &&
+       repr_static_read_kind(vk)) &&
       strbuf_slot_ref(c, v, sref, sizeof sref)) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);

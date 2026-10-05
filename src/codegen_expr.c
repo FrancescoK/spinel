@@ -2008,6 +2008,12 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     if (cid >= 0) {
       cid = comp_cvar_owner(c, cid, nm);
+      /* --share-strings: a class variable holding the shared handle */
+      char sref[300];
+      if (repr_handle_static_ref(c, id, sref, sizeof sref)) {
+        emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+        return 1;
+      }
       buf_printf(b, "cvar_%s_%s", c->classes[cid].name, nm + 2);
       return 1;
     }
@@ -2025,6 +2031,22 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     int idx = comp_cvar_index(&c->classes[cid], nm);
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
     buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
+    /* --share-strings: a class variable holding the shared handle; the
+       value is its read */
+    if (idx >= 0 && ct == TY_STRBUF && c->classes[cid].cvar_str_shared[idx]) {
+      LocalVar slot;
+      memset(&slot, 0, sizeof slot);
+      slot.type = TY_STRBUF;
+      slot.str_shared = 1;
+      if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
+      else emit_strbuf_value(c, &slot, v, b);
+      emit_cvar_set_flag_after(c, cid, nm, b);
+      char sref[300]; snprintf(sref, sizeof sref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
+      buf_puts(b, ", ");
+      emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
@@ -2241,6 +2263,12 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    /* --share-strings: a constant holding the shared handle (#6765) */
+    if (cv && !slot && repr_of_slot(c, cv).kind == RK_STRBUF && !cv->init_guarded) {
+      char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
+      emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      return 1;
+    }
     if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
@@ -2436,6 +2464,12 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     } }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
+    /* --share-strings: a constant holding the shared handle (#6765) */
+    if (cpcv && !slot && repr_of_slot(c, cpcv).kind == RK_STRBUF) {
+      char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
+      emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      return 1;
+    }
     if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "%scst_%s", slot ? "&" : "", nm); return 1; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }

@@ -89,6 +89,12 @@ typedef struct ShareRoute {
   char *msg;           /* (a kept route's message) */
 } ShareRoute;
 ShareRoute share_route(int site, int value, int elems);
+/* Does the rule share the elements of node n's value (a container)? */
+int share_node_elems_share(const Compiler *c, int n);
+/* Can node n's value (a container) be reached again once its expression
+   is done: a holder keeps it, it leaves a call to be read after, or it
+   meets what the walk does not follow? */
+int share_node_anchored(const Compiler *c, int n);
 
 /* A master route-refusal site asks this first. With the flag off it answers
    0 and the site refuses as before. With it on, the route is the rule's,

@@ -3918,7 +3918,10 @@ int infer_write_types(Compiler *c) {
          temp whose type IS its receiver's); the per-iteration reset must not
          wipe it -- users of such a temp can precede its own (late, synthesized)
          write in node order and would re-derive from UNKNOWN forever (#2723) */
-      if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) { lv->gc_root = (int)lv->type; lv->type = TY_UNKNOWN; }
+      if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) {
+        lv->gc_root = (int)lv->type;
+        lv->type = TY_UNKNOWN;
+      }
     }
   /* Because of that reset, a site below that types a non-param local must NOT
      report `changed` itself: it is comparing against UNKNOWN, so it answers
@@ -4330,6 +4333,9 @@ int infer_write_types(Compiler *c) {
       LocalVar *lv = &c->scopes[s].locals[i];
       if ((lv->str_shared || lv->str_append) &&
           (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
+      /* --share-strings: a String Array the rule settled in its poly form
+         keeps it (share_default_apply) */
+      if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
     }
 
   /* Detect change vs the stashed old types -- over EXACTLY the slots the reset
