@@ -10023,6 +10023,25 @@ static SP_UNUSED sp_int sp_fill_offset_arg(sp_RbVal v, int range_alone) {
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(v)));
   return 0;
 }
+/* Array#fill keeps its nil/default and boxed-Range rules, but every
+   other offset follows the implicit Integer protocol. Check Float before
+   narrowing: an out-of-range length must never reach the growth loop. */
+static SP_UNUSED sp_int sp_array_fill_offset_arg(sp_RbVal v, int range_alone) {
+  if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT) return sp_fill_offset_arg(v, range_alone);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE)
+    return sp_fill_offset_arg(v, range_alone);
+  if (v.tag == SP_TAG_FLT) {
+    if (!isfinite(v.v.f))
+      sp_raise_cls("RangeError", sp_sprintf("float %s out of range of integer",
+                   isnan(v.v.f) ? "NaN" : v.v.f > 0 ? "Inf" : "-Inf"));
+    if (v.v.f >= -(sp_float)INTPTR_MIN || v.v.f < (sp_float)INTPTR_MIN)
+      sp_raise_cls("RangeError", sp_sprintf("float %.10g out of range of integer", v.v.f));
+    return sp_float_fit_i(v.v.f);
+  }
+  if (v.tag == SP_TAG_BIGINT && !sp_bigint_fits_int((sp_Bigint *)v.v.p))
+    sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
+  return sp_poly_arg_int_chk(v);
+}
 static sp_IntArray *sp_poly_as_int_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY) return (sp_IntArray *)v.v.p;
   if (v.tag == SP_TAG_NIL || !sp_poly_is_array_kind(v.cls_id)) return (sp_IntArray *)0;
