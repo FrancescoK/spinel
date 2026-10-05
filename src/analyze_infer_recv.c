@@ -1597,8 +1597,9 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     { *out = TY_STRING; return 1; }
   /* poly.compact / poly.flatten: an Array read out of a container answers a
      generic Array either way (#3423). */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       sp_streq(name, "flatten") &&
+      (argc == 0 || (argc == 1 && infer_type(c, argv[0]) == TY_INT)) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_POLY_ARRAY; return 1; }
   /* #compact answers the receiver's own kind -- Hash#compact is a Hash -- and

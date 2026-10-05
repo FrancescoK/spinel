@@ -15552,12 +15552,18 @@ static sp_RbVal sp_poly_compact_val(sp_RbVal v) {
   }
   return sp_box_poly_array(sp_poly_compact(v));
 }
-static sp_PolyArray *sp_poly_flatten(sp_RbVal v) {
-  if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) sp_poly_ary_chk(v, "flatten", 0);
+/* flatten / flatten(depth) on a boxed receiver: an Array flattens fully by
+   default, a Hash its [key, value] pairs one level (Hash#flatten is
+   to_a.flatten(1)); a depth unwraps that many levels, a negative one all. */
+static sp_PolyArray *sp_poly_flatten_d(sp_RbVal v, sp_int d, int has_d) {
+  int hash = v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id);
+  if (!hash) sp_poly_ary_chk(v, "flatten", 0);
   sp_PolyArray *src = sp_poly_arr_recv(v, "flatten");
   SP_GC_ROOT(src);
-  return sp_PolyArray_flatten(src);
+  if (!has_d && !hash) return sp_PolyArray_flatten(src);
+  return sp_PolyArray_flatten_depth(src, has_d ? d : 1);
 }
+static sp_PolyArray *sp_poly_flatten(sp_RbVal v) { return sp_poly_flatten_d(v, 0, 0); }
 /* String#gsub / #sub whose pattern is a poly value: a Regexp (the boxed
    compiled pattern) or a String, decided at runtime -- activesupport's
    inflection rules are [pattern, replacement] pairs of either kind, read
