@@ -4095,6 +4095,18 @@ static sp_bool sp_poly_enc_pred(sp_RbVal v, const char *meth) {
   const char *n = v.v.s ? v.v.s : "";
   return !(strncmp(n, "UTF-16", 6) == 0 || strncmp(n, "UTF-32", 6) == 0);
 }
+/* String#encoding / Symbol#encoding on a boxed receiver: a Symbol is
+   US-ASCII when its name is all ASCII and UTF-8 otherwise, as the typed
+   Symbol arm answers; a String is ASCII-8BIT or UTF-8; anything else raises
+   NoMethodError. */
+static sp_RbVal sp_poly_encoding(sp_RbVal v) {
+  if (v.tag == SP_TAG_SYM) {
+    for (const char *p = sp_sym_to_s((sp_sym)v.v.i); *p; p++)
+      if ((unsigned char)*p >= 0x80) return sp_box_encoding(sp_encoding_utf8());
+    return sp_box_encoding(sp_encoding_us_ascii());
+  }
+  return sp_box_encoding(sp_str_is_binary(sp_poly_recv_s(v, "encoding")) ? sp_encoding_binary() : sp_encoding_utf8());
+}
 
 static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *), const char *meth) {
   if (v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_json_sym_intern_fn)

@@ -1,0 +1,6 @@
+#<Encoding:US-ASCII>
+#<Encoding:UTF-8>
+#<Encoding:UTF-8>
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+undefined method 'encoding' for an instance of Integer
