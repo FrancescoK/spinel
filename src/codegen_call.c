@@ -968,6 +968,8 @@ int poly_exc_cand(Compiler *c, const char *name) {
 
 static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b);
+static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+                                       const char *pick_name, Buf *b);
 /* `sp_io_pick_class(<handle>, names, idx)` over the reopened IO classes
    that define `name` (public ones only when asked): the one the handle's
    kind is nearest to, or 0x7fffffff. Emits nothing and answers 0 when no
@@ -1167,8 +1169,22 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
   buf_puts(b, "; })");
   unhoist_dispatch_args(c, hn, hsv, hty);
 }
+/* The dispatch key of a whole dispatch: emit_poly_dispatch_key_pick's, and
+   an Array subclass instance, boxed as its Array, keys by the class its
+   scan names (#7449). The pick's own recursions take the pick alone. */
+static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+                                       const char *pick_name, Buf *b) {
+  if (!program_has_arysub(c)) {
+    emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+    return;
+  }
+  int kt = ++g_tmp;
+  buf_printf(b, "({ int _ak%d = sp_bsub_cls_of(_t%d); _ak%d >= 0 ? _ak%d : ", kt, tv, kt, kt);
+  emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+  buf_puts(b, "; })");
+}
 void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b) {
-  emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
+  emit_poly_dispatch_key_top(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
 }
 
 /* The dispatch key, with a boxed exception of a class that has no method of
@@ -1221,7 +1237,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
       return;
     }
     buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION) ? sp_exc_user_cls_id(_t%d) : ", tv, tv, tv);
-    emit_poly_dispatch_key(c, tv, cls0_cand, prim_cand, 0, b);
+    emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, 0, NULL, b);
     buf_puts(b, ")");
     return;
   }
@@ -1683,6 +1699,26 @@ static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_
 #undef BAM
 #undef BAS
 #undef BAC
+/* Every (class, name) the facts carry, the instance-count rows (BAS: the
+   Enumerable names an Array answers, among them) included: an Array
+   subclass instance answers each Array name as its Array (#7449). */
+#define BAI(c,m,...) {c,m},
+#define BAM(c,m,a) {c,m},
+#define BAS(c,m,...) {c,m},
+#define BAC(...)
+static const struct { const char *cls; const char *m; } sp_builtin_names_tbl[] = {
+#include "builtin_arity.inc"
+  {NULL, NULL}
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+int builtin_instance_method_known(const char *cls, const char *m) {
+  for (int i = 0; sp_builtin_names_tbl[i].cls; i++)
+    if (sp_streq(sp_builtin_names_tbl[i].cls, cls) && sp_streq(sp_builtin_names_tbl[i].m, m)) return 1;
+  return 0;
+}
 /* Exported probes for the analyze-side method() desugar (#2752): whether the
    builtin table knows (cls, m), and whether m is universal Object surface. */
 int builtin_method_known(const char *cls, const char *m);
@@ -7394,7 +7430,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* a genuine String in a slot whose name a user class owns (#4816) */
       emit_poly_str_prearm(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, b);
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key_pick(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+      emit_poly_dispatch_key_top(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
                                   (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame0);
@@ -7702,7 +7738,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* where this switch starts, so its end can tell whether any arm below
          wrote the `default:` label (see the builtin default at the close) */
       size_t sw_start = b->len;
-      emit_poly_dispatch_key_pick(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+      emit_poly_dispatch_key_top(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
                                   (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame);
@@ -17517,7 +17553,12 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
                   "(%s.tag == SP_TAG_OBJ && (%s.cls_id == SP_BUILTIN_RATIONAL || "
                   "%s.cls_id == SP_BUILTIN_BIG_RATIONAL || %s.cls_id == SP_BUILTIN_COMPLEX)))",
                v, v, v, v, v, v, v);
-  else if (sp_streq(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && sp_poly_is_array_kind(%s.cls_id))", v, v);
+  else if (sp_streq(cn, "Array")) {
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && sp_poly_is_array_kind(%s.cls_id)", v, v);
+    /* an Array subclass instance is no instance of Array itself (#7449) */
+    if (exact && program_has_arysub(c)) buf_printf(b, " && sp_bsub_cls_of(%s) < 0", v);
+    buf_puts(b, ")");
+  }
   else if (sp_streq(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && ((%s.cls_id <= -13 && %s.cls_id >= -20) || %s.cls_id == -34))", v, v, v, v);
   else if (sp_streq(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
   else {
@@ -17542,7 +17583,11 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
          receiver does */
       for (int k = 0; k < c->nclasses; k++)
         if (k == cid || (!exact && class_isa_user(c, k, cid, cn))) {
-          buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", v, k); first = 0;
+          /* an Array subclass instance is boxed as its Array (#7449) */
+          if (c->classes[k].ary_root > 0)
+            buf_printf(b, "%ssp_bsub_cls_of(%s) == %d", first ? "" : " || ", v, k);
+          else buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", v, k);
+          first = 0;
         }
       if (first) buf_puts(b, "0");
       buf_puts(b, "))");
@@ -20252,6 +20297,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     } }
+  if (emit_arysub_call(c, id, b)) return;   /* Array's, on an Array subclass instance (#7449) */
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
@@ -22861,6 +22907,9 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
+  /* an Array subclass instance answers Array's names (#7449) */
+  if (!resolved && recv >= 0 && comp_ty_ary_root(c, rt) >= 0 && comp_array_method_name(qm))
+    { yes = resolved = 1; }
   /* A top-level def (a hoisted `module Kernel` method among them) is a
      private method of Object, so every receiver answers it to include_all:
      `5.respond_to?(:foo, true)` read false. A receiver whose class has its

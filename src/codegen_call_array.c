@@ -2021,3 +2021,124 @@ int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
   BopCtx x = { id, recv, argc, rt, name, op, NULL, 0 };
   return emit_op_array_transpose(c, &x, b);
 }
+
+/* ---- Array subclass instances (#7449) ----
+   A call Array answers on an Array subclass instance (comp_arysub_call) is
+   Array's call: the receiver is bound to its Array -- the same pointer, since
+   the instance starts with its Array -- and the call re-enters the emitters
+   under the kind the inference pinned it to (infer_arysub_call), as a boxed
+   receiver's face does (emit_face_arm). A call whose answer is its receiver
+   answers the instance. */
+typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; int copy; } ArysubView;
+
+/* Bind node n, an Array subclass instance, to its Array -- the same pointer
+   cast -- evaluating anything but a variable once, ahead of the call. */
+static int arysub_bind(Compiler *c, int n) {
+  const char *at = arysub_array_ctype(c, ty_object_class(comp_ntype(c, n)));
+  NodeKind nk = nt_kind(c->nt, n);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, n, &rb);
+  char cast[96];
+  snprintf(cast, sizeof cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
+  int slot;
+  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && strlen(cast) < sizeof g_argov_text[0])
+    slot = view_bind(n, "%s", cast);
+  else {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s *_t%d = (%s *)(%s); SP_GC_ROOT(_t%d);\n", at, t, at, rb.p ? rb.p : "NULL", t);
+    slot = view_bind(n, "_t%d", t);
+  }
+  free(rb.p);
+  return slot;
+}
+
+/* Bind and retype the receiver of call `id` when the call is Array's on an
+   Array subclass instance, and the arguments the call reads as Arrays
+   (comp_arysub_args_viewed); 0 when there is neither. */
+static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
+  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN; v->copy = 0;
+  if (comp_arysub_call(c, id, rt, &k) && array_new_copies(k)) {
+    v->bound = arysub_bind(c, recv);
+    v->vr = view_push(c, recv, k);
+    v->vf = view_push_face(recv, k);
+    /* a call that answers its receiver: the Array emitter's answer -- the
+       Array itself, or boxed where a `!` method answers nil when it
+       changed nothing (BOPF_SELF_OR_NIL) -- is turned back into the
+       instance below */
+    if (comp_arysub_self_result(c, id)) {
+      v->nat = comp_arysub_answer(c, id) & BOPF_SELF_OR_NIL ? TY_POLY : k;
+      v->vi = view_push(c, id, v->nat);
+    }
+    /* a conversion answering its receiver only when the receiver's class
+       is exactly Array (to_a, BOPF_SELF_EXACT) answers a new plain Array
+       of the elements: the Array emitter's answer is the instance's own
+       Array, copied below */
+    else if (comp_arysub_answer(c, id) & BOPF_SELF_EXACT) v->copy = 1;
+    rt = k;
+  }
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int want = 0;
+  for (int i = 0; i < an; i++) want |= comp_ty_ary_root(c, comp_ntype(c, av[i])) >= 0;
+  if (want && comp_arysub_args_viewed(c, id, rt)) {
+    for (int i = 0; i < an && v->nv < 16; i++) {
+      TyKind at = comp_ntype(c, av[i]);
+      if (comp_ty_ary_root(c, at) < 0) continue;
+      int slot = arysub_bind(c, av[i]);
+      if (v->bound < 0) v->bound = slot;
+      v->views[v->nv++] = view_push(c, av[i], comp_ary_kind(c, ty_object_class(at)));
+    }
+  }
+  return v->bound >= 0;
+}
+static void arysub_view_close(Compiler *c, ArysubView *v) {
+  for (int i = v->nv - 1; i >= 0; i--) view_pop(c, v->views[i]);
+  if (v->vi >= 0) view_pop(c, v->vi);
+  if (v->vf >= 0) view_pop(c, v->vf);
+  if (v->vr >= 0) view_pop(c, v->vr);
+  view_unbind(v->bound);
+}
+
+int emit_arysub_call(Compiler *c, int id, Buf *b) {
+  if (!c->has_arysub) return 0;
+  int ka = comp_arysub_kernel_array(c, id);
+  if (ka >= 0 && comp_ty_ary_root(c, comp_ntype(c, ka)) >= 0) { emit_expr(c, ka, b); return 1; }
+  int recv = nt_ref(c->nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  ArysubView v;
+  if (!arysub_view_open(c, id, &v)) return 0;
+  const char *cn = recv >= 0 && ty_is_object(rt) ? c->classes[ty_object_class(rt)].c_name : NULL;
+  if (v.vi >= 0 && v.nat == TY_POLY) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_call(c, id, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d.v.p; })", t, cn, t);
+  }
+  else if (v.copy) {
+    buf_printf(b, "%s_dup(", arysub_array_ctype(c, ty_object_class(rt)));
+    emit_call(c, id, b);
+    buf_puts(b, ")");
+  }
+  else {
+    if (v.vi >= 0) buf_printf(b, "((sp_%s *)(", cn);
+    emit_call(c, id, b);
+    if (v.vi >= 0) buf_puts(b, "))");
+  }
+  arysub_view_close(c, &v);
+  return 1;
+}
+
+/* The statement form: the statement emitters' own Array paths (the in-place
+   mutators, the loops) take it. */
+int emit_arysub_call_stmt(Compiler *c, int id, Buf *b, int indent) {
+  if (!c->has_arysub) return 0;
+  ArysubView v;
+  if (!arysub_view_open(c, id, &v)) return 0;
+  emit_stmt_inner(c, id, b, indent);
+  arysub_view_close(c, &v);
+  return 1;
+}

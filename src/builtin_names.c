@@ -730,3 +730,26 @@ int is_builtin_reopen_name(const char *name) {
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
          sp_streq(name, "Random");
 }
+
+/* An Array subclass instance's questions about the object itself rather
+   than its elements (#7449): the class's own answers, through the object
+   paths. dup and clone keep the class and copy the elements. */
+int is_arysub_object_name(const char *n) {
+  static const char *const names[] = {
+    "class", "singleton_class", "is_a?", "kind_of?", "instance_of?", "respond_to?",
+    "equal?", "object_id", "__id__", "dup", "clone", "itself", "tap", "then",
+    "yield_self", "instance_variable_get", "instance_variable_set",
+    "instance_variable_defined?", "instance_variables", "remove_instance_variable",
+    "send", "public_send", "__send__", "method", "public_method", "methods",
+    "public_methods", "singleton_methods", "define_singleton_method", "extend",
+    "instance_eval", "instance_exec", "nil?", "!", "display", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}
+
+/* The Object methods an Array subclass instance answers as its Array
+   (#7449): to_enum and enum_for walk its elements, frozen? reads the
+   Array's frozen flag, != negates Array#==. */
+int is_arysub_kernel_name(const char *n) {
+  return sp_streq(n, "to_enum") || sp_streq(n, "enum_for") || sp_streq(n, "frozen?") || sp_streq(n, "!=");
+}
