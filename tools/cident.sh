@@ -63,6 +63,13 @@ CORPUSKEY=$({
   printf '%s\n' "$CORPUS" | git hash-object --stdin-paths
 } | git hash-object --stdin)
 REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}-$CORPUSKEY
+# A cold cache has one builder. Hold the lock through comparison so no
+# other run can remove or read its outputs while they are being written.
+LOCK=$REFDIR.lock
+mkdir -p "$(dirname "$REFDIR")"
+while ! mkdir "$LOCK" 2>/dev/null; do sleep 1; done
+trap 'rmdir "$LOCK"' EXIT
+trap 'exit 2' HUP INT TERM
 if [ ! -f "$REFDIR/.done" ]; then
   # The C embeds the compiler's own tree path in a few string literals,
   # together with their lengths. A reference tree at a path of the same
