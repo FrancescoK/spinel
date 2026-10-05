@@ -35,6 +35,13 @@ int emit_op_hash_pattern(Compiler *c, const BopCtx *x, Buf *b) {
                   " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
                   " if (sp_poly_is_a(_t%d, (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++; }",
                ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
+  /* a boxed pattern is tested at run time with ===: a Class, a Range or a
+     Regexp read out of a mixed Array (count compares by ==) */
+  else if (comp_ntype(c, argv[0]) == TY_POLY && !sp_streq(name, "count"))
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
+                  " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
+                  " if (sp_poly_case_eq(_t%d, _t%d)) _t%d++; }",
+               ti, ti, tn, ti, tp, th, ti, tv, tp, tc2);
   else
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
                   " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
@@ -67,6 +74,8 @@ int emit_op_hash_pattern_all(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tp, ti);
   if (comp_ntype(c, argv[0]) == TY_CLASS)
     buf_printf(b, " if (sp_poly_is_a(_t%d->data[_t%d], (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++;", tp, ti, tpat, tc);
+  else if (comp_ntype(c, argv[0]) == TY_POLY)   /* === at run time, as above */
+    buf_printf(b, " if (sp_poly_case_eq(_t%d, _t%d->data[_t%d])) _t%d++;", tpat, tp, ti, tc);
   else
     buf_printf(b, " if (sp_poly_eq(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
   buf_printf(b, " _t%d == _t%d->len; })", tc, tp);
