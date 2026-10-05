@@ -650,7 +650,7 @@ void emit_int_divisor(Compiler *c, int node, Buf *b) {
      (Integer#remainder reaches sp_iremainder through it), so a boxed value
      that is not an integer raises CRuby's TypeError rather than being read
      as one. */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_arg_int_chk("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -716,7 +716,7 @@ static int emit_arm_text_as_bigint(TyKind res, TyKind at, const char *txt, Buf *
 static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *bty = nt_type(nt, nd);
-  if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) { emit_boxed(c, nd, b); return; }
+  if (res == TY_POLY && repr_of(c, nd).kind != RK_BOXED) { emit_boxed(c, nd, b); return; }
   /* An arm with no C VALUE cannot sit in a C conditional beside a typed
      sibling: a method whose body is `nil` compiles to a void function, and
      `a && a.analyze` put that call straight into one arm of `? :` whose other
@@ -1256,7 +1256,7 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
      sp_IntArray * (#4277). Render it into the slot the declaration promises.
      Every other value type answers the same both ways, so this changes only
      the shapes that did not compile. */
-  if (vt == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+  if (vt == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
   else emit_expr(c, v, b);
   buf_puts(b, "; ");
   if (vt == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tw);
@@ -1511,7 +1511,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        read of a concretely-declared local boxes the declared value so the
        consumer's poly dispatch stays well-typed (#2730). */
     if (slv && slv->type != TY_POLY && slv->type != TY_UNKNOWN &&
-        slv->type != TY_STRBUF && comp_ntype(c, id) == TY_POLY) {
+        slv->type != TY_STRBUF && repr_of(c, id).kind == RK_BOXED) {
       Buf rb3; memset(&rb3, 0, sizeof rb3);
       emit_local_ref(c, id, lrn, &rb3);
       emit_boxed_text(c, slv->type, rb3.p ? rb3.p : "", b);
@@ -1605,7 +1605,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
     int ven = 0;
     int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
-    if (lv && lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    if (lv && lv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
     /* an empty `[]` is built at the slot's representation, as the statement
        form and the ivar twin below build it: its own default, an IntArray,
        went into an sp_PolyArray *, sp_FloatArray * or sp_PtrArray * slot.
@@ -1636,7 +1636,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        raw, the literal was reinterpreted as an sp_Bigint* and a boxed chain
        value did not compile at all. */
     else if (lv && lv->type == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT) {
-      if (comp_ntype(c, v) == TY_POLY) {
+      if (repr_of(c, v).kind == RK_BOXED) {
         buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, v, b); buf_puts(b, ")");
       }
       else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
@@ -1736,6 +1736,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     buf_puts(b, "({ ");
     if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
     buf_printf(b, "%s = ", ref2e);
+    Repr rp = repr_of(c, v);
     if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
     else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));
@@ -1744,7 +1745,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
-    else if (ivt2 == TY_STRBUF && repr_of(c, v).as_ty != TY_STRBUF && comp_ntype(c, v) != TY_POLY) {
+    else if (ivt2 == TY_STRBUF && rp.as_ty != TY_STRBUF && rp.kind != RK_BOXED) {
       /* a shared-handle slot takes an alias RHS by handle and wraps anything
          else in a fresh handle, exactly as the statement form does; the raw
          const char * went into the sp_String * slot here (a value-position
@@ -1761,7 +1762,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
                  ref2e, ref2e, ref2e);
       return 1;
     }
-    else if (ivt2 == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
+    else if (ivt2 == TY_POLY && rp.kind != RK_BOXED) emit_boxed(c, v, b);
     /* a typed array into the general Array slot the ivar widened to (an
        `o.a << nil` through its reader), rebuilt as the statement form does:
        an endless `def initialize(z) = (@a = [z])` assigned the typed array
@@ -1772,7 +1773,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
          as the statement form does */
       emit_array_store_value(c, ivt2, v, b);
     }
-    else if (ivt2 != TY_POLY && ivt2 != TY_UNKNOWN && comp_ntype(c, v) == TY_POLY) {
+    else if (ivt2 != TY_POLY && ivt2 != TY_UNKNOWN && rp.kind == RK_BOXED) {
       /* poly rhs assigned to a typed ivar: unbox to the concrete type */
       Buf _rb; memset(&_rb, 0, sizeof _rb);
       emit_expr(c, v, &_rb);
@@ -1832,7 +1833,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        a boxed value, as its type says: the local's number, or nil for its
        nil sentinel */
     static int orw_boxing_id = -1;
-    if ((t == TY_INT || t == TY_FLOAT) && comp_ntype(c, id) == TY_POLY && orw_boxing_id != id) {
+    if ((t == TY_INT || t == TY_FLOAT) && repr_of(c, id).kind == RK_BOXED && orw_boxing_id != id) {
       int sv = orw_boxing_id; orw_boxing_id = id;
       buf_puts(b, t == TY_INT ? "sp_box_int_or_nil(" : "sp_box_float_or_nil(");
       emit_expr_node(c, id, b);
@@ -1916,7 +1917,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
        plain String it holds becomes the shared handle and is stored back
        first, as a POLY local's marked read is (poly_strbuf_lift); an
        instance's field store takes its write barrier from gc_wb_insert. */
-    if (rp.poly_lift && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
+    if (rp.poly_lift && !g_ie_nil_ivars && rp.kind == RK_BOXED) {
       int vl = view_push_repr(c, id, VR_POLY_LIFT, 0);
       Buf rl; memset(&rl, 0, sizeof rl);
       emit_expr_node(c, id, &rl);
@@ -2010,7 +2011,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     /* a boxed value into a slot typed by its other writes (a writer's
        parameter reached through a `self.class.x =` dispatch, which boxes
        what it passes) is unboxed into the slot, as an ivar's is */
-    else if (comp_ntype(c, v) == TY_POLY && ct != TY_UNKNOWN) {
+    else if (repr_of(c, v).kind == RK_BOXED && ct != TY_UNKNOWN) {
       Buf vb = expr_buf(c, v); emit_unbox_text(c, ct, vb.p ? vb.p : "sp_box_nil()", b); free(vb.p);
     }
     else emit_coerce(c, v, ct, CO_HOLD, "a class variable write", b);
@@ -3105,7 +3106,7 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          one would convert rather than carry -- and where the result type is
          narrower than the arm the analysis has already gone wrong, so the C
          type error that raises is the honest answer, not a silent value. */
-      int fbox = fres == TY_POLY && comp_ntype(c, lb[ln - 1]) != TY_POLY;
+      int fbox = fres == TY_POLY && repr_of(c, lb[ln - 1]).kind != RK_BOXED;
       if (ln == 1) {
         if (fbox) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
@@ -3587,7 +3588,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       Buf *sv_pre = g_pre; int sv_ind = g_indent;
       g_pre = &rpre; g_indent = 1;
       Buf rv; memset(&rv, 0, sizeof rv);
-      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, &rv);
+      if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
       else emit_expr_slot(c, r, rt, &rv);
       g_pre = sv_pre; g_indent = sv_ind;
       if (rpre.p) buf_puts(b, rpre.p);
@@ -3686,8 +3687,8 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        as one (sp_poly_frange_bound and the run-time bits below). */
     int lnil = left < 0 || comp_ntype(c, left) == TY_NIL;
     int rnil = right < 0 || comp_ntype(c, right) == TY_NIL;
-    int lpoly = !lnil && comp_ntype(c, left) == TY_POLY;
-    int rpoly = !rnil && comp_ntype(c, right) == TY_POLY;
+    int lpoly = !lnil && repr_of(c, left).kind == RK_BOXED;
+    int rpoly = !rnil && repr_of(c, right).kind == RK_BOXED;
     int om = (lnil ? 1 : 0) | (rnil ? 2 : 0);
     /* Each endpoint renders as the user wrote it, so record which one was an
        Integer: a mixed literal (1.5..5) inspects as "1.5..5" (#3896). */
@@ -3792,13 +3793,13 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* A boxed begin before a Float end keeps the integer representation,
      which holds the end truncated: a beginless (x nil) such range would
      answer for `..2` where CRuby has `..2.5`. Say so at run time. */
-  if (!left_unbounded && !right_unbounded && comp_ntype(c, left) == TY_POLY &&
+  if (!left_unbounded && !right_unbounded && repr_of(c, left).kind == RK_BOXED &&
       comp_ntype(c, right) == TY_FLOAT) {
     buf_puts(b, "sp_range_lo_float_end("); emit_expr(c, left, b); buf_puts(b, ")");
   }
   /* a boxed begin holding a Float cannot be an Integer range's: it says so
      (sp_range_lo_bound), where the conversion truncated it */
-  else if (!left_unbounded && comp_ntype(c, left) == TY_POLY) {
+  else if (!left_unbounded && repr_of(c, left).kind == RK_BOXED) {
     buf_puts(b, "sp_range_lo_bound("); emit_expr(c, left, b); buf_puts(b, ")");
   }
   else if (!left_unbounded) emit_range_endpoint(c, left, "INTPTR_MIN", b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
@@ -3817,7 +3818,7 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
    emits for that was dropped by the consumer's box. */
 static TyKind emit_paren_tail(Compiler *c, int paren, int tail, Buf *b) {
   TyKind tt = comp_ntype(c, tail);
-  if (tt == TY_UNKNOWN && comp_ntype(c, paren) == TY_POLY && an_empty_container_kind(c, tail)) {
+  if (tt == TY_UNKNOWN && repr_of(c, paren).kind == RK_BOXED && an_empty_container_kind(c, tail)) {
     emit_boxed(c, tail, b);
     return TY_POLY;
   }
@@ -4334,7 +4335,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
        `const char *` went into an sp_RbVal slot unboxed and the C build
        stopped (Dir.chdir's block splice, one copy per call site). Box the
        tail where the node's own type says the consumer expects a box. */
-    if (comp_ntype(c, id) == TY_POLY) {
+    if (repr_of(c, id).kind == RK_BOXED) {
       TyKind ptt = comp_ntype(c, bd[n - 1]);
       if (ptt != TY_POLY && ptt != TY_UNKNOWN && ptt != TY_VOID && ptt != TY_NIL) {
         Buf inner; memset(&inner, 0, sizeof inner);
