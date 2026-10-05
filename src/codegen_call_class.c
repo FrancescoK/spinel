@@ -3338,8 +3338,9 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
         emit_method_cname(c, &c->scopes[mi], b);
         buf_puts(b, "(");
-        emit_expr(c, recv, b);
-        emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+        emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
+        /* a method taking `&block` takes the call's block, or NULL (#7200) */
+        emit_callee_block_arg(c, id, &c->scopes[mi], b);
         buf_puts(b, ")");
         return 1;
       }
@@ -3366,8 +3367,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (oc_mi >= 0) {
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
-          emit_expr(c, recv, b);
-          emit_args_filled(c, oc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+          emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, b);
           /* a method taking `&block` takes the call's block, or NULL (#7200) */
           emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
           buf_puts(b, ")");
@@ -3427,8 +3427,8 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (hc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, hc_mi, hc_ci, 0);
         buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
-        emit_boxed(c, recv, b);
-        emit_args_filled(c, hc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+        emit_reopen_recv_args(c, id, hc_mi, recv, 1, NULL, b);
+        emit_callee_block_arg(c, id, &c->scopes[hc_mi], b);
         buf_puts(b, ")");
         return 1;
       }
@@ -3473,8 +3473,8 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                                (rt == TY_FLOAT_ARRAY) ? "sp_box_float_array" : "sp_box_poly_array";
           if (emit_reopen_block_call(c, id, recv, oc_mi2, box_fn, b)) return 1;
           buf_printf(b, "sp_Array_%s(", mc(c->scopes[oc_mi2].name));
-          buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")");
-          emit_args_filled(c, oc_mi2, nt_ref(nt, id, "arguments"), ", ", b);
+          emit_reopen_recv_args(c, id, oc_mi2, recv, 1, box_fn, b);
+          emit_callee_block_arg(c, id, &c->scopes[oc_mi2], b);
           buf_puts(b, ")");
           return 1;
         }
