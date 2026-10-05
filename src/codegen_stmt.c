@@ -15871,7 +15871,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     else {
       buf_printf(b, "; sp_RbVal _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_BOXED, TY_POLY); buf_puts(b, "; ");
       if (eff && !g_iow_key_ref && subtree_may_allocate(nt, argv[0])) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tb);
-      buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, _t%d);", tc, ta, tb);
+      buf_printf(b, "sp_RbVal _t%d = %s(_t%d, _t%d);", tc, poly_index_poly_fn(c), ta, tb);
     }
     if (eff) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tc);
     char *rhs = iow_rhs(c, v, IOW_RHS_BOXED, eff ? b : NULL);
@@ -15984,8 +15984,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     emit_indent(b, indent);
     buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (%ssp_poly_truthy(sp_poly_index_poly(_t%d, _t%d))) ",
-               tb, is_or ? "!" : "", ta, tb);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (%ssp_poly_truthy(%s(_t%d, _t%d))) ",
+               tb, is_or ? "!" : "", poly_index_poly_fn(c), ta, tb);
     int open = 0;
     char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
     buf_printf(b, "sp_poly_set_poly(_t%d, _t%d, %s)", ta, tb, rhs);
