@@ -14809,6 +14809,10 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
       for (int e = 0; e < an && nst < 64; e++) stores[nst++] = av[e];
     }
     else if (sp_streq(wcn, "[]=") && an >= 2) stores[nst++] = av[an - 1];
+    /* under --share-strings a store with a block (not rewritten to []=)
+       stores its value as well (#6765) */
+    else if (c->share_strings && is_store_alias(wcn) && an == 2 && nt_ref(nt, w, "block") >= 0)
+      stores[nst++] = av[1];
     else if (sp_streq(wcn, "fill") && an >= 1 && an <= 3 &&
              nt_ref(nt, w, "block") < 0) stores[nst++] = av[0];
   }
@@ -16391,8 +16395,14 @@ static int promote_local_alias_pairs(Compiler *c) {
     if (value >= 0 && nt_kind(nt, value) == NK_CallNode &&
         sp_streq(nt_str(nt, value, "name"), "scrub!") &&
         (infer_type(c, value) == TY_STRING || infer_type(c, value) == TY_STRBUF) &&
-        strbuf_mut_kind(c, nt_str(nt, w, "name"), comp_scope_of(c, w)) == 1)
-      unsupported_feature(c, w, "a String is not yet shared by reference through a retained scrub! result that is appended to");
+        strbuf_mut_kind(c, nt_str(nt, w, "name"), comp_scope_of(c, w)) == 1) {
+      static const char scrub_msg[] =
+        "a String is not yet shared by reference through a retained scrub! result that is appended to";
+      ShareRoute q = share_route(w, value, 0);
+      q.to = w;
+      q.carry = value;
+      if (!share_route_defer(c, &q, scrub_msg)) unsupported_feature(c, w, scrub_msg);
+    }
     /* the aliasing shapes: `s2 = s1`, the value-position append chain
        `s2 = (s1 << x)`, whose value IS the base object, and each arm of a
        conditional (an_strbuf_alias_leaves) */
@@ -16419,10 +16429,16 @@ static int promote_local_alias_pairs(Compiler *c) {
     for (int mw = comp_kind_first(c, NK_MultiWriteNode); mw >= 0; mw = comp_kind_next(c, mw)) {
       if (comp_scope_of(c, mw) != ts || an_masgn_alias_source(c, mw, t) >= 0) continue;
       int source = an_masgn_alias_in(c, mw, nt_ref(nt, mw, "value"), t, 0);
-      if (source >= 0 && (comp_ntype(c, source) == TY_STRING || comp_ntype(c, source) == TY_STRBUF))
-        unsupported_feature(c, t, "a nested multiple-assignment target appends to a String variable "
-                            "from an Array literal (a String is not yet shared by reference through "
-                            "a nested multiple-assignment target). Append to the source String instead.");
+      static const char masgn_msg[] =
+        "a nested multiple-assignment target appends to a String variable "
+        "from an Array literal (a String is not yet shared by reference through "
+        "a nested multiple-assignment target). Append to the source String instead.";
+      if (source < 0 || (comp_ntype(c, source) != TY_STRING && comp_ntype(c, source) != TY_STRBUF)) continue;
+      ShareRoute q = share_route(t, source, 0);
+      q.to = t;
+      q.to_name = tn;
+      q.carry = source;
+      if (!share_route_defer(c, &q, masgn_msg)) unsupported_feature(c, t, masgn_msg);
     }
   }
   /* `t, u = s, 1` names s as t, as `t = s` does (an_masgn_alias_source) */
@@ -16503,6 +16519,58 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
    `h.each_value { |v| }`, `h.each { |k, v| }` / `each_pair`, and an element
    iterator over `h.values`. Answers the Hash's read in *hrecv and the
    value's parameter position in *vi. */
+/* Each String stored into container hr (a Hash or Array literal, or a
+   local's stores) that an appending block reaches: refused with msg at the
+   store (at `site` when one is given), unless --share-strings leaves the
+   route to the rule (share_route_defer: the container's elements reaching
+   block blk's parameter bp, each store carrying the handle). */
+static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const char *bp, const char *msg) {
+  const NodeTable *nt = c->nt;
+  int lit = nt_kind(nt, hr) == NK_HashNode || nt_kind(nt, hr) == NK_ArrayNode;
+  if (!lit && nt_kind(nt, hr) != NK_LocalVariableReadNode) return;
+  const char *hn = lit ? NULL : nt_str(nt, hr, "name");
+  Scope *hs = lit ? NULL : comp_scope_of(c, hr);
+  /* (a literal's every element: a fixed buffer left the ones past it
+     unchecked) */
+  int lit_en = 0;
+  if (lit) nt_arr(nt, hr, "elements", &lit_en);
+  int *stores = malloc(sizeof(int) * (size_t)(lit_en > 64 ? lit_en + 1 : 65));
+  for (int w = 0; w < (lit ? 1 : nt->count); w++) {
+    int ns = 0;
+    if (lit) {
+      int en = 0; const int *el = nt_arr(nt, hr, "elements", &en);
+      for (int e = 0; e < en; e++)
+        if (nt_kind(nt, el[e]) == NK_AssocNode) stores[ns++] = nt_ref(nt, el[e], "value");
+        else if (nt_kind(nt, hr) == NK_ArrayNode) stores[ns++] = el[e];
+    }
+    else {
+      ns = strbuf_container_store_values(c, w, hn, hs, 0, stores);
+      /* A store with a block is not rewritten to []=. */
+      if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name") &&
+          sp_streq(nt_str(nt, w, "name"), "store")) {
+        int wr = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        if (wr >= 0 && nt_kind(nt, wr) == NK_LocalVariableReadNode &&
+            nt_str(nt, wr, "name") && sp_streq(nt_str(nt, wr, "name"), hn) &&
+            comp_scope_of(c, wr) == hs && an == 2 && ns < 64) stores[ns++] = av[1];
+      }
+    }
+    int at = site >= 0 ? site : w ? w : hr;
+    for (int e = 0; e < ns; e++) {
+      TyKind st = infer_type(c, stores[e]);
+      /* A frozen literal already raises FrozenError on this route. */
+      if (st != TY_STRING && st != TY_STRBUF) continue;
+      if (nt_kind(nt, stores[e]) == NK_StringNode) continue;
+      ShareRoute q = share_route(at, hr, 1);
+      q.to = blk;
+      q.to_name = bp;
+      q.carry = stores[e];
+      if (!share_route_defer(c, &q, msg)) unsupported_feature(c, at, msg);
+    }
+  }
+  free(stores);
+}
+
 static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return 0;
@@ -17385,16 +17453,29 @@ static int promote_shared_stored_strings(Compiler *c) {
       int hrecv = -1, value_param = -1;
       if (inner_name && an_hash_value_block(c, inner_name, inner_recv, &hrecv, &value_param) &&
           dyn_block_appends(c, blk4, value_param) &&
-          !an_hash_chain_is_unobserved_literal(c, hrecv))
-        unsupported_feature(c, w,
-            "a String is not yet shared by reference through a Hash's chained index into an appending block");
+          !an_hash_chain_is_unobserved_literal(c, hrecv)) {
+        static const char hc_msg[] =
+          "a String is not yet shared by reference through a Hash's chained index into an appending block";
+        ShareRoute q = share_route(w, hrecv, 1);
+        q.to = blk4;
+        q.to_name = block_param_name(c, blk4, value_param);
+        if (!share_route_defer(c, &q, hc_msg)) unsupported_feature(c, w, hc_msg);
+        an_hash_store_routes(c, hrecv, w, blk4, q.to_name, hc_msg);
+      }
       const char *it = inner >= 0 ? nt_str(nt, inner, "name") : NULL;
       int src = inner >= 0 ? nt_ref(nt, inner, "receiver") : -1;
       if (it && src >= 0 && nt_ref(nt, inner, "block") < 0 &&
           (sp_streq(it, "each") || sp_streq(it, "map") || sp_streq(it, "collect") || sp_streq(it, "each_entry")) &&
           (infer_type(c, src) == TY_STR_ARRAY || infer_type(c, src) == TY_POLY_ARRAY) &&
-          dyn_block_appends(c, blk4, 0))
-        unsupported_feature(c, w, "a String is not yet shared by reference through an Array's chained index into an appending block");
+          dyn_block_appends(c, blk4, 0)) {
+        static const char ac_msg[] =
+          "a String is not yet shared by reference through an Array's chained index into an appending block";
+        ShareRoute q = share_route(w, src, 1);
+        q.to = blk4;
+        q.to_name = block_param_name(c, blk4, 0);
+        if (!share_route_defer(c, &q, ac_msg)) unsupported_feature(c, w, ac_msg);
+        an_hash_store_routes(c, src, w, blk4, q.to_name, ac_msg);
+      }
     }
     /* the builtin's own copy, once the call has been rewritten onto it:
        `__enum_filter_map__N(arr) { |x| }` carries the container as its
@@ -17437,38 +17518,10 @@ static int promote_shared_stored_strings(Compiler *c) {
         Scope *vs = vp ? comp_scope_of(c, blk4) : NULL;
         if (!vp || (strbuf_mut_kind(c, vp, vs) != 1 && !cap_wrap_mutates_param(c, blk4, vp) &&
             !an_subtree_hands_to_appender(c, nt_ref(nt, blk4, "body"), vp, 0))) continue;
-        int lit = nt_kind(nt, hr) == NK_HashNode;
-        const char *hn = lit ? NULL : nt_str(nt, hr, "name");
-        Scope *hs = lit ? NULL : comp_scope_of(c, hr);
-        for (int w = 0; w < (lit ? 1 : nt->count); w++) {
-          int stores[64], ns = 0;
-          if (lit) {
-            int en = 0; const int *el = nt_arr(nt, hr, "elements", &en);
-            for (int e = 0; e < en && ns < 64; e++)
-              if (nt_kind(nt, el[e]) == NK_AssocNode) stores[ns++] = nt_ref(nt, el[e], "value");
-          }
-          else {
-            ns = strbuf_container_store_values(c, w, hn, hs, 0, stores);
-            /* A store with a block is not rewritten to []=. */
-            if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name") &&
-                sp_streq(nt_str(nt, w, "name"), "store")) {
-              int wr = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
-              const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-              if (wr >= 0 && nt_kind(nt, wr) == NK_LocalVariableReadNode &&
-                  nt_str(nt, wr, "name") && sp_streq(nt_str(nt, wr, "name"), hn) &&
-                  comp_scope_of(c, wr) == hs && an == 2) stores[ns++] = av[1];
-            }
-          }
-          for (int e = 0; e < ns; e++) {
-            TyKind st = infer_type(c, stores[e]);
-            /* A frozen literal already raises FrozenError on this route. */
-            if ((st == TY_STRING || st == TY_STRBUF) && nt_kind(nt, stores[e]) != NK_StringNode)
-              unsupported_feature(c, w ? w : hr,
-                  "a String stored in a Hash is passed to an appending value block: "
-                  "a String is not yet shared by reference through a Hash's values. "
-                  "Append to the String before storing it in the Hash.");
-          }
-        }
+        an_hash_store_routes(c, hr, -1, blk4, vp,
+            "a String stored in a Hash is passed to an appending value block: "
+            "a String is not yet shared by reference through a Hash's values. "
+            "Append to the String before storing it in the Hash.");
         continue;
       }
       if (!strbuf_elem_first_iterator(itn)) continue;
@@ -17489,9 +17542,15 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (!bpa_built) { an_local_aliases_build(c, &bpa); bpa_built = 1; }
       if (!an_block_param_alias_mutated(c, &bpa, bs4, bp4)) {
         if (nt_kind(nt, recv4) == NK_LocalVariableReadNode && ty_is_array(infer_type(c, recv4)) &&
-            an_block_rebinds_appended_element_alias(c, blk4, bp4))
-          unsupported_feature(c, w,
-              "a String appended to through a rebound iterator alias is not yet shared by reference with its Array");
+            an_block_rebinds_appended_element_alias(c, blk4, bp4)) {
+          static const char ra_msg[] =
+            "a String appended to through a rebound iterator alias is not yet shared by reference with its Array";
+          ShareRoute q = share_route(w, recv4, 1);
+          q.to = blk4;
+          q.to_name = bp4;
+          if (!share_route_defer(c, &q, ra_msg)) unsupported_feature(c, w, ra_msg);
+          an_hash_store_routes(c, recv4, w, blk4, bp4, ra_msg);
+        }
         continue;
       }
       alias_mut = 1;
@@ -17525,8 +17584,14 @@ static int promote_shared_stored_strings(Compiler *c) {
     }
     if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) &&
         (nt_kind(nt, recv4) == NK_InstanceVariableReadNode || nt_kind(nt, recv4) == NK_CallNode) &&
-        (infer_type(c, recv4) == TY_STR_ARRAY || infer_type(c, recv4) == TY_POLY_ARRAY))
-      unsupported_feature(c, w, "a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block");
+        (infer_type(c, recv4) == TY_STR_ARRAY || infer_type(c, recv4) == TY_POLY_ARRAY)) {
+      static const char ia_msg[] =
+        "a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block";
+      ShareRoute q = share_route(w, recv4, 1);
+      q.to = blk4;
+      q.to_name = bp4;
+      if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
+    }
     if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
@@ -17539,9 +17604,14 @@ static int promote_shared_stored_strings(Compiler *c) {
        never promotes its param */
     if (contt4 != TY_STR_ARRAY && contt4 != TY_POLY_ARRAY) continue;
     if (!lit4 && contt4 == TY_STR_ARRAY &&
-        an_local_string_array_has_untracked_call_store(c, contn4, conts4))
-      unsupported_feature(c, w,
-          "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block");
+        an_local_string_array_has_untracked_call_store(c, contn4, conts4)) {
+      static const char sa_msg[] =
+        "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block";
+      ShareRoute q = share_route(w, recv4, 1);
+      q.to = blk4;
+      q.to_name = bp4;
+      if (!share_route_defer(c, &q, sa_msg)) unsupported_feature(c, w, sa_msg);
+    }
     if (contt4 == TY_POLY_ARRAY) {
       /* A poly array may still narrow to a nested numeric table. Binding the
          element param poly here is permanent -- a block parameter only widens
@@ -22472,7 +22542,7 @@ static int yield_splat_handles(Compiler *c) {
    `Thread.new(a) { |x| }`, and a `resume` of a Fiber
    made with one, `Fiber.new { |x| }.resume(a)` or through a local only ever
    written so; -1 for another call. */
-static int an_fiber_new_block(Compiler *c, int v) {
+int an_fiber_new_block(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode || !sp_streq(nt_str(nt, v, "name"), "new")) return -1;
   int r = nt_ref(nt, v, "receiver"), b = nt_ref(nt, v, "block");
@@ -29794,17 +29864,22 @@ static int hp_hash_may_hold_string(Compiler *c) {
   TyKind wv = aset_value_type_ex(c, h, &nw);
   return nw > 0 && hp_may_be_string(wv);
 }
-static void hp_refuse(Compiler *c, int call) {
-  unsupported_feature(c, call,
+/* hash: the Hash the pair came from, or -1 */
+static void hp_refuse(Compiler *c, int call, int hash) {
+  static const char hp_msg[] =
       "a String read out of a Hash through its [key, value] pairs is mutated: a String is not "
-      "yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)");
+      "yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)";
+  ShareRoute q = share_route(call, nt_ref(c->nt, call, "receiver"), 0);
+  q.to = hash;
+  q.to_elems = 1;
+  if (hash < 0 || !share_route_defer(c, &q, hp_msg)) unsupported_feature(c, call, hp_msg);
 }
 static void refuse_hash_pair_string_mutations(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* the iterator calls whose block binds a pair or its value, once: the
      block's scope, the names it binds, whether the Hash may hold a String */
   int nb = 0, cap = 0;
-  struct HpBind { Scope *scope; const char *pair, *value; int may; } *binds = NULL;
+  struct HpBind { Scope *scope; const char *pair, *value; int may, hash; } *binds = NULL;
   NT_FOREACH_KIND(nt, NK_CallNode, it) {
     int vi, pi, blk = nt_ref(nt, it, "block");
     if (blk < 0) continue;
@@ -29820,6 +29895,7 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
     binds[nb].pair = pi >= 0 ? block_param_name(c, blk, pi) : NULL;
     binds[nb].value = vi >= 0 ? block_param_name(c, blk, vi) : NULL;
     binds[nb].may = hp_hash_may_hold_string(c);
+    binds[nb].hash = hp_hash_node;
     nb++;
   }
   /* the multiple assignments from a pair (`k, v = h.first`), once */
@@ -29836,7 +29912,7 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
     int r = nt_ref(nt, call, "receiver"), pair = -1;
     /* `h.first[1] << x`, `h.to_a[0].last << x` */
     if (hp_value_of(nt, r, &pair) && hp_pair(c, pair)) {
-      if (mk > 0 || hp_hash_may_hold_string(c)) hp_refuse(c, call);
+      if (mk > 0 || hp_hash_may_hold_string(c)) hp_refuse(c, call, hp_hash_node);
       continue;
     }
     int rl = an_unparen(nt, r);
@@ -29852,10 +29928,11 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
     /* a block parameter that binds a pair or its value */
     int hit = 0;
     int may = -1;   /* a binding block's answer; -1 asks the Hash hp_pair found */
+    int hash = -1;
     for (int bi = 0; bi < nb && !hit; bi++) {
       if (ls && binds[bi].scope != ls) continue;
       const char *want = pairp ? binds[bi].pair : binds[bi].value;
-      if (want && sp_streq(want, ln)) { hit = 1; may = binds[bi].may; }
+      if (want && sp_streq(want, ln)) { hit = 1; may = binds[bi].may; hash = binds[bi].hash; }
     }
     /* `k, v = h.first` / `pair = h.first; pair[1] << x` */
     for (int w = pairp ? comp_lvw_first(c, ln) : -1; w >= 0 && !hit; w = comp_lvw_next(c, w)) {
@@ -29871,7 +29948,7 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
             sp_streq(nt_str(nt, lefts[1], "name"), ln)) hit = 1;
       }
     }
-    if (hit && (mk > 0 || (may < 0 ? hp_hash_may_hold_string(c) : may))) hp_refuse(c, call);
+    if (hit && (mk > 0 || (may < 0 ? hp_hash_may_hold_string(c) : may))) hp_refuse(c, call, hash >= 0 ? hash : hp_hash_node);
   }
   free(binds); free(pmw);
 }
