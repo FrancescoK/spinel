@@ -3592,6 +3592,11 @@ static SP_UNUSED sp_float sp_range_max_f(sp_Range r) {
    a's, and b's end is within a's -- an excluded end of a admits b's end
    only when b excludes it too, or when b's greatest member is below it. */
 static SP_UNUSED sp_bool sp_range_cover_rng(sp_Range a, sp_Range b) {
+  /* an empty b ((3..2), (3...3)) holds nothing, so nothing is covered */
+  if (b.first != INTPTR_MIN && (b.fe || b.last != INTPTR_MAX)) {
+    sp_float be0 = sp_range_end_num(b);
+    if ((sp_float)b.first > be0 || ((sp_float)b.first == be0 && sp_range_excl_end(b))) return 0;
+  }
   if (!a.fe && !b.fe)
     return b.first >= a.first && (b.last - b.excl) <= (a.last - a.excl);
   if (a.first != INTPTR_MIN && (b.first == INTPTR_MIN || b.first < a.first)) return 0;
@@ -3608,6 +3613,26 @@ static SP_UNUSED sp_bool sp_range_cover_rng(sp_Range a, sp_Range b) {
      excluded end has none (CRuby's rescued TypeError) */
   if (b.fe) return 0;
   return (sp_float)(b.last - 1) <= ae;
+}
+/* Range#cover?(range) for a Float Range a and an Integer Range b, as
+   sp_range_cover_rng decides it for an Integer a (CRuby's
+   r_cover_range_p): b is not empty, its begin is not below a's, and its end
+   lies within a's. */
+static SP_UNUSED sp_bool sp_frange_cover_rng(sp_FloatRange a, sp_Range b) {
+  int abn = (a.omitted & SP_FRANGE_NO_BEGIN) != 0, aen = (a.omitted & SP_FRANGE_NO_END) != 0;
+  int bbn = b.first == INTPTR_MIN, ben = !b.fe && b.last == INTPTR_MAX;
+  sp_float be = sp_range_end_num(b);
+  int aex = a.excl != 0, bex = sp_range_excl_end(b);
+  if (!bbn && !ben && ((sp_float)b.first > be || ((sp_float)b.first == be && bex))) return 0;
+  if (!abn && (bbn || (sp_float)b.first < a.first)) return 0;
+  if (aen) return 1;
+  if (ben) return 0;
+  if (aex == bex) return be <= a.last;
+  if (aex) return be < a.last;
+  if (be <= a.last) return 1;
+  /* b excludes an end past a's: its greatest member decides */
+  if (b.fe) return 0;
+  return (sp_float)(b.last - 1) <= a.last;
 }
 /* Float#clamp(int_range): below the begin answers the begin, past the end
    the end -- the Float written for (1..2.5), where it answered the walk's 2 --
