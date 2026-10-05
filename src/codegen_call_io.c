@@ -445,7 +445,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         emit_int_expr(c, argv[0], b);
         buf_puts(b, ")");
         if (argc >= 2) {
-          if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp);
+          { char hr[1024];
+          /* a buffer that is also appended to is a mutable String handle:
+             replace its contents, where assigning the bytes to the handle
+             did not compile (#7314) */
+          if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_replace(%s, _t%d)", hr, tsp);
+          else if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp); }
           buf_printf(b, "; _t%d", tsp);
         }
         buf_puts(b, "; })");
@@ -754,13 +759,32 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       int exc8 = kwh8 >= 0 ? kwh_lookup(nt, kwh8, "exception") : -1;
       int no_exc8 = exc8 >= 0 && nt_type(nt, exc8) && sp_streq(nt_type(nt, exc8), "FalseNode");
       if (sp_streq(name, "read_nonblock")) {
+        /* (len, outbuf): the buffer takes the bytes read, as readpartial's
+           does; the argument was read past and the buffer left as it was */
+        int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
+        char obset[1200]; obset[0] = 0;
+        int tob = ++g_tmp;
+        if (ob >= 0) {
+          char hr[1024];
+          if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_replace(%s, _t%d); ", hr, tob);
+          else snprintf(obset, sizeof obset, "lv_%s = _t%d; ", rename_local(nt_str(nt, ob, "name")), tob);
+        }
         if (no_exc8) {
-          int tw = ++g_tmp, te = ++g_tmp;
-          buf_printf(b, "({ sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tw, r);
+          int te = ++g_tmp;
+          buf_puts(b, "({ ");
+          if (ob >= 0) { buf_puts(b, "sp_str_check_mutable("); emit_expr(c, ob, b); buf_puts(b, "); "); }
+          buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 0, 0, &_e%d); _t%d ? sp_box_str(_t%d)"
+          buf_printf(b, ", 0, 0, &_e%d); ", te);
+          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset);
+          buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                         " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
-                     te, tw, tw, te);
+                     tob, tob, te);
+        }
+        else if (ob >= 0) {
+          buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
+          buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
+          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
         }
         else {
           buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
@@ -802,7 +826,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (argc >= 2) {
-        if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr);
+        { char hr[1024];
+          /* a buffer that is also appended to is a mutable String handle:
+             replace its contents, where assigning the bytes to the handle
+             did not compile (#7314) */
+          if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_replace(%s, _t%d)", hr, tsr);
+          else if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr); }
         buf_printf(b, "; _t%d; })", tsr);
       }
       free(rb.p); return 1;
