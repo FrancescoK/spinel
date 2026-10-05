@@ -651,6 +651,30 @@ static const char *repr_share_kind_name(int kind) {
    handle now. One whose kind cannot carry it yet is refused, naming it,
    rather than compiled holding a copy. SPINEL_SHARE_STATS=1 reports what
    the rule decided. */
+/* SPINEL_SHARE_STATS=4: which of the walk's UNKNOWN sources (share.h,
+   share_unknown_tag_name) holder sh, shared only through UNKNOWN, needs:
+   each tag whose sites, left out of a build of their own, leave sh
+   unshared; "multi" when no single one does. skip[t] caches those builds. */
+static void repr_share_unknown_source(Compiler *c, const ShareHolder *sh, struct ShareFacts **skip) {
+  char tags[512];
+  tags[0] = 0;
+  for (int t = 1; t < share_unknown_tags() && t < SHARE_UNKNOWN_TAGS_MAX; t++) {
+    if (!skip[t]) skip[t] = share_facts_build_skip(c, 1u << t);
+    if (!share_closed_shares(skip[t], sh) && strlen(tags) + 32 < sizeof tags) {
+      strcat(tags, share_unknown_tag_name(t));
+      strcat(tags, "+");
+    }
+  }
+  char lb[256];
+  const char *hn = sh->name;
+  if (sh->kind == SHK_LOCAL) {
+    snprintf(lb, sizeof lb, "%s:%s", c->scopes[sh->scope].name ? c->scopes[sh->scope].name : "<top>",
+             c->scopes[sh->scope].locals[sh->local].name);
+    hn = lb;
+  }
+  fprintf(stderr, "share-unknown: %d %s %s\n", sh->kind, hn ? hn : "-", tags[0] ? tags : "multi");
+}
+
 static void repr_share_seal(Compiler *c) {
   share_facts_build(c);
   int nh = share_holder_count(c);
@@ -660,6 +684,7 @@ static void repr_share_seal(Compiler *c) {
   int n_seal = 0;   /* the checks below that fail: holders, literals, routes */
   const char *stats = getenv("SPINEL_SHARE_STATS");
   struct ShareFacts *closed = stats ? share_facts_build_closed(c) : NULL;
+  struct ShareFacts *skip[SHARE_UNKNOWN_TAGS_MAX] = {0};
   for (int h = 0; h < nh; h++) {
     const ShareHolder *sh = share_holder(c, h);
     int ec = repr_share_elems_carried(c, sh);
@@ -683,7 +708,10 @@ static void repr_share_seal(Compiler *c) {
     n_shared++;
     n_kind[sh->kind]++;
     if (sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].is_param) n_param++;
-    if (closed && !share_closed_shares(closed, sh)) n_unknown++;
+    if (closed && !share_closed_shares(closed, sh)) {
+      n_unknown++;
+      if (stats[0] == '4') repr_share_unknown_source(c, sh, skip);
+    }
     if (!carried) { n_seal++; if (bad < 0) bad = h; }
   }
   /* a container literal no holder names, whose elements the rule shares
@@ -725,6 +753,7 @@ static void repr_share_seal(Compiler *c) {
             n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only, bad >= 0,
             c->share_borrows, n_seal);
     share_facts_drop(closed);
+    for (int t = 0; t < SHARE_UNKNOWN_TAGS_MAX; t++) share_facts_drop(skip[t]);
   }
   /* a route master refuses, left to the rule: refused as master does
      unless the final facts share its String */
