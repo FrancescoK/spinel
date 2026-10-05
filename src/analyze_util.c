@@ -1869,17 +1869,19 @@ TyKind yield_aware_elem_ty(Compiler *c, int node) {
 }
 
 /* The statement a call with a block answers from, when the body ends in
-   `if block_given? ... else ... end`: the block arm's last statement. */
-static int block_given_tail_then_last(Compiler *c, int last) {
+   `if/unless block_given? ... else ... end`: the block arm's last statement. */
+int block_given_tail_then_last(Compiler *c, int last) {
   const NodeTable *nt = c->nt;
-  if (last < 0 || nt_kind(nt, last) != NK_IfNode) return -1;
+  if (last < 0) return -1;
+  NodeKind k = nt_kind(nt, last);
+  if (k != NK_IfNode && k != NK_UnlessNode) return -1;
   int pred = nt_ref(nt, last, "predicate");
   if (pred < 0 || nt_kind(nt, pred) != NK_CallNode || nt_ref(nt, pred, "receiver") >= 0) return -1;
   const char *pn = nt_str(nt, pred, "name");
   if (!pn || !sp_streq(pn, "block_given?")) return -1;
-  int sub = nt_ref(nt, last, "subsequent");
+  int sub = nt_ref(nt, last, k == NK_UnlessNode ? "else_clause" : "subsequent");
   if (sub < 0 || nt_kind(nt, sub) != NK_ElseNode) return -1;
-  int ts = nt_ref(nt, last, "statements");
+  int ts = nt_ref(nt, k == NK_UnlessNode ? sub : last, "statements");
   int tn = 0; const int *tb = ts >= 0 ? nt_arr(nt, ts, "body", &tn) : NULL;
   return tn > 0 ? tb[tn - 1] : -1;
 }
