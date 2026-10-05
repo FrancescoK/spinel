@@ -115,6 +115,8 @@ int is_succ_alias(const char *n); /* next succ */
 int is_path_reader(const char *n); /* path to_path */
 int is_io_position(const char *n); /* pos tell */
 int is_sort_family(const char *n); /* sort sort! */
+int is_hash_transform(const char *n); /* transform_values transform_keys */
+int is_fallback_block_call(const char *n); /* fetch delete fetch_values: the block is the fallback */
 int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */
 int is_match_operator(const char *n); /* !~ =~ */
