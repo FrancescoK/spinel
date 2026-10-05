@@ -14843,6 +14843,13 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     cr_collect_calls(c, nt, nt_ref(nt, id, "statements"), out, n, cap);
     return;
   }
+  /* A respond_to? probe (desugar_respond_to_probe) is analysis-only: it asks
+     whether `recv.m` would type, and is never emitted or run. Reached through
+     the respond_to? node's "rt_probes" array, it counted as a call of m, so a
+     method nothing calls but a respond_to? names was emitted, its parameters
+     widened to poly by the never-bound backstop, and a refusal in its body
+     stopped the build. Its receiver is the respond_to?'s own, walked there. */
+  if (sp_streq(ty, "CallNode") && nt_int(nt, id, "rt_probe", 0)) return;
   /* Collect method name from CallNode, or operator name from op-assign nodes
      (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
   const char *nm = NULL;
