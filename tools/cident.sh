@@ -54,7 +54,15 @@ emit() {
 CIDENT_FLAGS=${CIDENT_FLAGS-}
 export CIDENT_FLAGS
 FLAGKEY=$(printf "%s" "$CIDENT_FLAGS" | tr -c 'A-Za-z0-9=' '_')
-REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}
+# Include supporting files as well as entry points: require_relative and
+# compile-time reads can change a program without changing its own bytes.
+CORPUS=$(find test benchmark packages/*/test -type f 2>/dev/null; [ -f "$OC" ] && echo "$OC")
+CORPUS=$(printf '%s\n' "$CORPUS" | LC_ALL=C sort)
+CORPUSKEY=$({
+  printf '%s\n' "$CORPUS"
+  printf '%s\n' "$CORPUS" | git hash-object --stdin-paths
+} | git hash-object --stdin)
+REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}-$CORPUSKEY
 if [ ! -f "$REFDIR/.done" ]; then
   # The C embeds the compiler's own tree path in a few string literals,
   # together with their lengths. A reference tree at a path of the same
