@@ -984,6 +984,14 @@ static void emit_str_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     return;
   }
   if (emit_nilbool_conv_raise_w(c, node, TY_STRING, !strict, 0, b)) return;
+  /* a String subclass instance in a String slot is its bytes, copied: its
+     handle changes in place (#7449) */
+  if (comp_ty_bsub_base(c, comp_ntype(c, node)) == BSUB_STRING) {
+    buf_puts(b, "sp_String_to_s_embedded((sp_String *)(");
+    emit_expr(c, node, b);
+    buf_puts(b, "))");
+    return;
+  }
   if (emit_obj_conv(c, node, "to_str", TY_STRING, "String", b)) return;
   /* The unresolved-call gate's sp_raise_nomethod(...) is a side-effecting poly
      value (it raises): coerce it to the const char* slot, keeping the call,
@@ -8477,6 +8485,12 @@ void bsub_box_id(Compiler *c, TyKind t, Buf *b) {
 }
 
 int program_has_bsub(Compiler *c) { return c->has_bsub; }
+/* ... a subclass of builtin `base` in particular */
+int program_has_bsub_of(Compiler *c, int base) {
+  for (int k = 0; c->has_bsub && k < c->nclasses; k++)
+    if (c->classes[k].bsub_base == base) return 1;
+  return 0;
+}
 
 /* A row's rendering with $v spelled as the box v. */
 void bsub_expand(Buf *b, const char *tmpl, const char *v) {

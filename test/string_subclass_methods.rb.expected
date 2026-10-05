@@ -1,0 +1,85 @@
+upcase: String
+downcase: String
+capitalize: String
+swapcase: String
+strip: String
+lstrip: String
+rstrip: String
+chomp: String
+chop: String
+succ: String
+next: String
+reverse: String
+squeeze: String
+dup: N
+clone: N
+to_s: String
+to_str: String
+itself: N
+b: String
+scrub: String
+-@: N
++@: N
+to_sym: Symbol
++: String
+x+s: String
+*: String
+%: String
+[]: String
+[] range: String
+slice: String
+sub: String
+gsub: String
+tr: String
+delete: String
+center: String
+ljust: String
+split: [String, String]
+chars: String
+each_char: String
+lines: String
+partition: [String, String, String]
+force_encoding: N
+<<: N
+concat: N
+replace: N
+insert: N
+upcase!: N
+upcase! nil: NilClass
+String.new: String
+interp: String
+==: [true, true, true, true]
+inspect: "\"hello world\""
+is_a: [true, false, true, N, String]
+String(s): N
+to_s equal: false
+format: String
+join: String
+each_char self: true
+true
+true
+false
+false
+N
+true
+true
+true
+N
+false
+"AB!"
+N
+"hoho"
+Word
+true
+"<ABC>"
+"[ab]"
+"[b]"
+nil
+true
+["hello", "world"]
+"helLO world"
+true
+N
+N
+N
+"dba"

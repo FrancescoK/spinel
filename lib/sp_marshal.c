@@ -114,7 +114,9 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
      (sp_marshal_v.obj_dump), so it loads back as an instance of the class */
   if (v.tag == SP_TAG_OBJ && sp_bsub_cls_fn) {
     int k = sp_bsub_cls_fn(v);
-    if (k >= 0) {
+    /* a String subclass instance's record is not written yet: it falls
+       to the TypeError below */
+    if (k >= 0 && sp_json_kind_fn && sp_json_kind_fn(v) != 0) {
       if (sp_mar_seen(b, v.v.p)) return;
       if (!sp_marshal_v.obj_dump || !sp_marshal_v.obj_dump(b, k, v.v.p))
         mar_raise("TypeError", "no marshal_dump is defined for this object");

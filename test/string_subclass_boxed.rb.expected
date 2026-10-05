@@ -1,0 +1,26 @@
+[Tag, "Tag", true, false, true, true]
+[Strong, "Strong", true, false, true, true]
+[String, "String", true, true, false, true]
+[Integer, "other", false, false, false, false]
+[Other, "other", false, false, false, false]
+[2, 1, 5]
+"em+b+plain"
+["inline em", "strong block b"]
+"strong block b"
+"other"
+"EM"
+Tag
+:inline
+"em!"
+true
+Strong
+"b"
+"ab"
+Tag
+"plainc"
+String
+"b"
+true
+true
+true
+["em!", "b"]

@@ -1706,8 +1706,7 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/co.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/co.out"; ok=0; }; fi; \
 	done; \
-	for spec in "subclass_string:class Name < String: subclassing String is not supported yet" \
-	            "subclass_hash_class_new:Class.new(Hash) without a block is not supported yet" \
+	for spec in "subclass_hash_class_new:Class.new(Hash) without a block is not supported yet" \
 	            "subclass_hash_reopened:class Registry < Hash: subclassing Hash in a program that also reopens Hash" \
 	            "subclass_hash_zsuper_kw:a bare \`super\` into Hash from a method with keyword, post-rest" \
 	            "subclass_hash_brackets_splat:Registry[...] with a splatted or computed argument is not supported yet" \
@@ -1716,7 +1715,11 @@ reject-test: $(SPINEL)
 	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO" \
 	            "subclass_array_class_new_call:Class.new(Array) without a block is not supported yet" \
 	            "subclass_array_reopened:class Stack < Array: subclassing Array in a program that also reopens Array" \
-	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest"; do \
+	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest" \
+	            "subclass_string_class_new_call:Class.new(String) without a block is not supported yet" \
+	            "subclass_string_reopened:class Name < String: subclassing String in a program that also reopens String" \
+	            "subclass_string_zsuper_kw:a bare \`super\` into String from a method with keyword, post-rest" \
+	            "subclass_string_marshal:Marshal.dump of a String subclass instance is not supported yet"; do \
 	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sb.c" >"$$tmp/sb.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a subclass of a builtin has none of its parent's methods)"; ok=0; \
@@ -2199,7 +2202,10 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/array_subclass_copy.rb \
                   test/hash_subclass_boxed.rb \
                   test/hash_subclass_methods.rb \
-                  test/hash_subclass_indifferent.rb
+                  test/hash_subclass_indifferent.rb \
+                  test/string_subclass_boxed.rb \
+                  test/string_subclass_safe_buffer.rb \
+                  test/string_subclass_tag.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

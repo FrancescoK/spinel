@@ -1,0 +1,63 @@
+"div"
+:block
+"block:div"
+3
+"DIV"
+String
+"di"
+String
+true
+true
+true
+true
+"xdiv"
+"divy"
+String
+"divdiv"
+div
+<div>
+true
+Tag
+"div!"
+"div!ab"
+"DIV!AB"
+"DIV!AB"
+Tag
+Tag
+nil
+"[<div!ab"
+"span"
+:block
+"spanX"
+Tag
+:block
+"span"
+true
+false
+FrozenError
+true
+Tag
+true
+false
+true
+true
+tag
+1
+1
+["span", "plain"]
+[Tag, String]
+"span-plain"
+"tag block"
+"str s"
+Tag
+4
+String
+String
+Tag
+["s", "an"]
+String
+true
+true
+2
+4
+true

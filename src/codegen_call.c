@@ -17754,8 +17754,14 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
      migration, reproduces with zero migration mechanism involved:
      `def wrap(v)=v; wrap(2**80).is_a?(Integer)` answered false). */
   if (is_integer_class_name(cn)) buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT)", v, v);
-  else if (sp_streq(cn, "String"))
-    buf_printf(b, "(%s.tag == SP_TAG_STR || (%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_STRBUF))", v, v, v);
+  else if (sp_streq(cn, "String")) {
+    buf_printf(b, "(%s.tag == SP_TAG_STR || (%s.tag == SP_TAG_OBJ && %s.cls_id == SP_BUILTIN_STRBUF", v, v, v);
+    /* a String subclass instance, boxed as a String handle, is no instance
+       of String itself (#7449) */
+    if (exact && program_has_bsub_of(c, BSUB_STRING))
+      buf_printf(b, " && sp_bsub_cls_of(%s) < 0", v);
+    buf_puts(b, "))");
+  }
   else if (sp_streq(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
   else if (sp_streq(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
   else if (sp_streq(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);

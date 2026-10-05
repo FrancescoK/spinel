@@ -1244,6 +1244,10 @@ typedef struct {
   const char *frozen_get;                          /* "$v.frozen" */
   const char *frozen_set;                          /* "$v.frozen = $x" */
   const BsubKind *kinds;                           /* ended by a TY_UNKNOWN row */
+  /* every method reads an argument of the builtin's class as the builtin
+     (it keeps none as the object it is), where the others' builtin-op rows
+     say which do (BOPF_ARGS_BUILTIN) */
+  int args_builtin;
 } BsubBase;
 const BsubBase *comp_bsub_info(int base);          /* NULL for BSUB_NONE */
 /* the spellings of kind t of builtin `base`: its own row, else the settled kind's */
@@ -1279,7 +1283,7 @@ int        comp_bsub_name_is_builtin(Compiler *c, int cid, const char *n);
 /* the kind the builtin's emitter answers a call answering its receiver
    with, k the embedded builtin's kind */
 TyKind     comp_bsub_self_kind(Compiler *c, int id, TyKind rt, TyKind k);
-enum { BSR_PLAIN, BSR_SELF, BSR_COPY, BSR_PLAIN_COPY };
+enum { BSR_PLAIN, BSR_SELF, BSR_COPY, BSR_PLAIN_COPY, BSR_SELF_CLASS };
 int        comp_bsub_result_form(Compiler *c, int id, TyKind rt);
 /* call `id` on a receiver of type rt reads an argument of builtin base's
    subclass as that builtin (BOPF_ARGS_BUILTIN, or puts) */

@@ -867,6 +867,13 @@ static const BsubKind bsub_hash_kinds[] = {
     "sp_PolyPolyHash_inspect", "sp_PolyPolyHash_dup" },
   { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
+/* A String subclass's one kind: the handle, read as the String it holds */
+static const BsubKind bsub_string_kinds[] = {
+  { TY_STRING, "sp_String", "SP_BUILTIN_STRBUF", "sp_String_init_embedded", "sp_String_fin",
+    NULL, "sp_String_copy_embedded", "sp_String_inspect_embedded", "sp_String_to_s_embedded", NULL },
+  { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
+static int string_kind_of(TyKind t) { return t == TY_STRING || t == TY_STRBUF; }
 static const BsubBase bsub_bases[BSUB_NBASES] = {
   [BSUB_ARRAY]  = { "Array", "ary", array_new_copies, TY_POLY_ARRAY, 1,
                     BSE_ELEMENTS, BSB_ARRAY_LITERAL, "sp_poly_is_array_kind($v.cls_id)",
@@ -876,7 +883,16 @@ static const BsubBase bsub_bases[BSUB_NBASES] = {
                     BSE_NONE, BSB_HASH_PAIRS, "sp_poly_is_hash_kind($v.cls_id)",
                     "sp_gc_is_frozen((void *)&$v)",
                     "((sp_gc_hdr *)((char *)&$v - sizeof(sp_gc_hdr)))->frozen = ($x)", bsub_hash_kinds },
-  [BSUB_STRING] = { "String", NULL, NULL, TY_UNKNOWN, 0, BSE_NONE, BSB_NONE, NULL, NULL, NULL, NULL },
+  /* a String subclass instance starts with a String handle (sp_String),
+     whose frozen flag is its GC header's, read and set through the
+     handle's accessors */
+  [BSUB_STRING] = { "String", "str", string_kind_of, TY_STRING, 0,
+                    BSE_NONE, BSB_NONE, "$v.cls_id == SP_BUILTIN_STRBUF",
+                    "sp_String_is_frozen(&$v)", "if ($x) sp_String_freeze(&$v)", bsub_string_kinds,
+                    /* none of String's methods keeps an argument as the
+                       object it is: a pattern, a separator, a format
+                       argument is read as its bytes */
+                    1 },
 };
 const BsubBase *comp_bsub_info(int base) {
   return base > BSUB_NONE && base < BSUB_NBASES ? &bsub_bases[base] : NULL;
@@ -937,7 +953,10 @@ TyKind comp_bsub_kind(Compiler *c, int cid) {
   int r = comp_bsub_root(c, cid);
   if (r < 0) return TY_UNKNOWN;
   TyKind k = c->classes[r].bsub_kind;
-  return k == TY_UNKNOWN && !g_infer_optimistic ? bsub_bases[c->classes[r].bsub_base].settled_kind : k;
+  /* a builtin whose stores are no evidence (a String) embeds its one kind
+     from the start */
+  const BsubBase *bb = &bsub_bases[c->classes[r].bsub_base];
+  return k == TY_UNKNOWN && (!g_infer_optimistic || bb->evidence == BSE_NONE) ? bb->settled_kind : k;
 }
 
 /* Whether a call named n on an instance of builtin subclass cid is the
@@ -1009,13 +1028,16 @@ TyKind comp_bsub_self_kind(Compiler *c, int id, TyKind rt, TyKind k) {
    builtin answers a new object of the receiver's class (Hash#merge,
    #compact); a plain copy of the builtin where the builtin answers its
    receiver only when the receiver's class is exactly the builtin (to_a,
-   Hash#to_h); else the answer as it is. dup and clone, which copy too,
+   Hash#to_h); the receiver or a copy of it depending on its frozen state
+   (BOPF_SELF_CLASS: String#+@, -@, dedup), which only the String
+   subclass's own forms take (emit_strsub_call); else the answer as it is. dup and clone, which copy too,
    are the object paths' (is_bsub_object_name). */
 int comp_bsub_result_form(Compiler *c, int id, TyKind rt) {
   int f = comp_bsub_answer(c, id, rt);
   if (f & (BOPF_SELF | BOPF_SELF_OR_NIL)) return BSR_SELF;
   if (f & BOPF_COPY_CLASS) return BSR_COPY;
   if (f & BOPF_SELF_EXACT) return BSR_PLAIN_COPY;
+  if (f & BOPF_SELF_CLASS) return BSR_SELF_CLASS;
   return BSR_PLAIN;
 }
 
@@ -1023,17 +1045,19 @@ int comp_bsub_result_form(Compiler *c, int id, TyKind rt) {
    that are instances of a subclass of builtin `base` are read as that
    builtin, so each is its Array (Hash, String) (#7449): the methods of a
    receiver of the same builtin that compare, combine or copy another
-   (BOPF_ARGS_BUILTIN) -- not the stores, which keep the instance itself as
-   an element -- and Kernel#puts, which prints an Array's elements and a
-   Hash's inspect. */
+   (BOPF_ARGS_BUILTIN), or every method of a builtin that keeps no argument
+   as the object it is (the row's args_builtin: a String) -- not the
+   stores, which keep the instance itself as an element -- and Kernel#puts,
+   which prints an Array's elements, a Hash's inspect and a String's
+   bytes. */
 int comp_bsub_args_viewed(Compiler *c, int id, TyKind rt, int base) {
   const NodeTable *nt = c->nt;
   const char *n = nt_str(nt, id, "name");
   const BsubBase *bb = comp_bsub_info(base);
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
-    return bb && bb->enumerable && sp_streq(n, "puts") && comp_method_index(c, n) < 0;
-  return bb && bb->kind_of(rt) && bsub_call_flags(c, id, base, 1);
+    return bb && sp_streq(n, "puts") && comp_method_index(c, n) < 0;
+  return bb && bb->kind_of(rt) && (bb->args_builtin || bsub_call_flags(c, id, base, 1));
 }
 
 /* `Array(x)` (`Hash(x)`, `String(x)`): of an instance x of a subclass of

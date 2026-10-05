@@ -2454,7 +2454,8 @@ static int bsub_view_open(Compiler *c, int id, BsubView *v) {
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   for (int i = 0; i < an && v->nv < 16; i++) {
     TyKind at = comp_ntype(c, av[i]);
-    if (comp_ty_bsub_root(c, at) < 0 || !comp_bsub_args_viewed(c, id, rt, comp_ty_bsub_base(c, at))) continue;
+    if (comp_ty_bsub_root(c, at) < 0 || comp_ty_bsub_base(c, at) == BSUB_STRING ||
+        !comp_bsub_args_viewed(c, id, rt, comp_ty_bsub_base(c, at))) continue;
     int slot = bsub_bind(c, av[i]);
     if (v->bound < 0) v->bound = slot;
     v->views[v->nv++] = view_push(c, av[i], comp_bsub_kind(c, ty_object_class(at)));
@@ -2497,6 +2498,9 @@ int emit_bsub_call(Compiler *c, int id, Buf *b) {
   if (!c->has_bsub) return 0;
   int kb = BSUB_NONE, ka = comp_bsub_kernel_conv(c, id, &kb);
   if (ka >= 0 && comp_ty_bsub_base(c, comp_ntype(c, ka)) == kb) { emit_expr(c, ka, b); return 1; }
+  /* a String subclass instance is a String handle, read through its own
+     forms (codegen_call_string.c) */
+  if (emit_strsub_call(c, id, b)) return 1;
   int recv = nt_ref(c->nt, id, "receiver");
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   BsubView v;
@@ -2530,6 +2534,15 @@ int emit_bsub_call(Compiler *c, int id, Buf *b) {
    mutators, the loops) take it. */
 int emit_bsub_call_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!c->has_bsub) return 0;
+  {
+    Buf e; memset(&e, 0, sizeof e);
+    if (emit_strsub_call(c, id, &e)) {
+      emit_indent(b, indent); buf_printf(b, "(void)%s;\n", e.p);
+      free(e.p);
+      return 1;
+    }
+    free(e.p);
+  }
   BsubView v;
   if (!bsub_view_open(c, id, &v)) return 0;
   emit_stmt_inner(c, id, b, indent);

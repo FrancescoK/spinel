@@ -295,6 +295,12 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else buf_printf(&conv, "sp_%sArray_inspect(_t%d)", array_kind(t), ntv);
         buf_puts(&conv, " : sp_str_empty; })");
       }
+      /* a String subclass instance interpolates as its bytes: CRuby takes a
+         String as it is and never asks it for #to_s (#7449) */
+      else if (comp_ty_bsub_base(c, t) == BSUB_STRING) {
+        buf_puts(&conv, "sp_String_to_s_embedded((sp_String *)(");
+        EMIT_IV(); buf_puts(&conv, "))");
+      }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
         /* a poly-returning to_s (String unioned with e.g. nil) yields a boxed

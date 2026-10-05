@@ -1,0 +1,26 @@
+"<b>"
+true
+SafeBuffer
+"<b>&lt;i&gt;&amp;"
+"<b>&lt;i&gt;&amp;<br>"
+"<b>&lt;i&gt;&amp;<br><em>"
+"<b>&lt;i&gt;&amp;<br><em>&lt;x&gt;"
+SafeBuffer
+true
+"<b>&lt;i&gt;&amp;<br><em>"
+"<b>"
+SafeBuffer
+true
+nil
+true
+SafeBuffer
+true
+false
+true
+true
+<b>&lt;i&gt;&amp;<br><em>
+<b>&lt;i&gt;&amp;<br><em>!
+25
+String
+"a&lt;b&gt;c&amp;d"
+"<b>&lt;i&gt;&amp;<br><em> | x"

@@ -1,0 +1,22 @@
+Buf
+[Buf, String, Comparable]
+true
+true
+true
+false
+true
+true
+true
+buf
+true
+true
+true
+Buf
+"x"
+"x"
+[:@src]
+"buf"
+2
+false
+false
+true
