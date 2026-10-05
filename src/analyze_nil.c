@@ -365,22 +365,45 @@ static int nf_is_read_of(const NodeTable *nt, int n, const char *nm) {
   const char *rn = nt_str(nt, n, "name");
   return rn && sp_streq(rn, nm);
 }
-static int nf_falsy_implies(const NodeTable *nt, int p, const char *nm);
+static int nf_falsy_implies(Compiler *c, int p, const char *nm);
 /* p truthy => local nm is not nil */
-static int nf_truthy_implies(const NodeTable *nt, int p, const char *nm) {
+/* `x.is_a?(K)` (kind_of?, instance_of?) is true only for a non-nil x when nil
+   is no instance of K: K names a program class, not a module (a module may be
+   mixed into Object), and not NilClass, Object or BasicObject. Any other
+   argument proves nothing, so the read stays may-be-nil. */
+static int nf_class_excludes_nil(Compiler *c, int p) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, p, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (an != 1) return 0;
+  NodeKind ak = nt_kind(nt, av[0]);
+  if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) return 0;
+  const char *k = nt_str(nt, av[0], "name");
+  if (!k || sp_streq(k, "NilClass") || sp_streq(k, "Object") || sp_streq(k, "BasicObject") ||
+      sp_streq(k, "Kernel") || comp_class_index(c, k) < 0) return 0;
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (mn && sp_streq(mn, k)) return 0;
+  }
+  return 1;
+}
+static int nf_truthy_implies(Compiler *c, int p, const char *nm) {
+  const NodeTable *nt = c->nt;
   p = nf_unparen(nt, p);
   if (p < 0) return 0;
   if (nf_is_read_of(nt, p, nm)) return 1;
   NodeKind k = nt_kind(nt, p);
   if (k == NK_AndNode)
-    return nf_truthy_implies(nt, nt_ref(nt, p, "left"), nm) || nf_truthy_implies(nt, nt_ref(nt, p, "right"), nm);
+    return nf_truthy_implies(c, nt_ref(nt, p, "left"), nm) || nf_truthy_implies(c, nt_ref(nt, p, "right"), nm);
   if (k == NK_CallNode) {
     const char *cn = nt_str(nt, p, "name");
     int r = nt_ref(nt, p, "receiver");
     if (!cn || r < 0) return 0;
-    if (sp_streq(cn, "!")) return nf_falsy_implies(nt, r, nm);
+    if (sp_streq(cn, "!")) return nf_falsy_implies(c, r, nm);
     if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nf_unparen(nt, r)) != NK_LocalVariableReadNode) return 0;
-    if (sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?")) return 1;
+    if (sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?"))
+      return nf_class_excludes_nil(c, p);
     if (sp_streq(cn, "!=")) {
       int a = nt_ref(nt, p, "arguments"), an = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -390,17 +413,18 @@ static int nf_truthy_implies(const NodeTable *nt, int p, const char *nm) {
   return 0;
 }
 /* p falsy => local nm is not nil */
-static int nf_falsy_implies(const NodeTable *nt, int p, const char *nm) {
+static int nf_falsy_implies(Compiler *c, int p, const char *nm) {
+  const NodeTable *nt = c->nt;
   p = nf_unparen(nt, p);
   if (p < 0) return 0;
   NodeKind k = nt_kind(nt, p);
   if (k == NK_OrNode)
-    return nf_falsy_implies(nt, nt_ref(nt, p, "left"), nm) || nf_falsy_implies(nt, nt_ref(nt, p, "right"), nm);
+    return nf_falsy_implies(c, nt_ref(nt, p, "left"), nm) || nf_falsy_implies(c, nt_ref(nt, p, "right"), nm);
   if (k == NK_CallNode) {
     const char *cn = nt_str(nt, p, "name");
     int r = nt_ref(nt, p, "receiver");
     if (!cn || r < 0) return 0;
-    if (sp_streq(cn, "!")) return nf_truthy_implies(nt, r, nm);
+    if (sp_streq(cn, "!")) return nf_truthy_implies(c, r, nm);
     if (!nf_is_read_of(nt, r, nm) || nt_kind(nt, nf_unparen(nt, r)) != NK_LocalVariableReadNode) return 0;
     if (sp_streq(cn, "nil?")) return 1;
     if (sp_streq(cn, "==")) {
@@ -474,23 +498,25 @@ static int nf_is_jump(const NodeTable *nt, int s) {
   return 0;
 }
 /* `return unless nm` / `raise ... if nm.nil?`: after it, nm is not nil */
-static int nf_exit_guard(const NodeTable *nt, int s, const char *nm) {
+static int nf_exit_guard(Compiler *c, int s, const char *nm) {
+  const NodeTable *nt = c->nt;
   s = nf_unparen(nt, s);
   if (s < 0) return 0;
   NodeKind k = nt_kind(nt, s);
   if (k == NK_OrNode)   /* `nm or return` */
-    return nf_is_jump(nt, nt_ref(nt, s, "right")) && nf_truthy_implies(nt, nt_ref(nt, s, "left"), nm);
+    return nf_is_jump(nt, nt_ref(nt, s, "right")) && nf_truthy_implies(c, nt_ref(nt, s, "left"), nm);
   if (k != NK_IfNode && k != NK_UnlessNode) return 0;
   int els = nt_ref(nt, s, k == NK_IfNode ? "subsequent" : "else_clause");
   if (els >= 0 || !nf_is_jump(nt, nt_ref(nt, s, "statements"))) return 0;
   int p = nt_ref(nt, s, "predicate");
-  return k == NK_IfNode ? nf_falsy_implies(nt, p, nm) : nf_truthy_implies(nt, p, nm);
+  return k == NK_IfNode ? nf_falsy_implies(c, p, nm) : nf_truthy_implies(c, p, nm);
 }
 
 /* Is the read rd of local nm (slot lv) under a guard that proves it is not
    nil, with no write of nm between the guard and the read? Walks out to the
    method, a block or a lambda, which may run after the slot changed. */
 static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
+  Compiler *c = f->c;
   const NodeTable *nt = f->nt;
   if (!f->par || lv->proc_rebinds) return 0;
   int cur = rd;
@@ -504,16 +530,16 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
     if ((pk == NK_IfNode || pk == NK_UnlessNode) && cur != nt_ref(nt, p, "predicate")) {
       int pr = nt_ref(nt, p, "predicate");
       int in_then = cur == nt_ref(nt, p, "statements");
-      int then_ok = pk == NK_IfNode ? nf_truthy_implies(nt, pr, nm) : nf_falsy_implies(nt, pr, nm);
-      int else_ok = pk == NK_IfNode ? nf_falsy_implies(nt, pr, nm) : nf_truthy_implies(nt, pr, nm);
+      int then_ok = pk == NK_IfNode ? nf_truthy_implies(c, pr, nm) : nf_falsy_implies(c, pr, nm);
+      int else_ok = pk == NK_IfNode ? nf_falsy_implies(c, pr, nm) : nf_truthy_implies(c, pr, nm);
       if (in_then ? then_ok : else_ok) region = cur;
     }
     else if (pk == NK_AndNode && cur == nt_ref(nt, p, "right") &&
-             nf_truthy_implies(nt, nt_ref(nt, p, "left"), nm)) region = cur;
+             nf_truthy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
     else if (pk == NK_OrNode && cur == nt_ref(nt, p, "right") &&
-             nf_falsy_implies(nt, nt_ref(nt, p, "left"), nm)) region = cur;
+             nf_falsy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
     else if (pk == NK_WhileNode && cur == nt_ref(nt, p, "statements") &&
-             nf_truthy_implies(nt, nt_ref(nt, p, "predicate"), nm)) region = cur;
+             nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
     if (region >= 0) {
       if (!nf_region_writes(f, region, nm)) return 1;
     }
@@ -522,7 +548,7 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
       int at = -1;
       for (int i = 0; i < bn; i++) if (b[i] == cur) { at = i; break; }
       for (int i = at - 1; i >= 0; i--) {
-        if (nf_exit_guard(nt, b[i], nm)) {
+        if (nf_exit_guard(c, b[i], nm)) {
           int clean = 1;
           for (int j = i + 1; j <= at && clean; j++) clean = !nf_region_writes(f, b[j], nm);
           if (clean) return 1;
