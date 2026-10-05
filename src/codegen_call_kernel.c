@@ -12,6 +12,34 @@
 /* the Kernel calls without a receiver: __dir__, at_exit, attr_* declarations, block_given?,
    the conversion functions (Integer, Float, String, Array, Hash, Rational, Complex), sleep,
    exit / exit! / abort, puts / print, p / pp, warn */
+/* `p(*v)` / `p(a, *v)` as a value: how many arguments a splat gives is
+   known only at run time. Gather them (a splat through sp_splat_to_array),
+   print each one's inspect, and answer what Kernel#p does: nil for none, the
+   argument for one, the array for more. */
+static int emit_p_splat_value(Compiler *c, int argc, const int *argv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+  for (int k = 0; k < argc; k++) {
+    int sx = nt_kind(nt, argv[k]) == NK_SplatNode ? nt_ref(nt, argv[k], "expression") : -1;
+    if (sx >= 0) {
+      buf_printf(b, "sp_PolyArray_concat_into(_t%d, sp_splat_to_array(", t);
+      emit_boxed(c, sx, b);
+      buf_puts(b, ")); ");
+    }
+    else {
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", t);
+      emit_boxed(c, argv[k], b);
+      buf_puts(b, "); ");
+    }
+  }
+  buf_printf(b, "for (sp_int _i%d = 0; _i%d < _t%d->len; _i%d++) { "
+                "sp_puts_line(sp_poly_inspect(_t%d->data[_i%d])); } "
+                "_t%d->len == 0 ? sp_box_nil() : _t%d->len == 1 ? _t%d->data[0] : sp_box_poly_array(_t%d); })",
+             t, t, t, t, t, t, t, t, t, t);
+  return 1;
+}
+
 int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* __dir__ -> the source file's directory (compile-time literal, mirroring
      the legacy generator). */
@@ -795,6 +823,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      argument as the value (statement position has its own emitter). The
      value is boxed once, printed through the poly inspect (which consults
      the user-object hook), and unboxed back to the static type. */
+  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 &&
+      call_has_splat_arg(nt, argv, argc)) return emit_p_splat_value(c, argc, argv, b);
   /* p(a, b, ...) as a value: prints each argument's inspect, returns the
      argument array. */
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
