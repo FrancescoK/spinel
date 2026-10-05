@@ -1,0 +1,8 @@
+["AB", [1, 2]]
+["AB", [1, 2, 3, 4]]
+[:Sym, [1, 2, 3, 4, 5, 6]]
+[nil, "ab", [1, 2, 3, 4, 5, 6, 7, 8]]
+["AB", "AB"]
+[ArgumentError, "invalid option"]
+[ArgumentError, "option :fold only allowed for downcasing"]
+["AB", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]]
