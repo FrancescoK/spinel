@@ -1047,10 +1047,11 @@ else {
                (long long)nt_int(c->nt, id, "warn_line", 0));
       int first = -1;
       for (int k = 0; k < argc && first < 0; k++) if (k != kw_idx) first = argv[k];
-      TyKind ft = first >= 0 ? comp_ntype(c, first) : TY_UNKNOWN;
+      Repr fr = repr_of(c, first);
+      TyKind ft = fr.as_ty;
       if (first >= 0 && g_n_argov < MAX_ARG_OVERRIDE && subtree_has_side_effect(c, first) &&
           ft != TY_UNKNOWN && ft != TY_NIL && ft != TY_VOID &&
-          !ty_is_struct_valued(ft) && !comp_ty_value_obj(c, ft)) {
+          fr.kind != RK_STRUCT && fr.kind != RK_VOBJ) {
         Buf fb; memset(&fb, 0, sizeof fb);
         emit_expr(c, first, &fb);
         int t = ++g_tmp;
@@ -6522,7 +6523,7 @@ static int hc_recv_text(Compiler *c, int recv, int kind, char *out, size_t cap) 
       if (kind == HC_STR || !call_is_field_read(c, recv, &alloc) || alloc) return 0;
       int obj = nt_ref(nt, recv, "receiver");
       const char *on = obj >= 0 && nt_kind(nt, obj) == NK_LocalVariableReadNode ? nt_str(nt, obj, "name") : NULL;
-      if (!on || nameset_has(&g_hc->wl, on) || comp_ty_value_obj(c, comp_ntype(c, obj))) return 0;
+      if (!on || nameset_has(&g_hc->wl, on) || repr_of(c, obj).kind == RK_VOBJ) return 0;
       char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, recv, "name"));
       if (nameset_has(&g_hc->wi, ivn)) return 0;
       Buf ob; memset(&ob, 0, sizeof ob);
@@ -10094,8 +10095,8 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     store_alloc = rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH;
   }
   for (int i = 0; i < en && !store_alloc; i++) {
-    TyKind vt = comp_ntype(c, els[i]);
-    store_alloc = (ty_is_struct_valued(vt) || comp_ty_value_obj(c, vt)) && masgn_slot_boxes(c, id, lefts, ln, i, vt);
+    Repr vr = repr_of(c, els[i]);
+    store_alloc = (vr.kind == RK_STRUCT || vr.kind == RK_VOBJ) && masgn_slot_boxes(c, id, lefts, ln, i, vr.as_ty);
   }
   /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
      Save each temp index separately: emit_expr may consume extra g_tmp
