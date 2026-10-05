@@ -2323,6 +2323,55 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
   free(inb);
 }
 
+/* The same question for a lambda, a proc, a Fiber or a Thread body, asked
+   of that body alone. Such a body is a C function of its own: the setjmp
+   of a begin around the `lambda` call is in the enclosing function, and
+   only one under the body's own block can lose its local. One walk of the
+   block gathers every name written under a setjmp; `*all` is a rescue no
+   begin holds, which guards the whole block. `in` says a setjmp construct
+   above already holds node `id`. */
+static void setjmp_written_names_under(Compiler *c, int id, int in, char ***names, int *n, int *cap, int *all) {
+  const NodeTable *nt = c->nt;
+  if (*all || id < 0 || id >= nt->count) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_RescueNode && !in) { *all = 1; return; }
+  if (in && lv_is_write_or_target(k)) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && !name_list_has(*names, *n, nm)) {
+      if (*n == *cap) { *cap = *cap ? *cap * 2 : 8; *names = (char **)realloc(*names, sizeof(char *) * (size_t)*cap); }
+      (*names)[(*n)++] = (char *)nm;
+    }
+  }
+  if (is_setjmp_construct(c, id) || is_rescuing_yield_call(c, id)) in = 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) setjmp_written_names_under(c, nt_ref_at(nt, id, i), in, names, n, cap, all);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *a = nt_arr_at(nt, id, i, &m);
+    for (int j = 0; j < m; j++) setjmp_written_names_under(c, a[j], in, names, n, cap, all);
+  }
+}
+
+/* `create` makes the body, or is its block. A body's locals are asked one
+   after another, so the walk is made once a body and its answer kept. The
+   list holds the nodes' own name strings, so it is kept for one version of
+   the table: a rename rewrites a name in place. */
+int proc_local_needs_volatile(Compiler *c, int create, LocalVar *lv) {
+  static const NodeTable *for_nt = NULL;
+  static unsigned for_version = 0;
+  static int for_blk = -1, n = 0, cap = 0, all = 0;
+  static char **names = NULL;
+  NodeKind k = nt_kind(c->nt, create);
+  int blk = (k == NK_LambdaNode || k == NK_BlockNode) ? create : nt_ref(c->nt, create, "block");
+  if (!lv || !lv->name) return 0;
+  if (blk < 0) return inlined_local_needs_volatile(c, lv);
+  if (for_nt != c->nt || for_version != c->nt->version || for_blk != blk) {
+    for_nt = c->nt; for_version = c->nt->version; for_blk = blk; n = 0; all = 0;
+    setjmp_written_names_under(c, blk, 0, &names, &n, &cap, &all);
+  }
+  return all || name_list_has(names, n, lv->name);
+}
+
 
 /* Declare a scope's locals. Params are already C function parameters, so
    they only need a GC root; body locals get a full declaration. */
@@ -6582,7 +6631,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
          rule above): allocate its cell here, once per fiber, rather than
          unpacking a shared one from the capture struct. */
       if (lv->is_cell) { emit_cell_decl(c, encl, lv, pb); continue; }
-      declare_local(c, pb, lv, 0);
+      declare_local(c, pb, lv, proc_local_needs_volatile(c, blk, lv));
     }
   }
   free(fib_locals.v);
@@ -7074,21 +7123,25 @@ int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
   return 0;
 }
 
+/* The C type of a local declared outside emit_scope_decls (an inlined
+   method's, a proc body's own parameter), volatile when `vol`. */
+static void emit_local_ctype(Compiler *c, TyKind ty, int vol, Buf *b) {
+  if (!vol) { emit_ctype(c, ty, b); return; }
+  Buf ct; memset(&ct, 0, sizeof ct);
+  emit_ctype(c, ty, &ct);
+  const char *t = ct.p ? ct.p : "";
+  size_t tl = strlen(t);
+  while (tl > 0 && t[tl - 1] == ' ') tl--;
+  /* a pointer takes the qualifier on itself, as declare_local's does */
+  if (tl > 0 && t[tl - 1] == '*') buf_printf(b, "%.*s volatile", (int)tl, t);
+  else buf_printf(b, "volatile %s", t);
+  free(ct.p);
+}
+
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din) {
   if (!lv->is_cell) {
     emit_indent(b, din);
-    if (inlined_local_needs_volatile(c, lv)) {
-      Buf ct; memset(&ct, 0, sizeof ct);
-      emit_ctype(c, lv->type, &ct);
-      const char *t = ct.p ? ct.p : "";
-      size_t tl = strlen(t);
-      while (tl > 0 && t[tl - 1] == ' ') tl--;
-      /* a pointer takes the qualifier on itself, as declare_local's does */
-      if (tl > 0 && t[tl - 1] == '*') buf_printf(b, "%.*s volatile", (int)tl, t);
-      else buf_printf(b, "volatile %s", t);
-      free(ct.p);
-    }
-    else emit_ctype(c, lv->type, b);
+    emit_local_ctype(c, lv->type, inlined_local_needs_volatile(c, lv), b);
     buf_printf(b, " lv_%s = %s;\n", rn, local_init_value(c, lv));
     if (lv->type == TY_POLY) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_RBVAL(lv_%s);\n", rn); }
     else if (needs_root(lv->type) && !comp_ty_value_obj(c, lv->type)) {
@@ -7929,7 +7982,7 @@ else if (orecv >= 0 && onm) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
     TyKind pt = lv ? lv->type : TY_INT;
-    buf_puts(pb, "    "); emit_ctype(c, pt, pb); buf_printf(pb, " lv_%s = ", p);
+    buf_puts(pb, "    "); emit_local_ctype(c, pt, proc_local_needs_volatile(c, create, lv), pb); buf_printf(pb, " lv_%s = ", p);
     /* a heap-pointer param is laundered back from the sp_int slot; a TY_POLY
        (sp_RbVal) param doesn't fit the slot, so it rides the _sp_proc_poly_args
        side-channel the call site published before the call. */
@@ -8110,7 +8163,7 @@ else if (orecv >= 0 && onm) {
   for (int i = 0; i < dlocals.n; i++) {
     LocalVar *lv = scope_local(bs, dlocals.v[i]);
     if (nameset_has(&params, dlocals.v[i])) continue;
-    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
+    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, proc_local_needs_volatile(c, create, lv));
   }
   if ((restn && restn[0]) || nposts > 0 || nopts > 0 || nnumbered > 0) {
     g_needs_proc_poly_argslot = 1;  /* channel array now lives in spinel_rt.h */
@@ -8160,7 +8213,7 @@ else if (orecv >= 0 && onm) {
       LocalVar *plv = scope_local(bs, pp);
       TyKind lt = plv ? plv->type : TY_POLY;
       if (lt == TY_POLY || lt == TY_UNKNOWN) {
-        buf_printf(pb, "    sp_RbVal lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
+        buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, plv), pb); buf_printf(pb, " lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
         buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
         buf_printf(pb, "    (void)lv_%s;\n", pp);
         continue;
@@ -8175,7 +8228,7 @@ else if (orecv >= 0 && onm) {
       else if (lt == TY_STRBUF) buf_printf(&ub, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", src, src);
       else emit_unbox_text(c, lt, src, &ub);
       buf_puts(pb, "    ");
-      emit_ctype(c, lt, pb);
+      emit_local_ctype(c, lt, proc_local_needs_volatile(c, create, plv), pb);
       buf_printf(pb, " lv_%s = %s;", pp, ub.p ? ub.p : "0");
       if (proc_slot_is_ptr(lt)) buf_printf(pb, " SP_GC_ROOT(lv_%s);", pp);
       buf_printf(pb, " (void)lv_%s;\n", pp);
@@ -8296,7 +8349,7 @@ else if (orecv >= 0 && onm) {
                    c_type_name(kty), krn, ub.p, krn, krn, 10);
         free(ub.p);
       }
-      else buf_printf(pb, "    sp_RbVal lv_%s = _kwr_%s; (void)lv_%s;%c", krn, krn, krn, 10);
+      else { buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, klv), pb); buf_printf(pb, " lv_%s = _kwr_%s; (void)lv_%s;%c", krn, krn, krn, 10); }
     }
   }
   /* The boxed-argument and result channels are GC roots, and nothing cleared
@@ -8317,7 +8370,7 @@ else if (orecv >= 0 && onm) {
     /* a reassigned PARAMETER is already bound by the arg prologue above --
        re-declaring it is a C redefinition (#3309) */
     if (nameset_has(&params, locals.v[i]) || nameset_has(&dlocals, locals.v[i])) continue;
-    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, 0);
+    if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) declare_local(c, pb, lv, proc_local_needs_volatile(c, create, lv));
   }
   free(dlocals.v);
   if (ret_ptr) {

@@ -937,6 +937,7 @@ int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);
 const char *past_open_parens(const char *s);
 int text_diverges(const char *txt);
 int inlined_local_needs_volatile(Compiler *c, LocalVar *lv);
+int proc_local_needs_volatile(Compiler *c, int create, LocalVar *lv);
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din);
 /* A parameter a closure captures is a heap cell: the `lv_<uniq>` a call
    binds an argument to, for a later default to read, gets that cell too. */
