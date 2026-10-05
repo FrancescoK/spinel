@@ -15561,34 +15561,104 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   return 0;
 }
 
+/* The demand below is a depth-bounded walk with no visited set: a poly
+   variable's read goes to every write of it, and those values read other
+   variables in turn, so a variable with W writes was walked W^hops times
+   (a machine-generated method appends to every boxed local it has). The
+   memo remembers a variable whose writes were walked from some depth and
+   changed nothing -- marked no node, promoted no local -- and skips its walk
+   from that depth or deeper. Nothing having changed since, the skipped walk
+   would see what the remembered one saw with less budget left, and so also
+   change nothing. Every change moves the generation on, which forgets every
+   entry; so does each run of the demand block, as other passes run between
+   them. Off (sbd_memo_on) outside that block. */
+typedef struct { int kind, owner; const char *name; unsigned gen; int depth; } SbdMemo;
+static SbdMemo *sbd_memo;
+static int sbd_memo_cap, sbd_memo_n, sbd_memo_on;
+static unsigned sbd_gen = 1;
+static SbdMemo *sbd_memo_slot(int kind, int owner, const char *name, int add) {
+  if (add && (sbd_memo_n + 1) * 2 > sbd_memo_cap) {
+    int ncap = sbd_memo_cap ? sbd_memo_cap * 2 : 256;
+    SbdMemo *nm = calloc((size_t)ncap, sizeof(SbdMemo));
+    if (!nm) return NULL;
+    for (int i = 0; i < sbd_memo_cap; i++) {
+      if (!sbd_memo[i].name) continue;
+      unsigned h = (sp_strhash(sbd_memo[i].name) ^ ((unsigned)sbd_memo[i].owner * 2654435761u) ^
+                    (unsigned)sbd_memo[i].kind) & (unsigned)(ncap - 1);
+      while (nm[h].name) h = (h + 1) & (unsigned)(ncap - 1);
+      nm[h] = sbd_memo[i];
+    }
+    free(sbd_memo);
+    sbd_memo = nm; sbd_memo_cap = ncap;
+  }
+  if (!sbd_memo_cap) return NULL;
+  unsigned h = (sp_strhash(name) ^ ((unsigned)owner * 2654435761u) ^ (unsigned)kind) &
+               (unsigned)(sbd_memo_cap - 1);
+  for (; sbd_memo[h].name; h = (h + 1) & (unsigned)(sbd_memo_cap - 1))
+    if (sbd_memo[h].kind == kind && sbd_memo[h].owner == owner && sp_streq(sbd_memo[h].name, name))
+      return &sbd_memo[h];
+  if (!add) return NULL;
+  sbd_memo[h].kind = kind; sbd_memo[h].owner = owner; sbd_memo[h].name = name;
+  sbd_memo[h].gen = 0; sbd_memo_n++;
+  return &sbd_memo[h];
+}
+static void sbd_memo_begin(void) {
+  if (sbd_memo_cap) memset(sbd_memo, 0, (size_t)sbd_memo_cap * sizeof(SbdMemo));
+  sbd_memo_n = 0;
+  sbd_gen++;
+  sbd_memo_on = 1;
+}
+/* Is this variable's walk from `depth` known to change nothing? */
+static int sbd_memo_covers(int kind, int owner, const char *name, int depth) {
+  if (!sbd_memo_on || !name) return 0;
+  SbdMemo *e = sbd_memo_slot(kind, owner, name, 0);
+  return e && e->gen == sbd_gen && e->depth <= depth;
+}
+/* Its walk from `depth`, begun at generation `gen0`, is done: remembered
+   when nothing changed on the way. */
+static void sbd_memo_done(int kind, int owner, const char *name, int depth, unsigned gen0) {
+  if (!sbd_memo_on || !name || sbd_gen != gen0) return;
+  SbdMemo *e = sbd_memo_slot(kind, owner, name, 1);
+  if (e) { e->gen = gen0; e->depth = depth; }
+}
+
 /* The writes of a poly local, ivar or global, each demanded in turn: the
    variable is another name for whatever was written to it. */
 static int strbuf_demand_local_writes(Compiler *c, const char *vn, Scope *vs, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (!vn || !vs) return 0;
-  for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+  int vsi = (int)(vs - c->scopes);
+  if (sbd_memo_covers(0, vsi, vn, depth)) return 0;
+  unsigned gen0 = sbd_gen;
+  for (int w = comp_lvw_first_sc(c, vsi, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || comp_scope_of(c, w) != vs) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, vn)) continue;
     changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
   }
+  sbd_memo_done(0, vsi, vn, depth, gen0);
   return changed;
 }
 static int strbuf_demand_ivar_writes(Compiler *c, int cid, const char *ivn, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  if (sbd_memo_covers(1, cid, ivn, depth)) return 0;
+  unsigned gen0 = sbd_gen;
   for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, ivn) || an_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
   }
+  sbd_memo_done(1, cid, ivn, depth, gen0);
   return changed;
 }
 static int strbuf_demand_gvar_writes(Compiler *c, const char *grn, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  if (sbd_memo_covers(2, 0, grn, depth)) return 0;
+  unsigned gen0 = sbd_gen;
   for (int w = comp_kind_first(c, NK_GlobalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_GlobalVariableWriteNode) continue;
     const char *wn = nt_str(nt, w, "name");
@@ -15596,6 +15666,7 @@ static int strbuf_demand_gvar_writes(Compiler *c, const char *grn, int depth) {
     if (!wrn || !sp_streq(wrn, grn)) continue;
     changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
   }
+  sbd_memo_done(2, 0, grn, depth, gen0);
   return changed;
 }
 static int strbuf_poly_ivar_read(Compiler *c, int node, int *cid) {
@@ -15666,6 +15737,7 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
       if (strbuf_mut_kind(c, vn, vs) < 0) return 0;
       vlv->type = TY_STRBUF; vlv->str_shared = 1;
       c->strbuf_box[node] = 1;
+      sbd_gen++;
       return 1;
     }
     default: {
@@ -15674,10 +15746,12 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
          container holds, so the container's Strings become handles */
       if (infer_type(c, node) == TY_POLY) {
         int d = strbuf_demand_elem_arg(c, node);
+        if (d >= 0) sbd_gen++;   /* it may have marked stores, changed or not */
         return d > 0 ? d : 0;
       }
       if (infer_type(c, node) != TY_STRING) return 0;
       c->strbuf_box[node] = 1;
+      sbd_gen++;
       return 1;
     }
   }
@@ -17048,6 +17122,7 @@ static int promote_shared_stored_strings(Compiler *c) {
      variable alone and every alias kept the old string. Demand the String
      values written to it into handles. */
   if (!g_infer_optimistic) {
+    sbd_memo_begin();
     for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
       if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
       const char *pn = nt_str(nt, w, "name");
@@ -17094,6 +17169,7 @@ static int promote_shared_stored_strings(Compiler *c) {
         changed |= strbuf_demand_value_leaves(c, aj, 0);
       }
     }
+    sbd_memo_on = 0;
   }
   return changed;
 }
