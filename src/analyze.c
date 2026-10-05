@@ -32367,6 +32367,31 @@ static void an_phase_post_fixpoint(Compiler *c) {
   propagate_bigint_cascade(c);
 }
 
+/* --share-strings (#6765): apply the rule after a late phase that can
+   change a String holder's type or class (the walk follows a proc's body
+   only once the proc phase types it), until it holds still. With reinfer,
+   a phase after the late widening re-derives the method returns and node
+   types the rule's retyping (a String container settling poly) changes, as
+   late widening does after its own; the phases before it leave that to
+   late widening. Each round rebuilds the facts once (one walk). A round
+   that changes anything sets a flag no round clears (a holder's handle, a
+   container's demanded stores), so the rounds end; one past every node of
+   the program would be a rule that undoes itself, refused rather than
+   compiled from facts that did not settle. */
+static void an_share_settle(Compiler *c, int reinfer) {
+  if (!c->share_strings) return;
+  for (int round = 0;; round++) {
+    if (!share_default_apply(c, 0)) break;
+    if (round > c->nt->count)
+      unsupported_feature(c, 0, "--share-strings: the share rule did not settle (please report this program)");
+    if (!reinfer) continue;
+    g_ret_no_new_poly = 2;
+    infer_return_types(c);
+    g_ret_no_new_poly = 0;
+    for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
+  }
+}
+
 /* Procs: the forced #each lowering, the proc captures, the referenced module sources, the dropped case arms, the lifted block procs and their scopes (analyze_program's steps, in their order) */
 static void an_phase_procs(Compiler *c) {
   /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
@@ -32572,6 +32597,7 @@ static void an_phase_procs(Compiler *c) {
       }
     }
   }
+  an_share_settle(c, 0);
 }
 
 /* The method backstops: params of a method reached only by method(:sym) (step 1), the ivar up-propagation and param re-binding, the method_missing warning, the block-splat check, params no typed call site bound (step 2), then the write and return re-inference (analyze_program's steps, in their order) */
@@ -32937,6 +32963,7 @@ static void an_phase_method_backstops(Compiler *c) {
      loop-variable promotion, so re-apply it. */
   detect_bigint_loop_vars(c);
   propagate_bigint_cascade(c);
+  an_share_settle(c, 0);
 }
 
 /* The late widening and narrowing: unresolved locals and returns to poly, ivars fed by nil-only params, the arithmetic widen, the object-array and poly-int narrowing, then the gc-root marks and the full node type cache (analyze_program's steps, in their order) */
@@ -33169,6 +33196,7 @@ static void an_phase_late_widen(Compiler *c) {
   mark_empty_array_operands(c);
   for (int id = 0; id < c->nt->count; id++)
     infer_type(c, id);
+  an_share_settle(c, 1);
 }
 
 /* The only calls an_call_targets_scope can answer yes for, given a scope's
@@ -33783,6 +33811,7 @@ static void an_phase_proc_returns(Compiler *c) {
     for (int id = 0; id < nt->count; id++)
       infer_type(c, id);
   }
+  an_share_settle(c, 1);
 }
 
 /* The instance_eval re-infer and the storage refinements: byref string out-params, handle params, the reader operand marks, the STRBUF promotion, the shared and aliased strings (analyze_program's steps, in their order) */

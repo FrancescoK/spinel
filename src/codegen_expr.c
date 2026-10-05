@@ -4249,7 +4249,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       else {
         /* poly key fallback: box the key, look up polymorphically, set via poly */
         buf_printf(b, "sp_RbVal _t%d = ", tb2); emit_boxed(c, iav[0], b); buf_puts(b, "; ");
-        buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, _t%d);", tc2, ta2, tb2);
+        buf_printf(b, "sp_RbVal _t%d = %s(_t%d, _t%d);", tc2, poly_index_poly_fn(c), ta2, tb2);
         buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { ", is_or2 ? "!" : "", tc2);
         emit_guarded_poly_slot_assign(c, iv, tc2, b);
         buf_printf(b, "; sp_poly_set_poly(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
