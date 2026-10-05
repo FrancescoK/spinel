@@ -2848,20 +2848,31 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         /* replace(other) splices the WHOLE other container in: a hash local
            must be able to hold other's variant (transform_keys! desugars to
            replace and may change the key type). Differing variants widen the
-           local to the universally-boxed PolyPoly hash. */
+           local to the universally-boxed PolyPoly hash, and so does a boxed
+           other, which holds whichever variant the value really is. */
         TyKind ot = infer_type(c, argv[0]);
-        if (recv < 0 || !ty_is_hash(ot)) continue;
-        const char *rpty = nt_type(nt, recv);
-        if (!rpty || !sp_streq(rpty, "LocalVariableReadNode")) continue;
-        const char *rpnm = nt_str(nt, recv, "name");
-        Scope *rpsc = rpnm ? comp_scope_of(c, recv) : NULL;
-        LocalVar *rplv = rpsc ? scope_local(rpsc, rpnm) : NULL;
-        if (rplv && !rplv->is_param && !rplv->is_block_param &&
-            ty_is_hash(rplv->type) && rplv->type != ot &&
-            rplv->type != TY_POLY_POLY_HASH) {
-          rplv->type = TY_POLY_POLY_HASH;   /* a reset local: the sweep reports */
+        if (recv < 0 || (!ty_is_hash(ot) && ot != TY_POLY)) continue;
+        NodeKind rpk = nt_kind(nt, recv);
+        if (rpk == NK_LocalVariableReadNode) {
+          const char *rpnm = nt_str(nt, recv, "name");
+          Scope *rpsc = rpnm ? comp_scope_of(c, recv) : NULL;
+          LocalVar *rplv = rpsc ? scope_local(rpsc, rpnm) : NULL;
+          if (!rplv || rplv->is_block_param) continue;
+          if (!rplv->is_param) {
+            if (ty_is_hash(rplv->type) && rplv->type != ot && rplv->type != TY_POLY_POLY_HASH)
+              rplv->type = TY_POLY_POLY_HASH;   /* a reset local: the sweep reports */
+            continue;
+          }
         }
-        continue;
+        else if (rpk != NK_InstanceVariableReadNode) continue;
+        /* A parameter's or an ivar's Hash is held elsewhere too: the
+           other's keys and values are the evidence a merge! of it is, and
+           the fold below widens the Hash where it is built (a boxed other
+           is of kinds nothing here knows) */
+        if (!ty_is_hash(infer_type(c, recv))) continue;
+        is_idx_write = 1; is_merge = 1;
+        kt = ty_is_hash(ot) ? ty_hash_key(ot) : TY_POLY;
+        vt = ty_is_hash(ot) ? ty_hash_val(ot) : TY_POLY;
       }
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]);

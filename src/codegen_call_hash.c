@@ -470,7 +470,9 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, " _t%d; })", trp);
     return 1;
   }
-  if (rt == TY_POLY_POLY_HASH && ty_is_hash(comp_ntype(c, argv[0]))) {
+  /* any Hash, or a boxed value, which sp_poly_hash_replace checks is one */
+  TyKind ot = comp_ntype(c, argv[0]);
+  if (rt == TY_POLY_POLY_HASH && (ty_is_hash(ot) || ot == TY_POLY)) {
     int th = ++g_tmp;
     buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); (void)sp_poly_hash_replace(sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH), ", th, th);

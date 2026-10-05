@@ -578,7 +578,9 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        declared r holding a PolyPoly pointer made inspect walk garbage). */
     if (sp_streq(name, "replace") && argc == 1) {
       TyKind ot = infer_type(c, argv[0]);
-      if (ty_is_hash(ot) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
+      /* a boxed other holds whichever variant the value really is (#3975's
+         rule for merge) */
+      if ((ty_is_hash(ot) || ot == TY_POLY) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
       { *out = rt; return 1; }
     }
     if (sp_streq(name, "merge")) { *out = rt; return 1; }
