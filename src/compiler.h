@@ -756,6 +756,10 @@ typedef struct {
   TyKind *poly_builtin_ty; /* [node_cap] for a container read on a poly receiver a
                               user class also owns: the type the builtin surface
                               alone would give, so codegen can shape its arm (#3459) */
+  TyKind *builtin_ans; /* [node_cap] what the builtin surface alone answers a call,
+                          as a dispatch's builtin arm asks it, recorded once the
+                          types settle (an_record_builtin_answers); TY_UNKNOWN
+                          for none or a call no such arm asks of */
   const struct BuiltinOp **bop_inf; /* [node_cap] the builtin-op row inference
                                        answered the call with (--plan-check only) */
   UCallInf *ucall_inf; /* [node_cap] the user method inference bound the call
