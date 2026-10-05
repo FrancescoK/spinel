@@ -1035,11 +1035,12 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                  tbr, self_tmp, self_tmp, self_tmp, tbr);
     }
     else if (self_receiver) {
-      TyKind rt2 = comp_ntype(c, recv);
+      Repr rr2 = repr_of(c, recv);
+      TyKind rt2 = rr2.as_ty;
       /* A Method binds to whatever the receiver is, and a number is not a
          reference the collector can follow. */
       if (rt2 == TY_STRING || rt2 == TY_STRBUF) { self_kind = "SP_BM_SELF_STR"; self_is_str = 1; self_rooted = 1; }
-      else if (needs_root(rt2) && rt2 != TY_POLY && !comp_ty_value_obj(c, rt2)) { self_kind = "SP_BM_SELF_OBJ"; self_rooted = 1; }
+      else if (needs_root(rt2) && rr2.kind != RK_BOXED && rr2.kind != RK_VOBJ) { self_kind = "SP_BM_SELF_OBJ"; self_rooted = 1; }
       /* The constructor allocates and may collect: a fresh receiver
          (`M.new.method(:v)`) is otherwise unreachable and would be swept, so
          hold it in a rooted C temporary across the call -- the same shape as
@@ -1507,8 +1508,9 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* An expression receiver (`Calc.new(3).method(:add)`) must not be
          evaluated a second time -- and need not be: the Method object carries
          the self it bound (#3693). */
-      TyKind mrt2 = comp_ntype(c, mrecv);
-      if (ty_is_object(mrt2) && !comp_ty_value_obj(c, mrt2)) {
+      Repr mr2 = repr_of(c, mrecv);
+      TyKind mrt2 = mr2.as_ty;
+      if (ty_is_object(mrt2) && mr2.kind != RK_VOBJ) {
         int trv = ++g_tmp;
         buf_printf(b, "({ sp_BoundMethod *_t%d = ", trv);
         emit_expr(c, recv, b);
