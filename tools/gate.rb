@@ -30,7 +30,9 @@ module Gate
 
   def git(*args, env: {}) = run("git", *args, env: env)&.strip
 
-  def show(spec) = run("git", "show", spec).to_s
+  # A file's bytes, whatever the locale: under a C locale git's output reads
+  # as US-ASCII, and the scans below raised on a UTF-8 source.
+  def show(spec) = run("git", "show", spec).to_s.b
 
   def master
     [ENV["GATE_MASTER"], "upstream/master", "origin/master"].compact
@@ -195,7 +197,7 @@ module Gate
       out = cruby(ruby, t, File.exist?("#{t}.args") ? File.read("#{t}.args").split : [])
       next warn("gate: #{t} ran over 20s under CRuby; .expected not checked") unless out
 
-      errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out != show(":#{t}.expected")
+      errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out.b != show(":#{t}.expected")
     end
     errors.each { |e| warn "gate: #{e}" }
     errors.empty? ? 0 : 1

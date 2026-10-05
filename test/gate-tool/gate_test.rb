@@ -105,6 +105,8 @@ Dir.mktmpdir("gate-tool-test") do |dir|
   ok(v == 0 && err.empty?, "check passes an .expected CRuby agrees with")
   v, _, err = check.("differs", "puts 1\n", "2\n")
   ok(v == 1 && err.include?(".expected differs"), "check refuses an .expected CRuby disagrees with")
+  v, _, err = check.("utf8_out", "puts \"\\u2192\"\n", "\u2192\n")
+  ok(v == 0 && err.empty?, "check passes a non-ASCII .expected CRuby agrees with")
   v, _, err = check.("own", "# spinel: not-cruby -- spinel's own answer\nputs 1\n", "2\n")
   ok(v == 0 && err.empty?, "check skips the comparison for `# spinel: not-cruby`")
   File.write("old-ruby", "#!/bin/sh\nprintf 3.2.3\n")
@@ -127,6 +129,23 @@ Dir.mktmpdir("gate-tool-test") do |dir|
   sh("git", "add", "src/big.c")
   v, _, err = capture { Gate.check }
   ok(v == 1 && err.include?("new function big"), "check refuses a new function past FUNCTION_LIMIT lines")
+  sh("git", "rm", "-q", "--cached", "src/big.c")
+
+  # A UTF-8 source under a C locale, where git's output reads as US-ASCII.
+  File.write("src/utf8.c", "/* a \u2192 b */\nstatic int f(void) {\n  return 0;\n}\n")
+  sh("git", "add", "src/utf8.c")
+  ext = Encoding.default_external
+  begin
+    $VERBOSE, verbose = nil, $VERBOSE
+    Encoding.default_external = Encoding::US_ASCII
+    v, _, err = capture { Gate.check }
+  rescue ArgumentError => e
+    v, err = :raised, e.message
+  ensure
+    Encoding.default_external = ext
+    $VERBOSE = verbose
+  end
+  ok(v == 0 && err.empty?, "check reads a UTF-8 source under a US-ASCII locale")
 end
 
 if $fails > 0
