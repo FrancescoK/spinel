@@ -10121,6 +10121,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_FLOAT_RANGE) {
     int a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     int tr = ++g_tmp;
+    /* overlap?: CRuby's range_overlap at run time, as for an Integer Range */
+    if (argc == 1 && sp_streq(name, "overlap?")) {
+      buf_puts(b, "sp_range_overlap_v(sp_box_frange("); emit_expr(c, recv, b);
+      buf_puts(b, "), "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     if (argc == 0 && (is_range_end_reader(name))) {
       int as_int2 = comp_ntype(c, id) == TY_INT;
       buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);

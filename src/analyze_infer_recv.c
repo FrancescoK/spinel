@@ -83,6 +83,8 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     { *out = TY_UNKNOWN; return 1; }
   }
   if (rt == TY_FLOAT_RANGE) {
+    /* overlap? answers through sp_range_overlap_v, as an Integer Range's does */
+    if (sp_streq(name, "overlap?") && argc == 1) { *out = TY_BOOL; return 1; }
     /* #size counts the integers the range enumerates: a Float answer, since an
        unbounded end makes it Infinity (#3670). Only an Integer begin has an
        enumeration at all; the emitter checks that and leaves the rest to the
