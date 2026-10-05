@@ -1266,7 +1266,7 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
      union of an rbs-seeded Hash and a class instance, #3278): the user-class
      switch has no builtin arm, so the hash fell through to the nil seed. */
   int is_poly_to_a = sp_streq(name, "to_a") &&
-                     (comp_ntype(c, id) == TY_POLY_ARRAY || comp_ntype(c, id) == TY_POLY);
+                     (comp_ntype(c, id) == TY_POLY_ARRAY || repr_of(c, id).kind == RK_BOXED);
   /* to_h on a poly value that is really a builtin hash (or an Array of
      pairs, or a Struct): the user-class switch carries an arm per class that
      defines to_h and none for the builtin, so a plain Hash reached the
@@ -1274,7 +1274,7 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
      sibling (to_a, to_s, keys, length) already had its arm (#4170). */
   int is_poly_to_h = sp_streq(name, "to_h") && argc == 0 &&
                      nt_ref(nt, id, "block") < 0 &&
-                     comp_ntype(c, id) == TY_POLY;
+                     repr_of(c, id).kind == RK_BOXED;
   int ncand = 0, ncall_arm = 0;
   /* a class neither defining nor reading the name, and not native, counts
      for neither: the name's memoized candidates are the classes to ask */
@@ -2312,7 +2312,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      index; in promote mode that index variable may have widened to poly, so
      accept poly too (the index is unboxed where it is used below). */
   int is_index = sp_streq(name, "[]") && argc == 1 &&
-                 (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY);
+                 (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED);
   /* `fetch(key[, default])` on a poly value that is actually a str/sym-keyed
      hash: without a user `fetch` candidate the dispatch was skipped and the
      call collapsed to default_value (an empty string), dropping the lookup.
@@ -2548,7 +2548,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      the constant's (#2325, #2585). */
   int is_ctryconv = sp_streq(name, "try_convert") && argc == 1 && !has_splat_arg && kw_pos &&
                     nt_ref(nt, id, "block") < 0 && !recv_user_defines(c, name) &&
-                    comp_ntype(c, id) == TY_POLY;
+                    repr_of(c, id).kind == RK_BOXED;
   s->index = is_index;
   s->fetch = is_fetch;
   s->pdelete = is_pdelete;
@@ -3472,9 +3472,10 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   }
   if (is_intersect) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INTERSECT, -1, TY_UNKNOWN, PC_SAME);
-    TyKind at2 = comp_ntype(c, argv[0]);
+    Repr ar2 = repr_of(c, argv[0]);
+    TyKind at2 = ar2.as_ty;
     char abox[96];
-    if (at2 == TY_POLY) snprintf(abox, sizeof abox, "_t%d", atmp[0]);
+    if (ar2.kind == RK_BOXED) snprintf(abox, sizeof abox, "_t%d", atmp[0]);
     else {
       Buf ab2; memset(&ab2, 0, sizeof ab2);
       char tn2[32]; snprintf(tn2, sizeof tn2, "_t%d", atmp[0]);
@@ -3612,7 +3613,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
      explicit poly key -- cover it here so a Hash reached by such a key is
      not dropped to nil (gemini review). */
   if ((is_aref || is_fetch) &&
-      (comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[0]) == TY_UNKNOWN)) {
+      (repr_of(c, argv[0]).kind == RK_BOXED || comp_ntype(c, argv[0]) == TY_UNKNOWN)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_AREF_POLY, -1, TY_UNKNOWN, PC_SAME);
     TyKind ptrt = is_scalar_ret(ret) ? ret : TY_INT;
     buf_puts(b, " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:"
