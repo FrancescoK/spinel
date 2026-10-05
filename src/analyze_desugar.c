@@ -14479,10 +14479,36 @@ static int sce_name_reflective(const char *nm) {
   if (*nm == ':') nm++;
   return str_in(nm, NAMES);
 }
+/* An instance method of Kernel, Object or BasicObject: what a plain object
+   reaches. A class or module finds Module's own class_eval (and hooks)
+   first, so such a def overrides nothing a class body's graft runs --
+   activesupport's Kernel#class_eval is this. */
+static int sce_def_below_module(const NodeTable *nt, int def) {
+  if (nt_ref(nt, def, "receiver") >= 0) return 0;
+  static const NodeKind HOLDERS[] = { NK_ModuleNode, NK_ClassNode };
+  for (int h = 0; h < 2; h++) {
+    NtKindIter it = nt_kind_iter_begin(nt, HOLDERS[h]);
+    int found = 0;
+    while (!found && nt_kind_iter_next(&it)) {
+      int cp = nt_ref(nt, it.id, "constant_path");
+      if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+      const char *cn = nt_str(nt, cp, "name");
+      if (!cn || !(h == 0 ? sp_streq(cn, "Kernel")
+                          : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject")))) continue;
+      int body = nt_ref(nt, it.id, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int i = 0; i < bn && !found; i++) found = bb[i] == def;
+    }
+    nt_kind_iter_close(&it);
+    if (found) return 1;
+  }
+  return 0;
+}
 static int sce_program_reflects(const NodeTable *nt) {
   int hit = 0;
   NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
-  while (!hit && nt_kind_iter_next(&it)) hit = sce_name_reflective(nt_str(nt, it.id, "name"));
+  while (!hit && nt_kind_iter_next(&it))
+    hit = sce_name_reflective(nt_str(nt, it.id, "name")) && !sce_def_below_module(nt, it.id);
   nt_kind_iter_close(&it);
   it = nt_kind_iter_begin(nt, NK_AliasMethodNode);
   while (!hit && nt_kind_iter_next(&it)) {
