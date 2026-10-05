@@ -384,8 +384,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   }
   /* a `||=` can read the slot before any write: nil until then */
   if (lv->or_written) r.may_nil = 1;
-  /* a shared-mutable String is held as its handle */
-  if (lv->str_shared) { k = RK_STRBUF; r.handle = 1; }
+  /* str_shared refines TY_STRBUF; it can outlive that storage type */
+  if (lv->type == TY_STRBUF && lv->str_shared) r.handle = 1;
   r.kind = (unsigned char)k;
   r.dyn_cls = repr_dyn_cls(c, lv->type);
   return r;
