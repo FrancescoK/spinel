@@ -1410,7 +1410,8 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     return;
   }
   /* an ivar's, or a global's (--share-strings), shared handle slot */
-  if (rp->strbuf_src == RS_HANDLE && (k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode)) {
+  if (rp->strbuf_src == RS_HANDLE &&
+      (k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
     char srefX[192];
     if (strbuf_slot_ref(c, node, srefX, sizeof srefX)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefX);
