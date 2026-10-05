@@ -8569,7 +8569,9 @@ TyKind infer_uncached(Compiler *c, int id) {
        an && / || or a condition around the read is not typed by its other
        side alone (`backtrace && $DEBUG` cached Boolean, then read the box). */
     if (lv && lv->type == TY_UNKNOWN && !gvar_has_write(c, rn)) return TY_POLY;
-    return lv ? lv->type : TY_UNKNOWN;
+    /* a global holding the shared handle (--share-strings) reads as a
+       String, as a local's or an ivar's does */
+    return lv ? (lv->type == TY_STRBUF ? TY_STRING : lv->type) : TY_UNKNOWN;
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {
     /* `$g += v` evaluates to the updated value (the local/ivar op-write forms
@@ -8579,7 +8581,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     TyKind ct = lv ? lv->type : TY_UNKNOWN;
     TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
-    if (ct == TY_STRING) return TY_STRING;
+    if (ct == TY_STRING || ct == TY_STRBUF) return TY_STRING;   /* STRBUF: --share-strings' handle */
     if (ty_is_numeric(ct) && ty_is_numeric(vt))
       return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct != TY_UNKNOWN ? ct : vt;
@@ -8592,6 +8594,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     TyKind ct = lv ? lv->type : TY_UNKNOWN;
+    if (ct == TY_STRBUF) return TY_STRING;   /* --share-strings' handle reads as a String */
     return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
   }
   if (nk == NK_ConstantReadNode) {
