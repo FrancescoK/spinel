@@ -1048,11 +1048,27 @@ SP_NORETURN static void sp_typed_replace_elem_error(sp_RbVal v, const char *kind
   abort();
 }
 
+/* the contents of a shared String buffer as a String of their own, embedded
+   NULs included */
+static const char *sp_strbuf_copy(sp_String *b) {
+  size_t n = (size_t)b->len;
+  char *c = sp_str_alloc(n);
+  memcpy(c, b->data, n);
+  c[n] = '\0';
+  sp_str_set_len(c, n);
+  return c;
+}
+
 /* A typed array replaced from an array of another kind takes each element as
    the boxed []= stores one: its own kind, nil as its nil, an Integer into a
    Float array; any other element raises before the receiver changes. */
 static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
   SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(src);
+  sp_int frozen = recv.cls_id == SP_BUILTIN_INT_ARRAY ? ((sp_IntArray *)recv.v.p)->frozen
+                : recv.cls_id == SP_BUILTIN_FLT_ARRAY ? ((sp_FloatArray *)recv.v.p)->frozen
+                : recv.cls_id == SP_BUILTIN_STR_ARRAY ? ((sp_StrArray *)recv.v.p)->frozen
+                : ((sp_PtrArray *)recv.v.p)->frozen;
+  if (frozen) { sp_raise_frozen_array_at(recv.v.p, recv.cls_id); return; }
   sp_PolyArray *els = sp_PolyArray_new(); SP_GC_ROOT(els);
   sp_poly_replace(sp_box_poly_array(els), src);
   switch (recv.cls_id) {
@@ -1085,7 +1101,7 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
         sp_RbVal e = els->data[i];
         if (e.tag == SP_TAG_STR) sp_StrArray_push(st, e.v.s);
         else if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF)
-          sp_StrArray_push(st, sp_str_dup_external(sp_String_cstr((sp_String *)e.v.p)));
+          sp_StrArray_push(st, sp_strbuf_copy((sp_String *)e.v.p));
         else if (e.tag == SP_TAG_NIL) sp_StrArray_push(st, NULL);
         else sp_typed_replace_elem_error(e, "String");
       }
@@ -1094,7 +1110,6 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
     }
     case SP_BUILTIN_PTR_ARRAY: {
       sp_PtrArray *d = (sp_PtrArray *)recv.v.p;
-      if (d->frozen) { sp_raise_frozen_array_at(d, SP_BUILTIN_PTR_ARRAY); return; }
       for (sp_int i = 0; i < els->len; i++) (void)sp_PtrArray_elem_unbox(d, els->data[i]);
       sp_gc_wb((void *)d);
       d->len = 0;

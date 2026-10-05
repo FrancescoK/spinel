@@ -33,3 +33,17 @@ rescue FrozenError => e
   puts e.class
 end
 p frozen
+
+locked = [1, 2].freeze
+begin
+  refill(pick(locked), ["x", 1].first(1))
+rescue => e
+  puts e.class
+end
+
+nul = ["old"]
+buf = +"a"
+buf << "\0b"
+refill(pick(nul), [buf, 1].first(1))
+p nul
+p nul.first.bytesize
