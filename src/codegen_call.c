@@ -10934,7 +10934,19 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (lty && sp_streq(lty, "KeywordHashNode")) enc_kw = kwh_lookup(nt, argv[argc - 1], "encoding");
       }
       Buf nb; memset(&nb, 0, sizeof nb);
-      if (has_content) { buf_puts(&nb, "sp_str_dup("); emit_str_expr(c, argv[0], &nb); buf_puts(&nb, ")"); }
+      /* String.new(*a): the content is the splat's one element, none is
+         the empty String, and more raise ArgumentError. Taken as the one
+         argument it was, the splatted Array went to the String slot. */
+      if (has_content && a0ty && sp_streq(a0ty, "SplatNode") &&
+          (argc == 1 || (argc == 2 && enc_kw >= 0))) {
+        int ta = ++g_tmp;
+        buf_printf(&nb, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(sp_splat_to_array(", ta);
+        emit_boxed(c, nt_ref(nt, argv[0], "expression"), &nb);
+        buf_printf(&nb, ")); SP_GC_ROOT(_t%d); if (_t%d->len > 1) sp_raise_arity(_t%d->len, 0, 1, 0);"
+                        " _t%d->len ? sp_str_dup(sp_poly_arg_str_chk(sp_PolyArray_get(_t%d, 0)))"
+                        " : sp_str_empty_binary(); })", ta, ta, ta, ta, ta);
+      }
+      else if (has_content) { buf_puts(&nb, "sp_str_dup("); emit_str_expr(c, argv[0], &nb); buf_puts(&nb, ")"); }
       else buf_puts(&nb, "sp_str_empty_binary()");
       if (enc_kw >= 0) emit_str_force_encoding(c, "force_encoding", nb.p ? nb.p : "", &enc_kw, 1, b);
       else buf_puts(b, nb.p ? nb.p : "");
