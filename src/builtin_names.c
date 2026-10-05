@@ -560,6 +560,10 @@ int is_div_or_mod(const char *n) {
   return sp_streq(n, "/") || sp_streq(n, "%");
 }
 
+int is_div_or_modulo(const char *n) {
+  return sp_streq(n, "div") || sp_streq(n, "modulo");
+}
+
 int is_initialize_family(const char *n) {
   return sp_streq(n, "initialize_copy") || sp_streq(n, "initialize");
 }
