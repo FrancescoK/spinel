@@ -1564,7 +1564,7 @@ static const BuiltinOp bop_rows[] = {
      BOPF_SELF_CLASS (bop_answers_self). */
   { TY_STRING, "clear",           0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2332) */
   { TY_STRING, "[]=",             2,   3, BF_ANY,      TY_STRING,     BOPE_NONE },  /* the assigned string (#2370) */
-  { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE },  /* clone(freeze: ...) */
+  { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },  /* clone(freeze: ...) */
   { TY_STRING, "encoding",        0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "sp_box_encoding(sp_str_is_binary($r) ? sp_encoding_binary() : sp_encoding_utf8())", 0 },  /* an Encoding value */
   { TY_STRING, "upcase",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "downcase",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
@@ -1665,14 +1665,14 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   /* emit_call_body's arms ahead of the scalar chain: concat() (stage 1) and
      nil? (stage 2), each looked up where its arm sat */
-  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF, 1 },
+  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN, 1 },
   { TY_STRING, "nil?",            0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r) == 0)", 0, 0, 0, 2 },  /* a nullable String carries nil as NULL */
-  { TY_STRING, "concat",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2309) */
-  { TY_STRING, "<<",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { TY_STRING, "prepend",         0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF },
-  { TY_STRING, "prepend",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { TY_STRING, "insert",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { TY_STRING, "replace",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "concat",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },  /* self (#2309) */
+  { TY_STRING, "<<",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { TY_STRING, "prepend",         0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { TY_STRING, "prepend",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { TY_STRING, "insert",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { TY_STRING, "replace",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { TY_STRING, "ascii_only?",     0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_ascii_only($r)", 0 },
   { TY_STRING, "ascii_only?",     0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
   { TY_STRING, "valid_encoding?", 0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_valid_encoding($r)", 0 },
@@ -1719,8 +1719,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "rjust",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "*",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "to_sym",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_sym_intern_n(_t$t, sp_str_byte_len(_t$t)); })", 0 },
-  { TY_STRING, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? _t$t : sp_str_frozen_empty; })", 0 },
-  { TY_STRING, "to_str",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; if (!_t$t) sp_nil_recv(\"to_str\"); _t$t; })", 0 },
+  { TY_STRING, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? _t$t : sp_str_frozen_empty; })", 0, 0, BOPF_SELF_EXACT },
+  { TY_STRING, "to_str",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; if (!_t$t) sp_nil_recv(\"to_str\"); _t$t; })", 0, 0, BOPF_SELF_EXACT },
   { TY_STRING, "empty?",          0, 127, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_empty_p($r)", 0 },
   { TY_STRING, "include?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_include($r, $s0)", 0 },
   { TY_STRING, "start_with?",     2, 127, BF_ANY,      TY_BOOL,       BOPE_STR_AFFIX_ANY, NULL, 0 },
@@ -1749,22 +1749,23 @@ static const BuiltinOp bop_rows[] = {
      nothing: inference keeps the rules after the lookup and codegen the
      legacy chain. Each fits only calls no row above fits. */
   { TY_STRING, "%",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one */
   { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
-  { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "eql?",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "<=>",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "<",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "<=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, ">",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, ">=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "between?",            2,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "eql?",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "<=>",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "<",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "<=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, ">",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, ">=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { TY_STRING, "between?",            2,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "hash",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "length",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "size",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { TY_STRING, "dup",                 0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "dup",                 0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  { TY_STRING, "clone",               0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
   { TY_STRING, "freeze",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "byteindex",           1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "byterindex",          1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
@@ -1837,17 +1838,17 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "to_s",             0,   0, BF_ANY,      TY_STRING,      BOPE_HASH_TO_S },
   { BOP_ANY_HASH, "to_proc",          0,   0, BF_ANY,      TY_PROC,        BOPE_HASH_TO_PROC },  /* a lambda over the hash */
   { BOP_ANY_HASH, "default_proc",     0,   0, BF_NONE,     TY_PROC,        BOPE_HASH_DEFAULT_PROC },
-  { BOP_ANY_HASH, "dup",              0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)" },
-  { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })" },  /* the frozen flag too (#3751) */
-  { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)" },  /* a copy (#2340) */
+  { BOP_ANY_HASH, "dup",              0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)", 0, 0, BOPF_COPY_CLASS },
+  { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })", 0, 0, BOPF_COPY_CLASS },  /* the frozen flag too (#3751) */
+  { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)", 0, 0, BOPF_COPY_CLASS | BOPF_ARGS_BUILTIN },  /* a copy (#2340) */
   { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
   /* the mutators */
   { BOP_ANY_HASH, "delete",           1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
   { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
-  { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
-  { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF },  /* #2431 */
-  { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },  /* #2431 */
+  { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   /* the conversions */
   { BOP_ANY_HASH, "to_a",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },  /* the [key, value] pairs */
   { BOP_ANY_HASH, "to_a",             0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
@@ -1889,21 +1890,21 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
   { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
   { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_DROP },
-  { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE },  /* identity */
+  { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_SELF_EXACT },  /* identity */
   { BOP_ANY_HASH, "slice",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* a copy, or a key subset */
   { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
-  { BOP_ANY_HASH, "dup",              0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
-  { BOP_ANY_HASH, "clone",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
+  { BOP_ANY_HASH, "dup",              0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  { BOP_ANY_HASH, "clone",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_HASH, "[]",               0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
   { BOP_ANY_HASH, "delete",           0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
   { BOP_ANY_HASH, "default",          0,   1, BF_ANY,      TY_POLY,        BOPE_HASH_DEFAULT },  /* default(key) too (#2409) */
   { BOP_ANY_HASH, "length",           0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { BOP_ANY_HASH, "size",             0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { BOP_ANY_HASH, "count",            0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
-  { BOP_ANY_HASH, "<",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },  /* subset / superset */
-  { BOP_ANY_HASH, "<=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
-  { BOP_ANY_HASH, ">",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
-  { BOP_ANY_HASH, ">=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE },
+  { BOP_ANY_HASH, "<",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },  /* subset / superset */
+  { BOP_ANY_HASH, "<=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, ">",                1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, ">=",               1,   1, BF_ANY,      TY_BOOL,        BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "keys",             0, 127, BF_ANY,      BOPR_HASH_KEYS, BOPE_NONE },
   { BOP_ANY_HASH, "values",           0, 127, BF_ANY,      BOPR_HASH_VALS, BOPE_NONE },
   { BOP_ANY_HASH, "values_at",        0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },
@@ -1927,7 +1928,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "clear",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash * _t$t = $r; if (sp_gc_is_frozen(_t$t)) sp_raise_frozen_hash_at(_t$t, $K); sp_$HHash_clear(_t$t); _t$t; })", 0, 0, BOPF_SELF },  /* #2340/#2349/#2351, #3001 */
   { BOP_ANY_HASH, "to_hash",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF },  /* the receiver itself, not a copy */
   { BOP_ANY_HASH, "rehash",           0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_REHASH, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_COMPACT },
+  { BOP_ANY_HASH, "compact",          0,   0, BF_ANY,      BOPR_SELF,      BOPE_HASH_COMPACT, NULL, 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_NONE },  /* a [key, value] pair, or nil (#2349) */
   { BOP_ANY_HASH, "has_key?",         0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { BOP_ANY_HASH, "key?",             0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
@@ -1953,15 +1954,15 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "store",            2,   2, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "fetch",            1,   2, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "dig",              1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
-  { BOP_ANY_HASH, "==",               1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
-  { BOP_ANY_HASH, "eql?",             1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
+  { BOP_ANY_HASH, "==",               1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, "eql?",             1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "hash",             0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "default_proc=",    1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },  /* the assigned proc */
   { BOP_ANY_HASH, "compare_by_identity", 0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_HASH, "freeze",           0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_HASH, "merge",            1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
-  { BOP_ANY_HASH, "merge!",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_HASH, "update",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_HASH, "merge",            1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS | BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, "merge!",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { BOP_ANY_HASH, "update",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "transform_keys!",  1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* by a Hash of new keys */
   { BOP_ANY_HASH, "transform_keys!",  0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_HASH, "transform_values!", 0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2102,12 +2103,12 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "reverse",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* flatten: typed arrays have no nesting */
   { BOP_ANY_ARRAY, "sort",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "uniq",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "to_a",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "to_a",                  0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_EXACT },
   { BOP_ANY_ARRAY, "to_ary",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "deconstruct",           0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "entries",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "dup",                   0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "clone",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
+  { BOP_ANY_ARRAY, "dup",                   0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  { BOP_ANY_ARRAY, "clone",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_ARRAY, "compact",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "flatten",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "clear",                 0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2119,18 +2120,18 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "rotate!",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "rotate",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "insert",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "concat",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "concat",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "freeze",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "replace",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "replace",               0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "values_at",             0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },
-  { BOP_ANY_ARRAY, "union",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_union($r, NULL)" },
+  { BOP_ANY_ARRAY, "union",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_union($r, NULL)", 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_NONE,     BOPR_SELF,     BOPE_NONE },
   { BOP_ANY_ARRAY, "fetch_values",          0, 127, BF_REQUIRED, TY_POLY_ARRAY, BOPE_NONE },  /* fallback values mix in (#2368) */
-  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE },
-  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_REQUIRED, TY_NIL,        BOPE_NONE },  /* the block form returns nil */
-  { BOP_ANY_ARRAY, "product",               1, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* the block form returns self */
-  { BOP_ANY_ARRAY, "product",               1, 127, BF_ANY,      TY_POLY_ARRAY, BOPE_NONE },
-  { BOP_ANY_ARRAY, "product",               0,   0, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT },
+  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_NONE,     TY_POLY_ARRAY, BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "zip",                   0, 127, BF_REQUIRED, TY_NIL,        BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },  /* the block form returns nil */
+  { BOP_ANY_ARRAY, "product",               1, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },  /* the block form returns self */
+  { BOP_ANY_ARRAY, "product",               1, 127, BF_ANY,      TY_POLY_ARRAY, BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "product",               0,   0, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "combination",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* block forms return self */
   { BOP_ANY_ARRAY, "permutation",           0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "repeated_combination",  0, 127, BF_REQUIRED, BOPR_SELF,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -2158,19 +2159,19 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "shift",                 0,   0, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "sp_$AArray_shift($r)" },  /* the nil sentinel when empty */
   { BOP_ANY_ARRAY, "pop",                   0,   0, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "sp_$AArray_pop($r)" },
   { BOP_ANY_ARRAY, "inspect",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_$AArray_inspect($r)" },
-  { BOP_ANY_ARRAY, "to_a",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r" },
+  { BOP_ANY_ARRAY, "to_a",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT },
   { BOP_ANY_ARRAY, "to_ary",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "entries",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r" },
   { BOP_ANY_ARRAY, "deconstruct",           0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "dup",                   0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)" },
-  { BOP_ANY_ARRAY, "clone",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray *_t$u = sp_$AArray_dup(_t$t); _t$u->frozen = _t$t ? _t$t->frozen : 0; _t$u; })" },  /* the frozen flag carries over */
+  { BOP_ANY_ARRAY, "dup",                   0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)", 0, 0, BOPF_COPY_CLASS },
+  { BOP_ANY_ARRAY, "clone",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; sp_$AArray *_t$u = sp_$AArray_dup(_t$t); _t$u->frozen = _t$t ? _t$t->frozen : 0; _t$u; })", 0, 0, BOPF_COPY_CLASS },  /* the frozen flag carries over */
   { BOP_ANY_ARRAY, "compact",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_compact($r)" },  /* drops the nil sentinel */
   { BOP_ANY_ARRAY, "shuffle",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_shuffle($r)" },
   { BOP_ANY_ARRAY, "reverse",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = sp_$AArray_dup($r); sp_$AArray_reverse_bang(_t$t); _t$t; })" },
   { BOP_ANY_ARRAY, "clear",                 0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; if (_t$t && _t$t->frozen) sp_raise_cls(\"FrozenError\", sp_sprintf(\"can't modify frozen Array: %s\", sp_$AArray_inspect(_t$t))); if (_t$t) _t$t->len = 0; _t$t; })", 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "values_at",             0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "((void)($r), sp_$AArray_new())" },  /* no indices: empty (#2980) */
-  { BOP_ANY_ARRAY, "intersection",          0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)" },  /* a fold over nothing: a copy (#3851) */
-  { BOP_ANY_ARRAY, "difference",            0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)" },
+  { BOP_ANY_ARRAY, "intersection",          0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)", 0, 0, BOPF_ARGS_BUILTIN },  /* a fold over nothing: a copy (#3851) */
+  { BOP_ANY_ARRAY, "difference",            0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "sp_$AArray_dup($r)", 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "insert",                1,   1, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; SP_GC_ROOT(_t$t); (void)($i0); _t$t; })", 0, 0, BOPF_SELF },  /* no values: self */
   { BOP_ANY_ARRAY, "take",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; SP_GC_ROOT(_t$t); sp_int _t$u = $i0; if (_t$u < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\"); sp_$AArray_slice(_t$t, 0, _t$u); })" },
   { BOP_ANY_ARRAY, "drop",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; SP_GC_ROOT(_t$t); sp_int _t$u = $i0; if (_t$u < 0) sp_raise_cls(\"ArgumentError\", \"attempt to drop negative size\"); sp_$AArray_slice(_t$t, _t$u, _t$t->len - _t$u); })" },
@@ -2191,15 +2192,15 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "minmax",                0,   0, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_MINMAX },
   { BOP_ANY_ARRAY, "sort",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_SORT },
   { BOP_ANY_ARRAY, "uniq",                  0,   0, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_UNIQ },
-  { BOP_ANY_ARRAY, "replace",               1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_REPLACE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "+",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PLUS },
-  { BOP_ANY_ARRAY, "&",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "|",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "-",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "intersection",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP },
-  { BOP_ANY_ARRAY, "intersect?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_ARRAY_INTERSECT_P },
+  { BOP_ANY_ARRAY, "replace",               1,   1, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "+",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_PLUS, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "&",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "|",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "-",                     1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "intersection",          1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "union",                 1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "difference",            1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_ARRAY_SETOP, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "intersect?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_ARRAY_INTERSECT_P, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "sum",                   0,   0, BF_NONE,     BOPR_ARRAY_SUM, BOPE_ARRAY_SUM0 },
   { BOP_ANY_ARRAY, "compact!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_ARRAY_COMPACT_BANG, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { BOP_ANY_ARRAY, "flatten!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_ARRAY_COMPACT_BANG, NULL, 0, 0, BOPF_SELF_OR_NIL },
@@ -2215,7 +2216,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "repeated_combination",  1,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
   { BOP_ANY_ARRAY, "repeated_permutation",  1,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
   { BOP_ANY_ARRAY, "permutation",           0,   1, BF_NONE,     BOPR_ARRAY_TUPLES, BOPE_ARRAY_COMBINATION },
-  { BOP_ANY_ARRAY, "product",               1,   1, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT },
+  { BOP_ANY_ARRAY, "product",               1,   1, BF_NONE,     TY_POLY_ARRAY, BOPE_ARRAY_PRODUCT, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_NONE,     BOPR_SELF,     BOPE_ARRAY_FETCH_VALUES0 },
   { BOP_ANY_ARRAY, "fetch_values",          0,   0, BF_REQUIRED, TY_POLY_ARRAY, BOPE_ARRAY_FETCH_VALUES0 },
   { BOP_ANY_ARRAY, "all?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
@@ -2224,7 +2225,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "one?",                  0,   0, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED0 },
   { BOP_ANY_ARRAY, "dig",                   2, 127, BF_ANY,      TY_POLY,       BOPE_ARRAY_DIG_N },
   { BOP_ANY_ARRAY, "sum",                   1,   1, BF_NONE,     TY_UNKNOWN,    BOPE_ARRAY_SUM1 },
-  { BOP_ANY_ARRAY, "concat",                1, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_CONCAT, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "concat",                1, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_CONCAT, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "index",                 1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
   { BOP_ANY_ARRAY, "find_index",            1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
   { BOP_ANY_ARRAY, "rindex",                1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
@@ -2239,9 +2240,9 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "slice",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "[]=",                   2,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },  /* the assigned value */
   { BOP_ANY_ARRAY, "fetch",                 1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "==",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "eql?",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
-  { BOP_ANY_ARRAY, "<=>",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { BOP_ANY_ARRAY, "==",                    1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "eql?",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
+  { BOP_ANY_ARRAY, "<=>",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "hash",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "member?",               1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { BOP_ANY_ARRAY, "sample",                0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
@@ -2260,7 +2261,7 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "reverse_each",          0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "each_with_index",       0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "each_entry",            0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "product",               0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "product",               0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_ARRAY, "each_with_object",      1,   1, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE },  /* the memo */
   { BOP_ANY_ARRAY, "keep_if",               0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },  /* blockless: an Enumerator */
   { BOP_ANY_ARRAY, "delete_if",             0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
@@ -2452,7 +2453,9 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
   return op && (op->flags & BOPF_BOXED) ? op : NULL;
 }
 
-int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
+/* the flags of the row a call on a receiver of kind rt finds, the Array and
+   Hash kinds through their family's rows */
+static unsigned bop_call_flags(TyKind rt, const char *name, int argc, int has_block) {
   TyKind lk = rt;
   if (rt == TY_STRBUF) lk = TY_STRING;
   else if (!bop_covers(rt)) {
@@ -2460,7 +2463,16 @@ int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
     else if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
   }
   const BuiltinOp *op = bop_find(lk, name, argc, has_block);
-  return op ? op->flags & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS) : 0;
+  return op ? op->flags : 0;
+}
+
+int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
+  return bop_call_flags(rt, name, argc, has_block) &
+         (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS | BOPF_SELF_EXACT | BOPF_COPY_CLASS);
+}
+
+int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block) {
+  return (bop_call_flags(rt, name, argc, has_block) & BOPF_ARGS_BUILTIN) != 0;
 }
 
 TyKind bop_result(const BuiltinOp *op, TyKind rt) {
