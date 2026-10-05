@@ -55,3 +55,10 @@ buf << "\0b"
 refill(pick(nul), [buf, 1].first(1))
 p nul
 p nul.first.bytesize
+
+bin = ["old"]
+raw = "é".b
+raw << "x"
+refill(pick(bin), [raw, 1].first(1))
+p bin.first.length
+p bin.first.encoding

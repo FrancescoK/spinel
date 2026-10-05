@@ -13,3 +13,5 @@ FrozenError
 FrozenError
 ["a\u0000b"]
 3
+3
+#<Encoding:BINARY (ASCII-8BIT)>
