@@ -2042,6 +2042,7 @@ GC_MINOR_TESTS := test/zip_block_many_operands.rb \
                   test/block_arg_paren_sequence_proc.rb \
                   test/gc_fresh_receiver_eq_exc_rooted.rb \
                   test/poly_string_dump_case_options.rb \
+                  test/send_recv_class_before_toplevel.rb \
                   test/combinations_yield_ivar.rb \
                   test/gc_minor_thread_local_slot.rb \
                   test/boxed_map_bang_write_barrier.rb \

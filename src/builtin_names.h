@@ -181,4 +181,6 @@ int is_string_append(const char *n); /* << concat: appends answering the receive
 
 int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
 
+int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+
 #endif
