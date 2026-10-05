@@ -1475,12 +1475,14 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             int ts = ++g_tmp;
             buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts);
             if (se >= 0) emit_boxed(c, se, b); else buf_puts(b, "sp_box_nil()");
-            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
-                       ts, tall, ts);
+            /* --share-strings: an element may be a shared handle's box; the
+               runtime takes a String's */
+            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, %s_t%d->data[_i]%s); }",
+                       ts, tall, repr_share_rule(c) ? "sp_poly_strbuf_deref(" : "", ts, repr_share_rule(c) ? ")" : "");
           }
           else {
             buf_printf(b, " sp_PolyArray_push(_t%d, ", tall);
-            emit_boxed(c, argv[k], b);
+            emit_boxed_str_operand(c, argv[k], b);
             buf_puts(b, ");");
           }
         }
@@ -1493,14 +1495,14 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       else {
         /* cmd = argv[0] (boxed, so it can be String or Array) */
         buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
-        emit_boxed(c, argv[0], b);
+        emit_boxed_str_operand(c, argv[0], b);
         buf_puts(b, ";");
         /* args: collect argv[1..argc-2] (or empty if argc==1) into a
            PolyArray. Skip the last arg if it's a Hash (the opts). */
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
         for (int k = 1; k <= n_args; k++) {
           buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
-          emit_boxed(c, argv[k], b);
+          emit_boxed_str_operand(c, argv[k], b);
           buf_puts(b, ");");
         }
       }
@@ -1538,7 +1540,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             "_t%d = sp_poly_hash_get_pair_val(_t%d, "
             "sp_box_sym(sp_sym_intern(\"%s\")), &_t%d); "
             "if (_t%d) { "
-            "  sp_RbVal _v = _t%d; "
+            "  sp_RbVal _v = %s_t%d%s; "
             "  if (_v.tag == SP_TAG_NIL) { "
             "    sp_PolyArray_push(_t%d, sp_box_int(-1)); "
             "  }\nelse if (_v.tag == SP_TAG_BOOL && !_v.v.i) { "
@@ -1575,7 +1577,8 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             "  } "
             "}\nelse { sp_PolyArray_push(_t%d, sp_box_int(-1)); } }",
             tkv, tfd, tkv, tth, fd_keys[i], tfd,
-            tfd, tkv,
+            /* --share-strings: a path may be the shared handle's box */
+            tfd, repr_share_rule(c) ? "sp_poly_strbuf_deref(" : "", tkv, repr_share_rule(c) ? ")" : "",
             topts,
             topts,
             topts,
