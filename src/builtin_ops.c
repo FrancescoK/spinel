@@ -98,6 +98,23 @@ static const BuiltinOp bop_rows[] = {
   { TY_RANDOM, "seed", 0, BOP_ARGC_ANY, BF_ANY, TY_INT, BOPE_NONE, NULL, 0, 0, 0 },
   { TY_RANDOM, "bytes", 0, BOP_ARGC_ANY, BF_ANY, TY_STRING, BOPE_NONE, NULL, 0, 0, 0 },
 
+  /* Class-gated exception accessors, used behind the Object fallback. */
+  { TY_EXCEPTION, "key", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_key_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "receiver", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_receiver_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "args", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_args_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "private_call?", 0, 0, BF_NONE, TY_BOOL, BOPE_TEMPLATE, "sp_exc_private_call_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "reason", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_reason_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "exit_value", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_exit_value_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "tag", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_tag_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "value", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_throw_value_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "status", 0, 0, BF_NONE, TY_INT, BOPE_TEMPLATE, "sp_exc_status_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "success?", 0, 0, BF_NONE, TY_BOOL, BOPE_TEMPLATE, "sp_exc_success_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "signo", 0, 0, BF_NONE, TY_INT, BOPE_TEMPLATE, "sp_exc_signo_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "signm", 0, 0, BF_NONE, TY_STRING, BOPE_TEMPLATE, "sp_exc_signm_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "name", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_name_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "errno", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_errno_acc($r)", 0, 0, 0 },
+  { TY_EXCEPTION, "result", 0, 0, BF_NONE, TY_POLY, BOPE_TEMPLATE, "sp_exc_result($r)", 0, 0, 0 },
+
   /* Process::Tms: four cumulative CPU times, all Float (#3044), fields of
      the by-value struct */
   { TY_TMS, "utime",  0, 0, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "($r).utime", 0, 0, BOPF_BOXED },

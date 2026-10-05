@@ -5,6 +5,7 @@
 #include "types.h"
 #include <stddef.h>
 #include "builtin_names.h"
+#include <stddef.h>
 
 int is_zip_name(const char *n) {
   return sp_streq(n, "zip");
@@ -679,4 +680,17 @@ int builtin_module_owns(const char *cls, const char *m) {
   if (numeric && builtin_name_in(m, num)) return 1;
   if ((sp_streq(cls, "Array") || sp_streq(cls, "Hash") || sp_streq(cls, "Range")) && builtin_name_in(m, enm)) return 1;
   return 0;
+}
+
+int is_gated_exception_accessor(const char *n) {
+  static const char *const names[] = {
+    "key", "receiver", "args", "private_call?", "reason", "exit_value", "tag",
+    "value", "status", "success?", "signo", "signm", "name", "errno", "result", NULL };
+  if (!n) return 0;
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}
+
+int is_symbol_exception_accessor(const char *n) {
+  return sp_streq(n, "reason") || sp_streq(n, "tag") || sp_streq(n, "key") || sp_streq(n, "name");
 }

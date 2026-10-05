@@ -183,4 +183,7 @@ int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
 
+int is_gated_exception_accessor(const char *n); /* accessors owned by specific exception classes */
+int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
+
 #endif
