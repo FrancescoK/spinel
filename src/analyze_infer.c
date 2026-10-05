@@ -8868,6 +8868,10 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (et == TY_STRBUF && c->share_strings) et = TY_POLY;
       e = ty_unify(e, et);
     }
+    /* --share-strings: a String literal whose elements the rule shares
+       settles in its poly form, its stores boxed as handles (#6765) */
+    if ((e == TY_STRING || e == TY_STRBUF) && c->share_strings && share_node_elems_share(c, id))
+      return TY_POLY_ARRAY;
     /* ty_array_of holds an all-unknown element type at bottom while the
        fixpoint runs; see its TY_UNKNOWN case. */
     return ty_array_of(e);
@@ -8975,6 +8979,8 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (vt_elem == TY_STRBUF && c->share_strings) vt_elem = TY_POLY;
       vt = ty_unify(vt, vt_elem);
     }
+    /* --share-strings: String values the rule shares are boxed handles */
+    if ((vt == TY_STRING || vt == TY_STRBUF) && c->share_strings && share_node_elems_share(c, id)) vt = TY_POLY;
     /* symbol keys -> SymPolyHash (boxed values), regardless of value type */
     if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
     TyKind hv = ty_hash_of(kt, vt);

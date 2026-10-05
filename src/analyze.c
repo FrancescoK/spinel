@@ -15089,10 +15089,16 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
        e << x }`) is lost or finds no method. Refused (#6765) rather than
        compiled with the change lost; a container flowing in is left out,
        its own mutations reach it. */
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns))
-      unsupported_feature(c, sn, "a String a boxed local holds is stored into a container and mutated in "
-                          "place through it (a String is not yet shared by reference through a boxed "
-                          "local's container element). Mutate the String through the local itself.");
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
+      static const char boxed_msg[] =
+        "a String a boxed local holds is stored into a container and mutated in place through it (a "
+        "String is not yet shared by reference through a boxed local's container element). Mutate the "
+        "String through the local itself.";
+      /* (under the flag the boxed local's box holds the handle when the rule
+         shares its class, and the container stores that box) */
+      ShareRoute q = share_route(sn, sn, 0);
+      if (!share_route_defer(c, &q, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
+    }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -16419,17 +16425,24 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       changed = 1;
     }
   }
-  /* a container literal no holder names, iterated in place by a block
-     (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
-    int r = nt_ref(c->nt, n, "receiver"), blk = nt_ref(c->nt, n, "block");
-    if (r < 0 || blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
-    r = unwrap_parens(c, r);
-    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
-        share_node_elems_share(c, r))
-      changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
+  /* a container literal whose elements the rule shares settled in its poly
+     form (infer_uncached): its stores are the handles its boxes hold */
+  /* (a multiple assignment's value is no container: it binds each target
+     from its element) */
+  unsigned char *masgn_val = calloc((size_t)c->nt->count + 1, 1);
+  NT_FOREACH_KIND(c->nt, NK_MultiWriteNode, mw) {
+    int v = nt_ref(c->nt, mw, "value");
+    if (v >= 0) masgn_val[v] = 1;
   }
+  static const NodeKind lits[] = { NK_ArrayNode, NK_HashNode };
+  for (int li = 0; li < 2; li++)
+    NT_FOREACH_KIND(c->nt, lits[li], n) {
+      TyKind lt = c->ntype[n];
+      if (!masgn_val[n] && (lt == TY_POLY_ARRAY || (ty_is_hash(lt) && ty_hash_val(lt) == TY_POLY)) &&
+          share_node_elems_share(c, n))
+        changed |= strbuf_container_source_walk(c, n, 0, SB_DEMAND);
+    }
+  free(masgn_val);
   return changed;
 }
 
