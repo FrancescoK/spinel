@@ -5289,7 +5289,7 @@ static int is_array_enum_method(const char *nm) {
     "member?", "each_with_index", "join", "index", "each",
     "each_cons", "each_slice", "chunk", "chunk_while", "slice_when",
     "minmax_by", "cycle", "lazy", "each_entry", "reverse_each", "compact",
-    "chain", "slice_before", "slice_after", NULL };
+    "chain", "slice_before", "slice_after", "minmax", NULL };
   return str_in(nm, names);
 }
 
@@ -8172,6 +8172,11 @@ int desugar_enum_method_recv(Compiler *c) {
       continue;
     }
     if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
+    /* minmax only where Enumerable really is: a Struct, or a class that mixes
+       it in (whose own minmax builtins/enumerable.rb also answers); a class
+       with a bare #each keeps its NoMethodError */
+    if (sp_streq(nm, "minmax") && !c->classes[cid].is_struct &&
+        !an_class_includes_enumerable(c, cid)) continue;
     /* a Struct/Data class serves these natively in the struct emit section
        (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
        element array would change their semantics */
