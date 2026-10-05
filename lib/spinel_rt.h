@@ -8358,6 +8358,29 @@ static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_c
    raw pointer assignment would mix incompatible struct layouts
    (vals[] of const char** vs sp_RbVal*). See issue #614. A frozen source
    gives a frozen copy. */
+/* A String-keyed Hash of any values as the replacement Hash of sub/gsub:
+   each value read as its to_s (nil as ""), the String-to-String Hash the
+   substitution helpers take, as CRuby converts hash[match] with to_s. */
+static sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h) {
+  SP_GC_ROOT(h);
+  sp_StrStrHash *r = sp_StrStrHash_new(); SP_GC_ROOT(r);
+  if (h) for (sp_int i = 0; i < h->len; i++) {
+    const char *k = h->order[i];
+    sp_StrStrHash_set(r, k, sp_poly_to_s(sp_StrPolyHash_get(h, k)));
+  }
+  return r;
+}
+/* ...and an Integer-valued one, the same way (a nil value is the sentinel) */
+static sp_StrStrHash *sp_StrIntHash_to_s_values(sp_StrIntHash *h) {
+  SP_GC_ROOT(h);
+  sp_StrStrHash *r = sp_StrStrHash_new(); SP_GC_ROOT(r);
+  if (h) for (sp_int i = 0; i < h->len; i++) {
+    const char *k = h->order[i];
+    sp_int v = sp_StrIntHash_get(h, k);
+    sp_StrStrHash_set(r, k, v == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(v));
+  }
+  return r;
+}
 static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_str(sp_StrStrHash_get(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
 /* MatchData#named_captures: {String name => group substring | nil}. A
    non-participating named group maps to nil, so the value side is poly. Lives
