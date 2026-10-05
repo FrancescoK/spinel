@@ -307,6 +307,9 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 #define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
 #define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
 #define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
+#define BOP_LIB      ((TyKind)-8)   /* a library class's class methods (File,
+                                       Dir, IO, ...: is_lib_class_name) and a
+                                       C-bound class's instance methods */
 
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
