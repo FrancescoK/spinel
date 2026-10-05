@@ -24,6 +24,9 @@ typedef struct sp_mar_buf_s {
   /* symbol-link table: every symbol is written in full once; a repeat emits
      `;<index>` (indices count symbols only, separate from object links). */
   char **wsyms; int nws, cws;
+  /* set by sp_marshal_dump_h only (a program built --share-strings): a
+     shared String handle's box dumps as the String it holds */
+  int handles;
 } sp_mar_buf;
 void sp_mar_b(sp_mar_buf *b, unsigned char c);
 void sp_mar_sym(sp_mar_buf *b, const char *name);
@@ -47,6 +50,7 @@ typedef struct {
 extern sp_marshal_vt sp_marshal_v;
 
 const char *sp_marshal_dump(sp_RbVal v);
+const char *sp_marshal_dump_h(sp_RbVal v);   /* --share-strings: handles dump as Strings */
 sp_RbVal sp_marshal_load(const char *s, sp_int len);
 void sp_marshal_mark_active(void);   /* mark the in-flight load tables (lib/sp_marshal.c) */
 #endif /* SP_MARSHAL_H */
