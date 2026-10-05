@@ -602,6 +602,14 @@ spinel: 1 refusal, nothing written
 == test/reject/rational_pow_bignum.rb [promote] rc=1
 spinel: the receiver of a Float `**` given a Rational, which no conversion keeps in its sp_float slot
 spinel: 1 refusal, nothing written
+== test/reject/reader_string_elem_append.rb [default] rc=1
+spinel: a String is not yet shared by reference through a reader's String stored into a container whose element is changed in place
+== test/reject/reader_string_elem_append.rb [promote] rc=1
+spinel: a String is not yet shared by reference through a reader's String stored into a container whose element is changed in place
+== test/reject/reader_string_hash_value_mutate.rb [default] rc=1
+spinel: a String is not yet shared by reference through a reader's String stored into a container whose element is changed in place
+== test/reject/reader_string_hash_value_mutate.rb [promote] rc=1
+spinel: a String is not yet shared by reference through a reader's String stored into a container whose element is changed in place
 == test/reject/recursive_default_reads_block.rb [default] rc=1
 spinel: unsupported default of `m`'s parameter `y` that calls `m` again with that argument omitted (one reading the caller's block or `super` cannot be moved into a method of its own): node N (ParenthesesNode)
 spinel: 1 refusal, nothing written

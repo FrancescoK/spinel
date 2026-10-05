@@ -18785,6 +18785,29 @@ static int mark_param_read_only_operands(Compiler *c) {
   return marked;
 }
 
+/* A reader's String stored into a container whose element is changed in
+   place (`a << k.s; a[0] << "!"`) is demanded as the shared handle:
+   strbuf_demand_store_leaf marks the reader call, and a marked reader call
+   renders its ivar as the handle. When that ivar is no handle once the
+   promotions have converged, the box took its const char * for an
+   sp_String * and the C did not build. Making the ivar the handle would be
+   a new sharing route, which waits for the share-by-default rule (#6765),
+   so the route is refused. */
+static void refuse_unshared_reader_stores(Compiler *c) {
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    if (!c->strbuf_box[n]) continue;
+    char ivb[300]; int defc = -1;
+    const char *ivn = an_reader_ivar_of(c, n, &defc, ivb, sizeof ivb);
+    if (!ivn || defc < 0 || defc >= c->nclasses) continue;
+    ClassInfo *ci = &c->classes[defc];
+    int iv = comp_ivar_index(ci, ivn);
+    if (iv < 0 || ci->ivar_str_shared[iv]) continue;
+    if (ci->ivar_types[iv] != TY_STRING && ci->ivar_types[iv] != TY_STRBUF) continue;
+    unsupported_feature(c, n, "a String is not yet shared by reference through a reader's "
+                        "String stored into a container whose element is changed in place");
+  }
+}
+
 static int mark_reader_identity_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -33309,6 +33332,7 @@ static void an_phase_storage(Compiler *c) {
   }
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
+  refuse_unshared_reader_stores(c);
 
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
      append is amortized O(1) instead of an O(n) copy-concat (which makes a

@@ -710,6 +710,8 @@ Not yet shared:
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
 
+- through a reader's String (`attr_reader`, or `def m = @iv`) stored into an Array or a Hash whose element is then changed in place (`a << obj.name; a[0] << "!"`), unless the instance variable is already a shared handle;
+
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
