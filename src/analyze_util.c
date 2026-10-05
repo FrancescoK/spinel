@@ -1494,6 +1494,58 @@ static TyKind yvt_forwarded_value(Compiler *c, int emi) {
   return all != first && all != TY_UNKNOWN ? TY_POLY : first;
 }
 
+/* Whether block-passing call `cid` hands its callee the block the enclosing
+   method was given: a `...` forward, or `&b` naming that method's block
+   parameter (an anonymous `&` reads it under its desugared name). Any other
+   `&expr` -- a proc in a local, a lambda, a Method -- is a value of its own,
+   which the callee yields to in place of the enclosing method's block. The
+   yield's value, the call's, the tails read for nilability and an
+   instance_exec's value all ask this one question, so they agree: the call
+   was typed from the enclosing method's block while its yield ran the proc. */
+int call_forwards_own_block(Compiler *c, int cid) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, cid, "block");
+  if (blk < 0) return yvt_call_forwards_block(nt, cid);
+  if (nt_kind(nt, blk) != NK_BlockArgumentNode) return 0;
+  Scope *encl = comp_scope_of(c, cid);
+  int bexpr = nt_ref(nt, blk, "expression");
+  const char *bpn = encl && encl->blk_param && encl->blk_param[0] ? encl->blk_param : NULL;
+  const char *ben = bexpr >= 0 && nt_kind(nt, bexpr) == NK_LocalVariableReadNode
+                      ? nt_str(nt, bexpr, "name") : NULL;
+  return bpn && ben && sp_streq(bpn, ben);
+}
+
+/* The body of the lambda or proc literal a `&expr` block argument writes in
+   place (`m(&-> { 1 })`, `m(&proc { 1 })`), or -1 for any other value. */
+static int yvt_proc_arg_body(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int bexpr = nt_ref(nt, blk, "expression");
+  if (bexpr < 0) return -1;
+  if (nt_kind(nt, bexpr) == NK_LambdaNode) return nt_ref(nt, bexpr, "body");
+  if (nt_kind(nt, bexpr) == NK_CallNode) {
+    const char *pnm = nt_str(nt, bexpr, "name");
+    int pblk = nt_ref(nt, bexpr, "block");
+    if (pnm && pblk >= 0 && is_proc_constructor(pnm) && nt_kind(nt, pblk) == NK_BlockNode)
+      return nt_ref(nt, pblk, "body");
+  }
+  return -1;
+}
+
+/* What a callee yields to when the call passes a proc value of its own
+   (call_forwards_own_block is 0): a literal written there types like an
+   ordinary literal block, its tail being the value; any other callable is
+   only known at run time, so poly. Typing it from the enclosing method's
+   block made the whole call answer nil (#3688). */
+static TyKind yvt_proc_arg_value(Compiler *c, int blk) {
+  int pbody = yvt_proc_arg_body(c, blk);
+  if (pbody < 0) return TY_POLY;
+  int pn = 0; const int *pd = nt_arr(c->nt, pbody, "body", &pn);
+  if (pn == 0) return TY_NIL;
+  TyKind pt = infer_type(c, pd[pn - 1]);
+  if (pt == TY_VOID) return TY_NIL;
+  return pt == TY_UNKNOWN ? TY_POLY : pt;
+}
+
 TyKind yield_value_type(Compiler *c, int mi) {
   for (int i = 0; i < g_yvt_depth; i++)
     if (g_yvt_mi[i] == mi) return TY_UNKNOWN;
@@ -1528,39 +1580,12 @@ TyKind yield_value_type(Compiler *c, int mi) {
       Scope *encl = comp_scope_of(c, cid);
       int emi = encl ? (int)(encl - c->scopes) : -1;
       /* `mi(&some_proc)`: a first-class Proc / lambda / Method value, not the
-         enclosing method's own block forwarded on. Its result is whatever the
-         proc answers at run time, i.e. poly -- typing it from the (absent)
-         enclosing block made the whole call answer nil (#3688). */
-      if (!fwd_args && blk >= 0) {
-        int bexpr = nt_ref(nt, blk, "expression");
-        const char *bpn = (encl && encl->blk_param && encl->blk_param[0]) ? encl->blk_param : NULL;
-        const char *ben = (bexpr >= 0 && nt_kind(nt, bexpr) == NK_LocalVariableReadNode)
-                            ? nt_str(nt, bexpr, "name") : NULL;
-        if (!(bpn && ben && sp_streq(bpn, ben))) {
-          /* A lambda/proc LITERAL right there types like an ordinary literal
-             block -- its tail expression is the value the call yields. Any
-             other callable (a proc read from a local, a Method) is only known
-             at run time, so poly. */
-          TyKind pt = TY_POLY;
-          int pbody = -1;
-          if (nt_kind(nt, bexpr) == NK_LambdaNode) pbody = nt_ref(nt, bexpr, "body");
-          else if (nt_kind(nt, bexpr) == NK_CallNode) {
-            const char *pnm = nt_str(nt, bexpr, "name");
-            int pblk = nt_ref(nt, bexpr, "block");
-            if (pnm && pblk >= 0 && (is_proc_constructor(pnm)) &&
-                nt_kind(nt, pblk) == NK_BlockNode)
-              pbody = nt_ref(nt, pblk, "body");
-          }
-          if (pbody >= 0) {
-            int pn2 = 0; const int *pd = nt_arr(nt, pbody, "body", &pn2);
-            if (pn2 == 0) pt = TY_NIL;
-            else { pt = infer_type(c, pd[pn2 - 1]); if (pt == TY_VOID) pt = TY_NIL; }
-            if (pt == TY_UNKNOWN) pt = TY_POLY;
-          }
-          if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) { result = pt; break; }
-          result = ty_unify(result, pt);
-          continue;
-        }
+         enclosing method's own block forwarded on. */
+      if (!call_forwards_own_block(c, cid)) {
+        TyKind pt = yvt_proc_arg_value(c, blk);
+        if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) { result = pt; break; }
+        result = ty_unify(result, pt);
+        continue;
       }
       TyKind ft = (emi >= 0 && emi != mi) ? yvt_forwarded_value(c, emi) : TY_UNKNOWN;
       if (ft == TY_VOID) ft = TY_NIL;
@@ -1640,6 +1665,14 @@ int yield_block_tails(Compiler *c, int mi, int *out, int max) {
     if (!yvt_reaches(c, cid, mi)) continue;
     const char *blkty = blk >= 0 ? nt_type(nt, blk) : NULL;
     if (fwd_args || (blkty && sp_streq(blkty, "BlockArgumentNode"))) {
+      /* a proc value of the call's own: a literal's tail, as a literal
+         block's; any other arrives boxed, with no sentinel to carry */
+      if (!call_forwards_own_block(c, cid)) {
+        int pbody = yvt_proc_arg_body(c, blk);
+        int pn = 0; const int *pd = pbody >= 0 ? nt_arr(nt, pbody, "body", &pn) : NULL;
+        if (pd && pn > 0) out[n++] = pd[pn - 1];
+        continue;
+      }
       Scope *encl = comp_scope_of(c, cid);
       int emi = encl ? (int)(encl - c->scopes) : -1;
       if (emi >= 0 && emi != mi) n += yield_block_tails(c, emi, out + n, max - n);
@@ -2024,6 +2057,12 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
        i.e. the enclosing method's own per-call-site yield value. */
     int fwd = (bty && sp_streq(bty, "BlockArgumentNode"));
     if (!fwd && blk < 0) fwd = yvt_call_forwards_block(c->nt, call_id);
+    /* `callee(&lp)` with a proc of the call's own: the yield runs that
+       proc, so the call answers its value, as the yield is typed. Read
+       through the enclosing method's block, `lp = proc { "lp" }; m(&lp)`
+       inside a method given `{ :blk }` answered a Symbol, and the String
+       the proc returned was unboxed into it as an empty one. */
+    if (fwd && !call_forwards_own_block(c, call_id)) return yvt_proc_arg_value(c, blk);
     if (fwd) {
       Scope *encl = comp_scope_of(c, call_id);
       int emi = encl ? (int)(encl - c->scopes) : -1;

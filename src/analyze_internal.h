@@ -169,6 +169,9 @@ TyKind yield_value_type(Compiler *c, int mi);
 int yield_block_tails(Compiler *c, int mi, int *out, int max);
 /* The block value reaching `mi` from a child's `super` (see analyze_util.c). */
 TyKind yield_value_type_via_super(Compiler *c, int mi);
+/* Whether a block-passing call hands on its enclosing method's own block
+   (`...`, `&` of the block parameter) rather than a proc value of its own. */
+int call_forwards_own_block(Compiler *c, int cid);
 int yield_value_diverges(Compiler *c, int mi);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
