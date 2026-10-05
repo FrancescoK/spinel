@@ -7794,8 +7794,13 @@ static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
   /* `super(x) { }`: the literal block is spliced into the yielding parent
      like a call's, so the super answers what that call would */
   int sblk = nt_ref(c->nt, id, "block");
-  if (c->scopes[mi].yields && sblk >= 0 && nt_kind(c->nt, sblk) == NK_BlockNode)
-    return method_call_ret(c, mi, id);
+  if (c->scopes[mi].yields && sblk >= 0 && nt_kind(c->nt, sblk) == NK_BlockNode) {
+    TyKind ret = method_call_ret(c, mi, id);
+    TyKind own = (TyKind)c->scopes[mi].ret;
+    if (own != TY_UNKNOWN && own != TY_VOID && ret != TY_UNKNOWN && ret != TY_VOID &&
+        scope_has_return(c, mi)) return ty_unify(own, ret);
+    return ret;
+  }
   TyKind sret = (TyKind)c->scopes[mi].ret;
   /* A yielding parent's return is whatever its yield produces, decided per
      call site, so its own `ret` stays unknown. The block reaching it is the
