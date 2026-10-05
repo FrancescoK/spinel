@@ -2590,7 +2590,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       Scope *ds = comp_scope_of(c, v);
       int dcid = ds && !ds->is_cmethod && ds->class_id >= 0 && g_ie_class_id < 0 ? ds->class_id : -1;
       if (res && dcid >= 0 && comp_ivar_index(&c->classes[dcid], inm) >= 0 &&
-          ivar_set_kind(c, dcid, inm) == 1) {
+          (ivar_set_kind(c, dcid, inm) & 1)) {
         char ex[200], tb[300];
         snprintf(ex, sizeof ex, "%s%siv_%s", g_self, g_self_deref, iv_c(inm + 1));
         buf_printf(b, "(%s ? SPL(\"instance-variable\") : NULL)", ivar_set_test(c, dcid, inm, ex, tb, sizeof tb));
