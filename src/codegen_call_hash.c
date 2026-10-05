@@ -448,11 +448,17 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
   int keep_default = nt_str(c->nt, x->id, "bang_splice") != NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  if (repr_hash_is(repr_of(c, argv[0]), ty_hash_key(rt), ty_hash_val(rt))) {
+  /* an empty `{}` has no variant of its own: it is read as the receiver's */
+  Buf eb; memset(&eb, 0, sizeof eb);
+  int same = repr_hash_is(repr_of(c, argv[0]), ty_hash_key(rt), ty_hash_val(rt));
+  int empty = !same && emit_empty_literal_as(c, argv[0], rt, &eb);
+  if (same || empty) {
     int trp = ++g_tmp, to = ++g_tmp;
     buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
     buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
-    buf_printf(b, " SP_GC_ROOT(_t%d); %s _t%d = ", trp, c_type_name(rt), to); emit_expr(c, argv[0], b);
+    buf_printf(b, " SP_GC_ROOT(_t%d); %s _t%d = ", trp, c_type_name(rt), to);
+    if (empty) buf_puts(b, eb.p); else emit_expr(c, argv[0], b);
+    free(eb.p);
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash_replace(_t%d, _t%d);", to, hn, trp, to);
     if (!keep_default) {
       buf_printf(b, " if (_t%d && _t%d) { sp_gc_wb((void *)_t%d); _t%d->default_v = _t%d->default_v;",
