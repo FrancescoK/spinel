@@ -1,0 +1,83 @@
+["Ann", "Bob", "carol"]
+Names
+"names"
+["ANN", "BOB", "CAROL"]
+"Bob"
+11
+6
+["Bob", "Ann"]
+"carol"
+3
+true
+2
+ABc
+Array
+Array
+Array
+Array
+Array
+true
+true
+[3, 3, 5]
+true
+Names
+5
+Names
+["Ann", "Bob", "dan", "eve"]
+nil
+nil
+true
+Names
+["AnnAnn", "BobBob", "dandan", "eveeve"]
+Names
+Names
+"names"
+5
+4
+Names
+true
+false
+true
+true
+false
+FrozenError
+true
+Short
+true
+[Short, Names, Countable]
+2
+Names
+[1, 2]
+[0, 1, 4]
+[0, 0]
+[]
+[4, 5]
+Bag
+["x", "y"]
+Bag
+2
+2.5
+Floats
+4.5
+Array
+:found
+true
+true
+true
+1
+0
+Array
+[30, nil, nil, 7, 4]
+Bag
+5
+8
+[30, nil, nil, 7, 4]
+[1, 2, 3]
+Array
+[1, 2]
+false
+true
+true
+Bag
+Bag
+true
