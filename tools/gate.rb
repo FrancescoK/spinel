@@ -51,7 +51,7 @@ module Gate
   end
 
   def compiler
-    cc = (ENV["CC"] || "cc").split.reject { |w| %w[ccache sccache].include?(w) }.first || "cc"
+    cc = (ENV["CC"] || "cc").split.reject { |w| %w[ccache sccache].include?(File.basename(w)) }.first || "cc"
     kind = run(cc, "--version").to_s.include?("clang") ? "clang" : "gcc"
     "#{kind}-#{(run(cc, "-dumpfullversion") || run(cc, "-dumpversion")).to_s.strip}"
   end

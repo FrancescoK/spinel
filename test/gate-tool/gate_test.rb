@@ -114,6 +114,13 @@ Dir.mktmpdir("gate-tool-test") do |dir|
   ok(v == 0 && err.lines.size == 1 && err.include?("not checked"), "an older Ruby skips the .expected check with one warning")
   ENV["GATE_RUBY"] = ruby
 
+  # The platform names the compiler behind a launcher given by its path.
+  if Gate.run("cc", "-dumpversion")
+    ENV["CC"] = "/no/such/dir/ccache cc"
+    ok(Gate.compiler.match?(/\A(gcc|clang)-\d/), "the compiler's version behind a ccache path")
+    ENV.delete("CC")
+  end
+
   # The function-size rule.
   Dir.mkdir("src")
   File.write("src/big.c", "static int big(void) {\n#{"  x++;\n" * Gate::FUNCTION_LIMIT}}\n")
