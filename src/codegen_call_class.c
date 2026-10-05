@@ -1219,6 +1219,12 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               int back[1] = { saved0 };
               nt_node_set_arr((NodeTable *)nt, argsn, "arguments", back, 1);
               buf_printf(b, "lv_%s; })", svn);
+              for (int k = esc->nlocals - 1; k >= 0; k--)
+                if (sp_streq(esc->locals[k].name, svn)) {
+                  memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));
+                  esc->nlocals--;
+                  break;
+                }
               return 1;
             }
           }
