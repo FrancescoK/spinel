@@ -1228,7 +1228,10 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
      both are builtins/native classes with no user arm, so without this
      pre-arm the call was silently dropped. */
-  int is_io_rewind = sp_streq(name, "rewind") && !recv_user_defines(c, name);
+  /* ...and an Enumerator's, beside a class of the program's own that
+     defines rewind too: the builtin arms test their runtime kind first, so
+     a user arm still takes its objects */
+  int is_io_rewind = sp_streq(name, "rewind") && argc == 0;
   /* to_a on a poly value that is really a builtin hash/array (a yield-result
      union of an rbs-seeded Hash and a class instance, #3278): the user-class
      switch has no builtin arm, so the hash fell through to the nil seed. */
@@ -1552,13 +1555,27 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      (rewind's return is rarely consumed through a poly union) */
   if (is_io_rewind) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_REWIND, -1, TY_UNKNOWN, PC_SAME);
+    /* a stream answers its 0 where the result is boxed */
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO)"
-                  " { sp_File_rewind((sp_File *)_t%d.v.p); }\nelse ", tv, tv, tv);
+                  " { sp_int _rw = sp_File_rewind((sp_File *)_t%d.v.p);", tv, tv, tv);
+    if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_int(_rw);", tr);
+    else if (ret == TY_INT) buf_printf(b, " _t%d = _rw;", tr);
+    buf_puts(b, " (void)_rw; }\nelse ");
+    /* an Enumerator rewinds, and answers itself where the result is boxed */
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR)"
+                  " { sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p);", tv, tv, tv);
+    if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
+    buf_puts(b, " }\nelse ");
     int sio_cid3 = comp_class_index(c, "StringIO");
     if (sio_cid3 >= 0)
+    {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
-                    " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); }\nelse ",
+                    " { sp_int _rw = sp_StringIO_rewind((sp_StringIO *)_t%d.v.p);",
                  tv, tv, sio_cid3, tv);
+      if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_int(_rw);", tr);
+      else if (ret == TY_INT) buf_printf(b, " _t%d = _rw;", tr);
+      buf_puts(b, " (void)_rw; }\nelse ");
+    }
   }
   /* A zero-arg IO method whose name a user class ALSO owns. The cls_id
      switch below carries an arm per user class only, so an `@io` that

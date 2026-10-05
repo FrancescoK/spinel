@@ -3299,6 +3299,24 @@ static SP_INLINE sp_int sp_poly_arg_int_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_INT && v.v.i != SP_INT_NIL) return v.v.i;
   return sp_poly_arg_int_chk_slow(v);
 }
+/* Integer#div / #modulo with a divisor known only at run time, in a call
+   typed Integer. A Float divisor floors the real quotient for div; for
+   modulo its answer is a Float, which the Integer slot cannot hold, so that
+   raises instead of answering the modulo of a truncated divisor. Any other
+   kind converts as an Integer argument does. */
+static inline sp_int sp_int_div_boxed(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) {
+    if (v.v.f == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+    if (isnan(v.v.f)) sp_raise_cls("FloatDomainError", "NaN");
+    return sp_float_fit_i(floor((double)a / v.v.f));
+  }
+  return sp_idiv(a, sp_poly_arg_int_chk(v));
+}
+static inline sp_int sp_int_modulo_boxed(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT)
+    sp_raise_cls("NotImplementedError", "Integer#modulo of a Float answers a Float, which this Integer-typed call cannot hold");
+  return sp_imod(a, sp_poly_arg_int_chk(v));
+}
 /* File.open's permission slot: nil is CRuby's default (SP_INT_NIL to the
    open entries), anything else converts as an Integer argument does. */
 static SP_INLINE sp_int sp_poly_arg_perm(sp_RbVal v) {
@@ -4193,10 +4211,11 @@ SP_COLD void sp_exc_stage_val(sp_RbVal v);
 #else
 SP_COLD void sp_exc_stage_val(sp_RbVal v)  { sp_pending_exc_val = v;  sp_pending_exc_flags |= 4; }
 #endif
-/* frozen-Hash raise carrying the receiver (identity-preserving) (#3119) */
+/* frozen-Hash raise carrying the receiver (identity-preserving) (#3119), and
+   naming it as CRuby's message does: "can't modify frozen Hash: {k: 1}" */
+static SP_NOINLINE SP_COLD void sp_raise_frozen_obj(sp_RbVal v, const char *what);
 static SP_NOINLINE SP_COLD void sp_raise_frozen_hash_at(void *h, int cls_id) {
-  sp_exc_stage_recv(sp_box_obj(h, cls_id));
-  sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Hash")[1]));
+  sp_raise_frozen_obj(sp_box_obj(h, cls_id), (&("\xff" "can't modify frozen Hash")[1]));
 }
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
@@ -9725,13 +9744,36 @@ static sp_PolyPolyHash *sp_poly_as_poly_poly_hash(sp_RbVal v) {
    right keeps its identity and its mutations; only a mismatch pays for a
    rebuild. A nil element takes the slot's own nil, which is what a nullable
    int or float becomes everywhere else it meets a concrete slot. */
+/* A boxed start or length of Array#fill: nil is "from the start" / "to the
+   end", an Integer (or a Float, truncated) is the offset. A Range is the
+   span only as fill's sole offset, which the boxed form does not lower
+   (`range_alone`); after it a length makes CRuby's TypeError. Anything else
+   has no Integer conversion. Read as a number, a Range filled from 0. */
+static SP_UNUSED sp_int sp_fill_offset_arg(sp_RbVal v, int range_alone) {
+  if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) return (sp_int)v.v.f;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && range_alone)
+    sp_raise_cls("NotImplementedError", "Array#fill with a Range held in an untyped slot");
+  sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(v)));
+  return 0;
+}
 static sp_IntArray *sp_poly_as_int_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY) return (sp_IntArray *)v.v.p;
   if (v.tag == SP_TAG_NIL || !sp_poly_is_array_kind(v.cls_id)) return (sp_IntArray *)0;
   SP_GC_ROOT_RBVAL(v);   /* the source array is a boxed temporary; the converting pushes allocate */
   sp_IntArray *a = sp_IntArray_new(); SP_GC_ROOT(a);
   sp_int n = sp_poly_length(v);
-  for (sp_int i = 0; i < n; i++) sp_IntArray_push(a, sp_poly_as_int_or_nil(sp_poly_arr_get(v, i)));
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(v, i);
+    /* an element of another class has no Integer to give: read as one it
+       became its payload (a Symbol's id), a wrong value that said nothing.
+       The slot was typed too narrowly, so say so. */
+    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_NIL)
+      sp_raise_cls("TypeError", sp_sprintf("an Array holding %s reached a slot typed as an Integer Array",
+                                           sp_poly_class_name(e)));
+    sp_IntArray_push(a, sp_poly_as_int_or_nil(e));
+  }
   sp_IntArray_note_nils(a);   /* a nil element converted to the sentinel */
   return a;
 }
@@ -9743,6 +9785,9 @@ static sp_FloatArray *sp_poly_as_float_array(sp_RbVal v) {
   sp_int n = sp_poly_length(v);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(v, i);
+    if (e.tag != SP_TAG_INT && e.tag != SP_TAG_FLT && e.tag != SP_TAG_NIL)
+      sp_raise_cls("TypeError", sp_sprintf("an Array holding %s reached a slot typed as a Float Array",
+                                           sp_poly_class_name(e)));
     sp_FloatArray_push(a, e.tag == SP_TAG_INT ? (sp_float)e.v.i : sp_poly_as_float_or_nil(e));
   }
   sp_FloatArray_note_nils(a);   /* a nil element converted to the sentinel */
@@ -10673,6 +10718,13 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
    name match for instance_of? (and same-class is_a?), plus the builtin-ancestry
    table for is_a?. A dynamic user-class ancestor is out of reach here, so this
    under-reports at worst (never a false positive) -- the safe direction. */
+/* The class argument of is_a? / kind_of? / instance_of? read out of a boxed
+   slot (a class passed through a method or stored in an ivar): a Class or
+   Module, else CRuby's TypeError. */
+static SP_UNUSED sp_Class sp_isa_class_arg(sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS) sp_raise_cls("TypeError", "class or module required");
+  return sp_unbox_class(v);
+}
 static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
   const char *cn = sp_poly_to_s(cls);
   if (!cn) return FALSE;
@@ -11727,13 +11779,12 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
      all: nil, a String, an Array start at plain `+` from the first element,
      which is the whole point -- that is the operator whose failure CRuby
      reports. */
-  /* ...and only an EXACT seed reaches the compensated phase. CRuby enters
-     the float loop from the exact phase, so a seed that is already a Float
-     has neither: it runs plain `+` from the first element, which is why
-     `[0.1, 0.2, 0.3].sum(0.0)` is 0.6000000000000001 while `.sum(0)` and
-     `.sum` are 0.6. Reading a Float seed as "numeric, so compensate" made
-     the two agree, which they do not. */
+  /* ...and a Float seed enters the compensated phase at once, with no exact
+     phase before it: Ruby 4.0.7 compensates `[0.1, 0.2, 0.3].sum(0.0)` to
+     0.6, as it does `.sum(0)` and `.sum` (4.0.4 ran plain `+` from a Float
+     seed and answered 0.6000000000000001). */
   sp_bool numeric_seed = sp_poly_sum_exact_p(acc);
+  sp_bool float_seed = acc.tag == SP_TAG_FLT;
   if (sp_poly_sum_exact_p(acc)) {
     for (; i < n; i++) {
       sp_RbVal e = sp_poly_sum_item(v, items, i);
@@ -11742,12 +11793,13 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
     }
   }
   /* The compensated phase, entered from the first Float element that ends the
-     exact phase -- and running the very step sp_FloatArray_sum runs, NaN and
-     Infinity arms included. `e` is carried across the turn boundary so the
-     element that decided the entry is not read a second time. */
-  if (numeric_seed && i < n) {
+     exact phase, or from a Float seed at the first element of the tower --
+     and running the very step sp_FloatArray_sum runs, NaN and Infinity arms
+     included. `e` is carried across the turn boundary so the element that
+     decided the entry is not read a second time. */
+  if ((numeric_seed || float_seed) && i < n) {
     sp_RbVal e = sp_poly_sum_item(v, items, i);
-    if (e.tag == SP_TAG_FLT) {
+    if (e.tag == SP_TAG_FLT || (float_seed && sp_poly_sum_exact_p(e))) {
       sp_float f = sp_poly_to_f(acc), c = 0.0;
       while (i < n && (e.tag == SP_TAG_FLT || sp_poly_sum_exact_p(e))) {
         sp_float_sum_step(&f, &c, sp_poly_to_f(e));
@@ -11762,6 +11814,39 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
   }
   for (; i < n; i++) acc = sp_poly_add(acc, sp_poly_sum_item(v, items, i));
   return acc;
+}
+/* The same fold one value at a time, for a sum with a block: the block's
+   values are added as they come, so a value `+` refuses raises before the
+   next element's block runs, as CRuby's does. phase 0 is the exact run, 1
+   the compensated one (f, c), 2 plain `+`; a Float seed starts compensated,
+   as sp_poly_sum_seed's does. The caller roots `acc`. */
+typedef struct { sp_RbVal acc; sp_float f, c; int phase; } sp_SumState;
+static void sp_sum_init(sp_SumState *s, sp_RbVal seed) SP_UNUSED;
+static void sp_sum_init(sp_SumState *s, sp_RbVal seed) {
+  s->acc = seed; s->f = 0.0; s->c = 0.0;
+  if (sp_poly_sum_exact_p(seed)) s->phase = 0;
+  else if (seed.tag == SP_TAG_FLT) { s->phase = 1; s->f = seed.v.f; }
+  else s->phase = 2;
+}
+static void sp_sum_step(sp_SumState *s, sp_RbVal e) SP_UNUSED;
+static void sp_sum_step(sp_SumState *s, sp_RbVal e) {
+  if (s->phase == 0) {
+    if (sp_poly_sum_exact_p(e)) { s->acc = sp_poly_add(s->acc, e); return; }
+    if (e.tag == SP_TAG_FLT) { s->phase = 1; s->f = sp_poly_to_f(s->acc); s->c = 0.0; }
+    else s->phase = 2;
+  }
+  if (s->phase == 1) {
+    if (e.tag == SP_TAG_FLT || sp_poly_sum_exact_p(e)) { sp_float_sum_step(&s->f, &s->c, sp_poly_to_f(e)); return; }
+    /* a run that ends before the last value folds no compensation back,
+       as CRuby's does not */
+    s->acc = sp_box_float(s->f);
+    s->phase = 2;
+  }
+  s->acc = sp_poly_add(s->acc, e);
+}
+static sp_RbVal sp_sum_result(sp_SumState *s) SP_UNUSED;
+static sp_RbVal sp_sum_result(sp_SumState *s) {
+  return s->phase == 1 ? sp_box_float(s->f + s->c) : s->acc;
 }
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);  /* defined below, after sp_enum.h */
 /* The count-taking reads of Array's surface, for a receiver carried in a poly
@@ -15899,6 +15984,25 @@ static sp_PolyArray *sp_zip_arg(sp_RbVal v) {
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (must respond to :each)",
                                        sp_poly_class_name(v)));
   return sp_PolyArray_new();
+}
+/* Block zip snapshots Array operands and bounds Enumerator preparation by
+   the initial receiver length. A Range is read one element at a time. */
+static sp_RbVal sp_zip_block_arg(sp_RbVal v, sp_int n) {
+  SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return v;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR)
+    return sp_box_poly_array(sp_Enumerator_take((sp_Enumerator *)v.v.p, n));
+  return sp_box_poly_array(sp_PolyArray_slice(sp_zip_arg(v), 0, n));
+}
+static sp_RbVal sp_zip_block_row(sp_RbVal recv, sp_PolyArray *ops, sp_int i, sp_int n) {
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT(ops);
+  sp_PolyArray *row = sp_PolyArray_new(); SP_GC_ROOT(row);
+  sp_PolyArray_push(row, sp_poly_arr_get(recv, i));
+  for (sp_int j = 0; j < ops->len; j++) {
+    sp_RbVal v = ops->data[j];
+    sp_PolyArray_push(row, i < n && i < sp_poly_arr_len_ex(v) ? sp_poly_each_elem(v, i) : sp_box_nil());
+  }
+  return sp_box_poly_array(row);
 }
 /* The boxed-receiver entry points the poly surface above forwards to: an
    Enumerator read out of a container answers #to_a / #next like the typed

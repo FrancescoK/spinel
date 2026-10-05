@@ -11063,6 +11063,10 @@ static void yarg_scan_pushes(Compiler *c, int id, const char *memo, TyKind *acc,
     for (int k = 0; k < n; k++) if (ids[k] >= 0) yarg_scan_pushes(c, ids[k], memo, acc, open); }
 }
 
+/* the kinds narrow_empty_array_args_by_yield stamps an empty literal with */
+static int yarg_stamped(TyKind w) {
+  return w == TY_INT_ARRAY || w == TY_FLOAT_ARRAY || w == TY_STR_ARRAY;
+}
 int narrow_empty_array_args_by_yield(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (!c->arr_want) return 0;
@@ -11080,7 +11084,7 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
       int a = av[j];
       if (a < 0 || a >= c->node_cap || nt_kind(nt, a) != NK_ArrayNode) continue;
       int en = 0; nt_arr(nt, a, "elements", &en);
-      if (en == 0 && c->arr_want[a] == TY_UNKNOWN) any_empty = 1;
+      if (en == 0 && (c->arr_want[a] == TY_UNKNOWN || yarg_stamped(c->arr_want[a]))) any_empty = 1;
       /* a non-empty literal the block may push another kind into */
       if (en > 0 && blk >= 0 && c->arr_want[a] != TY_POLY_ARRAY) any_empty = 1;
     }
@@ -11099,7 +11103,11 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
       if (a < 0 || a >= c->node_cap || nt_kind(nt, a) != NK_ArrayNode) continue;
       int en = 0; nt_arr(nt, a, "elements", &en);
       int seeded = en > 0 && blk >= 0 && c->arr_want[a] != TY_POLY_ARRAY;
-      if (!seeded && (en != 0 || c->arr_want[a] != TY_UNKNOWN)) continue;
+      /* an empty literal this pass stamped is looked at again: a push read
+         before its value's type settled (`m << (c ? x.to_s : x)` with x
+         still open answers String) stamped the first kind seen */
+      int restamp = en == 0 && yarg_stamped(c->arr_want[a]);
+      if (!seeded && !restamp && (en != 0 || c->arr_want[a] != TY_UNKNOWN)) continue;
       const char *pn = m->pnames[j];
       if (!pn) continue;
       TyKind acc = TY_UNKNOWN; int open = 0;
@@ -11129,6 +11137,13 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
         if (!open && acc != TY_UNKNOWN && ty_is_array(lt) && lt != TY_POLY_ARRAY &&
             acc != ty_array_elem(lt))
           changed |= widen_arg_array(c, a);
+        continue;
+      }
+      if (restamp) {
+        if (!open && acc != TY_UNKNOWN && ty_array_of(acc) != c->arr_want[a]) {
+          c->arr_want[a] = TY_POLY_ARRAY;
+          changed = 1;
+        }
         continue;
       }
       if (!open && (acc == TY_INT || acc == TY_FLOAT || acc == TY_STRING)) {
@@ -12340,6 +12355,34 @@ static int proc_params_poly(const NodeTable *nt, Scope *bs, int pn, const char *
   return changed;
 }
 
+static int infer_zip_block_params(Compiler *c, int id, int block, const char *p0, TyKind rt) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  int za = nt_ref(nt, id, "arguments"), zn = 0;
+  const int *zv = za >= 0 ? nt_arr(nt, za, "arguments", &zn) : NULL;
+  if (zn != 1 || (zv && nt_kind(nt, zv[0]) == NK_SplatNode)) {
+    Scope *zs = comp_scope_of(c, block);
+    for (int j = 0; block_param_name(c, block, j); j++)
+      if (bp_widen(zs, block_param_name(c, block, j), TY_POLY)) changed = 1;
+    return changed;
+  }
+  Scope *zs = comp_scope_of(c, block);
+  const char *zp1s = block_param_name(c, block, 1);
+  LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
+  /* a SOLO param receives the boxed TUPLE ([e1, e2]); two params
+     auto-splat it */
+  if (lv_widen(ep0, zp1s ? ty_array_elem(rt) : TY_POLY)) changed = 1;
+  const char *zp1 = zp1s;
+  if (zp1) {
+    int zargs = nt_ref(nt, id, "arguments");
+    int zargc = 0; const int *zargv = zargs >= 0 ? nt_arr(nt, zargs, "arguments", &zargc) : NULL;
+    TyKind et2 = (zargc > 0 && zargv && ty_is_array(infer_type(c, zargv[0])))
+                 ? ty_array_elem(infer_type(c, zargv[0])) : ty_array_elem(rt);
+    if (bp_widen(zs, zp1, et2)) changed = 1;
+  }
+  return changed;
+}
+
 /* infer_block_params's per-call arms for a container receiver's block:
    match, zip, merge, product, fetch, transform_keys / transform_values,
    each_value / each_key, a Hash's each / each_pair, and an Array element
@@ -12363,21 +12406,8 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
       return changed | 2;
     }
   }
-  if (sp_streq(name, "zip") && ty_is_array(rt)) {
-    Scope *zs = comp_scope_of(c, block);
-    const char *zp1s = block_param_name(c, block, 1);
-    LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
-    /* a SOLO param receives the boxed TUPLE ([e1, e2]); two params
-       auto-splat it */
-    if (lv_widen(ep0, zp1s ? ty_array_elem(rt) : TY_POLY)) changed = 1;
-    const char *zp1 = zp1s;
-    if (zp1) {
-      int zargs = nt_ref(nt, id, "arguments");
-      int zargc = 0; const int *zargv = zargs >= 0 ? nt_arr(nt, zargs, "arguments", &zargc) : NULL;
-      TyKind et2 = (zargc > 0 && zargv && ty_is_array(infer_type(c, zargv[0])))
-                   ? ty_array_elem(infer_type(c, zargv[0])) : ty_array_elem(rt);
-      if (bp_widen(zs, zp1, et2)) changed = 1;
-    }
+  if (is_zip_name(name) && ty_is_array(rt)) {
+    changed |= infer_zip_block_params(c, id, block, p0, rt);
     return changed | 2;
   }
 

@@ -18,10 +18,10 @@ p("a1b2".scan(/\d/))
 p("a1b2".scan(/([a-z])(\d)/))
 "a1b2".scan(/(?<d>\d)/) { |m| p m }
 "a1b2".scan(/([a-z])(\d)/) { |x, y| p [x, y] }
-s = "hello"
+s = +"hello"
 p(s.slice!(/l+/))
 p(s)
-t = "hello"
+t = +"hello"
 p(t.slice!(/z+/))
 p(t)
 "hello" =~ /l(l)/

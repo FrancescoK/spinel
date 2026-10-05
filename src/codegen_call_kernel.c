@@ -806,8 +806,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_puts(b, "); ");
     }
     buf_printf(b, "for (sp_int _i%d = 0; _i%d < _t%d->len; _i%d++) { "
-                  "sp_puts_line(sp_poly_inspect(_t%d->data[_i%d])); } _t%d; })",
-               t, t, t, t, t, t, t);
+                  "sp_puts_line(sp_poly_inspect(_t%d->data[_i%d])); } %s_t%d; })",
+               t, t, t, t, t, t, sp_streq(name, "p") ? "fflush(stdout); " : "", t);
     return 1;
   }
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -815,7 +815,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_puts_line(sp_poly_inspect(_t%d)); ", t, t);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_puts_line(sp_poly_inspect(_t%d)); %s", t, t,
+               sp_streq(name, "p") ? "fflush(stdout); " : "");   /* p flushes, as CRuby's does */
     char tv[16]; snprintf(tv, sizeof tv, "_t%d", t);
     emit_unbox_text(c, at, tv, b);
     buf_puts(b, "; })");

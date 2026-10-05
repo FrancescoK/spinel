@@ -3560,7 +3560,10 @@ static int sp_source_mentions_method(const char *src, const char *name) {
     unsigned char ac = (unsigned char)*after;
     int word_end = !((ac >= 'a' && ac <= 'z') || (ac >= 'A' && ac <= 'Z') || (ac >= '0' && ac <= '9') || ac == '_' || ac == '?' || ac == '!' || ac == '=');
     unsigned char bc = p > src ? (unsigned char)p[-1] : ' ';
-    int word_start = !((bc >= 'a' && bc <= 'z') || (bc >= 'A' && bc <= 'Z') || (bc >= '0' && bc <= '9') || bc == '_' || bc == '@' || bc == '$' || bc == ':');
+    /* a Symbol naming it (`send(:tally)`, `method(:tally)`, `&:tally`) calls
+       it as surely as `.tally` does; `Foo::tally` is a constant path's */
+    int sym = bc == ':' && p - src >= 2 && p[-2] != ':' && !(p - src >= 2 && sp_req_ident_char(p[-2]));
+    int word_start = sym || !((bc >= 'a' && bc <= 'z') || (bc >= 'A' && bc <= 'Z') || (bc >= '0' && bc <= '9') || bc == '_' || bc == '@' || bc == '$' || bc == ':');
     p = after;
     if (!word_end || !word_start) continue;
     /* not in a comment: a `#` between the line start and the name is asked
@@ -3571,7 +3574,7 @@ static int sp_source_mentions_method(const char *src, const char *name) {
     int in_comment = 0;
     for (const char *k = ls; k < p - nl; k++) if (*k == '#') { in_comment = sp_src_in_comment(src, p - nl); break; }
     if (in_comment) continue;
-    if (bc == '.') return 1;
+    if (bc == '.' || sym) return 1;
     if (ac == '(' || ac == ' ' || ac == '\n') return 1;
   }
   return 0;

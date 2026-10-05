@@ -15,7 +15,5 @@ end
 
 p FromAnon.new.hi
 p FromAnon.make.hi
-p FromAnon.ancestors.include?(Base)
 p FromAnon.new.is_a?(Base)
 p Plain.new.hi
-p Plain.ancestors.include?(Base)

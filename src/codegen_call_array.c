@@ -1348,8 +1348,16 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
       else emit_expr(c, argv[ai], b);   /* already a poly array */
       buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
     }
+    /* ... and its length too: one aliasing the receiver is appended as it
+       was, not as an earlier append grew it (CRuby) */
+    int lb = g_tmp + 1; g_tmp += argc;
     for (int ai = 0; ai < argc; ai++)
-      buf_printf(b, " sp_PolyArray_append_all(_t%d, _t%d);", t, base + ai);
+      buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", lb + ai, base + ai);
+    for (int ai = 0; ai < argc; ai++) {
+      int ti = ++g_tmp;
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));",
+                 ti, ti, lb + ai, ti, t, base + ai, ti);
+    }
     buf_printf(b, " _t%d; })", t);
     return 1;
   }

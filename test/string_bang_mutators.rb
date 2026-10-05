@@ -13,7 +13,7 @@ puts u
 v = +"hello"
 v.delete!("l")
 puts v
-w = "hello world"
+w = +"hello world"
 w.slice!(5, 6)
 puts w
 x = +"hello"

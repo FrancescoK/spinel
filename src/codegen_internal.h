@@ -13,6 +13,7 @@
 #include "codegen.h"
 #include "compiler.h"
 #include "analyze.h"
+#include "decide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -143,6 +144,7 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
 int str_mut_var_recv(Compiler *c, int recv);
+void emit_str_frozen_check(Compiler *c, int recv, Buf *b);
 int strbuf_boxed_elem_read(Compiler *c, int v);
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b);
 int strbuf_object_ref(Compiler *c, int recv, Buf *b);
@@ -186,7 +188,11 @@ void argov_reserve(void);
 extern int  g_setter_stmt_id;
 extern int  g_sn_skip;   /* safe-nav re-entry marker (see codegen_util.c) */
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
+/* Ask subtree_may_allocate before leaving something unrooted across `id`:
+   its "no" is a keyed decision (src/decide.c). subtree_allocates is the
+   bare fact, for a caller whose answer licenses no such omission. */
 int subtree_may_allocate(const NodeTable *nt, int id);
+int subtree_allocates(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
 int loop_has_valued_break(Compiler *c, int root);
 /* Can evaluating the subtree store into an ivar, class variable or global? A

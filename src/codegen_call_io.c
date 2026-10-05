@@ -110,6 +110,22 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                  tio3, tfs, tpa);
       return 1;
     }
+    /* rewind on a boxed value: an Enumerator rewinds and answers itself,
+       a stream answers its 0. It took the stream arm alone, and an
+       Enumerator read back out of a container raised NoMethodError. */
+    if (!iocand && sp_streq(name, "rewind") && argc == 0) {
+      int tv = ++g_tmp;
+      int boxed = comp_ntype(c, id) == TY_POLY;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ",
+                 tv, tv, tv);
+      if (boxed) buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), _t%d)", tv, tv);
+      else buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), (sp_int)0)", tv);
+      buf_printf(b, " : %ssp_File_rewind(sp_poly_as_io(_t%d, \"rewind\"))%s; })",
+                 boxed ? "sp_box_int(" : "", tv, boxed ? ")" : "");
+      return 1;
+    }
     if (!iocand) {
       /* write with an argument list (boxed_write_takes_list): the receiver
          and then the arguments are evaluated (a splat contributes its

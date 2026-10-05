@@ -580,7 +580,7 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
 }
 
 /* hash.sum(init) / count / all? / any? { |k, v| ... } -> a scalar reduction.
-   sum accumulates the block value (boxed, via sp_poly_add); count tallies truthy
+   sum folds the block values as Enumerable#sum does (sp_sum_step); count tallies truthy
    results; all?/any? short-circuit to a boolean. */
 int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -625,7 +625,9 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
     if (sum_init >= 0) buf_puts(g_pre, sib.p ? sib.p : "sp_box_nil()");
     else buf_puts(g_pre, "sp_box_int(0)");
     buf_puts(g_pre, ";\n");
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tacc);
+    /* the block's values folded as Enumerable#sum folds them (sp_sum_step) */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc);\n", tacc, tacc, tacc, tacc);
   }
   else if (is_count || is_one)
     buf_printf(g_pre, "sp_int _t%d = 0;\n", tacc);   /* one? tallies, checks == 1 */
@@ -639,7 +641,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   if (is_sum) {
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "_t%d = sp_poly_add(_t%d, ", tacc, tacc);
+    buf_printf(g_pre, "sp_sum_step(&_t%dS, ", tacc);
     if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
     else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
            buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
@@ -665,6 +667,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   free(vb);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (is_one) buf_printf(b, "(_t%d == 1)", tacc);
+  else if (is_sum) buf_printf(b, "sp_sum_result(&_t%dS)", tacc);
   else buf_printf(b, "_t%d", tacc);
   return 1;
 }
@@ -1647,8 +1650,10 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
              ta, tn, ta, tacc);
   if (argc == 1) emit_boxed(c, argv[0], b);
   else buf_puts(b, "sp_box_int(0)");
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
-             tacc, ti, ti, tn, ti);
+  /* folded a value at a time (sp_sum_step) */
+  buf_printf(b, "; sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc); "
+                "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+             tacc, tacc, tacc, tacc, ti, ti, tn, ti);
   /* a block of any other shape than plain requireds binds the element by
      the proc distribution */
   if (block_binds_gathered(c, block)) {
@@ -1677,10 +1682,10 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
       g_line_map = svlm; }
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
-    buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+    buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
     free(inner.p); free(valb.p);
   }
-  buf_printf(b, " _t%d; })", tacc);
+  buf_printf(b, " sp_sum_result(&_t%dS); })", tacc);
   if (blv) blv->type = saved;
   return 1;
 }
@@ -1734,8 +1739,10 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = sp_%sArray_length(_t%d); sp_RbVal _t%d = ",
                ta, tn, k, ta, tacc);
     if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_int(0)");
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
-               tacc, ti, ti, tn, ti);
+    /* folded a value at a time (sp_sum_step) */
+    buf_printf(b, "; sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc); "
+                  "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+               tacc, tacc, tacc, tacc, ti, ti, tn, ti);
     /* A 2+-param block over an array of sub-arrays auto-splats each element
        into the params (`sum { |v, i| v }` over [v, i] pairs); a single param
        binds the whole element. Each param is gated on liveness. */
@@ -1766,9 +1773,10 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         g_line_map = svlm; }
       g_pre = saved_pre;
       if (inner.p) buf_puts(b, inner.p);
-      buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+      buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
       free(inner.p); free(valb.p);
     }
+    buf_printf(b, " _t%d = sp_sum_result(&_t%dS);", tacc, tacc);
     /* The call's own type may be a scalar the inference settled on (an int
        array's `sum {}` is an Integer where it answers at all), so hand back
        what the caller's slot holds; a nil term raises inside the loop before
@@ -4980,7 +4988,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, sp_poly_iter_elem(_t%d, _t%d));\n",
                  rename_local(restn2), tpair2, trecv2, ti2);
     }
-    for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
+    /* a `next <v>` answers for this element: the body writes a slot and the
+       push below reads it, where the bare `continue` of a tail read skipped
+       the push and dropped the element */
+    int nx2 = spair < 0 && bn2 >= 1 && fold_body_has_next(c, body2);
+    if (!nx2) for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
     Buf vb2; memset(&vb2, 0, sizeof vb2);
     if (spair >= 0 && bn2 >= 1) {
@@ -5015,6 +5027,15 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "}\n");
       buf_printf(&vb2, "_t%d", tv3);
+    }
+    else if (nx2) {
+      int tv4 = ++g_tmp;
+      char tvbuf4[24]; snprintf(tvbuf4, sizeof tvbuf4, "_t%d", tv4);
+      emit_indent(g_pre, g_indent);
+      if (res_poly2) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tv4, tv4);
+      else { emit_ctype(c, ty_array_elem(restype2), g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv4, default_value_from_compiler(c, ty_array_elem(restype2))); }
+      emit_block_value_into(c, block, tvbuf4, res_poly2, g_indent);
+      buf_puts(&vb2, tvbuf4);
     }
     else if (bn2 < 1) buf_puts(&vb2, "sp_box_nil()");
     else if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &vb2);
@@ -10189,8 +10210,10 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
                   sp_streq(aty, "SelfNode") || sp_streq(aty, "NilNode") ||
                   sp_streq(aty, "StringNode"))) root = 0;
       /* only a fresh allocation needs protecting; a non-allocating heap
-         expression (e.g. a ternary over two already-live reads) does not. */
-      else if (!subtree_may_allocate(nt, argv[k])) root = 0;
+         expression (e.g. a ternary over two already-live reads) does not.
+         Asked without the decision registry: a global or a class variable
+         is lent as its slot, and a temp here would be a copy of it. */
+      else if (!subtree_allocates(nt, argv[k])) root = 0;
       if (!root && !seq) continue;
       int ht = ++g_tmp;
       /* Evaluate into a side buffer first: the expression may push its own

@@ -1,0 +1,4 @@
+"b"
+#<struct S a=nil, b=nil>
+#<struct S a=1, b=2>
+"wrong number of arguments (given 0, expected 1..2)"

@@ -749,8 +749,15 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* Kernel#p flushes stdout after writing, as CRuby's rb_p does: what it
+     printed is out before an exec replaces the process (puts, print and pp
+     leave theirs in the buffer, as CRuby's do) */
+  int p_flush = sp_streq(name, "p") && argc >= 1;
   if (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "p") || sp_streq(name, "pp")) {
-    if (emit_output_spilled(c, name, argc, argv, b, indent)) return 1;
+    if (emit_output_spilled(c, name, argc, argv, b, indent)) {
+      if (p_flush) { emit_indent(b, indent); buf_puts(b, "fflush(stdout);\n"); }
+      return 1;
+    }
   }
   if (sp_streq(name, "puts")) {
     if (argc == 0) { emit_indent(b, indent); buf_puts(b, "putchar('\\n');\n"); return 1; }
@@ -758,7 +765,11 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
   if (sp_streq(name, "print")) { for (int k = 0; k < argc; k++) emit_print_one(c, argv[k], b, indent); return 1; }
-  if (is_inspect_print(name)) { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
+  if (is_inspect_print(name)) {
+    for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent);
+    if (p_flush) { emit_indent(b, indent); buf_puts(b, "fflush(stdout);\n"); }
+    return 1;
+  }
   if (sp_streq(name, "putc") && argc == 1) {
     /* Kernel#putc: an int writes (byte & 0xff); a string writes its first char. */
     TyKind at = comp_ntype(c, argv[0]);
@@ -5334,9 +5345,11 @@ static int case_subject_needs_root(Compiler *c, TyKind pt, const int *whens, int
   if (!needs_root(pt) || comp_ty_value_obj(c, pt)) return 0;
   for (int w = 0; w < nw; w++) {
     int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
-    for (int k = 0; k < wc; k++) if (subtree_may_allocate(nt, conds[k])) return 1;
+    for (int k = 0; k < wc; k++) if (subtree_allocates(nt, conds[k])) return 1;
   }
-  return 0;
+  /* no operand allocates: the unrooted subject is a decision, keyed at the
+     first `when` */
+  return nw > 0 && !decide_node(nt, whens[0], "case-root", NULL);
 }
 
 /* `case <array or hash> when <cond>`: Array#=== and Hash#=== are Object#===,
@@ -8825,10 +8838,14 @@ static void masgn_target_parts(const NodeTable *nt, int t, int *recv, int *key) 
    operator over scalars is a CallNode to subtree_may_allocate, but `a[i % n]`
    builds nothing; what has no effect and answers a scalar is arithmetic. */
 static int masgn_part_allocates(Compiler *c, int id) {
-  if (!subtree_may_allocate(c->nt, id)) return 0;
-  if (subtree_has_side_effect(c, id)) return 1;
-  TyKind t = comp_ntype(c, id);
-  return !(t == TY_INT || t == TY_FLOAT || t == TY_BOOL);
+  if (subtree_allocates(c->nt, id)) {
+    if (subtree_has_side_effect(c, id)) return 1;
+    TyKind t = comp_ntype(c, id);
+    if (!(t == TY_INT || t == TY_FLOAT || t == TY_BOOL)) return 1;
+  }
+  /* a part that builds nothing is a decision, either way it was found: the
+     temps bound before it go unrooted on its strength */
+  return id >= 0 && !decide_node(c->nt, id, "masgn-root", NULL);
 }
 /* Whether the subtree reads the variable a target of the given kind writes. */
 static int masgn_reads(const NodeTable *nt, int id, const char *rty, const char *name) {
@@ -8884,7 +8901,8 @@ static int masgn_part_plain(Compiler *c, int id, const int *lefts, int before) {
 /* A literal that is not built -- rodata, which no sweep touches; a Bignum
    is built. */
 static int masgn_rodata(Compiler *c, int id) {
-  return node_is_pure_literal(c->nt, id) && !subtree_may_allocate(c->nt, id) && comp_ntype(c, id) != TY_BIGINT;
+  return node_is_pure_literal(c->nt, id) && !subtree_allocates(c->nt, id) && comp_ntype(c, id) != TY_BIGINT &&
+         decide_node(c->nt, id, "masgn-root", NULL);
 }
 /* The root push for a temp, after the `;` of the statement that set it, when
    `emit_gc_root_tmp` has one for the type. */
@@ -10976,7 +10994,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       }
     }
     const char *vty = nt_type(nt, v);
-    int sc = cws ? cws->class_id : -1;
+    int sc = g_ie_class_id >= 0 ? g_ie_class_id : (cws ? cws->class_id : -1);
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     TyKind ivt = TY_INT;
@@ -13784,6 +13802,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (push_stmt_takes_value_form(c, id)) return 0;
   return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_body);
 }
+/* The FrozenError an in-place String mutator raises before it reads its
+   arguments, hit or miss; a nil receiver is left to the mutator's own
+   NoMethodError */
+void emit_str_frozen_check(Compiler *c, int recv, Buf *b) {
+  buf_puts(b, "if ("); emit_expr(c, recv, b); buf_puts(b, ") sp_str_check_mutable(");
+  emit_expr(c, recv, b); buf_puts(b, ");");
+}
 /* emit_array_mutate_stmt_body's String mutators done by reassigning the
    receiver: replace, prepend, insert, concat, clear, delete_prefix! /
    delete_suffix! (answers 1 emitted, 0 declined, -1 to go on) */
@@ -13902,6 +13927,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
     }
     if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
       const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
+      emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
       return 1;
     }
@@ -13909,17 +13935,29 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
        Integer argument appends its codepoint, like `<<`. */
     if (assignable && sp_streq(name, "concat") && argc >= 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      /* every argument is taken before anything is appended, as CRuby
+         does: `s.concat(s, s)` appended the grown s the second time */
+      int base = g_tmp + 1; g_tmp += argc;
+      emit_indent(b, indent); buf_puts(b, "{");
       for (int a = 0; a < argc; a++) {
         TyKind at = comp_ntype(c, argv[a]);
-        emit_indent(b, indent);
-        emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (at == TY_INT) {
-          buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, recv, b); buf_puts(b, ", ");
-          emit_expr(c, argv[a], b); buf_puts(b, ")");
+          buf_printf(b, " const char *_t%d = sp_int_codepoint_to_str_in(", base + a); emit_expr(c, recv, b);
+          buf_puts(b, ", "); emit_expr(c, argv[a], b); buf_puts(b, ");");
         }
-        else emit_poly_unboxed(c, argv[a], at, "sp_poly_to_s(", b);
-        buf_puts(b, ");\n");
+        else {
+          buf_printf(b, " const char *_t%d = ", base + a);
+          emit_poly_unboxed(c, argv[a], at, "sp_poly_to_s(", b); buf_puts(b, ";");
+        }
+        buf_printf(b, " SP_GC_ROOT_STR(_t%d);", base + a);
       }
+      buf_puts(b, "\n");
+      for (int a = 0; a < argc; a++) {
+        emit_indent(b, indent + 1);
+        emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d);\n", base + a);
+      }
+      emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
     /* s[i] = str: replace the single character at index i (negative from the
@@ -14264,6 +14302,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     if (sp_streq(name, "slice!") && assignable2) {
       if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         /* remove the first occurrence */
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         /* sub would set `$~`, which slice! leaves alone; a program that
            never reads it has sub record nothing */
@@ -14278,6 +14317,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         /* slice!(i): one char at i; slice!(range): the range's span. Same
            clamped splice as the (start, len) arm below (OOB is a no-op). */
         int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         if (comp_ntype(c, argv[0]) == TY_RANGE) {
           int tr2 = ++g_tmp;
@@ -14314,6 +14354,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         /* splice out [i, i+len): head + tail, bounds clamped to the string in
            characters (a negative i counts from the end; OOB is a no-op) (#3084) */
         int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         buf_printf(b, "{ sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
@@ -14791,8 +14832,11 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     return 1;
   }
   if (sp_streq(name, "concat") && argc >= 1) {
-    /* Process each arg sequentially, snapshotting each arg's length before
-       its own loop (the test expects sequential/non-snapshotted behavior). */
+    /* Every argument is evaluated, and its length taken, before anything is
+       appended, as CRuby concatenates the arguments as they were: with one
+       aliasing the receiver, `a.concat(a, a)` appended the grown array the
+       second time (8 elements where CRuby has 6). The appends follow in
+       order, each over its argument's own snapshot length. */
     int tr = ++g_tmp;
     TyKind et = ty_array_elem(rt);
     /* an Integer or Float receiver takes a boxed nil as its sentinel, and
@@ -14800,6 +14844,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     const char *nilable = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) ? "_nilable" : "";
     emit_indent(b, indent);
     buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    Buf hd, lp; memset(&hd, 0, sizeof hd); memset(&lp, 0, sizeof lp);
     for (int a = 0; a < argc; a++) {
       int tn = ++g_tmp, ti = ++g_tmp;
       /* the source array may be a different kind than the receiver (e.g.
@@ -14818,16 +14863,17 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       if (at == TY_POLY) {
         /* boxed source: walk it through the boxed surface */
         int tv = ++g_tmp;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[a], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
-        emit_indent(b, indent + 1);
-        buf_printf(b, "sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
-        buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
+        emit_indent(&hd, indent + 1);
+        buf_printf(&hd, "{ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[a], &hd);
+        buf_printf(&hd, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
+        emit_indent(&hd, indent + 1);
+        buf_printf(&hd, "sp_int _t%d = sp_poly_length(_t%d);\n", tn, tv);
+        emit_indent(&lp, indent + 1);
+        buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
                    ti, ti, tn, ti, k, nilable, tr);
         { char el[64]; snprintf(el, sizeof el, "sp_poly_each_elem(_t%d, _t%d)", tv, ti);
-          emit_unbox_text(c, et, el, b); }
-        buf_puts(b, "); }\n");
+          emit_unbox_text(c, et, el, &lp); }
+        buf_puts(&lp, ");\n");
         continue;
       }
       if (!ak) ak = k;
@@ -14836,32 +14882,39 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
          whole byte array per element -- quadratic, and any side effect ran
          n+1 times. Rooted: pushing into the receiver can collect. */
       int ts = ++g_tmp;
-      emit_indent(b, indent + 1);
-      buf_printf(b, "{ sp_%sArray *_t%d = ", ak, ts); emit_expr(c, argv[a], b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d);\n", ts);
-      emit_indent(b, indent + 1);
-      buf_printf(b, "sp_int _t%d = sp_%sArray_length(_t%d);", tn, ak, ts);
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
+      emit_indent(&hd, indent + 1);
+      buf_printf(&hd, "{ sp_%sArray *_t%d = ", ak, ts); emit_expr(c, argv[a], &hd);
+      buf_printf(&hd, "; SP_GC_ROOT(_t%d);\n", ts);
+      emit_indent(&hd, indent + 1);
+      buf_printf(&hd, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
+      emit_indent(&lp, indent + 1);
+      buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
                  ti, ti, tn, ti, k, sp_streq(ak, "Poly") ? nilable : "", tr);
       char getexpr[256];
       snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, _t%d)", ak, ts, ti);
       if (sp_streq(k, "Poly") && !sp_streq(ak, "Poly")) {
         /* box the source scalar into the poly receiver */
-        emit_boxed_text(c, ty_array_elem(at), getexpr, b);
+        emit_boxed_text(c, ty_array_elem(at), getexpr, &lp);
       }
       else if (!sp_streq(k, "Poly") && sp_streq(ak, "Poly")) {
         /* unbox the source poly element into the receiver's scalar */
-        if (et == TY_INT) buf_printf(b, "sp_poly_elem_i(%s)", getexpr);
-        else if (et == TY_STRING) buf_printf(b, "sp_poly_elem_s(%s)", getexpr);
-        else if (et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(%s)", getexpr);
-        else buf_puts(b, getexpr);
+        if (et == TY_INT) buf_printf(&lp, "sp_poly_elem_i(%s)", getexpr);
+        else if (et == TY_STRING) buf_printf(&lp, "sp_poly_elem_s(%s)", getexpr);
+        else if (et == TY_FLOAT) buf_printf(&lp, "sp_poly_elem_f(%s)", getexpr);
+        else buf_puts(&lp, getexpr);
       }
-      else buf_puts(b, getexpr);
-      buf_puts(b, ");");
+      else buf_puts(&lp, getexpr);
+      buf_puts(&lp, ");");
       /* the same kind copies the source's elements, nils and all */
-      if (*nilable && sp_streq(ak, k)) buf_printf(b, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, ts);
-      buf_puts(b, " }\n");
+      if (*nilable && sp_streq(ak, k)) buf_printf(&lp, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, ts);
+      buf_puts(&lp, "\n");
     }
+    if (hd.p) buf_puts(b, hd.p);
+    if (lp.p) buf_puts(b, lp.p);
+    emit_indent(b, indent + 1);
+    for (int a = 0; a < argc; a++) buf_puts(b, "}");
+    buf_puts(b, "\n");
+    free(hd.p); free(lp.p);
     emit_indent(b, indent);
     buf_puts(b, "}\n");
     return 1;

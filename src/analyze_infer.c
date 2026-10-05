@@ -1491,6 +1491,10 @@ int reduce_tail_from_acc(Compiler *c, int tail, const char *accp) {
   if (sp_streq(ty, "LocalVariableReadNode"))
     return nt_str(nt, tail, "name") && sp_streq(nt_str(nt, tail, "name"), accp);
   if (sp_streq(ty, "CallNode")) {
+    /* an element read out of it answers the element, not the accumulator
+       (`h[k]` walking a nested hash by a key path) */
+    const char *cn = nt_str(nt, tail, "name");
+    if (cn && (sp_streq(cn, "[]") || sp_streq(cn, "dig") || sp_streq(cn, "fetch"))) return 0;
     int rcv = nt_ref(nt, tail, "receiver");
     if (rcv >= 0 && nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode"))
       return nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), accp);
@@ -2256,7 +2260,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
            sp_streq(name, "strip") || sp_streq(name, "reverse") ||
            sp_streq(name, "chomp") || sp_streq(name, "chop") ||
-           sp_streq(name, "succ") || sp_streq(name, "next") ||
+           sp_streq(name, "succ") || sp_streq(name, "next") || sp_streq(name, "peek") ||
            sp_streq(name, "chr") ||
            /* `strip` was here and its one-sided siblings were not, which is
               what most of this line is: a String reaching the dispatch
@@ -2771,7 +2775,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
         if (!cm) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       }
-      if (sp_streq(name, "rewind")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+      /* boxed: an Enumerator answers itself, a stream its 0 */
+      if (sp_streq(name, "rewind")) { *out = TY_POLY; return 1; }
       /* a stat's predicates, as the TY_IO arms type them, where the poly-IO
          arm emits them (not where a class method may own the name): size?
          is the int-or-nil count */
@@ -6095,6 +6100,12 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
     int orecv = nt_ref(nt, recv, "receiver");
     if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }
   }
+  /* A forwarded proc takes the receiver-valued runtime path. Keep this
+     structural rule here: builtin rows cannot distinguish a block argument
+     from a literal block. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "each") &&
+      nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode)
+    { *out = TY_POLY; return 1; }
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
      r = arr.each { }; arr.each { }.map { }. Gated to receivers that define
