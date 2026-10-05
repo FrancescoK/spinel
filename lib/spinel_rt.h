@@ -15646,6 +15646,24 @@ static sp_Enumerator *sp_range_endless_step(sp_RbVal first, sp_RbVal step) {
 static sp_RbVal sp_range_endless_step_v(sp_RbVal first, sp_RbVal step) {
   return sp_box_obj(sp_range_endless_step(first, step), SP_BUILTIN_ENUMERATOR);
 }
+/* A boxed endless Range with a begin (Integer or Float), which a blockless
+   step(n) walks as an Enumerator rather than materializing */
+static sp_bool sp_poly_range_is_endless(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ || !v.v.p) return 0;
+  if (v.cls_id == SP_BUILTIN_RANGE) {
+    sp_Range *r = (sp_Range *)v.v.p;
+    return !r->fe && r->last == INTPTR_MAX && r->first != INTPTR_MIN;
+  }
+  if (v.cls_id == SP_BUILTIN_FLOAT_RANGE) {
+    sp_FloatRange *f = (sp_FloatRange *)v.v.p;
+    return (f->omitted & SP_FRANGE_NO_END) && !(f->omitted & SP_FRANGE_NO_BEGIN);
+  }
+  return 0;
+}
+static sp_RbVal sp_poly_range_endless_step(sp_RbVal v, sp_RbVal step) {
+  if (v.cls_id == SP_BUILTIN_RANGE) return sp_range_endless_step_v(sp_box_int(((sp_Range *)v.v.p)->first), step);
+  return sp_range_endless_step_v(sp_box_float(((sp_FloatRange *)v.v.p)->first), step);
+}
 /* Blockless Kernel#loop: an infinite Enumerator yielding nil forever (#3236).
    Defined out-of-line in sp_cold.c (one linked copy, not per generated TU). */
 sp_Enumerator *sp_loop_enum(void);
