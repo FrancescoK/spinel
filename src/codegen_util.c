@@ -619,7 +619,7 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
   id = unwrap_parens(c, id);
-  if (id < 0 || c->strbuf_box[id]) return 0;
+  if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, id, "name");
@@ -1855,7 +1855,7 @@ const char *strbuf_local_name(Compiler *c, int recv) {
   const char *rn = nt_str(c->nt, recv, "name");
   Scope *rs = rn ? comp_scope_of(c, recv) : NULL;
   LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
-  return (rl && rl->type == TY_STRBUF) ? rn : NULL;
+  return repr_of_slot(c, rl).kind == RK_STRBUF ? rn : NULL;
 }
 /* The owning class slot of an ivar READ node, mirroring the read emitter's
    storage resolution: instance method -> its class; top-level method ->
@@ -2412,14 +2412,14 @@ int sb_shadowed_reader(int node) {
    when `recv` is no such call. */
 int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv) {
   if (recv < 0 || nt_kind(c->nt, recv) != NK_CallNode) return 0;
-  if (!c->strbuf_box[recv] && !c->strbuf_handle_demand[recv]) return 0;
+  Repr rp = repr_of(c, recv);
+  if (!rp.handle && !rp.demand) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
   int tH = ++g_tmp;
   /* the marks lifted and the handle type dropped for the shim's lifetime:
      views, so a refusal inside it puts them back (view_unwind) */
-  sv->box = c->strbuf_box[recv]; sv->demand = c->strbuf_handle_demand[recv];
-  sv->ty = c->ntype[recv];
+  sv->box = rp.handle; sv->demand = rp.demand; sv->ty = rp.ty;
   sv->tok = view_push_repr(c, recv, VR_STRBUF_BOX, 0);
   view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
   sv->ntok = 2;
@@ -2467,8 +2467,8 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
   if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
-      ((c->strbuf_box[recv] && comp_ntype(c, recv) == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
-       c->strbuf_handle_demand[recv])) {
+      ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
+       repr_of(c, recv).demand)) {
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     emit_expr(c, recv, &rb2);
     /* A container ELEMENT read comes back BOXED (a poly array element, a hash
