@@ -415,7 +415,7 @@ end
 # The argument lists of count n: each sample n times, and for two or more
 # an index or a count ahead of samples of another kind, as a variadic
 # method's leading position takes one (insert(1, "a"), fill(0, 1)).
-BLOCK_MIXED = [[0, "a"], [1, "a"], ["a", 0], [0, [1]], [0, :a], [1, 1.5]]
+BLOCK_MIXED = [[0, "a"], [1, "a"], ["a", 0], [0, [1]], [0, :a], [1, 1.5], [:turkic, :lithuanian]]
 def block_vectors(n)
   vs = BLOCK_SAMPLES.map { |v| Array.new(n, v) }
   vs += BLOCK_MIXED.map { |a, b| [a, *Array.new(n - 1, b)] } if n >= 2
@@ -423,14 +423,17 @@ def block_vectors(n)
 end
 
 # The counts (a bit each, 0..3) at which m ignores a block on these
-# receivers, and those it takes neither with nor without one. Each call gets
-# fresh samples: a method may write into one (IO#read's buffer).
+# receivers, those it takes neither with nor without one, and those at which
+# every call raised without running the block (`upcase(a, b, c)`: too many
+# options). Each call gets fresh samples: a method may write into one
+# (IO#read's buffer).
 def block_ignored_mask(receivers, m)
-  mask = neither = 0
+  mask = neither = rejects = 0
   (0..3).each do |n|
     runs = false
     kept_at = nil
     counts = 0
+    raised = true
     vectors = block_vectors(n)
     receivers.each do |thunk, ev|
       vectors.each do |vec|
@@ -438,11 +441,13 @@ def block_ignored_mask(receivers, m)
         runs = true if o == :runs
         kept_at ||= [thunk, vec.map(&:dup)] if o == :returned && ev == :full
         counts += 1 if o == :count
+        raised = false unless o == :count || o == :raised
         break if runs || o == :timeout
       end
       break if runs
     end
     next if runs
+    rejects |= 1 << n if raised
     # a count the method takes neither with a block nor without one raises
     # the same ArgumentError either way, so the block is no matter there
     if counts == receivers.size * vectors.size && probe_counts(receivers[0][0], m, n).is_a?(String)
@@ -451,7 +456,7 @@ def block_ignored_mask(receivers, m)
       mask |= 1 << n
     end
   end
-  [mask, neither]
+  [mask, neither, rejects]
 end
 
 block_masks = {}   # [owner, m] => mask
@@ -465,7 +470,7 @@ BLOCK_RECEIVERS.each do |cls, thunk|
     name_keys[m] << key
     next if block_masks.key?(key)
     block_masks[key] =
-      if FORWARDING.fetch(cls, []).include?(m) || skipped.include?(m) then [0, 0]
+      if FORWARDING.fetch(cls, []).include?(m) || skipped.include?(m) then [0, 0, 0]
       elsif key[0] == "Object" then block_ignored_mask([[INSTANCE_RECEIVERS["Object"], :full]], m)
       else block_ignored_mask([[thunk, :full], *BLOCK_VARIANTS.fetch(cls, [])], m)
       end
@@ -477,7 +482,10 @@ end
 # block keeps its block, whatever the probe saw: either the probe missed a
 # block that runs only for some arguments or states, or the signature
 # declares a block CRuby ignores, and only the first kind matters. Read in
-# a fresh interpreter, as the arity dump below is.
+# a fresh interpreter, as the arity dump below is. The counts any overload
+# takes, with a block or without, come along: a count no signature of the
+# name takes, of a name no signature gives a block, is one CRuby rejects
+# before it could use a block.
 rbs_src = <<~'RUBY'
   require "rbs"
   require "json"
@@ -485,30 +493,48 @@ rbs_src = <<~'RUBY'
   env = RBS::Environment.from_loader(loader).resolve_type_names
   builder = RBS::DefinitionBuilder.new(env: env)
   out = Hash.new { |h, k| h[k] = Hash.new { |h2, k2| h2[k2] = [] } }
+  takes = Hash.new { |h, k| h[k] = [] }
   env.class_decls.each_key do |tn|
     d = (builder.build_instance(tn) rescue next)
     d.methods.each do |name, m|
       next unless m.accessibility == :public
       m.method_types.each do |mt|
         f = mt.type
-        next unless mt.block && f.respond_to?(:required_positionals)
+        unless f.respond_to?(:required_positionals)
+          takes[name.to_s] |= [0, 1, 2, 3]   # an untyped parameter list takes any count
+          next
+        end
         lo = f.required_positionals.size + f.trailing_positionals.size
         hi = f.rest_positionals ? 3 : [lo + f.optional_positionals.size, 3].min
+        takes[name.to_s] |= (lo..hi).to_a
+        next unless mt.block
         (lo..hi).each { |n| out[name.to_s][n] |= [tn.to_s.delete_prefix("::")] }
       end
     end
   end
-  puts JSON.generate(out)
+  puts JSON.generate("blocks" => out, "takes" => takes)
 RUBY
 require "rbconfig"
-rbs_blocks = JSON.parse(IO.popen([RbConfig.ruby, "-e", rbs_src], &:read).to_s) rescue nil
-abort "block-use probe: could not read RBS core's signatures (the rbs gem)" unless $?.success? && rbs_blocks&.any?
+rbs = JSON.parse(IO.popen([RbConfig.ruby, "-e", rbs_src], &:read).to_s) rescue nil
+abort "block-use probe: could not read RBS core's signatures (the rbs gem)" unless $?.success? && rbs&.dig("blocks")&.any?
+rbs_blocks, rbs_takes = rbs.values_at("blocks", "takes")
 rbs_disagree = []
+rbs_rejected = []
 blk = name_keys.keys.sort.filter_map do |m|
   # a count no class takes is no proof: some class the probe leaves out
   # (IO::Buffer#each_byte(type, offset)) may take it and use the block
   ms = name_keys[m].uniq.map { |k| block_masks[k] }
-  mask = ms.map { |ign, neither| ign | neither }.reduce(:&) & ms.map(&:first).reduce(:|)
+  mask = ms.map { |ign, neither, _| ign | neither }.reduce(:&) & ms.map(&:first).reduce(:|)
+  # ...unless every call there raised without running the block, no
+  # signature takes the count either, and none of the name's signatures
+  # declares a block: upcase(:turkic, :lithuanian, x)
+  unless rbs_blocks.key?(m) || !rbs_takes.key?(m)
+    (0..3).each do |n|
+      next if mask[n] == 1 || ms.map(&:last).reduce(:&)[n] == 0 || rbs_takes[m].include?(n)
+      mask |= 1 << n
+      rbs_rejected << "#{m}/#{n}"
+    end
+  end
   rbs_blocks.fetch(m, {}).each do |n, owners|
     next unless mask[n.to_i] == 1
     mask &= ~(1 << n.to_i)
@@ -564,6 +590,8 @@ blk.each { |r| render.("BAB", r) }
 summary = "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method + #{blk.length} block-use entries"
 $stderr.puts "block use: the probe saw these counts ignore a block an RBS core signature declares " \
              "(kept): #{rbs_disagree.size}", *rbs_disagree.map { |d| "  #{d}" }
+$stderr.puts "block use: counts every class and every RBS core signature reject, of a name no " \
+             "signature gives a block: #{rbs_rejected.size}"
 if ARGV.include?("--check")
   if File.read(SOURCE) == out
     $stderr.puts "arity facts match #{ver}: #{summary}"
