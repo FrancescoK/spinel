@@ -1459,6 +1459,21 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       return;
     }
   }
+  /* --share-strings: a bang method on a handle local answers that local's
+     String, or nil (strbuf_bang_self_local) */
+  if (repr_share_rule(c) && strbuf_bang_self_local(c, node)) {
+    char srefB[256];
+    if (strbuf_slot_ref(c, nt_ref(c->nt, node, "receiver"), srefB, sizeof srefB)) {
+      int tb = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", tb);
+      int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+      emit_expr(c, node, b);
+      view_pop(c, sv_b);
+      buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
+  }
   /* a demanded literal / expression store: wrap a FRESH handle so the
      container element is mutable in place (#3227 P3) */
   buf_puts(b, "sp_box_obj(sp_String_new_shared(");
