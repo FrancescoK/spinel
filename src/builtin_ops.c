@@ -2547,8 +2547,31 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "scan",       BSH_ITER_FRESH },
   { TY_STRING, "gsub",       BSH_ITER_FRESH },
   { TY_STRING, "sub",        BSH_ITER_FRESH },
-  { TY_STRING, "gsub!",      BSH_ITER_FRESH },
-  { TY_STRING, "sub!",       BSH_ITER_FRESH },
+  { TY_STRING, "gsub!",      BSH_ITER_FRESH_RECV },
+  { TY_STRING, "sub!",       BSH_ITER_FRESH_RECV },
+  /* the bang methods answer the receiver itself (or nil when nothing
+     changed): `r = s.strip!` names s's String (slice! answers what it cut) */
+  { TY_STRING, "capitalize!", BSH_RECV },
+  { TY_STRING, "chomp!",     BSH_RECV },
+  { TY_STRING, "chop!",      BSH_RECV },
+  { TY_STRING, "delete!",    BSH_RECV },
+  { TY_STRING, "delete_prefix!", BSH_RECV },
+  { TY_STRING, "delete_suffix!", BSH_RECV },
+  { TY_STRING, "downcase!",  BSH_RECV },
+  { TY_STRING, "encode!",    BSH_RECV },
+  { TY_STRING, "lstrip!",    BSH_RECV },
+  { TY_STRING, "next!",      BSH_RECV },
+  { TY_STRING, "reverse!",   BSH_RECV },
+  { TY_STRING, "rstrip!",    BSH_RECV },
+  { TY_STRING, "scrub!",     BSH_RECV },
+  { TY_STRING, "squeeze!",   BSH_RECV },
+  { TY_STRING, "strip!",     BSH_RECV },
+  { TY_STRING, "succ!",      BSH_RECV },
+  { TY_STRING, "swapcase!",  BSH_RECV },
+  { TY_STRING, "tr!",        BSH_RECV },
+  { TY_STRING, "tr_s!",      BSH_RECV },
+  { TY_STRING, "unicode_normalize!", BSH_RECV },
+  { TY_STRING, "upcase!",    BSH_RECV },
   { TY_STRING, "upto",       BSH_ITER_FRESH },
 
   /* An Array: what it answers out of its elements, and what it stores. A
@@ -2907,6 +2930,13 @@ static int bop_share_find(TyKind fam, const char *name) {
 
 int bop_share_named(TyKind fam, const char *name) {
   return name ? bop_share_find(fam, name) : 0;
+}
+
+int bop_share_bang_self(const char *name) {
+  size_t n = name ? strlen(name) : 0;
+  if (n < 2 || name[n - 1] != '!') return 0;
+  int s = bop_share_find(TY_STRING, name);
+  return s == BSH_RECV || s == BSH_ITER_FRESH_RECV;
 }
 
 int bop_share(TyKind fam, const char *name) {
