@@ -9,7 +9,8 @@
 # pinned_cases(rows, only), pins(spec),
 # random_rows(n, seed), program(cases) (each case's lines under a heading
 # `# case <id>:`), flags(cases) and shape(case), and
-# optionally diff_kind(want, got, case). A probe names, beside it, the lines CRuby
+# optionally diff_kind(want, got, case) and FIXED (factors a reduction never
+# steps). A probe names, beside it, the lines CRuby
 # prints when a generated program reads a name it does not define. Covering gives a generator all but render,
 # program, flags and shape from its FACTORS.
 #
@@ -21,8 +22,10 @@
 # which loses no buffered lines). When they show the failure, the others are
 # split in halves without them; else, and when no case is named, the program
 # is split in halves. A difference seen in a program is confirmed on
-# its case alone. A failure no single case carries (two cases that only fail
-# together) is kept as an `interaction`, with the program that showed it.
+# its case alone (unless --no-confirm takes it as the case's own: a run in
+# which many cases differ spends most of its time confirming them). A
+# failure no single case carries (two cases that only fail together) is
+# kept as an `interaction`, with the program that showed it.
 #
 # Each finding is then reduced: one factor at a time steps toward its
 # simplest level for as long as the case alone still makes the same kind of
@@ -454,9 +457,12 @@ module ProbeCommon
     #     when: ->(r) { <the case's realized levels> }, answer: /<spinel's line>/ }
     # `undefined`: CRuby's line for a name the generator's programs read and
     # do not define, which makes the program wrong, not spinel. `keep`: the
-    # work dir is kept, binaries included.
-    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined, keep = false)
+    # work dir is kept, binaries included. `confirm`: a difference in a
+    # program that ran to its end is confirmed on its case alone; without it
+    # the difference is taken as the case's own (--no-confirm).
+    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined, keep = false, confirm = true)
       @gen = gen
+      @confirm = confirm
       @spinel = spinel
       @ruby = ruby
       @timeout = timeout
@@ -664,6 +670,11 @@ module ProbeCommon
       stopped = o.label == "ran" && (!o.status.zero? || cases.any? { |c| o.lines[c.id].empty? && !want[c.id].empty? })
       if o.label == "ran" && !stopped
         cases.reject { |c| ProbeCommon.same_answers?(want[c.id], o.lines[c.id]) }.map do |c|
+          unless @confirm
+            next record(Finding.new(c, "output-diff", "", want[c.id], o.lines[c.id],
+                                    diff_kind(want[c.id], o.lines[c.id], c), nil, []))
+          end
+
           l, k, w, g, det = judge(c)
           record(if l == "ran"
                    interaction(cases, "case #{c.id} differs only beside the other cases of its program",
@@ -723,10 +734,12 @@ module ProbeCommon
 
     # The cases one step simpler than `c`: a factor at its simplest level, or
     # a count one less. A step the case cannot take renders `c` again and is
-    # no step.
+    # no step. A generator's FIXED factors (the builtin-row probe's op) are
+    # what a case is about, and never step.
     def simpler(c)
+      fixed = @gen.const_defined?(:FIXED) ? @gen::FIXED : []
       @gen::NAMES.flat_map do |f|
-        next [] if c.realized[f] == @gen::SIMPLEST[f]
+        next [] if c.realized[f] == @gen::SIMPLEST[f] || fixed.include?(f)
         steps = [@gen::SIMPLEST[f]]
         steps.unshift(c.realized[f] - 1) if c.realized[f].is_a?(Integer) && c.realized[f] > 1
         steps.uniq.map { |l| @gen.render(c.id, c.realized.merge(f => l)) }.reject { |s| s.realized == c.realized }
@@ -896,7 +909,7 @@ module ProbeCommon
   # `undefined` as Probe takes them. Answers the exit status.
   def main(gen, name, argv, out:, strength:, undefined:, documented: [])
     usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--seed S] [--only F=L,..] " \
-            "[--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce]"
+            "[--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce] [--no-confirm]"
     random = nil
     seed = 1
     only = {}
@@ -905,6 +918,7 @@ module ProbeCommon
     timeout = 30
     keep = false
     reduce = true
+    confirm = true
     args = argv.dup
     begin
       until args.empty?
@@ -919,6 +933,7 @@ module ProbeCommon
         when "--timeout" then timeout = Integer(args.shift)
         when "--keep" then keep = true
         when "--no-reduce" then reduce = false
+        when "--no-confirm" then confirm = false
         else raise ArgumentError
         end
       end
@@ -974,7 +989,7 @@ module ProbeCommon
       File.write(File.join(out, "summary.txt"), "run in progress\n")
       work = keep ? File.join(out, "work") : Dir.mktmpdir(name.tr("_", "-"))
       FileUtils.mkdir_p(work)
-      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined, keep)
+      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined, keep, confirm)
       # the C spinel keeps of a program that does not build, and the C
       # compiler's own temporary files, go to the work dir and with it
       ENV["TMPDIR"] = work
