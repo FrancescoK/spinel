@@ -14722,6 +14722,17 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF &&
            c->classes[cid].ivar_str_shared[iv];
   }
+  /* a global holding the handle (--share-strings): its read, or its write
+     (`($g = s)`), whose value is the slot */
+  if (c->share_strings) { int g = node;
+    while (g >= 0 && nt_kind(nt, g) == NK_ParenthesesNode) {
+      int body = nt_ref(nt, g, "body");
+      int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
+      g = k > 0 ? st[k - 1] : -1;
+    }
+    if (g >= 0 && (nt_kind(nt, g) == NK_GlobalVariableReadNode || nt_kind(nt, g) == NK_GlobalVariableWriteNode) &&
+        repr_handle_gvar(c, g))
+      return 1; }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
@@ -16279,9 +16290,9 @@ static unsigned share_types_digest(Compiler *c) {
    String holders are the shared handle; this sets the flags repr_of reads
    for them, through each holder kind's own representation: a local or a
    parameter takes STRBUF + str_shared (a lent parameter gives up its slot,
-   and convert_byref_handle_params then pulls its callers), an ivar the
-   shared slot, and a container whose elements share demands the handle at
-   each of its stores. A holder whose kind has no handle yet is left as it
+   and convert_byref_handle_params then pulls its callers), an ivar or a
+   global the shared slot, and a container whose elements share demands the
+   handle at each of its stores. A holder whose kind has no handle yet is left as it
    is; repr_seal refuses it. The route rules after this only carry the
    handles it made, and add none it did not (#6765's stats count them). */
 /* --share-strings: ivar `name` of class cid is a box (it also holds nil,
@@ -16371,6 +16382,15 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
       if (it == TY_POLY && repr_str_shares(c, h)) changed |= share_lift_poly_ivar_stores(c, sh->cid, sh->name);
+    }
+    /* a global holds the handle the way a top-level ivar's C global does */
+    else if (sh->kind == SHK_GVAR && repr_str_shares(c, h)) {
+      LocalVar *gv = comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
+      if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;   /* a box holds the handle */
+      if (gv->type == TY_STRBUF && gv->str_shared) continue;
+      gv->type = TY_STRBUF;
+      gv->str_shared = 1;
+      changed = 1;
     }
   }
   return changed;
@@ -16906,6 +16926,49 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
     if (nt_kind(nt, u) == NK_ReturnNode) ls[fill[comp_scope_of(c, u) - c->scopes]++] = u;
   free(fill);
   *start = st; *list = ls;
+}
+/* Does every return tail of method mi3 (the implicit one and each `return`)
+   read a shared handle? *saw: it has one. */
+static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
+  const NodeTable *nt = c->nt;
+  int ok = 1;
+  int lastT = scope_body_last(c, mi3);
+  if (lastT >= 0) {
+    *saw = 1;
+    if (!an_arg_is_shared_handle(c, lastT)) ok = 0;
+  }
+  for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
+    int u = ret_list[r];
+    int ra = nt_ref(nt, u, "arguments");
+    int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+    *saw = 1;
+    if (rn2 != 1 || !an_arg_is_shared_handle(c, rv2[0])) ok = 0;
+  }
+  return ok;
+}
+/* --share-strings: a String mutator whose receiver is a receiverless call
+   of a uniquely named method answering a shared handle on every path
+   (`def get = $g`, `get << x`): the rule shares that String, so the call is
+   marked to hand out the handle its tail publishes, as the deep-return
+   pickup marks `r = get`. */
+static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_list) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, q) {
+    const char *qn = nt_str(nt, q, "name");
+    int wv = nt_ref(nt, q, "receiver");
+    if (!qn || !sp_str_mutator(qn, 0) || wv < 0 || nt_kind(nt, wv) != NK_CallNode || c->strbuf_box[wv]) continue;
+    if (nt_ref(nt, wv, "receiver") >= 0 || nt_ref(nt, wv, "block") >= 0) continue;
+    const char *mn = nt_str(nt, wv, "name");
+    int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+    if (mi3 <= 0) continue;
+    if (!*ret_start) an_returns_by_scope(c, ret_start, ret_list);
+    int saw = 0;
+    if (!an_returns_shared_handles(c, mi3, *ret_start, *ret_list, &saw) || !saw) continue;
+    c->strbuf_box[wv] = 1;
+    changed = 1;
+  }
+  return changed;
 }
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
@@ -17678,19 +17741,8 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (mi3 <= 0) continue;
     if (!ret_start) an_returns_by_scope(c, &ret_start, &ret_list);
     /* every return tail (implicit + explicit) must be a shared slot read */
-    int shared_ok = 1, saw_tail = 0;
-    { int lastT = scope_body_last(c, mi3);
-      if (lastT >= 0) {
-        saw_tail = 1;
-        if (!an_arg_is_shared_handle(c, lastT)) shared_ok = 0;
-      } }
-    for (int r = ret_start[mi3]; shared_ok && r < ret_start[mi3 + 1]; r++) {
-      int u = ret_list[r];
-      int ra = nt_ref(nt, u, "arguments");
-      int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
-      saw_tail = 1;
-      if (rn2 != 1 || !an_arg_is_shared_handle(c, rv2[0])) shared_ok = 0;
-    }
+    int saw_tail = 0;
+    int shared_ok = an_returns_shared_handles(c, mi3, ret_start, ret_list, &saw_tail);
     const char *lname3 = nt_str(nt, w, "name");
     Scope *ls3 = comp_scope_of(c, w);
     /* strbuf_mut_kind is keyed on name + scope only, so `rr << x` reports a
@@ -17741,6 +17793,9 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (clv3->type != TY_POLY && (clv3->type != TY_STRBUF || !clv3->str_shared))
       {  clv3->type = TY_STRBUF; clv3->str_shared = 1; changed = 1;  }
   }
+  /* --share-strings: the same call as a String mutator's receiver (`get <<
+     x`), whose String the rule shares, hands out the handle it publishes */
+  if (c->share_strings) changed |= an_mutated_handle_returns(c, &ret_start, &ret_list);
   free(ret_start); free(ret_list);
   /* Container-read alias (`r = rows[0]; r.upcase!`): the local is another name
      for the element, so an in-place mutation through it has to land on the
@@ -19543,6 +19598,14 @@ static int convert_byref_handle_params(Compiler *c,
             comp_sn_retype(c, an2, TY_STRBUF);
             changed = 1;
           }
+        }
+        /* a global holding the handle (--share-strings) hands it over as an
+           ivar's read does */
+        else if (nt_kind(nt, an2) == NK_GlobalVariableReadNode && repr_handle_gvar(c, an2) &&
+                 (pp->type == TY_POLY || (pp->type == TY_STRBUF && pp->str_shared)) && !c->strbuf_box[an2]) {
+          c->strbuf_box[an2] = 1;
+          comp_sn_retype(c, an2, TY_STRBUF);
+          changed = 1;
         }
         /* `K.new(obj.reader)`: the reader has to hand out the HANDLE, or the
            new holder and `obj` walk away with two strings. The P5 rule makes
