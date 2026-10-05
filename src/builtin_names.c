@@ -2,6 +2,7 @@
    Each family is spelled once here; the order is the order its compares run
    in, the one most of the replaced chains used. */
 #include <stddef.h>
+#include <string.h>
 #include "types.h"
 #include <stddef.h>
 #include "builtin_names.h"
