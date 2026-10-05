@@ -35,6 +35,7 @@ int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */
 int is_self_answer(const char *n);    /* freeze itself: the receiver itself, never a copy */
+int is_method_object_ref(const char *n); /* method public_method: a Method of the method a Symbol names */
 int is_int_step(const char *n);       /* times upto downto: Integer's counting iterators */
 int is_equality_name(const char *n);  /* equal? eql? == */
 int is_bits_query(const char *n);     /* allbits? anybits? nobits? */
@@ -43,6 +44,7 @@ int is_class_eval_family(const char *n);  /* class_eval module_eval class_exec m
 int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec */
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
+int is_proc_conversion(const char *n); /* to_proc: a proc's or a Method's proc, the same callable */
 int is_truth_query(const char *n); /* nil? !: a test of the receiver itself */
 int is_symbol_conversion(const char *n); /* to_sym intern: a String made a Symbol at run time */
 int is_io_read_into(const char *n); /* read sysread readpartial read_nonblock: IO reads that fill an outbuf argument */
