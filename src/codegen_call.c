@@ -13534,8 +13534,15 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, wrecv, &rb);
     spill = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    emit_ctype(c, normal_ty, g_pre);
-    buf_printf(g_pre, " _t%d = %s;", spill, rb.p ? rb.p : "0");
+    /* a receiver with no value of its own (a call that raises: a wrong
+       count) runs for its effect into a nil temp; declared as its own
+       type, the temp was void and did not build */
+    if (!c_type_name(normal_ty))
+      buf_printf(g_pre, "sp_RbVal _t%d = ((void)(%s), sp_box_nil());", spill, rb.p ? rb.p : "0");
+    else {
+      emit_ctype(c, normal_ty, g_pre);
+      buf_printf(g_pre, " _t%d = %s;", spill, rb.p ? rb.p : "0");
+    }
     free(rb.p);
     if (needs_root(normal_ty)) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, normal_ty, spill, g_pre); }
     buf_puts(g_pre, "\n");
