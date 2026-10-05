@@ -305,6 +305,9 @@ int ty_is_array(TyKind t) {
          t == TY_STR_ARRAY || t == TY_POLY_ARRAY || t == TY_INT_ARRAY_ARRAY ||
          t == TY_FLOAT_ARRAY_ARRAY;
 }
+int array_new_copies(TyKind t) {
+  return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY || t == TY_POLY_ARRAY;
+}
 TyKind ty_array_of(TyKind elem) {
   switch (elem) {
     case TY_INT:    return TY_INT_ARRAY;
