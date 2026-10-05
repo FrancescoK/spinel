@@ -5757,10 +5757,12 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        an Integer -- a Struct field another site builds with a literal -- the
        boxed value met an sp_int parameter and the build failed (#3939). */
     if (sp_streq(nm, "with_index") && nt_ref(nt, recv, "arguments") < 0 &&
-        (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte"))) {
+        (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte") ||
+         sp_streq(rn, "each_codepoint"))) {
       nt_node_set_str(nt, recv, "name",
                       sp_streq(rn, "each_char") ? "chars" :
-                      sp_streq(rn, "each_line") ? "lines" : "bytes");
+                      sp_streq(rn, "each_line") ? "lines" :
+                      sp_streq(rn, "each_byte") ? "bytes" : "codepoints");
       int eachn = nt_new_node(nt, "CallNode");
       if (eachn < 0) continue;
       nt_node_set_str(nt, eachn, "name", "each");
