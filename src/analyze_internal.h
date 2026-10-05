@@ -285,6 +285,7 @@ void seed_unsupplied_nil_defaults(Compiler *c);
 int infer_container_flow(Compiler *c);
 int an_builtin_only_p(void);
 TyKind an_builtin_answer(Compiler *c, int id);
+void an_record_builtin_answers(Compiler *c);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
