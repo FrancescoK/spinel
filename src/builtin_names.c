@@ -256,6 +256,16 @@ int is_element_at_alias(const char *n) {
   return sp_streq(n, "[]") || sp_streq(n, "at");
 }
 
+int is_hash_transform(const char *n) {
+  return sp_streq(n, "transform_values") || sp_streq(n, "transform_keys");
+}
+
+/* the calls whose block is the fallback for a missing key or index: they
+   hand it the one value they could not find */
+int is_fallback_block_call(const char *n) {
+  return sp_streq(n, "fetch") || sp_streq(n, "delete") || sp_streq(n, "fetch_values");
+}
+
 int is_sort_family(const char *n) {
   return sp_streq(n, "sort") || sp_streq(n, "sort!");
 }
