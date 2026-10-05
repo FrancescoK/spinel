@@ -1505,6 +1505,12 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     buf_puts(b, ")");
     view_pop(c, sv);
   }
+  /* --share-strings: a bare reader of a shared ivar, or a call of a method
+     a path of which answers the handle (strbuf_call_answers_handle): the
+     local takes that handle */
+  else if (shared && emit_strbuf_call_handle(c, v, b)) {
+    /* emitted: the handle itself */
+  }
   /* --share-strings (#6765): `r = s.strip!` names s's String when the bang
      changed it, and nil when not; the call changes s's handle in place, so
      r takes that handle. Wrapped fresh, r forked off s. */

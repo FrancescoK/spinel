@@ -115,6 +115,9 @@ int share_node_anchored(const Compiler *c, int n);
    from the final facts. */
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg);
 void share_routes_check(Compiler *c);
+/* a return tail that clears the deep-return side channel (a String of its
+   own in a method that also answers the handle) */
+int share_ret_clears(Compiler *c, int node);
 /* how many kept routes the final facts fail (SPINEL_SHARE_STATS) */
 int share_routes_failing(Compiler *c);
 void share_routes_free(Compiler *c);
