@@ -5002,6 +5002,10 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
           if (uni == TY_UNKNOWN) uni = t;
           else if (uni != t) { uni = TY_POLY; break; }
         }
+        /* A receiver without the slot answers nil. Keep a boxed answer when
+           the slot representation has no nil, even if all slots agree. */
+        const TyTraits *tr = ty_traits_of(uni);
+        if (uni != TY_UNKNOWN && !ty_is_object(uni) && (!tr || (!tr->nil && !tr->null_is_nil))) uni = TY_POLY;
         /* a bare Object can hold any value there (sp_Object_ivar_get) */
         if (uni != TY_UNKNOWN && an_program_news_object(c)) uni = TY_POLY;
         { *out = uni == TY_UNKNOWN ? TY_POLY : uni; return 1; }
