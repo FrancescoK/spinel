@@ -2315,7 +2315,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* poly.unpack1(fmt): String#unpack1 on a value that widened to poly
          (pervasive in doom's binary WAD parsing). Mirrors the rt==TY_STRING
          rule so a single-directive int format stays int, not poly. */
-      if (sp_streq(name, "unpack1") && argc == 1) {
+      if (sp_streq(name, "unpack1") &&
+          (argc == 1 || (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode))) {   /* (fmt, offset: n) too (#7317) */
         /* a user class owning the name puts its own arm in the dispatch, and
            both arms share one C temp: type the call for what both can hold */
         TyKind u1 = an_unpack1_lit_type(nt, argv[0]);

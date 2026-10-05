@@ -13226,6 +13226,22 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
     return 1;
   }
+  /* ...and unpack1(fmt, offset: n), as the typed receiver's arm takes it: with
+     the keyword the boxed String had no arm and raised NoMethodError (#7317) */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 2 &&
+      nt_kind(nt, argv[1]) == NK_KeywordHashNode && struct_kwarg_value(c, argv[1], "offset") >= 0 &&
+      !user_defines_or_reads(c, name)) {
+    int offv = struct_kwarg_value(c, argv[1], "offset");
+    TyKind u1t = comp_ntype(c, id);
+    if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(");
+    else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(");
+    buf_puts(b, "sp_PolyArray_get(sp_str_unpack_off(sp_poly_recv_s(");
+    emit_expr(c, recv, b); buf_puts(b, ", \"unpack1\"), ");
+    emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
+    emit_int_expr(c, offv, b); buf_puts(b, "), 0)");
+    if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
+    return 1;
+  }
   { int r; if (emit_poly_index_call(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* poly receiver: join. Stands down for a user class that defines the name --
      the arm answered the receiver's #to_s where CRuby entered the method, and
