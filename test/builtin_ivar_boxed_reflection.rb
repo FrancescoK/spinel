@@ -45,3 +45,9 @@ begin
 rescue => e
   p mark(e, true)
 end
+
+# the same set sent by name
+arr = [1]
+y = rand > 2 ? 1 : arr
+y.send(:instance_variable_set, :@q, 5)
+p arr.instance_variable_get(:@q), y.instance_variable_get(:@q)
