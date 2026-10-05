@@ -1511,6 +1511,16 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && emit_strbuf_call_handle(c, v, b)) {
     /* emitted: the handle itself */
   }
+  /* --share-strings: a proc's or a Method's answer the rule shares: the
+     handle its box holds (a String box: a handle of its own) */
+  else if (repr_share_rule(c) && shared && strbuf_proc_call_answer(c, v)) {
+    int tr = ++g_tmp;
+    int sv = view_push(c, v, TY_POLY);
+    buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+    emit_expr(c, v, b);
+    view_pop(c, sv);
+    buf_printf(b, "; sp_poly_nil_p(_t%d) ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", tr, tr);
+  }
   /* --share-strings: a read into a buffer that is the handle answers that
      buffer (or nil at the end of the stream) */
   else if (shared && io_outbuf_handle_arg(c, v) >= 0 &&
