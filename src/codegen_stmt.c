@@ -2061,7 +2061,7 @@ static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
   char hd[48], hn[48];
   if (!vn || (!sp_streq(vn, "[]") && !sp_streq(vn, "at")) || vr < 0 || vc != 1 ||
       nt_ref(nt, v, "block") >= 0 || comp_ntype(c, vr) != TY_FLOAT_ARRAY ||
-      infer_type(c, vav[0]) != TY_INT || nullable_int_elem_array(c, vr) ||
+      comp_ntype(c, vav[0]) != TY_INT || nullable_int_elem_array(c, vr) ||
       !hc_array_nilfree(c, vr, hd, hn, sizeof hd))
     return 0;
   int tk = ++g_tmp;

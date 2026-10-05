@@ -1226,7 +1226,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     if (blk >= 0) {
-      TyKind rtype = infer_type(c, recv);
+      TyKind rtype = comp_ntype(c, recv);
       const char *bp0 = block_param_name(c, blk, 0); if (bp0) bp0 = rename_local(bp0);
       int blk_body = nt_ref(nt, blk, "body");
       int then_bn = 0; const int *then_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &then_bn) : NULL;
