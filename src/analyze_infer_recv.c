@@ -1154,7 +1154,7 @@ int infer_bsub_call(Compiler *c, int id, TyKind *out) {
   }
   /* a copy of the instance holds the builtin's answer when that answer is
      the builtin's own kind (emit_bsub_call) */
-  *out = form == BSR_SELF || (form == BSR_COPY && r == k) ? rt : r;
+  *out = form == BSR_SELF || form == BSR_SELF_CLASS || (form == BSR_COPY && r == k) ? rt : r;
   return 1;
 }
 

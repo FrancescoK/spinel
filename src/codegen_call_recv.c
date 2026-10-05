@@ -9821,7 +9821,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
 /* The encoding a force_encoding / encode! call names as a literal: 1 for
    ASCII-8BIT, 0 for UTF-8, -1 for any other or a computed one, which only
    checks that the receiver may change. */
-static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
+int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
   const char *fe_nm = NULL;
   if (argc >= 1) {

@@ -1405,3 +1405,205 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
   }
   return 0;
 }
+
+/* ---- String subclass instances (#7449) ----
+   An instance starts with its String handle (sp_String), so a call String
+   answers on it (comp_bsub_call) is String's call on that handle: the
+   appends and replace go straight onto the handle, the other mutators run
+   the plain String arm on a shadow copy that is written back (the shim the
+   shared handles use, sb_shadowed_reader), and every other call reads the
+   String the handle holds -- its live bytes where the answer cannot hold on
+   to them, a copy otherwise. A String subclass instance among the arguments
+   of a call that reads its arguments as Strings is read as a copy of its
+   bytes, made ahead of the statement. Every form is one C expression, the
+   receiver evaluated once. */
+
+/* a String answer that cannot be the receiver's bytes or hold them */
+static int strsub_answer_detached(TyKind t) {
+  return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL ||
+         t == TY_BIGINT;
+}
+
+/* `_t<h>`, the handle of call id's receiver, rooted: the opening of the
+   statement expression every form below is */
+static int strsub_open_handle(Compiler *c, int recv, Buf *b) {
+  int h = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = (sp_String *)(", h);
+  emit_expr(c, recv, b);
+  buf_printf(b, "); SP_GC_ROOT(_t%d); ", h);
+  return h;
+}
+
+/* call id re-entered with node n (an instance) read as the String `text` */
+static void strsub_emit_viewed(Compiler *c, int id, int n, const char *text, TyKind idty, Buf *b) {
+  int vb = view_bind(n, "%s", text);
+  int vr = view_push(c, n, TY_STRING);
+  int vf = view_push_face(n, TY_STRING);
+  int vi = idty != TY_UNKNOWN ? view_push(c, id, idty) : -1;
+  emit_call(c, id, b);
+  if (vi >= 0) view_pop(c, vi);
+  view_pop(c, vf);
+  view_pop(c, vr);
+  view_unbind(vb);
+}
+
+/* The arguments of call id that are String subclass instances read as
+   Strings (comp_bsub_args_viewed): each one copied into a rooted temp ahead
+   of the statement, then the call with each bound to its temp. Answers 0 when
+   there is none. */
+static int strsub_emit_args_viewed(Compiler *c, int id, TyKind rt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int which[16], tmp[16], n = 0;
+  for (int i = 0; i < an && n < 16; i++) {
+    TyKind at = comp_ntype(c, av[i]);
+    if (comp_ty_bsub_base(c, at) != BSUB_STRING || !comp_bsub_args_viewed(c, id, rt, BSUB_STRING)) continue;
+    which[n++] = i;
+  }
+  if (!n) return 0;
+  /* the copies go ahead of the statement, where a lowering that hoists
+     part of the call (a block's gsub) can read them too */
+  for (int k = 0; k < n; k++) {
+    tmp[k] = ++g_tmp;
+    Buf e; memset(&e, 0, sizeof e);
+    emit_expr(c, av[which[k]], &e);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = sp_String_to_s_embedded((sp_String *)(%s)); SP_GC_ROOT_STR(_t%d);\n",
+               tmp[k], e.p ? e.p : "NULL", tmp[k]);
+    free(e.p);
+  }
+  int vb[16], vr[16], vf = -1;
+  for (int k = 0; k < n; k++) {
+    vb[k] = view_bind(av[which[k]], "_t%d", tmp[k]);
+    vr[k] = view_push(c, av[which[k]], TY_STRING);
+  }
+  /* the inference pinned the first one (infer_bsub_arg_call) */
+  vf = view_push_face(av[which[0]], TY_STRING);
+  emit_call(c, id, b);
+  view_pop(c, vf);
+  for (int k = n - 1; k >= 0; k--) { view_pop(c, vr[k]); view_unbind(vb[k]); }
+  return 1;
+}
+
+int emit_strsub_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
+  if (comp_ty_bsub_base(c, rt) != BSUB_STRING || !comp_bsub_call(c, id, rt, &k))
+    return strsub_emit_args_viewed(c, id, rt, b);
+  const char *name = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int blk = nt_ref(nt, id, "block");
+  int cid = ty_object_class(rt);
+  const char *cn = c->classes[cid].c_name;
+  /* what String answers, as its builtin-op rows say: the receiver
+     (BOPF_SELF, or BOPF_SELF_OR_NIL where it changed nothing), an object of
+     the receiver's class (+@ -@ dedup, BOPF_SELF_CLASS), or a plain String */
+  int form = comp_bsub_result_form(c, id, rt);
+  int self = form == BSR_SELF || form == BSR_SELF_CLASS;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_SplatNode || nt_kind(nt, argv[i]) == NK_BlockArgumentNode) self = -1;
+  /* the appends: each argument taken before the first append, as CRuby
+     does (the receiver as its own argument appends as it was) */
+  if (self > 0 && blk < 0 && (sp_streq(name, "<<") || sp_streq(name, "concat")) &&
+      (argc == 1 || sp_streq(name, "concat"))) {
+    int h = strsub_open_handle(c, recv, b);
+    char rtx[32]; snprintf(rtx, sizeof rtx, "sp_String_cstr(_t%d)", h);
+    int base = g_tmp + 1; g_tmp += argc;
+    for (int i = 0; i < argc; i++) {
+      buf_printf(b, "const char *_t%d = ", base + i);
+      emit_str_append_arg(c, argv[i], rtx, b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); ", base + i);
+    }
+    if (!argc) buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data); ", h, h);
+    for (int i = 0; i < argc; i++) buf_printf(b, "sp_String_append_bin(_t%d, _t%d); ", h, base + i);
+    buf_printf(b, "(sp_%s *)_t%d; })", cn, h);
+    return 1;
+  }
+  if (self > 0 && blk < 0 && ((sp_streq(name, "replace") && argc == 1) || (sp_streq(name, "clear") && argc == 0))) {
+    int h = strsub_open_handle(c, recv, b), a = ++g_tmp;
+    buf_printf(b, "const char *_t%d = ", a);
+    if (argc) emit_str_expr(c, argv[0], b);
+    else buf_puts(b, "(&(\"\\xff\")[1])");
+    buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data); ", h, h);
+    if (argc) buf_printf(b, "_t%d->binary = sp_str_is_binary(_t%d) ? 1 : 0; ", h, a);
+    buf_printf(b, "sp_String_set_bin(_t%d, _t%d); (sp_%s *)_t%d; })", h, a, cn, h);
+    return 1;
+  }
+  if (self > 0 && blk < 0 && sp_streq(name, "force_encoding") && argc == 1) {
+    int h = strsub_open_handle(c, recv, b);
+    buf_printf(b, "(void)(");
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "); sp_String_force_encoding(_t%d, %d); (sp_%s *)_t%d; })",
+               h, str_force_encoding_mode(c, argv, argc), cn, h);
+    return 1;
+  }
+  if (self > 0 && blk < 0 && sp_streq(name, "freeze") && argc == 0) {
+    int h = strsub_open_handle(c, recv, b);
+    buf_printf(b, "sp_String_freeze(_t%d); (sp_%s *)_t%d; })", h, cn, h);
+    return 1;
+  }
+  if (blk < 0 && sp_streq(name, "frozen?") && argc == 0) {
+    int h = strsub_open_handle(c, recv, b);
+    buf_printf(b, "(sp_bool)sp_String_is_frozen(_t%d); })", h);
+    return 1;
+  }
+  /* +@ answers the receiver unless it is frozen, -@ (dedup) a frozen
+     receiver itself: otherwise a copy of the instance, as dup makes it, and
+     for -@ frozen */
+  if (self > 0 && form == BSR_SELF_CLASS && blk < 0 && argc == 0) {
+    int h = strsub_open_handle(c, recv, b);
+    if (name[0] == '+')
+      buf_printf(b, "sp_String_is_frozen(_t%d) ? (sp_%s *)sp_%s__dup(_t%d, 0) : (sp_%s *)_t%d; })",
+                 h, cn, cn, h, cn, h);
+    else
+      buf_printf(b, "sp_String_is_frozen(_t%d) ? (sp_%s *)_t%d : (sp_%s *)sp_String_freeze((sp_String *)sp_%s__dup(_t%d, 0)); })",
+                 h, cn, h, cn, cn, h);
+    return 1;
+  }
+  int mut = self > 0 || bop_name_mutates(name, BOP_MUT_LOCAL);
+  int walk = self > 0 && blk >= 0;
+  if (mut && !walk) {
+    /* the shim: the plain String arm on a shadow, written back */
+    int h = strsub_open_handle(c, recv, b);
+    /* the plain String arm's answer: for a call answering its receiver, the
+       String row's (comp_bsub_self_kind: the String, NULL where a `!`
+       method changed nothing), else the call's own */
+    TyKind nat = form == BSR_SELF || form == BSR_SELF_CLASS ? comp_bsub_self_kind(c, id, rt, TY_STRING)
+                                                       : comp_ntype(c, id);
+    if (nat == TY_UNKNOWN || nat == TY_VOID) nat = TY_STRING;
+    buf_printf(b, "if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data); "
+                  "const char *lv__sb%d = sp_String_to_s_embedded(_t%d); SP_GC_ROOT(lv__sb%d); ",
+               h, h, h, h, h);
+    int r = ++g_tmp;
+    emit_ctype(c, nat, b);
+    buf_printf(b, " _t%d = ", r);
+    char sh[32]; snprintf(sh, sizeof sh, "lv__sb%d", h);
+    strsub_emit_viewed(c, id, recv, sh, nat, b);
+    buf_printf(b, "; sp_String_set_bin(_t%d, lv__sb%d); ", h, h);
+    if (self > 0 && nat == TY_POLY) buf_printf(b, "_t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d; })", r, cn, h);
+    else if (self > 0) buf_printf(b, "_t%d ? (sp_%s *)_t%d : NULL; })", r, cn, h);
+    else buf_printf(b, "_t%d; })", r);
+    return 1;
+  }
+  /* a read: the live bytes when the answer cannot hold them, else a copy */
+  int h = strsub_open_handle(c, recv, b);
+  TyKind idty = walk ? TY_STRING : TY_UNKNOWN;
+  int s = ++g_tmp;
+  if (!walk && blk < 0 && strsub_answer_detached(comp_ntype(c, id)))
+    buf_printf(b, "const char *_t%d = sp_String_cstr(_t%d); ", s, h);
+  else buf_printf(b, "const char *_t%d = sp_String_to_s_embedded(_t%d); SP_GC_ROOT_STR(_t%d); ", s, h, s);
+  char sx[32]; snprintf(sx, sizeof sx, "_t%d", s);
+  if (walk) {
+    /* a walk answers its receiver: the instance */
+    buf_puts(b, "(void)(");
+    strsub_emit_viewed(c, id, recv, sx, idty, b);
+    buf_printf(b, "); (sp_%s *)_t%d; })", cn, h);
+    return 1;
+  }
+  strsub_emit_viewed(c, id, recv, sx, TY_UNKNOWN, b);
+  buf_puts(b, "; })");
+  return 1;
+}

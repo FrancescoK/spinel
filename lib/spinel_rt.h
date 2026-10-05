@@ -2164,7 +2164,8 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   /* a builtin subclass instance boxed as its builtin answers the builtin's
      names (#7449); its class's own are the caller's */
   if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_bsub_cls_fn(v) >= 0)
-    cn = sp_poly_is_array_kind(v.cls_id) ? "Array" : sp_poly_is_hash_kind(v.cls_id) ? "Hash" : cn;
+    cn = sp_poly_is_array_kind(v.cls_id) ? "Array" : sp_poly_is_hash_kind(v.cls_id) ? "Hash"
+       : v.cls_id == SP_BUILTIN_STRBUF ? "String" : cn;
   if (strcmp(cn, "Array") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
   if (strcmp(cn, "Hash") == 0)

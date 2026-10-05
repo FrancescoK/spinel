@@ -2909,15 +2909,30 @@ static int alias_target_defined_before(Compiler *c, ClassInfo *cls, int cid, con
   return 0;
 }
 
+/* A class declared right below a builtin a program class can subclass
+   (`class SafeBuffer < String`, #7449): its aliases can capture the
+   builtin's methods too. Its parent is not resolved yet; the declaration
+   names it. */
+static int alias_bsub_class(Compiler *c, ClassInfo *cls) {
+  int dn = cls->def_node;
+  if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
+  int sc = nt_ref(c->nt, dn, "superclass");
+  NodeKind sk = sc >= 0 ? nt_kind(c->nt, sc) : NK_NONE;
+  const char *pn = sk == NK_ConstantReadNode || sk == NK_ConstantPathNode ? nt_str(c->nt, sc, "name") : NULL;
+  return pn && comp_bsub_base_named(pn) && comp_class_index(c, pn) < 0;
+}
+
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s) {
   if (alias_capture_earlier_def(c, cls, nw, od, s)) return;
   comp_add_alias_from(cls, nw, od, s);
   /* In a reopened primitive, an alias of a name the program has not defined
      there yet names the builtin method: it keeps naming it when the class
      later defines or re-aliases that name (`alias_method :plus_without, :+`
-     ahead of `alias_method :+, :plus_with`). */
+     ahead of `alias_method :+, :plus_with`). So does one in a class right
+     below a builtin it subclasses (SafeBuffer's `alias original_concat
+     concat` ahead of its own `concat`). */
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
-  if (s >= 0 && cid >= 0 && alias_prim_class(cls->name) &&
+  if (s >= 0 && cid >= 0 && (alias_prim_class(cls->name) || alias_bsub_class(c, cls)) &&
       !alias_target_defined_before(c, cls, cid, od, s)) {
     for (int i = cls->naliases - 1; i >= 0; i--)
       if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = 1; break; }

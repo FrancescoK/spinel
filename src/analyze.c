@@ -28208,7 +28208,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      count, which no range covers. A variadic-2 name (slice) needs no
      widening: its other counts keep the splat call, which reaches the user
      method as any splat call does. */
-  if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id)) {
+  /* a call marked builtin_only (a super into a builtin, #7449) reaches no
+     user method of the name, and neither does any of its arms */
+  int bonly = (int)nt_int(nt, id, "builtin_only", 0);
+  if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id) && !bonly) {
     for (int si = 0; si < c->nscopes; si++) {
       Scope *s = &c->scopes[si];
       if (!s->name || !sp_streq(s->name, cnm)) continue;
@@ -28366,6 +28369,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     if (nt_str(nt, id, "send_blind")) nt_node_set_str(nt, arm, "send_blind", "1");
     if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, arm, "vis_enforce", "1");
     nt_node_set_int(nt, arm, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
+    if (bonly) nt_node_set_int(nt, arm, "builtin_only", 1);
     nt_node_set_ref(nt, arm, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, arm, "arguments", an);
     nt_node_set_ref(nt, arm, "block", odyn ? blk : -1);
@@ -28401,6 +28405,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     if (nt_str(nt, id, "send_blind")) nt_node_set_str(nt, cl, "send_blind", "1");
     if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, cl, "vis_enforce", "1");
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
+    if (bonly) nt_node_set_int(nt, cl, "builtin_only", 1);
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, cl, "block", fwd_blk ? nt_clone_subtree(nt, blk) :
                                      blk >= 0 && (m == 1 || odyn) ? blk : -1);
@@ -29753,9 +29758,11 @@ static void bsub_super_into(Compiler *c, int at, int n, int base, const char *mn
   if (!init) {
     bsub_set_call(c, n, self, mn, args, blk);
     nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
-    /* a splatted argument (`super(key, *extras)`) is spread to the
-       builtin's arity as the desugar spreads it on any call; that ran before
-       this call existed */
+    /* a splatted argument (`super(key, *extras)`), and a bare super
+       forwarding a rest (`def [](*args) = super`), is spread to the
+       builtin's arity as the desugar spreads it on any call, or dispatched
+       on its length as a splat the program wrote is; that ran before this
+       call existed */
     const NodeTable *nt = c->nt;
     int n0 = nt->count;
     expand_static_splat_args(c, n, n + 1);

@@ -1018,10 +1018,30 @@ spinel: a bare `super` into Hash from a method with keyword, post-rest or destru
 spinel: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
 == test/reject/subclass_range.rb [promote] rc=1
 spinel: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
-== test/reject/subclass_string.rb [default] rc=1
-spinel: class Name < String: subclassing String is not supported yet (a subclass would answer differently from CRuby); wrap a String in an instance variable instead
-== test/reject/subclass_string.rb [promote] rc=1
-spinel: class Name < String: subclassing String is not supported yet (a subclass would answer differently from CRuby); wrap a String in an instance variable instead
+== test/reject/subclass_string_class_new_call.rb [default] rc=1
+spinel: Class.new(String) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < String`
+== test/reject/subclass_string_class_new_call.rb [promote] rc=1
+spinel: Class.new(String) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < String`
+== test/reject/subclass_string_marshal.rb [default] rc=1
+spinel: Marshal.dump of a String subclass instance is not supported yet (it would load back as a plain String)
+spinel: 1 refusal, nothing written
+== test/reject/subclass_string_marshal.rb [promote] rc=1
+spinel: Marshal.dump of a String subclass instance is not supported yet (it would load back as a plain String)
+spinel: 1 refusal, nothing written
+== test/reject/subclass_string_reopened.rb [default] rc=1
+spinel: class Name < String: subclassing String in a program that also reopens String is not supported yet
+== test/reject/subclass_string_reopened.rb [promote] rc=1
+spinel: class Name < String: subclassing String in a program that also reopens String is not supported yet
+== test/reject/subclass_string_super_iterator_block.rb [default] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 28 (CallNode `each_char`) recv=SelfNode/ty6 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/subclass_string_super_iterator_block.rb [promote] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 28 (CallNode `each_char`) recv=SelfNode/ty6 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/subclass_string_zsuper_kw.rb [default] rc=1
+spinel: a bare `super` into String from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
+== test/reject/subclass_string_zsuper_kw.rb [promote] rc=1
+spinel: a bare `super` into String from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
 == test/reject/subclass_stringio.rb [default] rc=1
 spinel: class Buffer < StringIO: subclassing StringIO is not supported yet (a subclass would answer differently from CRuby); wrap a StringIO in an instance variable instead
 == test/reject/subclass_stringio.rb [promote] rc=1

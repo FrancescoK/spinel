@@ -741,6 +741,10 @@ int emit_unknown_kwarg_raise(Compiler *c, Scope *m, const int *argv, int argc);
    (#4425). */
 void emit_str_append_arg(Compiler *c, int arg, const char *rtext, Buf *b);
 void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b);
+int str_force_encoding_mode(Compiler *c, const int *argv, int argc);   /* 1 ASCII-8BIT, 0 UTF-8, -1 other */
+/* a call String answers on a String subclass instance, or one reading such
+   an instance as a String argument (#7449, codegen_call_string.c) */
+int emit_strsub_call(Compiler *c, int id, Buf *b);
 int rest_shortfall_required(Compiler *c, Scope *m);
 /* Emit a hash key, unboxing a poly value to the typed-hash's key type. */
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
@@ -1434,6 +1438,7 @@ const char *bsub_field(Compiler *c, int cid);
 void emit_bsub_alloc(Compiler *c, ClassInfo *ci, Buf *b);
 void bsub_box_id(Compiler *c, TyKind t, Buf *b);
 int program_has_bsub(Compiler *c);
+int program_has_bsub_of(Compiler *c, int base);   /* a subclass of builtin base (BSUB_*) in particular */
 void bsub_expand(Buf *b, const char *tmpl, const char *v);   /* a row's $v rendering */
 void bsub_expand2(Buf *b, const char *tmpl, const char *v, const char *x);   /* ... and $x */
 /* the frozen state of class cid's embedded builtin v (a struct lvalue):
