@@ -1447,6 +1447,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (fmt_t == TY_STRING || fmt_t == TY_POLY || fmt_t == TY_UNKNOWN)
       { *out = TY_STRING; return 1; }
   }
+  /* casecmp / casecmp? ignore a block, as CRuby does, and the emitter's
+     sp_poly_casecmp arm takes the call with one as without: its answer is
+     the same boxed value (typed bool under a block, it did not build) */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+      is_casecmp_family(name) && !an_user_defines_or_reads(c, name)) { *out = TY_POLY; return 1; }
   /* The String-only surface on a boxed receiver: the names no other class
      answers, so the result type is the one the typed String path gives. Names
      Array or Enumerable share (index, count, sum) stay untyped here and go
