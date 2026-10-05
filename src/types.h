@@ -215,6 +215,10 @@ int fold_seed_typed(TyKind seed, TyKind elem);
    rule itself is written once and they cannot answer differently. */
 TyKind fold_seed_kind(TyKind resolved, const char *node_type);
 int ty_is_array(TyKind t);
+/* Array.new(x) copies x when x is an Array of one of these kinds, which have
+   a copy constructor of their own (sp_<K>Array_dup); any other argument is
+   the size form. Read by the inference and the emitter alike (#7449). */
+int array_new_copies(TyKind t);
 /* Set while the type fixpoint iterates; defined in analyze.c. Declared here
    because ty_array_of consults it -- see the TY_UNKNOWN case. */
 extern int g_infer_optimistic;

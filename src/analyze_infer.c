@@ -2967,6 +2967,12 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
            empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
         if (argc == 0 && blk < 0) { *out = TY_UNKNOWN; return 1; }
+        /* Array.new(array) is a copy of the array, of its own kind (#7449).
+           An argument not typed yet may still turn out to be one. */
+        if (argc == 1 && blk < 0) {
+          TyKind at = infer_type(c, argv[0]);
+          if (array_new_copies(at) || (at == TY_UNKNOWN && g_infer_optimistic)) { *out = at; return 1; }
+        }
         { *out = TY_POLY_ARRAY; return 1; }
       }
       if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; } /* Array.new / Array.new(n) */
