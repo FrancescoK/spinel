@@ -1178,7 +1178,8 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
   int sb_asgn = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
   if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
     int tp2 = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = ", tp2); emit_expr(c, argv[0], b);
+    buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
+    buf_printf(b, " const char *_t%d = ", tp2); emit_expr(c, argv[0], b);
     buf_printf(b, "; const char *_hit%d = (_t%d && ", tp2, tp2);
     emit_expr(c, recv, b);
     buf_puts(b, ") ? strstr("); emit_expr(c, recv, b);
@@ -1206,7 +1207,8 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
        helper replaces it with the empty string. */
     int tm3 = ++g_tmp, ts3 = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", ts3); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
+    buf_printf(b, "; if (_t%d) sp_str_check_mutable(_t%d);", ts3, ts3);
+    buf_printf(b, " sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
                   " const char *_hit%d = _t%d >= 0 ? sp_re_match_str : NULL;",
                tm3, re_lit_index(c, argv[0]), ts3, tm3, tm3);
     if (sb_asgn) {
@@ -1282,15 +1284,16 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
        is a different character when the group repeats (#3543). */
     int ts = ++g_tmp, tn = ++g_tmp, th = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", ts); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
+    buf_printf(b, "; if (_t%d) sp_str_check_mutable(_t%d);", ts, ts);
+    buf_printf(b, " sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
     buf_printf(b, "; const char *_t%d = sp_re_match(sp_re_pat_%d, _t%d) >= 0"
                   " ? (_t%d == 0 ? sp_re_match_str"
                   "    : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL;",
                th, re_lit_index(c, argv[0]), ts, tn, tn, tn, tn);
     if (sb_asgn) {
-      buf_printf(b, " if (_t%d && _t%d >= 0 && _t%d <= 9) { sp_str_check_mutable(_t%d);"
+      buf_printf(b, " if (_t%d && _t%d >= 0 && _t%d <= 9) {"
                     " sp_int _b = sp_re_caps[2 * _t%d], _e = sp_re_caps[2 * _t%d + 1]; ",
-                 th, tn, tn, ts, tn, tn);
+                 th, tn, tn, tn, tn);
       emit_expr(c, recv, b);
       buf_printf(b, " = sp_str_concat(sp_str_byteslice(_t%d, 0, _b),"
                     " sp_str_byteslice(_t%d, _e, (sp_int)sp_str_byte_len(_t%d) - _e)); }",
@@ -1302,7 +1305,8 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
   if (sb_asgn && argc == 2) {
     /* character-indexed splice, not byte-indexed, for a multibyte receiver (#3084) */
     int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
-    buf_printf(b, "({ sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+    buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
+    buf_printf(b, " sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
     buf_printf(b, "; sp_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
     buf_printf(b, "; sp_int _t%d = (sp_int)sp_str_length(", tn2);
     emit_expr(c, recv, b);
