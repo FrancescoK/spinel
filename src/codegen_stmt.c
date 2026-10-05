@@ -15216,6 +15216,15 @@ static char *iow_rhs(Compiler *c, int v, int mode, Buf *pre) {
 /* Read the slot `slot` names into a rooted temp of type `t` and point `slot`
    at the temp: Ruby reads the slot before an effectful right-hand side runs,
    and that right-hand side can replace the slot's value (#4875). */
+/* The nil test of a Float element about to take an op-assign's operator as
+   its receiver: a nil there has no operator (NoMethodError), as
+   SP_FLOAT_NIL_CK reports for the binary form. A statement, emitted where
+   both the element and the right-hand side are already in temps, so it
+   raises after a right-hand side with an effect has run, as CRuby does. */
+static void iow_nil_recv_ck(const char *elem, const char *op, Buf *b) {
+  buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(%s))) sp_raise_nil_float_op(1, \"%s\"); ", elem, op);
+}
+
 static void iow_capture_slot(Compiler *c, TyKind t, char *slot, size_t n, Buf *b) {
   int ts = ++g_tmp;
   buf_printf(b, "%s _t%d = %s; ", c_type_name(t), ts, slot);
@@ -15322,6 +15331,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        order against the read */
     int fuse = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt != TY_POLY &&
                subtree_is_pure_read(c, v);
+    /* A Float element is the operator's receiver: a nil one raises
+       NoMethodError, as `a[i] + x` does, where the bare C operator carried
+       its NaN payload through and stored nil. Only an element known to be no
+       nil skips the test (the fold's nil-free range below); a marked array's
+       nils set no run-time flag, so such an array is never folded. */
+    int fnil = rt == TY_FLOAT_ARRAY && is_arith_op(op);
+    if (fnil && nullable_int_elem_array(c, recv)) fuse = 0;
     int eff = !fuse && g_pre && subtree_has_side_effect(c, v);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
     /* ...and when the key can run code: it can reassign the variable the
@@ -15333,7 +15349,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; sp_int _t%d = ", tb); iow_emit_key(c, argv[0], b, IOW_KEY_INT, TY_INT);
     buf_puts(b, "; ");
-    char slot[64];
+    char slot[192];
     snprintf(slot, sizeof slot, "sp_%sArray_get(_t%d, _t%d)", k, ta, tb);
     if (rt == TY_STR_ARRAY && (sp_streq(op, "+") || sp_streq(op, "<<"))) {
       /* String slots take String ops only: `+`/`<<` concatenate, `*` repeats
@@ -15354,9 +15370,23 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* poly slot: fold via the tag-dispatching operator on boxed operands,
        like the TY_POLY receiver path below. */
     if (rt == TY_POLY_ARRAY && !pf) unsupported(c, id, "index operator assignment (poly array, operator)");
-    if (eff) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
+    /* An unfolded Float element's nil test runs in CRuby's order: the
+       element is read, then the right-hand side runs, then the operator
+       raises. Both go to temps first; in one C expression the test could
+       run ahead of a right-hand side with an effect. */
+    int fseq = fnil && !fuse;
+    if (eff || fseq) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
     int mode = rt == TY_STR_ARRAY ? IOW_RHS_INT : (rt == TY_POLY_ARRAY || vt == TY_POLY) ? IOW_RHS_BOXED : IOW_RHS_EXPR;
     char *rhs = iow_rhs(c, v, mode, eff ? b : NULL);
+    if (fseq) {
+      int tr = ++g_tmp;
+      buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tr, rhs);
+      if (vt == TY_POLY) { emit_gc_root_tmp(c, TY_POLY, tr, b); buf_puts(b, " "); }
+      free(rhs);
+      rhs = malloc(24);
+      snprintf(rhs, 24, "_t%d", tr);
+      iow_nil_recv_ck(slot, op, b);
+    }
     /* An Integer or Float slot in range of a mutable array is folded where it
        is: one bounds check instead of the get's and then the set's. Anything
        else -- a negative index, one past the end, a frozen array, a nil slot's
@@ -15373,23 +15403,33 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tv, rhs);
       /* a header the loop being emitted holds (hc_array) is the one read:
          the receiver's own would be read again at every iteration */
-      char hd[48], hl[48], hw[48];
+      char hd[48], hl[48], hw[48], hn[48], may_nil_ck[48];
+      snprintf(may_nil_ck, sizeof may_nil_ck, "!SP_MAY_NIL(_t%d) && ", ta);
       if (hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
-        buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, hl);
+        /* a Float element is folded only below the nil-free length (_hcn),
+           which is the array's length while it holds no nil and 0 otherwise */
+        if (fnil) hc_array_nilfree(c, recv, hd, hn, sizeof hd);
+        buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, fnil ? hn : hl);
         buf_printf(b, "%s *_t%d = &%s[_t%d]; *_t%d = ", c_type_name(et), tp, hd, tb, tp);
       }
       else {
-        buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && (unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
-                   ta, ta, tb, ta);
+        buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && %s(unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
+                   ta, ta, fnil ? may_nil_ck : "", tb, ta);
         buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
         if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
         buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
       }
       if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
-      buf_printf(b, "; } else sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
+      buf_printf(b, "; } else ");
+      if (fnil) {
+        buf_puts(b, "{ ");
+        iow_capture_slot(c, TY_FLOAT, slot, sizeof slot, b);
+        iow_nil_recv_ck(slot, op, b);
+      }
+      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
       if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
       free(rhs);
-      buf_printf(b, ")%s; }\n", hc_mark());
+      buf_printf(b, ")%s;%s }\n", hc_mark(), fnil ? " }" : "");
       return;
     }
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
