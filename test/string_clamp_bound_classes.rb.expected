@@ -1,0 +1,16 @@
+"ab"
+"ab"
+"ab"
+"comparison of String with 7 failed"
+"comparison of Integer with String failed"
+"comparison of String with 7 failed"
+"comparison of String with Array failed"
+"comparison of String with :a failed"
+"comparison of Rational with String failed"
+"b"
+"comparison of String with 1.5 failed"
+"b"
+"aa"
+"ab"
+NoMethodError
+[1, 2, 3]
