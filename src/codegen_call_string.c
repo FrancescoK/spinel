@@ -890,6 +890,12 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte") ||
        sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) {
     int block = nt_ref(nt, id, "block");
+    /* The loop below runs a literal block's body. A block argument that
+       reached here (`s.bytes(&pr)`, `s.chars(&b)` for a method's own &b)
+       has none: the loop ran nothing and answered the receiver, where CRuby
+       calls the proc for each element, or answers the Array when it is nil. */
+    if (nt_kind(nt, block) == NK_BlockArgumentNode)
+      unsupported(c, id, "a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line");
     int body = nt_ref(nt, block, "body");
     const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
     int ts = ++g_tmp, ti = ++g_tmp;

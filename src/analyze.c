@@ -29273,6 +29273,8 @@ static void an_phase_desugar_register(Compiler *c) {
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
   desugar_static_class_eval(c);
+  /* `m(&nil)` is the blockless call */
+  desugar_nil_block_arg(c);
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
      reference is written */

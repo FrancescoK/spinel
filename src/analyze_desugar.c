@@ -14487,6 +14487,25 @@ static int sce_bare_visibility(const NodeTable *nt, int st) {
   const char *m = nt_str(nt, st, "name");
   return m && (is_visibility_or_module_function(m));
 }
+/* `m(&nil)` passes no block: it is the blockless call. The `&nil` stayed a
+   block argument, and each arm that only asks "is there a block" took the
+   block form -- `"e".bytes(&nil)` answered the receiver, `[3, 1].sort(&nil)`
+   and `s.split(" ", &nil)` did not build (#7412). Dropped here, ahead of
+   every pass, so the call is read as it is written without one.
+   Not for super: `super(&nil)` passes no block where a bare `super(...)`
+   hands the caller's own block on, so there the &nil is meaningful. */
+void desugar_nil_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex >= 0 && nt_kind(nt, ex) == NK_NilNode) nt_node_set_ref(nt, id, "block", -1);
+  }
+}
+
 int desugar_static_class_eval(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;

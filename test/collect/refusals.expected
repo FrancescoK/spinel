@@ -788,6 +788,12 @@ spinel: a String stored in a Hash is passed to an appending value block: a Strin
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_values_variable.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/string_iter_block_argument.rb [default] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/string_iter_block_argument.rb [promote] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
+spinel: 1 refusal, nothing written
 == test/reject/string_ivar_alias_lent_call.rb [default] rc=1
 spinel: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
 == test/reject/string_ivar_alias_lent_call.rb [promote] rc=1
