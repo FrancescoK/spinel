@@ -6341,6 +6341,23 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
        two-argument min above max is out of order: both raise (#3593) */
     int excl_r = (argc == 1 && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
     int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+    /* A bound of another class than String, nil or one known only at run
+       time is Comparable#clamp over the boxed values (sp_obj_clamp): a
+       nil side is open, and a class String does not compare with raises
+       CRuby's ArgumentError. A bound it answers compared equal or past
+       the String, so it is one. Read into the String slot, such a bound
+       did not build. A nil receiver is NoMethodError, once the bounds
+       have run. */
+    if (argc == 2 && !(comp_ntype(c, lo_n) == TY_STRING && comp_ntype(c, hi_n) == TY_STRING)) {
+      buf_printf(b, "({ const char *_t%d = %s; sp_RbVal _t%d = ", tc, r, tlo);
+      emit_boxed(c, lo_n, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tlo, thi);
+      emit_boxed(c, hi_n, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (!_t%d) sp_nil_recv(\"clamp\");"
+                    " sp_poly_unbox_s(sp_obj_clamp(sp_box_str(_t%d), _t%d, _t%d)); })",
+                 thi, tc, tc, tlo, thi);
+      return 1;
+    }
     buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo);
     if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
     buf_printf(b, "; const char *_t%d = ", thi);
