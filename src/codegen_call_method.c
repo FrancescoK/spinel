@@ -295,20 +295,20 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(b, "sp_int _t%d = ", atmp[k]);
         emit_adapter_arg_static(c, argv[k], _ak, b);
       }
-      else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) {
+      else if (proc_slot_is_ptr(repr_of(c, argv[k]).as_ty)) {
         /* Hold the value in its own C type first, then launder. The raw
            sp_int carries no class, and the generic trampoline this site
            falls back to reads the BOXED argument channel -- so the boxed
            form has to come from the same single evaluation, not from a
            second one (an argument with a side effect must run once). */
-        TyKind pk = comp_ntype(c, argv[k]);
+        TyKind pk = repr_of(c, argv[k]).as_ty;
         bxtmp[k] = ++g_tmp;
         emit_ctype(c, pk, b); buf_printf(b, " _t%d = ", bxtmp[k]); emit_expr(c, argv[k], b); buf_puts(b, "; ");
         emit_named_root(c, pk, "_t", bxtmp[k], b); buf_puts(b, " ");
         buf_printf(b, "sp_int _t%d = (sp_int)(uintptr_t)(_t%d)", atmp[k], bxtmp[k]);
       }
       else {
-        TyKind pk = comp_ntype(c, argv[k]);
+        TyKind pk = repr_of(c, argv[k]).as_ty;
         if (bm_want_boxed && pk != TY_UNKNOWN && pk != TY_VOID && pk != TY_NIL) {
           bxtmp[k] = ++g_tmp;
           emit_ctype(c, pk, b); buf_printf(b, " _t%d = ", bxtmp[k]); emit_expr(c, argv[k], b); buf_puts(b, "; ");
@@ -384,7 +384,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         if (bm_boxed_ok) {
           for (int k = 0; k < eargc; k++) {
             buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
-            emit_boxed_text(c, comp_ntype(c, argv[k]), bxref[k], b);
+            emit_boxed_text(c, repr_of(c, argv[k]).as_ty, bxref[k], b);
             buf_puts(b, ", ");
           }
           buf_printf(b, "sp_bm_call_boxed_kw(_t%d, %d, 1)", tr, eargc);
@@ -401,7 +401,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            nothing to test at run time here: go straight to the boxed lane. */
         for (int k = 0; k < eargc; k++) {
           buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
-          emit_boxed_text(c, comp_ntype(c, argv[k]), bxref[k], b);
+          emit_boxed_text(c, repr_of(c, argv[k]).as_ty, bxref[k], b);
           buf_puts(b, ", ");
         }
         buf_printf(b, "sp_bm_call_boxed_kw(_t%d, %d, 1); })", tr, eargc);
@@ -482,7 +482,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
       (is_call_alias(name) ||
        (sp_streq(name, "===") && argc == 1))) {
-    TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
+    TyKind rty = repr_of(c, id).as_ty;       /* the call's result = proc's body return */
     /* `pr&.call(...)`: a nil proc answers nil and the call does not run. The
        receiver goes into a temp the call below reads (through the argument
        override), so it is evaluated once. Without this the nil receiver
@@ -588,7 +588,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           rk == NK_ConstantReadNode || rk == NK_SelfNode)
         emit_expr(c, recv, b);
       else {
-        TyKind rct = comp_ntype(c, recv);
+        TyKind rct = repr_of(c, recv).as_ty;
         Buf rb = expr_buf(c, recv);
         int tr = ++g_tmp;
         emit_indent(g_pre, g_indent);
@@ -883,7 +883,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       method_expr_is_unbound(c, recv)) {
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
     buf_printf(b, "); sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of UnboundMethod\")[1])); %s; })",
-               name, default_value_from_compiler(c, comp_ntype(c, id)));
+               name, default_value_from_compiler(c, repr_of(c, id).as_ty));
     return 1;
   }
   /* UnboundMethod#bind_call(obj, args...) = bind(obj).call(args...): with a
@@ -1857,7 +1857,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (aptmp) {
         g_needs_proc_poly_argslot = 1;
         for (int k = 0; k < argc; k++) {
-          TyKind at = comp_ntype(c, argv[k]);
+          TyKind at = repr_of(c, argv[k]).as_ty;
           int storable = ty_is_object(at) || c_type_name(at) != NULL;
           aptmp[k] = ++g_tmp;
           /* the arg may spill setup into g_pre; emit into a private buffer
@@ -1893,7 +1893,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          the Proc's speculative one (see PA_SLOT) */
       const char *pc_conv = "sp_poly_to_i";
       #define EMIT_POLY_CALL_SLOT(k) do { \
-        TyKind _at = comp_ntype(c, argv[k]); \
+        TyKind _at = repr_of(c, argv[k]).as_ty; \
         if (aptmp) { \
           if (_at == TY_POLY) buf_printf(b, "%s(_t%d)", pc_conv, aptmp[k]); \
           else if (proc_slot_is_ptr(_at) || _at == TY_PROC) buf_printf(b, "(sp_int)(uintptr_t)_t%d", aptmp[k]); \
@@ -1912,7 +1912,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          poly-signatured), the same shape as the prearm's PA_MARG */
       #define EMIT_POLY_CALL_MARG(k) do { \
         if (mabi_poly && aptmp) { \
-          TyKind _at = comp_ntype(c, argv[k]); \
+          TyKind _at = repr_of(c, argv[k]).as_ty; \
           if (_at == TY_POLY) buf_printf(b, "_t%d", aptmp[k]); \
           else { char _tn[24]; snprintf(_tn, sizeof _tn, "_t%d", aptmp[k]); \
                  emit_boxed_text(c, _at, _tn, b); } \
