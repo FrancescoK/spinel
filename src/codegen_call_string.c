@@ -906,6 +906,10 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *clv_ech = (p0 && cs_ech) ? scope_local(cs_ech, p0) : NULL;
     int p0_box_poly_ech = clv_ech && clv_ech->type == TY_POLY;
+    /* a parameter the analysis made a shared handle (the line is stored
+       where an append reaches it): each line is a fresh String, so it is a
+       fresh handle */
+    int p0_handle_ech = clv_ech && clv_ech->type == TY_STRBUF;
     /* The loop below reads the receiver on every turn -- as its bound, and as
        the string it takes the next character or byte out of -- and the block
        between two turns may allocate. A temporary receiver (`array.join.
@@ -948,6 +952,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
                  ti, ti, tl, ti);
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
+        else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
         else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);
       }
     }
@@ -973,6 +978,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_str_length(_t%d); _t%d++) { ", ti, ti, ts, ti);
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_str_char_at_or_nil(_t%d, _t%d)); ", p0, ts, ti);
+        else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_str_char_at_or_nil(_t%d, _t%d)); ", p0, ts, ti);
         else buf_printf(b, "lv_%s = sp_str_char_at_or_nil(_t%d, _t%d); ", p0, ts, ti);
       }
     }
