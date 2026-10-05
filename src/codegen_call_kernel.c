@@ -941,7 +941,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "loop") && argc == 0 && !bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      TyKind bt = infer_type(c, id);
+      TyKind bt = comp_ntype(c, id);
       /* a value-less `break` (or none at all) makes the loop's value nil:
          ride the poly slot so the nil default is the result */
       if (bt == TY_UNKNOWN || bt == TY_NIL) bt = TY_POLY;

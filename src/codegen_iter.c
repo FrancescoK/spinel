@@ -1494,7 +1494,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   /* a String variable that is the shared handle goes over as the handle,
      its read marked for the call alone: the same yield spliced into a
      literal block binds the plain String (#6179) */
-  unsigned char mk[16]; TyKind mt[16];
+  int vt[32], nv = 0;
   int nm = yargc < 16 ? yargc : 16;
   /* the handle's live bytes may ride the plain slot where every target
      reads the box or only reads the String: the blocks a lowered method's
@@ -1503,8 +1503,10 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   int lmi = ys && ys->is_lowered_yield ? (int)(ys - c->scopes) : -1;
   unsigned live = 0;
   for (int k = 0; k < nm; k++) {
-    mk[k] = c->strbuf_box[yargv[k]]; mt[k] = c->ntype[yargv[k]];
-    if (!mk[k] && local_is_handle(c, yargv[k])) { c->strbuf_box[yargv[k]] = 1; c->ntype[yargv[k]] = TY_STRBUF; }
+    if (!c->strbuf_box[yargv[k]] && local_is_handle(c, yargv[k])) {
+      vt[nv++] = view_push_repr(c, yargv[k], VR_STRBUF_BOX, 1);
+      vt[nv++] = view_push(c, yargv[k], TY_STRBUF);
+    }
     if (lmi >= 0) { if (dyn_yield_live(c, lmi, k)) live |= 1u << k; }
     else if (g_yield_proc_expr >= 0 && ref && ref == g_yield_proc_ref && g_yield_proc_expr_ref == g_yield_proc_ref) {
       DynReach r;
@@ -1515,7 +1517,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   unsigned sv_live = g_yield_live_mask; g_yield_live_mask = live;
   emit_proc_call_args(c, -1, yargc, yargv, b, 1);
   g_yield_live_mask = sv_live;
-  for (int k = 0; k < nm; k++) { c->strbuf_box[yargv[k]] = mk[k]; c->ntype[yargv[k]] = mt[k]; }
+  while (nv > 0) view_pop(c, vt[--nv]);
 }
 
 /* Emit a call to the forwarded real-proc block (g_yield_proc_ref) with the
@@ -4843,7 +4845,7 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
 static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
-    TyKind et = infer_type(c, recv);
+    TyKind et = comp_ntype(c, recv);
     /* a receiver of no type -- a call proven to raise NoMethodError -- is
        the raise's sp_RbVal; `void _t` did not compile (#6213) */
     if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
@@ -6004,16 +6006,6 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     int is_ewi = sp_streq(name, "each_with_index");
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    /* The gate read the cached node type (poly); a cloned-body local can have
-       settled to a TYPED container since (a per-includer module-method clone
-       whose param pinned later, #2008). Re-infer and box the concrete kind --
-       a raw typed pointer must never initialize the sp_RbVal receiver. */
-    TyKind fresh_rt = infer_type(c, recv);
-    if (fresh_rt != TY_POLY && (ty_is_hash(fresh_rt) || ty_is_array(fresh_rt))) {
-      Buf bx; memset(&bx, 0, sizeof bx);
-      emit_boxed_text(c, fresh_rt, rb.p ? rb.p : "", &bx);
-      free(rb.p); rb = bx;
-    }
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
     /* Root the boxed receiver so a GC fired by the loop body doesn't free a
        freshly-built collection held only by this temp. */

@@ -170,9 +170,6 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   buf_puts(b, ")");
 }
 
-int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty,
-                           int *ids_out, TyKind *ty_out, int cap);
-
 /* Emit, into g_pre after the caller's `<lhs> = `, the rest of the statement
    binding a hash block's first parameter to entry `ti` of `_t<trecv>`: the
    boxed [k, v] pair when `pair`, else the key or the value per `is_key`. */
@@ -673,62 +670,6 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
-/* Recursively patch c->ntype[id]=ty for every LocalVariableReadNode named nm
-   within the subtree at id. Saved old values in ids_out/ty_out (max cap).
-   Returns count of patched nodes. */
-int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty,
-                           int *ids_out, TyKind *ty_out, int cap) {
-  if (id < 0 || id >= c->nt->count || cap <= 0) return 0;
-  int n = 0;
-  const char *node_ty = nt_type(c->nt, id);
-  if (node_ty && sp_streq(node_ty, "LocalVariableReadNode")) {
-    const char *vname = nt_str(c->nt, id, "name");
-    if (vname && sp_streq(vname, nm)) {
-      ids_out[0] = id; ty_out[0] = c->ntype[id]; c->ntype[id] = ty;
-      return 1;
-    }
-  }
-  int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr && n < cap; i++) {
-    int r = nt_ref_at(c->nt, id, i);
-    n += patch_lv_reads(c, r, nm, ty, ids_out + n, ty_out + n, cap - n);
-  }
-  int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na && n < cap; i++) {
-    int cn = 0; const int *ids = nt_arr_at(c->nt, id, i, &cn);
-    for (int j = 0; j < cn && n < cap; j++)
-      n += patch_lv_reads(c, ids[j], nm, ty, ids_out + n, ty_out + n, cap - n);
-  }
-  return n;
-}
-
-/* Scan nodes with IDs in [min_id, max_id) for LocalVariableReadNode with the
-   given name in the given scope, and patch c->ntype[id] to `new_ty`.
-   Prism assigns IDs in pre-order, so all descendants of `block` have id > block.
-   Passing min_id=block+1 restricts patching to the block's own subtree.
-   Stores original types in saved[] (caller must free). Returns the count. */
-int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name,
-                                TyKind new_ty, int min_id,
-                                int **saved_ids, TyKind **saved_tys) {
-  int n = 0, cap = 8;
-  *saved_ids = malloc(sizeof(int) * (size_t)cap);
-  *saved_tys = malloc(sizeof(TyKind) * (size_t)cap);
-  for (int i = min_id; i < c->nt->count; i++) {
-    const char *ty = nt_type(c->nt, i);
-    if (!ty || !sp_streq(ty, "LocalVariableReadNode")) continue;
-    if (c->nscope[i] != scope_idx) continue;
-    const char *nm = nt_str(c->nt, i, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
-    if (c->ntype[i] == new_ty) continue;
-    if (n >= cap) { cap *= 2; *saved_ids = realloc(*saved_ids, sizeof(int) * (size_t)cap); *saved_tys = realloc(*saved_tys, sizeof(TyKind) * (size_t)cap); }
-    (*saved_ids)[n] = i;
-    (*saved_tys)[n] = c->ntype[i];
-    c->ntype[i] = new_ty;
-    n++;
-  }
-  return n;
-}
-
 /* hash.transform_keys { |k| nk } / transform_values { |v| nv }: rebuild the
    hash applying the block to every key (or value), keeping the other half.
    Returns 1 if handled. */
@@ -934,8 +875,8 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
        re-assigned variable, a call's answer) bisects its run-time bounds */
     int fvar = rn9 < 0 && comp_ntype(c, recv) == TY_FLOAT_RANGE;
     if (rn9 < 0 && !fvar) return 0;
-    TyKind blt9 = rleft >= 0 ? infer_type(c, rleft) : TY_NIL;
-    TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
+    TyKind blt9 = rleft >= 0 ? comp_ntype(c, rleft) : TY_NIL;
+    TyKind brt9 = rright >= 0 ? comp_ntype(c, rright) : TY_NIL;
     /* A half-open Float range (..2.5), (1.5..): CRuby bisects the doubles
        themselves, in the order of their bit patterns (sp_f2key), so an
        infinite bound is a bound like any other. Its answer is the least
@@ -5706,7 +5647,7 @@ int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
-  if (comp_ntype(c, recv) != TY_POLY || infer_type(c, recv) != TY_POLY) return 0;
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;

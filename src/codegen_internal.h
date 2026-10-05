@@ -1173,8 +1173,6 @@ int bare_call_class_owned(Compiler *c, int id);
    unchanged. Lets a forwarded block be materialized by emit_proc_literal. */
 int resolve_forwarded_block(Compiler *c, int block);
 int emit_hash_collect_expr(Compiler *c, int id, Buf *b);
-int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty, int *ids_out, TyKind *ty_out, int cap);
-int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new_ty, int min_id, int **saved_ids, TyKind **saved_tys);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int block_tail_is_unresolved(Compiler *c, int node);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);

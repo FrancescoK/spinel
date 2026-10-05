@@ -1690,7 +1690,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* an array whose header the loop being emitted holds (hc_array):
        in range, read the element there; anything else, the get */
     char hd[48], hl[48], hw[48];
-    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && infer_type(c, argv[0]) == TY_INT &&
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && comp_ntype(c, argv[0]) == TY_INT &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       if (hc_index_in_range(c, recv, argv[0])) {   /* in range by the loop's own test */
         buf_printf(b, "%s[", hd); emit_int_expr(c, argv[0], b); buf_puts(b, "]");
@@ -1707,7 +1707,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, "sp_%sArray_get(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     /* a splat is its one element (emit_int_expr_ex), not a boxed index */
-    if (infer_type(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    if (comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
       /* a checked conversion, not a raw `.v.i`: the union read assumed
          the box held an Integer, so a boxed user object indexed by its
          pointer bits and the read answered a wrong element in silence;
@@ -1963,12 +1963,13 @@ else {
     int blk = nt_ref(nt, id, "block");
     /* an empty `[]` argument has no element type of its own and would emit
        as the int-array default, which this arm then reads as the poly array
-       it dispatches on (#3975 sweep) */
+       it dispatches on (#3975 sweep): a view, for this arm's emission */
+    int pv = -1;
     if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode")) {
       int aen = 0; nt_arr(nt, argv[0], "elements", &aen);
       if (aen == 0 && (comp_ntype(c, argv[0]) == TY_UNKNOWN ||
                        ty_is_array(comp_ntype(c, argv[0]))))
-        c->ntype[argv[0]] = TY_POLY_ARRAY;
+        pv = view_push(c, argv[0], TY_POLY_ARRAY);
     }
     TyKind at = comp_ntype(c, argv[0]);
     Buf ra; memset(&ra, 0, sizeof ra);
@@ -2000,6 +2001,7 @@ else {
     buf_puts(b, " {");
     emit_iter_step_body(c, blk, b, 0);
     buf_printf(b, " } } } _t%d; })", ta);
+    if (pv >= 0) view_pop(c, pv);
     { *out = 1; return 1; }
   }
   if (sp_streq(name, "product") && argc == 1) {
@@ -3649,6 +3651,53 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* emit_array_call's views of an empty `[]` receiver as the poly array its
+   dispatch builds, into pv (at most three); answers how many it pushed. They
+   hold for the call's emission alone and emit_array_call pops them. */
+static int array_call_empty_views(Compiler *c, int id, int *pv) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_recv_type(c, recv);
+  int n = 0;
+  /* An empty [] literal receiver has no element type of its own, so emit_expr
+     would default it to sp_IntArray_new() -- but comp_recv_type coerces it to
+     TY_POLY_ARRAY for dispatch, and the poly-array arms below build/consume it
+     as a PolyArray. View the node as one so the receiver emits as a
+     PolyArray too, keeping the generated C well-typed (#3223). */
+  if (recv >= 0 && rt == TY_POLY_ARRAY &&
+      (comp_ntype(c, recv) == TY_UNKNOWN || ty_is_array(comp_ntype(c, recv))) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    /* A cached typed-array kind is no better than UNKNOWN here: the literal is
+       empty, so the kind is a default rather than an element type, and emitting
+       (say) sp_IntArray_new() into a poly-array slot reads back the wrong
+       struct (#3608). */
+    if (en == 0) pv[n++] = view_push(c, recv, TY_POLY_ARRAY);
+  }
+  /* The same literal one pass-through call down (`[].freeze.rotate`): the
+     freeze/dup/clone arm builds the literal at ITS type, which for an empty one
+     is the int-array default, and the poly-array arm below then handed an
+     sp_IntArray * to sp_PolyArray_dup. View the literal, and the call that
+     carries it, to the poly array this dispatch is about to build. */
+  if (recv >= 0 && rt == TY_POLY_ARRAY && nt_kind(nt, recv) == NK_CallNode) {
+    const char *pnm = nt_str(nt, recv, "name");
+    int pin_recv = nt_ref(nt, recv, "receiver");
+    if (pnm && pin_recv >= 0 && nt_ref(nt, recv, "block") < 0 &&
+        is_self_copy(pnm) &&
+        nt_type(nt, pin_recv) && sp_streq(nt_type(nt, pin_recv), "ArrayNode")) {
+      int pen = 0; nt_arr(nt, pin_recv, "elements", &pen);
+      if (pen == 0 &&
+          (comp_ntype(c, pin_recv) == TY_UNKNOWN || ty_is_array(comp_ntype(c, pin_recv)))) {
+        pv[n++] = view_push(c, pin_recv, TY_POLY_ARRAY);
+        pv[n++] = view_push(c, recv, TY_POLY_ARRAY);
+      }
+    }
+  }
+  return n;
+}
+
+static int emit_array_call_arms(Compiler *c, int id, Buf *b);
+
 int emit_array_call(Compiler *c, int id, Buf *b) {
   if (emit_array_splat_mutator(c, id, b)) return 1;
   /* An array indexed by a String or a Symbol is CRuby's TypeError. A
@@ -3894,46 +3943,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  int pv[3], npv = array_call_empty_views(c, id, pv);
+  int r = emit_array_call_arms(c, id, b);
+  while (npv > 0) view_pop(c, pv[--npv]);
+  return r;
+}
+
+/* emit_array_call past its prefix arms, under the empty-receiver views */
+static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = comp_recv_type(c, recv);
-  /* An empty [] literal receiver has no element type of its own, so emit_expr
-     would default it to sp_IntArray_new() -- but comp_recv_type coerces it to
-     TY_POLY_ARRAY for dispatch, and the poly-array arms below build/consume it
-     as a PolyArray. Pin the node's cached type so the receiver emits as a
-     PolyArray too, keeping the generated C well-typed (#3223). */
-  if (recv >= 0 && rt == TY_POLY_ARRAY &&
-      (comp_ntype(c, recv) == TY_UNKNOWN || ty_is_array(comp_ntype(c, recv))) &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
-    int en = 0; nt_arr(nt, recv, "elements", &en);
-    /* A cached typed-array kind is no better than UNKNOWN here: the literal is
-       empty, so the kind is a default rather than an element type, and emitting
-       (say) sp_IntArray_new() into a poly-array slot reads back the wrong
-       struct (#3608). */
-    if (en == 0) c->ntype[recv] = TY_POLY_ARRAY;
-  }
-  /* The same literal one pass-through call down (`[].freeze.rotate`): the
-     freeze/dup/clone arm builds the literal at ITS type, which for an empty one
-     is the int-array default, and the poly-array arm below then handed an
-     sp_IntArray * to sp_PolyArray_dup. Pin the literal, and the call that
-     carries it, to the poly array this dispatch is about to build. */
-  if (recv >= 0 && rt == TY_POLY_ARRAY && nt_kind(nt, recv) == NK_CallNode) {
-    const char *pnm = nt_str(nt, recv, "name");
-    int pin_recv = nt_ref(nt, recv, "receiver");
-    if (pnm && pin_recv >= 0 && nt_ref(nt, recv, "block") < 0 &&
-        is_self_copy(pnm) &&
-        nt_type(nt, pin_recv) && sp_streq(nt_type(nt, pin_recv), "ArrayNode")) {
-      int pen = 0; nt_arr(nt, pin_recv, "elements", &pen);
-      if (pen == 0 &&
-          (comp_ntype(c, pin_recv) == TY_UNKNOWN || ty_is_array(comp_ntype(c, pin_recv)))) {
-        c->ntype[pin_recv] = TY_POLY_ARRAY;
-        c->ntype[recv] = TY_POLY_ARRAY;
-      }
-    }
-  }
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
   /* [].first / [].last on an empty literal: there is no element type to read;
@@ -10084,9 +10107,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
      answer natively; every traversal materializes the element array (#3064). */
   if (recv >= 0 && rt == TY_STR_RANGE) {
     TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-    /* a stale cache reads UNKNOWN; re-infer so a String operand is not
-       mistaken for an uncoverable one */
-    if (argc >= 1 && (a0 == TY_UNKNOWN || a0 == TY_POLY)) a0 = infer_type(c, argv[0]);
     int tr = ++g_tmp;
     if (is_range_membership(name) && argc == 1) {
       const char *fn = is_membership_alias(name) ?
@@ -11078,21 +11098,19 @@ static void emit_face_value(Compiler *c, TyKind slot, TyKind nat, const char *va
 /* An arm under the silent emittability probe the dynamic-send dispatch
    uses: a typed emitter that declines the call longjmps out of emit, and
    the arm is dropped rather than the build. Everything the arm may have
-   changed on the way out is put back -- the receiver's type override and
-   the inference pin emit_face_arm restores only on its normal return, the
-   argument overrides, the conversion hold, the prelude, and the recovery
-   point itself, which the driver armed for the whole unit. The arm's
-   prelude is captured to `pre` and its value to `val`; answers 0 when the
-   arm was dropped. */
+   changed on the way out is put back -- the receiver's type view and face
+   pin emit_face_arm pops only on its normal return (view_unwind pops them
+   otherwise), the argument overrides, the conversion hold, the prelude,
+   and the recovery point itself, which the driver armed for the whole
+   unit. The arm's prelude is captured to `pre` and its value to `val`;
+   answers 0 when the arm was dropped. */
 static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box,
                           Buf *pre, Buf *val, TyKind *nat) {
-  int recv = nt_ref(c->nt, id, "receiver");
   Buf *sv_pre = g_pre;
   int sv_probe = g_unsup_probe;
   ConvHold *sv_hold = g_conv_hold;
   int sv_argov = g_n_argov;
   int sv_open_defaults = g_open_defaults;
-  TyKind sv_ty = c->ntype[recv];
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
   int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
@@ -11100,7 +11118,6 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   if (setjmp(g_unsup_recover) == 0) *nat = emit_face_arm(c, id, kind, flags, box, val);
   else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-  c->ntype[recv] = sv_ty;
   view_unbind(sv_argov);
   g_open_defaults = sv_open_defaults;
   g_conv_hold = sv_hold;
