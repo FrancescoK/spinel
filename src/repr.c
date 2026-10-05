@@ -559,6 +559,17 @@ static void repr_share_seal(Compiler *c) {
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
     if (!carried && bad < 0) bad = h;
   }
+  if (stats && stats[0] == '2')
+    for (int h = 0; h < nh; h++) {
+      const ShareHolder *sh = share_holder(c, h);
+      const char *nm = sh->kind == SHK_LOCAL ? c->scopes[sh->scope].locals[sh->local].name : sh->name;
+      fprintf(stderr, "share-holder: %s %s%s%s flags=%u holders=%d shares=%d elems-share=%d\n",
+              repr_share_kind_name(sh->kind), nm ? nm : "?",
+              sh->kind == SHK_LOCAL ? " in " : "",
+              sh->kind == SHK_LOCAL ? (c->scopes[sh->scope].name ? c->scopes[sh->scope].name : "<top>") : "",
+              share_class_flags(c, h), share_class_holders(c, h), repr_str_shares(c, h),
+              repr_str_elems_share(c, h));
+    }
   if (stats) {
     fprintf(stderr, "share-stats: string-holders=%d shared=%d local=%d (param=%d) ivar=%d gvar=%d "
             "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d\n",
