@@ -1207,7 +1207,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   if (!name || (!sp_streq(name, "uniq") && !sp_streq(name, "uniq!"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-  if (recv < 0 || block < 0) return 0;
+  if (recv < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;   /* a literal block */
   TyKind rt = comp_ntype(c, recv);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -1217,10 +1217,11 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   /* a block of any other shape than plain requireds, over elements known
      only at run time, binds each by the proc distribution */
-  int gather = (rt == TY_POLY_ARRAY || rt == TY_POLY) && block_binds_gathered(c, block);
-  /* a block that binds nothing (`uniq { 1 }`) keys every element the same */
+  int gather = (rt == TY_POLY_ARRAY || rt == TY_POLY || array_kind(rt)) && block_binds_gathered(c, block);
+  /* a block that binds nothing (`uniq { 1 }`) keys every element the same,
+     and so does an empty one, whose key is nil */
   int bare = !p0 && !gather;
-  if ((bare && rt != TY_POLY_ARRAY && rt != TY_POLY) || bn < 1) return 0;
+  if (bare && array_kind(rt) && nt_ref(nt, block, "parameters") >= 0) return 0;
   int bang = sp_streq(name, "uniq!");
 
   /* Typed or poly array receiver (sp_<K>Array): dedup keeping the same element
@@ -1242,7 +1243,8 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
        element across its params; the survivor pushed is the element */
     char es[64]; snprintf(es, sizeof es, "sp_%sArray_get(_t%d, _t%d)", rk, trecv, ti);
     int np = 0; while (block_param_name(c, block, np)) np++;
-    int splat = gather || bare || (rt == TY_POLY_ARRAY && np >= 2 && !block_param_is_multi(c, block, 0));
+    int splat = gather || (bare && rt == TY_POLY_ARRAY) ||
+                (rt == TY_POLY_ARRAY && np >= 2 && !block_param_is_multi(c, block, 0));
     int use_shadow = !splat && clv0 && clv0->type != et && et != TY_UNKNOWN;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(g_pre, g_indent);
@@ -1266,14 +1268,17 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       if (splat) {
         int tel = ++g_tmp;
         snprintf(sel, sizeof sel, "_t%d", tel);
-        emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal %s = %s; SP_GC_ROOT_RBVAL(%s);\n", sel, es, sel);
+        /* a typed element is bound boxed; the survivor pushed stays raw */
+        emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal %s = ", sel);
+        if (rt == TY_POLY_ARRAY) buf_puts(g_pre, es); else emit_boxed_text(c, et, es, g_pre);
+        buf_printf(g_pre, "; SP_GC_ROOT_RBVAL(%s);\n", sel);
       }
       if (gather) {
         char vals[64]; snprintf(vals, sizeof vals, "sp_yielded_args(0, %s)", sel);
         emit_boxed_step_binds(c, block, vals, g_pre, din, 0);
-        snprintf(es, sizeof es, "%s", sel);
+        if (rt == TY_POLY_ARRAY) snprintf(es, sizeof es, "%s", sel);
       }
-      else if (bare) snprintf(es, sizeof es, "%s", sel);
+      else if (bare) { if (splat) snprintf(es, sizeof es, "%s", sel); }
       else if (!splat || !emit_iter_autosplat(c, block, rt, sel, din)) {
         splat = 0;
         emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = %s;\n", p0, es);
@@ -1289,17 +1294,24 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "int _t%d = 0; for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
                tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
     emit_indent(g_pre, din);
-    if (splat) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
+    if (splat || bare || gather) buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, %s); }\n", tdup, tseen, tkey, rk, tres, es);
     else buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk, tres, p0);
     if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
     if (clv0) clv0->type = csaved0;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     if (bang) {
-      int tm = ++g_tmp, tn = ++g_tmp;
+      int tm = ++g_tmp, tn = ++g_tmp, to = ++g_tmp;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
-                 tn, tres, trecv, tm, tm, tn, tm, rk, trecv, rk, tres, tm);
-      buf_printf(b, "_t%d", trecv);
+      buf_printf(g_pre, "sp_int _t%d = _t%d->len; sp_int _t%d = _t%d->len; _t%d->len = 0; for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
+                 to, trecv, tn, tres, trecv, tm, tm, tn, tm, rk, trecv, rk, tres, tm);
+      /* the receiver when the block removed an element, and nil when it
+         removed none, as uniq! without a block answers (a boxed value, or
+         an array slot's NULL) */
+      char rtx[24]; snprintf(rtx, sizeof rtx, "_t%d", trecv);
+      buf_printf(b, "(_t%d == _t%d ? ", to, tn);
+      if (comp_ntype(c, id) == TY_POLY) { buf_puts(b, "sp_box_nil() : "); emit_boxed_text(c, rt, rtx, b); }
+      else buf_printf(b, "(sp_%sArray *)0 : %s", rk, rtx);
+      buf_puts(b, ")");
     }
     else {
       buf_printf(b, "_t%d", tres);
