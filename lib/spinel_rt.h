@@ -11282,6 +11282,31 @@ static sp_RbVal sp_poly_arr_set(sp_RbVal v, sp_int idx, sp_RbVal val) {
   }
   return val;
 }
+/* shuffle / shuffle! / sample given `random: g`: every draw comes from that
+   Random (sp_Random_rand_int), so a seed repeats its order, where the keyword
+   was dropped and the global generator drew. Any array kind, through the
+   boxed element accessors. */
+static void sp_poly_shuffle_bang_r(sp_RbVal a, sp_Random *g) {
+  SP_GC_ROOT_RBVAL(a);
+  if (a.tag == SP_TAG_OBJ && a.v.p && sp_gc_is_frozen(a.v.p)) sp_raise_frozen_array_at(a.v.p, a.cls_id);
+  sp_int n = sp_poly_length(a);
+  for (sp_int i = n - 1; i > 0; i--) {
+    sp_int j = sp_Random_rand_int(g, i + 1);
+    sp_RbVal x = sp_poly_arr_get(a, i); SP_GC_ROOT_RBVAL(x);
+    sp_RbVal y = sp_poly_arr_get(a, j); SP_GC_ROOT_RBVAL(y);
+    sp_poly_arr_set(a, i, y);
+    sp_poly_arr_set(a, j, x);
+  }
+}
+static sp_RbVal sp_poly_shuffle_r(sp_RbVal a, sp_Random *g) {
+  sp_RbVal cp = sp_poly_dup(a, 0); SP_GC_ROOT_RBVAL(cp);
+  sp_poly_shuffle_bang_r(cp, g);
+  return cp;
+}
+static sp_RbVal sp_poly_sample_r(sp_RbVal a, sp_Random *g) {
+  sp_int n = sp_poly_length(a);
+  return n > 0 ? sp_poly_arr_get(a, sp_Random_rand_int(g, n)) : sp_box_nil();
+}
 /* A key or value of a kind a typed hash cannot hold: the compiler settled
    the hash's variant from what it saw and did not widen it for this store.
    Loud, not a dropped entry (#4540). */
