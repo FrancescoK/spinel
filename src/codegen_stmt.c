@@ -15469,8 +15469,9 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tr, rhs);
       if (vt == TY_POLY) { emit_gc_root_tmp(c, TY_POLY, tr, b); buf_puts(b, " "); }
       free(rhs);
-      rhs = malloc(24);
-      snprintf(rhs, 24, "_t%d", tr);
+      Buf rn; memset(&rn, 0, sizeof rn);
+      buf_printf(&rn, "_t%d", tr);
+      rhs = rn.p;
       iow_nil_recv_ck(slot, op, b);
     }
     /* An Integer or Float slot in range of a mutable array is folded where it

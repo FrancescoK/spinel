@@ -10,8 +10,10 @@ K = 2
 def try
   r = yield
   p r
-rescue NoMethodError, TypeError, FrozenError => e
-  puts "#{e.class}: #{e.message}"
+rescue NoMethodError => e
+  puts "NoMethodError: #{e.name}"
+rescue TypeError, FrozenError => e
+  puts e.class
 end
 
 def f_add(a, n) = (i = 0; while i < n; a[i] += 2; i += 1; end; a)
