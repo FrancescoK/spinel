@@ -45,6 +45,7 @@ typedef struct {
                              reads the class id from the object */
   unsigned nil_scalar:1;  /* an Integer or Float whose box tests for the nil
                              sentinel */
+  unsigned big:1;         /* an Integer held as an sp_Bigint * */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
