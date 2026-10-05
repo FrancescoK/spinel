@@ -12246,6 +12246,41 @@ static sp_RbVal sp_poly_fiber_join(sp_RbVal v) {
 static sp_PolyArray*sp_PolyPolyHash_keys(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->keys[h->order[i]]);return a;}
 static sp_PolyArray*sp_PolyPolyHash_values(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->vals[h->order[i]]);return a;}
 
+/* A Numeric alias (magnitude, imag, conj) on a boxed receiver: the receiver
+   when it is a number, else the NoMethodError naming the alias, where the
+   helper the alias shares raised naming abs, imaginary or conjugate. */
+static SP_UNUSED sp_RbVal sp_poly_num_chk(sp_RbVal v, const char *m) {
+  if (sp_poly_numeric_p(v) || sp_poly_is_rational(v) || sp_poly_is_brat(v) ||
+      (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX)) return v;
+  sp_raise_poly_nomethod(m, v);
+  return v;
+}
+/* String#append_as_bytes's operand at run time: a String's bytes, or an
+   Integer's low byte (CRuby truncates: 321 appends "A"); anything else is its
+   TypeError, worded as CRuby words it (`wrong argument type NilClass
+   (expected String or Integer)`). */
+static SP_UNUSED const char *sp_poly_bytes_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR) return v.v.s;
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_strbuf(v)) return sp_poly_arg_str(v);
+  if (v.tag == SP_TAG_INT) return sp_int_chr(v.v.i & 0xff);
+  if (v.tag == SP_TAG_BIGINT) {
+    sp_Bigint *lo = sp_bigint_and((sp_Bigint *)v.v.p, sp_bigint_new_int(0xff));
+    return sp_int_chr((sp_int)sp_bigint_to_int(lo));
+  }
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected String or Integer)",
+                                       sp_poly_class_name(v)));
+  return NULL;
+}
+/* A Hash-only name (keys, values, compare_by_identity?) on a boxed receiver:
+   the receiver when it is a Hash, else CRuby's NoMethodError naming the
+   method and the receiver (`for nil`), where the helpers below name the
+   method alone or the receiver as "poly". Answers the receiver so a call site
+   can wrap its receiver expression in place. */
+static SP_UNUSED sp_RbVal sp_poly_hash_chk(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
+  sp_raise_poly_nomethod(m, v);
+  return v;
+}
 /* Hash#keys / #values on a poly receiver -- e.g. an evidence-free empty `{}`
    that stayed poly, or a hash read back out of a poly slot. Dispatch on the
    runtime hash variant, returning a poly array of the (boxed) keys or values.

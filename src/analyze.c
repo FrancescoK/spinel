@@ -5552,6 +5552,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
                                mek == NK_ConstantReadNode || mek == NK_SymbolNode)) {
         int sortc = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, sortc, "name", "sort");
+        nt_node_set_str(nt, sortc, "said_name", nm);   /* a nil receiver's NoMethodError names min/max */
         nt_node_set_ref(nt, sortc, "receiver", recv);
         nt_node_set_ref(nt, sortc, "block", mblk);
         if (sp_streq(nm, "min")) {

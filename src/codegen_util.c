@@ -3296,6 +3296,9 @@ int enum_builtin_node(Compiler *c, int node) {
    "undefined method 'minmax' for an instance of Integer", where the walk
    named `each`. Anything else keeps its own name. */
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name) {
+  /* a call a desugar made for another (min(n) { } walks a sort) */
+  const char *own = id >= 0 ? nt_str(c->nt, id, "said_name") : NULL;
+  if (own) return own;
   Scope *s = id >= 0 ? comp_scope_of(c, id) : NULL;
   if (!s || !s->name || strncmp(s->name, "__enum_", 7) != 0) return name;
   if (recv >= 0) {
@@ -3303,6 +3306,11 @@ const char *enum_walk_name(Compiler *c, int id, int recv, const char *name) {
     const char *rn = rk == NK_LocalVariableReadNode ? nt_str(c->nt, recv, "name") : NULL;
     if (rk != NK_SelfNode && !(rn && sp_streq(rn, "__self"))) return name;
   }
+  /* the call this copy serves, under the name the program wrote (`detect`
+     reaches find's copy) */
+  int site = s->def_node >= 0 ? (int)nt_int(c->nt, s->def_node, "enum_site", -1) : -1;
+  const char *said = site >= 0 ? nt_str(c->nt, site, "said_name") : NULL;
+  if (said) return said;
   static char buf[4][96];
   static int k;
   char *o = buf[k++ & 3];
