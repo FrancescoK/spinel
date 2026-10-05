@@ -31080,7 +31080,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= promote_forwarded_rest_args(c);
     ch |= promote_append_accumulators(c);
     ch |= infer_ivar_types(c);
-    ch |= infer_cvar_types(c);
+    ch |= infer_cvar_types(c, 0);
     ch |= infer_inherited_ivars(c);
     ch |= infer_return_types(c);
     ch |= backprop_hash_return_types(c);
@@ -31308,7 +31308,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         { int _w = promote_forwarded_rest_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
         { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_cvar_types(c); ch |= _w; ch_other |= _w; }
+        { int _w = infer_cvar_types(c, 0); ch |= _w; ch_other |= _w; }
         int ivsame = c->nclasses == ivncls;
         for (int ci = 0; ivsame && ci < ivncls; ci++)
           if (c->classes[ci].nivars != ivoff[ci + 1] - ivoff[ci]) ivsame = 0;
@@ -32484,10 +32484,10 @@ static void an_phase_method_backstops(Compiler *c) {
   reassert_rbs_param_seeds(c);   /* the post-fixpoint passes narrow too */
   /* The returns settled above may have widened past the locals that were
      derived from them (the write re-run ran first, and its `no new poly` gate
-     kept a return narrow until now). Reconcile the object slots, whose
-     assignment has no coercion to fall back on. */
+     kept a return narrow until now). Reconcile object slots and scalars that
+     have no nil representation. */
   for (int iter = 0; iter < 8; iter++) {
-    int ch = widen_object_locals_from_poly_writes(c);
+    int ch = widen_locals_from_poly_writes(c);
     ch |= widen_arrays_from_map_bang(c);
     ch |= infer_return_types(c);
     if (!ch) break;
@@ -32569,13 +32569,15 @@ static void an_phase_late_widen(Compiler *c) {
      the [parent ivars..., own ivars...] cast-compatible layout is preserved. */
   inherit_members(c);
 
-  /* Re-run ivar inference now that purely-nil params/locals became poly: an
-     ivar fed by such a param (`@x = idx` where every `set` call passed nil)
-     was skipped during the fixpoint (its value read as TY_NIL) and may have
-     stayed a narrower scalar; with the param now poly the write contributes
-     poly so the ivar widens to match. */
+  /* Re-run ivar and cvar inference after late parameter/return widening.
+     An ivar fed by a purely-nil param (`@x = idx` where every `set` call
+     passed nil) was skipped during the fixpoint. A cvar fed by an optional
+     Symbol param's return may still be Symbol; with the return now poly,
+     its write must widen too, or storing nil loses the tag. Limit this late
+     cvar widening to Bool and Symbol slots, which have no nil representation. */
   for (int it = 0; it < 8; it++) {
     int ch = infer_ivar_types(c);
+    ch |= infer_cvar_types(c, 1);
     ch |= infer_inherited_ivars(c);
     /* ... and back up: the re-run above can widen a subclass's copy of an
        inherited ivar (a poly-fallen param feeding it), and the up-propagation
