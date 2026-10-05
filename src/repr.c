@@ -117,6 +117,15 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))
       return RS_DEMANDED;
+    /* --share-strings: a marked receiverless call (or one on a class)
+       without a block takes the handle its method publishes (the
+       deep-return pickup) */
+    if (c->share_strings && c->strbuf_box[node] && nt_ref(nt, node, "block") < 0 &&
+        (r < 0 || comp_ntype(c, r) == TY_CLASS) && strbuf_call_publishes(mc, node))
+      return RS_DEMANDED;
+    /* --share-strings: a bare reader of a shared ivar, or a call of a method
+       that answers the handle on every path */
+    if (strbuf_call_answers_handle(mc, node)) return RS_DEMANDED;
   }
   /* a String value stored where a handle is demanded: a fresh one */
   return RS_FRESH;
@@ -850,3 +859,72 @@ void repr_dump(const Compiler *c) {
 }
 
 int repr_share_rule(const Compiler *c) { return c->share_strings; }
+
+/* ---- the handle answers of calls (--share-strings) ---- */
+
+/* Under --share-strings: does every method call `id` reaches (its plan's,
+   or each member of its switch) answer the handle on a path, or (unless
+   `need_handle`) no String of its own on any? */
+static int strbuf_call_targets_all(Compiler *c, int id, int need_handle) {
+  int tg[64], n = share_call_targets(c, id, tg, 64);
+  if (n == 0) return 0;
+  /* more members than the buffer: every method of the name answers for it */
+  const char *nm = n < 0 ? nt_str(c->nt, id, "name") : NULL;
+  for (int i = 0; i < (n < 0 ? c->nscopes : n); i++) {
+    int mi = n < 0 ? i : tg[i];
+    if (n < 0 && (c->scopes[mi].def_node < 0 || !nm || !c->scopes[mi].name || !sp_streq(c->scopes[mi].name, nm)))
+      continue;
+    int k = c->scopes[mi].ret_kinds;
+    if (!(k & SCOPE_RET_HANDLE) && (need_handle || (k & SCOPE_RET_FRESH))) return 0;
+  }
+  return 1;
+}
+/* Does the call `id`, marked for the handle its method publishes (the
+   deep-return pickup), answer that handle? Without --share-strings, as
+   master always has. Under it, only a user method a path of which answers
+   the handle, or none a String of its own (Scope.ret_kinds): a builtin's
+   answer (`File.basename(p)`) or a method's fresh String is not the handle
+   a read of an argument or inside the method left in the side channel. A
+   method answering both clears the channel at its fresh paths
+   (share_ret_clears). */
+int strbuf_call_publishes(Compiler *c, int id) {
+  if (!c->share_strings) return 1;
+  return strbuf_call_targets_all(c, id, 0);
+}
+/* Does reader `name`, called on self of class cls, read an ivar that holds
+   the shared handle, with no def in cls's chain taking the name over? (A
+   def below cls is an arm of the dispatch, emit_reader_override_handle.) */
+int reader_reads_shared_ivar(Compiler *c, int cls, const char *name) {
+  int rd = -1, m = -1;
+  if (!name || cls < 0 || !comp_reader_in_chain(c, cls, name, &rd)) return 0;
+  if (comp_method_in_chain(c, cls, name, &m) >= 0 && (m == rd || is_descendant(c, m, rd))) return 0;
+  char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cls, name));
+  int iv = comp_ivar_index(&c->classes[cls], ivn);
+  return iv >= 0 && c->classes[cls].ivar_types[iv] == TY_STRBUF && c->classes[cls].ivar_str_shared[iv];
+}
+/* --share-strings: does call `id`, where a handle is demanded, answer the
+   shared handle itself? A bare reader of a shared ivar in its class's own
+   method (`a << n`), or a call of a user method a path of which answers
+   the handle (the deep-return pickup; its other paths clear the channel,
+   share_ret_clears). */
+int strbuf_call_answers_handle(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  if (r < 0) {
+    int cid = implicit_self_reader_cid(c, id);
+    if (cid >= 0) return reader_reads_shared_ivar(c, cid, nt_str(nt, id, "name"));
+  }
+  /* a boxed receiver's dispatch can also reach a library method, whose
+     String is its own and which leaves the side channel as the call found
+     it: taken only where nothing before the dispatch publishes a handle (a
+     plain read of the receiver that is no String, and no arguments) */
+  else if (comp_ntype(c, r) != TY_CLASS && !ty_is_object(comp_ntype(c, r))) {
+    NodeKind rk = nt_kind(nt, r);
+    TyKind rt = comp_ntype(c, r);
+    if (nt_ref(nt, id, "arguments") >= 0 || rt == TY_STRING || rt == TY_STRBUF ||
+        (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode && rk != NK_SelfNode))
+      return 0;
+  }
+  return strbuf_call_targets_all(c, id, 1);
+}

@@ -1,5 +1,6 @@
 #include "codegen_internal.h"
 #include "repr.h"
+#include "share.h"
 
 /* defined? support: does this subtree reference a constant the compiler
    cannot resolve? Any such reference makes the whole defined? answer nil
@@ -1373,7 +1374,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (g_repr_check) repr_check_ask(c, id);
   g_expr_depth++;
-  emit_expr_node(c, id, b);
+  /* --share-strings: a return tail answering a String of its own, in a
+     method whose other path answers the handle, clears the side channel a
+     read inside it published (share_ret_clears) */
+  if (repr_share_rule(c) && share_ret_clears(c, id)) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tr);
+    emit_expr_node(c, id, b);
+    buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", tr);
+  }
+  else emit_expr_node(c, id, b);
   g_expr_depth--;
 }
 
