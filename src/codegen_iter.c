@@ -1322,7 +1322,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
-    TyKind rt = comp_ntype(c, id);
+    TyKind rt = repr_of(c, id).as_ty;
     if (fwd_yield_proc) g_yield_slot_ty = rt;  /* value-position yield unboxes to this */
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
@@ -2930,7 +2930,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     if (as_expr) {
-      nx_bt = bn3 > 0 ? comp_ntype(c, bd3[bn3 - 1]) : TY_NIL;
+      nx_bt = bn3 > 0 ? repr_of(c, bd3[bn3 - 1]).as_ty : TY_NIL;
       /* A void tail (a call to a method that always raises) produces no
          value, and method_call_ret types it nil for the call. Joined raw,
          VOID and an Integer `next` made the carrier poly while the call was
@@ -3219,7 +3219,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if ((ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_NIL) && tail_ret) {
         int ra = nt_ref(nt, bd2[bn2 - 1], "arguments");
         int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-        TyKind rt2 = rn > 0 ? comp_ntype(c, rv[0]) : TY_INT;
+        TyKind rt2 = rn > 0 ? repr_of(c, rv[0]).as_ty : TY_INT;
         ft = is_scalar_ret(rt2) ? rt2 : TY_INT;
       }
       if (ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_NIL) ft = TY_INT;
@@ -3671,7 +3671,7 @@ static int call_targets_yielding_method(Compiler *c, int id) {
 
 int emit_inline_expr(Compiler *c, int id, Buf *b) {
   /* only when a value is actually produced (scalar return) */
-  TyKind rt = comp_ntype(c, id);
+  TyKind rt = repr_of(c, id).as_ty;
   if (!is_scalar_ret(rt)) {
     /* A block that always raises leaves the call with no value type at all,
        but the call itself still inlines: hold the (dead) result boxed so the
@@ -4023,7 +4023,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      block value escapes it. */
   int tres = 0; TyKind rett = TY_VOID;
   if (is_then) {
-    rett = comp_ntype(c, id);
+    rett = repr_of(c, id).as_ty;
     /* A body that always `break`s completes normally nowhere, so it publishes
        no result type and `void` cannot declare the slot the substrate writes
        (#3986). The break itself delivers its value through sp_brk_val, and the
@@ -4296,7 +4296,7 @@ int iter_value_answers_recv(Compiler *c, int id) {
    both reads take the binding; answers 1 when the caller must pop it. */
 int iter_recv_bind_once(Compiler *c, int node) {
   if (!g_pre || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, node)) return 0;
-  TyKind ot = comp_ntype(c, node);
+  TyKind ot = repr_of(c, node).as_ty;
   if (ot == TY_UNKNOWN) return 0;
   int t = ++g_tmp;
   Buf ob = expr_buf(c, node);
@@ -4352,7 +4352,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
     free(wb.p);
     return 1;
   }
-  TyKind rt = comp_ntype(c, recv);
+  TyKind rt = repr_of(c, recv).as_ty;
   /* A poly receiver is allowed: `each` answers the receiver whatever kind it
      turns out to hold, and the loop below walks it through the poly surface.
      Bails on its own below when the iteration cannot be emitted. */
@@ -4845,7 +4845,7 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
 static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
-    TyKind et = comp_ntype(c, recv);
+    TyKind et = repr_of(c, recv).as_ty;
     /* a receiver of no type -- a call proven to raise NoMethodError -- is
        the raise's sp_RbVal; `void _t` did not compile (#6213) */
     if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
