@@ -5085,7 +5085,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       buf_puts(b, " = ");
     }
     if (argc == 2) {
-      buf_puts(b, "sp_poly_insert(");
+      buf_puts(b, "sp_poly_insert_chk(");
       emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b);

@@ -871,7 +871,7 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
                     " (given %%lld, expected 2)\", (long long)(_t%d->len + 1)));",
                  tr, tr, ta, ta);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                    " _t%d = sp_poly_insert(_t%d, _t%d < 0 ? _t%d : _t%d + _t%d, _t%d->data[_t%d]);",
+                    " _t%d = sp_poly_insert_chk(_t%d, _t%d < 0 ? _t%d : _t%d + _t%d, _t%d->data[_t%d]);",
                  tj, tj, ta, tj, tr, tr, ti, ti, ti, tj, ta, tj);
       /* a plain String box cannot hold the spliced contents: an lvalue
          receiver takes the result back */
