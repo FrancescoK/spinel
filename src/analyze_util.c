@@ -1947,6 +1947,15 @@ TyKind dispatch_ret_over(Compiler *c, int cid, const char *name, int cmeth, int 
   return r;
 }
 
+/* A tail yield specializes to its block, but an earlier return still leaves
+   the same call. Keep both values in the inline result's type. */
+static TyKind method_yield_ret(Compiler *c, int mi, TyKind ret) {
+  TyKind own = (TyKind)c->scopes[mi].ret;
+  if (own != TY_UNKNOWN && own != TY_VOID && ret != TY_UNKNOWN && ret != TY_VOID &&
+      scope_has_return(c, mi)) return ty_unify(own, ret);
+  return ret;
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block
@@ -1989,7 +1998,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
       int emi = encl ? (int)(encl - c->scopes) : -1;
       if (emi >= 0 && emi != mi) {
         TyKind ft = yvt_forwarded_value(c, emi);
-        if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;
+        if (ft != TY_UNKNOWN && ft != TY_VOID) return method_yield_ret(c, mi, ft);
       }
     }
     if (blk >= 0) {
@@ -1998,7 +2007,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
       if (bn > 0) {
         const char *lty = nt_type(c->nt, bb[bn - 1]);
         if (lty && sp_streq(lty, "ReturnNode"))
-          return return_node_type(c, bb[bn - 1]);  /* `{ return e }`: see yield_value_type */
+          return method_yield_ret(c, mi, return_node_type(c, bb[bn - 1]));  /* `{ return e }`: see yield_value_type */
         /* A `next v` leaves the block with v, so the call answers v's type
            joined with the tail's, as yield_value_type joins them. Typed from
            the tail alone, `run { next true if c; nil }` was a nil call: `p`
@@ -2010,7 +2019,7 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
           if (bt == TY_VOID) bt = TY_NIL;
           bt = bt == TY_UNKNOWN ? nx : ty_unify(bt, nx);
         }
-        return bt;
+        return method_yield_ret(c, mi, bt);
       }
     }
   }

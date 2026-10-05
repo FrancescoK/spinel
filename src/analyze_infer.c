@@ -7809,11 +7809,7 @@ static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
      like a call's, so the super answers what that call would */
   int sblk = nt_ref(c->nt, id, "block");
   if (c->scopes[mi].yields && sblk >= 0 && nt_kind(c->nt, sblk) == NK_BlockNode) {
-    TyKind ret = method_call_ret(c, mi, id);
-    TyKind own = (TyKind)c->scopes[mi].ret;
-    if (own != TY_UNKNOWN && own != TY_VOID && ret != TY_UNKNOWN && ret != TY_VOID &&
-        scope_has_return(c, mi)) return ty_unify(own, ret);
-    return ret;
+    return method_call_ret(c, mi, id);
   }
   TyKind sret = (TyKind)c->scopes[mi].ret;
   if (c->scopes[mi].yields && sblk >= 0 &&
