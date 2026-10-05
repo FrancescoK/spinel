@@ -6486,7 +6486,12 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       }
       buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
                       ? "sp_String_new_fresh(" : "sp_String_new_shared(");
+      /* --share-strings: a String of its own typed as the handle it is
+         demanded as renders as that String */
+      int svf = repr_share_rule(c) && comp_ntype(c, provided) == TY_STRBUF && strbuf_fresh_renders_string(c, provided)
+                  ? view_push(c, provided, TY_STRING) : -1;
       emit_str_expr(c, provided, out);
+      if (svf >= 0) view_pop(c, svf);
       buf_puts(out, ")");
       return;
     }
