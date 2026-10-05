@@ -86,3 +86,17 @@ def run
 end
 
 run
+
+# is_a? proves a read not nil only for a class nil is no instance of: not
+# NilClass, Object, BasicObject or a module (CodeRabbit on #7468).
+class Tagged
+  attr_reader :v
+  def initialize(v) = @v = v
+end
+def isa(n)
+  b = n > 0 ? Tagged.new(n) : nil
+  p b.v if b.is_a?(Tagged)
+  p b.v if b.is_a?(NilClass)
+  p b.v if b.kind_of?(Object)
+end
+isa(ARGV.size)
