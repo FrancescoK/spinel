@@ -4422,6 +4422,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ")");
       }
     }
+    else if (comp_ntype(c, argv[0]) == TY_REGEX) {
+      /* a regex separator with a limit: sp_re_split_limit, as the typed
+         String path; the string-separator slot below refused the pattern */
+      buf_puts(b, "sp_re_split_limit("); emit_expr(c, argv[0], b);
+      buf_printf(b, ", _t%d.v.s, ", tv); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    }
     else {
       /* The separator of String#split can be nil ("split on whitespace" in
          CRuby); sp_str_split_limit treats a NULL separator as that mode.
