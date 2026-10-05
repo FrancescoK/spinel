@@ -47,6 +47,8 @@ typedef struct ShareFacts {
   /* the mutation sites, for SPINEL_SHARE_STATS=3: node, value */
   int *mut_n, *mut_v, nmut, cmut;
   int *hcount;         /* per root, once built: holders storing a String */
+  unsigned char *anchored;   /* per root, once built: a container of the class
+                                can be reached again (sh_finalize) */
   unsigned char *kind, *flags, *own;
   /* the holders, and their element */
   ShareHolder *h;
@@ -737,6 +739,26 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
 
 /* The share-row semantics of builtin call n. Answers its value. */
+/* An iterator's block over a container's elements. Over a Hash (`hash`), a
+   block of two or more plain parameters takes the key first: a key is the
+   frozen copy CRuby makes as it is stored, no name for a value. */
+static void sh_iter_params(ShareFacts *F, Compiler *c, int blk, int ev, int hash) {
+  const NodeTable *nt = c->nt;
+  int bp = hash ? nt_ref(nt, blk, "parameters") : -1;
+  int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+  int nreq = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &nreq) : NULL;
+  int nopt = 0; if (pn >= 0) nt_arr(nt, pn, "optionals", &nopt);
+  if (nreq < 2 || nopt || nt_ref(nt, pn, "rest") >= 0 || nt_kind(nt, reqs[0]) != NK_RequiredParameterNode) {
+    sh_block_params(F, c, blk, ev, 1);
+    return;
+  }
+  for (int i = 1; i < nreq; i++) {
+    sh_target(F, c, reqs[i], ev);
+    sh_target(F, c, reqs[i], sh_elem(F, ev));
+  }
+}
+
+/* container: 1 an Array's (or a poly receiver's) row, 2 a Hash's */
 static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk, int container) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, n, "arguments");
@@ -764,6 +786,8 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_SUB:
     return rv;
   case BSH_FETCH: {
+    /* a default block is handed the key it was asked for */
+    if (lit_blk && nv >= 1) sh_block_params(F, c, blk, vals[0], 0);
     int r = sh_elem(F, rv);
     if (nv >= 2) r = sh_join(F, r, vals[nv - 1]);
     return sh_join(F, r, bv);
@@ -812,16 +836,16 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     }
     return -1;
   case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
-    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
   case BSH_ITER_MAP_BANG:
     if (lit_blk) {
-      sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+      sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
       sh_union(F, sh_elem(F, rv), bv);
     }
     return rv;
   case BSH_ITER_MAP: {
-    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     if (!lit_blk) return rv;   /* an Enumerator over the receiver */
     /* a new container of the block's values; a flat_map's or to_h's value
        is itself a container of them */
@@ -863,6 +887,13 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return memo;
   }
   case BSH_ITER_SELF:
+    /* a fresh receiver (`(+"a").tap { |x| x << y }`) is one String the
+       block's parameter and the answer both name, the answer a second name
+       when it is used */
+    if (rv < 0 && lit_blk && !F->unused[n]) {
+      rv = sh_new(F, SHK_VALUE);
+      F->nhold[rv] = 1;
+    }
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
     return rv;
   case BSH_ITER_THEN:
@@ -1136,7 +1167,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a family's "*" row is its default; a container's "*" is Array#*, and
      its default is sh_container_default (a block binds what it holds) */
   if (!s && fam != BOP_ANY_ARRAY && fam != BOP_ANY_HASH) s = bop_share(fam, name);
-  if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH);
+  if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_HASH ? 2 : fam == BOP_ANY_ARRAY);
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk);
 }
@@ -1497,7 +1528,7 @@ static void sh_finalize(ShareFacts *F) {
     int o = sh_root(F, F->owner[e]), r = sh_root(F, e);
     if (anchored[o] && o != r) F->hcount[r]++;
   }
-  free(anchored);
+  F->anchored = anchored;
 }
 
 /* A value that is a frozen String (a literal, a freeze, a -@): nothing can
@@ -1601,7 +1632,7 @@ static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
-  free(F->owner); free(F->hcount); free(F->mconst);
+  free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
   free(F->kind); free(F->flags); free(F->own);
@@ -1823,6 +1854,18 @@ int share_elem_holders(const Compiler *c, int e) {
 }
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
 
+
+static int sh_node_root(const ShareFacts *F, int n, int elems);
+int share_node_anchored(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  int r = sh_node_root(F, n, 0);
+  return r >= 0 && F->anchored && F->anchored[r];
+}
+int share_node_elems_share(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  int r = sh_node_root(F, n, 1);
+  return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
 
 /* ---- master's route refusals under the flag (share.h) ---- */
 
