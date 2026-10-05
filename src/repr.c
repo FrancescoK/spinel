@@ -33,13 +33,21 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
 }
 
 /* The layout of a value stored as t that its type names and its kind does
-   not: every Array is a pointer, and which container it points to -- what
-   it holds its elements as (ty_array_elem) -- decides the helpers a call on
-   it takes; an Integer is an sp_int scalar, and one held big an sp_Bigint *
-   pointer, which takes the Bignum helpers. */
+   not: every Array and Hash is a pointer, and which container it points to
+   -- what an Array holds its elements as (ty_array_elem), what a Hash
+   holds its keys and its values as (its variant's row: ty_hash_key,
+   ty_hash_val) -- decides the helpers a call on it takes and the C type
+   they name; an Integer is an sp_int scalar, and one held big an
+   sp_Bigint * pointer, which takes the Bignum helpers. */
 static void repr_layout(Repr *r, TyKind t) {
   r->elem = ty_is_array(t) || ty_is_obj_array(t) ? ty_array_elem(t) : TY_UNKNOWN;
+  r->key = ty_hash_key(t);
+  r->val = ty_hash_val(t);
   r->big = t == TY_BIGINT;
+}
+
+int repr_hash_is(Repr r, TyKind key, TyKind val) {
+  return r.key != TY_UNKNOWN && r.key == key && r.val == val;
 }
 
 /* an object whose class some other class inherits from: its static type is
@@ -190,7 +198,7 @@ int repr_local_nullable_int(Compiler *c, int node) {
 Repr repr_of(const Compiler *c, int node) {
   Repr r;
   memset(&r, 0, sizeof r);
-  r.ty = r.as_ty = r.narrowed = r.elem = TY_UNKNOWN;
+  r.ty = r.as_ty = r.narrowed = r.elem = r.key = r.val = TY_UNKNOWN;
   r.kind = RK_NONE;
   if (node < 0 || node >= c->nt->count) return r;
   r.ty = c->ntype[node];
@@ -403,7 +411,7 @@ void repr_check_ask(const Compiler *c, int node) {
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   Repr r;
   memset(&r, 0, sizeof r);
-  r.ty = r.as_ty = r.narrowed = r.elem = TY_UNKNOWN;
+  r.ty = r.as_ty = r.narrowed = r.elem = r.key = r.val = TY_UNKNOWN;
   r.kind = RK_NONE;
   if (!lv) return r;
   r.ty = r.as_ty = lv->type;
