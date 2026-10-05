@@ -2068,6 +2068,7 @@ GC_MINOR_TESTS := test/reflect_ivar_nil_presence.rb \
                   test/poly_case_option_evaluation.rb \
                   test/builtin_ivar_dynamic_name.rb \
                   test/string_prepend_operand_order.rb \
+                  test/io_copy_stream_boxed_path.rb \
                   test/data_ivar_set_value_gc.rb \
                   test/method_call_block_captures_outer.rb \
                   test/range_dup_unfrozen.rb \
