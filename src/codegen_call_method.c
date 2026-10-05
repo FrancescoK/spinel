@@ -1065,10 +1065,11 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* `<typed_array>.method(:op)`: lower through a per-(type, op) adapter
          matching the Method dispatch ABI (optcarrot's
          `add_mappings(.., @ram, @ram.method(:[]=))` shape). */
-      TyKind brt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+      Repr br = repr_of(c, recv);
+      TyKind brt = br.as_ty;
       const char *bk = ty_is_array(brt) ? array_kind(brt) : NULL;
       const char *bop = NULL;
-      if (bk && (brt == TY_INT_ARRAY || brt == TY_STR_ARRAY)) {
+      if (bk && (br.elem == TY_INT || br.elem == TY_STRING)) {
         if (sp_streq(sym, "[]")) bop = "get";
         else if (sp_streq(sym, "[]=")) bop = "set";
         else if (sp_streq(sym, "push")) bop = "push";
@@ -1090,7 +1091,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         /* memoized per (kind, op): emit the adapter once */
         static char bam_done[2][3];
-        int ki = (brt == TY_INT_ARRAY) ? 0 : 1;
+        int ki = br.elem == TY_INT ? 0 : 1;
         int oi = bop[0] == 'g' ? 0 : bop[0] == 's' ? 1 : 2;
         /* The non-promote adapter's Ruby return comes from the shared helper
            (which also drives the analyzer's inferred type): an IntArray

@@ -768,17 +768,18 @@ int emit_array_splat_mutator(Compiler *c, int id, Buf *b) {
     if (nt_kind(nt, argv[a]) == NK_SplatNode) has_splat = 1;
   if (!has_splat) return 0;
   if (is_insert && nt_kind(nt, argv[0]) == NK_SplatNode) return 0;
-  TyKind rt = comp_ntype(c, recv);
-  int poly = rt == TY_POLY && is_insert;
+  Repr rr = repr_of(c, recv), ir = repr_of(c, id);
+  TyKind rt = rr.as_ty;
+  int poly = rr.kind == RK_BOXED && is_insert;
   if (poly)
     for (int k2 = 0; k2 < c->nclasses; k2++)
       if (comp_poly_arm_defines(c, k2, name)) return 0;
   /* a typed literal receiver given elements of another kind is rebuilt as
      the poly array the call's value was typed as */
-  int lift = !poly && rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY &&
+  int lift = !poly && rr.elem != TY_POLY && ir.elem == TY_POLY &&
              nt_kind(nt, recv) == NK_ArrayNode;
   if (lift) rt = TY_POLY_ARRAY;
-  else if (!poly && ty_is_array(comp_ntype(c, id)) && comp_ntype(c, id) != rt) return 0;
+  else if (!poly && ir.elem != TY_UNKNOWN && ir.elem != rr.elem) return 0;
   const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
   if (!k && !poly) return 0;
   if (is_insert && rt == TY_FLOAT_ARRAY) return 0;
@@ -1737,14 +1738,14 @@ else {
          read as the element kind while its declaration is boxed, and
          emitting the boxed local into a typed pointer does not compile
          (#3850). */
-      TyKind at = comp_ntype(c, argv[j]);
+      Repr ar = repr_of(c, argv[j]);
       if (nt_type(nt, argv[j]) && sp_streq(nt_type(nt, argv[j]), "LocalVariableReadNode")) {
         Scope *asc = comp_scope_of(c, argv[j]);
         LocalVar *alv = asc ? scope_local(asc, nt_str(nt, argv[j], "name")) : NULL;
-        if (alv && alv->type != TY_UNKNOWN) at = alv->type;
+        if (alv && alv->type != TY_UNKNOWN) ar = repr_of_slot(c, alv);
       }
-      if (at != rt) same = 0;
-      if (at != TY_POLY && at != TY_POLY_ARRAY && at != rt) all_poly = 0;
+      if (ar.elem != ty_array_elem(rt)) same = 0;
+      if (ar.kind != RK_BOXED && ar.elem != TY_POLY && ar.elem != ty_array_elem(rt)) all_poly = 0;
     }
     /* A boxed argument -- an element read out of a poly array, which is
        what `g.each_with_object([]) { |r, acc| acc.concat(r) }` hands it --
@@ -2743,7 +2744,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
     /* a block value the element type cannot hold rebuilds through a poly
        array, as the value form below does (inference typed the call poly);
        a local receiver was widened at the write site instead */
-    int fill_conflict = rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY;
+    int fill_conflict = rt != TY_POLY_ARRAY && repr_of(c, id).elem == TY_POLY;
     const char *fk = (rt == TY_POLY_ARRAY || fill_conflict) ? "Poly" : k;
     TyKind frt = fill_conflict ? TY_POLY_ARRAY : rt;
     int fblk = nt_ref(nt, id, "block");
@@ -2861,7 +2862,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
        poly array (inference typed the result poly to match); only literal
        and temp receivers reach this -- a conflicting fill on a LOCAL
        already widened the local itself at the write site */
-    int fill_conflict = rt != TY_POLY_ARRAY && comp_ntype(c, id) == TY_POLY_ARRAY;
+    int fill_conflict = rt != TY_POLY_ARRAY && repr_of(c, id).elem == TY_POLY;
     const char *fk = (rt == TY_POLY_ARRAY || fill_conflict) ? "Poly" : k;
     TyKind fill_rt = fill_conflict ? TY_POLY_ARRAY : rt;
     if (fk) {
@@ -5095,7 +5096,7 @@ else {
            (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode")))) {
         buf_puts(b, "sp_poly_hash_sum_arr("); emit_boxed(c, recv, b); buf_puts(b, ", ");
         if (ty_is_array(comp_ntype(c, argv[0]))) {
-          if (comp_ntype(c, argv[0]) == TY_POLY_ARRAY) emit_expr(c, argv[0], b);
+          if (repr_of(c, argv[0]).elem == TY_POLY) emit_expr(c, argv[0], b);
           else { buf_puts(b, "sp_poly_to_poly_array("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
         }
         else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_PolyArray_new())"); }
@@ -6819,7 +6820,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      or its captures. */
   else if (sp_streq(name, "scan") && argc == 1 && comp_ntype(c, argv[0]) == TY_REGEX &&
            nt_ref(nt, id, "block") < 0) {
-    buf_printf(b, "%s(", comp_ntype(c, id) == TY_POLY_ARRAY ? "sp_re_scan_poly" : "sp_re_scan");
+    buf_printf(b, "%s(", repr_of(c, id).elem == TY_POLY ? "sp_re_scan_poly" : "sp_re_scan");
     emit_expr(c, argv[0], b); buf_printf(b, ", %s)", r);
   }
   else return 0;
@@ -11496,7 +11497,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      as a new Array, and nil's NoMethodError (sp_poly_entries). A user
      class with a method or a reader of the name wins the dispatch. */
   if (sp_streq(name, "entries") && nt_ref(nt, id, "block") < 0 &&
-      comp_ntype(c, id) == TY_POLY_ARRAY) {
+      repr_of(c, id).elem == TY_POLY) {
     if (!poly_name_user_claimed(c, name, argc)) {
       buf_puts(b, "sp_poly_entries("); emit_expr(c, recv, b); buf_puts(b, ")");
       { *out = 1; return 1; }
@@ -12957,7 +12958,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (rli >= 0 || str_arg || re_arg) {
       /* follow the type analyze settled on, so emit and type stay in step for
          a run-time pattern (sp_re_scan_poly decides per match) */
-      int poly_res = comp_ntype(c, id) == TY_POLY_ARRAY;
+      int poly_res = repr_of(c, id).elem == TY_POLY;
       int ts = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_boxed(c, recv, b);
       buf_printf(b, "; (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? ", ts, ts);
@@ -13069,12 +13070,12 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       !native_class_defines(c, "scan")) {
     int sre = re_lit_index(c, argv[0]);
     TyKind spt = comp_ntype(c, argv[0]);
-    TyKind sres = comp_ntype(c, id);
-    const char *sfn = sres == TY_STR_ARRAY ? "sp_re_scan" : "sp_re_scan_poly";
+    int str_rows = repr_of(c, id).elem == TY_STRING;
+    const char *sfn = str_rows ? "sp_re_scan" : "sp_re_scan_poly";
     if (spt == TY_STRING) { sfn = "sp_str_scan"; }
     /* a boxed pattern is a Regexp or a String, told apart at run time */
     if (sre < 0 && spt != TY_REGEX && spt != TY_STRING) {
-      buf_printf(b, "%s(sp_poly_recv_s(", sres == TY_STR_ARRAY ? "sp_scan_boxed" : "sp_scan_boxed_poly");
+      buf_printf(b, "%s(sp_poly_recv_s(", str_rows ? "sp_scan_boxed" : "sp_scan_boxed_poly");
       emit_expr(c, recv, b);
       buf_printf(b, ", \"%s\"), ", name);
       emit_boxed(c, argv[0], b);
