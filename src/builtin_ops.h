@@ -294,6 +294,9 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
    flags sit on the unguarded rows, the ones a lookup without the
    arguments' kinds finds. */
 int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
+/* The unguarded row bop_answers_self reads for that call, or NULL: an
+   Array or Hash kind's family row, a String buffer's String row. */
+const BuiltinOp *bop_find_call(TyKind rt, const char *name, int argc, int has_block);
 /* Whether that call reads its arguments of the receiver's builtin class as
    that builtin (BOPF_ARGS_BUILTIN), looked up as bop_answers_self does. */
 int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
