@@ -3179,6 +3179,19 @@ static SP_INLINE const char *sp_poly_arg_str_or_null(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   return sp_poly_arg_str_chk(v);
 }
+/* A boxed operand of Regexp.union and of Regexp.escape. A Regexp joins a
+   union by its #to_s form `(?on-off:src)`, and escape takes a Symbol by its
+   name; anything else is the strict String slot's (rb_reg_s_union and
+   rb_reg_s_quote call StringValue), so an Integer or nil raises CRuby's
+   TypeError where #to_s read it as the text "1" or "". */
+static const char *sp_re_union_operand(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_REGEX && v.v.p) return sp_re_to_s_str(v.v.p);
+  return sp_re_escape(sp_poly_arg_str_chk(v));
+}
+static const char *sp_re_escape_operand(sp_RbVal v) {
+  if (v.tag == SP_TAG_SYM) return sp_re_escape(sp_poly_to_s(v));
+  return sp_re_escape(sp_poly_arg_str_chk(v));
+}
 /* A boxed value entering a PATH slot (File, Dir and IO's path arguments).
    CRuby's rb_get_path asks #to_path before #to_str, which is how a Pathname,
    or any user class that names a file, is accepted wherever a String path is.

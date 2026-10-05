@@ -692,7 +692,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     TyKind _re_at = comp_ntype(c, argv[0]);
-    if (_re_at == TY_POLY) { buf_puts(b, "sp_re_escape(sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+    if (_re_at == TY_POLY) { buf_puts(b, "sp_re_escape_operand("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else if (_re_at == TY_SYMBOL) {
       /* rb_reg_operand takes a Symbol by its name -- Regexp.escape(:"a.b")
          is "a\\.b" -- where the #to_str protocol of the String slot would
@@ -763,7 +763,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         TyKind at = comp_ntype(c, ops[i]);
         if (at != TY_STRING && at != TY_POLY)
           unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
-        if (at == TY_POLY) { buf_puts(&ab, "sp_re_escape(sp_poly_to_s("); emit_expr(c, ops[i], &ab); buf_puts(&ab, "))"); }
+        if (at == TY_POLY) { buf_puts(&ab, "sp_re_union_operand("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
         else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
       }
       emit_indent(g_pre, g_indent);
