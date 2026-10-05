@@ -16012,8 +16012,12 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
       is_each_walk(name)) {
     /* a value that is no collection is the call's NoMethodError, where the
        Enumerator walked nil or a String as empty (sp_poly_enum_chk) */
-    buf_printf(b, "sp_Enumerator_new_from%s(sp_poly_enum_chk(", sp_streq(name, "reverse_each") ? "_rev" : "");
-    emit_boxed(c, recv, b); buf_printf(b, ", \"%s\"))", name);
+    /* a Float Range's walk raises only once its Enumerator walks */
+    if (sp_streq(name, "reverse_each")) {
+      buf_puts(b, "sp_Enumerator_new_from_rev(sp_poly_enum_chk(");
+      emit_boxed(c, recv, b); buf_printf(b, ", \"%s\"))", name);
+    }
+    else { buf_puts(b, "sp_Enumerator_new_from_walk("); emit_boxed(c, recv, b); buf_printf(b, ", SPL(\"%s\"))", name); }
     return 1;
   }
   /* A blockless map or selecting call there is the same snapshot under its

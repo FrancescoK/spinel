@@ -31048,6 +31048,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= desugar_main_self_call(c);           /* self.m on main with a top-level def m -> m */
     ch |= desugar_cmethod_cvar_reflection(c); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */
     ch |= desugar_array_at(c);                 /* a.at(i) -> a[i] */
+    ch |= desugar_minmax_nil_count(c);         /* a.min(nil) -> a.min */
     ch |= desugar_array_first_last(c);         /* arr.first -> arr[0], arr.last -> arr[-1] */
     ch |= desugar_to_h_block(c);               /* recv.to_h{|e|[k,v]} -> recv.map{...}.to_h */
     ch |= desugar_to_proc_block_arg(c);        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */

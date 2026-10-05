@@ -14764,6 +14764,18 @@ static sp_RbVal sp_poly_range_endless_step(sp_RbVal v, sp_RbVal step) {
 /* Blockless Kernel#loop: an infinite Enumerator yielding nil forever (#3236).
    Defined out-of-line in sp_cold.c (one linked copy, not per generated TU). */
 sp_Enumerator *sp_loop_enum(void);
+/* A blockless iterating method of a Float Range (each, map, min_by, ...):
+   CRuby answers its Enumerator, and raises only when that Enumerator walks
+   (`can't iterate from Float`), where the eager walk raised at the call.
+   The generator body raises what the walk raises; `r` is the boxed Range,
+   `meth` the method as #inspect names it. */
+static void sp_frange_lazy_gen(sp_Fiber *f) { sp_frange_iter_raise(*(sp_FloatRange *)f->user_data, 0); }
+static SP_UNUSED sp_Enumerator *sp_Enumerator_new_frange_lazy(sp_RbVal r, const char *meth) {
+  SP_GC_ROOT_RBVAL(r);
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_frange_lazy_gen, r.v.p, sp_box_nil());
+  e->source = r; e->has_src = TRUE; e->meth = meth;
+  return e;
+}
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   /* The receiver is the caller's temporary -- `(11..55).each` passes it straight
      in, unreachable from anywhere else -- and BOTH arms below allocate before
@@ -14789,6 +14801,14 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = SPL("each");
   return e;
+}
+/* A boxed receiver's blockless walk: a Float Range's Enumerator raises only
+   when it walks (sp_Enumerator_new_frange_lazy); every other receiver is
+   checked (sp_poly_enum_chk, naming `meth`) and snapshot. */
+static sp_RbVal sp_poly_enum_chk(sp_RbVal v, const char *m);
+static SP_UNUSED sp_Enumerator *sp_Enumerator_new_from_walk(sp_RbVal v, const char *meth) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) return sp_Enumerator_new_frange_lazy(v, meth);
+  return sp_Enumerator_new_from(sp_poly_enum_chk(v, meth));
 }
 /* The source of `o.lazy...` where o is a boxed value: an Enumerator is
    read as it is (a generator one step at a time), any other collection

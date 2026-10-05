@@ -4647,6 +4647,37 @@ int desugar_array_first_last(Compiler *c) {
   return changed;
 }
 
+/* Array#min / #max / #min_by / #max_by and Hash#min_by / #max_by given a
+   nil count: CRuby reads it as no count (`[3, 1].min(nil)` is 1), where the
+   count slot raised `no implicit conversion from nil to integer`. A nil
+   written in place, or read from a local the inference typed nil, is
+   dropped; any other nil-valued argument keeps its effect and its slot.
+   Range#min(nil) and #max(nil) raise in CRuby too, so a Range keeps it. */
+int desugar_minmax_nil_count(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !(sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "min_by") || sp_streq(nm, "max_by")))
+      continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (recv < 0 || argc != 1) continue;
+    NodeKind ak = nt_kind(nt, argv[0]);
+    if (!(ak == NK_NilNode || (ak == NK_LocalVariableReadNode && infer_type(c, argv[0]) == TY_NIL))) continue;
+    TyKind rt = infer_type(c, recv);
+    int hash = ty_is_hash(rt);
+    if (!(ty_is_array(rt) || ty_is_obj_array(rt) || (hash && (sp_streq(nm, "min_by") || sp_streq(nm, "max_by")))))
+      continue;
+    if (an_user_defines_or_reads(c, nm)) continue;
+    nt_node_set_ref(nt, id, "arguments", -1);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_array_at(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
