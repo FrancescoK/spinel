@@ -701,9 +701,9 @@ static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
 /* The runtime function that reads a String-keyed Hash of other values as
    the String-to-String replacement Hash sub/gsub take (each value's to_s),
    or NULL for a Hash kind that needs none or cannot be one */
-static const char *repl_hash_to_s_fn(TyKind ht) {
-  return ht == TY_STR_POLY_HASH ? "sp_StrPolyHash_to_s_values"
-       : ht == TY_STR_INT_HASH ? "sp_StrIntHash_to_s_values" : NULL;
+static const char *repl_hash_to_s_fn(Repr hr) {
+  return repr_hash_is(hr, TY_STRING, TY_POLY) ? "sp_StrPolyHash_to_s_values"
+       : repr_hash_is(hr, TY_STRING, TY_INT) ? "sp_StrIntHash_to_s_values" : NULL;
 }
 static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r);
 static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
@@ -1185,10 +1185,10 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
   }
   if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-    TyKind res = comp_ntype(c, id);
-    const char *hn = ty_hash_cname(res);
+    Repr hr = repr_of(c, id);
+    const char *hn = ty_hash_cname(hr.as_ty);
     if (!hn) hn = "SymPoly";
-    TyKind kty = ty_hash_key(res), vty = ty_hash_val(res);
+    TyKind kty = hr.key, vty = hr.val;
     int tr = ++g_tmp, th = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = ", tr); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", tr, hn, th, hn, th);
@@ -3959,7 +3959,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-  TyKind res = comp_ntype(c, id);
+  TyKind res = repr_of(c, id).as_ty;   /* a Hash result's C table (to_h) */
   /* [].first / [].last on an empty literal: there is no element type to read;
      the value is nil (boxed -- the call types poly). */
   if (recv >= 0 && argc == 0 && (is_endpoint_query(name)) &&
@@ -4751,7 +4751,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        emitter calls it (its result is the general boxed hash, as the call
        is typed). */
     if (sp_streq(name, "merge") && argc == 1 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode &&
-        comp_ntype(c, id) == TY_POLY_POLY_HASH && emit_merge_any_block_boxed(c, id, recv, argv[0], b))
+        repr_hash_is(repr_of(c, id), TY_POLY, TY_POLY) && emit_merge_any_block_boxed(c, id, recv, argv[0], b))
       return 1;
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
       unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
@@ -5249,7 +5249,8 @@ else {
             return 1;
           }
         }
-        TyKind at = comp_ntype(c, argv[0]);
+        Repr ar = repr_of(c, argv[0]);
+        TyKind at = ar.as_ty;
         /* a forwarded `&blk` is the caller's block: none where it passed none
            (a plain merge), its literal where it passed one (whose parameters
            the collision binds); a real proc handed in its place stays */
@@ -5261,9 +5262,9 @@ else {
            because a merged value or the conflict block's did not fit the
            literal's variant). The argument's order[] holds its keys, which
            a PolyPoly argument's does not, so that one stays out. */
-        if (at != rt && ty_is_hash(at) && at != TY_POLY_POLY_HASH && vt == TY_POLY &&
-            (kt == TY_POLY || kt == ty_hash_key(at))) {
-          TyKind akt = ty_hash_key(at), avt = ty_hash_val(at);
+        if (ar.key != TY_UNKNOWN && !repr_hash_is(ar, kt, vt) && !repr_hash_is(ar, TY_POLY, TY_POLY) &&
+            vt == TY_POLY && (kt == TY_POLY || kt == ar.key)) {
+          TyKind akt = ar.key, avt = ar.val;
           const char *ahn = ty_hash_cname(at);
           int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, trk = ++g_tmp;
           char akey[32], aval[128];
@@ -5404,12 +5405,12 @@ else {
          The boxed-receiver arm usually takes it first; it stands aside when
          a user class defines or reads `merge`. */
       if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
-          comp_ntype(c, id) == TY_POLY_POLY_HASH && rt != TY_POLY_POLY_HASH &&
+          repr_hash_is(repr_of(c, id), TY_POLY, TY_POLY) && rt != TY_POLY_POLY_HASH &&
           emit_merge_block_boxed(c, id, recv, argv[0], nt_ref(nt, id, "block"), b))
         return 1;
       /* merge with a block, typed as the receiver's own variant */
       if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
-          comp_ntype(c, id) == rt) {
+          repr_hash_is(repr_of(c, id), ty_hash_key(rt), ty_hash_val(rt))) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
            result starts as a copy of the receiver, then each key of `other`
            is inserted; on a collision the block picks the value. */
@@ -6622,11 +6623,12 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
   /* string methods taking a regex-literal argument route to the engine */
   else if ((is_substitution(name)) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-    TyKind ht = comp_ntype(c, argv[1]);
-    const char *hconv = repl_hash_to_s_fn(ht);
-    const char *suf = (ht == TY_STR_STR_HASH || hconv) ? "_str_str_hash" : "";
+    Repr hr = repr_of(c, argv[1]);
+    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
+    const char *hconv = repl_hash_to_s_fn(hr);
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
-    if (ht == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    if (str_pairs) emit_expr(c, argv[1], b);
     else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else emit_str_expr(c, argv[1], b);
     buf_puts(b, ")");
@@ -6634,13 +6636,14 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   else if ((is_substitution(name)) && argc == 2 &&
            nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
     /* a Hash replacement takes the Hash overload, as with a literal pattern */
-    TyKind ht = comp_ntype(c, argv[1]);
-    const char *hconv = repl_hash_to_s_fn(ht);
-    const char *suf = (ht == TY_STR_STR_HASH || hconv) ? "_str_str_hash" : "";
+    Repr hr = repr_of(c, argv[1]);
+    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
+    const char *hconv = repl_hash_to_s_fn(hr);
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
     Buf rp; memset(&rp, 0, sizeof rp);
     emit_regex_pat_to_buf(c, argv[0], &rp);
     buf_printf(b, "sp_re_%s%s(%s, %s, ", name, suf, rp.p ? rp.p : "NULL", r);
-    if (ht == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    if (str_pairs) emit_expr(c, argv[1], b);
     else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else emit_str_expr(c, argv[1], b);
     buf_puts(b, ")");
@@ -6651,18 +6654,19 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* pattern held in a regex-typed value (e.g. a local bound to an
        interpolated /.../); dispatch to the compiled-pattern overload
        rather than the string-pattern one. */
-    TyKind ht = comp_ntype(c, argv[1]);
-    const char *hconv = repl_hash_to_s_fn(ht);
-    const char *suf = (ht == TY_STR_STR_HASH || hconv) ? "_str_str_hash" : "";
+    Repr hr = repr_of(c, argv[1]);
+    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
+    const char *hconv = repl_hash_to_s_fn(hr);
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
     buf_printf(b, "sp_re_%s%s(", name, suf);
     emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
-    if (ht == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    if (str_pairs) emit_expr(c, argv[1], b);
     else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else emit_str_expr(c, argv[1], b);
     buf_puts(b, ")");
   }
   else if ((is_substitution(name)) && argc == 2 &&
-           comp_ntype(c, argv[0]) == TY_POLY && comp_ntype(c, argv[1]) != TY_STR_STR_HASH) {
+           comp_ntype(c, argv[0]) == TY_POLY && !repr_hash_is(repr_of(c, argv[1]), TY_STRING, TY_STRING)) {
     /* a pattern that is a Regexp or a String only at runtime (an inflection
        rule read out of a [pattern, replacement] pair): the runtime picks
        the engine by its tag. The string-pattern path coerced the Regexp. */
@@ -8101,8 +8105,8 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     int block = nt_ref(nt, id, "block");
     int t = ++g_tmp, rh = ++g_tmp;
     Buf rb = expr_buf(c, recv);
-    TyKind res = comp_ntype(c, id);
-    const char *hn = ty_hash_cname(res);
+    Repr hr = repr_of(c, id);
+    const char *hn = ty_hash_cname(hr.as_ty);
     if (!hn) hn = "SymPoly";
     buf_printf(b, "({ sp_%s *_t%d = %s; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
                sc->name, t, rb.p ? rb.p : "", t, hn, rh, hn, rh);
@@ -8119,7 +8123,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
         int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
         if (en == 2) { ke = els[0]; ve = els[1]; }
       }
-      TyKind kt = ty_hash_key(res), vt = ty_hash_val(res);
+      TyKind kt = hr.key, vt = hr.val;
       for (int i = 0; i < sc->nmembers; i++) {
         if (kp) buf_printf(b, " lv_%s = (sp_sym)%d;", kp, comp_sym_intern(c, sc->ivars[i] + 1));
         if (vp) {
@@ -13483,7 +13487,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      engine, just like a TY_STRING receiver. */
   if (recv >= 0 && rt == TY_POLY && (is_substitution(name)) &&
       argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-    const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+    const char *suf = repr_hash_is(repr_of(c, argv[1]), TY_STRING, TY_STRING) ? "_str_str_hash" : "";
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
     emit_expr(c, recv, b); buf_puts(b, "), ");
     emit_expr(c, argv[1], b); buf_puts(b, ")");
