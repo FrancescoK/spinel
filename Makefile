@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all hooks gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test nil-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test nil-check-test traits-check-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -959,6 +959,20 @@ re-lit-test: $(SPINEL)
 	else echo "re-lit-test: FAIL (an interpolated pattern was refused at compile time)"; cat "$$tmp/interp.out"; ok=0; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "re-lit-test: pass"; else exit 1; fi
+
+# test/share/*.rb hold the answers only --share-strings gives (#6765): the
+# prototype's fixes of programs the default build answers wrong. Each runs
+# under the flag, plain and with GC stress, against its CRuby .expected.
+share-strings-test: $(SPINEL)
+	@tmp=$$(mktemp -d /tmp/spinel-share.XXXXXX); ok=1; \
+	for t in test/share/*.rb; do \
+	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
+	    "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
+	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
+	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
+	done; \
+	rm -rf "$$tmp"; \
+	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
