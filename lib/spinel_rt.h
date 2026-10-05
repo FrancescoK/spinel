@@ -266,6 +266,14 @@ static SP_NOINLINE SP_COLD sp_float sp_FloatArray_get_operand(sp_FloatArray *a, 
   if (sp_float_is_nil(v)) sp_raise_nil_float_op(0, op);
   return v;
 }
+/* ... and the LEFT operand of a binary `+ - * /`: a nil there has no
+   operator (NoMethodError), as SP_FLOAT_NIL_CK reports it. */
+static sp_float sp_FloatArray_get_recv(sp_FloatArray *a, sp_int i, const char *op) SP_UNUSED;
+static SP_NOINLINE SP_COLD sp_float sp_FloatArray_get_recv(sp_FloatArray *a, sp_int i, const char *op) {
+  sp_float v = sp_FloatArray_get(a, i);
+  if (sp_float_is_nil(v)) sp_raise_nil_float_op(1, op);
+  return v;
+}
 
 /* A divisor that is a power of two the C compiler can see (a literal the
    emitter wrote) makes Ruby's floored % a mask: for b = 2**k, `a % b` is

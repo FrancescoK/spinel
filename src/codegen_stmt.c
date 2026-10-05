@@ -2052,13 +2052,15 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
   return 1;
 }
 
-/* An op-assign's right operand that is an element of a Float array the
-   loop holds the header of, for a slot that cannot be nil: in range of an
+/* An operand of a Float `+ - * /` that is an element of a Float array the
+   loop holds the header of -- an op-assign's right operand for a slot that
+   cannot be nil, or either side of the binary operator: in range of an
    array that holds no nil the element is no nil either, so that read is the
    plain load it always was, and only the rest (out of range, or an array
-   that may hold nil) takes a get that raises on a nil. A marked array's nils
-   set no flag, so it is not one. Answers 1 when it emitted the read. */
-static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
+   that may hold nil) takes a get that raises on a nil, as the operator's
+   left (`left`) or right operand. A marked array's nils set no flag, so it
+   is not one. Answers 1 when it emitted the read. */
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -2072,8 +2074,8 @@ static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
     return 0;
   int tk = ++g_tmp;
   buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, vav[0], b);
-  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_operand(",
-             tk, hn, hd, tk);
+  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_%s(",
+             tk, hn, hd, tk, left ? "recv" : "operand");
   emit_expr(c, vr, b);
   buf_printf(b, ", _t%d, \"%s\"); })", tk, op);
   return 1;
@@ -2137,7 +2139,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
   int nfread = 0;
-  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, &rb)) nfread = 1;
+  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, &rb)) nfread = 1;
   else if (t == TY_INT && fn && (is_div_or_mod(op))) emit_int_divisor(c, v, &rb);
   /* a boxed rhs of a Float op is kept boxed for the nil test below */
   else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
