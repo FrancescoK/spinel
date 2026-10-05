@@ -7,7 +7,9 @@
    codegen's nil receiver guards (local_obj_nil_written, nil_value_node,
    method_ret_nilable), the value-type selection's nil witness, parameter
    tracking's obj_nilable -- and each asks it about the shapes it knows.
-   Step 1 computes the fact; nothing reads it yet.
+   Step 1 computes the fact and changes nothing that reads those answers:
+   --nil-check holds it against them (nil_check_report, codegen_call.c, and
+   vt_nil_witness_check, analyze.c).
 
    The fact is a may-be-nil over-approximation. Where the analysis cannot
    see what reaches a slot it answers "may be nil": an object a builtin call
@@ -33,7 +35,7 @@
    are bounded by the number of flags.
 
    Each may-be-nil answer carries where its nil comes from (NFW_*, the first
-   source found). */
+   source found), which --nil-check reports beside a disagreement. */
 
 #include "analyze_internal.h"
 #include "call_plan.h"
