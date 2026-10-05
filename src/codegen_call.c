@@ -15019,14 +15019,15 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
 
 /* The builtin classes a boxed receiver's count is checked for, and room for
    the native classes after them. */
-#define POLY_ARITY_BUILTINS 10
-#define POLY_ARITY_MAX 16
-static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]);
+#define POLY_ARITY_BUILTINS 21
+#define POLY_ARITY_ADDED 9
+#define POLY_ARITY_MAX 32
+static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32], int *some_take);
 int builtin_arity_violation(Compiler *c, int id) {
   char exp[32]; int eval_recv;
   if (arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 1;
-  const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
-  return poly_arity_plan(c, id, tests, exps) > 0;
+  const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32]; int some_take = 0;
+  return poly_arity_plan(c, id, tests, exps, &some_take) > 0 && !some_take;
 }
 
 /* The raise for a count a method refuses: the receiver (when asked) and the
@@ -15265,14 +15266,16 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
 }
 
 
-/* The same decision for a boxed receiver: the count is wrong for every
-   builtin class that has the method (and for Object's row, which a user
-   object answers with), and no program class, top-level def or reopened
-   builtin can take the call instead. Which error CRuby raises then depends
-   on the class the receiver has at run time: ArgumentError with that
-   class's range where it has the method, NoMethodError where it has not.
-   Fills the classes' runtime tests and ranges; answers how many. */
-static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32]) {
+/* The same decision for a boxed receiver: the builtin classes that have
+   the method (and Object's row, which a user object answers with) and
+   reject the count, when no program class, top-level def or reopened
+   builtin can take the call instead. CRuby raises ArgumentError with that
+   class's range for a receiver of one of them at run time. A class that
+   takes the count drops the guard, or, for the classes listed after
+   POLY_ARITY_ADDED, gets no test and sets *some_take: the call then raises
+   only for some receivers. Fills the classes' runtime tests and ranges;
+   answers how many. */
+static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][32], int *some_take) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -15283,9 +15286,20 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   for (int k = 0; k < c->nclasses; k++)
     if (comp_is_reader(&c->classes[k], name) || comp_is_writer(&c->classes[k], name) ||
         comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
+  /* Every builtin kind a box carries a class of its own for: a boxed
+     Rational, Time or Float Range took the dispatch's NoMethodError for a
+     count its class refuses. A test names its temp at most four times.
+     One of the first nine classes, or Object, taking the count still drops
+     the whole guard: the call may be one the compiler renamed, as a boxed
+     Hash#slice reaches here as `[]`, which String takes. The classes from
+     POLY_ARITY_ADDED on only add tests: one of them taking the count gets
+     no test and sets *some_take, and the others keep theirs, so a File's
+     getbyte() takes no ArgumentError away from a String's. */
   static const char *const CLS[POLY_ARITY_BUILTINS] = {
     "String", "Integer", "Float", "Symbol", "Array", "Hash", "Range",
-    "NilClass", "TrueClass", "Object" };
+    "NilClass", "TrueClass", "Rational", "Complex", "Time", "Regexp",
+    "MatchData", "Enumerator", "Proc", "Method", "File", "Queue", "Mutex",
+    "Object" };
   static const char *const TST[POLY_ARITY_BUILTINS] = {
     "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)",
     "_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_BIGINT",
@@ -15293,9 +15307,21 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
     "_t%d.tag == SP_TAG_SYM && _t%d.tag == SP_TAG_SYM",
     "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)",
     "_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)",
-    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE",
+    "_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE ||"
+    " _t%d.cls_id == SP_BUILTIN_STR_RANGE)",
     "_t%d.tag == SP_TAG_NIL && _t%d.tag == SP_TAG_NIL",
     "_t%d.tag == SP_TAG_BOOL && _t%d.tag == SP_TAG_BOOL",
+    "sp_poly_is_rational(_t%d) || sp_poly_is_brat(_t%d)",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_COMPLEX",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MATCHDATA",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE",
+    "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX",
     "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0" };
   const SpAritySpec *itbl = sp_builtin_arity_spec_tbl;
   if (reopened_owns(c, "Object", name) || reopened_owns(c, "Kernel", name) ||
@@ -15314,10 +15340,16 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
       int a;
       if (!builtin_method_arity(CLS[q], name, &a) && !builtin_method_arity("Object", name, &a))
         continue;                 /* no such method: NoMethodError there */
-      if (a < 0 || a == argc) return 0;
+      if (a < 0 || a == argc) {
+        if (q < POLY_ARITY_ADDED || q == POLY_ARITY_BUILTINS - 1) return 0;
+        *some_take = 1; continue;
+      }
       snprintf(exp, sizeof exp, "%d", a);
     }
-    if (!exp[0]) return 0;        /* this class takes the count */
+    if (!exp[0]) {                /* this class takes the count */
+      if (q < POLY_ARITY_ADDED || q == POLY_ARITY_BUILTINS - 1) return 0;
+      *some_take = 1; continue;
+    }
     tests[n] = TST[q];
     snprintf(exps[n], 32, "%s", exp);
     n++;
@@ -15408,7 +15440,8 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
   if (emit_poly_args_first(c, id, b)) return 1;
   if (g_poly_arity_node == id || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
-  int n = poly_arity_plan(c, id, tests, exps);
+  int some_take = 0;
+  int n = poly_arity_plan(c, id, tests, exps, &some_take);
   if (n == 0) return 0;
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -15419,13 +15452,21 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   for (int q = 0; q < n; q++) {
     buf_puts(g_pre, q ? "else if (" : "if (");
-    buf_printf(g_pre, tests[q], tv, tv);
+    buf_printf(g_pre, tests[q], tv, tv, tv, tv);
     /* the arguments with an effect ran ahead of the tests
        (emit_poly_args_first); rendered here, their own hoisted statements
        would run on the dispatch path too */
     buf_puts(g_pre, ") { ");
-    buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); }\n",
-               argc, exps[q]);
+    /* one kind holds Queue and SizedQueue, whose push takes 1 and 1..2:
+       the table keeps the wider range, and the receiver's capacity says
+       which it is (as emit_builtin_arity_guard reads it) */
+    if (strstr(tests[q], "SP_BUILTIN_QUEUE") && sp_streq(exps[q], "1..2"))
+      buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", ((sp_queue *)_t%d.v.p)->max > 0"
+                        " ? \"wrong number of arguments (given %d, expected 1..2)\""
+                        " : \"wrong number of arguments (given %d, expected 1)\"); }\n", tv, argc, argc);
+    else
+      buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); }\n",
+                 argc, exps[q]);
     if (q + 1 < n) emit_indent(g_pre, g_indent);
   }
   view_bind(recv, "_t%d", tv);
