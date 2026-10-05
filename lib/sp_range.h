@@ -17,6 +17,23 @@
 #include "sp_types.h"   /* sp_Range */
 #include "sp_array.h"   /* sp_IntArray_from_range / _from_range_step */
 
+/* An Integer against a Float, compared exactly as CRuby does (#7505):
+   -1, 0 or 1, or 2 when the Float is NaN. Converting the Integer to a double
+   is exact only up to 2^53; above it 2**53 + 1 and 2.0**53 compared equal.
+   The double comparison decides every case it can; an apparent tie with an
+   Integer past 2^53 is settled on the integers, where the Float is integral. */
+static SP_INLINE int sp_int_flt_cmp(sp_int i, sp_float d) {
+  if (d != d) return 2;
+  double di = (double)i;
+  if (di < d) return -1;
+  if (di > d) return 1;
+  if (i >= -9007199254740992LL && i <= 9007199254740992LL) return 0;
+  if (d >= 9223372036854775808.0) return -1;
+  if (d < -9223372036854775808.0) return 1;
+  long long t = (long long)d;
+  return ((long long)i > t) - ((long long)i < t);
+}
+
 /* Boxed copy/freeze operations stay out of the generated translation unit. */
 sp_RbVal sp_range_dup(sp_RbVal v, int keep_frozen);
 void sp_range_freeze(sp_RbVal v);
@@ -108,6 +125,7 @@ const char *sp_range_inspect(sp_Range r);
 sp_FloatRange sp_frange_new(sp_float f, sp_float l, sp_int e);
 sp_FloatRange sp_frange_new_o(sp_float f, sp_float l, sp_int e, sp_int om);
 sp_bool sp_frange_cover(sp_FloatRange r, sp_float x);
+sp_bool sp_frange_cover_i(sp_FloatRange r, sp_int x);
 sp_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b);
 const char *sp_frange_inspect(sp_FloatRange r);
 sp_RbVal sp_box_frange(sp_FloatRange v);

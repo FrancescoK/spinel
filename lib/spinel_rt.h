@@ -3425,6 +3425,7 @@ static sp_float sp_poly_to_f_meth(sp_RbVal v) {
    nil and a String among them, is not one (CRuby compares, and answers
    false). */
 static sp_bool sp_frange_cover_poly(sp_FloatRange r, sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return sp_frange_cover_i(r, v.v.i);   /* exactly (#7505) */
   if (v.tag == SP_TAG_FLT || v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT ||
       (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)))
     return sp_frange_cover(r, sp_poly_to_f(v));
@@ -3602,17 +3603,21 @@ static SP_UNUSED sp_bool sp_range_cover_rng(sp_Range a, sp_Range b) {
   if (a.first != INTPTR_MIN && (b.first == INTPTR_MIN || b.first < a.first)) return 0;
   sp_float ae = sp_range_end_num(a), be = sp_range_end_num(b);
   int aex = sp_range_excl_end(a), bex = sp_range_excl_end(b);
-  if (aex == bex) return be <= ae;
+  /* b's end against a's, exactly where one is an Integer (#7505) */
+  int c = (!b.fe && a.fe) ? sp_int_flt_cmp(b.last, a.fend)
+        : (b.fe && !a.fe) ? -sp_int_flt_cmp(a.last, b.fend)
+        : (be > ae) - (be < ae);
+  if (aex == bex) return c <= 0;
   if (aex) {
-    if (be < ae) return 1;
+    if (c < 0) return 1;
     /* b's end at a's excluded one: only an Integer b reaches below it */
     return 0;
   }
-  if (be <= ae) return 1;
+  if (c <= 0) return 1;
   /* b excludes an end past a's: its greatest member decides; a Float
      excluded end has none (CRuby's rescued TypeError) */
   if (b.fe) return 0;
-  return (sp_float)(b.last - 1) <= ae;
+  return a.fe ? sp_int_flt_cmp(b.last - 1, a.fend) <= 0 : b.last - 1 <= a.last;
 }
 /* Range#cover?(range) for a Float Range a and an Integer Range b, as
    sp_range_cover_rng decides it for an Integer a (CRuby's
@@ -3642,11 +3647,13 @@ static SP_UNUSED sp_RbVal sp_float_clamp_range(double x, sp_Range r) {
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
   /* a begin past the end is out of order, as for the two-argument form (the
      same wording as sp_int_clamp_ck) */
-  if (r.first != INTPTR_MIN && (r.fe || r.last != INTPTR_MAX) && (double)r.first > sp_range_end_num(r))
+  if (r.first != INTPTR_MIN && (r.fe || r.last != INTPTR_MAX) &&
+      (r.fe ? sp_int_flt_cmp(r.first, r.fend) == 1 : r.first > r.last))
     sp_raise_cls("ArgumentError", "min argument must be less than or equal to max argument");
-  if (r.first != INTPTR_MIN && x < (double)r.first) return sp_box_int(r.first);
+  /* x against the Integer bounds exactly (#7505) */
+  if (r.first != INTPTR_MIN && sp_int_flt_cmp(r.first, x) == 1) return sp_box_int(r.first);
   if (r.fe) return x > r.fend ? sp_box_float(r.fend) : sp_box_float(x);
-  if (r.last != INTPTR_MAX && x > (double)r.last) return sp_box_int(r.last);
+  if (r.last != INTPTR_MAX && sp_int_flt_cmp(r.last, x) < 0) return sp_box_int(r.last);
   return sp_box_float(x);
 }
 /* Range#cover?(float_range) on an Integer range: the operand's ends against
@@ -3909,22 +3916,8 @@ extern sp_bool sp_convert_failed;
 /* Hash subset/superset comparisons (boxed, any variant pairing): every pair
    of `a` present in `b` with an equal value; strict adds len <. */
 static void sp_poly_hash_pair(sp_RbVal v, sp_int i, sp_RbVal *k, sp_RbVal *out);
-/* An Integer against a Float, compared exactly as CRuby does (#7505):
-   -1, 0 or 1, or 2 when the Float is NaN. Converting the Integer to a double
-   is exact only up to 2^53; above it 2**53 + 1 and 2.0**53 compared equal.
-   The double comparison decides every case it can; an apparent tie with an
-   Integer past 2^53 is settled on the integers, where the Float is integral. */
-static SP_INLINE int sp_int_flt_cmp(sp_int i, sp_float d) {
-  if (d != d) return 2;
-  double di = (double)i;
-  if (di < d) return -1;
-  if (di > d) return 1;
-  if (i >= -9007199254740992LL && i <= 9007199254740992LL) return 0;
-  if (d >= 9223372036854775808.0) return -1;
-  if (d < -9223372036854775808.0) return 1;
-  long long t = (long long)d;
-  return ((long long)i > t) - ((long long)i < t);
-}
+/* sp_int_flt_cmp, an Integer against a Float compared exactly (#7505), is in
+   sp_range.h, where the Range helpers of lib/sp_cold.c read it too. */
 static sp_bool sp_poly_eq_slow(sp_RbVal a, sp_RbVal b);
 /* Two plain Integers are what a boxed comparison actually holds, and no
    arm of the body below can match either tag -- a user `==` needs a user

@@ -6880,8 +6880,9 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
        boxed result); an in-range Int receiver stays Int. */
     int tv3 = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); sp_FloatRange _fr%d = ", tv3, r, tv3); emit_expr(c, argv[0], b);
-    buf_printf(b, "; ((double)_t%d < _fr%d.first) ? sp_box_float(_fr%d.first)"
-                  " : ((double)_t%d > _fr%d.last) ? sp_box_float(_fr%d.last)"
+    /* the receiver against the bounds exactly (sp_int_flt_cmp, #7505) */
+    buf_printf(b, "; (sp_int_flt_cmp(_t%d, _fr%d.first) < 0) ? sp_box_float(_fr%d.first)"
+                  " : (sp_int_flt_cmp(_t%d, _fr%d.last) == 1) ? sp_box_float(_fr%d.last)"
                   " : sp_box_int(_t%d); })", tv3, tv3, tv3, tv3, tv3, tv3, tv3);
   }
   else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
@@ -6897,8 +6898,8 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
     if (lo3 >= 0) emit_float_expr(c, lo3, b); else buf_puts(b, "-HUGE_VAL");
     buf_printf(b, "; double _hi%d = ", tv3);
     if (hi3 >= 0) emit_float_expr(c, hi3, b); else buf_puts(b, "HUGE_VAL");
-    buf_printf(b, "; ((double)_t%d < _lo%d) ? sp_box_float(_lo%d)"
-                  " : ((double)_t%d > _hi%d) ? sp_box_float(_hi%d)"
+    buf_printf(b, "; (sp_int_flt_cmp(_t%d, _lo%d) < 0) ? sp_box_float(_lo%d)"
+                  " : (sp_int_flt_cmp(_t%d, _hi%d) == 1) ? sp_box_float(_hi%d)"
                   " : sp_box_int(_t%d); })",
                tv3, tv3, tv3, tv3, tv3, tv3, tv3);
   }

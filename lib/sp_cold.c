@@ -3427,8 +3427,13 @@ sp_bool sp_range_include(sp_Range *r, sp_int x){SP_GC_ROOT(r);
 /* A Float is compared against the bounds as a Float, never truncated: 2.5 is
    not in 1..2. The sentinels leave their side open, as in sp_range_include. */
 sp_bool sp_range_cover_f(sp_Range *r, sp_float x){
-  if (r->fe) return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->fe==2?x<r->fend:x<=r->fend);
-  return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->last==INTPTR_MAX||(r->excl?x<(sp_float)r->last:x<=(sp_float)r->last));}
+  if (x != x) return 0;   /* NaN is in no range */
+  /* an Integer bound against x exactly (#7505): a double past 2^53 rounds */
+  if (r->first!=INTPTR_MIN && sp_int_flt_cmp(r->first, x) > 0) return 0;
+  if (r->fe) return r->fe==2?x<r->fend:x<=r->fend;
+  if (r->last==INTPTR_MAX) return 1;
+  int c = sp_int_flt_cmp(r->last, x);
+  return r->excl ? c > 0 : c >= 0;}
 sp_Range sp_range_new_fend(sp_int f, sp_float e, sp_int x) {
   sp_Range r = sp_range_new(f, 0, 0);
   r.fend = e; r.fe = x ? 2 : 1;
@@ -3678,6 +3683,16 @@ sp_FloatRange sp_frange_new_o(sp_float f, sp_float l, sp_int e, sp_int om) {
 sp_bool sp_frange_cover(sp_FloatRange r, sp_float x) {
   if (r.first != -HUGE_VAL && x < r.first) return 0;
   if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
+  return 1;
+}
+/* ...and an Integer x, compared with the bounds exactly (#7505): converted to
+   a double first, an Integer past 2^53 rounded onto a bound */
+sp_bool sp_frange_cover_i(sp_FloatRange r, sp_int x) {
+  if (r.first != -HUGE_VAL && sp_int_flt_cmp(x, r.first) < 0) return 0;
+  if (r.last != HUGE_VAL) {
+    int c = sp_int_flt_cmp(x, r.last);
+    if (r.excl ? c >= 0 : c > 0) return 0;
+  }
   return 1;
 }
 sp_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) {
