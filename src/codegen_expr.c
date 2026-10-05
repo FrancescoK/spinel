@@ -4232,7 +4232,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
            `h[yield(x)] ||= []` as the hash the method returns. */
         TyKind _ynt = repr_of(c, id).as_ty;
         int _ytail = 1;
-        if (_ynt == TY_POLY) {
+        if (_ynt == TY_POLY || _ynt == TY_UNKNOWN) {
           Scope *_ys = comp_scope_of(c, id);
           int _last = _ys ? scope_body_last(c, (int)(_ys - c->scopes)) : -1;
           if (_last >= 0 && _last != id) {
@@ -4243,11 +4243,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
               int _tn = 0; const int *_tb = _ts >= 0 ? nt_arr(nt, _ts, "body", &_tn) : NULL;
               if (_tn > 0) _tl = _tb[_tn - 1];
             }
-            if (_tl != id) _ytail = 0;
+            if (_tl != id && block_given_tail_then_last(c, _last) != id) _ytail = 0;
           }
         }
         emit_yield_proc_call(c, nt_ref(nt, id, "arguments"),
-                             ((_ynt != TY_UNKNOWN && _ynt != TY_POLY) || (_ynt == TY_POLY && !_ytail))
+                             ((_ynt != TY_UNKNOWN && _ynt != TY_POLY) || !_ytail)
                                ? _ynt : g_yield_slot_ty,
                              b, 0, 1); }
       return;
