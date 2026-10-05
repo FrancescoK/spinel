@@ -5059,6 +5059,10 @@ static void synth_enum_to_a(Compiler *c) {
              when its #each never yields: the mixin is simply empty (#3755) */
           an_class_includes_enumerable(c, m->class_id))) continue;
     if (comp_method_in_class(c, m->class_id, "__enum_to_a") >= 0) continue;
+    /* a module's methods are compiled into each class that includes it,
+       which gets its own materializer; the module has no instances, and
+       one of its own called methods that exist only in those copies */
+    if (comp_class_is_module(c, &c->classes[m->class_id])) continue;
     int dup = 0;
     for (int k = 0; k < ncls; k++) if (cls[k] == m->class_id) { dup = 1; break; }
     if (dup) continue;
