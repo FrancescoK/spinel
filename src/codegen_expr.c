@@ -1528,6 +1528,16 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         emit_local_ref(c, id, lrn, b);
         return 1;
       }
+      /* a parameter that only reads the bytes for the length of the call
+         takes the live buffer: the copy below is O(len) per call (#7482) */
+      if (repr_of(c, id).read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)) {
+        buf_puts(b, "(");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, " ? sp_String_cstr(");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, ") : NULL)");
+        return 1;
+      }
       /* A mutable-string local read yields an independent GC string copy: its
          sp_String buffer is not itself a GC object, so a bare cstr pointer
          would dangle once the wrapper is unreachable (e.g. after `return`).
@@ -1951,6 +1961,10 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       view_pop(c, vsm);
       if (is_sb) {
         if (svm) buf_printf(b, "%s", srefI);
+        /* a parameter that only reads the bytes for the length of the call
+           takes the live buffer (#7482) */
+        else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
+          buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", srefI, srefI);
         else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
                         srefI, srefI, srefI);
         return 1;

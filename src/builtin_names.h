@@ -22,6 +22,7 @@ int is_add_sub_mul(const char *n);    /* + - * */
 int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operators */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
+int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
 int is_tap_alias(const char *n);      /* tap then yield_self */
 int is_quantifier(const char *n);     /* all? any? none? one? */
