@@ -33645,6 +33645,74 @@ static void vt_nil_witness_check(Compiler *c, const unsigned char *cand) {
 }
 
 /* Value-type objects: a small, immutable, scalar-only leaf class is represented by value, unless an instance is boxed, held in a class variable or captured by a proc (analyze_program's steps, in their order) */
+/* A String argument of a C function the program binds (ffi_func, a
+   package's native_func) takes a shared or appended String's live buffer.
+
+   Such a String is an sp_String * handle, and its read face is a full copy,
+   made so that no `const char *` outlives the bytes a growth reallocates.
+   A bound C function reads a :str argument for the length of the call and
+   runs no Ruby code meanwhile, so nothing can grow the String under it, and
+   the copy is never observed: `LibC.strlen(s)` copied all of a 1 MB `s` at
+   every call. The call's other operands have to be plain reads or literals,
+   so nothing runs between the borrow and the call either. Nothing becomes
+   shared that was not; only the read of a handle stops copying, as
+   mark_reader_read_only_operands does for a builtin accessor. */
+static int native_str_operand_plain(Compiler *c, int a) {
+  switch (nt_kind(c->nt, a)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_SelfNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_StringNode: case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Is argument a a read of a String slot held as an sp_String * handle? */
+static int native_str_handle_read(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (c->strbuf_box[a] || c->strbuf_handle_demand[a] || c->strbuf_read_raw[a]) return 0;
+  if (nt_kind(nt, a) == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, a, "name");
+    LocalVar *lv = ln ? scope_local(comp_scope_of(c, a), ln) : NULL;
+    return lv && lv->type == TY_STRBUF && repr_of_slot(c, lv).kind == RK_STRBUF;
+  }
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, a, "name");
+    Scope *s = comp_scope_of(c, a);
+    /* a class method's @x is the class's own ivar, another slot */
+    if (!nm || !s || s->is_cmethod) return 0;
+    int cid = s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
+  }
+  return 0;
+}
+
+static void mark_native_str_operands(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int recv = nt_ref(nt, n, "receiver");
+    const char *name = nt_str(nt, n, "name");
+    if (recv < 0 || !name || nt_ref(nt, n, "block") >= 0) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    const char *mod = nt_str(nt, recv, "name");
+    if (!mod || (ffi_find_func(c, mod, name) < 0 && comp_native_find(c, mod, name) < 0)) continue;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    int plain = 1, any = 0;
+    for (int i = 0; i < argc && plain; i++) {
+      int h = native_str_handle_read(c, argv[i]);
+      any |= h;
+      plain = h || native_str_operand_plain(c, argv[i]);
+    }
+    if (!plain || !any) continue;
+    for (int i = 0; i < argc; i++)
+      if (native_str_handle_read(c, argv[i])) c->strbuf_read_raw[argv[i]] = 1;
+  }
+}
+
 static void an_phase_value_types(Compiler *c) {
   /* The nil fact (analyze_nil.c, #7444): whether each object-typed node and
      slot may hold nil, from the settled types, ahead of the layout choice
@@ -33865,6 +33933,9 @@ static void an_phase_value_types(Compiler *c) {
     if (ty_is_object(lt)) { int q = ty_object_class(lt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
   }
   if (vt_cand) vt_nil_witness_check(c, vt_cand);
+  /* a bound C function's String argument reads a handle's live buffer,
+     off the final slots */
+  mark_native_str_operands(c);
   free(vt_cand);
 }
 
