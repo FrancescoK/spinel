@@ -1450,6 +1450,15 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      both a reader argument and a container element. */
   if (rp->strbuf_src == RS_DEMANDED) {
     char sref_h[1024];
+    /* --share-strings: a call answering the handle, however long its text */
+    { Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_call_handle(c, node, &hb)) {
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        free(hb.p);
+        RC(RF_STRBUF_HANDLE, RW_NONE);
+        return;
+      }
+      free(hb.p); }
     int sv_mh = view_push_repr(c, node, VR_STRBUF_BOX, 1);
     int got_h = strbuf_slot_ref(c, node, sref_h, sizeof sref_h);
     view_pop(c, sv_mh);
@@ -1475,8 +1484,12 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     }
   }
   /* a demanded literal / expression store: wrap a FRESH handle so the
-     container element is mutable in place (#3227 P3) */
-  buf_puts(b, "sp_box_obj(sp_String_new_shared(");
+     container element is mutable in place (#3227 P3). Under
+     --share-strings a call reaches here too, and a String it answers may be
+     nil: box that nil as nil rather than as a handle with no String. */
+  { int may_nil = repr_share_rule(c) && nt_kind(c->nt, node) != NK_StringNode &&
+                  nt_kind(c->nt, node) != NK_InterpolatedStringNode;
+    buf_puts(b, may_nil ? "sp_box_nullable_obj(sp_String_new_shared(" : "sp_box_obj(sp_String_new_shared("); }
   { Buf eb0; memset(&eb0, 0, sizeof eb0);
     int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
     emit_str_expr(c, node, &eb0);
