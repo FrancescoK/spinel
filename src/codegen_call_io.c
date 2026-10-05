@@ -158,6 +158,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          sp_poly_arg_int_chk. */
       if (boxed_desc_control_arity(name, argc)) {
         int trv = ++g_tmp, first_int = sp_streq(name, "advise") ? 1 : 0, tadv = 0;
+        /* an offset's nil is worded by NUM2OFFT (emit_int_expr_offt) */
+        int offt = is_io_offset_move(name);
         int targ[3] = {0, 0, 0}, theld[3] = {0, 0, 0};
         buf_printf(b, "({ sp_RbVal _t%d = ", trv);
         emit_boxed(c, recv, b);
@@ -174,7 +176,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           targ[ai] = ++g_tmp;
           if (ak == TY_INT || ak == TY_FLOAT) {
             buf_printf(b, "sp_int _t%d = ", targ[ai]);
-            emit_int_expr(c, argv[ai], b);
+            if (ai == 0 && offt) emit_int_expr_offt(c, argv[ai], b);
+            else emit_int_expr(c, argv[ai], b);
             buf_puts(b, "; ");
           }
           else {
@@ -192,7 +195,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "if (strcmp(sp_io_kind_name(_t%d), \"File\") != 0) "
                         "sp_raise_poly_nomethod(\"flock\", _t%d); ", tio2, trv);
         for (int ai = first_int; ai < argc; ai++)
-          if (theld[ai])
+          if (theld[ai] && ai == 0 && offt)
+            buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk_w(_t%d, 2); ", targ[ai], theld[ai]);
+          else if (theld[ai])
             buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", targ[ai], theld[ai]);
         if (sp_streq(name, "pos=")) {
           buf_printf(b, "sp_File_seek(_t%d, _t%d, 0); _t%d; })", tio2, targ[0], targ[0]);
@@ -391,7 +396,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_io_stat_handle(_t%d); })", tio2);
       else if (sp_streq(name, "seek") && argc >= 1) {
         buf_printf(b, "sp_File_seek(_t%d, ", tio2);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_int_expr_offt(c, argv[0], b); buf_puts(b, ", ");
         if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
@@ -399,15 +404,15 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_File_tell(_t%d); })", tio2);
       else if (sp_streq(name, "pread") && argc >= 1) {
         buf_printf(b, "sp_File_pread(_t%d, ", tio2);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+        emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+        if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
       else if (sp_streq(name, "pwrite") && argc >= 1) {
         buf_printf(b, "%s(_t%d, ", comp_ntype(c, argv[0]) == TY_STRING
                                    ? "sp_File_pwrite_bin" : "sp_File_pwrite", tio2);
         emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+        if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
       else if (sp_streq(name, "fsync") || sp_streq(name, "fdatasync"))
@@ -731,8 +736,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[2], b); buf_puts(b, "); ");
         buf_printf(b, "const char *_t%d = ", tpr);
       }
-      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      /* the length is NUM2SIZET's, the offset NUM2OFFT's: each words its
+         nil its own way */
+      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")");
       if (bufn) buf_printf(b, "; lv_%s = _t%d; _t%d; })", rename_local(bufn), tpr, tpr);
       free(rb.p); return 1;
@@ -743,7 +750,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_printf(b, "%s(%s, ", comp_ntype(c, argv[0]) == TY_STRING
                                ? "sp_File_pwrite_bin" : "sp_File_pwrite", r);
       emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")"); free(rb.p); return 1;
     }
     if (sp_streq(name, "reopen") && argc >= 1) {

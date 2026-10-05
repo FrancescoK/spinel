@@ -40,6 +40,8 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
      $bN  argument N boxed (emit_boxed)
      $fN  argument N as a double (emit_float_expr)
      $iN  argument N as an sp_int (emit_int_expr)
+     $oN  argument N as an IO offset, an sp_int whose nil CRuby words by
+          NUM2OFFT (emit_int_expr_offt)
      $sN  argument N as a String (emit_str_expr)
      $cN  argument N as an sp_Complex (emit_complex_coerce)
      $qN  argument N as an sp_Rational (emit_rat_coerce) */
@@ -101,7 +103,7 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, "%d", tn[tk - tnames]);
       p++;
     }
-    else if (p[0] == '$' && p[1] && strchr("ebficqs", p[1]) &&
+    else if (p[0] == '$' && p[1] && strchr("ebficoqs", p[1]) &&
              p[2] >= '0' && p[2] <= '9' && p[2] - '0' < argc) {
       int a = argv[p[2] - '0'];
       switch (p[1]) {
@@ -109,6 +111,7 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
       case 'b': emit_boxed(c, a, b); break;
       case 'f': emit_float_expr(c, a, b); break;
       case 'i': emit_int_expr(c, a, b); break;
+      case 'o': emit_int_expr_offt(c, a, b); break;
       case 's': emit_str_expr(c, a, b); break;
       case 'c': emit_complex_coerce(c, a, b); break;
       default:  emit_rat_coerce(c, a, b); break;

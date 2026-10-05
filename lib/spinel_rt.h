@@ -229,6 +229,8 @@ SP_NORETURN SP_COLD void sp_raise_nil_to_int(int of_wording);
   if (SP_UNLIKELY((a) == SP_INT_NIL)) sp_raise_nil_to_int(0)
 #define SP_INT_NIL_ARG_CK_OF(a) \
   if (SP_UNLIKELY((a) == SP_INT_NIL)) sp_raise_nil_to_int(1)
+#define SP_INT_NIL_ARG_CK_OFFT(a) \
+  if (SP_UNLIKELY((a) == SP_INT_NIL)) sp_raise_nil_to_int(2)
 /* The same sentinel test ahead of a comparison (see sp_raise_nil_cmp): the
    left nil is NoMethodError, the right the Comparable ArgumentError. Emitted
    only for an operand that can carry the sentinel; a literal or an
@@ -3324,6 +3326,13 @@ static SP_INLINE sp_Proc *sp_bm_arg_proc(sp_RbVal v) {
 static SP_INLINE sp_int sp_poly_arg_int_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_INT && v.v.i != SP_INT_NIL) return v.v.i;
   return sp_poly_arg_int_chk_slow(v);
+}
+/* The same, for a slot whose nil CRuby words by another conversion
+   (sp_raise_nil_to_int's `of_wording`): rb_convert_type's, or an IO
+   offset's NUM2OFFT. */
+static SP_INLINE sp_int sp_poly_arg_int_chk_w(sp_RbVal v, int wording) {
+  if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_INT && v.v.i == SP_INT_NIL)) sp_raise_nil_to_int(wording);
+  return sp_poly_arg_int_chk(v);
 }
 /* Integer#div / #modulo with a divisor known only at run time, in a call
    typed Integer. A Float divisor floors the real quotient for div; for
