@@ -18,6 +18,8 @@
 "f=1.5"
 "s=ab"
 "n=INT"
+"w=INT"
+7
 "ab"
 false
 "ba"
