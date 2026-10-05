@@ -4766,26 +4766,42 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
   return nt_kind(nt, mblk) == NK_BlockNode && emit_merge_block_boxed(c, id, recv, arg, mblk, b);
 }
 
-/* merge!/update on a typed Hash given an argument typed as no Hash: the
-   receiver and every argument run, in order, then the nil and frozen
-   checks; then each argument in turn merges in, as CRuby's does, until the
-   first that converts to no Hash raises its TypeError -- a boxed one at run
-   time, the typed misfit there. The arms that merge took no such argument,
-   and the call fell to NoMethodError. A block form keeps those arms when a
-   Hash comes first: the block resolves its conflicts. Each argument is a
-   statement of its own after its own prelude, so one built in place does
-   not run ahead of the ones before it. */
+/* merge!/update on a typed Hash given an argument typed as no Hash, or a
+   boxed one: the receiver and every argument run, in order, then the nil and
+   frozen checks; then each argument in turn merges in, as CRuby's does, until
+   the first that converts to no Hash raises its TypeError -- a boxed one at
+   run time, the typed misfit there. A boxed Hash merges pair by pair through
+   the store []= takes (sp_poly_hash_merge_set), which raises for a pair the
+   receiver's variant cannot hold, and with a block through
+   sp_poly_hash_merge_blk, whose block resolves the conflicts. The arms that
+   merge took neither, and the call fell to NoMethodError. Each argument is a
+   statement of its own after its own prelude, so one built in place does not
+   run ahead of the ones before it. */
 static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
   if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id) ||
       an_zero_arg_builtin_shadowed(c, name, argc) || user_defines_or_reads(c, name)) return 0;
-  int bad = -1;
-  for (int i = 0; i < argc && bad < 0; i++)
+  int bad = -1, boxed = 0, other = 0, runs = 0, blk = nt_ref(nt, id, "block") >= 0;
+  for (int i = 0; i < argc && bad < 0; i++) {
+    TyKind at = comp_ntype(c, argv[i]);
     if (nt_kind(nt, argv[i]) != NK_HashNode && face_arg_misfit(c, PF_HASH, argv[i])) bad = i;
-  if (bad < 0 || (bad > 0 && nt_ref(nt, id, "block") >= 0)) return 0;
+    else if (at == TY_POLY) boxed = 1;
+    else if (at != rt) other = 1;
+    if (i > 0 && subtree_has_side_effect(c, argv[i])) runs = 1;
+  }
+  /* several Hashes the one-Hash arms and the same-variant row cannot take
+     in CRuby's order: a block, another variant, or a later argument that
+     runs code before the first merge */
+  int several = argc >= 2 && (blk || other || runs);
+  if (bad < 0 && !several && !(boxed && rt != TY_POLY_POLY_HASH)) return 0;
+  /* a block resolves the conflicts of the Hashes that merge: its proc */
+  int tblk = blk && (bad != 0) ? poly_call_blk_proc(c, id, -1) : -1;
+  if (blk && bad != 0 && tblk < 0) return 0;
+  int last = bad >= 0 ? bad : argc - 1;
   int tr = ++g_tmp, t0 = g_tmp + 1;
   g_tmp += argc;
   Buf *sv_pre = g_pre;
@@ -4793,7 +4809,17 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   for (int i = -1; i < argc; i++) {
     Buf ap = {0, 0, 0}, av = {0, 0, 0};
     g_pre = &ap;
-    if (i < 0) emit_expr(c, nt_ref(nt, id, "receiver"), &av);
+    if (i < 0) {
+      /* a chain's own receiver may be held boxed (a captured local) where
+         the chain's links are typed */
+      if (repr_of(c, recv).kind == RK_BOXED) {
+        Buf rv = {0, 0, 0};
+        emit_expr(c, recv, &rv);
+        emit_unbox_text(c, rt, rv.p ? rv.p : "sp_box_nil()", &av);
+        free(rv.p);
+      }
+      else emit_expr(c, recv, &av);
+    }
     else emit_boxed(c, argv[i], &av);
     g_pre = sv_pre;
     if (ap.p) buf_puts(b, ap.p);
@@ -4805,11 +4831,16 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", tr, tr, hash_box_cls(rt));
   char rtxt[32];
   snprintf(rtxt, sizeof rtxt, "_t%d", tr);
-  for (int i = 0; i <= bad; i++) {
+  for (int i = 0; i <= last; i++) {
     buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                   " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d))); ",
                t0 + i, t0 + i, t0 + i);
-    if (i < bad) { buf_puts(b, "sp_poly_hash_merge_into("); emit_boxed_text(c, rt, rtxt, b); buf_printf(b, ", _t%d); ", t0 + i); }
+    if (i == bad) continue;
+    if (tblk >= 0) {
+      buf_puts(b, "sp_poly_hash_merge_blk("); emit_boxed_text(c, rt, rtxt, b);
+      buf_printf(b, ", _t%d, _t%d, \"%s\"); ", t0 + i, tblk, name);
+    }
+    else { buf_puts(b, "sp_poly_hash_merge_set("); emit_boxed_text(c, rt, rtxt, b); buf_printf(b, ", _t%d); ", t0 + i); }
   }
   buf_printf(b, "_t%d; })", tr);
   return 1;
@@ -11397,16 +11428,28 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
          an object its class). Each argument is a statement of its own,
          after its own prelude: as one expression, an argument that needs a
          prelude (a literal built in place) ran ahead of the ones before it */
+      /* A Hash merges each argument before it converts the next, so the
+         Hashes ahead of the misfit merge into the box first (merge!/update
+         are the Hash names that take arguments of its kind) */
       Buf *sv_pre = g_pre; g_pre = &pre;
-      int tm = ++g_tmp;
+      int tm = ++g_tmp, th0 = g_tmp + 1;
+      g_tmp += misfit;
       buf_printf(&pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); ", tm, tm);
       for (int i = 0; i < argc; i++) {
         Buf ab = {0, 0, 0};
         emit_boxed(c, argv[i], &ab);
         if (i == misfit) buf_printf(&pre, "_t%d = %s; ", tm, ab.p ? ab.p : "sp_box_nil()");
+        else if (kind == PF_HASH && i < misfit)
+          buf_printf(&pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", th0 + i, ab.p ? ab.p : "sp_box_nil()", th0 + i);
         else buf_printf(&pre, "(void)(%s); ", ab.p ? ab.p : "0");
         free(ab.p);
       }
+      if (kind == PF_HASH && misfit > 0)
+        buf_printf(&pre, "if (sp_gc_is_frozen(_t%d.v.p)) sp_raise_frozen_hash_at(_t%d.v.p, _t%d.cls_id); ", box, box, box);
+      for (int i = 0; kind == PF_HASH && i < misfit; i++)
+        buf_printf(&pre, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
+                         " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d)));"
+                         " sp_poly_hash_merge_set(_t%d, _t%d); ", th0 + i, th0 + i, th0 + i, box, th0 + i);
       buf_printf(&val, "sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into %s\", sp_convert_src_name(_t%d)))",
                  kind == PF_STRING ? "String" : kind == PF_HASH ? "Hash" : "Array", tm);
       g_pre = sv_pre;
