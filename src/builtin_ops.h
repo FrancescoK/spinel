@@ -298,4 +298,57 @@ int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
    that builtin (BOPF_ARGS_BUILTIN), looked up as bop_answers_self does. */
 int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 
+/* ---- What a builtin call does with the Strings it is handed (#6765) ----
+   The facts --share-strings reads (analyze_share.c): which of the call's
+   values the answer can be, and where the arguments can end up. One row per
+   receiver family and name. A name with no row on a family that has a
+   default row ("*") takes the default; one on a family without a default
+   is not followed (the analysis treats it as unknown). */
+#define BOP_KERNEL   ((TyKind)-4)   /* a receiverless builtin (Kernel) */
+#define BOP_ANY_RECV ((TyKind)-5)   /* Object's methods, on any receiver */
+#define BOP_CALLABLE ((TyKind)-6)   /* a proc, a lambda or a Method */
+
+typedef enum {
+  BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed */
+  BSH_RECV,       /* answers its receiver */
+  BSH_ELEM,       /* answers an element of the receiver (with a count: a SUB) */
+  BSH_SUB,        /* answers a container of the receiver's elements */
+  BSH_STORE_LAST, /* stores its last argument among the receiver's elements */
+  BSH_STORE_ALL,  /* stores every argument among them */
+  BSH_STORE_TAIL, /* stores every argument but the first (insert, fill) */
+  BSH_MERGE,      /* stores the elements of its container arguments; answers
+                     the receiver or a container of both */
+  BSH_ARGS,       /* answers its arguments, or a container of them (p, Array) */
+  BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
+  BSH_ITER,       /* block parameters bind elements; answers the receiver or a
+                     container of the elements and the block's values */
+  BSH_ITER_SUB,   /* block parameters bind containers of elements (each_slice) */
+  BSH_ITER_FIND,  /* block parameters bind elements; answers one of them */
+  BSH_ITER_FRESH, /* block parameters bind fresh values (each_char, each_line) */
+  BSH_ITER_MEMO0, /* inject/reduce: parameter 0 the memo (argument 0), the
+                     others elements; answers the memo or the block's value */
+  BSH_ITER_MEMO1, /* each_with_object: parameter 1 the memo (argument 0) */
+  BSH_ITER_SELF,  /* tap: parameter 0 the receiver; answers the receiver */
+  BSH_ITER_THEN,  /* then: parameter 0 the receiver; answers the block's value */
+  BSH_FETCH,      /* answers an element, or its last argument (fetch's default) */
+  BSH_ELEM_N,     /* answers an element, or with a count a container of them
+                     (first, last, pop, shift, sample) */
+  BSH_CALL,       /* calls a proc or a Method with its arguments */
+  BSH_METHOD_REF, /* makes a Method (or defines one) of the method its first
+                     argument names: that method is called from anywhere */
+  BSH_IVAR_GET,   /* answers the ivar its first argument names */
+  BSH_IVAR_SET,   /* stores its second argument in the ivar its first names */
+  BSH_EXEC,       /* runs its block with its arguments (instance_exec) and
+                     answers the block's value */
+  BSH_NEW         /* constructs: its arguments go to initialize */
+} BopShare;
+
+/* The BSH_* of `name` on receiver family fam (TY_STRING, BOP_ANY_ARRAY,
+   BOP_ANY_HASH, TY_IO, BOP_KERNEL, BOP_ANY_RECV, or a scalar kind), the
+   family's default row's when the name has none, or 0 when the family has
+   no default either. */
+int bop_share(TyKind fam, const char *name);
+/* the name's own row only, without the family's default */
+int bop_share_named(TyKind fam, const char *name);
+
 #endif
