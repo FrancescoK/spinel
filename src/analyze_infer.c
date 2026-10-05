@@ -8205,8 +8205,16 @@ TyKind infer_uncached(Compiler *c, int id) {
   NodeKind nk = nt_kind(nt, id);
   /* A read marked strbuf_box yields the shared sp_String* HANDLE, whatever
      the node kind: a container-stored local read, a demanded string literal
-     element, or a demanded call-result store (#3227). */
-  if (c->strbuf_box[id]) return TY_STRBUF;
+     element, or a demanded call-result store (#3227). The mark is set on
+     a String; a value that has since widened to poly is no handle -- the
+     demand saw `x.to_s.strip` while the re-narrow had x re-cleared, and
+     the box the value now is was handed on as a String. */
+  if (c->strbuf_box[id]) {
+    c->strbuf_box[id] = 0;
+    TyKind u = infer_uncached(c, id);
+    c->strbuf_box[id] = 1;
+    return u == TY_POLY ? TY_POLY : TY_STRBUF;
+  }
   /* a multiple assignment's element, read back for desugar_masgn_store_evidence:
      a method returning a fixed tuple answers that element's own type (a
      negative position counts from the end) */
