@@ -2799,7 +2799,7 @@ void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b) {
   if (node >= 0 && (slot == TY_INT || slot == TY_FLOAT)) {
     const char *sent = slot == TY_INT ? "SP_INT_NIL" : "sp_float_nil()";
     if (nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, sent); return; }
-    TyKind vt = comp_ntype(c, node);
+    TyKind vt = repr_of(c, node).as_ty;
     if (vt == TY_NIL || vt == TY_VOID) {
       buf_puts(b, "({ (void)("); emit_expr(c, node, b); buf_printf(b, "); %s; })", sent);
       return;
