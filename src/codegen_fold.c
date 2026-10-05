@@ -10670,6 +10670,23 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
               g_nd_call_id, name, mi, defcls, omi, odef);
   }
   Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+  /* Only subclasses define a method that takes a block: it has no function, a
+     switch arm reaches it through its proc-form clone, and inference does not
+     type the call by the block. Refused; the parent defining it avoids this. */
+  if (!m && blk_node >= 0)
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k == cid || !is_descendant(c, k, cid)) continue;
+      int kmi = comp_method_in_chain(c, k, name, NULL);
+      if (kmi >= 0 && c->scopes[kmi].yields) {
+        const char *cn = class_ruby_name(c, cid);
+        Buf msg;
+        memset(&msg, 0, sizeof msg);
+        buf_printf(&msg, "`%s` takes a block and is defined only in subclasses of `%s`; "
+                   "define it in `%s` too (for example as `raise NotImplementedError`)",
+                   name, cn, cn);
+        unsupported_feature(c, g_nd_call_id, msg.p);
+      }
+    }
   /* An alias shares the definition's function, so `__callee__` in the body can
      only learn the spelled name from here (#3729). */
   if (m && m->name && !sp_streq(m->name, name) && scope_reads_callee(c, mi)) {
