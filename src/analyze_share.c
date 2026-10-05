@@ -3,11 +3,17 @@
    See share.h. One walk over the node table gives every node a value (an
    element of the union-find, or none) and unifies what flows together:
    each write with its target, each container store with the container's
-   elements, each yield with what the method yields, each return with the
-   method's value. A builtin call is read off its builtin-op share row
-   (bop_share). What the walk does not follow -- a user method's call, a
-   proc or Method call, a runtime `send`, a builtin with no row -- joins
-   UNKNOWN, so a case it misses costs a handle, never a silent copy. */
+   elements, each argument with the parameter it binds, each yield with the
+   blocks the method is called with, each return with the method's value.
+   A builtin call is read off its builtin-op share row (bop_share); a user
+   call off its call plan (cplan_user_fresh). What the walk does not follow
+   -- a proc or Method call, a runtime `send`, a builtin with no row -- joins
+   UNKNOWN, so a case it misses costs a handle, never a silent copy.
+
+   A parameter its method only reads and mutates is lent, as the lent slot
+   is: binding it does not unify, and its mutation marks each argument's
+   class instead. That keeps `grow(buf)` on a local accumulator a
+   `const char *` lent by address, as without the flag. */
 
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +41,10 @@ typedef struct ShareFacts {
   int nbucket;
   /* each node's value: -2 not yet computed, -1 none */
   int *nval, nnodes;
+  /* lent bindings: argument value -> parameter holder element */
+  int *lend_arg, *lend_par;
+  unsigned char *lend_direct, *lend_done;
+  int nlend, clend;
   /* the method names a Method, `send` or define_method can reach */
   const char **dyn;
   int ndyn, cdyn, dyn_all, dyn_ivars;
@@ -273,6 +283,22 @@ static void sh_dyn_name(ShareFacts *F, const char *name) {
   F->dyn[F->ndyn++] = name;
 }
 
+static void sh_lend(ShareFacts *F, int arg, int par, int direct) {
+  if (arg < 0 || par < 0) return;
+  if (F->nlend >= F->clend) {
+    F->clend = F->clend ? F->clend * 2 : 64;
+    F->lend_arg = realloc(F->lend_arg, sizeof(int) * (size_t)F->clend);
+    F->lend_par = realloc(F->lend_par, sizeof(int) * (size_t)F->clend);
+    F->lend_direct = realloc(F->lend_direct, (size_t)F->clend);
+    F->lend_done = realloc(F->lend_done, (size_t)F->clend);
+  }
+  F->lend_arg[F->nlend] = arg;
+  F->lend_par[F->nlend] = par;
+  F->lend_direct[F->nlend] = (unsigned char)direct;
+  F->lend_done[F->nlend] = 0;
+  F->nlend++;
+}
+
 /* ---- node values ---- */
 
 static int sh_val(ShareFacts *F, Compiler *c, int n);
@@ -435,6 +461,73 @@ static const char *sh_lit_name(const NodeTable *nt, int a) {
   if (k == NK_SymbolNode) return nt_str(nt, a, "value") ? nt_str(nt, a, "value") : nt_str(nt, a, "unescaped");
   if (k == NK_StringNode) return nt_str(nt, a, "content");
   return NULL;
+}
+
+/* Bind the arguments of `call` to method mi's parameters. A parameter the
+   method may lend (only read and mutated) is bound by sh_lend, the rest by
+   a union. An argument the layout places nowhere joins every parameter. */
+static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(nt, call, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int claimed[64];
+  int nclaimed = 0;
+  for (int j = 0; j < m->nparams; j++) {
+    int p = m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1;
+    int spread = -1;
+    int a = arg_layout_param_node(c, m, call, j, &spread);
+    if (a >= 0 && nclaimed < 64) claimed[nclaimed++] = a;
+    if (p < 0) continue;
+    if (a >= 0) {
+      int v = sh_val(F, c, a);
+      if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
+      else sh_lend(F, v, p, sh_holder_read(nt, a));
+    }
+    else if (spread >= 0) sh_union(F, p, sh_elem(F, sh_val(F, c, spread)));
+  }
+  /* any value the layout placed nowhere: every parameter, and the elements
+     of a rest */
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(nt, argv[i]);
+    if (k == NK_BlockArgumentNode) continue;
+    int vals[32], nodes[32];
+    int nv = 0;
+    if (k == NK_KeywordHashNode) {
+      int en = 0; const int *el = nt_arr(nt, argv[i], "elements", &en);
+      for (int e = 0; e < en && nv < 32; e++) {
+        nodes[nv] = nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "value") : el[e];
+        vals[nv] = nt_kind(nt, el[e]) == NK_AssocNode ? sh_val(F, c, nodes[nv]) : sh_arg_val(F, c, el[e]);
+        nv++;
+      }
+    }
+    else { nodes[0] = argv[i]; vals[0] = sh_arg_val(F, c, argv[i]); nv = 1; }
+    for (int q = 0; q < nv; q++) {
+      int placed = 0;
+      for (int w = 0; w < nclaimed && !placed; w++) placed = claimed[w] == nodes[q];
+      if (placed || vals[q] < 0) continue;
+      for (int j = 0; j < m->nparams; j++) {
+        int p = m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1;
+        if (p < 0) continue;
+        sh_union(F, j == m->rest_idx || j == m->kwrest_idx ? sh_elem(F, p) : p, vals[q]);
+      }
+    }
+  }
+}
+
+/* A block literal handed to user method mi: its parameters take what mi
+   yields, its value is what mi's yields answer; a block mi keeps as &blk
+   may be called from anywhere. */
+static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
+  Scope *m = &c->scopes[mi];
+  if (m->yields) {
+    sh_block_params(F, c, blk, sh_scope_holder(F, SHK_YIELD, mi), 1);
+    sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
+  }
+  if (m->blk_param || m->is_lowered_yield || m->is_proc_form) {
+    sh_block_params(F, c, blk, F->unknown, 1);
+    sh_union(F, sh_block_val(F, c, blk), F->unknown);
+  }
 }
 
 /* the user methods a call reaches: its plan's method and, for a switch,
@@ -678,6 +771,36 @@ static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
   return F->unknown;
 }
 
+/* `Klass.new(...)`: the class's initialize, a Struct's members */
+static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  int cid = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
+            ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+  if (cid < 0) return -2;
+  ClassInfo *ci = &c->classes[cid];
+  /* an exception keeps its message, which #message hands back */
+  if (class_is_exc_subclass(c, cid)) {
+    int vals[64];
+    int nv = sh_args_vals(F, c, n, vals, 64);
+    for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
+  }
+  if (ci->is_struct) {
+    int vals[64];
+    int nv = sh_args_vals(F, c, n, vals, 64);
+    for (int i = 0; i < ci->nivars; i++) {
+      int iv = sh_ivar(F, c, cid, ci->ivars[i], n);
+      for (int k = 0; k < nv; k++) sh_union(F, iv, vals[k]);
+    }
+    return -1;
+  }
+  int mi = comp_method_in_chain(c, cid, "initialize", NULL);
+  if (mi < 0) return ci->def_node >= 0 ? -1 : -2;
+  sh_bind(F, c, n, mi);
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, mi);
+  return -1;
+}
+
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -721,7 +844,52 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* a user method */
   int tg[64];
-  if (sh_targets(c, n, tg, 64) > 0) return sh_unknown_call(F, c, n, blk);
+  int ntg = sh_targets(c, n, tg, 64);
+  if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
+    int r = sh_new_call(F, c, n, recv, blk);
+    if (r != -2) return r;
+    if (rt == TY_CLASS || rt == TY_POLY || rt == TY_UNKNOWN) {
+      /* a class held in a variable: any initialize */
+      for (int k = 0; k < c->nscopes; k++)
+        if (c->scopes[k].def_node >= 0 && comp_method_in_class(c, c->scopes[k].class_id, "initialize") == k) {
+          sh_bind(F, c, n, k);
+          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, k);
+        }
+      return sh_join(F, -1, rt == TY_CLASS ? -1 : sh_unknown_call(F, c, n, blk));
+    }
+  }
+  if (ntg > 0) {
+    int r = -1;
+    for (int i = 0; i < ntg; i++) {
+      sh_bind(F, c, n, tg[i]);
+      r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
+      /* a method of a String reopen: self is the receiver */
+      if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
+          c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
+        sh_union(F, rv, F->unknown);
+    }
+    /* a poly receiver may be a builtin as well */
+    if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
+    return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
+  }
+
+  /* an attr reader or writer */
+  if (argc <= 1 && (recv < 0 || ty_is_object(rt) || rt == TY_POLY || rt == TY_UNKNOWN)) {
+    int writer = 0;
+    int iv = sh_attr_ivars(F, c, name, n, &writer);
+    if (iv >= 0 && writer == (argc == 1)) {
+      int r = iv;
+      if (writer) {
+        int vals[1];
+        int nv = sh_args_vals(F, c, n, vals, 1);
+        if (nv == 1) sh_union(F, iv, vals[0]);
+        r = nv == 1 ? vals[0] : -1;
+      }
+      if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
+      return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
+    }
+  }
 
   /* a builtin */
   if (recv < 0) {
@@ -752,6 +920,43 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH);
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk);
+}
+
+static int sh_super(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, n, "block");
+  int tg[64];
+  int ntg = sh_targets(c, n, tg, 64);
+  int cur = sh_method_index(c, n);
+  int r = -1;
+  for (int i = 0; i < ntg; i++) {
+    Scope *m = &c->scopes[tg[i]];
+    if (nt_kind(nt, n) == NK_ForwardingSuperNode && cur >= 0) {
+      /* zsuper hands on this method's own parameters, and its block */
+      Scope *s = &c->scopes[cur];
+      for (int j = 0; j < s->nparams; j++) {
+        int a = s->pnames[j] ? sh_local_of(F, c, s, s->pnames[j], n) : -1;
+        for (int k = 0; k < m->nparams; k++)
+          if (m->nparams != s->nparams || k == j)
+            sh_union(F, a, m->pnames[k] ? sh_local_of(F, c, m, m->pnames[k], n) : -1);
+      }
+      sh_union(F, sh_scope_holder(F, SHK_YIELD, cur), sh_scope_holder(F, SHK_YIELD, tg[i]));
+      sh_union(F, sh_scope_holder(F, SHK_BLKRET, cur), sh_scope_holder(F, SHK_BLKRET, tg[i]));
+    }
+    else {
+      int vals[64];
+      int nv = sh_args_vals(F, c, n, vals, 64);
+      for (int q = 0; q < nv; q++)
+        for (int k = 0; k < m->nparams; k++) {
+          int p = m->pnames[k] ? sh_local_of(F, c, m, m->pnames[k], n) : -1;
+          sh_union(F, k == m->rest_idx || k == m->kwrest_idx ? sh_elem(F, p) : p, vals[q]);
+        }
+    }
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
+    r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
+  }
+  if (ntg == 0) return sh_unknown_call(F, c, n, blk);
+  return r;
 }
 
 static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
@@ -943,7 +1148,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_CallNode:
     return sh_call(F, c, n);
   case NK_SuperNode: case NK_ForwardingSuperNode:
-    return sh_unknown_call(F, c, n, nt_ref(nt, n, "block"));
+    return sh_super(F, c, n);
   case NK_SelfNode: {
     Scope *s = comp_scope_of(c, n);
     int cid = s ? s->class_id : -1;
@@ -966,6 +1171,48 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
     v = -1;
   F->nval[n] = v;
   return v;
+}
+
+/* ---- lending ---- */
+
+/* A parameter its method only reads and mutates: no write, nothing else in
+   its class, not captured by a proc that can outlive the call. */
+static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
+  int hi = F->hidx[p];
+  if (hi < 0 || F->h[hi].kind != SHK_LOCAL) return 0;
+  Scope *s = &c->scopes[F->h[hi].scope];
+  LocalVar *lv = &s->locals[F->h[hi].local];
+  if (!lv->is_param || lv->is_block_param || lv->cell_outlives) return 0;
+  if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
+  if (F->own[p] & SHE_WRITTEN) return 0;
+  int r = sh_find(F, p);
+  return F->nmem[r] == 1 && !(F->flags[r] & SHF_UNKNOWN);
+}
+
+static void sh_settle_lends(ShareFacts *F, Compiler *c) {
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int i = 0; i < F->nlend; i++) {
+      if (F->lend_done[i] || sh_lendable(F, c, F->lend_par[i])) continue;
+      sh_union(F, F->lend_arg[i], F->lend_par[i]);
+      F->lend_done[i] = 1;
+      changed = 1;
+    }
+  }
+  /* a lent parameter's mutation is its argument's */
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int i = 0; i < F->nlend; i++) {
+      if (F->lend_done[i]) continue;
+      int rp = sh_find(F, F->lend_par[i]);
+      if (!(F->flags[rp] & SHF_MUT)) continue;
+      int ra = sh_find(F, F->lend_arg[i]);
+      unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
+      if ((F->flags[ra] & want) == want) continue;
+      F->flags[ra] |= (unsigned char)want;
+      changed = 1;
+    }
+  }
 }
 
 /* ---- the build ---- */
@@ -1057,6 +1304,7 @@ static void sh_free(ShareFacts *F) {
   free(F->mut_n); free(F->mut_v);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
+  free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
   free(F);
 }
@@ -1110,6 +1358,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     if (!ci->is_struct && !F->dyn_ivars) continue;
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
   }
+  sh_settle_lends(F, c);
   sh_finalize(F);
   return F;
 }
