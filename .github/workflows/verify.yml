@@ -1,14 +1,20 @@
 name: verify
 # The per-branch checks of a fix, off the local machine: the suite in
-# slices, infer-test, both probes, the corpus C diff against BASE with the
+# slices, infer-test, the probes, the corpus C diff against BASE with the
 # cost tools over the programs it changes (repr_diff, c_costs, alloc_diff),
 # and a new test under --int-overflow=promote and SPINEL_GC_STRESS=1. Edit
 # verify.conf and push this branch, or dispatch by hand.
 #
+# The probes, each on the base and every head: cb, vf and nn (call binding,
+# value flow, nil narrowing) in one job each; brow (builtin rows) in shards
+# of its ops; dc, lit, op and ord (dead code, literals, operand order,
+# inference order) in shards of the corpus. A probe watch on master is all
+# eight: LEGS="cb vf nn brow dc lit op ord".
+#
 # Each sha is built once, by the build job, and the legs unpack its tree.
 # Every make-driven compile goes through sccache, as upstream CI's do: the
 # build and each suite slice carry sccache's disk store between runs as one
-# actions/cache entry per lane. The base's results (both probes, the rubyspec
+# actions/cache entry per lane. The base's results (the probes, the rubyspec
 # gate, the C the base emits for each corpus program) are cached by the base
 # sha, the leg, the runner (image, ruby, cc) and the files of this branch that
 # make them; the report says which came from the cache.
@@ -47,8 +53,9 @@ jobs:
           # every head: brow the builtin-row probe in --shard slices of its
           # ops; dc, lit, op and ord Matz's corpus probes, each shard every
           # n-th program of the tool's default FILE set. <LEG>_SHARDS in
-          # verify.conf overrides a count.
-          sharded = {"brow": 4, "dc": 8, "lit": 2, "op": 4, "ord": 2}
+          # verify.conf overrides a count. The counts aim at an hour or less
+          # a shard on a 4-core runner (dc: some 25 builds a program).
+          sharded = {"brow": 4, "dc": 12, "lit": 1, "op": 2, "ord": 1}
           sp = []
           for leg, d in sharded.items():
               if leg in legs:
@@ -169,7 +176,8 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has_run == 'true' }}
     name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # a corpus or builtin-row shard is given longer: its time is a guess
+    timeout-minutes: ${{ contains(fromJSON('["brow", "dc", "lit", "op", "ord"]'), matrix.leg) && 240 || 120 }}
     strategy:
       fail-fast: false
       # The account runs 20 jobs at once. A run keeps 8 of them free, so a
@@ -207,15 +215,18 @@ jobs:
       # A base result is the base sha's, under this runner's ruby, cc and
       # image, made by this branch's files (the base's own tools come with
       # its sha); the tree's path is in the emitted C of a program whose
-      # required file's path it names.
+      # required file's path it names. A head's probe result is kept the
+      # same way under the head's sha, so a later run whose BASE is that
+      # sha, spelled alike (a probe watch's last head), takes it as its base.
       - name: Base cache key
         id: key
-        if: matrix.name == 'base' || matrix.leg == 'cdiff'
+        if: matrix.name == 'base' || contains(fromJSON('["cdiff", "cb", "vf", "nn", "brow", "dc", "lit", "op", "ord"]'), matrix.leg)
         run: |
           set -a; . ./verify.conf; set +a
           env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
                      sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
-          echo "key=verify-base-$LEG-$SHARD-$BASE-$env_id" >> "$GITHUB_OUTPUT"
+          of=$BASE; [ "$NAME" != base ] && [ "$LEG" != cdiff ] && of=$SHA
+          echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of-$env_id" >> "$GITHUB_OUTPUT"
       - name: Restore the base result
         id: based
         if: matrix.name == 'base'
@@ -263,7 +274,7 @@ jobs:
             exit 0
           fi
           echo "$LEG $NAME $SHARD $(git -C "$h" log -1 --format='%h %s')" > "$out/rev.txt"
-          [ "$NAME" = base ] && echo "run ${{ github.run_id }} attempt ${{ github.run_attempt }}, $(date -u '+%Y-%m-%d %H:%M UTC')" > "$out/computed.txt"
+          echo "run ${{ github.run_id }} attempt ${{ github.run_attempt }}, $(date -u '+%Y-%m-%d %H:%M UTC')" > "$out/computed.txt"
           cd "$h"
           case "$LEG" in
           suite)
@@ -272,14 +283,40 @@ jobs:
             if [ "$SHARD" = 1 ]; then make infer-test > "$out/infer.log" 2>&1 || true; fi
             printf '%s\n' test/*.rb | wc -l > "$out/corpus.txt"
             ;;
-          cb|vf|nn)
-            tool=tools/call_binding_probe.rb; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
+          cb|vf|nn|brow)
+            tool=tools/call_binding_probe.rb; more=""; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
             # nn: the nil-narrowing probe, with each tree's own generator
             [ "$LEG" = nn ] && tool=tools/nil_narrowing_probe.rb
-            ruby $tool --strength 2 --seed 1 --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
+            # brow: the builtin-row probe, the SHARD-th of OF slices of its ops
+            # (--shard counts from 0)
+            [ "$LEG" = brow ] && tool=tools/builtin_row_probe.rb more="--shard $((SHARD - 1))/$OF"
+            ruby $tool --strength 2 --seed 1 $more --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
             # a timeout depends on the machine's load: such a result is not kept
-            if [ "$NAME" = base ] && grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&
+            if grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&
                ! grep -q -E '^ +timeout ' "$out/probe/summary.txt"; then echo save=true >> "$GITHUB_OUTPUT"; fi
+            ;;
+          dc|lit|op|ord)
+            # Matz's corpus probes: dead code, literals, operand order and
+            # inference order. Each shard takes every OF-th program of the
+            # tool's default FILE set, from the SHARD-th on, the promote_
+            # tests left out as each tool's default leaves them; lit without
+            # its reduction. A summary and the timeouts in each tool's words.
+            case "$LEG" in
+            dc) tool=tools/dead_code_probe.rb; set -- test/*.rb
+                done_re='^findings: [0-9]+ in '; late_re='^ +timeout +[0-9]|spinel ran past|no answer after' ;;
+            lit) tool=tools/literal_probe.rb; set -- test/*.rb
+                 done_re='^findings: [0-9]+ programs, '; late_re='does not compile in time|does not end' ;;
+            op) tool=tools/operand_probe.rb; set -- test/*.rb
+                done_re='^findings: [0-9]+ programs, '; late_re='out of time' ;;
+            ord) tool=tools/order_probe.rb; set -- test/*.rb test/infer/*.rb benchmark/*.rb
+                 done_re='^findings: [0-9]+ programs, '; late_re='timeout( in both orders|: )' ;;
+            esac
+            for f in "$@"; do if [ -f "$f" ]; then echo "$f"; fi; done | grep -v '/promote_[^/]*$' | LC_ALL=C sort |
+              awk -v n="$OF" -v k="$SHARD" 'NR % n == k % n' > "$out/files.txt"
+            more=""; [ "$LEG" = lit ] && more="--no-reduce"
+            ruby "$tool" --jobs "$(nproc)" $more --out "$out/probe" $(cat "$out/files.txt") > "$out/probe.log" 2>&1 || true
+            if grep -q -E "$done_re" "$out/probe/summary.txt" 2>/dev/null &&
+               ! grep -q -E "$late_re" "$out/probe/summary.txt"; then echo save=true >> "$GITHUB_OUTPUT"; fi
             ;;
           cdiff)
             # The base compiles what the head's tree holds, at the head's path,
@@ -399,8 +436,9 @@ jobs:
             ;;
           esac
         shell: bash
+      # the base's result, or a head's probe result kept for a later base
       - name: Save the base result
-        if: matrix.name == 'base' && steps.run.outputs.save == 'true'
+        if: matrix.leg != 'cdiff' && steps.run.outputs.save == 'true'
         uses: actions/cache/save@v6
         with:
           path: out
