@@ -1646,11 +1646,13 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (is_byte_codepoint_each(name)) { *out = TY_INT_ARRAY; return 1; }
     { *out = TY_STR_ARRAY; return 1; }
   }
-  /* poly.each_char { |c| }: the block param is a one-char String and the call
-     answers the receiver's string, as String#each_char answers self (#3402). */
-  if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "each_char") &&
-      nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, "each_char") &&
-      !an_user_defines_or_reads(c, "chars")) {
+  /* poly.each_char { |c| } / each_line { |l| }: the block param is a String
+     (one char, one line) and the call answers the receiver's string, as
+     String#each_char answers self (#3402). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 &&
+      (sp_streq(name, "each_char") || sp_streq(name, "each_line")) &&
+      nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, name) &&
+      !an_user_defines_or_reads(c, sp_streq(name, "each_char") ? "chars" : "lines")) {
     int eb = nt_ref(nt, id, "block");
     const char *ebp = block_param_name(c, eb, 0);
     Scope *ebs = ebp ? comp_scope_of(c, eb) : NULL;

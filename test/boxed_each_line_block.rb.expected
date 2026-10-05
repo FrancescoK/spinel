@@ -1,0 +1,7 @@
+"ab\n"
+"cd\n"
+"last"
+"ab\ncd\nlast"
+10
+["ab", "cd", "last"]
+undefined method 'each_line' for an instance of Integer
