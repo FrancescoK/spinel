@@ -4074,6 +4074,26 @@ static const char *sp_poly_recv_s(sp_RbVal v, const char *meth) {
   sp_raise_nomethod(sp_nomethod_msg(meth, v));
   return sp_str_empty;
 }
+/* casecmp / casecmp? (`q`) on a boxed receiver. A Symbol compares with a
+   Symbol and a String with a String (or an operand answering #to_str), as the
+   typed forms do; any other operand answers nil, and a receiver that is
+   neither raises NoMethodError. */
+static sp_RbVal sp_poly_casecmp(sp_RbVal v, sp_RbVal o, int q) {
+  const char *m = q ? "casecmp?" : "casecmp";
+  const char *a, *bs;
+  if (v.tag == SP_TAG_SYM) {
+    if (o.tag != SP_TAG_SYM) return sp_box_nil();
+    a = sp_sym_to_s((sp_sym)v.v.i);
+    bs = sp_sym_to_s((sp_sym)o.v.i);
+  }
+  else {
+    a = sp_poly_recv_s(v, m);
+    bs = sp_poly_check_str(sp_poly_strbuf_deref(o));
+    if (!bs) return sp_box_nil();
+  }
+  int r = sp_str_casecmp(a, bs);
+  return q ? sp_box_bool(r == 0) : sp_box_int(r);
+}
 /* ...as the receiver of a String mutator. A shared handle hands out its own
    bytes, which a mutator such as setbyte writes in place, and its frozen flag
    is on the handle, not in the bytes: a frozen one refuses here, before the
