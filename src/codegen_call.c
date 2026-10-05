@@ -18307,6 +18307,142 @@ int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
   return r;
 }
 
+/* ---- a builtin call's nil target (#7444) ----
+   A builtin called on a receiver that may be nil (cplan_nil: CN_RAISE)
+   raises CRuby's NoMethodError -- "undefined method 'count' for nil",
+   "private method 'puts' called for nil" -- after the receiver and the
+   arguments have run, in Ruby's order. The typed emission alone treated the
+   NULL pointer as the builtin: an empty Array counted 0, a String mutator
+   raised FrozenError, a File raised IOError for a closed stream, and others
+   crashed; and its own arity check, an argument's conversion or a frozen
+   check raised ahead of the NoMethodError. The test goes in front of the
+   whole emission, so it comes first. The arguments that run code are bound
+   into temps ahead of it (view_bind, as emit_operands_in_order binds them),
+   and the call reads the temps. A receiver that is a local's or a global's
+   read is tested in its slot (a mutator writes back into it); any other is
+   read once into a rooted temp, as nil_recv_guard's call result is. The
+   emission inside runs with g_ivar_nil_guarded_id naming the call, as the
+   ivar guard's does, so it is not guarded twice. */
+
+/* The operands the nil arm runs ahead of its test, into node[]/ty[]: the
+   receiver unless it is a local's or a global's read, then each argument
+   that runs code. An argument that runs code but cannot be bound -- a
+   container literal, a splat, a block argument, a value with no C type --
+   stops the list there: the ones after it run in the call as before.
+   Answers the count. */
+static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int max) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  int r = nt_ref(nt, id, "receiver");
+  NodeKind rk = nt_kind(nt, r);
+  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode) {
+    node[n] = r; ty[n] = comp_ntype(c, r); n++;
+  }
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an && n < max; i++) {
+    if (!subtree_has_side_effect(c, av[i])) continue;
+    NodeKind k = nt_kind(nt, av[i]);
+    TyKind t = comp_ntype(c, av[i]);
+    if ((k != NK_CallNode && k != NK_ParenthesesNode && k != NK_IfNode && k != NK_UnlessNode &&
+         k != NK_YieldNode && k != NK_SuperNode && k != NK_ForwardingSuperNode) ||
+        t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
+      break;
+    node[n] = av[i]; ty[n] = t; n++;
+  }
+  return n;
+}
+
+/* The temps' declarations and the test, into b, each statement after
+   `lead` (a statement prefix: an indent, or nothing inside an expression).
+   The operands are bound to the temps; the caller unbinds from *mark. */
+static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int *mark) {
+  const NodeTable *nt = c->nt;
+  int node[8]; TyKind ty[8];
+  int n = nil_target_operands(c, id, node, ty, 8);
+  int r = nt_ref(nt, id, "receiver");
+  char rtext[32] = "";
+  *mark = g_n_argov;
+  for (int i = 0; i < n; i++) {
+    Buf ob, op;
+    render_operand(c, node[i], &ob, &op);
+    int t = ++g_tmp;
+    if (op.p) buf_puts(b, op.p);
+    buf_puts(b, lead);
+    emit_ctype(c, ty[i], b);
+    buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : default_value_from_compiler(c, ty[i]));
+    if (ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+    else if (needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+    buf_puts(b, *lead ? "\n" : " ");
+    free(ob.p); free(op.p);
+    view_bind(node[i], "_t%d", t);
+    if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
+  }
+  buf_puts(b, lead);
+  buf_puts(b, "if (SP_UNLIKELY((");
+  /* a slot read is its slot: a shared String's handle, not the copy its
+     value form makes */
+  char sref[192];
+  if (rtext[0]) buf_puts(b, rtext);
+  else if (strbuf_slot_ref(c, r, sref, sizeof sref)) buf_puts(b, sref);
+  else emit_expr(c, r, b);
+  /* inside a Ruby-defined builtin (`r.count { }` is `__enum_count(r)`), the
+     walk of its own receiver is reported under that method's name */
+  buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+             enum_walk_name(c, id, r, nt_str(nt, id, "name")));
+  buf_puts(b, *lead ? "\n" : " ");
+}
+
+/* Call id in value position, behind its nil arm. 1 when it emitted. */
+static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
+  if (id == g_ivar_nil_guarded_id || cplan_nil(c, id) != CN_RAISE) return 0;
+  if (g_plan_check) cplan_served("nil-target");
+  Buf hb; memset(&hb, 0, sizeof hb);
+  int mark;
+  emit_nil_target_head(c, id, &hb, "", &mark);
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  Buf cb; memset(&cb, 0, sizeof cb);
+  int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
+  emit_call_held(c, id, &cb);
+  g_ivar_nil_guarded_id = sv;
+  view_unbind(mark);
+  if (g_pre && g_pre->len > pre0) {
+    /* the call hoisted its work (an iterator's loop): the head goes ahead
+       of that work */
+    Buf rest; memset(&rest, 0, sizeof rest);
+    buf_puts(&rest, g_pre->p + pre0);
+    g_pre->len = pre0; g_pre->p[pre0] = 0;
+    size_t hn = hb.p ? strlen(hb.p) : 0;
+    while (hn > 0 && hb.p[hn - 1] == ' ') hb.p[--hn] = 0;
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p ? hb.p : ""); buf_puts(g_pre, "\n");
+    buf_puts(g_pre, rest.p);
+    free(rest.p);
+    buf_puts(b, cb.p ? cb.p : "");
+  }
+  else buf_printf(b, "({ %s%s; })", hb.p ? hb.p : "", cb.p ? cb.p : "");
+  free(hb.p); free(cb.p);
+  return 1;
+}
+
+/* Call id as a statement, behind its nil arm: the head goes where the
+   statement's own prelude goes, ahead of what it hoists. 1 when it
+   emitted. */
+int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
+  if (id == g_ivar_nil_guarded_id || cplan_nil(c, id) != CN_RAISE) return 0;
+  if (g_plan_check) cplan_served("nil-target");
+  Buf *db = g_pre ? g_pre : b;
+  Buf lb; memset(&lb, 0, sizeof lb);
+  emit_indent(&lb, g_pre ? g_indent : indent);
+  int mark;
+  emit_nil_target_head(c, id, db, lb.p ? lb.p : " ", &mark);
+  free(lb.p);
+  int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
+  emit_stmt_inner(c, id, b, indent);
+  g_ivar_nil_guarded_id = sv;
+  view_unbind(mark);
+  return 1;
+}
+
 /* An object-typed local of scope `sc` that a write in that scope sets to nil
    (`b = nil`, `b = c ? Box.new : nil`): it is NULL until another write
    fills it, and a user method called on it ran with a NULL self, or
@@ -20269,7 +20405,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     free(cb.p);
   }
-  else emit_call_held(c, id, b);
+  else if (!emit_nil_target_call(c, id, b)) emit_call_held(c, id, b);
   g_nd_call_id = nd_saved;
   /* an emitter that made a switch or reached for the boxed value said so;
      anything else bound the call statically, unless the receiver is a boxed

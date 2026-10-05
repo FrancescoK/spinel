@@ -1043,6 +1043,9 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
+/* a statement-position call on a builtin receiver that may be nil, behind
+   its nil arm (cplan_nil, #7444); 0 when it has none */
+int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent);
 const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */
