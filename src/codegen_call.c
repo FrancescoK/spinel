@@ -8348,9 +8348,11 @@ int call_has_splat_arg(const NodeTable *nt, const int *argv, int argc) {
 }
 
 /* ctor_needs_self_defaults for a construction over `argv`: a splat's count
-   is the run time's, so any optional may be left to its default. */
+   is the run time's, so any optional may be left to its default. A keyword
+   hash does not supply a positional argument that would skip the default. */
 static int ctor_needs_self_defaults_argv(Compiler *c, int initm, const int *argv, int argc) {
-  return ctor_needs_self_defaults(c, initm, call_has_splat_arg(c->nt, argv, argc) ? 0 : argc);
+  int pos_argc = argc - call_has_keyword_args(c->nt, argv, argc);
+  return ctor_needs_self_defaults(c, initm, call_has_splat_arg(c->nt, argv, argc) ? 0 : pos_argc);
 }
 
 /* Does any class define `name` as a class method? A boxed Class or Module
