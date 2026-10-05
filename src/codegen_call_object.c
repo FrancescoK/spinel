@@ -933,7 +933,10 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* TY_STRING freeze: update the variable to the frozen copy and return it */
   if (recv >= 0 && argc == 0 && sp_streq(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
     const char *rtyf = nt_type(nt, recv);
-    int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode"));
+    char gfz[256];   /* a global holding the handle (--share-strings) */
+    int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode") ||
+                                (nt_kind(nt, recv) == NK_GlobalVariableReadNode &&
+                                 strbuf_slot_ref(c, recv, gfz, sizeof gfz)));
     /* a shared String handle reads back as an expression (a copy), which
        cannot be assigned to: freeze the handle, which every later mutation
        through it checks, and answer its contents frozen */
