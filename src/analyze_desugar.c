@@ -14582,6 +14582,46 @@ static int sce_def_below_module(const NodeTable *nt, int def) {
   }
   return 0;
 }
+/* Could a call naming its method by a value (`undef_method m`) reach the
+   class_eval a class body calls? That one is Module's, so only a call whose
+   self is Module, Class or a singleton class can: one in a `class << x`
+   body or in `class Module` / `class Class`'s own body, or one with an
+   explicit receiver. A bare call anywhere else -- a blank-slate class
+   undefining its instance methods, a Module method changing the module it
+   is called on -- changes some module's instance methods. `ctx`: 1 inside
+   a singleton class or Module/Class body, 0 elsewhere; a def resets it. */
+static int sce_computed_reaches_module(const NodeTable *nt, int n, int ctx, int depth) {
+  if (n < 0 || depth > 4000) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) ctx = 0;
+  else if (k == NK_SingletonClassNode) ctx = 1;
+  else if (k == NK_ClassNode || k == NK_ModuleNode) {
+    int cp = nt_ref(nt, n, "constant_path");
+    const char *cn = cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
+    ctx = k == NK_ClassNode && cn && (sp_streq(cn, "Module") || sp_streq(cn, "Class"));
+  }
+  else if (k == NK_CallNode) {
+    const char *m = nt_str(nt, n, "name");
+    if (m && (sp_streq(m, "alias_method") || sp_streq(m, "define_singleton_method") ||
+              sp_streq(m, "remove_method") || sp_streq(m, "undef_method"))) {
+      int args = nt_ref(nt, n, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      NodeKind ak = an >= 1 && av ? nt_kind(nt, av[0]) : NK_NONE;
+      if (an >= 1 && ak != NK_SymbolNode && ak != NK_StringNode) {
+        int r = nt_ref(nt, n, "receiver");
+        if (ctx || (r >= 0 && nt_kind(nt, r) != NK_SelfNode)) return 1;
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (sce_computed_reaches_module(nt, nt_ref_at(nt, n, i), ctx, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (sce_computed_reaches_module(nt, ids[j], ctx, depth + 1)) return 1;
+  }
+  return 0;
+}
 static int sce_program_reflects(const NodeTable *nt) {
   int hit = 0;
   NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
@@ -14613,9 +14653,10 @@ static int sce_program_reflects(const NodeTable *nt) {
     NodeKind k = nt_kind(nt, av[0]);
     if (k == NK_SymbolNode) hit = sce_name_reflective(nt_str(nt, av[0], "value"));
     else if (k == NK_StringNode) hit = sce_name_reflective(nt_str(nt, av[0], "content"));
-    else hit = !dm;   /* a computed name could be any of them (as sp_macro.c reads it) */
   }
   nt_kind_iter_close(&it);
+  /* a computed name could be any of them, where it can reach Module's */
+  if (!hit) hit = sce_computed_reaches_module(nt, nt->root_id, 0, 0);
   return hit;
 }
 /* a bare `private` / `protected` / `public` / `module_function`: a def
