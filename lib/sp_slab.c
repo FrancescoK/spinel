@@ -210,10 +210,20 @@ static pthread_mutex_t sp_slab_lock = PTHREAD_MUTEX_INITIALIZER;
    threaded nothing runs beside the program, and a locked instruction per
    allocation and per death was a fifth of an allocation-bound benchmark. */
 #ifdef SP_THREADS
-static inline uint64_t bm_or(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_OR(p, v, __ATOMIC_ACQ_REL); }
-static inline uint64_t bm_and(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_AND(p, v, __ATOMIC_ACQ_REL); }
-static inline uint64_t bm_load(const uint64_t *p) { return SP_ATOMIC_LOAD(p, __ATOMIC_ACQUIRE); }
-static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE(p, v, __ATOMIC_RELEASE); }
+/* A bitmap word as the atomics see it: 8-aligned. On 32-bit x86 the ABI
+   aligns a uint64_t in a struct to 4, and clang then turns a 64-bit atomic
+   into a libatomic call (__atomic_load_8), which nothing links; gcc inlines
+   it either way. The words are 8-aligned in fact: the bitmaps sit in a page-
+   aligned arena, in 448-byte records of nothing but uint64_t. */
+#if SP_ATOMICS_BUILTIN
+typedef uint64_t sp_bm_aword __attribute__((aligned(8)));
+#else
+typedef uint64_t sp_bm_aword;
+#endif
+static inline uint64_t bm_or(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_OR((sp_bm_aword *)p, v, __ATOMIC_ACQ_REL); }
+static inline uint64_t bm_and(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_AND((sp_bm_aword *)p, v, __ATOMIC_ACQ_REL); }
+static inline uint64_t bm_load(const uint64_t *p) { return SP_ATOMIC_LOAD((const sp_bm_aword *)p, __ATOMIC_ACQUIRE); }
+static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE((sp_bm_aword *)p, v, __ATOMIC_RELEASE); }
 #endif
 /* The claim of an object slot writes the current epoch's young word, which
    has one writer: the chunk's owner, on its own thread. Nothing else sets or
@@ -228,7 +238,7 @@ static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE(p, v, __A
    two sides atomic; with one writer the read-modify-write loses nothing.
    Aging's carry into the current epoch would be a second writer, which is
    one more reason it stays off with the slab on. */
-static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = SP_ATOMIC_LOAD(p, __ATOMIC_RELAXED); SP_ATOMIC_STORE(p, o | v, __ATOMIC_RELEASE); return o; }
+static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = SP_ATOMIC_LOAD((sp_bm_aword *)p, __ATOMIC_RELAXED); SP_ATOMIC_STORE((sp_bm_aword *)p, o | v, __ATOMIC_RELEASE); return o; }
 #else
 static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = *p; *p = o | v; return o; }
 #endif
