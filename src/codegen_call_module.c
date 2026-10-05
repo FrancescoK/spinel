@@ -936,6 +936,13 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   /* Marshal (Phase 1): dump a value to a binary String, load one back as poly */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
+    /* boxed as its Array, an Array subclass instance would dump as a plain
+       Array, without its class and ivars (#7449) */
+    if (sp_streq(name, "dump") && argc >= 1 && comp_ty_ary_root(c, comp_ntype(c, argv[0])) >= 0) {
+      unsupported_feature(c, id, "Marshal.dump of an Array subclass instance is not supported yet "
+                                 "(it would load back as a plain Array)");
+      return 1;
+    }
     if (sp_streq(name, "dump") && argc == 1) {
       buf_puts(b, "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;

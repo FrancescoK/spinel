@@ -1425,6 +1425,15 @@ void emit_array_elem_sure(TyKind at, int tmp, int elem_idx, Buf *b);
 void emit_rest_from_splat_and_argv(int tmp, TyKind at, int from_idx, Compiler *c, int argv_from, int pos_argc, const int *argv, Buf *b);
 int is_descendant(Compiler *c, int k, int anc);
 int class_builtin_superclass(Compiler *c, int i);   /* codegen.c */
+const char *arysub_array_ctype(Compiler *c, int cid);   /* codegen.c: an Array subclass's Array struct (#7449) */
+void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b);
+void arysub_box_id(Compiler *c, TyKind t, Buf *b);   /* the cls_id an object's box carries */
+int program_has_arysub(Compiler *c);
+void emit_arysub_machinery(Compiler *c, Buf *b);
+/* a call Array answers on an Array subclass instance (#7449), as an
+   expression or as a statement (codegen_call_array.c) */
+int emit_arysub_call(Compiler *c, int id, Buf *b);
+int emit_arysub_call_stmt(Compiler *c, int id, Buf *b, int indent);
 const char *class_builtin_superclass_name(Compiler *c, int i);   /* codegen.c */
 int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
 int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
