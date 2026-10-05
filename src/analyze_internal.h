@@ -150,6 +150,7 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
 int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
+int super_forwards_caller_block(Compiler *c, int id);
 /* 1 if `node` is `<&block-param>.call(...)` / .() / [] for method mi -- the
    explicit-call equivalent of `yield`, inlined the same way. */
 int is_blk_param_call(Compiler *c, int node, int mi);
