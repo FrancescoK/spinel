@@ -2893,7 +2893,10 @@ static inline sp_bool sp_poly_tower_mismatch(sp_RbVal a, sp_RbVal b) {
          (!sp_poly_tower_p(a) || !sp_poly_tower_p(b));
 }
 static sp_RbVal sp_poly_binop_bad(const char *op, sp_RbVal recv, sp_RbVal arg) {
-  if (recv.tag == SP_TAG_OBJ && recv.cls_id >= 0 && sp_user_binop_hook) {
+  /* a program object, or a Time or Range whose reopening defines the
+     operator (activesupport's Time#- taking a Duration) */
+  if (recv.tag == SP_TAG_OBJ && sp_user_binop_hook &&
+      (recv.cls_id >= 0 || recv.cls_id == SP_BUILTIN_TIME || recv.cls_id == SP_BUILTIN_RANGE)) {
     sp_bool _h = FALSE;
     sp_RbVal _r = sp_user_binop_hook(op, recv, arg, &_h);
     if (_h) return _r;
