@@ -1004,16 +1004,22 @@ whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
 
-A note on identity: what `frozen_string_literal` specifies is frozenness,
-not object identity, so the identity of frozen literals is
-implementation-dependent. CRuby happens to intern equal-content literals
-(`"abc".equal?("abc")` is `true` there); Spinel compiles each literal
-OCCURRENCE to its own static object, so the same comparison answers
-`false`, while re-evaluating one occurrence (a literal in a loop) yields
-the same object where plain CRuby would allocate per evaluation. Programs
-should not depend on either arrangement -- `equal?`/`object_id` on frozen
-literals is exactly the implementation-defined corner. Value semantics
-(`==`, hashing, matching) are unaffected.
+A note on identity: equal frozen literals are one object, as in CRuby
+with frozen string literals. `"abc".equal?("abc")` is `true`, the same
+text in two methods (or in two parts of a `--jobs=N` split build) is the
+same object, an adjacent-literal fold (`"ab" "c"`) is the object the plain
+`"abc"` is, and a literal in a loop yields one object on every pass. An
+interpolated string (`"#{x}"`) is built anew each time, in CRuby too.
+
+What still differs is the run-time intern table behind `String#-@` /
+`dedup`. CRuby puts every frozen literal in it when the code is loaded, so
+`-("ab" + "c")` returns the literal `"abc"` itself. Spinel's table holds
+only what `-@` / `dedup` has been called on: two run-time strings dedup to
+one object, and `-"abc"` returns the literal when the literal is the first
+of its content to be deduped, but a run-time string deduped before that is
+not the literal (`(-("ab" + "c")).equal?("abc")` is `false`), and the
+literal's own `-@` then returns that earlier object. `str.dup.freeze` is
+never deduplicated, in CRuby either.
 
 **Aliased in-place mutation is observed.** A mutable string (from
 `String.new`, `+"lit"`, interpolation, or `dup`) that is both aliased and mutated in
@@ -1238,15 +1244,14 @@ an explicit unique key (an Integer id, a Symbol) instead.
 
 #### `String#equal?` and literal identity
 
-`equal?` on strings is pointer identity. Each literal OCCURRENCE compiles
-to its own frozen static object (see the identity note under the
-frozen-string-literal section): `"x".equal?("x")` is `false`, and
-re-evaluating one occurrence (a literal in a loop) yields the same object.
-Both facets are implementation-defined under `frozen_string_literal`
-semantics and programs should not depend on them. Everything else about
-identity is truthful: `s.freeze.equal?(s)` is `true` (freeze marks in
-place), aliasing compares equal, `-lit` dedups interned content to one
-object, and distinct-valued strings compare `false`.
+`equal?` on strings is pointer identity. Equal frozen literals are one
+object, as in CRuby (see the identity note under the frozen-string-literal
+section): `"x".equal?("x")` is `true`, and re-evaluating a literal (one in
+a loop) yields the same object. Everything else about identity is
+truthful: `s.freeze.equal?(s)` is `true` (freeze marks in place), aliasing
+compares equal, `-str` dedups interned content to one object (but not
+always to the literal of that content, as noted there), and
+distinct-valued strings compare `false`.
 
 #### `defined?`
 
