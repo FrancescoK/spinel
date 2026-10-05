@@ -1,0 +1,10 @@
+[7, q, 2, 70]
+[7, q, 3, 70]
+[:arr, true, [:@mark]]
+[:hash, true, [:@mark]]
+[:obj, true, [:@mark]]
+[:rng, true, [:@mark]]
+"can't modify frozen Integer: 5"
+"can't modify frozen Symbol: :sym"
+"can't modify frozen Array: [3]"
+[true, true, [:@mark]]
