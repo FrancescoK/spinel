@@ -14243,7 +14243,7 @@ void emit_math_arg(Compiler *c, int node, Buf *out) {
 
 /* Does class `cid` (or any ancestor) have a literal `include <mod_name>` in a
    class/module body? Compile-time mirror of the ancestors-table include scan,
-   for folding is_a?(Comparable) / is_a?(Enumerable) on a statically-typed
+   for answering is_a?(Comparable) / is_a?(Enumerable) on a statically-typed
    user instance (#2363). static_isa_cond (the folded `is_a?` of an `if`,
    `unless` or ternary) and emit_obj_class_when (the typed class arm of a
    `when` or `in`) read it too, so a module the class includes matches

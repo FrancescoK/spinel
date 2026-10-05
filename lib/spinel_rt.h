@@ -10707,6 +10707,13 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
      poly array must still answer BasicSocket / IO) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO)
     return sp_io_is_a((sp_File *)v.v.p, cn);
+  /* a user object takes the builtin modules it includes from the class
+     table, which the program's is_a? hook reads */
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && sp_poly_is_a_hook) {
+    int mod_id = strcmp(cn, "Comparable") == 0 ? -114 : strcmp(cn, "Enumerable") == 0 ? -115 :
+                 strcmp(cn, "Math") == 0 ? -130 : 0;
+    if (mod_id) return (sp_bool)(sp_poly_is_a_hook(v, (sp_Class){mod_id, NULL}) != 0);
+  }
   int is_int = (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT);
   int is_flt = (v.tag == SP_TAG_FLT);
   int is_rat = (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL);
@@ -10726,8 +10733,12 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
      which is not Comparable */
   if (strcmp(cn, "Comparable") == 0) return is_int || is_flt || is_rat ||
                                              v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM ||
+                                             (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) ||
                                              (sp_poly_is_strbuf(v) && v.v.p);
-  if (strcmp(cn, "Enumerable") == 0) return is_arr || is_range || is_hash;
+  /* an Enumerator (lazy ones too) and a Dir handle include Enumerable */
+  if (strcmp(cn, "Enumerable") == 0)
+    return is_arr || is_range || is_hash ||
+           (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_ENUMERATOR || v.cls_id == SP_BUILTIN_DIR) && v.v.p);
   /* a boxed exception (e.g. rescued into a poly-union local) walks the
      exception hierarchy: StopIteration is_a? StandardError etc. (#3096) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p)

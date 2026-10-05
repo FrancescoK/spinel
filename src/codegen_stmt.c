@@ -2615,7 +2615,12 @@ int static_isa_cond(Compiler *c, int pred) {
     return ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
   }
   int target = comp_class_index(c, target_name);
-  if (target < 0) return -1;
+  /* Comparable, Enumerable and Math name no class of the table: the includes
+     of the class answer for them, as for a user module. */
+  int builtin_mod = target < 0 && (sp_streq(target_name, "Comparable") ||
+                                   sp_streq(target_name, "Enumerable") ||
+                                   sp_streq(target_name, "Math"));
+  if (target < 0 && !builtin_mod) return -1;
   /* A number/symbol/bool is never an instance of a user class, so the arm that
      reads it as one is dead -- and it is the only place a call like
      `value.value` on an Integer comes from (`Int64.new(0)` reaching
@@ -2647,16 +2652,16 @@ int static_isa_cond(Compiler *c, int pred) {
   int has_sub = class_has_subclass(c, rcls);
   int exact = sp_streq(nm, "instance_of?");
   if (rcls == target) return (nilable || (exact && has_sub)) ? -1 : 1;
-  if (has_sub && is_descendant(c, target, rcls)) return -1;
+  if (has_sub && !builtin_mod && is_descendant(c, target, rcls)) return -1;
   if (exact) return 0;
-  if (is_descendant(c, rcls, target)) return nilable ? -1 : 1;
+  if (!builtin_mod && is_descendant(c, rcls, target)) return nilable ? -1 : 1;
+  int is_mod = builtin_mod || comp_class_is_module(c, &c->classes[target]);
   /* a module the class (or a superclass) includes */
-  if (comp_class_is_module(c, &c->classes[target]) &&
-      class_includes_module_named(c, rcls, target_name)) return nilable ? -1 : 1;
+  if (is_mod && class_includes_module_named(c, rcls, target_name)) return nilable ? -1 : 1;
   /* a subclass can add any other module (with include, prepend, a module
      that includes it, or an `extend` on one object), so is_a? of a module
      is answered at run time when the class has a subclass */
-  if (has_sub && comp_class_is_module(c, &c->classes[target])) return -1;
+  if (has_sub && is_mod) return -1;
   return 0;
 }
 

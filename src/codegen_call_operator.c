@@ -931,32 +931,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   }
   /* `Comparable === x` / `Enumerable === x`: the module names no class object
      spinel carries, so the call fell through to the poly dispatch and raised
-     NoMethodError. It is the is_a? question with the operands swapped (#3871). */
+     NoMethodError. It is the is_a? question with the operands swapped, which
+     the boxed value answers at run time (#3871). */
   if (recv >= 0 && argc == 1 && sp_streq(name, "===") &&
       nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name")) {
     const char *mcn = nt_str(nt, recv, "name");
     if ((sp_streq(mcn, "Comparable") || sp_streq(mcn, "Enumerable")) &&
         comp_class_index(c, mcn) < 0) {
-      TyKind at = comp_ntype(c, argv[0]);
-      int yes;
-      if (ty_is_object(at))
-        yes = class_includes_module_named(c, ty_object_class(at), mcn);
-      else if (sp_streq(mcn, "Comparable"))
-        yes = at == TY_INT || at == TY_FLOAT || at == TY_BIGINT || at == TY_STRING ||
-              at == TY_SYMBOL || at == TY_TIME || at == TY_RATIONAL;
-      else
-        yes = ty_is_array(at) || ty_is_hash(at) || at == TY_RANGE ||
-              at == TY_FLOAT_RANGE || at == TY_STR_RANGE || at == TY_ENUMERATOR ||
-              at == TY_DIR;
-      /* nil is neither, and a nullable Integer or Float is nil where it
-         holds its sentinel */
-      if (yes && (at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, argv[0])) {
-        char ref[24];
-        buf_puts(b, "({ "); emit_sentinel_bind(c, at, argv[0], ref, sizeof ref, b);
-        emit_slot_truthy(at, ref, b); buf_puts(b, "; })");
-        return 1;
-      }
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
+      buf_puts(b, "sp_poly_kind_of_builtin(");
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, ", \"%s\")", mcn);
       return 1;
     }
   }
@@ -977,13 +961,6 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                         ? nt_str(nt, argv[0], "name") : NULL;
     if (acn && is_object_root(acn)) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
-      return 1;
-    }
-    /* a builtin mixin: fold from the class's own `include` declarations (#2363) */
-    if (acn && (sp_streq(acn, "Comparable") || sp_streq(acn, "Enumerable") ||
-                sp_streq(acn, "Math")) && comp_class_index(c, acn) < 0) {
-      int yes = class_includes_module_named(c, ty_object_class(rt), acn);
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return 1;
     }
   }
