@@ -4506,7 +4506,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   /* ivar OP= as expression: emit the mutation then read back the ivar. */
   if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
-    int sc = comp_scope_of(c, id)->class_id;
+    /* an instance_eval body's slot is its receiver's (see the statement form) */
+    int sc = g_ie_class_id >= 0 ? g_ie_class_id : comp_scope_of(c, id)->class_id;
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     /* the slot is read back as the read of the ivar finds it: a top-level

@@ -11310,7 +11310,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
   if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
-    int sc = comp_scope_of(c, id)->class_id;
+    /* inside `obj.instance_eval { }` the slot is obj's, at the type its class
+       holds it (as the plain-write form reads it) */
+    int sc = g_ie_class_id >= 0 ? g_ie_class_id : comp_scope_of(c, id)->class_id;
     /* same scope ladder as the plain-write form: class body civ_, then the
        Toplevel pseudo-class global (a bare `self` here is undeclared C) */
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
