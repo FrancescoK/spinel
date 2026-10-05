@@ -283,8 +283,14 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int ta = ++g_tmp, tb = ++g_tmp;
       buf_puts(b, "({ "); emit_ctype(c, lrt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
       buf_puts(b, "; "); emit_ctype(c, lat, b); buf_printf(b, " _t%d = ", tb); emit_expr(c, argv[0], b);
+      /* an Integer against a Float compares exactly (#7505); a NaN answers 2 */
+      if ((lrt == TY_INT && lat == TY_FLOAT) || (lrt == TY_FLOAT && lat == TY_INT)) {
+        int tc = ++g_tmp;
+        buf_printf(b, "; int _t%d = sp_int_flt_cmp(_t%d, _t%d); _t%d == 2 ? SP_INT_NIL : (sp_int)%s_t%d; })",
+                   tc, lrt == TY_INT ? ta : tb, lrt == TY_INT ? tb : ta, tc, lrt == TY_INT ? "" : "-", tc);
+      }
       /* a NaN operand makes <=> nil, not 0 (#2315); only floats can be NaN */
-      if (lrt == TY_FLOAT || lat == TY_FLOAT)
+      else if (lrt == TY_FLOAT || lat == TY_FLOAT)
         buf_printf(b, "; (isnan((double)_t%d) || isnan((double)_t%d)) ? SP_INT_NIL"
                       " : (sp_int)((_t%d > _t%d) - (_t%d < _t%d)); })", ta, tb, ta, tb, ta, tb);
       /* an Integer slot's nil sentinel on either side: nil <=> n and n <=> nil
@@ -577,8 +583,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         emit_expr(c, recv, b);
         buf_printf(b, "; %s%s %s = %s", ap.p ? ap.p : "", cat == TY_FLOAT ? "sp_float" : "sp_int", rv, av.p ? av.p : "0");
         free(ap.p); free(av.p);
-        buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) sp_raise_nil_cmp(%s, \"%s\", \"%s\"); %s %s %s; })",
-                   ln, rn, ln, name, rt == TY_FLOAT ? "Float" : "Integer", lv, name, rv);
+        buf_printf(b, "; if (SP_UNLIKELY(%s || %s)) sp_raise_nil_cmp(%s, \"%s\", \"%s\"); ",
+                   ln, rn, ln, name, rt == TY_FLOAT ? "Float" : "Integer");
+        emit_int_flt_rel(b, rt == TY_INT ? lv : rv, rt == TY_INT ? rv : lv, rt == TY_INT, name);
+        buf_puts(b, "; })");
         return 1;
       }
       if (guard9) {
@@ -598,6 +606,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                    rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", l9, r9, name, tg, name, tg);
         return 1;
       }
+      if (mixed9 && emit_int_float_cmp(c, recv, argv[0], name, b)) return 1;
       buf_puts(b, "(");
       emit_expr(c, recv, b);
       buf_printf(b, " %s ", name);

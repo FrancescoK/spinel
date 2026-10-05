@@ -91,6 +91,8 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b);
 int bigint_cmp_operand_ok(TyKind t);
 Buf emit_cmp_self(Compiler *c, int recv, TyKind rt);
 int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b);
+void emit_int_flt_rel(Buf *b, const char *iv, const char *fv, int int_left, const char *op);
+int emit_int_float_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b);
 int emit_int_operand_fail(Compiler *c, int id, int recv, int arg, int is_shift, Buf *b);
 int exc_subclass_defines_cmp(Compiler *c);
 int obj_cmp_by_identity(TyKind t);

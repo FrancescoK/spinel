@@ -501,6 +501,53 @@ int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b
   buf_printf(b, "); _t%d != 2 && %s_t%d %s 0; })", tc, lt == TY_BIGINT ? "" : "-", tc, op);
   return 1;
 }
+/* An Integer against a Float compares exactly, as CRuby does (#7505): C
+   converts the Integer to a double first, which above 2^53 rounds, so
+   2**53 + 1 == 2.0**53 answered true. A literal operand within 2^53 keeps
+   the plain C comparison, which is exact then: an Integer literal converts
+   without rounding, and against a Float literal below 2^53 a rounded
+   Integer is already past it. */
+static int int_flt_lit_exact(Compiler *c, int id) {
+  if (nt_kind(c->nt, id) == NK_IntegerNode)
+    return !nt_str(c->nt, id, "bigval") && llabs(nt_int(c->nt, id, "value", 0)) <= (1LL << 53);
+  if (nt_kind(c->nt, id) == NK_FloatNode) {
+    const char *v = nt_content(c->nt, id);
+    double d = v ? strtod(v, NULL) : 0.0;
+    return d == d && (d < 0 ? -d : d) < 9007199254740992.0;
+  }
+  return 0;
+}
+/* The relation `op` between the Integer `iv` and the Float `fv` (C operands
+   already evaluated); `int_left` says which side the Integer was written on. */
+void emit_int_flt_rel(Buf *b, const char *iv, const char *fv, int int_left, const char *op) {
+  if (!int_left)
+    op = sp_streq(op, "<") ? ">" : sp_streq(op, ">") ? "<" : sp_streq(op, "<=") ? ">=" : sp_streq(op, ">=") ? "<=" : op;
+  /* sp_int_flt_cmp answers 2 against a NaN, which satisfies only != */
+  if (sp_streq(op, ">=")) buf_printf(b, "((unsigned)sp_int_flt_cmp(%s, %s) <= 1u)", iv, fv);
+  else buf_printf(b, "(sp_int_flt_cmp(%s, %s) %s)", iv, fv,
+                  sp_streq(op, ">") ? "== 1" : sp_streq(op, "<") ? "< 0" : sp_streq(op, "<=") ? "<= 0" :
+                  sp_streq(op, "==") ? "== 0" : "!= 0");
+}
+/* `op` (== != < <= > >=) on an Integer and a Float that cannot carry their
+   nil sentinels; 0 when the operands are not that pair or a plain C
+   comparison is exact. */
+int emit_int_float_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b) {
+  TyKind lt = comp_ntype(c, recv), at = comp_ntype(c, arg);
+  if (!((lt == TY_INT && at == TY_FLOAT) || (lt == TY_FLOAT && at == TY_INT))) return 0;
+  if (int_flt_lit_exact(c, recv) || int_flt_lit_exact(c, arg)) return 0;
+  int tl = ++g_tmp, tr = ++g_tmp;
+  char lv[32], rv[32];
+  snprintf(lv, sizeof lv, "_t%d", tl);
+  snprintf(rv, sizeof rv, "_t%d", tr);
+  buf_printf(b, "({ %s %s = ", lt == TY_INT ? "sp_int" : "sp_float", lv);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; %s %s = ", at == TY_INT ? "sp_int" : "sp_float", rv);
+  emit_expr(c, arg, b);
+  buf_puts(b, "; ");
+  emit_int_flt_rel(b, lt == TY_INT ? lv : rv, lt == TY_INT ? rv : lv, lt == TY_INT, op);
+  buf_puts(b, "; })");
+  return 1;
+}
 void emit_bigint_operand(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_BIGINT) { emit_expr(c, node, b); return; }
@@ -12312,6 +12359,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; %s(_t%d == _t%d || (sp_float_is_nil(_t%d) && sp_float_is_nil(_t%d))); })",
                      eq ? "" : "!", ta, tb, ta, tb);
         }
+        else if (emit_int_float_cmp(c, recv, argv[0], eq ? "==" : "!=", b)) {}
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", eq ? "==" : "!="); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
@@ -12319,21 +12367,18 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
          compares its begin and end with ==, and 1 == 1.0 (#3841); an end
          written as a Float compares as written (sp_range_end_num) */
       if ((fr == 5 && fa == 6) || (fr == 6 && fa == 5)) {
+        /* sp_range_frange_eq compares the ends exactly: an Integer end past
+           2^53 is not rounded to the Float's (#7505) */
         int ta = ++g_tmp, tb = ++g_tmp;
-        buf_printf(b, "({ sp_float _t%d, _t%d; int _e1, _e2;", ta, tb);
         if (fr == 5) {
-          buf_printf(b, " sp_Range _r%d = ", ta); emit_expr(c, recv, b);
-          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e1 = sp_range_excl_end(_r%d);", ta, ta, ta);
-          buf_printf(b, " sp_FloatRange _f%d = ", tb); emit_expr(c, argv[0], b);
-          buf_printf(b, "; _t%d = _f%d.first; _e2 = _f%d.excl;", tb, tb, tb);
-          buf_printf(b, " (_t%d == _t%d && sp_range_end_num(_r%d) == _f%d.last && _e1 == _e2)", ta, tb, ta, tb);
+          buf_printf(b, "({ sp_Range _r%d = ", ta); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_FloatRange _f%d = ", tb); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_range_frange_eq(_r%d, _f%d)", ta, tb);
         }
         else {
-          buf_printf(b, " sp_FloatRange _f%d = ", ta); emit_expr(c, recv, b);
-          buf_printf(b, "; _t%d = _f%d.first; _e1 = _f%d.excl;", ta, ta, ta);
-          buf_printf(b, " sp_Range _r%d = ", tb); emit_expr(c, argv[0], b);
-          buf_printf(b, "; _t%d = (sp_float)_r%d.first; _e2 = sp_range_excl_end(_r%d);", tb, tb, tb);
-          buf_printf(b, " (_t%d == _t%d && _f%d.last == sp_range_end_num(_r%d) && _e1 == _e2)", ta, tb, ta, tb);
+          buf_printf(b, "({ sp_FloatRange _f%d = ", ta); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_Range _r%d = ", tb); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_range_frange_eq(_r%d, _f%d)", tb, ta);
         }
         buf_printf(b, "%s; })", eq ? "" : " ? 0 : 1");
         return 1;
