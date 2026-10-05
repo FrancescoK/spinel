@@ -15864,7 +15864,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
                tb, is_or ? "!" : "", poly_index_poly_fn(c), ta, tb);
     int open = 0;
     char *rhs = iow_guarded_rhs(c, v, IOW_RHS_BOXED, b, &open);
-    buf_printf(b, "sp_poly_set_poly(_t%d, _t%d, %s)", ta, tb, rhs);
+    buf_printf(b, "%s(_t%d, _t%d, %s)", poly_set_poly_fn(c), ta, tb, rhs);
     iow_guard_close(rhs, open, b);
     buf_puts(b, "; }\n");
     return;
