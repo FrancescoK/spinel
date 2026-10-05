@@ -783,23 +783,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* an Integer or a Float reads its nil sentinel at run time, as nil?
        does: the nullable-value analysis does not see every way nil reaches
        one (a method's parameter only nil is passed to, a splat of a boxed
-       Array), and folded, a nil answered true to is_a?(Integer) */
+       Array), and folded, a nil answered true to is_a?(Integer). A nullable
+       String slot holds nil as NULL and answers the same way. */
     if (emit_scalar_class_test(c, recv, eff_rt, nt_str(nt, argv[0], "name"),
                                sp_streq(name, "instance_of?"), b)) return 1;
-    /* A nullable String slot answers at run time too: nil is a NilClass and
-       is not a String, whatever the slot's kind says. Object and its
-       ancestors hold for nil too. */
-    if (yes >= 0 && eff_rt == TY_STRING) {
-      const char *kn = nt_str(nt, argv[0], "name");
-      int nilcls = kn && sp_streq(kn, "NilClass");
-      int univ = kn && is_object_root(kn);
-      if (nilcls || (yes && !univ)) {
-        int tn = ++g_tmp;
-        buf_puts(b, "({ "); emit_ctype(c, eff_rt, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, recv, b);
-        buf_printf(b, "; %s(_t%d == NULL); })", nilcls ? "" : "!", tn);
-        return 1;
-      }
-    }
     if (yes >= 0) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes); return 1; }
   }
 

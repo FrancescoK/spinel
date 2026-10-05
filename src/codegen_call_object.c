@@ -394,9 +394,9 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     const char *cn = isa_match_name(nt, recv, rq, sizeof rq);
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
-      /* An Integer or Float argument is nil where it holds its sentinel,
-         which the scalar type cannot say: `Integer === x` answered true and
-         `NilClass === x` false for a nil x (emit_scalar_class_test). */
+      /* An Integer, Float or String argument is nil where it holds its
+         sentinel, which the scalar type cannot say: `Integer === x` answered
+         true and `NilClass === x` false for a nil x (emit_scalar_class_test). */
       if (emit_scalar_class_test(c, argv[0], at2, cn, 0, b)) return 1;
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
