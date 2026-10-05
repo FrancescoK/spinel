@@ -12275,7 +12275,10 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         TyKind t = c->classes[k].ivar_types[iv];
         if (t == TY_STRBUF) continue;
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
-        buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(sym + 1));
+        buf_printf(b, " case %d: ", k);
+        char obj[80]; snprintf(obj, sizeof obj, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, tv);
+        emit_frozen_obj_guard(c, k, obj, b);
+        buf_printf(b, "%s->iv_%s = ", obj, iv_c(sym + 1));
         if (t == TY_POLY) buf_puts(b, val);
         else if (nil_value(t)) {
           /* nil into a scalar or String slot is its in-band nil */
