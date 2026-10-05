@@ -51,11 +51,9 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
    bound to the fresh line in _t<lt>: a parameter that is the shared handle
    (--share-strings) wraps it in a handle of its own. */
 static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Buf *b) {
-  Scope *s = comp_scope_of(c, id);
-  LocalVar *lv = s ? scope_local(s, pn) : NULL;
-  if (repr_of_slot(c, lv).kind == RK_STRBUF)
-    buf_printf(b, " sp_String *lv_%s = sp_String_new_shared(_t%d); SP_GC_ROOT(lv_%s);", pn, lt, pn);
-  else buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", pn, lt, pn);
+  char src[32]; snprintf(src, sizeof src, "_t%d", lt);
+  buf_puts(b, " ");
+  emit_str_param_decl(c, id, pn, pn, src, 1, b);
 }
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */

@@ -1268,7 +1268,10 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
       clv0->type = et;
       for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
       emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
-      emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti);
+      { char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", rk, trecv, ti);
+        emit_indent(g_pre, din);
+        emit_elem_param_bind(c, block, 0, NULL, p0, rk, et, _es, g_pre);
+        buf_puts(g_pre, ";\n"); }
     }
     else {
       /* the element is kept as it was before the block ran, which may
@@ -1711,7 +1714,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
           if (plv) buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d); ", rename_local(pn), te, pj);
         }
       }
-      else if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
+      else if (p0) { char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      emit_elem_param_bind(c, block, 0, NULL, p0, k, TY_UNKNOWN, _es, b);
+      buf_puts(b, "; "); }
     }
     {
       Buf inner; memset(&inner, 0, sizeof inner);
@@ -1816,7 +1821,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; ");
       }
     }
-    else if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
+    else if (p0) { char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      emit_elem_param_bind(c, block, 0, NULL, p0, k, TY_UNKNOWN, _es, b);
+      buf_puts(b, "; "); }
   }
   /* The block's value expression may spill setup statements to g_pre (e.g.
      a nested count loop). Those must run per iteration: redirect g_pre into
@@ -3291,7 +3298,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   }
   else if (!p1) { }
   else if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
-  else { emit_ctype(c, et, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti); }
+  else { char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+    emit_elem_param_bind(c, block, 0, p1_orig, p1, k, et, _es, b); buf_puts(b, "; "); }
   /* `next v` inside a fold block sets the accumulator and moves on, so point
      the next-value channel at the accumulator temp for this body (#3356). The
      for above is a real C loop, so the depth must say so or a `next` at the
@@ -3694,7 +3702,8 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   buf_puts(b, "{ ");
   emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc);
   if (multi) {
-    emit_ctype(c, elem_t, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", rename_local(vo), k, ta, ti);
+    { char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      emit_elem_param_bind(c, block, 0, vo, rename_local(vo), k, elem_t, _es, b); buf_puts(b, "; "); }
     buf_printf(b, "sp_int lv_%s = _t%d; ", rename_local(io), tidx);
   }
   else {
@@ -5107,7 +5116,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   Scope *csc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-  int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  int use_shadow = iter_param_needs_shadow(c, clv0, et_elem);
   if (use_shadow) {
     clv0->type = et_elem;
     for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
@@ -5128,8 +5137,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
   else if (p0) {
+    char _es[96]; snprintf(_es, sizeof _es, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
     emit_indent(g_pre, bodyIndent);
-    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+    emit_elem_param_bind(c, block, 0, p0, p0, k, TY_UNKNOWN, _es, g_pre);
+    buf_puts(g_pre, ";\n");
   }
   /* a `*rest` param: splat-only wraps the whole element; alongside required
      params it binds empty (scalar elements never distribute) */
