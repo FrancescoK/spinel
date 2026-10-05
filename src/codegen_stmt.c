@@ -13850,9 +13850,13 @@ static int emit_array_mutate_stmt_dispatch(Compiler *c, int id, Buf *b, int inde
   if (recv >= 0 && op && op->emit == BOPE_STRING_SLICE && argc == 1 &&
       (comp_ntype(c, recv) == TY_STRING || comp_ntype(c, recv) == TY_STRBUF) &&
       repr_of(c, argv[0]).kind == RK_BOXED) {
-    emit_indent(b, indent); buf_puts(b, "(void)(");
-    emit_array_call(c, id, b); buf_puts(b, ");\n");
-    return 1;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (emit_or_take_back(c, id, &vb, emit_array_call)) {
+      emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0");
+      free(vb.p);
+      return 1;
+    }
+    free(vb.p);
   }
   return emit_array_mutate_stmt_body(c, id, b, indent);
 }

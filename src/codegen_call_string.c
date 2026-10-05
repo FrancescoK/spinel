@@ -1156,7 +1156,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
 /* Boxed slice! arguments select the same overloads as typed arguments.
    Keep the argument rooted and evaluate it once before re-entering the arms. */
 static int emit_string_slice_poly(Compiler *c, int id, int arg, Buf *b) {
-  if (repr_of(c, arg).kind != RK_BOXED || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  if (repr_of(c, arg).kind != RK_BOXED) return 0;
   int ta = ++g_tmp, tr = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d);"
