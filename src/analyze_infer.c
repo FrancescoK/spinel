@@ -7808,10 +7808,14 @@ static TyKind super_target_ret(Compiler *c, Scope *s, int mi, int id) {
     /* An unrelated proc replaces the caller's block. Its result, not a
        block supplied to this method, is what a yield-tailed parent answers. */
     int last = scope_body_last(c, mi);
+    int tl = block_given_tail_then_last(c, last);
+    if (tl >= 0) last = tl;
     if (last >= 0 && (nt_kind(c->nt, last) == NK_YieldNode || is_blk_param_call(c, last, mi))) {
       TyKind ret = proc_call_ret(c, nt_ref(c->nt, sblk, "expression"));
+      /* A proc argument may be nil, so both arms of the guard stay emitted. */
+      if (tl >= 0) ret = ty_unify(ret, (TyKind)c->scopes[mi].ret_noblock);
       if (sret != TY_UNKNOWN && sret != TY_VOID && ret != TY_UNKNOWN && ret != TY_VOID &&
-          scope_has_return(c, mi)) return ty_unify(sret, ret);
+          (tl >= 0 || scope_has_return(c, mi))) return ty_unify(sret, ret);
       return ret;
     }
     return sret;
