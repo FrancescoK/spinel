@@ -4,14 +4,17 @@
    element of the union-find, or none) and unifies what flows together:
    each write with its target, each container store with the container's
    elements, each yield with what the method yields, each return with the
-   method's value. What the walk does not follow -- here every call but the
-   in-place String mutation of its receiver -- joins UNKNOWN, so a case it
-   misses costs a handle, never a silent copy. */
+   method's value. A builtin call is read off its builtin-op share row
+   (bop_share). What the walk does not follow -- a user method's call, a
+   proc or Method call, a runtime `send`, a builtin with no row -- joins
+   UNKNOWN, so a case it misses costs a handle, never a silent copy. */
 
 #include <stdlib.h>
 #include <string.h>
 #include "analyze_internal.h"
+#include "builtin_ops.h"
 #include "builtin_names.h"
+#include "call_plan.h"
 #include "share.h"
 
 /* element-own flags (not merged by a union) */
@@ -434,6 +437,34 @@ static const char *sh_lit_name(const NodeTable *nt, int a) {
   return NULL;
 }
 
+/* the user methods a call reaches: its plan's method and, for a switch,
+   every member */
+static int sh_targets(Compiler *c, int call, int *out, int cap) {
+  const CallPlan *p = cplan_user_fresh(c, call);
+  if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
+  CallPlan plan = *p;
+  int n = 0;
+  out[n++] = plan.mi;
+  if (plan.dispatch >= CP_SWITCH) {
+    const char *name = c->scopes[plan.mi].name;
+    for (int k = 0; k < c->nscopes && n < cap; k++)
+      if (k != plan.mi && c->scopes[k].name && name && sp_streq(c->scopes[k].name, name) &&
+          cplan_virtual_member(c, call, &plan, k))
+        out[n++] = k;
+  }
+  return n;
+}
+
+/* the receiver family a builtin's share row is keyed by */
+static TyKind sh_family(TyKind rt) {
+  if (rt == TY_STRING || rt == TY_STRBUF) return TY_STRING;
+  if (ty_is_array(rt) || ty_is_ptr_array(rt) || rt == TY_STR_RANGE || rt == TY_ENUMERATOR) return BOP_ANY_ARRAY;
+  if (ty_is_hash(rt)) return BOP_ANY_HASH;
+  if (rt == TY_ARGF) return TY_IO;
+  if (rt == TY_PROC || rt == TY_METHOD || rt == TY_CURRY) return BOP_CALLABLE;
+  return rt;
+}
+
 /* The ivars the attr readers (or, for `x=`, the writers) of the name on any
    class read or write, joined; -1 when no class has one. */
 static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node, int *writer) {
@@ -454,6 +485,184 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
       if (names[i] && sp_streq(names[i], base + 1)) r = sh_join(F, r, sh_ivar(F, c, k, base, node));
   }
   return r;
+}
+
+static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
+
+/* The share-row semantics of builtin call n. Answers its value. */
+static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk, int container) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, n, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int vals[64];
+  int nv = sh_args_vals(F, c, n, vals, 64);
+  int lit_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
+  int bv = lit_blk ? sh_block_val(F, c, blk) : -1;
+  switch (share) {
+  case BSH_PURE:
+    /* a container's block is handed its elements, whatever it answers */
+    if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    return -1;
+  case BSH_ITER_FRESH: case BSH_FROZEN:
+    return -1;
+  case BSH_RECV:
+    return rv;
+  case BSH_ELEM:
+    /* `a[i, n]`, `a[r]`: a run of elements */
+    if (argc >= 2 || (argc == 1 && nt_kind(nt, argv[0]) == NK_RangeNode))
+      return sh_join(F, rv, sh_elem(F, rv));
+    return sh_elem(F, rv);
+  case BSH_ELEM_N:
+    return argc >= 1 ? sh_join(F, rv, sh_elem(F, rv)) : sh_elem(F, rv);
+  case BSH_SUB:
+    return rv;
+  case BSH_FETCH: {
+    int r = sh_elem(F, rv);
+    if (nv >= 2) r = sh_join(F, r, vals[nv - 1]);
+    return sh_join(F, r, bv);
+  }
+  case BSH_STORE_LAST:
+    if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
+    return nv > 0 ? vals[nv - 1] : rv;
+  case BSH_STORE_ALL:
+    for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
+    return rv;
+  case BSH_STORE_TAIL:
+    for (int i = 1; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
+    return rv;
+  case BSH_MERGE:
+    for (int i = 0; i < nv; i++) {
+      sh_union(F, sh_elem(F, rv), sh_elem(F, vals[i]));
+      /* zip and product pair elements up: a tuple holds the elements */
+      sh_union(F, sh_elem(F, rv), vals[i]);
+    }
+    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    return rv;
+  case BSH_ARGS: {
+    /* one argument is the answer; several, an Array of them */
+    if (nv == 1) return vals[0];
+    int r = sh_new(F, SHK_VALUE);
+    for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
+    return r;
+  }
+  case BSH_ARRAY_OF: {
+    /* an Array is the answer itself; anything else, wrapped in one */
+    if (nv != 1) return -1;
+    TyKind at = c->ntype[argv[0]];
+    if (ty_is_array(at) || at == TY_POLY || at == TY_UNKNOWN) return sh_join(F, vals[0], -1);
+    int r = sh_new(F, SHK_VALUE);
+    sh_union(F, sh_elem(F, r), vals[0]);
+    return r;
+  }
+  case BSH_FILL1:
+    if (argc >= 2) {
+      int b = sh_val(F, c, argv[1]);
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[1]) ? 0 : SHF_INDIRECT), n);
+      return b;
+    }
+    return -1;
+  case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
+    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
+  case BSH_ITER_MAP_BANG:
+    if (lit_blk) {
+      sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+      sh_union(F, sh_elem(F, rv), bv);
+    }
+    return rv;
+  case BSH_ITER_MAP: {
+    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (!lit_blk) return rv;   /* an Enumerator over the receiver */
+    /* a new container of the block's values; a flat_map's or to_h's value
+       is itself a container of them */
+    int r = sh_new(F, SHK_VALUE);
+    sh_union(F, sh_elem(F, r), bv);
+    sh_union(F, sh_elem(F, r), sh_elem(F, bv));
+    return r;
+  }
+  case BSH_ITER_SUB:
+    /* the block takes runs of elements: a run's elements are the
+       receiver's, so the two levels are one */
+    sh_union(F, rv, sh_elem(F, rv));
+    if (lit_blk) sh_block_params(F, c, blk, rv, 1);
+    return rv;
+  case BSH_ITER_MEMO0: {
+    const char *sym = argc >= 1 ? sh_lit_name(nt, argv[argc - 1]) : NULL;
+    int memo = nv >= 1 && !sym ? vals[0] : sh_elem(F, rv);
+    if (lit_blk) {
+      int bp = nt_ref(nt, blk, "parameters");
+      int pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+      int nreq = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &nreq) : NULL;
+      for (int i = 0; i < nreq; i++) sh_target(F, c, reqs[i], i == 0 ? memo : sh_elem(F, rv));
+      memo = sh_join(F, memo, bv);
+    }
+    return sym ? -1 : memo;
+  }
+  case BSH_ITER_MEMO1: {
+    int memo = nv >= 1 ? vals[0] : -1;
+    if (lit_blk) {
+      int bp = nt_ref(nt, blk, "parameters");
+      int pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+      int nreq = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &nreq) : NULL;
+      for (int i = 0; i < nreq; i++) {
+        int src = i == 1 ? memo : sh_elem(F, rv);
+        sh_target(F, c, reqs[i], src);
+        if (i == 0 && nt_kind(nt, reqs[i]) == NK_MultiTargetNode) sh_target(F, c, reqs[i], sh_elem(F, src));
+      }
+    }
+    return memo;
+  }
+  case BSH_ITER_SELF:
+    if (lit_blk) sh_block_params(F, c, blk, rv, 0);
+    return rv;
+  case BSH_ITER_THEN:
+    if (lit_blk) sh_block_params(F, c, blk, rv, 0);
+    return bv;
+  case BSH_CALL:
+    return sh_unknown_call(F, c, n, blk);
+  case BSH_METHOD_REF:
+    /* the method it names is called from wherever the Method goes; a
+       define_method body is called with what the walk does not see */
+    sh_dyn_name(F, argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL);
+    if (lit_blk) {
+      sh_block_params(F, c, blk, F->unknown, 1);
+      sh_union(F, bv, F->unknown);
+    }
+    return -1;
+  case BSH_IVAR_GET: case BSH_IVAR_SET: {
+    const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
+    TyKind rt = nt_ref(nt, n, "receiver") >= 0 ? c->ntype[nt_ref(nt, n, "receiver")] : TY_VOID;
+    int cid = ty_is_object(rt) ? ty_object_class(rt) : rt == TY_VOID ? sh_ivar_owner(c, n) : -1;
+    int iv = lit && cid >= 0 ? sh_ivar(F, c, cid, lit, n) : -1;
+    if (!lit || cid < 0) { F->dyn_ivars = 1; iv = F->unknown; }
+    if (share == BSH_IVAR_SET && nv >= 2) sh_union(F, iv, vals[1]);
+    return iv;
+  }
+  case BSH_EXEC:
+    if (!lit_blk) return sh_unknown_call(F, c, n, blk);
+    sh_block_params(F, c, blk, F->unknown, 1);
+    for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+    return bv;
+  default:
+    return -1;
+  }
+}
+
+/* A builtin call no row describes on a container: it may store any
+   argument and answer anything the receiver holds. */
+static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int blk) {
+  int vals[64];
+  int nv = sh_args_vals(F, c, n, vals, 64);
+  for (int i = 0; i < nv; i++) {
+    sh_union(F, sh_elem(F, rv), vals[i]);
+    sh_union(F, sh_elem(F, rv), sh_elem(F, vals[i]));
+  }
+  if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
+    sh_union(F, rv, sh_elem(F, rv));
+    sh_block_params(F, c, blk, rv, 1);
+    sh_union(F, rv, sh_block_val(F, c, blk));
+  }
+  return sh_join(F, rv, sh_elem(F, rv));
 }
 
 /* A call the walk does not follow: what it is handed and what it answers
@@ -510,7 +719,38 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (mod && (ffi_find_func(c, mod, name) >= 0 || comp_native_find(c, mod, name) >= 0)) return -1;
   }
 
-  /* a user method or a builtin */
+  /* a user method */
+  int tg[64];
+  if (sh_targets(c, n, tg, 64) > 0) return sh_unknown_call(F, c, n, blk);
+
+  /* a builtin */
+  if (recv < 0) {
+    int s = bop_share_named(BOP_KERNEL, name);
+    if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+    return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
+  }
+  if (rt == TY_POLY || rt == TY_UNKNOWN) {
+    /* a proc or a Method in the box: called with what it is handed */
+    if (bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
+      sh_unknown_call(F, c, n, blk);
+      return sh_join(F, F->unknown, sh_container_default(F, c, n, rv, blk));
+    }
+    /* any receiver it may be: an Array's or a Hash's row (a String's keeps
+       its arguments least), or the container default */
+    int s = bop_share_named(BOP_ANY_ARRAY, name);
+    if (!s) s = bop_share_named(BOP_ANY_HASH, name);
+    if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+    if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
+    return sh_container_default(F, c, n, rv, blk);
+  }
+  TyKind fam = sh_family(rt);
+  int s = bop_share_named(fam, name);
+  /* the Strings' answers-self names the face table lists */
+  if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
+  if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+  if (!s) s = bop_share(fam, name);
+  if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH);
+  if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk);
 }
 
@@ -774,6 +1014,7 @@ static int sh_frozen_value(Compiler *c, int v) {
   if (v < 0) return 1;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_StringNode) return 1;
+  if (k == NK_CallNode && bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_FROZEN) return 1;
   return c->ntype[v] != TY_UNKNOWN && !sh_may_hold(c->ntype[v]);
 }
 
