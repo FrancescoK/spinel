@@ -128,6 +128,13 @@ void share_dump_unknown_mutations(Compiler *c);
 /* The stats' second build, with every union with UNKNOWN dropped: would
    the holder with h's key share without what the walk does not follow? */
 struct ShareFacts *share_facts_build_closed(Compiler *c);
+/* SPINEL_SHARE_STATS=4/5: the walk's UNKNOWN sources, by site tag. A build
+   with skip bit t set drops the unions with UNKNOWN at tag t's sites, and
+   those sites' answers are values of their own. */
+enum { SHARE_UNKNOWN_TAGS_MAX = 32 };
+struct ShareFacts *share_facts_build_skip(Compiler *c, unsigned skip);
+int share_unknown_tags(void);
+const char *share_unknown_tag_name(int t);
 void share_facts_drop(struct ShareFacts *F);
 int share_closed_shares(const struct ShareFacts *F, const ShareHolder *h);
 
