@@ -715,6 +715,11 @@ Not yet shared:
 - through a bang method's result, which is its receiver (`r = s.strip!`, `r = s.strip! || s`), when the result is mutated in place through a variable and the receiver is read; a mutator straight on the result (`s.sub!(a, b) << x`) reaches the receiver;
 - through `to_s` (or another call answering its String receiver) under a mutator whose argument reassigns the variable, when the variable is a String handle (`e.to_s << (e = +"b")`);
 - into an Array, a String variable added by `insert`, `prepend`, a `concat` of a literal, the later push of a chain (`a << t << s`) or a push into a global Array, or as the value of `s << x`, of `+s` (s itself unless s is frozen; a parameter is refused even when every caller passes a frozen literal) or of a reader method (`a << sb` with `def sb = @s`), when the variable or the element is then mutated in place;
+- through a reader on a boxed receiver (a Struct or Data member, an `attr_reader`, `def m = @iv`), a String read into a local that is mutated in place while the receiver is read again;
+- into a container, a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s, `scan`'s), when an element is then mutated in place;
+- through `scan`'s block parameter, a match the block keeps and mutates in place (it did not build);
+- through a global variable's Array, a String element mutated in place through the Array (`$b.each { |y| y << x }`, `$b[0] << x`);
+- into an Array or Hash a caller passes a method, a String the method stores (`def keep(a) = (a << n)`), when the caller mutates the element in place;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
 
