@@ -212,6 +212,9 @@ no_gsub_enum:
        string, over its name when it holds a Symbol. NilClass has no match?, so
        nil raises here rather than answering false the way `nil !~` answers
        true. */
+    /* ...unless a program class answers match? itself: the boxed dispatch
+       has its arm, and the String one beside it */
+    if (are >= 0 && sp_streq(name, "match?") && rpoly && poly_name_user_claimed(c, name, argc)) return 0;
     if (are >= 0 && sp_streq(name, "match?") && rpoly) {
       int tv = ++g_tmp;
       /* a shared-string handle is a String (#4279) */
