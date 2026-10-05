@@ -8366,10 +8366,23 @@ int program_has_bsub(Compiler *c) { return c->has_bsub; }
 
 /* A row's rendering with $v spelled as the box v. */
 void bsub_expand(Buf *b, const char *tmpl, const char *v) {
+  bsub_expand2(b, tmpl, v, "");
+}
+/* ... and $x as x (frozen_set's truth value) */
+void bsub_expand2(Buf *b, const char *tmpl, const char *v, const char *x) {
   for (const char *t = tmpl; *t; t++) {
     if (t[0] == '$' && t[1] == 'v') { buf_puts(b, v); t++; }
+    else if (t[0] == '$' && t[1] == 'x') { buf_puts(b, x); t++; }
     else buf_printf(b, "%c", *t);
   }
+}
+/* The frozen state of class cid's embedded builtin, the struct lvalue v:
+   read, and set to x (the row's frozen_get / frozen_set). */
+void bsub_frozen_get(Compiler *c, int cid, const char *v, Buf *b) {
+  bsub_expand(b, comp_bsub_info(comp_bsub_base(c, cid))->frozen_get, v);
+}
+void bsub_frozen_set(Compiler *c, int cid, const char *v, const char *x, Buf *b) {
+  bsub_expand2(b, comp_bsub_info(comp_bsub_base(c, cid))->frozen_set, v, x);
 }
 
 /* A boxed builtin subclass instance is boxed as its builtin (bsub_box_id);
@@ -8441,7 +8454,14 @@ void emit_bsub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_printf(b, "  sp_%s *d = sp_%s__alloc(); SP_GC_ROOT(d);\n", cn, cn);
   buf_printf(b, "  { %s a = d->%s; *d = *o; d->%s = a; }\n", kr->ctype, f, f);
   buf_printf(b, "  %s(&d->%s, &o->%s);\n", kr->replace, f, f);
-  buf_printf(b, "  if (mode) d->%s.frozen = mode == 1 ? o->%s.frozen : mode == 3;\n", f, f);
+  {
+    char dv[64], ov[64];
+    snprintf(dv, sizeof dv, "d->%s", f); snprintf(ov, sizeof ov, "o->%s", f);
+    Buf x; memset(&x, 0, sizeof x);
+    buf_puts(&x, "mode == 1 ? "); bsub_frozen_get(c, cid, ov, &x); buf_puts(&x, " : mode == 3");
+    buf_puts(b, "  if (mode) "); bsub_frozen_set(c, cid, dv, x.p, b); buf_puts(b, ";\n");
+    free(x.p);
+  }
   buf_puts(b, "  return d;\n}\n");
 }
 
@@ -10028,7 +10048,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     /* a builtin subclass instance's #to_s is its builtin's (#7449) */
     if (tci->bsub_root > 0) {
       const BsubKind *kr = bsub_kind_row(c, i);
-      buf_printf(b, "    case %d: return %s((%s *)p);\n", i, kr->inspect, kr->ctype);
+      buf_printf(b, "    case %d: return %s((%s *)p);\n", i, kr->to_s, kr->ctype);
       continue;
     }
     continue;

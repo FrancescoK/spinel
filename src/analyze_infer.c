@@ -9259,8 +9259,10 @@ TyKind infer_type(Compiler *c, int id) {
   g_infer_depth--;
   /* a builtin subclass instance read where its builtin is wanted -- a
      splat, a destructuring, an element write that is no call (marked
-     bsub_operand) -- is its Array (Hash, String) (#7449) */
-  if (ty_is_object(t) && comp_ty_bsub_root(c, t) >= 0) {
+     bsub_operand) -- is its Array (Hash) (#7449). Each of those walks a
+     collection; a String is none (`*s` is [s]), so only an Enumerable
+     builtin's row takes them. */
+  if (ty_is_object(t) && comp_ty_bsub_root(c, t) >= 0 && comp_bsub_info(comp_ty_bsub_base(c, t))->enumerable) {
     long long op = nt_int(c->nt, id, "bsub_operand", 0);
     if (op == 1 || (op == 2 && comp_method_in_chain(c, ty_object_class(t), "[]", NULL) < 0 &&
                     comp_method_in_chain(c, ty_object_class(t), "[]=", NULL) < 0)) {

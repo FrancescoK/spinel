@@ -837,22 +837,27 @@ int comp_array_method_name(const char *n) {
    values, as an empty `[]` that never settles does. */
 static const BsubKind bsub_array_kinds[] = {
   { TY_INT_ARRAY, "sp_IntArray", "SP_BUILTIN_INT_ARRAY", "sp_IntArray_init_embedded", "sp_IntArray_fin",
-    NULL, "sp_IntArray_replace", "sp_IntArray_inspect" },
+    NULL, "sp_IntArray_replace", "sp_IntArray_inspect",
+    "sp_IntArray_inspect" },
   { TY_FLOAT_ARRAY, "sp_FloatArray", "SP_BUILTIN_FLT_ARRAY", "sp_FloatArray_init_embedded", "sp_FloatArray_fin",
-    NULL, "sp_FloatArray_replace", "sp_FloatArray_inspect" },
+    NULL, "sp_FloatArray_replace", "sp_FloatArray_inspect",
+    "sp_FloatArray_inspect" },
   { TY_STR_ARRAY, "sp_StrArray", "SP_BUILTIN_STR_ARRAY", "sp_StrArray_init_embedded", "sp_StrArray_fin",
-    "sp_StrArray_scan", "sp_StrArray_replace", "sp_StrArray_inspect" },
+    "sp_StrArray_scan", "sp_StrArray_replace", "sp_StrArray_inspect",
+    "sp_StrArray_inspect" },
   /* a poly Array's growth installs its finalizer */
   { TY_POLY_ARRAY, "sp_PolyArray", "SP_BUILTIN_POLY_ARRAY", "sp_PolyArray_init_embedded", NULL,
-    "sp_PolyArray_scan", "sp_PolyArray_replace", "sp_PolyArray_inspect" },
-  { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+    "sp_PolyArray_scan", "sp_PolyArray_replace", "sp_PolyArray_inspect",
+    "sp_PolyArray_inspect" },
+  { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
 };
 static const BsubBase bsub_bases[BSUB_NBASES] = {
   [BSUB_ARRAY]  = { "Array", "ary", comp_array_method_name, is_array_self_result_name,
                     is_array_element_store_name, array_new_copies, TY_POLY_ARRAY, 1,
-                    BSE_ELEMENTS, BSB_ARRAY_LITERAL, "sp_poly_is_array_kind($v.cls_id)", bsub_array_kinds },
-  [BSUB_HASH]   = { "Hash", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 1, BSE_NONE, BSB_NONE, NULL, NULL },
-  [BSUB_STRING] = { "String", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 0, BSE_NONE, BSB_NONE, NULL, NULL },
+                    BSE_ELEMENTS, BSB_ARRAY_LITERAL, "sp_poly_is_array_kind($v.cls_id)",
+                    "$v.frozen", "$v.frozen = $x", bsub_array_kinds },
+  [BSUB_HASH]   = { "Hash", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 1, BSE_NONE, BSB_NONE, NULL, NULL, NULL, NULL },
+  [BSUB_STRING] = { "String", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 0, BSE_NONE, BSB_NONE, NULL, NULL, NULL, NULL },
 };
 const BsubBase *comp_bsub_info(int base) {
   return base > BSUB_NONE && base < BSUB_NBASES ? &bsub_bases[base] : NULL;

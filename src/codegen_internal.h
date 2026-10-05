@@ -1413,6 +1413,11 @@ void emit_bsub_alloc(Compiler *c, ClassInfo *ci, Buf *b);
 const char *bsub_box_id(Compiler *c, TyKind t);
 int program_has_bsub(Compiler *c);
 void bsub_expand(Buf *b, const char *tmpl, const char *v);   /* a row's $v rendering */
+void bsub_expand2(Buf *b, const char *tmpl, const char *v, const char *x);   /* ... and $x */
+/* the frozen state of class cid's embedded builtin v (a struct lvalue):
+   read, and set to the truth value x (the row's frozen_get / frozen_set) */
+void bsub_frozen_get(Compiler *c, int cid, const char *v, Buf *b);
+void bsub_frozen_set(Compiler *c, int cid, const char *v, const char *x, Buf *b);
 void emit_bsub_machinery(Compiler *c, Buf *b);
 /* a call the builtin answers on a builtin subclass instance (#7449), as an
    expression or as a statement (codegen_call_object.c) */

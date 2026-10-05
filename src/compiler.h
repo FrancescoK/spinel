@@ -1179,7 +1179,8 @@ typedef struct {
   const char *fin;         /* the finalizer the instance is allocated with, or NULL */
   const char *scan;        /* marks its references (the instance's scan calls it), or NULL */
   const char *replace;     /* (dst, src): dup's copy of the contents */
-  const char *inspect;     /* p / to_s of the instance */
+  const char *inspect;     /* p of the instance */
+  const char *to_s;        /* to_s of the instance, where it is printed */
 } BsubKind;
 typedef struct {
   const char *name;                                /* the builtin class, "Array" */
@@ -1193,6 +1194,10 @@ typedef struct {
   int evidence;                                    /* BSE_* */
   int brackets;                                    /* BSB_* */
   const char *box_test;                            /* its boxes' cls_id, $v the box: "sp_poly_is_array_kind($v.cls_id)" */
+  /* the frozen state of the embedded struct $v (an lvalue): read it, and
+     set it to the truth value $x */
+  const char *frozen_get;                          /* "$v.frozen" */
+  const char *frozen_set;                          /* "$v.frozen = $x" */
   const BsubKind *kinds;                           /* ended by a TY_UNKNOWN row */
 } BsubBase;
 const BsubBase *comp_bsub_info(int base);          /* NULL for BSUB_NONE */
