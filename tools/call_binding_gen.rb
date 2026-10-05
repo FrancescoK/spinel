@@ -9,10 +9,11 @@
 # whether another class defines a method of the same name, the parameters of a
 # child whose bare `super` forwards them, what the callee does with them (and
 # through which method), the block the call passes and what the method does
-# with it, and the mode the program is compiled in. Spinel binds arguments to
-# parameters separately on each path, and its inference types a parameter from
-# every call that reaches it, so each of these is a factor rather than a
-# constant of the probe.
+# with it (yields it, answers it beside an early return, or yields it inside a
+# begin/ensure it returns through), and the mode the program is compiled in.
+# Spinel binds arguments to parameters separately on each path, and its
+# inference types a parameter from every call that reaches it, so each of
+# these is a factor rather than a constant of the probe.
 #
 # The argument levels follow the decisions CRuby's binding makes
 # (setup_parameters_complex, vm_args.c), relative to the parameters: the
@@ -56,11 +57,14 @@ module CallBindingGen
     # bind_call, raise_new (`raise C, msg` reaching initialize through
     # Exception.exception), a super into an included or prepended module's
     # method, and a parent's class method called through a subclass's Method
-    # (self is the subclass) each bind on a path of their own.
+    # (self is the subclass) each bind on a path of their own. reopen_random
+    # and reopen_array call a method the case adds to a builtin class it
+    # reopens (`class Random; def m(..)`), on an object of that class.
     [:path, %w[direct send public_send method_call method_to_proc bind_call instance poly class_method
                inherited_cmethod class_value yield_inline initialize raise_new define_method
                super_explicit super_zsuper super_include super_prepend forward_all forward_anon
-               block_yield proc_call lambda_call instance_exec struct struct_kw data]],
+               block_yield proc_call lambda_call instance_exec struct struct_kw data reopen_random
+               reopen_array]],
     [:req, [0, 1, 2]],
     [:opt, [0, 1, 2]],
     # ivar, global: the default of an optional, positional or keyword,
@@ -70,8 +74,10 @@ module CallBindingGen
     # at the call site at its parameter's slot read the value from before
     # the write (#6005). An instance variable's is assigned only on the
     # paths whose method has the self the arguments run with
-    # (SAME_SELF_PATHS); elsewhere the source is a literal.
-    [:opt_default, %w[int string ref ivar global]],
+    # (SAME_SELF_PATHS); elsewhere the source is a literal. object: an
+    # optional positional's default is an object of a class of the case's
+    # own (`p2 = Q.new`), which no argument has.
+    [:opt_default, %w[int string ref ivar global object]],
     [:rest, %w[none named]],
     [:post, [0, 1]],
     [:kreq, [0, 1]],
@@ -97,8 +103,11 @@ module CallBindingGen
     # last (a local's targets were bound up to eight, and the ninth, typed
     # by the other call, read a String as an Integer, #6007). With
     # body=mutate every call passes the String, so rebound9 is rebound, as
-    # int_then_typed is twice.
-    [:sites, %w[one twice int_then_typed rebound rebound9]],
+    # int_then_typed is twice. min_then: a first call leaves every optional
+    # positional to its default, so a parameter takes a default on one call
+    # and an argument on the other (a post-required one takes what the
+    # optional took).
+    [:sites, %w[one twice int_then_typed rebound rebound9 min_then]],
     # sibling: a class of its own defines a method of the called one's name
     # and parameters, called with the same arguments, so the name has two
     # methods. A callee found by unique name was then not found at all: a
@@ -126,12 +135,27 @@ module CallBindingGen
     # fwd_anon: the call is made inside `def fw(&) = <call>(.., &)`, which
     # hands on the block it is given; through Method#call that named a
     # proc the forwarder does not declare, and the C did not build (#6007).
-    [:block, %w[none literal amp fwd_anon]],
+    # amp_fwd: the call is made inside such a forwarder, but passes a proc
+    # of its own (`lp = proc { "lp" }; m(.., &lp)`), which CRuby binds in
+    # place of the forwarder's block. at_super: a bare super writes a
+    # literal block of its own (`super { :sup }`); elsewhere it is literal.
+    [:block, %w[none literal amp fwd_anon amp_fwd at_super]],
     # kept: a method that yields to a block also stores it, and a later
     # call runs the block with values of another type (`@kb = b` beside
     # `yield 1`, then `@kb.call("s")`). A block parameter typed from the
     # yields alone read the String as an Integer (#6033).
     [:block_use, %w[yield kept]],
+    # What the method the call reaches does with the block the call passes
+    # (CALLEE_PATHS): nothing more than its parameters say (plain); records
+    # its parameters through a method (rc<id>) and answers the block's value
+    # (yield); answers its parameters on one call and the block's value on
+    # the next (early: `return [..] if $r = !$r; yield`, a method of two
+    # answer types); or yields, then returns its parameters through rc<id>
+    # from inside a begin/ensure, the call made as a statement (ensure: a
+    # return's call skipped, #7141's review). ivar: the method writes an
+    # instance variable of its first optional positional and answers what
+    # it reads back in place of it, with an object default.
+    [:callee, %w[plain yield early ensure ivar]],
     # promote: compiled with --int-overflow=promote, which widens Integer
     # values and so the types every binding reads (#5744 met a yield that
     # did not build only there).
@@ -158,10 +182,18 @@ module CallBindingGen
   CLASS_METHOD_PATHS = %w[class_method inherited_cmethod class_value].freeze
   NAMED_PATHS = (CLASS_METHOD_PATHS + METHOD_PATHS +
                  %w[direct send public_send bind_call instance poly yield_inline define_method forward_all
-                    forward_anon super_explicit super_zsuper super_include super_prepend]).freeze
+                    forward_anon super_explicit super_zsuper super_include super_prepend reopen_random
+                    reopen_array]).freeze
   # Paths whose block is one the case writes to take the parameters, which
   # the method it is given to can keep.
   KEPT_PATHS = %w[block_yield yield_inline].freeze
+  # Paths whose call reaches a method the case writes with `def`, which can
+  # yield (the callee factor). initialize answers no value of its own.
+  CALLEE_PATHS = %w[direct send public_send method_call method_to_proc bind_call instance poly class_method
+                    inherited_cmethod class_value super_explicit super_zsuper super_include super_prepend
+                    forward_all forward_anon reopen_random reopen_array].freeze
+  # The builtin class a path reopens, and the object its method is called on.
+  REOPENED = { "reopen_random" => ["Random", "Random.new(1)"], "reopen_array" => ["Array", "[]"] }.freeze
   # Paths whose parameters bind with the self the call's arguments run
   # with: the top level's, or on a super path the child's method, where
   # the call is made (a bare super's call is made at the top level on a
@@ -218,6 +250,7 @@ module CallBindingGen
       default = case row[:opt_default]
                 when "string" then "\"d#{n}\""
                 when "ref" then ps.last && ps.last[1]
+                when "object" then "Q#{i}.new"
                 else var
                 end
       ps << [:opt, name, default || (50 + n).to_s]
@@ -240,6 +273,7 @@ module CallBindingGen
                     end
     real[:opt_default] = if opts.any? { |p| p[2].start_with?("p") } then "ref"
                          elsif opts.any? { |p| p[2].start_with?("\"") } then "string"
+                         elsif opts.any? { |p| p[2].start_with?("Q") } then "object"
                          elsif var && ps.any? { |p| p[2] == var } then row[:opt_default]
                          else "int"
                          end
@@ -287,14 +321,33 @@ module CallBindingGen
 
   # The callee's answer: its parameters, after `lead` (a tag or self); with
   # `grow`, that statement first (it grows a parameter in place).
-  def body_src(ps, lead = nil, grow = nil)
+  def body_src(ps, lead = nil, grow = nil, callee = "plain", i = nil)
+    reflect = callee == "ivar" ? ps.find { |p| p[0] == :opt }[1] : nil
     vals = ps.filter_map do |kind, name|
       next if kind == :nokw
-      kind == :block ? "(#{name} ? #{name}.call : nil)" : name
+      next "(#{name} ? #{name}.call : nil)" if kind == :block
+      # an Integer argument is frozen: its write raises, and its read is nil
+      next name unless name == reflect
+      "(#{name}.instance_variable_set(:@z#{i}, 7) rescue nil; #{name}.instance_variable_get(:@z#{i}))"
     end
     vals.unshift(lead) if lead
     list = "[#{vals.join(", ")}]"
     grow ? "(#{grow}; #{list})" : list
+  end
+
+  # The method `name` of case `i`, taking `pl` and answering `list` as
+  # `callee` says: `yield` records it through rc<id> and answers the
+  # block's value, `early` answers it on every other call and the block's
+  # value on the rest, `ensure` yields and then returns it through rc<id>
+  # from inside a begin/ensure.
+  def def_src(name, pl, list, callee, i)
+    case callee
+    when "yield" then "def #{name}(#{pl}) = (rc#{i}(#{list}); yield)\n"
+    when "early" then "def #{name}(#{pl})\n  return #{list} if ($r#{i} = !$r#{i})\n\n  yield\nend\n"
+    when "ensure"
+      "def #{name}(#{pl})\n  begin\n    yield\n    return rc#{i}(#{list})\n  ensure\n    $l << 0\n  end\nend\n"
+    else "def #{name}(#{pl}) = #{list}\n"
+    end
   end
 
   # How the callee of case `i` grows its parameter `name`: in place, or
@@ -514,7 +567,8 @@ module CallBindingGen
     [args, prelude, defs, typed]
   end
 
-  # With fwd_anon the call hands on the block its forwarder is given.
+  # With fwd_anon the call hands on the block its forwarder is given; with
+  # amp_fwd it passes a proc of its own instead.
   def call_src(name, args, row, tag, prelude)
     case BLOCK_PATHS.include?(row[:path]) ? "none" : row[:block]
     when "literal" then "#{name}(#{args}) { :blk }"
@@ -522,6 +576,9 @@ module CallBindingGen
       prelude << "blk#{tag} = proc { :blk }" unless prelude.include?("blk#{tag} = proc { :blk }")
       "#{name}(#{[args, "&blk#{tag}"].reject(&:empty?).join(", ")})"
     when "fwd_anon" then "#{name}(#{[args, "&"].reject(&:empty?).join(", ")})"
+    when "amp_fwd"
+      prelude << "lp#{tag} = proc { \"lp\" }" unless prelude.include?("lp#{tag} = proc { \"lp\" }")
+      "#{name}(#{[args, "&lp#{tag}"].reject(&:empty?).join(", ")})"
     else "#{name}(#{args})"
     end
   end
@@ -539,13 +596,14 @@ module CallBindingGen
   end
 
   # The calls a case makes: one, the same one twice (twice through one
-  # Method local when rebound), or an all-Integer one ahead of the typed one.
+  # Method local when rebound, the first with fewer positionals when
+  # min_then), or an all-Integer one ahead of the typed one.
   def site_types(row)
     # a literal block given to instance_exec is reached by its one call
     return [row[:type]] if row[:path] == "instance_exec"
     case row[:sites]
     when "one" then [row[:type]]
-    when "twice", "rebound" then [row[:type], row[:type]]
+    when "twice", "rebound", "min_then" then [row[:type], row[:type]]
     else ["int", row[:type]]
     end
   end
@@ -607,21 +665,36 @@ module CallBindingGen
     child, cps = "same", ps if cps.nil?
     real[:child] = child
     bare = child != "none"
+    # a block of a super's own is a literal one where the call is the super
+    if real[:block] == "at_super" && !bare
+      row = row.merge(block: "literal")
+      real[:block] = "literal"
+    end
     rebound = %w[rebound rebound9].include?(real[:sites])
-    fwd = real[:block] == "fwd_anon"
+    fwd = %w[fwd_anon amp_fwd].include?(real[:block])
     kept = real[:block_use] == "kept"
     pl = param_src(ps)
     cpl = param_src(cps)
     m = "m#{i}"
-    # a bare super's call binds the child's parameters first
-    sites = site_types(row).each_with_index.map do |type, s|
+    # a bare super's call binds the child's parameters first. min_then's
+    # first call is built last, from the levels the second one realized,
+    # with as few positionals as the parameters take and no splat; the
+    # levels it realizes itself are not the case's.
+    types = site_types(row)
+    min_then = row[:sites] == "min_then" && types.size == 2
+    sites = []
+    (min_then ? types.each_index.to_a.reverse : types.each_index).each do |s|
       tag = "#{i}_#{s}"
-      call = args_src(row, bare ? cps : ps, real, type, tag, mutate)
+      first = min_then && s.zero?
+      r, into, type = first ? [real.merge(count: "min", splat: "none"), {}, real[:type]] : [row, real, types[s]]
+      call = args_src(r, bare ? cps : ps, into, type, tag, mutate)
       # a typed value a later key replaces binds nowhere: the call is an
       # Integer one, and says so
-      call = args_src(row, bare ? cps : ps, real, "int", tag, false) if type != "int" && real[:type] == "int"
-      [tag, *call]
+      call = args_src(r, bare ? cps : ps, into, "int", tag, false) if type != "int" && into[:type] == "int"
+      sites[s] = [tag, *call]
     end
+    # min_then at the minimum count is twice
+    real[:sites] = "twice" if min_then && real[:count] == "min" && real[:splat] == "none"
     mutated = mutate ? mutated_param(ps, sites.last[4]) : nil
     return build(i, asked.merge(body: "params")) if mutate && (real[:type] != "string" || mutated.nil?)
     real[:body] = mutate ? "mutate" : "params"
@@ -630,6 +703,17 @@ module CallBindingGen
     grow = mutate ? grow_src(i, mutated, real[:forward], real[:seed]) : nil
     body = body_src(ps, nil, grow)
     indent = ->(text, ind) { text.gsub(/^(?=.)/, ind) }
+    # The callee factor asks a method the case writes, called with a block
+    # (ivar: an optional with an object default, and no String argument,
+    # which CRuby's own literal would let take an instance variable).
+    callee = CALLEE_PATHS.include?(row[:path]) && !mutate ? row[:callee] : "plain"
+    callee = "plain" if %w[yield early ensure].include?(callee) && real[:block] == "none"
+    callee = "plain" if callee == "ivar" && (real[:opt_default] != "object" || real[:type] == "string")
+    real[:callee] = callee
+    # the method the call reaches, as the callee factor writes it
+    cdef = lambda do |name, lead = nil, ind = ""|
+      indent.call(def_src(name, pl, body_src(ps, lead, grow, callee, i), callee, i), ind)
+    end
     defs = +""
     uses = +""
     branches = +""
@@ -638,8 +722,17 @@ module CallBindingGen
       # the locals, written out once the call is built: a block the call
       # passes with `&` joins them
       pre = ->(ind = "") { prelude.map { |l| "#{ind}#{l}\n" }.join }
-      # with a grown String, the caller's variable after the call
-      out = ->(call) { mutate ? "[#{call}, v#{tag}]" : call }
+      # with a grown String, the caller's variable after the call; with
+      # callee=yield, the parameters rc<id> recorded after the block's
+      # value; with callee=ensure, the call is a statement and the answer
+      # the parameters rc<id> recorded
+      out = lambda do |call|
+        if mutate then "[#{call}, v#{tag}]"
+        elsif callee == "yield" then "[#{call}, $a#{i}]"
+        elsif callee == "ensure" then "($a#{i} = nil; #{call}; $a#{i})"
+        else call
+        end
+      end
       # The call where it stands after `lead` and the locals, or with
       # fwd_anon in a forwarder of its own the report gives a literal block;
       # `local`, a local of the top level the call reads, is then the
@@ -670,9 +763,10 @@ module CallBindingGen
         lead = { "send" => ":#{m}", "public_send" => ":#{m}", "bind_call" => "C#{i}.new" }[row[:path]]
         call = call_src(target, lead ? [lead, as].reject(&:empty?).join(", ") : as, row, tag, prelude)
         emit.call(call, rebound ? rebound_src(i, m, s, real[:sites]) : "")
-      when "instance", "class_method", "initialize", "define_method"
+      when "instance", "class_method", "initialize", "define_method", "reopen_random", "reopen_array"
         recv = { "instance" => "C#{i}.new.#{m}", "class_method" => "C#{i}.#{m}",
-                 "initialize" => "C#{i}.new", "define_method" => "C#{i}.new.#{m}" }[row[:path]]
+                 "initialize" => "C#{i}.new", "define_method" => "C#{i}.new.#{m}" }[row[:path]] ||
+               "#{REOPENED[row[:path]][1]}.#{m}"
         call = call_src(recv, as, row, tag, prelude)
         call = "(#{call}).v#{i}" if row[:path] == "initialize"
         emit.call(call)
@@ -744,16 +838,17 @@ module CallBindingGen
              else ""
              end
     members = ps.select { |p| %i[req opt post rest kreq kopt].include?(p[0]) }.map { |p| ":#{p[1]}" }
-    mod = "module M#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
-    child_src = ->(parent) { "class C#{i}#{parent}\n  def #{m}(#{cpl}) = super\nend\n" }
+    mod = "module M#{i}\n#{cdef.call(m, nil, "  ")}end\n"
+    sup = real[:block] == "at_super" ? "super { :sup }" : "super"
+    child_src = ->(parent) { "class C#{i}#{parent}\n  def #{m}(#{cpl}) = #{sup}\nend\n" }
     head = case row[:path]
            when "direct", "send", "method_call", "method_to_proc"
              # rebound: the Method local's first target, a method of the same
              # parameters, and with rebound9 seven more
-             target = ->(c, lead) { "class #{c}\n  def #{m}(#{pl}) = #{body_src(ps, lead, grow)}\nend\n" }
+             target = ->(c, lead) { "class #{c}\n#{cdef.call(m, lead, "  ")}end\n" }
              (rebound ? target.call("C#{i}", ":c") : "") +
                (real[:sites] == "rebound9" ? (2..8).map { |k| target.call("D#{i}_#{k}", ":d#{k}") }.join : "") +
-               "def #{m}(#{pl}) = #{body}\n"
+               cdef.call(m)
            when "yield_inline"
              if kept
                # the method keeps its block: its own block parameter, or one it takes for that
@@ -763,26 +858,25 @@ module CallBindingGen
              else
                "def #{m}(#{pl}) = yield(#{body})\n"
              end
-           when "forward_all" then "def #{m}(#{pl}) = #{body}\ndef w#{i}(...) = #{m}(...)\n"
-           when "forward_anon" then "def #{m}(#{pl}) = #{body}\ndef w#{i}(*, **, &) = #{m}(*, **, &)\n"
-           when "public_send", "instance", "bind_call" then "class C#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
-           when "class_method" then "class C#{i}\n  def self.#{m}(#{pl}) = #{body}\nend\n"
+           when "forward_all" then "#{cdef.call(m)}def w#{i}(...) = #{m}(...)\n"
+           when "forward_anon" then "#{cdef.call(m)}def w#{i}(*, **, &) = #{m}(*, **, &)\n"
+           when "public_send", "instance", "bind_call" then "class C#{i}\n#{cdef.call(m, nil, "  ")}end\n"
+           when "class_method" then "class C#{i}\n#{cdef.call("self.#{m}", nil, "  ")}end\n"
+           when "reopen_random", "reopen_array" then "class #{REOPENED[row[:path]][0]}\n#{cdef.call(m, nil, "  ")}end\n"
            when "inherited_cmethod"
-             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, "self", grow)}\nend\n" \
-               "class B#{i} < A#{i}\nend\n"
+             "class A#{i}\n#{cdef.call("self.#{m}", "self", "  ")}end\nclass B#{i} < A#{i}\nend\n"
            when "initialize"
              "class C#{i}\n  attr_reader :v#{i}\n\n  def initialize(#{pl})\n    @v#{i} = #{body}\n  end\nend\n"
            when "raise_new"
              "class C#{i} < StandardError\n  attr_reader :v#{i}\n\n  def initialize(#{pl})\n    @v#{i} = #{body}\n  end\nend\n"
            when "define_method" then "class C#{i}\n  define_method(:#{m}) { |#{pl}| #{body} }\nend\n"
            when "poly"
-             "class A#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":a", grow)}\nend\n" \
-               "class B#{i}\n  def #{m}(#{pl}) = #{body_src(ps, ":b", grow)}\nend\n"
+             "class A#{i}\n#{cdef.call(m, ":a", "  ")}end\nclass B#{i}\n#{cdef.call(m, ":b", "  ")}end\n"
            when "class_value"
-             "class A#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":a", grow)}\nend\n" \
-               "class B#{i}\n  def self.#{m}(#{pl}) = #{body_src(ps, ":b", grow)}\nend\n"
-           when "super_explicit" then "class B#{i}\n  def #{m}(#{pl}) = #{body}\nend\n"
-           when "super_zsuper" then "class B#{i}\n  def #{m}(#{pl}) = #{body}\nend\n" + child_src.call(" < B#{i}")
+             "class A#{i}\n#{cdef.call("self.#{m}", ":a", "  ")}end\n" \
+               "class B#{i}\n#{cdef.call("self.#{m}", ":b", "  ")}end\n"
+           when "super_explicit" then "class B#{i}\n#{cdef.call(m, nil, "  ")}end\n"
+           when "super_zsuper" then "class B#{i}\n#{cdef.call(m, nil, "  ")}end\n" + child_src.call(" < B#{i}")
            when "super_include" then mod + (bare ? child_src.call("").sub("\n", "\n  include M#{i}\n\n") : "")
            when "super_prepend"
              # P's own method, which the prepended module's comes ahead of
@@ -804,6 +898,10 @@ module CallBindingGen
     # with an Integer typed value both calls are the same, one twice
     real[:sites] = "twice" if row[:sites] == "int_then_typed" && real[:type] == "int"
     real[:sites] = "one" if row[:path] == "instance_exec"
+    # an object default's class, and the method the callee records its
+    # parameters through
+    helper += "class Q#{i}\n  def inspect = \"q\"\nend\n" if real[:opt_default] == "object"
+    helper += "def rc#{i}(v) = ($a#{i} = v)\n" if %w[yield ensure].include?(callee)
     [helper + head + sibling + defs + uses, real]
   end
 

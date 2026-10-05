@@ -34,10 +34,10 @@ require_relative "probe_common"
 DOCUMENTED = [].freeze
 
 # A name the generator defines, undefined: the program is wrong, not spinel
-# (a local, a helper method it calls -- g, gr, fw, q, w, y -- or a class or
-# module).
-UNDEFINED = Regexp.union(/NameError: undefined local variable or method '(?:blk|kb|[a-z])\d+(?:_\d+)?'[^\n]*/,
-                         /NoMethodError: undefined method '(?:[gqwy]|gr|fw)\d+(?:_\d+)?'[^\n]*/,
+# (a local, a helper method it calls -- g, gr, fw, q, w, y, rc -- or a class
+# or module).
+UNDEFINED = Regexp.union(/NameError: undefined local variable or method '(?:blk|kb|lp|[a-z])\d+(?:_\d+)?'[^\n]*/,
+                         /NoMethodError: undefined method '(?:[gqwy]|gr|fw|rc)\d+(?:_\d+)?'[^\n]*/,
                          /NameError: uninitialized constant [A-Z]+\d+(?:_\d+)?[^\n]*/)
 
 exit ProbeCommon.main(CallBindingGen, "call_binding_probe", ARGV,
