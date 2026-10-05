@@ -58,8 +58,9 @@ typedef struct ShareFacts {
   int nbucket;
   /* each node's value: -2 not yet computed, -1 none */
   int *nval, nnodes;
-  /* lent bindings: argument value -> parameter holder element */
-  int *lend_arg, *lend_par;
+  /* lent bindings: argument value -> parameter holder element, at call
+     node lend_call, from argument node lend_node */
+  int *lend_arg, *lend_par, *lend_call, *lend_node;
   unsigned char *lend_direct, *lend_done;
   int nlend, clend;
   /* the method names a Method, `send` or define_method can reach */
@@ -359,17 +360,21 @@ static void sh_dyn_name(ShareFacts *F, const char *name) {
   F->dyn[F->ndyn++] = name;
 }
 
-static void sh_lend(ShareFacts *F, int arg, int par, int direct) {
+static void sh_lend(ShareFacts *F, int arg, int par, int direct, int call, int node) {
   if (arg < 0 || par < 0) return;
   if (F->nlend >= F->clend) {
     F->clend = F->clend ? F->clend * 2 : 64;
     F->lend_arg = realloc(F->lend_arg, sizeof(int) * (size_t)F->clend);
     F->lend_par = realloc(F->lend_par, sizeof(int) * (size_t)F->clend);
+    F->lend_call = realloc(F->lend_call, sizeof(int) * (size_t)F->clend);
+    F->lend_node = realloc(F->lend_node, sizeof(int) * (size_t)F->clend);
     F->lend_direct = realloc(F->lend_direct, (size_t)F->clend);
     F->lend_done = realloc(F->lend_done, (size_t)F->clend);
   }
   F->lend_arg[F->nlend] = arg;
   F->lend_par[F->nlend] = par;
+  F->lend_call[F->nlend] = call;
+  F->lend_node[F->nlend] = node;
   F->lend_direct[F->nlend] = (unsigned char)direct;
   F->lend_done[F->nlend] = 0;
   F->nlend++;
@@ -579,7 +584,7 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
     if (a >= 0) {
       int v = sh_val(F, c, a);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
-      else sh_lend(F, v, p, sh_holder_read(nt, a));
+      else sh_lend(F, v, p, sh_holder_read(nt, a), call, a);
     }
     else if (spread >= 0) sh_union(F, p, sh_elem(F, sh_val(F, c, spread)));
   }
@@ -1426,6 +1431,63 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   return v;
 }
 
+/* A type whose builtin methods run no user code and keep no String pointer
+   a caller hands them: a scalar, a String, and the typed containers of
+   those. An object, a box, a proc or a class can reach user code. */
+static int sh_plain_ty(TyKind t) {
+  switch (t) {
+  case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: case TY_NIL:
+  case TY_VOID: case TY_STRING: case TY_STRBUF: case TY_RANGE: case TY_FLOAT_RANGE:
+  case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
+  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY: case TY_STR_INT_HASH: case TY_INT_INT_HASH:
+  case TY_STR_STR_HASH: case TY_INT_STR_HASH: case TY_REGEX: case TY_MATCHDATA: case TY_TIME:
+  case TY_COMPLEX: case TY_RATIONAL: case TY_IO:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Can node n run code the walk cannot see from where it stands: a call to
+   a user method, a yield, a super, a proc made or called, a reflective call,
+   or a builtin on (or handed) a value that can reach user code? */
+static int sh_node_blind(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, n)) {
+  case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode: case NK_LambdaNode:
+    return 1;
+  case NK_EmbeddedStatementsNode: {
+    /* `#{x}` calls x.to_s */
+    int st = nt_ref(nt, n, "statements");
+    int bn = 0; const int *bv = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    return bn > 0 && !sh_plain_ty(c->ntype[bv[bn - 1]]);
+  }
+  case NK_CallNode: {
+    const char *name = nt_str(nt, n, "name");
+    if (!name) return 1;
+    if (sh_has_targets(c, n)) return 1;
+    if (is_opaque_reaching_call(name)) return 1;
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if (recv >= 0 && !sh_plain_ty(rt) && rt != TY_CLASS) return 1;
+    int s = bop_share_named(recv >= 0 ? sh_family(rt) : BOP_KERNEL, name);
+    if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+    if (s == BSH_CALL || s == BSH_EXEC || s == BSH_METHOD_REF || s == BSH_IVAR_GET ||
+        s == BSH_IVAR_SET || s == BSH_FILL1 || s == BSH_NEW)
+      return 1;
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) return 1;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (!sh_plain_ty(c->ntype[argv[i]])) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
 /* ---- lending ---- */
 
 /* A parameter its method only reads and mutates: no write, nothing else in
@@ -1465,31 +1527,184 @@ static int sh_settle_rets(ShareFacts *F) {
   return any;
 }
 
+/* A lent parameter is a copy of its argument taken at the call, which is
+   CRuby's answer only while nothing changes the argument's String through
+   another name before the callee is done with the copy:
+   `def read(s) = (@buf << "x" * 100; s.bytesize)`, called as `read(@buf)`
+   on a 5-byte @buf, reads 5 where CRuby reads 105. So a lent parameter joins its argument's class, and
+   is the same handle, once the class is mutated somewhere and the callee may
+   change it while it runs:
+
+   - the callee changes a String of the class in place itself (`@buf << x`,
+     or through a local it aliased to @buf);
+   - the same call lends the class to another parameter, and the callee
+     changes that one (`g(b, b)` with `def g(s, t) = (t << "x"; s.size)`);
+   - the callee runs code the walk cannot see from there (sh_node_blind: a
+     user call, a yield, a proc), and the class has a holder that code can
+     reach: anything but plain locals of a single method;
+   - a later argument of the same call changes a String of the class
+     (`f(@b, (t << "x").size)`, CRuby's callee sees the change), or runs code
+     the walk cannot see while the class has such a holder: the copy is
+     taken before the later argument runs.
+
+   The last is coarse: a callee that calls any other method stops lending a
+   reachable mutated String. Telling which callees can reach which classes
+   needs a call-graph effect summary (#6765's open question 2, option b). */
+typedef struct {
+  int *mut_start, *mut_site;   /* the mutation sites, by method scope */
+  int *node_start, *node_of;   /* the nodes, by method scope (built on demand) */
+  signed char *blind;          /* per scope: -1 not yet asked */
+  int *mut_at;                 /* per node: its first mutation site, or -1
+                                  (mut_next chains the rest; built on demand) */
+  int *mut_next;
+} ShStale;
+
+/* Does the subtree at n hold node x? (a walk down: a desugared tree can
+   share a node between parents, so no parent map answers this) */
+static int sh_subtree_has(const NodeTable *nt, int n, int x, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  if (n == x) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int k = 0; k < nr; k++) if (sh_subtree_has(nt, nt_ref_at(nt, n, k), x, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int k = 0; k < na; k++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, k, &an);
+    for (int e = 0; e < an; e++) if (sh_subtree_has(nt, av[e], x, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Does the subtree at n change a String of class r in place, or (with
+   `reach`, the class having a holder other code can name) run code the walk
+   cannot see? */
+static int sh_subtree_changes(ShareFacts *F, Compiler *c, ShStale *S, int n, int r, int reach, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || n >= F->nnodes) return 0;
+  if (depth > 64) return 1;
+  for (int k = S->mut_at[n]; k >= 0; k = S->mut_next[k])
+    if (sh_find(F, F->mut_v[k]) == r) return 1;
+  if (reach && sh_node_blind(c, n)) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int k = 0; k < nr; k++) if (sh_subtree_changes(F, c, S, nt_ref_at(nt, n, k), r, reach, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int k = 0; k < na; k++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, k, &an);
+    for (int e = 0; e < an; e++) if (sh_subtree_changes(F, c, S, av[e], r, reach, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Can an argument of lend i's call after the lent one change the class r of
+   its argument before the callee runs (CRuby evaluates every argument
+   first, so the callee sees the change)? */
+static int sh_later_changes(ShareFacts *F, Compiler *c, ShStale *S, int i, int r) {
+  const NodeTable *nt = c->nt;
+  int call = F->lend_call[i], a = F->lend_node[i];
+  int args = call >= 0 ? nt_ref(nt, call, "arguments") : -1;
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int pos = -1;
+  for (int k = 0; k < argc && pos < 0; k++) if (argv[k] == a) pos = k;
+  for (int k = 0; k < argc && pos < 0; k++) if (sh_subtree_has(nt, argv[k], a, 0)) pos = k;
+  if (pos < 0 || pos + 1 >= argc) return 0;
+  if (!S->mut_at) {
+    S->mut_at = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
+    S->mut_next = malloc(sizeof(int) * (size_t)(F->nmut > 0 ? F->nmut : 1));
+    for (int n = 0; n < F->nnodes; n++) S->mut_at[n] = -1;
+    for (int k = F->nmut - 1; k >= 0; k--) {
+      int n = F->mut_n[k];
+      if (n < 0 || n >= F->nnodes) { S->mut_next[k] = -1; continue; }
+      S->mut_next[k] = S->mut_at[n];
+      S->mut_at[n] = k;
+    }
+  }
+  int reach = F->lsc[r] < 0 || (F->flags[r] & SHF_UNKNOWN);
+  for (int k = pos + 1; k < argc; k++)
+    if (sh_subtree_changes(F, c, S, argv[k], r, reach, 0)) return 1;
+  return 0;
+}
+
+static int sh_scope_blind(ShareFacts *F, Compiler *c, ShStale *S, int m) {
+  if (S->blind[m] >= 0) return S->blind[m];
+  int ns = c->nscopes;
+  if (!S->node_start) {
+    S->node_start = calloc((size_t)ns + 2, sizeof(int));
+    S->node_of = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
+    for (int n = 0; n < F->nnodes; n++)
+      if (c->nscope[n] >= 0 && c->nscope[n] < ns) S->node_start[c->nscope[n] + 2]++;
+    for (int k = 0; k < ns; k++) S->node_start[k + 2] += S->node_start[k + 1];
+    for (int n = 0; n < F->nnodes; n++)
+      if (c->nscope[n] >= 0 && c->nscope[n] < ns) S->node_of[S->node_start[c->nscope[n] + 1]++] = n;
+  }
+  int b = 0;
+  for (int k = S->node_start[m]; k < S->node_start[m + 1] && !b; k++) b = sh_node_blind(c, S->node_of[k]);
+  S->blind[m] = (signed char)b;
+  return b;
+}
+
+/* May method m, given lend i, change the class of its argument while the
+   copy is live? */
+static int sh_lend_stale(ShareFacts *F, Compiler *c, ShStale *S, int i, int m) {
+  int r = sh_find(F, F->lend_arg[i]);
+  if (!(F->flags[r] & SHF_MUT)) return 0;
+  for (int k = S->mut_start[m]; k < S->mut_start[m + 1]; k++)
+    if (sh_find(F, F->mut_v[S->mut_site[k]]) == r) return 1;
+  /* the lends of one call are recorded together */
+  for (int j = i - 1; j >= 0 && F->lend_call[j] == F->lend_call[i]; j--)
+    if (sh_find(F, F->lend_arg[j]) == r && (F->flags[sh_find(F, F->lend_par[j])] & SHF_MUT)) return 1;
+  for (int j = i + 1; j < F->nlend && F->lend_call[j] == F->lend_call[i]; j++)
+    if (sh_find(F, F->lend_arg[j]) == r && (F->flags[sh_find(F, F->lend_par[j])] & SHF_MUT)) return 1;
+  if (sh_later_changes(F, c, S, i, r)) return 1;
+  return (F->lsc[r] < 0 || (F->flags[r] & SHF_UNKNOWN)) && sh_scope_blind(F, c, S, m);
+}
+
 static void sh_settle_lends(ShareFacts *F, Compiler *c) {
-  for (int changed = 1; changed; ) {
-    changed = 0;
+  int ns = c->nscopes;
+  ShStale S = { 0 };
+  S.mut_start = calloc((size_t)ns + 2, sizeof(int));
+  S.mut_site = malloc(sizeof(int) * (size_t)(F->nmut > 0 ? F->nmut : 1));
+  S.blind = malloc((size_t)(ns > 0 ? ns : 1));
+  memset(S.blind, -1, (size_t)(ns > 0 ? ns : 1));
+  for (int k = 0; k < F->nmut; k++)
+    if (c->nscope[F->mut_n[k]] >= 0 && c->nscope[F->mut_n[k]] < ns) S.mut_start[c->nscope[F->mut_n[k]] + 2]++;
+  for (int k = 0; k < ns; k++) S.mut_start[k + 2] += S.mut_start[k + 1];
+  for (int k = 0; k < F->nmut; k++)
+    if (c->nscope[F->mut_n[k]] >= 0 && c->nscope[F->mut_n[k]] < ns) S.mut_site[S.mut_start[c->nscope[F->mut_n[k]] + 1]++] = k;
+  for (int stale = 1; stale; ) {
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int i = 0; i < F->nlend; i++) {
+        if (F->lend_done[i] || sh_lendable(F, c, F->lend_par[i])) continue;
+        sh_union(F, F->lend_arg[i], F->lend_par[i]);
+        F->lend_done[i] = 1;
+        changed = 1;
+      }
+      if (sh_settle_rets(F)) changed = 1;
+    }
+    /* a lent parameter's mutation is its argument's */
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int i = 0; i < F->nlend; i++) {
+        if (F->lend_done[i]) continue;
+        int rp = sh_find(F, F->lend_par[i]);
+        if (!(F->flags[rp] & SHF_MUT)) continue;
+        int ra = sh_find(F, F->lend_arg[i]);
+        unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
+        if ((F->flags[ra] & want) == want) continue;
+        F->flags[ra] |= (unsigned char)want;
+        changed = 1;
+      }
+    }
+    stale = 0;
     for (int i = 0; i < F->nlend; i++) {
-      if (F->lend_done[i] || sh_lendable(F, c, F->lend_par[i])) continue;
+      int hi = F->hidx[F->lend_par[i]];
+      if (F->lend_done[i] || hi < 0 || !sh_lend_stale(F, c, &S, i, F->h[hi].scope)) continue;
       sh_union(F, F->lend_arg[i], F->lend_par[i]);
       F->lend_done[i] = 1;
-      changed = 1;
-    }
-    if (sh_settle_rets(F)) changed = 1;
-  }
-  /* a lent parameter's mutation is its argument's */
-  for (int changed = 1; changed; ) {
-    changed = 0;
-    for (int i = 0; i < F->nlend; i++) {
-      if (F->lend_done[i]) continue;
-      int rp = sh_find(F, F->lend_par[i]);
-      if (!(F->flags[rp] & SHF_MUT)) continue;
-      int ra = sh_find(F, F->lend_arg[i]);
-      unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
-      if ((F->flags[ra] & want) == want) continue;
-      F->flags[ra] |= (unsigned char)want;
-      changed = 1;
+      stale = 1;
     }
   }
+  free(S.mut_start); free(S.mut_site); free(S.node_start); free(S.node_of); free(S.blind);
+  free(S.mut_at); free(S.mut_next);
 }
 
 /* ---- the build ---- */
@@ -1635,7 +1850,7 @@ static void sh_free(ShareFacts *F) {
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
-  free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
+  free(F->lend_arg); free(F->lend_par); free(F->lend_call); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
   free(F);
@@ -1990,7 +2205,7 @@ int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
   int x = F->helem[i];
   while (F->parent[x] != x) x = F->parent[x];
   unsigned f = F->flags[x];
-  return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & SHF_INDIRECT));
+  return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & (SHF_INDIRECT | SHF_MULTI)));
 }
 
 /* ---- a Hash key borrows a handle's bytes ----
