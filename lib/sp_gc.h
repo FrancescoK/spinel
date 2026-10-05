@@ -545,6 +545,15 @@ void sp_fin_run_pending(void);
 #define SP_FIN_POLL() \
   do { if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending(); } while (0)
 void sp_oom_die(void);
+/* The instance variables of a builtin value (an Array, a Hash, a Random):
+   a map from the object to its ivar table, a GC object the TU makes
+   (sp_bivar_set in spinel_rt.h). The map does not keep the object alive;
+   the collector marks a table only while its object lives, and drops the
+   entry of an object it frees (lib/sp_gc.c). */
+void *sp_ivtbl_get(const void *obj);
+void sp_ivtbl_put(const void *obj, void *tbl);
+/* the TU's rendering of an ivar table, for Random#inspect (set with the first table) */
+extern const char *(*sp_ivtbl_inspect_fn)(void *tbl);
 
 /* ---- Embedder callbacks supplied by the generated TU ----
  * The collector cannot own the program's roots or string heap (they are
