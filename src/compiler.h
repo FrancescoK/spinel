@@ -949,6 +949,10 @@ typedef struct {
      marked once the return kinds are final */
   unsigned char *share_ret_clear;
   int share_ret_clear_n;
+  /* an answer per method name, once the analysis is final
+     (strbuf_poly_reader_handle) */
+  struct ReprNameMemo { const char *name; int ans; } *name_memo;
+  int name_memo_n, name_memo_cap;
   /* the route refusals the flag left to the rule (share_route_defer),
      checked against the final facts at seal */
   struct ShareRoute *share_route;
