@@ -1049,13 +1049,14 @@ SP_NORETURN static void sp_typed_replace_elem_error(sp_RbVal v, const char *kind
 }
 
 /* the contents of a shared String buffer as a String of their own, embedded
-   NULs included */
+   NULs and a binary encoding included */
 static const char *sp_strbuf_copy(sp_String *b) {
   size_t n = (size_t)b->len;
   char *c = sp_str_alloc(n);
   memcpy(c, b->data, n);
   c[n] = '\0';
   sp_str_set_len(c, n);
+  if (b->binary) sp_str_mark_binary(c);
   return c;
 }
 
