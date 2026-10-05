@@ -4986,9 +4986,10 @@ int an_class_includes_enumerable(Compiler *c, int ci) {
    any of those includes (and a module it includes in turn). The minmax gate
    asks it once per call site; an_class_includes_enumerable alone sees only
    a class whose own body includes Enumerable. */
-static int an_enum_reaches(Compiler *c, int ci, int depth) {
+static int an_enum_reaches_v(Compiler *c, int ci, unsigned char *seen) {
   const NodeTable *nt = c->nt;
-  if (ci < 0 || ci >= c->nclasses || depth > 32) return 0;
+  if (ci < 0 || ci >= c->nclasses || seen[ci]) return 0;
+  seen[ci] = 1;
   for (int cur = ci; cur >= 0 && cur < c->nclasses; cur = c->classes[cur].parent) {
     if (an_class_includes_enumerable(c, cur)) return 1;
     for (int id = 0; id < nt->count; id++) {
@@ -5010,13 +5011,23 @@ static int an_enum_reaches(Compiler *c, int ci, int depth) {
           if (!mn) continue;
           if (sp_streq(mn, "Enumerable")) return 1;
           int mi = comp_class_index(c, mn);
-          if (mi >= 0 && mi != cur && an_enum_reaches(c, mi, depth + 1)) return 1;
+          if (mi >= 0 && an_enum_reaches_v(c, mi, seen)) return 1;
         }
       }
     }
     if (c->classes[cur].parent == cur) break;
   }
   return 0;
+}
+/* Each class or module is walked once (a visited set rather than a depth
+   bound, so a long include chain is still followed to its end). */
+static int an_enum_reaches(Compiler *c, int ci) {
+  if (ci < 0 || ci >= c->nclasses) return 0;
+  unsigned char *seen = calloc((size_t)c->nclasses, 1);
+  if (!seen) return 0;
+  int r = an_enum_reaches_v(c, ci, seen);
+  free(seen);
+  return r;
 }
 static int class_body_includes_enumerable(const NodeTable *nt, int id) {
   int body = nt_ref(nt, id, "body");
@@ -8262,7 +8273,7 @@ int desugar_enum_method_recv(Compiler *c) {
        (whose own minmax builtins/enumerable.rb also answers); a class with a
        bare #each keeps its NoMethodError */
     if (sp_streq(nm, "minmax") && !c->classes[cid].is_struct &&
-        !an_enum_reaches(c, cid, 0)) continue;
+        !an_enum_reaches(c, cid)) continue;
     /* a Struct/Data class serves these natively in the struct emit section
        (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
        element array would change their semantics */
