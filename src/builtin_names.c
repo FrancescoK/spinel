@@ -469,6 +469,33 @@ int is_extrema_family(const char *n) {
   return sp_streq(n, "min") || sp_streq(n, "max") || sp_streq(n, "minmax");
 }
 
+/* The values a builtin iterator whose lowering binds named block
+   parameters only yields its block a step, which a block of a lone splat
+   packs (desugar_block_lone_rest): one for most, two for
+   each_with_object, chunk_while, slice_when and a comparator of sort, min,
+   max and minmax, three for a merge's conflict (its key, old value and new
+   value); 0 for a name that is none of them */
+int block_rest_yield_count(const char *n) {
+  if (sp_streq(n, "flat_map") || sp_streq(n, "collect_concat") || sp_streq(n, "sort_by") ||
+      sp_streq(n, "min_by") || sp_streq(n, "max_by") || sp_streq(n, "group_by") ||
+      sp_streq(n, "partition") || sp_streq(n, "sum") || sp_streq(n, "count") ||
+      sp_streq(n, "all?") || sp_streq(n, "any?") || sp_streq(n, "none?") || sp_streq(n, "one?") ||
+      sp_streq(n, "take_while") || sp_streq(n, "drop_while") || sp_streq(n, "each_slice") ||
+      sp_streq(n, "each_cons") || sp_streq(n, "uniq") || sp_streq(n, "filter_map") ||
+      sp_streq(n, "find_index") || sp_streq(n, "index") || sp_streq(n, "cycle") ||
+      sp_streq(n, "each_entry") || sp_streq(n, "bsearch") || sp_streq(n, "chunk") ||
+      /* the String and Range walks, which bound a splat to nil */
+      sp_streq(n, "split") || sp_streq(n, "lines") || sp_streq(n, "chars") ||
+      sp_streq(n, "codepoints") || sp_streq(n, "bytes") || sp_streq(n, "each_char") ||
+      sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint") || sp_streq(n, "each_line") ||
+      sp_streq(n, "each_grapheme_cluster") || sp_streq(n, "grapheme_clusters") ||
+      sp_streq(n, "step") || sp_streq(n, "bsearch_index")) return 1;
+  if (sp_streq(n, "each_with_object") || sp_streq(n, "chunk_while") || sp_streq(n, "slice_when")) return 2;
+  if (is_sort_family(n) || is_extrema_family(n)) return 2;   /* a comparator's two elements */
+  if (is_hash_merge_bang(n) || sp_streq(n, "merge")) return 3;
+  return 0;
+}
+
 int is_unary_sign(const char *n) {
   return sp_streq(n, "-@") || sp_streq(n, "+@");
 }
