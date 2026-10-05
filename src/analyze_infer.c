@@ -2273,7 +2273,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
            sp_streq(name, "to_str") || sp_streq(name, "ascii_only?") ||
            sp_streq(name, "ascii_compatible?") || sp_streq(name, "dummy?") ||
            sp_streq(name, "valid_encoding?") || sp_streq(name, "encode") ||
-           sp_streq(name, "scrub") || sp_streq(name, "b")))
+           sp_streq(name, "scrub") || sp_streq(name, "b") || sp_streq(name, "dump")))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       /* ...and the same names where they take arguments. unpack answers a
          boxed array, byteslice a boxed String or nil; the codegen arm for
