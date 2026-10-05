@@ -2534,7 +2534,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      compile. Standing down leaves the builtin case at the raise, which is the
      trade the dig / values_at arms below already make (#4319). */
   if (is_ppack || is_pjoin) {
-    TyKind pjr = comp_ntype(c, id);
+    TyKind pjr = repr_of(c, id).as_ty;
     if (!(pjr == TY_POLY || pjr == TY_STRING || pjr == TY_UNKNOWN)) {
       is_ppack = 0; is_pjoin = 0;
     }
