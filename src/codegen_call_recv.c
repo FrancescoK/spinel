@@ -299,13 +299,28 @@ int elem_nil_marked(Compiler *c, int recv, TyKind rt) {
 }
 
 /* An array literal of plain elements (no splat): what CRuby's VM answers
-   min and max of without building the array (opt_newarray_send). */
+   min and max of without building the array (opt_newarray_send). A literal
+   whose elements are all static -- numbers, nil, true, false, a Symbol, a
+   Regexp or a plain String (frozen here) -- is a prebuilt array in CRuby
+   instead, whose min and max are Array#min and #max. */
+static int static_literal_elem(const NodeTable *nt, int n) {
+  switch (nt_kind(nt, n)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_RationalNode: case NK_ImaginaryNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_SymbolNode:
+    case NK_RegularExpressionNode: case NK_StringNode: return 1;
+    default: return 0;
+  }
+}
 static int array_literal_plain(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || nt_kind(nt, recv) != NK_ArrayNode) return 0;
   int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
-  for (int e = 0; el && e < en; e++) if (nt_kind(nt, el[e]) == NK_SplatNode) return 0;
-  return en > 0;
+  int all_static = 1;
+  for (int e = 0; el && e < en; e++) {
+    if (nt_kind(nt, el[e]) == NK_SplatNode) return 0;
+    if (!static_literal_elem(nt, el[e])) all_static = 0;
+  }
+  return en > 0 && !all_static;
 }
 
 /* value_kind_misses for a needle searched for in the array `recv`: nil is no
