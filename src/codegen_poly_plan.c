@@ -2597,12 +2597,35 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_cover) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_COVER, -1, TY_UNKNOWN, PC_SAME);
     const char *fn = atmp_ty[0] == TY_POLY ? "cover_poly" : atmp_ty[0] == TY_FLOAT ? "cover_f" : "include";
+    /* a Range argument: whether both its ends lie inside, as the typed
+       cover?(range) answers -- the Integer test took the sp_Range as a value */
+    if (atmp_ty[0] == TY_RANGE)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                    " { _t%d = %ssp_range_cover_rng(*(sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
+    /* ...and a boxed one, which sp_range_cover_poly (include?'s too) does
+       not read as a Range */
+    else if (atmp_ty[0] == TY_POLY)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                    " { _t%d = %s(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
+                    " ? sp_range_cover_rng(*(sp_Range *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
+                    " : sp_range_cover_poly((sp_Range *)_t%d.v.p, _t%d))%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "",
+                 atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
+    else
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
                   " { _t%d = %ssp_range_%s((sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
                tv, tv, tr,
                ret == TY_POLY ? "sp_box_bool(" : "", fn, tv, atmp[0],
                ret == TY_POLY ? ")" : "");
     /* a Float range covers by value (it fell through to false) */
+    if (atmp_ty[0] == TY_RANGE)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
+                    " { _t%d = %ssp_frange_cover_rng(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; }\nelse ",
+                 tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
     if (atmp_ty[0] == TY_POLY || atmp_ty[0] == TY_FLOAT || atmp_ty[0] == TY_INT) {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
                     " { _t%d = %s", tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "");
