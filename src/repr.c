@@ -52,17 +52,23 @@ int repr_dyn_cls(const Compiler *c, TyKind t) {
    a local's slot and a builtin's name), an Integer ivar read (every one is
    nil-initialized), a parameter bound from such an ivar (box_nullable_arg),
    a node in a Ruby-defined builtin (enum_builtin_node), and every Integer
-   under --int-overflow=promote. */
+   under --int-overflow=promote.
+   nullable_int_value re-derives a receiver's type (infer_type), so the
+   questions are asked as a pure read (an_pure_read_begin): nothing derived
+   is recorded, and asking changes nothing codegen reads next. */
 int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   Compiler *mc = (Compiler *)c;
+  int r = 0;
+  an_pure_read_begin();
   if (t == TY_INT)
-    return g_promote_mode || call_returns_nullable_int(mc, node) ||
-           nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
-           box_nullable_arg(mc, node) || enum_builtin_node(mc, node);
-  if (t == TY_FLOAT)
-    return call_returns_nullable_int(mc, node) || box_nullable_arg(mc, node) ||
-           enum_builtin_node(mc, node);
-  return 0;
+    r = g_promote_mode || call_returns_nullable_int(mc, node) ||
+        nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
+        box_nullable_arg(mc, node) || enum_builtin_node(mc, node);
+  else if (t == TY_FLOAT)
+    r = call_returns_nullable_int(mc, node) || box_nullable_arg(mc, node) ||
+        enum_builtin_node(mc, node);
+  an_pure_read_end();
+  return r;
 }
 
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
@@ -367,6 +373,15 @@ const char *repr_coerce_form_name(int form) {
 }
 
 int g_repr_check = 0;
+
+/* repr_of is a pure read: asked anywhere, it changes nothing. Under
+   --repr-check codegen asks it of every node it is about to emit, which an
+   ordinary compile does not, and repr_check.sh fails when the C then
+   differs from the C without the flag: a type recorded while a view was
+   open re-materialized a Range from its own temp. */
+void repr_check_ask(const Compiler *c, int node) {
+  if (node >= 0 && node < c->nt->count) (void)repr_of(c, node);
+}
 
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   Repr r;

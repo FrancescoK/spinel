@@ -1367,6 +1367,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     g_io_skip_reopen = 1;
     return;
   }
+  if (g_repr_check) repr_check_ask(c, id);
   g_expr_depth++;
   emit_expr_node(c, id, b);
   g_expr_depth--;

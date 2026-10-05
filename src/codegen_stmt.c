@@ -8634,6 +8634,7 @@ void emit_synth_line_marker(Buf *b) {
 }
 
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
+  if (g_repr_check) repr_check_ask(c, id);
   emit_line_directive(c, id, b);
   /* saved and restored like the other re-entry markers: a block body inlined
      at two sites shares its node ids, so a setter that is a statement at one

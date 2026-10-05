@@ -111,6 +111,15 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* A pure read of the settled analysis (repr_of) asks its questions between
+   an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
+   records nothing it derives: not the node-type cache, a poly call's
+   builtin answer, --plan-check's call records, a block parameter's pinned
+   type, the narrowing memo or a call's alias resolution (its name and
+   builtin_only, kept for the inference asking). So asking cannot change
+   what codegen reads next. They nest. */
+void an_pure_read_begin(void);
+void an_pure_read_end(void);
 
 /* String#lines' argument shapes besides none: (sep), (chomp: ...) and
    (sep, chomp: ...), sep a String -- what a boxed receiver takes the
