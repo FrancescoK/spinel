@@ -14782,6 +14782,7 @@ static int bsc_walk(NodeTable *nt, int n, const char *cn) {
   for (int j = 0; j < nr; j++) changed |= bsc_walk(nt, refs[j], cn);
   for (int j = 0; j < nt->nodes[n].na; j++) {
     int an = nt->nodes[n].a[j].n;
+    if (an <= 0) continue;  /* an empty array's ids may be NULL: memcpy from NULL is UB */
     int *ids = malloc(sizeof(int) * (size_t)(an + 1));
     memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
     for (int q = 0; q < an; q++) changed |= bsc_walk(nt, ids[q], cn);
