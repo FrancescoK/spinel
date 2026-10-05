@@ -1810,6 +1810,11 @@ void emit_scalar_operand(Compiler *c, int node, const char *zero, Buf *b);
    before the argument's value: left in g_pre, the setup (an array literal's
    pushes) runs ahead of the whole expression, and so ahead of the receiver
    Ruby evaluates first. */
+void emit_rooted_key_call(Compiler *c, const char *fn, const char *recv,
+                          const int *argv, int argc, Buf *b);
+int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
+                         const char *ctype, const char *root,
+                         void (*emit)(Compiler *, int, Buf *), Buf *b);
 void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *), Buf *pre, Buf *val);
 void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol);
 void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, int vol);

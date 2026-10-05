@@ -9,6 +9,40 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+/* File.join's scalar and flattened routes keep their operands alive
+   across every later argument, including argument setup emitted in g_pre. */
+static void emit_file_join_args(Compiler *c, const int *argv, int argc, int boxed, Buf *b) {
+  int literals = !boxed;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(c->nt, argv[i]) != NK_StringNode) literals = 0;
+  if (literals) {
+    buf_puts(b, "sp_file_join((const char*[]){");
+    for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_path_expr(c, argv[i], b); }
+    if (!argc) buf_puts(b, "(const char*)0");
+    buf_printf(b, "}, %d)", argc);
+    return;
+  }
+  buf_puts(b, "({ ");
+  int first = emit_rooted_arg_list(c, argv, argc,
+                                 boxed ? "sp_RbVal" : "const char *",
+                                 boxed ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT_STR",
+                                 boxed ? emit_boxed : emit_path_expr, b);
+  buf_printf(b, "%s((%s[]){", boxed ? "sp_file_join_vals" : "sp_file_join",
+             boxed ? "sp_RbVal" : "const char *");
+  for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", first + i);
+  if (!argc) buf_puts(b, "(const char *)0");
+  buf_printf(b, "}, %d); })", argc);
+}
+
+/* realdirpath takes (path, base), while join consumes (base, path).
+   Hold the values in Ruby's order before reversing the slots. */
+static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
+  buf_puts(b, "({ ");
+  int first = emit_rooted_arg_list(c, argv, 2, "const char *", "SP_GC_ROOT_STR", emit_path_expr, b);
+  buf_printf(b, "sp_file_realdirpath(sp_file_join((const char *[]){_t%d, _t%d}, 2)); })",
+             first + 1, first);
+}
+
 /* the class methods of File / FileTest, Dir and Time */
 int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* File class methods -> runtime helpers (the runtime has long carried
@@ -79,14 +113,13 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_realpath("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "realdirpath") && (argc == 1 || argc == 2)) {
-      buf_puts(b, "sp_file_realdirpath(");
-      /* the two-argument form resolves a relative name against a base dir */
-      if (argc == 2) buf_puts(b, "sp_file_join((const char *[]){");
-      if (argc == 2) { emit_path_expr(c, argv[1], b); buf_puts(b, ", "); }
-      emit_path_expr(c, argv[0], b);
-      if (argc == 2) buf_puts(b, "}, 2)");
-      buf_puts(b, ")"); return 1;
+      if (argc == 2) emit_file_realdirpath2(c, argv, b);
+      else {
+        buf_puts(b, "sp_file_realdirpath("); emit_path_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      return 1;
     }
+
     if (sp_streq(name, "stat") && argc == 1) {
       buf_puts(b, "sp_file_stat_handle("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
@@ -313,22 +346,10 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         TyKind jt = comp_ntype(c, argv[k]);
         if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jt == TY_POLY) has_dyn = 1;
       }
-      if (has_dyn) {
-        /* an Array component flattens into the path (#2786); box everything
-           and let the runtime walk it */
-        buf_printf(b, "sp_file_join_vals((sp_RbVal[]){");
-        for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_boxed(c, argv[k], b); }
-        if (argc == 0) buf_puts(b, "sp_box_nil()");
-        buf_printf(b, "}, %d)", argc); return 1;
-      }
-      /* each component initializes a `const char *` slot, so a poly arg (e.g.
-         doom's `File.join(Dir.tmpdir, ...)` where the first component stays
-         poly) must be unboxed via sp_poly_to_s, not land its sp_RbVal raw. */
-      buf_printf(b, "sp_file_join((const char*[]){");
-      for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_path_expr(c, argv[k], b); }
-      if (argc == 0) buf_puts(b, "(const char*)0");
-      buf_printf(b, "}, %d)", argc); return 1;
+      emit_file_join_args(c, argv, argc, has_dyn, b);
+      return 1;
     }
+
     if (sp_streq(name, "readlines") && argc >= 1) {
       /* File.readlines(path[, sep][, chomp: true]) (#2820) */
       int csep = -1;

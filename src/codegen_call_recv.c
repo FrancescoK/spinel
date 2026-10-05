@@ -5920,9 +5920,21 @@ int emit_op_str_set_n(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   if (!x->rtext) return 0;
-  buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", x->name, x->rtext);
-  for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
-  buf_printf(b, "}, %d)", argc);
+  int literals = 1;
+  for (int a = 0; a < argc; a++)
+    if (nt_kind(c->nt, argv[a]) != NK_StringNode) literals = 0;
+  if (literals) {
+    buf_printf(b, "sp_str_%s_n(%s, (const char *[]){", x->name, x->rtext);
+    for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_str_expr(c, argv[a], b); }
+    buf_printf(b, "}, %d)", argc);
+    return 1;
+  }
+  int tr = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); ", tr, x->rtext, tr);
+  int first = emit_rooted_arg_list(c, argv, argc, "const char *", "SP_GC_ROOT_STR", emit_str_expr, b);
+  buf_printf(b, "sp_str_%s_n(_t%d, (const char *[]){", x->name, tr);
+  for (int a = 0; a < argc; a++) buf_printf(b, "%s_t%d", a ? ", " : "", first + a);
+  buf_printf(b, "}, %d); })", argc);
   return 1;
 }
 
@@ -8551,11 +8563,8 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
         /* every other remaining key walks at run time: the arms above cover
            one step into a member, and the rest were silently dropped, which
            emitted the member itself where a dug value was wanted (#3881) */
-        buf_printf(b, "sp_poly_dig_n(");
-        emit_boxed_text(c, mt, fld, b);
-        buf_printf(b, ", %d, (sp_RbVal[]){", argc - 1);
-        for (int a = 1; a < argc; a++) { if (a > 1) buf_puts(b, ", "); emit_boxed(c, argv[a], b); }
-        buf_puts(b, "})");
+        Buf vb = {0}; emit_boxed_text(c, mt, fld, &vb);
+        emit_rooted_key_call(c, "sp_poly_dig_n", vb.p, argv + 1, argc - 1, b); free(vb.p);
       }
       else buf_puts(b, fld);
       buf_puts(b, "; })");
@@ -8571,11 +8580,8 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       emit_recv_rooted(c, recv, td, "SP_GC_ROOT", b);
       if (argc == 1) emit_struct_member_by_key(c, sc, rtxt, argv[0], 0, 1, b);
       else {
-        buf_puts(b, "sp_poly_dig_n(");
-        emit_struct_member_by_key(c, sc, rtxt, argv[0], 0, 1, b);
-        buf_printf(b, ", %d, (sp_RbVal[]){", argc - 1);
-        for (int a = 1; a < argc; a++) { if (a > 1) buf_puts(b, ", "); emit_boxed(c, argv[a], b); }
-        buf_puts(b, "})");
+        Buf vb = {0}; emit_struct_member_by_key(c, sc, rtxt, argv[0], 0, 1, &vb);
+        emit_rooted_key_call(c, "sp_poly_dig_n", vb.p, argv + 1, argc - 1, b); free(vb.p);
       }
       buf_puts(b, "; })");
       { *out = 1; return 1; }
@@ -12612,9 +12618,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (has_splat)
       buf_printf(b, " ? sp_poly_hash_slice(_t%d, (int)_t%d->len, _t%d->data) : ", tsv, tkeys, tkeys);
     else {
-      buf_printf(b, " ? sp_poly_hash_slice(_t%d, %d, (sp_RbVal[]){", tsv, argc);
-      for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
-      buf_puts(b, "}) : ");
+      char rb[32]; snprintf(rb, sizeof rb, "_t%d", tsv);
+      buf_puts(b, " ? "); emit_rooted_key_call(c, "sp_poly_hash_slice", rb, argv, argc, b);
+      buf_puts(b, " : ");
     }
     if (has_splat) {
       /* The non-hash side is String#slice / Array#slice, which is exactly #[]
@@ -12980,9 +12986,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         if (nt_kind(nt, argv[a]) == NK_SplatNode) any_splat = 1;
       if (!any_splat) {
         Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
-        buf_printf(b, "sp_poly_dig_n(%s, %d, (sp_RbVal[]){", rb.p, argc); free(rb.p);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_boxed(c, argv[a], b); }
-        buf_puts(b, "})");
+        emit_rooted_key_call(c, "sp_poly_dig_n", rb.p, argv, argc, b); free(rb.p);
         if (ch) buf_puts(b, "; })");
         return 1;
       }
