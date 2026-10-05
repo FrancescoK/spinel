@@ -96,8 +96,10 @@ TyKind comp_recv_type(Compiler *c, int recv) {
      String under one still answers String's methods. Without this, marking
      `obj.reader` for `equal?` took the call off the String surface and it
      compiled to "unsupported call" (#4363). */
-  if (recv >= 0 && t == TY_STRBUF && !c->strbuf_box[recv] && c->strbuf_handle_demand[recv])
-    t = TY_STRING;
+  if (recv >= 0 && t == TY_STRBUF) {
+    Repr rp = repr_of(c, recv);
+    if (!rp.handle && rp.demand) t = TY_STRING;
+  }
   if (t != TY_UNKNOWN || recv < 0) return t;
   const char *ty = nt_type(c->nt, recv);
   int en = 0;
@@ -3379,7 +3381,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           if (rd_call) {
             /* as sb_reader_shim_open: the call reads as a plain String, its
                marks lifted and its handle type dropped as views */
-            int was_sb = c->ntype[recv] == TY_STRBUF;
+            int was_sb = repr_of(c, recv).ty == TY_STRBUF;
             vC = view_push_repr(c, recv, VR_STRBUF_BOX, 0);
             view_push_repr(c, recv, VR_HANDLE_DEMAND, 0);
             nC = 2;
@@ -3442,7 +3444,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
                       ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
       /* STRBUF base: the buffer appends in place (its cstr read is not an
          lvalue, so the concat-and-write-back form below can't serve it) */
-      if (nchain > 0 && blv && blv->type == TY_STRBUF &&
+      if (nchain > 0 && repr_of_slot(c, blv).kind == RK_STRBUF &&
           bty && sp_streq(bty, "LocalVariableReadNode")) {
         int tb9 = ++g_tmp;
         /* through emit_local_ref: a block made a real proc reads the
@@ -3461,7 +3463,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, " sp_String_cstr(_t%d); })", tb9);
         { *out = 1; return 1; }
       }
-      if (nchain > 0 && !(blv && blv->type == TY_STRBUF) && str_mut_var_recv(c, cur)) {
+      if (nchain > 0 && repr_of_slot(c, blv).kind != RK_STRBUF && str_mut_var_recv(c, cur)) {
         buf_puts(b, "({ ");
         for (int j = nchain; j >= 0; j--) {  /* innermost link first, outer arg last */
           int arg = j > 0 ? chain[j - 1] : argv[0];
@@ -3535,7 +3537,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_str_expr(c, argv[0], b);
           /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
              receiver itself, as for the appends */
-          if (c->strbuf_box[id]) buf_printf(b, "); _t%d; })", tbR);
+          if (repr_of(c, id).handle) buf_printf(b, "); _t%d; })", tbR);
           else buf_printf(b, "); sp_String_cstr(_t%d); })", tbR);
           { *out = 1; return 1; }
         }
@@ -3754,7 +3756,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     const NodeTable *ntS = c->nt;
     const char *nmS = nt_str(ntS, id, "name");
     int recvS = nt_ref(ntS, id, "receiver");
-    if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRBUF &&
+    if (nmS && recvS >= 0 && repr_of(c, recvS).as_ty == TY_STRBUF &&
         (is_string_position_mutator(nmS)) &&
         sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
@@ -6088,7 +6090,7 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        before the argument's cstr is read. */
     int eq_sblv = 0;
     /* a demand-marked reader-call argument already emits the handle */
-    if (!eq_sblv && comp_ntype(c, argv[0]) == TY_STRBUF &&
+    if (!eq_sblv && repr_of(c, argv[0]).as_ty == TY_STRBUF &&
         nt_kind(nt, argv[0]) == NK_CallNode) {
       char rrefE2[192];
       if (strbuf_slot_ref(c, recv, rrefE2, sizeof rrefE2)) {
@@ -7822,7 +7824,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
        handle's buffer serves directly and the republish is needed only in
        that one case. */
     if (nmS && recvS >= 0 && sp_streq(nmS, "setbyte") &&
-        (comp_ntype(c, recvS) == TY_STRBUF ||
+        (repr_of(c, recvS).as_ty == TY_STRBUF ||
          (comp_ntype(c, recvS) == TY_STRING && strbuf_local_name(c, recvS)))) {
       int aS = nt_ref(ntS, id, "arguments"); int acS = 0;
       const int *avS = aS >= 0 ? nt_arr(ntS, aS, "arguments", &acS) : NULL;
@@ -7845,7 +7847,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRBUF &&
+    if (nmS && recvS >= 0 && repr_of(c, recvS).as_ty == TY_STRBUF &&
         sp_streq(nmS, "setbyte") &&
         sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
@@ -9399,14 +9401,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, ")%siv_%s; ", comp_ty_value_obj(c, rt) ? "." : "->", iv_c(rn2));
           /* either mark is the same demand: strbuf_box carries it with the
              node's type, strbuf_handle_demand without it (see compiler.h) */
-          if (c->strbuf_box[id] || c->strbuf_handle_demand[id])
+          if (repr_of(c, id).handle || repr_of(c, id).demand)
             buf_printf(b, "_t%d; })", tvR);
           /* the only consumer READS the bytes and keeps no pointer past the
              call, so the live buffer serves it. The copy below is O(len) and
              this read is typically in a loop: `ctx.buf.getbyte(i)` over a
              200 KB buffer copied the whole string once per row. Same type,
              same const char * -- the live buffer rather than a snapshot. */
-          else if (c->strbuf_read_raw[id] && decide_node(c->nt, id, "strbuf-raw", NULL))
+          else if (repr_of(c, id).read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
             buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
@@ -9437,7 +9439,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* a demand-marked read through a simple hand-written reader
        (`def body = @body`) hands out the ivar HANDLE via a field access:
        the C reader function returns the safe copy (#3227 P5) */
-    if (mi >= 0 && c->strbuf_box[id]) {
+    if (mi >= 0 && repr_of(c, id).handle) {
       int lastH = scope_body_last(c, mi);
       if (lastH >= 0 && nt_kind(nt, lastH) == NK_InstanceVariableReadNode) {
         const char *ivnH = nt_str(nt, lastH, "name");
@@ -9468,7 +9470,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     }
     /* a memoizing reader (`def s = (@s ||= +"")`) has to run to fill the
        slot first; then the slot is the handle */
-    if (mi >= 0 && (c->strbuf_box[id] || c->strbuf_handle_demand[id])) {
+    if (mi >= 0 && (repr_of(c, id).handle || repr_of(c, id).demand)) {
       const char *ivnM = an_memo_reader_ivar(c, mi);
       int defcM = c->scopes[mi].class_id;
       int ivM = (ivnM && defcM >= 0) ? comp_ivar_index(&c->classes[defcM], ivnM) : -1;

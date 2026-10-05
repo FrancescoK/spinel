@@ -430,7 +430,7 @@ int local_is_handle(Compiler *c, int a) {
   const char *vn = nt_str(c->nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  return lv && lv->type == TY_STRBUF && lv->str_shared;
+  return repr_of_slot(c, lv).handle;
 }
 /* A local that is the shared handle, as a reference to the handle itself
    rather than the copy a plain read of it takes. 0 when it is none. */
@@ -1595,7 +1595,7 @@ static int ykw_out_of_order(Compiler *c, int blk, int ykw) {
 }
 
 static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
-  TyKind at = comp_ntype(c, node);
+  TyKind at = repr_of(c, node).as_ty;
   /* an empty `{}` / `[]` stays untyped, and emit_boxed gives it the poly form */
   NodeKind nk = nt_kind(c->nt, node);
   int empty_lit = 0;
@@ -1693,7 +1693,7 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       const char *rn = nt_str(nt, r, "name");
       Scope *rs = rn ? comp_scope_of(c, r) : NULL;
       LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
-      if (rl && rl->type == TY_STRBUF) return 1;
+      if (repr_of_slot(c, rl).kind == RK_STRBUF) return 1;
     } }
   if (nt_ref(nt, id, "block") < 0) return 0;
   if (is_tap_alias(nm))
@@ -1881,7 +1881,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
                    comp_ntype(c, vn) == TY_STRING && block_local_wants_alias(c, blk, kp);
     /* a keyword that is the shared handle takes a handle yielded to it
        itself (yield_splice_kw_handles), as a positional one does */
-    if (vn >= 0 && kl && kwh_tmp < 0 && kl->type == TY_STRBUF && kl->str_shared &&
+    if (vn >= 0 && kl && kwh_tmp < 0 && repr_of_slot(c, kl).handle &&
         nt_kind(nt, vn) == NK_LocalVariableReadNode) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_handle_var_ref(c, vn, &hb)) {
@@ -2054,7 +2054,7 @@ static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const cha
   const NodeTable *nt = c->nt;
   if (!al || !bl || nt_kind(nt, yarg) != NK_LocalVariableReadNode || !block_local_wants_alias(c, blk, bp))
     return 0;
-  if (local_is_handle(c, yarg) || comp_ntype(c, yarg) == TY_STRBUF) {
+  if (local_is_handle(c, yarg) || repr_of(c, yarg).as_ty == TY_STRBUF) {
     char msg[512], bnb[160];
     snprintf(msg, sizeof msg,
              "a String is passed to a block's post parameter `%s` through a yield, which the block "
@@ -2142,7 +2142,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
        from a gathered Array of plain Strings: no value there was pulled
        into the handle (`yield(*[a[0]])`), so the block would append to
        a copy */
-    if (bt == TY_STRBUF && et == TY_STRING)
+    if (repr_of_slot(c, bl).kind == RK_STRBUF && et == TY_STRING)
       unsupported_feature(c, site,
                           "a String is passed through a splat into a yield to a block parameter the block "
                           "appends to, from a value that is not a String variable: the block would append "
@@ -2607,7 +2607,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
          itself (yield_splice_handles) */
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       Buf hb; memset(&hb, 0, sizeof hb);
-      if (bl && bl->type == TY_STRBUF && bl->str_shared && emit_handle_var_ref(c, yargs[k], b)) {}
+      if (repr_of_slot(c, bl).handle && emit_handle_var_ref(c, yargs[k], b)) {}
       /* a boxed parameter takes the handle's own box, or nil when the
          variable holds none (the handle is NULL for a nil) */
       else if (bl && bl->type == TY_POLY && emit_handle_var_ref(c, yargs[k], &hb))
@@ -2650,7 +2650,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     int opt_alias = al && ol && poly_splat_tmp < 0 && oi < ot_static && yi < yc &&
                     nt_kind(nt, yargs[yi]) == NK_LocalVariableReadNode &&
                     block_local_wants_alias(c, blk, op);
-    if (opt_alias && (local_is_handle(c, yargs[yi]) || comp_ntype(c, yargs[yi]) == TY_STRBUF)) {
+    if (opt_alias && (local_is_handle(c, yargs[yi]) || repr_of(c, yargs[yi]).as_ty == TY_STRBUF)) {
       char msg[512], onb[160];
       snprintf(msg, sizeof msg,
                "a String is passed to a block's optional parameter `%s` through a yield, which the block "
@@ -2679,7 +2679,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     if (oi < ot_static) {
       /* an optional that is the shared handle takes a handle yielded to it
          itself (yield_splice_handles), as a required one does */
-      if (!(ol && ol->type == TY_STRBUF && ol->str_shared && emit_handle_var_ref(c, yargs[yi], b)))
+      if (!(repr_of_slot(c, ol).handle && emit_handle_var_ref(c, yargs[yi], b)))
         emit_block_arg_coerced(c, yargs[yi], ot, b);
     }
     else if (dv >= 0) {
@@ -2741,7 +2741,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       int idx = ps_static + qi;
       /* a post that is the shared handle takes a handle yielded to it
          itself (yield_splice_handles), as a required one does */
-      if (idx < yc && ql && ql->type == TY_STRBUF && ql->str_shared && emit_handle_var_ref(c, yargs[idx], b)) {}
+      if (idx < yc && repr_of_slot(c, ql).handle && emit_handle_var_ref(c, yargs[idx], b)) {}
       else if (idx < yc) emit_block_arg_coerced(c, yargs[idx], qt, b);
       else buf_puts(b, qdflt);
       buf_puts(b, as_expr ? "; " : ";\n");
@@ -3974,7 +3974,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  TyKind et = comp_ntype(c, recv);
+  TyKind et = repr_of(c, recv).as_ty;
   /* An empty array literal receiver (`[].tap { |a| a << x }.join`) has no
      element type of its own, so comp_ntype leaves it unknown. Adopt the block
      param's container type (it was typed from the pushes) and materialize a
@@ -4125,7 +4125,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* a receiver read as the shared handle (a block parameter that appends to
      it is the handle, promote_shared_stored_strings): tap's value is that
      String, read as one */
-  if (is_tap && et == TY_STRBUF && comp_ntype(c, id) == TY_STRING)
+  if (is_tap && et == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING)
     buf_printf(b, "(_t%d ? sp_String_cstr(_t%d) : NULL)", tr, tr);
   else buf_printf(b, "_t%d", is_tap ? tr : tres);
   return 1;
@@ -5645,14 +5645,14 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
        array (a widened slot, #4188): the element binds boxed into it, the
        way the shadowed outer's would (the take_while of a Ruby definition
        whose block parameter widened assigned a const char * to it) */
-    int to_strbuf = outer && outer->type == TY_STRBUF && et == TY_STRING;
+    int to_strbuf = repr_of_slot(c, outer).kind == RK_STRBUF && et == TY_STRING;
     if (!box_to_poly && p0 && et != TY_POLY) {
       Scope *bsc = comp_scope_of(c, block);
       LocalVar *blv = bsc ? scope_local(bsc, p0_orig ? p0_orig : p0) : NULL;
       if (blv && blv->type == TY_POLY) box_to_poly = 1;
       /* a slot a mutating callee made a String buffer takes a String
          element as one, as a plain assignment to it does (#6038) */
-      if (blv && blv->type == TY_STRBUF && et == TY_STRING) to_strbuf = 1;
+      if (repr_of_slot(c, blv).kind == RK_STRBUF && et == TY_STRING) to_strbuf = 1;
     }
     int ts = 0;
     if (outer) {

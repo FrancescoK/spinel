@@ -1511,14 +1511,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        read of a concretely-declared local boxes the declared value so the
        consumer's poly dispatch stays well-typed (#2730). */
     if (slv && slv->type != TY_POLY && slv->type != TY_UNKNOWN &&
-        slv->type != TY_STRBUF && repr_of(c, id).kind == RK_BOXED) {
+        repr_of_slot(c, slv).kind != RK_STRBUF && repr_of(c, id).kind == RK_BOXED) {
       Buf rb3; memset(&rb3, 0, sizeof rb3);
       emit_local_ref(c, id, lrn, &rb3);
       emit_boxed_text(c, slv->type, rb3.p ? rb3.p : "", b);
       free(rb3.p);
       return 1;
     }
-    if (slv && slv->type == TY_STRBUF) {
+    if (slv && repr_of_slot(c, slv).kind == RK_STRBUF) {
       /* A container-store / equal?-arg read of a shared-mutable string yields
          the live HANDLE, not a copy (#3227 phase 3). */
       if (repr_of(c, id).handle) {
@@ -1583,7 +1583,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         return 1;
       }
     }
-    if (lv && lv->type == TY_STRBUF) {
+    if (lv && repr_of_slot(c, lv).kind == RK_STRBUF) {
       /* a shared-handle local: the statement form owns every way a value
          becomes the handle (alias, boxed element, fresh wrap); the raw
          const char * went into the sp_String * slot here (a write inside

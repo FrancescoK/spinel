@@ -6,6 +6,7 @@
 #include "codegen_internal.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
+#include "repr.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
@@ -998,7 +999,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            receiver itself, as for the appends */
         buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, (&(\"\\xff\")[1]));",
                    tC2, srefC, tC2);
-        if (c->strbuf_box[id]) buf_printf(b, " _t%d; })", tC2);
+        if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tC2);
         else buf_printf(b, " sp_String_cstr(_t%d); })", tC2);
         return 1;
       } }
@@ -1097,10 +1098,10 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* A reader call handing out the shared handle takes the same statement,
      through its shim (#3227). */
   if (recv >= 0 && sp_streq(name, "[]=") && (argc == 2 || argc == 3) &&
-      ((comp_ntype(c, recv) == TY_STRING &&
+      ((repr_of(c, recv).as_ty == TY_STRING &&
         nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
                               sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) ||
-       (comp_ntype(c, recv) == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode))) {
+       (repr_of(c, recv).as_ty == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode))) {
     /* the value is evaluated once, into a temp the store reads and the
        expression answers: evaluated again after the store, a call with
        effects ran twice, and a value the store read through a boxed
