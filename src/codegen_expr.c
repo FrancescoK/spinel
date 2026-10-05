@@ -1945,6 +1945,11 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
                   sref, sref, sref);
 }
 
+/* emit_strbuf_slot_read with node id's own repr */
+void emit_strbuf_slot_read_node(Compiler *c, int id, const char *sref, Buf *b) {
+  emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+}
+
 static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
