@@ -771,6 +771,13 @@ typedef struct {
   unsigned kind_version;
   int kind_built;
 
+  /* ReturnNode-by-scope chain; see comp_sret_first */
+  int *sret_head;       /* [sret_nscopes] first ReturnNode id in each scope */
+  int *sret_next;       /* [sret_count] next ReturnNode id in the same scope */
+  int sret_nscopes, sret_count;
+  unsigned sret_version;
+  int sret_built;
+
   /* CallNode-by-scope chain; see comp_scall_first */
   int *scall_head;      /* [scall_nscopes] first CallNode id in each scope */
   int *scall_next;      /* [scall_count] next CallNode id in the same scope */
@@ -943,6 +950,8 @@ int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);
+int comp_sret_first(Compiler *c, int scope_idx);
+int comp_sret_next(const Compiler *c, int r);
 int comp_bare_gets_is_argf(Compiler *c);
 int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
 /* A receiverless call's target: the enclosing self's ancestry first, a

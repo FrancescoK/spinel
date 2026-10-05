@@ -5094,10 +5094,19 @@ static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
   return nout;
 }
 
-/* The values method scope `mi` answers: its body's, and each `return`'s. */
+/* The values method scope `mi` answers: its body's, and each `return`'s.
+   The walks that follow a call into its callee ask this once per call they
+   follow, so the returns come from the scope's own chain (comp_sret_first,
+   in node order as the scan was) once scope shape is fixed, instead of a
+   scan of every ReturnNode of the program per question. */
 static int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
   Scope *m = &c->scopes[mi];
   int n = m->body >= 0 ? value_leaves(c, m->body, out, 0, cap) : -1;
+  if (comp_scope_index_is_frozen()) {
+    for (int r = comp_sret_first(c, mi); r >= 0 && n >= 0; r = comp_sret_next(c, r))
+      n = value_leaves(c, r, out, n, cap);
+    return n;
+  }
   NT_FOREACH_KIND(c->nt, NK_ReturnNode, r) {
     if (n < 0) break;
     if (comp_scope_of(c, r) == m) n = value_leaves(c, r, out, n, cap);
@@ -5106,16 +5115,35 @@ static int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
 }
 
 /* 1 when a call bound to method scope `mi` can reach another definition: an
-   override in a subclass, or the same method defined again. */
+   override in a subclass, or the same method defined again. A scan of every
+   scope, asked once per call the walks follow: remembered per scope while
+   scope shape is fixed (the scope-index epoch, the scope and class counts). */
 static int method_has_other_body(Compiler *c, int mi) {
+  static signed char *memo = NULL;
+  static int memo_nscopes = -1, memo_nclasses = -1;
+  static unsigned memo_gen = 0;
+  static const Compiler *memo_c = NULL;
+  int frozen = comp_scope_index_is_frozen();
+  if (frozen) {
+    unsigned gen = comp_scope_index_gen();
+    if (memo_c != c || memo_nscopes != c->nscopes || memo_nclasses != c->nclasses || memo_gen != gen) {
+      free(memo);
+      memo = malloc((size_t)(c->nscopes > 0 ? c->nscopes : 1));
+      if (memo) memset(memo, -1, (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+      memo_c = c; memo_nscopes = c->nscopes; memo_nclasses = c->nclasses; memo_gen = gen;
+    }
+    if (memo && memo[mi] >= 0) return memo[mi];
+  }
   Scope *m = &c->scopes[mi];
-  for (int t = 1; t < c->nscopes; t++) {
+  int other = 0;
+  for (int t = 1; t < c->nscopes && !other; t++) {
     Scope *o = &c->scopes[t];
     if (t == mi || !o->name || !m->name || !sp_streq(o->name, m->name) || o->is_cmethod != m->is_cmethod) continue;
     if (o->class_id == m->class_id || (o->class_id >= 0 && m->class_id >= 0 && is_descendant(c, o->class_id, m->class_id)))
-      return 1;
+      other = 1;
   }
-  return 0;
+  if (frozen && memo) memo[mi] = (signed char)other;
+  return other;
 }
 
 /* 1 when local `name` of `sc` is also bound as a target (`a, b = ...`,
