@@ -1,0 +1,19 @@
+true
+false
+false
+false
+false
+false
+true
+true
+true
+false
+true
+true
+false
+false
+true
+false
+TypeError: wrong argument type Integer (expected Range)
+NoMethodError: undefined method 'overlap?' for an instance of Symbol
+"yes"

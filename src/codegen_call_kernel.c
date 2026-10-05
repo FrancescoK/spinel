@@ -689,6 +689,14 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_puts(b, "sp_argf_gets()");
       return 1;
     }
+    /* Kernel#readline is ARGF.readline: the same line, and EOFError where
+       gets answers nil (#7201) */
+    if (sp_streq(name, "readline") && ac == 0 && comp_bare_gets_is_argf(c)) {
+      int tl = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = sp_argf_gets(); if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); _t%d; })",
+                 tl, tl, tl);
+      return 1;
+    }
   }
 
   /* exit / abort as expressions (noreturn, emit as C statement-expression) */
@@ -798,8 +806,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_puts(b, "); ");
     }
     buf_printf(b, "for (sp_int _i%d = 0; _i%d < _t%d->len; _i%d++) { "
-                  "sp_puts_line(sp_poly_inspect(_t%d->data[_i%d])); } _t%d; })",
-               t, t, t, t, t, t, t);
+                  "sp_puts_line(sp_poly_inspect(_t%d->data[_i%d])); } %s_t%d; })",
+               t, t, t, t, t, t, sp_streq(name, "p") ? "fflush(stdout); " : "", t);
     return 1;
   }
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -807,7 +815,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_puts_line(sp_poly_inspect(_t%d)); ", t, t);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_puts_line(sp_poly_inspect(_t%d)); %s", t, t,
+               sp_streq(name, "p") ? "fflush(stdout); " : "");   /* p flushes, as CRuby's does */
     char tv[16]; snprintf(tv, sizeof tv, "_t%d", t);
     emit_unbox_text(c, at, tv, b);
     buf_puts(b, "; })");
@@ -1237,10 +1246,15 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         const char *htyb = nt_type(nt, eav[0]);
         if (htb == TY_STR_STR_HASH ||
             (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
+          /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
+             literal one is built here. Built as a literal, `&pr` gave a proc
+             with no body and every conflict read nil. */
+          int bt = nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode ? poly_call_blk_proc(c, id, -1) : -1;
           buf_puts(b, "sp_env_update_h_blk(");
           emit_expr(c, eav[0], b);
           buf_puts(b, ", ");
-          emit_proc_literal(c, id, b);
+          if (bt >= 0) buf_printf(b, "_t%d", bt);
+          else emit_proc_literal(c, id, b);
           buf_puts(b, ")");
           return 1;
         }

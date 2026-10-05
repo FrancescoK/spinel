@@ -113,6 +113,12 @@ const char*sp_str_byteslice1(const char*s,sp_int i);
 const char*sp_str_byteslice_range(const char*s,sp_int lo,sp_int hi,int excl,int lo_none,int hi_none);
 const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val);
 int sp_str_ascii_only(const char*s);
+int sp_str_enc_step(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin);
+/* the common step inline: a part in the encoding so far keeps it */
+static inline int sp_str_enc_step_i(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin) {
+  if (state == part_bin) return state;
+  return sp_str_enc_step(state, acc, acc_len, part, part_len, part_bin);
+}
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a);
 const char*sp_str_sub(const char*s,const char*pat,const char*rep);
 const char*sp_str_remove_first(const char*s,const char*pat);

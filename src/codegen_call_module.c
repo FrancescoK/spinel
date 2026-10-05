@@ -600,6 +600,18 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       emit_time_in_zone(c, ts, struct_kwarg_value(c, argv[0], "in"), b);
       return 1;
     }
+    /* Time.at(x, *rest) and any other spread: every argument into one list,
+       which the runtime reads as Time.at's arguments, as for a lone splat */
+    if (sp_streq(name, "at") && argc >= 2) {
+      int any_splat = 0;
+      for (int k = 0; k < argc; k++) if (nt_kind(nt, argv[k]) == NK_SplatNode) any_splat = 1;
+      if (any_splat) {
+        buf_puts(b, "({ ");
+        int tf = emit_bm_flat_args(c, argv, argc, b);
+        buf_printf(b, " sp_time_at_args(sp_box_poly_array(_t%d)); })", tf);
+        return 1;
+      }
+    }
     /* Time.at(*args): the runtime reads the list as Time.at's arguments */
     if (sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode &&
         nt_ref(nt, argv[0], "expression") >= 0) {
@@ -790,6 +802,14 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
     if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return 1; }
+    /* the time every collection so far took (sp_gc_stat_seconds), in
+       nanoseconds as CRuby answers it */
+    if (sp_streq(name, "total_time") && argc == 0) { buf_puts(b, "((sp_int)(sp_gc_stat_seconds * 1e9))"); return 1; }
+    /* GC.stat(key): the one statistic, ArgumentError for a key not kept */
+    if (sp_streq(name, "stat") && argc == 1 && nt_kind(nt, argv[0]) != NK_KeywordHashNode) {
+      buf_puts(b, "sp_gc_stat_key("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
   }
 
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */
@@ -1126,6 +1146,17 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
      constant). Handled before the Class.new dispatch since they are not `new`. */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *tcn = nt_str(nt, recv, "name");
+    /* IO.popen is not implemented: refused at compile time, as an
+       unsupported API is, rather than a NoMethodError the first time the
+       line runs (#7199). A program's own IO.popen is its own. */
+    if (tcn && (sp_streq(tcn, "IO") || sp_streq(tcn, "File")) && sp_streq(name, "popen")) {
+      int ioc = comp_class_index(c, tcn);
+      if (ioc < 0 || comp_cmethod_in_chain(c, ioc, name, NULL) < 0) {
+        unsupported_feature(c, id, "IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)");
+        buf_puts(b, "sp_box_nil()");
+        return 1;
+      }
+    }
     /* Exception class-level: Cls.exception(msg) is Cls.new (#2740);
        Exception.to_tty? reports whether stderr is a terminal (#2757). */
     if (tcn && is_exc_name(tcn)) {
@@ -1374,23 +1405,17 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
        8-element flat array positionally -- this keeps the runtime
        TU out of spinel_rt.h's static-inline family entirely. The
        [:child, :out|:err|Integer] redirect is recognized inline. */
-    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "spawn") && argc >= 1) {
+    if (tcn && sp_streq(tcn, "Process") && (sp_streq(name, "spawn") || sp_streq(name, "exec")) && argc >= 1) {
+      int is_exec = sp_streq(name, "exec");
       g_uses_symbols = 1;
       int tcmd = ++g_tmp;
       int targs = ++g_tmp;
       int topts = ++g_tmp;
-      int tmerged = ++g_tmp;
-      /* cmd = argv[0] (boxed, so it can be String or Array) */
-      buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, ";");
-      /* args: collect argv[1..argc-2] (or empty if argc==1) into a
-         PolyArray. Skip the last arg if it's a Hash (the opts). */
-      buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
       int extra = argc - 1;
-      /* Detect if the last positional arg is a Hash (opts). */
+      /* Detect if the last positional arg is a Hash (opts). A splat is the
+         argument list, not the options. */
       int last_is_opts = 0;
-      if (extra >= 1) {
+      if (extra >= 1 && nt_kind(nt, argv[argc - 1]) != NK_SplatNode) {
         TyKind ltk = comp_ntype(c, argv[argc - 1]);
         if (ltk == TY_SYM_POLY_HASH || ltk == TY_STR_POLY_HASH ||
             ltk == TY_POLY_POLY_HASH || ltk == TY_UNKNOWN ||
@@ -1398,12 +1423,60 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           last_is_opts = 1;
         }
       }
-      int n_args = extra - (last_is_opts ? 1 : 0);
-      for (int k = 1; k <= n_args; k++) {
-        buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
-        emit_boxed(c, argv[k], b);
-        buf_puts(b, ");");
+      /* exec's options (chdir:, redirections) are not taken: refused, not
+         dropped */
+      if (is_exec && last_is_opts) {
+        unsupported_feature(c, id, "exec with an options Hash (Process.spawn takes chdir: and the redirections)");
+        buf_puts(b, "0");
+        return 1;
       }
+      int n_args = extra - (last_is_opts ? 1 : 0);
+      int has_splat = 0;
+      for (int k = 0; k <= n_args; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
+      if (has_splat) {
+        /* `spawn(*args)`: the command and its arguments are spread at run
+           time, then split, as the literal list is (#7192) */
+        int tall = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tall, tall);
+        for (int k = 0; k <= n_args; k++) {
+          if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+            int se = nt_ref(nt, argv[k], "expression");
+            int ts = ++g_tmp;
+            buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts);
+            if (se >= 0) emit_boxed(c, se, b); else buf_puts(b, "sp_box_nil()");
+            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
+                       ts, tall, ts);
+          }
+          else {
+            buf_printf(b, " sp_PolyArray_push(_t%d, ", tall);
+            emit_boxed(c, argv[k], b);
+            buf_puts(b, ");");
+          }
+        }
+        buf_printf(b, " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");", tall);
+        buf_printf(b, " sp_RbVal _t%d = _t%d->data[0];", tcmd, tall);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
+        buf_printf(b, " for (sp_int _i = 1; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]);",
+                   tall, targs, tall);
+      }
+      else {
+        /* cmd = argv[0] (boxed, so it can be String or Array) */
+        buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
+        emit_boxed(c, argv[0], b);
+        buf_puts(b, ";");
+        /* args: collect argv[1..argc-2] (or empty if argc==1) into a
+           PolyArray. Skip the last arg if it's a Hash (the opts). */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
+        for (int k = 1; k <= n_args; k++) {
+          buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
+          emit_boxed(c, argv[k], b);
+          buf_puts(b, ");");
+        }
+      }
+      /* a [program, argv0] pair of Strings arrives as a String array: the
+         runtime reads it as a general one */
+      buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id != SP_BUILTIN_POLY_ARRAY && sp_rbval_is_array(_t%d))"
+                    " _t%d = sp_box_poly_array(sp_poly_to_poly_array(_t%d));", tcmd, tcmd, tcmd, tcmd, tcmd);
       /* opts: build an 8-element flat PolyArray
          [in_fd, out_fd, err_fd, pgroup, rlimit_cpu, rlimit_as, chdir, owned].
          If last_is_opts, each entry is a hash lookup result resolved
@@ -1539,19 +1612,16 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          slot, so it closes the parent's copies and never a caller's IO. */
       buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int((_t%d[0] >= 0) | ((_t%d[1] >= 0) << 1) | ((_t%d[2] >= 0) << 2)));",
                  topts, town, town, town);
-      /* If cmd is an Array, fold its elements into args (prefix). */
-      buf_printf(b, " sp_PolyArray *_t%d = _t%d;", tmerged, targs);
-      buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_POLY_ARRAY) {", tcmd, tcmd);
-      buf_printf(b, "   sp_PolyArray *_cmd = (sp_PolyArray *)_t%d.v.p;", tcmd);
-      buf_printf(b, "   _t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tmerged, tmerged);
-      buf_printf(b, "   for (sp_int _i = 0; _i < _cmd->len - 1; _i++) {");
-      buf_printf(b, "     if (_cmd->data[_i].tag != SP_TAG_STR) sp_process_spawn_fail(_t%d, \"ArgumentError\", \"command array element must be a String\");", town);
-      buf_printf(b, "     sp_PolyArray_push(_t%d, _cmd->data[_i]);", tmerged);
-      buf_printf(b, "   }");
-      buf_printf(b, "   for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]);", targs, tmerged, targs);
-      buf_puts(b, " }");
-      buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, tmerged, topts);
+      if (is_exec)   /* Kernel#exec: the process becomes the command, or raises its Errno */
+        buf_printf(b, " sp_process_exec(_t%d, sp_box_poly_array(_t%d)); sp_int _r = 0; (void)_t%d;", tcmd, targs, topts);
+      else
+        buf_printf(b, " sp_int _r = sp_process_spawn(_t%d, sp_box_poly_array(_t%d), sp_box_poly_array(_t%d));", tcmd, targs, topts);
       buf_printf(b, " _r; })\n");
+      return 1;
+    }
+    /* Process.last_status is $? (#7196) */
+    if (tcn && sp_streq(tcn, "Process") && sp_streq(name, "last_status") && argc == 0) {
+      buf_puts(b, "sp_last_process_status()");
       return 1;
     }
     /* Process.waitpid2(pid) -> [pid, raw_status]: the runtime hands back a
@@ -1756,6 +1826,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 
   /* Random instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_RANDOM) {
+    if (emit_builtin_op(c, id, recv, TY_RANDOM, name, b)) return 1;
     if (sp_streq(name, "rand")) {
       if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -1815,15 +1886,6 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       else {
         buf_puts(b, "sp_Random_rand_float("); emit_expr(c, recv, b); buf_puts(b, ")");
       }
-      return 1;
-    }
-    if (sp_streq(name, "bytes") && argc == 1) {
-      buf_puts(b, "sp_Random_bytes("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_int_expr_conv(c, argv[0], b); buf_puts(b, ")");
-      return 1;
-    }
-    if (sp_streq(name, "seed") && argc == 0) {   /* #2522 */
-      buf_puts(b, "sp_Random_seed("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     if ((is_text_conversion(name)) && argc == 0) {

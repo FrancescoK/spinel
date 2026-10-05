@@ -2,6 +2,7 @@
    lowering, split out of codegen_call.c. Pure code movement, no logic change. */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "call_plan.h"
 
 /* A fused loop names the receiver expression twice: once in the bound check
@@ -1211,6 +1212,13 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      here -- and the receiver expression itself is still emitted in the
      caller's context (g_self unchanged at this point). */
   const char *recv_self_deref = NULL;
+  /* A poly arm's pre-hoisted receiver cast (#2448) is this call's receiver
+     only: a call the body inlines in turn (`@m.mix(&)` in `frame`, reached
+     through the arm) bound its own self to the arm's cast and the C did not
+     build (`sp_Mixer *` from `sp_Player *`). Cleared for the body, put back
+     on the way out. */
+  const char *saved_recv_expr = g_inline_recv_expr;
+  int saved_recv_cls = g_inline_recv_class;
   if (recv >= 0 && recv_class >= 0) {
     int self_is_val = c->classes[recv_class].is_value_type;
     int st = ++g_tmp;
@@ -1218,6 +1226,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     buf_printf(b, "sp_%s %s_t%d = ", c->classes[recv_class].c_name, self_is_val ? "" : "*", st);
     if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
     else emit_expr(c, recv, b);
+    g_inline_recv_expr = NULL; g_inline_recv_class = -1;
     buf_puts(b, ";");
     /* Root it: for the whole inlined body this temp is the only handle on the
        receiver, and every ivar read in the body goes through it. The body
@@ -1383,6 +1392,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
+  g_inline_recv_expr = saved_recv_expr; g_inline_recv_class = saved_recv_cls;
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
@@ -3016,6 +3026,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       free(tb.p); }
     buf_puts(b, "; ");
   }
+  else if (nx_own && as_expr && g_ie_next_var && bn3 > 0 &&
+           (nt_kind(nt, bd3[bn3 - 1]) == NK_IfNode || nt_kind(nt, bd3[bn3 - 1]) == NK_UnlessNode ||
+            nt_kind(nt, bd3[bn3 - 1]) == NK_CaseNode)) {
+    /* A conditional tail after a `next` guard (`next unless ok; k if c`):
+       emitted as a plain statement, its arms computed the value and dropped
+       it, so the block answered the carrier's nil and filter_map/select kept
+       nothing (#7283). Emit it as a tail whose arms store into the carrier,
+       as a `next` in one of them already does. */
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    const char *sv_rv = g_result_var; int sv_rp = g_result_poly; TyKind sv_rty = g_result_ty;
+    g_result_var = nxbuf; g_result_poly = g_ie_res_poly; g_result_ty = g_ie_res_poly ? TY_POLY : nx_bt;
+    emit_stmt_tail(c, bd3[bn3 - 1], b, 0);
+    g_result_var = sv_rv; g_result_poly = sv_rp; g_result_ty = sv_rty;
+  }
   else if (as_expr && !nx_own && bn3 > 0 &&
            nt_type(nt, bd3[bn3 - 1]) &&
            (sp_streq(nt_type(nt, bd3[bn3 - 1]), "IfNode") ||
@@ -4382,6 +4411,10 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      (hoisted into a temp for GC when non-trivial, else a plain lvalue), so
      re-emitting it here references that same value rather than re-evaluating. */
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
+  /* a boxed Enumerator's `each { }` answers its walk's result -- the
+     collection an `each` Enumerator was made from -- not the Enumerator */
+  else if (rt == TY_POLY && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "each"))
+    buf_printf(b, " sp_poly_each_answer(_t%d); })", ta);
   else buf_printf(b, " _t%d; })", ta);
   if (to) view_unbind(g_n_argov - 1);
   return 1;
@@ -4807,10 +4840,17 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
     snprintf(get, sizeof get, "%s(sp_PolyArray_get(_t%d, _t%d + %d))",
              pt == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_f_or_nil", ta, ti, pj);
   else snprintf(get, sizeof get, "sp_%sArray_get(_t%d, _t%d + %d)", k, ta, ti, pj);
+  /* A typed row can feed a boxed parameter. Keep missed reads nil when
+     boxing the element, including the short final slice. */
+  Buf boxed; memset(&boxed, 0, sizeof boxed);
+  if (pt == TY_POLY && rt != TY_POLY_ARRAY)
+    emit_boxed_text(c, ty_array_elem(rt), get, &boxed);
+  const char *value = boxed.p ? boxed.p : get;
   const char *nil = pt == TY_UNKNOWN ? NULL : nil_value(pt) ? nil_value(pt) : default_value_from_compiler(c, pt);
   emit_indent(b, indent);
-  if (pj == 0 || pj < lit || !nil) buf_printf(b, "lv_%s = %s;\n", rpn, get);
-  else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, get, nil);
+  if (pj == 0 || pj < lit || !nil) buf_printf(b, "lv_%s = %s;\n", rpn, value);
+  else buf_printf(b, "lv_%s = %d < _t%d ? %s : %s;\n", rpn, pj, tn, value, nil);
+  free(boxed.p);
 }
 
 /* emit_iteration_stmt_body's tap, Array#each_slice, and String#split / scan
@@ -5236,23 +5276,22 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     return 1;
   }
 
-  /* "a".upto("e") { |c| ... } -- string succ-sequence loop, mirrors
-     sp_StrArray_from_string_range semantics (inclusive, 4096-cap) */
+  /* "a".upto("e") { |c| ... }: the members the range walk lists
+     (sp_StrArray_from_string_range), the receiver evaluated first */
   if (sp_streq(name, "upto") && rt == TY_STRING && p0) {
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     if (argc != 1) return 0;
-    int te = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp, tcmp = ++g_tmp;
-    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", te); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
+    int tc = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
     emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";\n");
-    emit_indent(b, indent); buf_printf(b, "for (int _t%d = 0; _t%d < 4096; _t%d++) {\n", ti, ti, ti);
-    emit_indent(b, indent + 1); buf_printf(b, "int _t%d = sp_str_cmp_bytes(_t%d, _t%d);\n", tcmp, tc, te);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_STR(_t%d);\n", tc);
+    emit_indent(b, indent); buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(_t%d, ", ta, tc);
+    emit_expr(c, argv[0], b); buf_puts(b, ", 0);\n");
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+    emit_indent(b, indent); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d->data[_t%d];\n", p0, ta, ti);
     emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -5724,6 +5763,74 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
   return -1;
 }
 
+/* Zip yields one freshly built row at a time. Bind complex parameter
+   shapes through the same distribution as other boxed iterator steps. */
+static void emit_zip_many_block(Compiler *c, int recv, int block, int body,
+                                const int *zargv, int zargc, const char *p0,
+                                Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;
+  emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tr);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tr);
+  if (repr_of(c, recv).kind == RK_BOXED) {
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", tr, tr, tr);
+  }
+  emit_indent(b, indent);
+  buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", to, to);
+  for (int j = 0; j < zargc; j++) {
+    emit_indent(b, indent);
+    if (nt_kind(nt, zargv[j]) == NK_SplatNode) {
+      int ts = ++g_tmp, tj = ++g_tmp;
+      buf_printf(b, "{ sp_RbVal _t%d = sp_splat_to_array(", ts);
+      emit_boxed(c, nt_ref(nt, zargv[j], "expression"), b);
+      buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++)"
+                    " sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d)); }\n",
+                 ts, tj, tj, ts, tj, to, ts, tj);
+    }
+    else {
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
+      emit_boxed(c, zargv[j], b); buf_puts(b, ");\n");
+    }
+  }
+  /* Operands are captured before yielding. The receiver is read again
+     per row, so the block can change its later elements. */
+  int tj = ++g_tmp, tn = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_int _t%d = sp_poly_arr_len(_t%d);\n", tn, tr);
+  emit_indent(b, indent);
+  buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                " sp_PolyArray_set(_t%d, _t%d, sp_zip_block_arg(_t%d->data[_t%d], _t%d));\n",
+             tj, tj, to, tj, to, tj, to, tj, tn);
+  emit_indent(b, indent);
+  buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++) {\n", ti, ti, tr, ti);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "sp_RbVal _t%d = sp_zip_block_row(_t%d, _t%d, _t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
+             te, tr, to, ti, tn, te);
+  if (block_lone_rest(c, block)) {
+    char src[32]; snprintf(src, sizeof src, "_t%d", te);
+    emit_iter_bind_rest(c, block, 0, TY_POLY, src, b, indent + 1);
+  }
+  else if (block_binds_gathered(c, block)) {
+    char vals[64]; snprintf(vals, sizeof vals, "sp_yielded_args(0, _t%d)", te);
+    emit_boxed_step_binds(c, block, vals, b, indent + 1, 0);
+  }
+  else if (block_lead_only(c, block) || (p0 && block_rest_marker(c, block)))
+    emit_poly_auto_splat(c, block, te, b, indent);
+  else if (p0) {
+    Scope *zs = comp_scope_of(c, block);
+    LocalVar *lv = zs ? scope_local(zs, block_param_name(c, block, 0)) : NULL;
+    if (lv) {
+      char src[32]; snprintf(src, sizeof src, "_t%d", te);
+      emit_indent(b, indent + 1);
+      emit_block_param_from_boxed(c, p0, lv->type, src, b);
+    }
+  }
+  emit_loop_body(c, body, b, indent + 1);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+}
+
 /* emit_iteration_stmt_body's Array#each_with_index, zip with a block, and
    each / each_pair on a poly value dispatched at run time (answers 1
    emitted, 0 declined, -1 to go on) */
@@ -5797,7 +5904,7 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
   }
 
   /* array.zip(other) { |a, b| ... } -- block form, returns nil */
-  if (sp_streq(name, "zip") && (ty_is_array(rt) || rt == TY_POLY) && block >= 0) {
+  if (is_zip_name(name) && (ty_is_array(rt) || rt == TY_POLY) && block >= 0) {
     int zargs_n = nt_ref(nt, id, "arguments");
     int zargc = 0; const int *zargv = zargs_n >= 0 ? nt_arr(nt, zargs_n, "arguments", &zargc) : NULL;
     /* The receiver, too, can be an array only at run time (a row read out of a
@@ -5805,8 +5912,14 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
        fell to the runtime dispatch, which has no zip arm at all. */
     int recv_poly = !ty_is_array(rt);
     const char *k = recv_poly ? "Poly" : array_iter_kind(rt);
+    int zsplat = 0;
+    for (int j = 0; j < zargc; j++) if (nt_kind(nt, zargv[j]) == NK_SplatNode) zsplat = 1;
+    if (k && (zargc != 1 || zsplat)) {
+      emit_zip_many_block(c, recv, block, body, zargv, zargc, p0, b, indent);
+      return 1;
+    }
     if (k && zargc == 1 && zargv) {
-      TyKind a0t = comp_ntype(c, zargv[0]);
+      TyKind a0t = repr_of(c, zargv[0]).as_ty;
       const char *k2 = ty_is_array(a0t) ? array_iter_kind(a0t) : NULL;
       /* The other operand may be an array only at run time (a poly element of
          a table of rows). Read it through the boxed accessor rather than
@@ -5825,6 +5938,8 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
         int trz = ++g_tmp;
         emit_indent(b, indent);
         buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trz, rb.p ? rb.p : "sp_box_nil()", trz);
+        emit_indent(b, indent);
+        buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", trz, trz, trz);
         free(rb.p); memset(&rb, 0, sizeof rb);
         buf_printf(&rb, "_t%d", trz);
       }

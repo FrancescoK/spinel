@@ -52,6 +52,7 @@ typedef enum {
 
 typedef struct {
   int mi;                  /* the method scope, or -1 */
+  int send_fallback;       /* boxed send: top-level def if no class arm, or -1 */
   short owner_ci;          /* the class whose chain was searched, or -1 */
   unsigned char via;       /* UC_* */
   unsigned char dispatch;  /* CplanDispatch */
@@ -68,6 +69,8 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+/* Object fallback behind a class-gated exception accessor, or -1. */
+int cplan_exc_object_method(Compiler *c, const char *name);
 
 /* ---- CP_REFUSE: a call the compiler refuses ----
    Whether codegen refuses the call node id, and in which words, decided
@@ -165,7 +168,7 @@ typedef enum {
   PB_COVER, PB_TRY_CONVERT, PB_GCDLCM, PB_UNPACK1, PB_INCLUDE, PB_STR_DELETE, PB_STR_PARTITION,
   PB_STR_SETOP, PB_STORE, PB_STR_ENCODE, PB_STR_SPLIT_N, PB_INT_BITREF,
   /* its builtin cases after the class arms (emit_poly_cases_n) */
-  PB_INDEX_CASES, PB_IO_READ_NB, PB_IO_WRITE, PB_IO_SYSWRITE, PB_IO_PRINT, PB_IO_PUTC, PB_IO_SEEK_READ,
+  PB_INDEX_CASES, PB_IO_READ_NB, PB_IO_READPARTIAL, PB_IO_WRITE, PB_IO_SYSWRITE, PB_IO_PRINT, PB_IO_PUTC, PB_IO_SEEK_READ,
   PB_UNSHIFT, PB_PUSH, PB_PACK, PB_JOIN_N, PB_INCLUDE_CASES, PB_ARR_INDEX, PB_INTERSECT, PB_STRFTIME,
   PB_AREF_STR, PB_AREF_SYM, PB_AREF_POLY, PB_PRED_N,
   /* its `default:` arm (emit_poly_defaults_n): the generic one and what it

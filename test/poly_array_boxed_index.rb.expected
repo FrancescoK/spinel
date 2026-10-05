@@ -1,0 +1,5 @@
+"b"
+[1, "b"]
+:c
+["b", :c]
+"no implicit conversion from nil to integer"

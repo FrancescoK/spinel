@@ -75,7 +75,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
                                      "str-partition", "str-setop", "store", "str-encode", "str-split",
-                                     "int-bitref", "index-cases", "io-read_nonblock", "io-write",
+                                     "int-bitref", "index-cases", "io-read_nonblock", "io-readpartial", "io-write",
                                      "io-syswrite", "io-print", "io-putc", "io-seek/read", "unshift", "push",
                                      "pack", "join(sep)", "include?-cases", "array-index", "intersect?",
                                      "strftime", "aref-str", "aref-sym", "aref-poly", "predicate(arg)",
@@ -1228,7 +1228,10 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s) {
   /* `rewind` on a poly stream (a param unioning StringIO and IO, #3257):
      both are builtins/native classes with no user arm, so without this
      pre-arm the call was silently dropped. */
-  int is_io_rewind = sp_streq(name, "rewind") && !recv_user_defines(c, name);
+  /* ...and an Enumerator's, beside a class of the program's own that
+     defines rewind too: the builtin arms test their runtime kind first, so
+     a user arm still takes its objects */
+  int is_io_rewind = sp_streq(name, "rewind") && argc == 0;
   /* to_a on a poly value that is really a builtin hash/array (a yield-result
      union of an rbs-seeded Hash and a class instance, #3278): the user-class
      switch has no builtin arm, so the hash fell through to the nil seed. */
@@ -1552,13 +1555,27 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      (rewind's return is rarely consumed through a poly union) */
   if (is_io_rewind) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_REWIND, -1, TY_UNKNOWN, PC_SAME);
+    /* a stream answers its 0 where the result is boxed */
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO)"
-                  " { sp_File_rewind((sp_File *)_t%d.v.p); }\nelse ", tv, tv, tv);
+                  " { sp_int _rw = sp_File_rewind((sp_File *)_t%d.v.p);", tv, tv, tv);
+    if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_int(_rw);", tr);
+    else if (ret == TY_INT) buf_printf(b, " _t%d = _rw;", tr);
+    buf_puts(b, " (void)_rw; }\nelse ");
+    /* an Enumerator rewinds, and answers itself where the result is boxed */
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR)"
+                  " { sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p);", tv, tv, tv);
+    if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
+    buf_puts(b, " }\nelse ");
     int sio_cid3 = comp_class_index(c, "StringIO");
     if (sio_cid3 >= 0)
+    {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
-                    " { sp_StringIO_rewind((sp_StringIO *)_t%d.v.p); }\nelse ",
+                    " { sp_int _rw = sp_StringIO_rewind((sp_StringIO *)_t%d.v.p);",
                  tv, tv, sio_cid3, tv);
+      if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_int(_rw);", tr);
+      else if (ret == TY_INT) buf_printf(b, " _t%d = _rw;", tr);
+      buf_puts(b, " (void)_rw; }\nelse ");
+    }
   }
   /* A zero-arg IO method whose name a user class ALSO owns. The cls_id
      switch below carries an arm per user class only, so an `@io` that
@@ -1709,12 +1726,13 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
      class-method cascade, which already does this. */
   int blk_tmp0 = -1;
   { int cblk0 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-    if (cblk0 >= 0) {
+    if (cblk0 >= 0 || (nt_ref(nt, id, "block") >= 0 && g_yield_proc_ref)) {
       int npc0 = 0;
       const PolyCand *pc0 = comp_poly_candidates(c, name, &npc0);   /* (#4966) */
       for (int ki = 0; ki < npc0 && blk_tmp0 < 0; ki++) {
         int k = pc0[ki].cls;
-        if (!c->classes[k].instantiated) continue;
+        /* a reopened builtin (Hash, Array, String...) is never `.new`ed, and its arm runs too */
+        if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
         int mi0 = pc0[ki].mi;
         if (mi0 < 0) continue;
         Scope *cm0 = &c->scopes[mi0];
@@ -1725,7 +1743,7 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
           /* `&blk` that survived the forwarding resolution names a REAL
              proc (this function's own block param), not a literal to
              materialize: write the proc expression itself. */
-          blk_tmp0 = hoist_block_proc(c, cblk0);
+          blk_tmp0 = hoist_dispatch_blk_proc(c, id, cblk0);
         }
       }
     } }
@@ -2430,9 +2448,11 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      would otherwise lower to the unresolved-call raise even when the value
      is a genuine Time. Give the switch a SP_BUILTIN_TIME arm so a real Time
      formats and nil/anything-else raises NoMethodError, matching CRuby
-     (issue #2457, the family2 nilable value-method dispatch gap). Only when
-     no user class defines strftime, so the default-raise arm is unambiguous. */
-  int is_strftime = ncand == 0 && sp_streq(name, "strftime") && argc == 1 &&
+     (issue #2457, the family2 nilable value-method dispatch gap). Beside
+     user classes that define strftime the Time arm joins theirs, and the
+     switch's own default raises (#7334): a program-defined Date left a real
+     Time with no arm at all. */
+  int is_strftime = sp_streq(name, "strftime") && argc == 1 &&
                     infer_type(c, argv[0]) == TY_STRING;
   /* cover? on a container-read Range; gcdlcm on a container-read int
      receiver (#3234): builtin pre-arms, no user candidates required */
@@ -2577,12 +2597,35 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_cover) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_COVER, -1, TY_UNKNOWN, PC_SAME);
     const char *fn = atmp_ty[0] == TY_POLY ? "cover_poly" : atmp_ty[0] == TY_FLOAT ? "cover_f" : "include";
+    /* a Range argument: whether both its ends lie inside, as the typed
+       cover?(range) answers -- the Integer test took the sp_Range as a value */
+    if (atmp_ty[0] == TY_RANGE)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                    " { _t%d = %ssp_range_cover_rng(*(sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
+    /* ...and a boxed one, which sp_range_cover_poly (include?'s too) does
+       not read as a Range */
+    else if (atmp_ty[0] == TY_POLY)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                    " { _t%d = %s(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
+                    " ? sp_range_cover_rng(*(sp_Range *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
+                    " : sp_range_cover_poly((sp_Range *)_t%d.v.p, _t%d))%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "",
+                 atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
+    else
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
                   " { _t%d = %ssp_range_%s((sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
                tv, tv, tr,
                ret == TY_POLY ? "sp_box_bool(" : "", fn, tv, atmp[0],
                ret == TY_POLY ? ")" : "");
     /* a Float range covers by value (it fell through to false) */
+    if (atmp_ty[0] == TY_RANGE)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
+                    " { _t%d = %ssp_frange_cover_rng(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; }\nelse ",
+                 tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
     if (atmp_ty[0] == TY_POLY || atmp_ty[0] == TY_FLOAT || atmp_ty[0] == TY_INT) {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
                     " { _t%d = %s", tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "");
@@ -2810,9 +2853,10 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
   /* Same shared-proc materialization the zero-arg dispatch does (#3399). */
   int blk_tmp2 = -1;
   { int cblk2 = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-    if (cblk2 >= 0) {
+    if (cblk2 >= 0 || (nt_ref(nt, id, "block") >= 0 && g_yield_proc_ref)) {
       for (int k = 0; k < c->nclasses && blk_tmp2 < 0; k++) {
-        if (!c->classes[k].instantiated) continue;
+        /* a reopened builtin (Hash, Array, String...) is never `.new`ed, and its arm runs too */
+        if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
         int mi2 = comp_method_in_chain(c, k, name, NULL);
         if (mi2 < 0) continue;
         Scope *cm2 = &c->scopes[mi2];
@@ -2821,7 +2865,7 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
             scope_needs_proc_form(c, mi2)) {
           /* a forwarded &blk / anonymous & is a live proc, not a literal
              to lower -- the same guard the other dispatch arms carry */
-          blk_tmp2 = hoist_block_proc(c, cblk2);
+          blk_tmp2 = hoist_dispatch_blk_proc(c, id, cblk2);
         }
       }
     } }
@@ -2927,6 +2971,20 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       else buf_printf(b, "sp_box_str(_t%d)", trd7);
     }
     else buf_printf(b, "_t%d", trd7);
+    buf_puts(b, "; break; }");
+  }
+  /* readpartial / sysread(len) on the builtin IO tag, the same shape: a
+     TCPSocket beside an SSLSocket (an openssl package class) reached the
+     class-id switch, which had an arm only for the SSLSocket (#7315) */
+  if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && kwh < 0 && splat_a < 0) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL, -1, TY_UNKNOWN, PC_SAME);
+    int trp = ++g_tmp;
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_i(_t%d)", atmp[0]);
+    else buf_printf(b, "(sp_int)_t%d", atmp[0]);
+    buf_printf(b, "); _t%d = ", tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
+    else buf_printf(b, "_t%d", trp);
     buf_puts(b, "; break; }");
   }
   if (sp_streq(name, "write") && argc == 1 && kwh < 0 && splat_a < 0) {
@@ -3397,13 +3455,18 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   }
   /* strftime on a poly value that is really a Time: format it; nil or any
      other runtime class raises NoMethodError as CRuby does. */
-  if (is_strftime) {
+  /* beside user arms the call's type is theirs: the Time arm joins only
+     where its String fits (a user strftime answering something else keeps
+     the switch it had) */
+  if (is_strftime && (ps->ncand == 0 || ret == TY_STRING || ret == TY_POLY)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRFTIME, -1, TY_UNKNOWN, PC_SAME);
     if (ret == TY_POLY)
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d)); break;", tr, tv, atmp[0]);
     else
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
-    buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);
+    /* with user arms in the switch, the default is theirs to emit */
+    if (ps->ncand == 0)
+      buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);
   }
   /* the poly value may actually be a string-keyed hash: dispatch `[]` /
      `fetch` to the matching hash storage, boxing the value into the poly
@@ -3636,7 +3699,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
      `"abc".include?(:x)` is a TypeError in CRuby, not a NoMethodError --
      so those names keep their existing answer rather than gain a
      mislabelled raise (#3394). */
-  if (!is_pred && !is_strftime && !is_aref && !is_aref2 && !is_fetch && !is_include &&
+  if (!is_pred && !(is_strftime && ps->ncand == 0) && !is_aref && !is_aref2 && !is_fetch && !is_include &&
       !is_push && !is_cover && !is_gcdlcm && !is_strdel && !is_strsplit &&
       !is_pdelete && !is_pdig && !is_pvalues_at && !is_pfirstn && !is_pmerge) {
         if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_GENERIC, -1, TY_UNKNOWN, PC_SAME);

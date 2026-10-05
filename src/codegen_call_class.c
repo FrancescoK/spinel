@@ -9,6 +9,27 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp,
+                                       const char *name, Buf *b) {
+  TyKind avk = store_value_kind(c, arg);
+  /* A nil-valued argument has no C type for a temporary. Keep its
+     effects, store the slot's nil, and answer nil as the writer
+     does rather than reading the slot as an ordinary number. */
+  if (avk == TY_NIL || avk == TY_VOID) {
+    buf_printf(b, "_t%d->iv_%s = ", tmp, iv_c(name));
+    emit_coerce(c, arg, ivt, CO_HOLD, "an attribute writer", b);
+    buf_puts(b, "; 0; })");
+    return;
+  }
+  int tv = ++g_tmp;
+  char tn[32]; snprintf(tn, sizeof tn, "_t%d", tv);
+  emit_ctype(c, avk, b); buf_printf(b, " %s = ", tn); emit_expr(c, arg, b);
+  buf_printf(b, "; _t%d->iv_%s = ", tmp, iv_c(name));
+  emit_coerce_text(c, arg, avk, ivt, CO_HOLD, tn, "an attribute writer", b);
+  buf_printf(b, "; %s; })", tn);
+  return;
+}
+
 /* respond_to?, method_defined? and its kin, const_set / const_get / const_defined? */
 int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   if (sp_streq(name, "respond_to?") && argc >= 1 && !respond_to_user_defined(c, id, recv)) {
@@ -1103,13 +1124,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (argc >= 1 && _aivt != TY_POLY && _aivt != TY_UNKNOWN &&
               comp_ntype(c, argv[0]) != TY_UNKNOWN &&
               !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
-            TyKind _avk = store_value_kind(c, argv[0]);
-            int _tvv = ++g_tmp;
-            char _tvn[32]; snprintf(_tvn, sizeof _tvn, "_t%d", _tvv);
-            emit_ctype(c, _avk, b); buf_printf(b, " %s = ", _tvn); emit_expr(c, argv[0], b);
-            buf_printf(b, "; _t%d->iv_%s = ", _atmp, iv_c(_abase));
-            emit_coerce_text(c, argv[0], _avk, _aivt, CO_HOLD, _tvn, "an attribute writer", b);
-            buf_printf(b, "; %s; })", _tvn);
+            emit_attr_writer_converted(c, argv[0], _aivt, _atmp, _abase, b);
             return 1;
           }
           buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
@@ -1799,7 +1814,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
        path by falling through. */
     if (acid < 0) {
       const char *bcn = nt_str(nt, recv, "name");
-      if (bcn && sp_streq(bcn, "String")) { buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))"); return 1; }
+      if (bcn && sp_streq(bcn, "String")) { buf_puts(b, "sp_str_empty_binary()"); return 1; }
       if (bcn && sp_streq(bcn, "Array"))  { buf_puts(b, "sp_PolyArray_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Hash"))   { buf_puts(b, "sp_PolyPolyHash_new()"); return 1; }
       if (bcn && sp_streq(bcn, "Object")) { buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)"); return 1; }
@@ -2449,6 +2464,12 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(b, " _t%d; })", ta);
         return 1;
       }
+      /* a Class value known only at run time: the generated answer that a
+         boxed one gets (sp_cls_subclasses, over the same class graph) */
+      if (comp_ntype(c, recv) == TY_CLASS) {
+        buf_puts(b, "sp_cls_subclasses(sp_box_class("); emit_expr(c, recv, b); buf_puts(b, "))");
+        return 1;
+      }
     }
     /* a named class/module value is never a singleton class (spinel has no
        singleton-class objects), so #singleton_class? is always false. */
@@ -2793,9 +2814,13 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      helper beside it. Fall through to the class-member resolution instead. */
   if (recv < 0 && comp_method_index(c, name) >= 0) {
     Scope *esc = comp_scope_of(c, id);
-    int ecls = esc ? esc->class_id : -1;
+    /* a block run by instance_eval answers on its receiver's class: a
+       forwarded block's bare call took the top-level def of the same name
+       over the receiver's method (#7213) */
+    int ecls = g_ie_class_id >= 0 ? g_ie_class_id : esc ? esc->class_id : -1;
+    int ecm = g_ie_class_id < 0 && esc && esc->is_cmethod;
     int shadowed = ecls >= 0 && ecls < c->nclasses &&
-                   (esc->is_cmethod
+                   (ecm
                       ? comp_cmethod_in_chain(c, ecls, name, NULL) >= 0
                       : (comp_method_in_chain(c, ecls, name, NULL) >= 0 ||
                          comp_is_reader(&c->classes[ecls], name)));
@@ -2828,6 +2853,14 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           if (emit_native_ctor(c, id, new_cls, nargc, nargv, b)) return 1;
         }
         int initm = comp_method_in_chain(c, new_cls, "initialize", NULL);
+        /* an exception class with no `initialize` takes the first argument as
+           its message, exactly as the receiver `Klass.new(msg)` path does;
+           the plain constructor below dropped it */
+        if (initm < 0 && class_is_exc_subclass(c, new_cls)) {
+          int eargc; const int *eargv = call_args(nt, id, &eargc);
+          emit_exc_new_no_init(c, id, new_cls, eargc, eargv, b);
+          return 1;
+        }
         /* A Data/Struct class has no user `initialize`; its generated constructor
            takes one arg per member. Fill member-wise -- positionally, or by
            keyword when a trailing kwarg hash names each member -- exactly as the
@@ -3299,6 +3332,20 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   /* dispatch user-defined methods on reopened built-in types -- not for an
      alias that captured the builtin (builtin_only) */
   if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
+    if (rt == TY_RANDOM) {
+      const CallPlan *pl = cplan_user(c, id);
+      if (pl->mi >= 0 && pl->via == UC_REOPEN && pl->dispatch == CP_DIRECT &&
+          pl->owner_ci == comp_class_index(c, "Random")) {
+        int mi = pl->mi, ci = pl->owner_ci;
+        if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
+        emit_method_cname(c, &c->scopes[mi], b);
+        buf_puts(b, "(");
+        emit_expr(c, recv, b);
+        emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+        buf_puts(b, ")");
+        return 1;
+      }
+    }
     const char *oc_cn = NULL;
     switch (rt) {
     case TY_STRING: oc_cn = "String"; break;
@@ -3323,6 +3370,8 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_expr(c, recv, b);
           emit_args_filled(c, oc_mi, nt_ref(nt, id, "arguments"), ", ", b);
+          /* a method taking `&block` takes the call's block, or NULL (#7200) */
+          emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
           buf_puts(b, ")");
           return 1;
         }

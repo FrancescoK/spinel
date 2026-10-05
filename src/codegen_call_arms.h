@@ -53,7 +53,7 @@ int emit_call_openstruct_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
 int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_range_literal_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0);
 int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv);
-int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
+int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, int argc, const int *argv, TyKind rt);
 int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt);
 int emit_call_handle_op_arms(Compiler *c, int id, Buf *b, const char *name, int recv);
@@ -192,6 +192,7 @@ int ctor_init_takes_block(Compiler *c, int initm);
 void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg_node, Buf *b);
 void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b);
 int exc_reopen_initialize(Compiler *c, int ci);
+void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 int raise_plain_arg(const NodeTable *nt, int node);
 void emit_kconv_call(Compiler *c, int id, const int *av, int ac, int raise, Buf *b);
 void emit_pre_format_args(Compiler *c, const int *av, int ac, int ta);
@@ -250,5 +251,7 @@ void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b);
 int emit_implicit_self_member(Compiler *c, int id, Buf *b);
 int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b);
 int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid);
+
+int emit_send_blind(Compiler *c, int id, Buf *b);
 
 #endif

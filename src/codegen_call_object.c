@@ -865,6 +865,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
 
 /* freeze / frozen?, dup / clone, the identity methods that answer the receiver, and then / yield_self */
 int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
+  if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
+                   comp_ntype(c, recv) == TY_STR_RANGE) &&
+      emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 1, b)) return 1;
   /* freeze / frozen? on an array set/read the struct's frozen flag */
   if (recv >= 0 && argc == 0 && comp_ntype(c, recv) != TY_POLY) {
     TyKind crt = comp_ntype(c, recv);
@@ -1075,12 +1078,12 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   }
 
   /* frozen? on an immutable value type is constantly true (CRuby freezes
-     Integer/Float/Symbol/booleans/nil/Range/Complex/Rational values) */
+     Integer/Float/Symbol/booleans/nil/Complex/Rational values) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
     TyKind fvt = comp_ntype(c, recv);
     if (fvt == TY_NIL) { buf_puts(b, "1"); return 1; }
     if (fvt == TY_INT || fvt == TY_FLOAT || fvt == TY_SYMBOL || fvt == TY_BOOL ||
-        fvt == TY_RANGE || fvt == TY_COMPLEX || fvt == TY_RATIONAL ||
+        fvt == TY_COMPLEX || fvt == TY_RATIONAL ||
         fvt == TY_BIGINT) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return 1;
@@ -1132,7 +1135,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        keyword can't unfreeze what has no mutable state (#2379) */
     if (argc0 == 1 && sp_streq(name, "clone") &&
         (recv_t == TY_INT || recv_t == TY_FLOAT || recv_t == TY_BOOL ||
-         recv_t == TY_NIL || recv_t == TY_SYMBOL || recv_t == TY_RANGE ||
+         recv_t == TY_NIL || recv_t == TY_SYMBOL ||
          recv_t == TY_RATIONAL || recv_t == TY_COMPLEX || recv_t == TY_BIGINT)) {
       int dargs2 = nt_ref(nt, id, "arguments");
       int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;
@@ -1968,8 +1971,45 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   return 0;
 }
 
+int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(nt, id, &argc);
+  TyKind rt = repr_of(c, recv).ty;
+  /* A set raises on a frozen kind, or is refused where no ivar slot exists.
+     The receiver and arguments run first, including before a bad name. */
+  int is_set = x->op->arg[0] == 's';
+  int frozen_kind = rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_NIL || rt == TY_SYMBOL ||
+                    rt == TY_BIGINT || rt == TY_RANGE;
+  if (is_set && !frozen_kind)
+    unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
+                               "instance variables for a builtin value, so the variable has no slot to live in");
+  const char *a0ty = argc >= 1 ? nt_type(nt, argv[0]) : NULL;
+  const char *sym = a0ty && sp_streq(a0ty, "SymbolNode") ? nt_str(nt, argv[0], "value")
+                  : a0ty && sp_streq(a0ty, "StringNode") ? nt_str(nt, argv[0], "content") : NULL;
+  int tv = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+  /* a literal name with no `@` is NameError before anything else */
+  if (argc >= 1 && sym && sym[0] != '@')
+    buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
+  if (is_set)
+    buf_printf(b, "sp_raise_frozen_obj(_t%d, sp_str_concat((&(\"\\xff\" \"can't modify frozen \")[1]), "
+                  "sp_poly_class_name(_t%d))); ", tv, tv);
+  if (x->op->arg[0] == 'l') buf_puts(b, "sp_PolyArray_new(); })");
+  else if (x->op->arg[0] == 'd') buf_puts(b, "(sp_bool)0; })");
+  else {
+    /* A raising set still needs the settled result's C representation. */
+    Repr rp = repr_of(c, id);
+    const char *nv = nil_value(rp.as_ty);
+    buf_printf(b, "%s; })", nv ? nv : default_value(rp.as_ty));
+  }
+  return 1;
+}
+
 /* Kernel#display (to_s with no newline, answering nil), and instance_variable_defined? on a statically typed object, answered from its layout */
-int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
+int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* Kernel#display prints to_s with no newline, returns nil */
   if (recv >= 0 && sp_streq(name, "display") && argc == 0 &&
       /* a generated READER of the name owns it, as in CRuby (#4190) */
@@ -1992,6 +2032,8 @@ int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const 
     buf_puts(b, "), stdout))");
     return 1;
   }
+  if (recv >= 0 && ty_builtin_ivar_less(rt) &&
+      emit_builtin_op(c, id, recv, BOP_IVAR_LESS, name, b)) return 1;
   /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
      the layout answers at compile time */
   if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
@@ -2002,7 +2044,7 @@ int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const 
     int dcid = ty_object_class(rt);
     int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[dcid], ivn) >= 0;
     /* one nothing has set yet is not defined (ivar_set_kind) */
-    if (have && ivar_set_kind(c, dcid, ivn) == 1) {
+    if (have && (ivar_set_kind(c, dcid, ivn) & 1)) {
       int tro = ++g_tmp;
       char ex[160], tb[256];
       snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivn + 1));
@@ -2016,18 +2058,74 @@ int emit_call_display_ivar_arms(Compiler *c, Buf *b, const NodeTable *nt, const 
   return 0;
 }
 
+/* A presence flag is read after allocating the result Array, so its receiver
+   must stay live across that allocation. */
+int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
+  ClassInfo *ivc = &c->classes[ivcid];
+  int tia = ++g_tmp;
+  /* an ivar nothing has set yet is not listed (ivar_set_kind): its
+     slot is read off the receiver, held once */
+  int any1 = 0, tracked = 0;
+  for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
+    int kind = ivar_set_kind(c, ivcid, ivc->ivars[ji]);
+    any1 |= kind & 1;
+    tracked |= kind == 3;
+  }
+  int tro = any1 ? ++g_tmp : -1;
+  if (any1) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
+  else { buf_printf(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, ");"); }
+  if (tracked) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
+  buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
+  /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
+  for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
+    char ex[160], tb[256];
+    snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivc->ivars[ji] + 1));
+    const char *set = any1 ? ivar_set_test(c, ivcid, ivc->ivars[ji], ex, tb, sizeof tb) : NULL;
+    if (set) buf_printf(b, "if %s ", set);
+    buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
+  }
+  buf_printf(b, "_t%d; })", tia);
+  return 1;
+}
+
 static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid, Buf *b) {
   const char *dn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
   int td = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", td);
   emit_boxed(c, recv, b);
-  buf_puts(b, "; (void)(");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (void)(", td);
   emit_boxed(c, value, b);
   buf_printf(b, "); sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); ", td, dn);
   Repr rp = repr_of(c, id);
   TyKind rt9 = rp.as_ty;
   buf_printf(b, "%s; })", rp.kind == RK_BOXED || rp.kind == RK_NONE ? "sp_box_nil()" : default_value(rt9));
   return 1;
+}
+
+/* Reflection-only slots keep an assigned bit beside their value. Evaluate
+   the value before either the frozen check or the successful store. */
+static void emit_reflect_ivar_set(Compiler *c, int id, int recv, int value, int cid,
+                                  const char *sym, TyKind mt, int is_val, Buf *b) {
+  int tr = ++g_tmp, tv = ++g_tmp;
+  buf_printf(b, "({ sp_%s *_t%d = ", c->classes[cid].c_name, tr);
+  if (is_val) buf_puts(b, "&(");
+  emit_expr(c, recv, b);
+  if (is_val) buf_puts(b, ")");
+  buf_puts(b, "; ");
+  if (!is_val) buf_printf(b, "SP_GC_ROOT(_t%d); ", tr);
+  emit_ctype(c, mt, b); buf_printf(b, " _t%d = ", tv);
+  if (emit_array_into_poly_slot(c, mt, value, b)) { }
+  else emit_coerce(c, value, mt, CO_HOLD, "an instance variable write", b);
+  buf_puts(b, "; ");
+  char obj[32], val[32];
+  snprintf(obj, sizeof obj, "_t%d", tr);
+  snprintf(val, sizeof val, "_t%d", tv);
+  emit_gc_root_var(c, mt, val, b);
+  emit_frozen_obj_guard(c, cid, obj, b);
+  buf_printf(b, "%s->iv_%s = %s; %s->_sp_set_%s = TRUE; ", obj, iv_c(sym + 1), val, obj, iv_c(sym + 1));
+  Repr rp = repr_of(c, id);
+  emit_coerce_text(c, id, mt, rp.as_ty, CO_HOLD, val, "an instance variable write result", b);
+  buf_puts(b, "; })");
 }
 
 /* Literal ivar access depends on the class layout and member boundary,
@@ -2077,6 +2175,10 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
       TyKind mt = c->classes[cid].ivar_types[mi];
       const char *acc = is_val ? "." : "->";
       if (is_set) {
+        if (ivar_set_kind(c, cid, sym) == 3) {
+          emit_reflect_ivar_set(c, id, recv, argv[1], cid, sym, mt, is_val, b);
+          return 1;
+        }
         /* the write is a mutation like any other: a frozen receiver raises
            FrozenError rather than taking it (#3872) */
         if (!is_val && c->classes[cid].freeze_observed) {

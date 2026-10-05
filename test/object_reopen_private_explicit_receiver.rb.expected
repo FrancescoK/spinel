@@ -1,0 +1,8 @@
+"private method 'foo' called for an instance of Integer"
+"private method 'foo' called for an instance of K"
+"private method 'foo' called for an instance of String"
+"private method 'foo' called for an instance of Array"
+"private method 'foo' called for an instance of Integer"
+1
+1
+2

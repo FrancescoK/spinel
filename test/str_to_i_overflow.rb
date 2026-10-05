@@ -1,4 +1,5 @@
 # spinel: int64 -- assumes a 64-bit Integer (values or arithmetic past 2^31); not run on a 32-bit target
+# spinel: not-cruby -- fixed-width overflow raises instead of promoting to Bignum.
 # String#to_i overflow handling. Pre-fix: undefined behavior on
 # int64 wrap (#743) — addressed by overflow-detected saturation.
 # Per #842 the saturate path is gone; overflow now raises
@@ -28,6 +29,13 @@ puts "9_223_372_036_854_775_807".to_i
 # One past INT64_MAX: raises.
 begin
   puts "9_223_372_036_854_775_808".to_i
+rescue RangeError
+  puts "raised"
+end
+
+# One below INT64_MIN must still raise after signed accumulation.
+begin
+  puts "-9223372036854775809".to_i
 rescue RangeError
   puts "raised"
 end

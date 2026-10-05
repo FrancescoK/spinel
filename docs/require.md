@@ -130,7 +130,10 @@ like `ffi`),
 features). `net/http` and `uri` are there, and so
 is `openssl` -- the one that is conditional: it is glue over the system libssl, so it exists only where those
 headers did at build time, and `require "openssl"` is otherwise the
-unsatisfiable require it is for any library Spinel does not carry. Each lives as an ordinary
+unsatisfiable require it is for any library Spinel does not carry. Where the
+build found a keg-only OpenSSL (Homebrew's `openssl@3`), the compiler records
+that library directory and links a program's `-lssl -lcrypto` against it, so
+no `LIBRARY_PATH` is needed after `make`. Each lives as an ordinary
 spinelgem under `packages/<name>/` beside the compiler (`packages/set/set.rb` with
 its `spin.toml`); `lib/` holds only the C runtime. The `require` pulls in
 the package's file like any other package -- pre-installed just means no fetch.

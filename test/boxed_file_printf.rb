@@ -1,7 +1,7 @@
 # printf on an IO handle read out of a container (a File, $stdout) formats
 # its arguments and writes the result, as on a typed File, and answers nil;
 # with no arguments it raises ArgumentError, as CRuby does.
-path = "/tmp/sp_boxed_file_printf.txt"
+path = "/tmp/sp_boxed_file_printf_#{Process.pid}.txt"
 def fresh(path)
   h = File.open(path, "a")
   h.sync = true

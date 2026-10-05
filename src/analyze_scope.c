@@ -17,6 +17,8 @@ void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw) {
           (int)nw, ty_name(nw < 1000 ? nw : TY_POLY));
 }
 
+static int bc_builtin_module(const char *n);
+
 /* `...` forwards the caller's args verbatim, so rather than a rest array we
    synthesize concrete positional params whose count is the widest positional
    arg count across this method's call sites (the compiler already knows the
@@ -1101,10 +1103,37 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
                         "collides with the builtin class of that name\n", file, ln, cname);
       exit(1);
     }
+    /* The reverse: `class Comparable` reopens a builtin MODULE as a class,
+       which CRuby refuses with a TypeError. A nested or path-qualified name
+       is a fresh constant in CRuby, but the generated C name is the bare
+       tail and collides, so refuse that as unsupported. */
+    int cls_toplevel = class_id < 0 && cp >= 0 && nt_type(c->nt, cp) &&
+                       sp_streq(nt_type(c->nt, cp), "ConstantReadNode");
+    /* An earlier pass mangles a nested name to `Outer__Inner`: test the leaf. */
+    const char *cls_leaf = cname;
+    if (cname && !cls_toplevel) {
+      for (const char *q = strstr(cname, "__"); q; q = strstr(q + 1, "__")) cls_leaf = q + 2;
+    }
+    if (sp_streq(ty, "ClassNode") && cname && bc_builtin_module(cls_leaf)) {
+      int ln = (int)nt_int(c->nt, id, "node_line", 0);
+      const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
+      if (cls_toplevel)
+        fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cname);
+      else
+        fprintf(stderr, "spinel: %s:%d: unsupported class name '%s': "
+                        "collides with the builtin module of that name\n", file, ln, cls_leaf);
+      exit(1);
+    }
     /* `class CONST` where CONST aliases an existing class reopens that class.
        Rewrite the AST name so every later pass (registration, includes) agrees. */
     if (cname && cp >= 0 && comp_class_index(c, cname) < 0) {
       const char *real = resolve_class_alias(c, cname);
+      if (real && sp_streq(ty, "ClassNode") && cls_toplevel && bc_builtin_module(real)) {
+        int ln = (int)nt_int(c->nt, id, "node_line", 0);
+        const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
+        fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cname);
+        exit(1);
+      }
       if (real) {
         char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees cname */
         nt_set_str((NodeTable *)c->nt, cp, "name", buf);
@@ -3350,6 +3379,32 @@ static void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
 
 /* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
    module bodies. Called during analyze_program before fixpoint. */
+/* A native_func is a module function of its module: a bare call to it in one
+   of the module's own singleton methods (`hexdigest(x)` in `def self.twice`)
+   is the call on the module, as `Hasher.hexdigest(x)` is (#7205). The
+   module's own def of that name, if it has one, is what the call reaches. */
+static void bare_native_func_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (c->n_native_funcs == 0) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || nt_ref(nt, id, "receiver") >= 0) continue;
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc || !sc->is_cmethod || sc->class_id < 0) continue;
+    const char *mod = c->classes[sc->class_id].name;
+    int hit = 0;
+    for (int i = 0; i < c->n_native_funcs && !hit; i++)
+      hit = sp_streq(c->native_funcs[i].mod, mod) && sp_streq(c->native_funcs[i].name, nm);
+    if (!hit || comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
+    int cr = nt_new_node(nt, "ConstantReadNode");
+    if (cr < 0) continue;
+    nt_node_set_str(nt, cr, "name", mod);
+    comp_grow_node_arrays(c);
+    c->nscope[cr] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", cr);
+  }
+}
+
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
@@ -3836,6 +3891,7 @@ void register_ffi_decls(Compiler *c) {
       }
     }
   }
+  bare_native_func_calls(c);
 }
 
 /* Resolve Module.<method> against ffi_struct declarations. See compiler.h. */
@@ -4694,6 +4750,68 @@ static void check_builtin_subclasses(Compiler *c) {
   }
 }
 
+
+/* A class whose superclass is an anonymous class (`class A < Class.new(B)`,
+   `class S < Struct.new(:a)`, `< Data.define(:a)`), or a descendant of one:
+   no class object stands for the anonymous class, so `superclass` and
+   `ancestors` would name the wrong class (Base, Struct, Object) where CRuby
+   answers the anonymous one. */
+static int anon_super_class(Compiler *c, int k) {
+  for (int x = k, g = 0; x >= 0 && x < c->nclasses && g < 256; x = c->classes[x].parent, g++) {
+    int dn = c->classes[x].def_node;
+    if (dn < 0 || dn >= c->nt->count || nt_kind(c->nt, dn) != NK_ClassNode) continue;
+    if (nt_int(c->nt, dn, "anon_super", 0)) return 1;
+    int sc = nt_ref(c->nt, dn, "superclass");
+    if (sc >= 0 && nt_kind(c->nt, sc) == NK_CallNode) return 1;
+  }
+  return 0;
+}
+static int is_anon_reflect_name(const char *n) {
+  return n && (sp_streq(n, "superclass") || sp_streq(n, "ancestors"));
+}
+/* Refuse `superclass` / `ancestors` that can reach such a class: on a
+   constant naming one, on self inside one, and on any receiver the program
+   does not name statically while one exists. */
+static void refuse_anon_superclass_reflection(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  for (int k = 0; k < c->nclasses && !any; k++) any = anon_super_class(c, k);
+  if (!any) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    const char *what = NULL;
+    if (is_anon_reflect_name(nm)) what = nm;
+    else if (nm && (sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__") ||
+                    sp_streq(nm, "method"))) {
+      int a = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode && is_anon_reflect_name(nt_str(nt, av[0], "value")))
+        what = nt_str(nt, av[0], "value");
+    }
+    if (!what) continue;
+    int k = -1, known = 0;
+    if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+      k = comp_class_index(c, nt_str(nt, recv, "name"));
+      known = 1;   /* a module or a builtin class: not one of these */
+    }
+    else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+      Scope *s = comp_scope_of(c, id);
+      if (s && s->class_id >= 0 && s->is_cmethod) { k = s->class_id; known = 1; }
+      else if (c->node_cbody[id] >= 0 && (!s || !s->name)) { k = c->node_cbody[id]; known = 1; }
+    }
+    if (known && (k < 0 || !anon_super_class(c, k))) continue;
+    int ln = (int)nt_int(nt, id, "node_line", 0);
+    const char *file = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    if (!file || !*file) file = nt->source_file;
+    if (!file || !*file) file = "source.rb";
+    fprintf(stderr, "spinel: %s:%d: unsupported `%s` that can reach a class whose superclass is an "
+                    "anonymous class (Class.new, Struct.new or Data.define as the superclass): "
+                    "spinel has no class object for the anonymous class\n", file, ln, what);
+    exit(1);
+  }
+}
+
 void resolve_parents(Compiler *c) {
   check_class_redeclarations(c);
   check_blk_param_writes(c);
@@ -4745,6 +4863,7 @@ void resolve_parents(Compiler *c) {
     }
   }
   resolve_inherited_aliases(c);
+  refuse_anon_superclass_reflection(c);
 }
 
 /* An alias of a method this class only INHERITS names the ancestor's body: a
@@ -6161,6 +6280,20 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             active->name = strdup(shadow);
             /* Record the new dispatch chain entry: method_name -> shadow. */
             comp_prep_chain_add(&c->classes[ci], method_name, shadow);
+            /* Visibility is registered before prepends, by name: the class's
+               `private`/`protected` for method_name was declared for the body
+               just renamed, so it moves with that body, and method_name now
+               names the module's copy, which takes the module's own. Left by
+               name, a public module method over a private class one was
+               refused as private, and a private one over a public one was
+               called. */
+            {
+              int had = -1;
+              for (int vi = 0; vi < cif->nvis; vi++)
+                if (sp_streq(cif->vis_names[vi], method_name)) { had = cif->vis_kinds[vi]; break; }
+              if (had >= 0) comp_method_vis_set(cif, shadow, had);
+              comp_method_vis_set(cif, method_name, comp_method_vis(&c->classes[mod_id], method_name));
+            }
           }
           /* CLONE the module method into class ci rather than MOVING it. The
              same module can be prepended by more than one class, and moving
@@ -6686,6 +6819,9 @@ int poly_ivar_set_class(Compiler *c, int k) {
   ClassInfo *pk = &c->classes[k];
   if (pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
   if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
+  /* a reopened builtin's instances are the runtime's own structs, which
+     have no room for the program's ivars */
+  if (is_builtin_reopen(pk->name)) return 0;
   return 1;
 }
 /* The user classes a boxed receiver of instance_variable_set can be an
@@ -6773,6 +6909,10 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   for (int k = 0; k < on && i < 0; k++)
     if (sp_streq(nt_str(nt, op[k], "name"), pn)) { i = rn + k; dflt = nt_ref(nt, op[k], "value"); }
   if (i < 0) return 0;
+  /* Optional arguments precede the post-required arguments only when supplied. */
+  int posts = 0;
+  if (ps >= 0) nt_arr(nt, ps, "posts", &posts);
+  if (i >= rn && posts > 0) return 0;
   int si = (int)(s - c->scopes);
   for (int w = comp_lvw_first_sc(c, si, pn); w >= 0; w = comp_lvw_next_sc(c, w))
     if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
@@ -6823,8 +6963,8 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
     const char *un = nt_str(nt, u, "name");
     int known = 0;
     for (int j = 0; IT[j] && un && !known; j++) known = sp_streq(un, IT[j]);
-    if (!known || at != 0 || elems || rn != 1 && !sp_streq(un, "each_with_index") &&
-        !sp_streq(un, "each_with_object")) return 0;
+    if (!known || at != 0 || elems ||
+        (rn != 1 && !sp_streq(un, "each_with_index") && !sp_streq(un, "each_with_object"))) return 0;
     /* reassigned, it is not only the element */
     for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w))
       if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
@@ -6854,9 +6994,11 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
           for (int k = 0; k < ac; k++) if (!pivs_elems(c, av[k], set, depth + 1)) return 0;
         }
         else if (sp_streq(un, "[]=")) {
-          if (ac < 2 || !pivs_value(c, av[ac - 1], set, depth + 1)) return 0;
+          if (ac != 2 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
+          if (!pivs_value(c, av[1], set, depth + 1)) return 0;
         }
-        else if (array_mutator_name(un) || nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode)
+        else if (array_mutator_name(un) ||
+                 (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
           return 0;
       }
       /* handed as an argument it may be kept and grown, except to the
@@ -6964,7 +7106,8 @@ static int pivs_value(Compiler *c, int v, char *set, int depth) {
       if ((sp_streq(un, "[]") && ac == 1) || ((sp_streq(un, "first") || sp_streq(un, "last") ||
            sp_streq(un, "sample") || sp_streq(un, "shift") || sp_streq(un, "pop") || sp_streq(un, "min") ||
            sp_streq(un, "max")) && ac == 0) || ((sp_streq(un, "fetch") || sp_streq(un, "at")) && ac == 1))
-        return pivs_elems(c, r, set, depth + 1);
+        return (sp_streq(un, "fetch") && nt_ref(nt, v, "block") >= 0)
+                 ? 0 : pivs_elems(c, r, set, depth + 1);
       if ((sp_streq(un, "itself") || sp_streq(un, "dup") || sp_streq(un, "clone")) && ac == 0)
         return pivs_value(c, r, set, depth + 1);
       return 0;

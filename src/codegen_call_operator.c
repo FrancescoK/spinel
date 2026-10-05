@@ -192,12 +192,20 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* Blockless any?/all?/none?/one? on a BOXED receiver: walk the elements and
      count the truthy ones, the way the typed-array arms do. A widened array
      (an element read, a destructured multi-value return) had no arm at all and
-     raised NoMethodError naming Array, the class that defines them (#3967). */
-  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && rt == TY_POLY &&
+     raised NoMethodError naming Array, the class that defines them (#3967).
+     A pattern argument counts the elements it matches with === instead, as
+     the typed arms do; it is evaluated after the receiver, before the walk. */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && rt == TY_POLY &&
+      (argc == 0 || (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+                     nt_kind(nt, argv[0]) != NK_KeywordHashNode)) &&
       is_quantifier(name) &&
       !user_defines_or_reads(c, name)) {
-    int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+    int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+    if (argc == 1) {
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tp); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tp);
+    }
     buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
     emit_poly_iter_obj_reject(c, ta, name, b);
     /* the same receiver check the each emitter makes: nil is no collection,
@@ -206,8 +214,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
     buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
                   " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                  " if (sp_poly_truthy(sp_poly_each_elem(_t%d, _t%d))) _t%d++; ",
-               tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tcnt);
+                  " if (", tn, ta, tcnt, ti, ti, tn, ti);
+    if (argc == 1) buf_printf(b, "sp_poly_case_eq(_t%d, sp_poly_each_elem(_t%d, _t%d))", tp, ta, ti);
+    else buf_printf(b, "sp_poly_truthy(sp_poly_each_elem(_t%d, _t%d))", ta, ti);
+    buf_printf(b, ") _t%d++; ", tcnt);
     if (sp_streq(name, "any?"))       buf_printf(b, "_t%d > 0; })", tcnt);
     else if (sp_streq(name, "all?"))  buf_printf(b, "_t%d == _t%d; })", tcnt, tn);
     else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tcnt);
@@ -793,14 +803,24 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   }
 
   /* poly.is_a?(class_var) where the argument is a TY_CLASS typed expression.
-     Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+     Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins.
+     A typed builtin receiver (`5.is_a?(k)`, `nil.is_a?(k)`) is boxed and asked
+     the same way: it had no arm, and raised NoMethodError or answered false. */
+  int builtin_rt = rt != TY_POLY && !ty_is_object(rt) && rt != TY_CLASS && rt != TY_UNKNOWN &&
+                   rt != TY_VOID && rt != TY_EXCEPTION && rt != TY_IO;
+  if (recv >= 0 && (rt == TY_POLY || builtin_rt) && argc == 1 &&
       is_kind_query(name) &&
-      comp_ntype(c, argv[0]) == TY_CLASS &&
+      (comp_ntype(c, argv[0]) == TY_CLASS || comp_ntype(c, argv[0]) == TY_POLY) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
-    buf_printf(b, "sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    if (rt == TY_POLY) emit_expr(c, recv, b); else emit_boxed(c, recv, b);
+    buf_printf(b, "; ");
+    /* a class read out of a boxed slot is checked: CRuby's TypeError */
+    buf_printf(b, "sp_Class _t%d = ", k);
+    if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else emit_expr(c, argv[0], b);
+    buf_printf(b, "; ");
     if (sp_streq(name, "instance_of?"))
       buf_printf(b, "sp_poly_get_class(_t%d).cls_id == _t%d.cls_id; })", t, k);
     else
@@ -911,32 +931,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   }
   /* `Comparable === x` / `Enumerable === x`: the module names no class object
      spinel carries, so the call fell through to the poly dispatch and raised
-     NoMethodError. It is the is_a? question with the operands swapped (#3871). */
+     NoMethodError. It is the is_a? question with the operands swapped, which
+     the boxed value answers at run time (#3871). */
   if (recv >= 0 && argc == 1 && sp_streq(name, "===") &&
       nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name")) {
     const char *mcn = nt_str(nt, recv, "name");
     if ((sp_streq(mcn, "Comparable") || sp_streq(mcn, "Enumerable")) &&
         comp_class_index(c, mcn) < 0) {
-      TyKind at = comp_ntype(c, argv[0]);
-      int yes;
-      if (ty_is_object(at))
-        yes = class_includes_module_named(c, ty_object_class(at), mcn);
-      else if (sp_streq(mcn, "Comparable"))
-        yes = at == TY_INT || at == TY_FLOAT || at == TY_BIGINT || at == TY_STRING ||
-              at == TY_SYMBOL || at == TY_TIME || at == TY_RATIONAL;
-      else
-        yes = ty_is_array(at) || ty_is_hash(at) || at == TY_RANGE ||
-              at == TY_FLOAT_RANGE || at == TY_STR_RANGE || at == TY_ENUMERATOR ||
-              at == TY_DIR;
-      /* nil is neither, and a nullable Integer or Float is nil where it
-         holds its sentinel */
-      if (yes && (at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, argv[0])) {
-        char ref[24];
-        buf_puts(b, "({ "); emit_sentinel_bind(c, at, argv[0], ref, sizeof ref, b);
-        emit_slot_truthy(at, ref, b); buf_puts(b, "; })");
-        return 1;
-      }
-      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
+      buf_puts(b, "sp_poly_kind_of_builtin(");
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, ", \"%s\")", mcn);
       return 1;
     }
   }
@@ -957,13 +961,6 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                         ? nt_str(nt, argv[0], "name") : NULL;
     if (acn && is_object_root(acn)) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
-      return 1;
-    }
-    /* a builtin mixin: fold from the class's own `include` declarations (#2363) */
-    if (acn && (sp_streq(acn, "Comparable") || sp_streq(acn, "Enumerable") ||
-                sp_streq(acn, "Math")) && comp_class_index(c, acn) < 0) {
-      int yes = class_includes_module_named(c, ty_object_class(rt), acn);
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return 1;
     }
   }
@@ -1104,6 +1101,40 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
                               sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) ||
        (comp_ntype(c, recv) == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode))) {
+    /* the value is evaluated once, into a temp the store reads and the
+       expression answers: evaluated again after the store, a call with
+       effects ran twice, and a value the store read through a boxed
+       dispatch came back boxed where the call answers a String */
+    int va = argv[argc - 1];
+    TyKind vt = comp_ntype(c, va), want = comp_ntype(c, id);
+    if (vt == TY_STRING || vt == TY_POLY) {
+      int tv = ++g_tmp;
+      char tn[24]; snprintf(tn, sizeof tn, "_t%d", tv);
+      /* in the prelude, where the store hoists its own reads of it */
+      size_t pre0 = g_pre->len;
+      Buf vb; memset(&vb, 0, sizeof vb);
+      emit_expr(c, va, &vb);
+      emit_indent(g_pre, g_indent);
+      if (vt == TY_POLY) buf_printf(g_pre, "sp_RbVal %s = %s; SP_GC_ROOT_RBVAL(%s);\n", tn, vb.p ? vb.p : "sp_box_nil()", tn);
+      else buf_printf(g_pre, "const char *%s = %s; SP_GC_ROOT(%s);\n", tn, vb.p ? vb.p : "NULL", tn);
+      int slot = view_bind(va, "%s", tn);
+      Buf mb; memset(&mb, 0, sizeof mb);
+      int ok = emit_array_mutate_stmt(c, id, &mb, 0);
+      view_unbind(slot);
+      if (ok) {
+        buf_puts(b, "({ ");
+        buf_puts(b, mb.p ? mb.p : "");
+        if (want == vt || want == TY_UNKNOWN || want == TY_VOID) buf_puts(b, tn);
+        else if (vt == TY_POLY) emit_unbox_text(c, want, tn, b);
+        else emit_boxed_text(c, vt, tn, b);
+        buf_puts(b, "; })");
+        free(vb.p); free(mb.p);
+        return 1;
+      }
+      /* no store to run: the value is the plain path's to evaluate */
+      g_pre->len = pre0; if (g_pre->p) g_pre->p[pre0] = 0;
+      free(vb.p); free(mb.p);
+    }
     Buf mb; memset(&mb, 0, sizeof mb);
     if (emit_array_mutate_stmt(c, id, &mb, 0)) {
       buf_puts(b, "({ ");

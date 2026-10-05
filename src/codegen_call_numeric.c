@@ -555,3 +555,68 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   }
   return 0;
 }
+
+int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int arg = argv[0];
+  const char *r = x->rtext;
+  /* The epsilon must reach sp_float_rationalize as a float. emit_float_expr
+     casts a Rational arg with (sp_float)(<struct>), which the C compiler
+     rejects; convert it through sp_rational_to_f instead (#3224). */
+  TyKind et = comp_ntype(c, arg);
+  /* an epsilon that is no number: CRuby asks it for its #abs, which
+     it does not answer -- NoMethodError, not a conversion's TypeError */
+  if (et != TY_RATIONAL && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&
+      et != TY_UNKNOWN) {
+    buf_printf(b, "({ (void)(%s); sp_raise_nomethod(sp_nomethod_msg(\"abs\", ", r);
+    emit_boxed(c, arg, b);
+    buf_puts(b, ")); sp_float_rationalize0(0.0); })");
+  }
+  else {
+    buf_printf(b, "sp_float_rationalize(%s, ", r);
+    if (et == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+    else emit_float_expr(c, arg, b);
+    buf_puts(b, ")");
+  }
+  return 1;
+}
+
+/* The keyword is structural, so the Range row delegates its emission here. */
+int emit_op_range_clone(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, x->id, "arguments"), argc = 0;
+  const int *argv = nt_arr(nt, args, "arguments", &argc);
+  if (!argv || argc != 1) return 0;
+  if (nt_kind(nt, argv[0]) != NK_KeywordHashNode) return 0;
+  int fv = kwh_lookup(nt, argv[0], "freeze");
+  int fk = fv >= 0 ? nt_kind(nt, fv) : NK_NilNode;
+  if (fk != NK_TrueNode && fk != NK_FalseNode && fk != NK_NilNode) return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(x->rt), t);
+  emit_expr(c, x->recv, b);
+  buf_puts(b, "; ");
+  if (fk != NK_NilNode) buf_printf(b, "_t%d.unfrozen = %d; ", t, fk == NK_FalseNode);
+  buf_printf(b, "_t%d; })", t);
+  return 1;
+}
+
+int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b) {
+  int t = ++g_tmp;
+  int rk = nt_kind(c->nt, x->recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    buf_printf(b, "({ %s *_t%d = ", c_type_name(x->rt), t);
+    emit_constant_slot(c, x->recv, b);
+    buf_printf(b, "; _t%d->unfrozen = 0; *_t%d; })", t, t);
+    return 1;
+  }
+  buf_printf(b, "({ %s _t%d = ", c_type_name(x->rt), t);
+  emit_expr(c, x->recv, b);
+  buf_printf(b, "; _t%d.unfrozen = 0; ", t);
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
+      rk == NK_ClassVariableReadNode || rk == NK_GlobalVariableReadNode) {
+    emit_expr(c, x->recv, b); buf_printf(b, " = _t%d; ", t);
+  }
+  buf_printf(b, "_t%d; })", t);
+  return 1;
+}

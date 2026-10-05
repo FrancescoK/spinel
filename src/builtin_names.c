@@ -1,11 +1,22 @@
 /* builtin_names.c -- the families of builtin method names (builtin_names.h).
    Each family is spelled once here; the order is the order its compares run
    in, the one most of the replaced chains used. */
+#include <stddef.h>
 #include "types.h"
+#include <stddef.h>
 #include "builtin_names.h"
+#include <stddef.h>
+
+int is_zip_name(const char *n) {
+  return sp_streq(n, "zip");
+}
 
 int is_call_alias(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]");
+}
+
+int is_method_invoke(const char *n) {
+  return is_call_alias(n) || sp_streq(n, "===");
 }
 
 int is_kind_query(const char *n) {
@@ -621,4 +632,91 @@ int is_array_hash_or_object_class(const char *n) {
 
 int is_ivar_access(const char *n) {
   return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set");
+}
+
+int is_string_append_or_prepend(const char *n) {
+  return is_append_concat(n) || sp_streq(n, "prepend");
+}
+
+int is_string_append(const char *n) {
+  return sp_streq(n, "<<") || sp_streq(n, "concat");
+}
+
+int is_string_rebind_mutator(const char *n) {
+  static const char *const MUT[] = {
+    "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
+    "sub!", "gsub!", "tr!", "tr_s!", "delete!", "squeeze!", "delete_prefix!", "delete_suffix!",
+    "append_as_bytes", "force_encoding", "encode!", "unicode_normalize!", NULL };
+  for (int i = 0; MUT[i]; i++)
+    if (sp_streq(n, MUT[i])) return 1;
+  return 0;
+}
+
+static int builtin_name_in(const char *name, const char *const *names) {
+  for (int i = 0; names[i]; i++)
+    if (sp_streq(name, names[i])) return 1;
+  return 0;
+}
+
+/* The modules a builtin class includes ahead of Object, with their own
+   public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
+   Comparable, String and Symbol Comparable, Array, Hash and Range
+   Enumerable. The builtin table holds each class's own methods only. */
+int builtin_module_owns(const char *cls, const char *m) {
+  static const char *const cmp[] = { "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
+  static const char *const num[] = {
+    "%", "+@", "-@", "<=>", "abs", "abs2", "angle", "arg", "ceil", "clone", "coerce", "conj",
+    "conjugate", "denominator", "div", "divmod", "dup", "eql?", "fdiv", "finite?", "floor", "i",
+    "imag", "imaginary", "infinite?", "integer?", "magnitude", "modulo", "negative?", "nonzero?",
+    "numerator", "phase", "polar", "positive?", "quo", "real", "real?", "rect", "rectangular",
+    "remainder", "round", "step", "to_c", "to_int", "truncate", "zero?", NULL };
+  static const char *const enm[] = {
+    "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact",
+    "count", "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice",
+    "each_with_index", "each_with_object", "entries", "filter", "filter_map", "find", "find_all",
+    "find_index", "first", "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy",
+    "map", "max", "max_by", "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?",
+    "partition", "reduce", "reject", "reverse_each", "select", "slice_after", "slice_before",
+    "slice_when", "sort", "sort_by", "sum", "take", "take_while", "tally", "to_a", "to_h", "to_set",
+    "uniq", "zip", NULL };
+  int numeric = is_numeric_class_name(cls);
+  if ((numeric || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) && builtin_name_in(m, cmp)) return 1;
+  if (numeric && builtin_name_in(m, num)) return 1;
+  if ((sp_streq(cls, "Array") || sp_streq(cls, "Hash") || sp_streq(cls, "Range")) && builtin_name_in(m, enm)) return 1;
+  return 0;
+}
+
+int is_gated_exception_accessor(const char *n) {
+  static const char *const names[] = {
+    "key", "receiver", "args", "private_call?", "reason", "exit_value", "tag",
+    "value", "status", "success?", "signo", "signm", "name", "errno", "result", NULL };
+  if (!n) return 0;
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}
+
+int is_symbol_exception_accessor(const char *n) {
+  return sp_streq(n, "reason") || sp_streq(n, "tag") || sp_streq(n, "key") || sp_streq(n, "name");
+}
+
+/* Classes whose reopenings keep the runtime value instead of a user struct. */
+int is_builtin_reopen_name(const char *name) {
+  return sp_streq(name, "Toplevel") ||
+         sp_streq(name, "String")    || sp_streq(name, "Integer") ||
+         sp_streq(name, "Float")     || sp_streq(name, "Symbol")  ||
+         sp_streq(name, "TrueClass") || sp_streq(name, "FalseClass") ||
+         sp_streq(name, "NilClass")  || sp_streq(name, "Array")   ||
+         sp_streq(name, "Object")    || sp_streq(name, "Numeric") ||
+         sp_streq(name, "Dir")       ||
+         /* runtime value types with a typedef of their own (sp_Range, sp_Time,
+            sp_File, sp_Class): a user struct under that name was a C-level
+            typedef collision before any call was reached (activesupport's
+            blank.rb reopens Range and Time) */
+         sp_streq(name, "Range")     || sp_streq(name, "Time") ||
+         sp_streq(name, "File")      || sp_streq(name, "Class") ||
+         sp_streq(name, "Hash")      ||
+         /* a thread and a fiber are runtime handles too (activesupport's
+            IsolatedExecutionState gives both an accessor) */
+         sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
+         sp_streq(name, "Random");
 }

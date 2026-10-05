@@ -1,0 +1,13 @@
+2
+#<MatchData "ll">
+nil
+true
+false
+2
+"ll"
+nil
+true
+undefined method '=~' for an instance of Integer
+undefined method '=~' for an instance of Integer
+undefined method '=~' for true
+"e"

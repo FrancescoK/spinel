@@ -1,0 +1,4 @@
+"\"Hi \\\"x\\\"\\n\\t\\\\\""
+16
+"Hi \"x\"\n\t\\"
+undefined method 'dump' for an instance of Integer

@@ -1,0 +1,60 @@
+Random
+Integer
+true
+Float
+true
+Float
+true
+Integer
+true
+true
+Float
+true
+1
+String
+12
+#<Encoding:BINARY (ASCII-8BIT)>
+""
+2
+7
+0
+true
+false
+false
+false
+true
+false
+false
+false
+Integer
+Float
+Integer
+Float
+ArgumentError
+invalid argument - 0
+ArgumentError
+invalid argument - -1
+ArgumentError
+invalid argument - -1.5
+ArgumentError
+invalid argument - 
+ArgumentError
+invalid argument - 5...5
+ArgumentError
+invalid argument - 7..3
+TypeError
+no implicit conversion of String into Integer
+ArgumentError
+negative string size (or size too big)
+TypeError
+no implicit conversion of String into Integer
+TypeError
+no implicit conversion of nil into Integer
+ArgumentError
+ArgumentError
+23
+0
+1
+23
+0
+1

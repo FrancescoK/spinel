@@ -110,6 +110,22 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                  tio3, tfs, tpa);
       return 1;
     }
+    /* rewind on a boxed value: an Enumerator rewinds and answers itself,
+       a stream answers its 0. It took the stream arm alone, and an
+       Enumerator read back out of a container raised NoMethodError. */
+    if (!iocand && sp_streq(name, "rewind") && argc == 0) {
+      int tv = ++g_tmp;
+      int boxed = comp_ntype(c, id) == TY_POLY;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ",
+                 tv, tv, tv);
+      if (boxed) buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), _t%d)", tv, tv);
+      else buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), (sp_int)0)", tv);
+      buf_printf(b, " : %ssp_File_rewind(sp_poly_as_io(_t%d, \"rewind\"))%s; })",
+                 boxed ? "sp_box_int(" : "", tv, boxed ? ")" : "");
+      return 1;
+    }
     if (!iocand) {
       /* write with an argument list (boxed_write_takes_list): the receiver
          and then the arguments are evaluated (a splat contributes its
@@ -429,7 +445,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         emit_int_expr(c, argv[0], b);
         buf_puts(b, ")");
         if (argc >= 2) {
-          if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp);
+          { char hr[1024];
+          /* a buffer that is also appended to is a mutable String handle:
+             replace its contents, where assigning the bytes to the handle
+             did not compile (#7314) */
+          if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_replace(%s, _t%d)", hr, tsp);
+          else if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp); }
           buf_printf(b, "; _t%d", tsp);
         }
         buf_puts(b, "; })");
@@ -738,13 +759,32 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       int exc8 = kwh8 >= 0 ? kwh_lookup(nt, kwh8, "exception") : -1;
       int no_exc8 = exc8 >= 0 && nt_type(nt, exc8) && sp_streq(nt_type(nt, exc8), "FalseNode");
       if (sp_streq(name, "read_nonblock")) {
+        /* (len, outbuf): the buffer takes the bytes read, as readpartial's
+           does; the argument was read past and the buffer left as it was */
+        int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
+        char obset[1200]; obset[0] = 0;
+        int tob = ++g_tmp;
+        if (ob >= 0) {
+          char hr[1024];
+          if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_replace(%s, _t%d); ", hr, tob);
+          else snprintf(obset, sizeof obset, "lv_%s = _t%d; ", rename_local(nt_str(nt, ob, "name")), tob);
+        }
         if (no_exc8) {
-          int tw = ++g_tmp, te = ++g_tmp;
-          buf_printf(b, "({ sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tw, r);
+          int te = ++g_tmp;
+          buf_puts(b, "({ ");
+          if (ob >= 0) { buf_puts(b, "sp_str_check_mutable("); emit_expr(c, ob, b); buf_puts(b, "); "); }
+          buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 0, 0, &_e%d); _t%d ? sp_box_str(_t%d)"
+          buf_printf(b, ", 0, 0, &_e%d); ", te);
+          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset);
+          buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                         " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
-                     te, tw, tw, te);
+                     tob, tob, te);
+        }
+        else if (ob >= 0) {
+          buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
+          buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
+          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
         }
         else {
           buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
@@ -786,7 +826,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
       buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       if (argc >= 2) {
-        if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr);
+        { char hr[1024];
+          /* a buffer that is also appended to is a mutable String handle:
+             replace its contents, where assigning the bytes to the handle
+             did not compile (#7314) */
+          if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_replace(%s, _t%d)", hr, tsr);
+          else if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr); }
         buf_printf(b, "; _t%d; })", tsr);
       }
       free(rb.p); return 1;
@@ -874,6 +919,30 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          sp_File_syswrite (which writes straight to the descriptor) rather
          than through the stdio-backed write entries. */
       int is_sw = sp_streq(name, "syswrite");
+      /* write(*parts): a splat contributes its elements, each converted and
+         written in turn, as the boxed receiver's arm does. The arms below
+         read a splat as one operand and wrote the Array's inspect (#7313). */
+      { int has_splat = 0, listable = !is_sw;
+        const char *wop = nt_str(nt, id, "call_operator");
+        if (wop && sp_streq(wop, "&.")) listable = 0;
+        for (int k = 0; k < argc && listable; k++) {
+          if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) listable = 0;
+          else if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+            int so = nt_ref(nt, argv[k], "expression");
+            if (splat_operand_ok(c, so >= 0 ? so : argv[k])) has_splat = 1; else listable = 0;
+          }
+        }
+        if (listable && has_splat) {
+          int tio4 = ++g_tmp, tpa4 = ++g_tmp, tn4 = ++g_tmp;
+          buf_printf(b, "({ sp_File *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+                     tio4, r, tpa4, tpa4);
+          emit_push_arg_list(c, argv, argc, tpa4, b);
+          buf_printf(b, "SP_IO_OPEN(_t%d); sp_int _t%d = 0; "
+                        "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
+                     tio4, tn4, tpa4, tn4, tio4, tpa4, tn4);
+          free(rb.p); return 1;
+        }
+      }
       if (argc == 1) {
         /* An operand whose class is only known at run time picks the entry by
            its TAG, not by its static type: chosen statically it took the plain
@@ -1019,6 +1088,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           aarr[k] = 1;
           emit_boxed(c, argv[k], &abs[k]);
         }
+        /* print(*parts): each element is written in turn; the splat's array
+           was written as one operand, its inspect (#7313) */
+        else if (!sp_streq(name, "puts") && nt_kind(nt, argv[k]) == NK_SplatNode) {
+          aarr[k] = 2;
+          emit_boxed(c, argv[k], &abs[k]);
+        }
         else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
         /* a boxed operand is written by its runtime tag: a String keeps its
            byte count, as the write arm does */
@@ -1054,7 +1129,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
             }
           }
           else buf_printf(g_pre, "%s(%s, %s); ",
-                          aarr[k] ? "sp_File_write_poly" : abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
+                          aarr[k] == 2 ? "sp_File_splat_print" : aarr[k] ? "sp_File_write_poly" : abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
           free(abs[k].p);
         }
         if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);

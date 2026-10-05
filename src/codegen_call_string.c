@@ -4,6 +4,7 @@
    (codegen_call_arms.h). */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
@@ -174,9 +175,10 @@ no_gsub_enum:
       return 1;
     }
     /* poly receiver `poly =~ /re/`: String#=~ when it holds a string at runtime
-       (e.g. an element read out of an array that widened to poly), nil when it
-       holds nil (NilClass#=~ is always nil); any other tag has no =~ (Object#=~
-       was removed) -> NoMethodError, matching CRuby. */
+       (e.g. an element read out of an array that widened to poly), Symbol#=~
+       (its name) when it holds a Symbol, nil when it holds nil (NilClass#=~ is
+       always nil); any other tag has no =~ (Object#=~ was removed) ->
+       NoMethodError naming its class, matching CRuby. */
     if (are >= 0 && sp_streq(name, "=~") && rpoly) {
       /* Self-contained statement-expression: this can appear in a pure
          expression position (an `if`/ternary condition) where a g_pre prelude
@@ -186,9 +188,10 @@ no_gsub_enum:
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
       buf_printf(b, "); (_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_SYM ? sp_re_match_poly(sp_re_pat_%d, sp_sym_to_s((sp_sym)_t%d.v.i))"
                     " : _t%d.tag == SP_TAG_NIL ? sp_box_nil()"
-                    " : sp_raise_nomethod(\"undefined method '=~' for poly\")); })",
-                 tv, are, tv, tv);
+                    " : (sp_raise_nomethod(sp_nomethod_msg(\"=~\", _t%d)), sp_box_nil())); })",
+                 tv, are, tv, tv, are, tv, tv, tv);
       return 1;
     }
     /* poly receiver `poly !~ /re/`: nil !~ is always true, a string tests the
@@ -198,9 +201,10 @@ no_gsub_enum:
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
       buf_printf(b, "); (_t%d.tag == SP_TAG_STR ? sp_re_match(sp_re_pat_%d, _t%d.v.s) < 0"
+                    " : _t%d.tag == SP_TAG_SYM ? sp_re_match(sp_re_pat_%d, sp_sym_to_s((sp_sym)_t%d.v.i)) < 0"
                     " : _t%d.tag == SP_TAG_NIL ? 1"
-                    " : (sp_raise_nomethod(\"undefined method '=~' for poly\"), 0)); })",
-                 tv, are, tv, tv);
+                    " : (sp_raise_nomethod(sp_nomethod_msg(\"=~\", _t%d)), 0)); })",
+                 tv, are, tv, tv, are, tv, tv, tv);
       return 1;
     }
     if (are >= 0 && sp_streq(name, "!~")) {
@@ -211,6 +215,9 @@ no_gsub_enum:
        string, over its name when it holds a Symbol. NilClass has no match?, so
        nil raises here rather than answering false the way `nil !~` answers
        true. */
+    /* ...unless a program class answers match? itself: the boxed dispatch
+       has its arm, and the String one beside it */
+    if (are >= 0 && sp_streq(name, "match?") && rpoly && poly_name_user_claimed(c, name, argc)) return 0;
     if (are >= 0 && sp_streq(name, "match?") && rpoly) {
       int tv = ++g_tmp;
       /* a shared-string handle is a String (#4279) */
@@ -674,7 +681,7 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
     int tv = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_int _t%d = ", tv); emit_int_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+    { Buf ib_; memset(&ib_, 0, sizeof ib_); emit_int_expr(c, argv[0], &ib_); buf_printf(g_pre, "sp_int _t%d = %s;\n", tv, ib_.p ? ib_.p : "0"); free(ib_.p); }
     buf_printf(b, "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL))",
                tv, tv, tv, tv);
     return 1;
@@ -883,6 +890,12 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte") ||
        sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) {
     int block = nt_ref(nt, id, "block");
+    /* The loop below runs a literal block's body. A block argument that
+       reached here (`s.bytes(&pr)`, `s.chars(&b)` for a method's own &b)
+       has none: the loop ran nothing and answered the receiver, where CRuby
+       calls the proc for each element, or answers the Array when it is nil. */
+    if (nt_kind(nt, block) == NK_BlockArgumentNode)
+      unsupported(c, id, "a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line");
     int body = nt_ref(nt, block, "body");
     const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
     int ts = ++g_tmp, ti = ++g_tmp;
@@ -991,6 +1004,345 @@ int emit_call_symbol_misc_arms(Compiler *c, Buf *b, const char *name, int recv, 
       comp_ntype(c, argv[0]) == TY_SYMBOL) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
     emit_expr(c, argv[0], b); buf_puts(b, "))");
+    return 1;
+  }
+  return 0;
+}
+
+/* Invalid and boxed patterns share the runtime check; analysis has already
+   settled whether each match is a String or a captures array. */
+int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  TyKind t = comp_ntype(c, argv[0]);
+  if (t == TY_STRING || t == TY_STRBUF || t == TY_REGEX || t == TY_UNKNOWN) return 0;
+  buf_printf(b, "%s(%s, ", repr_of(c, x->id).as_ty == TY_POLY_ARRAY ? "sp_scan_boxed_poly" : "sp_scan_boxed", x->rtext);
+  emit_boxed(c, argv[0], b);
+  buf_puts(b, ")");
+  return 1;
+}
+
+/* An append chain over an existing handle must hand that handle to the
+   next link. Mark its receiver links before operand ordering can bind a
+   String read into a const char * temp, and restore their emission types
+   afterwards. No slot becomes shared here. */
+int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !is_append_concat(name)) return 0;
+  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  if (recv < 0 || argc < 1 || nt_ref(nt, id, "block") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  int first = unwrap_parens(c, recv);
+  Repr rp = repr_of(c, first);
+  if (rp.handle && rp.kind == RK_STRBUF) return 0;
+  int links[64], nlinks = 0, cur = recv, calls = 0;
+  while (cur >= 0 && nlinks < 64) {
+    if (nt_kind(nt, cur) == NK_ParenthesesNode) {
+      int body = nt_ref(nt, cur, "body"), n = 0;
+      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+      if (n != 1) break;
+      links[nlinks++] = cur; cur = bb[0]; continue;
+    }
+    if (nt_kind(nt, cur) != NK_CallNode) break;
+    const char *nm = nt_str(nt, cur, "name");
+    int ca = nt_ref(nt, cur, "arguments"), ac = 0;
+    if (ca >= 0) nt_arr(nt, ca, "arguments", &ac);
+    if (!nm || !is_append_concat(nm) ||
+        ac < 1 || nt_ref(nt, cur, "block") >= 0) break;
+    links[nlinks++] = cur; calls++;
+    cur = nt_ref(nt, cur, "receiver");
+  }
+  char ref[1024];
+  if (!calls || cur < 0 ||
+      (nt_kind(nt, cur) != NK_LocalVariableReadNode &&
+       nt_kind(nt, cur) != NK_InstanceVariableReadNode) ||
+      !strbuf_slot_ref(c, cur, ref, sizeof ref)) return 0;
+  int sv[64], st[64];
+  for (int i = 0; i < nlinks; i++) {
+    sv[i] = view_push_repr(c, links[i], VR_STRBUF_BOX, 1);
+    st[i] = view_push(c, links[i], TY_STRBUF);
+  }
+  emit_call(c, id, b);
+  for (int i = nlinks - 1; i >= 0; i--) {
+    view_pop(c, st[i]);
+    view_pop(c, sv[i]);
+  }
+  return 1;
+}
+
+int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv) {
+  const NodeTable *nt = c->nt;
+  if (is_string_append_or_prepend(name) && argc >= 1) {
+    /* a STRBUF-promoted local (repeated `<<`) appends in place: the read
+       form sp_String_cstr(lv) is not an lvalue, so the generic write-back
+       below would emit an invalid assignment (#2020). prepend replaces the
+       buffer with args-then-contents, keeping the handle stable (#3227). */
+    { char sref0[1024];
+      int sr = unwrap_parens(c, recv);
+      const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
+      Repr rp = repr_of(c, sr);
+      int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;
+      if (chain_handle || strbuf_slot_ref(c, sr, sref0, sizeof sref0)) {
+        int tb2 = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = ", tb2);
+        if (chain_handle) emit_expr(c, sr, b);
+        else buf_puts(b, sref0);
+        buf_puts(b, ";");
+        if (!is_append_concat(name)) {
+          int tp3 = ++g_tmp;
+          buf_printf(b, " const char *_t%d = ", tp3);
+          for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+          emit_str_expr(c, argv[0], b);
+          for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+          buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
+        }
+        else {
+          for (int j = 0; j < argc; j++) {
+            buf_printf(b, " sp_String_append(_t%d, ", tb2);
+            { char rt[48]; snprintf(rt, sizeof rt, "sp_String_cstr(_t%d)", tb2);
+              emit_str_append_arg(c, argv[j], rt, b); }
+            buf_puts(b, ");");
+          }
+        }
+        /* an append marked to hand out the handle (`r = obj.buf << x`)
+           answers the receiver itself; otherwise its String read */
+        if (repr_of(c, id).handle) buf_printf(b, " _t%d; })", tb2);
+        else buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int recv = x->recv;
+  const char *name = x->name;
+  const NodeTable *nt = c->nt;
+  /* upcase / downcase / capitalize / swapcase given options, on a boxed
+     String or Symbol: the arms below map it as they do with none, and the
+     options are checked as on a typed receiver (emit_case_opts_guard) -- a
+     literal :ascii alone picks the ASCII mapping and needs no check. With no
+     arm the call raised NoMethodError naming String. */
+  if (!user_defines_or_reads(c, name)) {
+    int plain_args = 1;
+    for (int i = 0; i < argc; i++) {
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain_args = 0;
+    }
+    if (plain_args) {
+      const char *sfx = argc == 1 ? case_map_suffix(c, argc, argv) : "";
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      if (!*sfx) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d)) "
+                      "sp_case_opts_check(%d, (sp_RbVal[]){", tv, tv, tv, argc);
+        for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_boxed(c, argv[i], b); }
+        buf_printf(b, "}, %s, _t%d); ", x->op->arg, tv);
+      }
+      buf_printf(b, "sp_poly_case_conv(_t%d, sp_str_%s%s, \"%s\"); })", tv, name, sfx, name);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* Boxed slice! arguments select the same overloads as typed arguments.
+   Keep the argument rooted and evaluate it once before re-entering the arms. */
+static int emit_string_slice_poly(Compiler *c, int id, int arg, Buf *b) {
+  if (repr_of(c, arg).kind != RK_BOXED || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  int ta = ++g_tmp, tr = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d);"
+                " const char *_t%d; if (_t%d.tag == SP_TAG_STR) { _t%d = ",
+             ta, ta, ta, tr, ta, tr);
+  int bind = view_bind(arg, "_t%d.v.s", ta);
+  int v = view_push(c, arg, TY_STRING);
+  emit_array_call(c, id, b);
+  view_pop(c, v);
+  view_unbind(bind);
+  buf_printf(b, "; }\nelse if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) { _t%d = ", ta, ta, tr);
+  bind = view_bind(arg, "(*(sp_Range *)_t%d.v.p)", ta);
+  v = view_push(c, arg, TY_RANGE);
+  emit_array_call(c, id, b);
+  view_pop(c, v);
+  view_unbind(bind);
+  buf_printf(b, "; }\nelse { _t%d = ", tr);
+  bind = view_bind(arg, "sp_poly_arg_int_chk(_t%d)", ta);
+  v = view_push(c, arg, TY_INT);
+  emit_array_call(c, id, b);
+  view_pop(c, v);
+  view_unbind(bind);
+  buf_printf(b, "; } _t%d; })", tr);
+  return 1;
+}
+
+int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
+  int id = x->id, recv = x->recv, argc;
+  const int *argv = call_args(c->nt, id, &argc);
+  if (argc == 1 && emit_string_slice_poly(c, id, argv[0], b)) return 1;
+  int sb_asgn = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
+  if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+    int tp2 = ++g_tmp;
+    buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
+    buf_printf(b, " const char *_t%d = ", tp2); emit_expr(c, argv[0], b);
+    buf_printf(b, "; const char *_hit%d = (_t%d && ", tp2, tp2);
+    emit_expr(c, recv, b);
+    buf_puts(b, ") ? strstr("); emit_expr(c, recv, b);
+    buf_printf(b, ", _t%d) : NULL;", tp2);
+    if (sb_asgn) {
+      buf_printf(b, " if (_hit%d) ", tp2);
+      emit_expr(c, recv, b);
+      /* sub would set `$~`, which slice! leaves alone; a program that
+         never reads it has sub record nothing */
+      if (g_reads_match_regs) {
+        buf_printf(b, " = sp_str_remove_first("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d);", tp2);
+      }
+      else {
+        buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d, (&(\"\\xff\")[1]));", tp2);
+      }
+    }
+    buf_printf(b, " _hit%d ? _t%d : (const char *)0; })", tp2, tp2);
+    return 1;
+  }
+  if (argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* slice!(/re/): remove the first match, evaluate to it (or nil).
+       sp_re_match fills sp_re_match_str with the matched run; the splice
+       helper replaces it with the empty string. */
+    int tm3 = ++g_tmp, ts3 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", ts3); emit_expr(c, recv, b);
+    buf_printf(b, "; if (_t%d) sp_str_check_mutable(_t%d);", ts3, ts3);
+    buf_printf(b, " sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
+                  " const char *_hit%d = _t%d >= 0 ? sp_re_match_str : NULL;",
+               tm3, re_lit_index(c, argv[0]), ts3, tm3, tm3);
+    if (sb_asgn) {
+      buf_printf(b, " if (_hit%d) ", tm3);
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_splice_re(sp_re_pat_%d, _t%d, (&(\"\\xff\")[1]));",
+                 re_lit_index(c, argv[0]), ts3);
+    }
+    buf_printf(b, " _hit%d; })", tm3);
+    return 1;
+  }
+  if (argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    /* slice!(regexp): the removed first match (or nil), reassigning an
+       lvalue receiver with the remainder; sets the match registers. */
+    int to = ++g_tmp, ts2 = ++g_tmp, tr2 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
+    buf_printf(b, "; const char *_t%d = _t%d;"
+                  " const char *_t%d = sp_str_slice_re(sp_re_pat_%d, _t%d, &_t%d);",
+               ts2, to, tr2, re_lit_index(c, argv[0]), to, ts2);
+    if (sb_asgn) { buf_puts(b, " "); emit_expr(c, recv, b); buf_printf(b, " = _t%d;", ts2); }
+    buf_printf(b, " _t%d; })", tr2);
+    return 1;
+  }
+  if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
+    /* slice!(i) / slice!(range): the removed part (or nil), reassigning an
+       lvalue receiver; a literal receiver just yields the removed part. */
+    int to = ++g_tmp, tb2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
+    /* rooted across the index or range, which may allocate */
+    buf_printf(b, "({ const char *_t%d = ", to); emit_recv_rooted(c, recv, to, "SP_GC_ROOT_STR", b);
+    buf_printf(b, "sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
+    buf_printf(b, " sp_int _t%d = (sp_int)sp_str_length(_t%d); sp_int _t%d, _t%d;",
+               tn2, to, tb2, tl2);
+    if (comp_ntype(c, argv[0]) == TY_RANGE) {
+      int trg = ++g_tmp;
+      buf_printf(b, " sp_Range _t%d = sp_range_ix(", trg); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      /* a beginless Range (first is INTPTR_MIN) starts at the beginning */
+      buf_printf(b, "; _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+                 tb2, trg, trg, trg, tn2, trg);
+      /* an endless Range (last is INTPTR_MAX) runs to the end of the String */
+      buf_printf(b, " _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
+                    " (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                 tl2, trg, tn2, tb2, trg, trg, tn2, trg, tb2, trg);
+      buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
+    }
+    else {
+      buf_printf(b, " _t%d = ", tb2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; _t%d = 1; if (_t%d < 0) _t%d += _t%d;", tl2, tb2, tb2, tn2);
+    }
+    /* a Range may be empty at any position up to the end (`s.slice!(3..)`
+       is ""); one index removes a character, so it must be inside */
+    buf_printf(b, " const char *_t%d = NULL;"
+                  " if (_t%d >= 0 && _t%d %s _t%d && _t%d >= 0) {"
+                  " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
+                  " _t%d = sp_str_sub_range(_t%d, _t%d, _t%d);"
+                  " SP_GC_ROOT_STR(_t%d);",
+               tr2,
+               tb2, tb2, comp_ntype(c, argv[0]) == TY_RANGE ? "<=" : "<", tn2, tl2,
+               tl2, tn2, tb2, tl2, tn2, tb2,
+               tr2, to, tb2, tl2, tr2);
+    if (sb_asgn) {
+      buf_puts(b, " ");
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_concat(sp_str_sub_range(_t%d, 0, _t%d), sp_str_sub_range(_t%d, _t%d + _t%d, _t%d - _t%d - _t%d));",
+                 to, tb2, to, tb2, tl2, tn2, tb2, tl2);
+    }
+    buf_printf(b, " } _t%d; })", tr2);
+    return 1;
+  }
+  if (argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    /* slice!(/re/, n): remove the nth capture group of the first match and
+       evaluate to it. sp_re_caps holds each group's byte span, so the removal
+       is the group's own occurrence rather than the first textual one, which
+       is a different character when the group repeats (#3543). */
+    int ts = ++g_tmp, tn = ++g_tmp, th = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", ts); emit_expr(c, recv, b);
+    buf_printf(b, "; if (_t%d) sp_str_check_mutable(_t%d);", ts, ts);
+    buf_printf(b, " sp_int _t%d = ", tn); emit_int_expr(c, argv[1], b);
+    buf_printf(b, "; const char *_t%d = sp_re_match(sp_re_pat_%d, _t%d) >= 0"
+                  " ? (_t%d == 0 ? sp_re_match_str"
+                  "    : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL;",
+               th, re_lit_index(c, argv[0]), ts, tn, tn, tn, tn);
+    if (sb_asgn) {
+      buf_printf(b, " if (_t%d && _t%d >= 0 && _t%d <= 9) {"
+                    " sp_int _b = sp_re_caps[2 * _t%d], _e = sp_re_caps[2 * _t%d + 1]; ",
+                 th, tn, tn, tn, tn);
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_concat(sp_str_byteslice(_t%d, 0, _b),"
+                    " sp_str_byteslice(_t%d, _e, (sp_int)sp_str_byte_len(_t%d) - _e)); }",
+                 ts, ts, ts);
+    }
+    buf_printf(b, " _t%d; })", th);
+    return 1;
+  }
+  if (sb_asgn && argc == 2) {
+    /* character-indexed splice, not byte-indexed, for a multibyte receiver (#3084) */
+    int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
+    buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
+    buf_printf(b, " sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; sp_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
+    buf_printf(b, "; sp_int _t%d = (sp_int)sp_str_length(", tn2);
+    emit_expr(c, recv, b);
+    buf_printf(b, "); const char *_t%d = NULL;"
+                  " if (_t%d < 0) _t%d += _t%d;"
+                  " if (_t%d >= 0 && _t%d <= _t%d && _t%d >= 0) {"
+                  " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
+                  " _t%d = sp_str_sub_range(",
+               tr2,
+               ti2, ti2, tn2,
+               ti2, ti2, tn2, tl2,
+               tl2, tn2, ti2, tl2, tn2, ti2,
+               tr2);
+    emit_expr(c, recv, b);
+    buf_printf(b, ", _t%d, _t%d); ", ti2, tl2);
+    /* the removed part must outlive the three allocations that rebuild the receiver */
+    buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr2);
+    emit_expr(c, recv, b);
+    buf_puts(b, " = sp_str_concat(sp_str_sub_range(");
+    emit_expr(c, recv, b);
+    buf_printf(b, ", 0, _t%d), sp_str_sub_range(", ti2);
+    emit_expr(c, recv, b);
+    buf_printf(b, ", _t%d + _t%d, _t%d - _t%d - _t%d)); } _t%d; })",
+               ti2, tl2, tn2, ti2, tl2, tr2);
     return 1;
   }
   return 0;

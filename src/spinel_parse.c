@@ -3560,7 +3560,10 @@ static int sp_source_mentions_method(const char *src, const char *name) {
     unsigned char ac = (unsigned char)*after;
     int word_end = !((ac >= 'a' && ac <= 'z') || (ac >= 'A' && ac <= 'Z') || (ac >= '0' && ac <= '9') || ac == '_' || ac == '?' || ac == '!' || ac == '=');
     unsigned char bc = p > src ? (unsigned char)p[-1] : ' ';
-    int word_start = !((bc >= 'a' && bc <= 'z') || (bc >= 'A' && bc <= 'Z') || (bc >= '0' && bc <= '9') || bc == '_' || bc == '@' || bc == '$' || bc == ':');
+    /* a Symbol naming it (`send(:tally)`, `method(:tally)`, `&:tally`) calls
+       it as surely as `.tally` does; `Foo::tally` is a constant path's */
+    int sym = bc == ':' && p - src >= 2 && p[-2] != ':' && !(p - src >= 2 && sp_req_ident_char(p[-2]));
+    int word_start = sym || !((bc >= 'a' && bc <= 'z') || (bc >= 'A' && bc <= 'Z') || (bc >= '0' && bc <= '9') || bc == '_' || bc == '@' || bc == '$' || bc == ':');
     p = after;
     if (!word_end || !word_start) continue;
     /* not in a comment: a `#` between the line start and the name is asked
@@ -3571,7 +3574,7 @@ static int sp_source_mentions_method(const char *src, const char *name) {
     int in_comment = 0;
     for (const char *k = ls; k < p - nl; k++) if (*k == '#') { in_comment = sp_src_in_comment(src, p - nl); break; }
     if (in_comment) continue;
-    if (bc == '.') return 1;
+    if (bc == '.' || sym) return 1;
     if (ac == '(' || ac == ' ' || ac == '\n') return 1;
   }
   return 0;
@@ -3652,6 +3655,14 @@ static char *sp_splice_object_space(char *source, const char *exe_path,
   { SpSrcLex *lx = sp_src_lex_of(source); if (!lx->fin && !lx->evals) return source; }
   if (sp_src_defines_module(source, "ObjectSpace")) return source;
   return sp_prepend_require(source, exe_path, "require \"builtins/object_space\"\n", fsl, fsl_n);
+}
+
+/* builtins/process_detach.rb: Process.detach, for a program that calls it
+   and does not open Process itself (#7203) */
+static char *sp_splice_process_detach(char *source, const char *exe_path,
+                                      unsigned char **fsl, size_t *fsl_n) {
+  if (!strstr(source, "Process.detach") || sp_src_defines_module(source, "Process")) return source;
+  return sp_prepend_require(source, exe_path, "require \"builtins/process_detach\"\n", fsl, fsl_n);
 }
 
 static char *sp_splice_builtins(char *source, const char *exe_path,
@@ -4491,6 +4502,20 @@ static char *rewrite_syntax_sugar(char *source) {
         while (back2 > 0 && (out[back2 - 1] == ' ' || out[back2 - 1] == '\t')) back2--;
         char pv = back2 > 0 ? out[back2 - 1] : '\n';
         valid = strchr("=,([{+-*/%|&<>?:;!^\n", pv) != NULL;
+        /* ...or a command argument: a name, a blank, then `%` directly
+           followed by its delimiter (`puts %(...)`), as CRuby's lexer reads
+           it after a method name. A local read as such (`x %(y)`) costs only
+           the rewrites inside the parentheses; the modulo reading of a real
+           literal let a `<<WORD` in its text open a heredoc that ran to the
+           end of the file (#7194). */
+        if (!valid && back2 < oi && back2 > 0) {
+          size_t ws = back2;
+          while (ws > 0 && ((out[ws - 1] >= 'a' && out[ws - 1] <= 'z') || (out[ws - 1] >= 'A' && out[ws - 1] <= 'Z') ||
+                            (out[ws - 1] >= '0' && out[ws - 1] <= '9') || out[ws - 1] == '_' ||
+                            ((out[ws - 1] == '?' || out[ws - 1] == '!') && ws == back2))) ws--;
+          char w0 = ws < back2 ? out[ws] : 0;
+          valid = (w0 >= 'a' && w0 <= 'z') || (w0 >= 'A' && w0 <= 'Z') || w0 == '_';
+        }
       }
       if (valid) {
         char close2 = d == '(' ? ')' : d == '[' ? ']' : d == '{' ? '}' : d == '<' ? '>' : d;
@@ -4949,6 +4974,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
+  source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
      they are used, in a required file as well (activesupport's
      notifications/fanout.rb; #6740 for IO::Buffer). Ask over the resolved

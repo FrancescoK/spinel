@@ -159,7 +159,9 @@ static int64_t sp_time_civil_epoch(int64_t y, int64_t mo, int64_t d,
    still races with another OS worker; resolve into caller-owned storage.
    Unlike localtime, POSIX localtime_r need not act as if it called tzset. */
 static struct tm *sp_time_local_tm(time_t s, struct tm *bd) {
+#ifndef __wasi__  /* WASI has no time zone database and no tzset */
   tzset();
+#endif
   return localtime_r(&s, bd);
 }
 

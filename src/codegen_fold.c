@@ -104,6 +104,16 @@ static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
   return blk_tmp;
 }
 
+/* `, <proc>` after a call's receiver and arguments, when its callee `m`
+   takes its block as a proc parameter: the block the call site gives, or
+   NULL. A callee that yields takes none. */
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b) {
+  if (!m || !m->blk_param || !m->blk_param[0] || m->yields) return;
+  int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  if (blk_node >= 0) buf_printf(b, ", _t%d", emit_blk_proc_tmp(c, blk_node));
+  else buf_puts(b, ", NULL");
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -114,8 +124,8 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
      names another method than the by-name lookup. */
   const CallPlan *pl = cplan_user(c, id);
   int mi;
-  if (pl->mi >= 0 && (pl->via == UC_TOP || pl->via == UC_SEND_BLIND)) {
-    mi = pl->mi;
+  if (pl->send_fallback >= 0 || (pl->mi >= 0 && (pl->via == UC_TOP || pl->via == UC_SEND_BLIND))) {
+    mi = pl->send_fallback >= 0 ? pl->send_fallback : pl->mi;
     if (g_plan_check) cplan_served("emit_method_call");
     if (g_plan_check && mi != comp_method_index(c, name))
       fprintf(stderr, "plan-check: cplan-conflict: emit_method_call node %d %s: plan %d, by name %d\n",
@@ -570,7 +580,7 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
 }
 
 /* hash.sum(init) / count / all? / any? { |k, v| ... } -> a scalar reduction.
-   sum accumulates the block value (boxed, via sp_poly_add); count tallies truthy
+   sum folds the block values as Enumerable#sum does (sp_sum_step); count tallies truthy
    results; all?/any? short-circuit to a boolean. */
 int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -615,7 +625,9 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
     if (sum_init >= 0) buf_puts(g_pre, sib.p ? sib.p : "sp_box_nil()");
     else buf_puts(g_pre, "sp_box_int(0)");
     buf_puts(g_pre, ";\n");
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tacc);
+    /* the block's values folded as Enumerable#sum folds them (sp_sum_step) */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc);\n", tacc, tacc, tacc, tacc);
   }
   else if (is_count || is_one)
     buf_printf(g_pre, "sp_int _t%d = 0;\n", tacc);   /* one? tallies, checks == 1 */
@@ -629,7 +641,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   if (is_sum) {
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "_t%d = sp_poly_add(_t%d, ", tacc, tacc);
+    buf_printf(g_pre, "sp_sum_step(&_t%dS, ", tacc);
     if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
     else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
            buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
@@ -655,6 +667,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   free(vb);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (is_one) buf_printf(b, "(_t%d == 1)", tacc);
+  else if (is_sum) buf_printf(b, "sp_sum_result(&_t%dS)", tacc);
   else buf_printf(b, "_t%d", tacc);
   return 1;
 }
@@ -1637,8 +1650,10 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
              ta, tn, ta, tacc);
   if (argc == 1) emit_boxed(c, argv[0], b);
   else buf_puts(b, "sp_box_int(0)");
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
-             tacc, ti, ti, tn, ti);
+  /* folded a value at a time (sp_sum_step) */
+  buf_printf(b, "; sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc); "
+                "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+             tacc, tacc, tacc, tacc, ti, ti, tn, ti);
   /* a block of any other shape than plain requireds binds the element by
      the proc distribution */
   if (block_binds_gathered(c, block)) {
@@ -1667,10 +1682,10 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
       g_line_map = svlm; }
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
-    buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+    buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
     free(inner.p); free(valb.p);
   }
-  buf_printf(b, " _t%d; })", tacc);
+  buf_printf(b, " sp_sum_result(&_t%dS); })", tacc);
   if (blv) blv->type = saved;
   return 1;
 }
@@ -1724,8 +1739,10 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = sp_%sArray_length(_t%d); sp_RbVal _t%d = ",
                ta, tn, k, ta, tacc);
     if (argc == 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_int(0)");
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
-               tacc, ti, ti, tn, ti);
+    /* folded a value at a time (sp_sum_step) */
+    buf_printf(b, "; sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc); "
+                  "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
+               tacc, tacc, tacc, tacc, ti, ti, tn, ti);
     /* A 2+-param block over an array of sub-arrays auto-splats each element
        into the params (`sum { |v, i| v }` over [v, i] pairs); a single param
        binds the whole element. Each param is gated on liveness. */
@@ -1756,9 +1773,10 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         g_line_map = svlm; }
       g_pre = saved_pre;
       if (inner.p) buf_puts(b, inner.p);
-      buf_printf(b, "_t%d = sp_poly_add(_t%d, %s); }", tacc, tacc, valb.p ? valb.p : "sp_box_nil()");
+      buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
       free(inner.p); free(valb.p);
     }
+    buf_printf(b, " _t%d = sp_sum_result(&_t%dS);", tacc, tacc);
     /* The call's own type may be a scalar the inference settled on (an int
        array's `sum {}` is an Integer where it answers at all), so hand back
        what the caller's slot holds; a nil term raises inside the loop before
@@ -4557,7 +4575,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                bound and the block runs between two reads of it */
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_es);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_int _t%d = ", ts_es); emit_int_expr(c, es_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            { Buf ib_; memset(&ib_, 0, sizeof ib_); emit_int_expr(c, es_argv[0], &ib_); buf_printf(g_pre, "sp_int _t%d = %s;\n", ts_es, ib_.p ? ib_.p : "0"); free(ib_.p); }
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_es, tres_es, rk_es);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_es);
@@ -4635,8 +4653,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             /* rooted like the result array below, for the same reason as the
                each_slice chain above */
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_ec);
+            Buf nb_ec; memset(&nb_ec, 0, sizeof nb_ec); emit_int_expr(c, ec_argv[0], &nb_ec);
             emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_int _t%d = ", tn_ec); emit_int_expr(c, ec_argv[0], g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, "sp_int _t%d = %s;\n", tn_ec, nb_ec.p ? nb_ec.p : "0"); free(nb_ec.p);
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_ec, tres_ec, rk_ec);
             emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_ec);
@@ -4736,13 +4755,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               buf_printf(g_pre, " _t%d = %s;\n", ta_wi, rb_wi.p ? rb_wi.p : ""); free(rb_wi.p);
               /* rooted like the result array below, as the each_cons chain is */
               emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta_wi);
+              /* the count and the offset as Integers, whatever slot they
+                 arrive in, each rendered whole before its line: what an
+                 operand hoists (`with_index(w(1))`) goes ahead of the
+                 line, not into the middle of it */
+              Buf nb_wi; memset(&nb_wi, 0, sizeof nb_wi); emit_int_expr(c, ec_argv2[0], &nb_wi);
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_int _t%d = ", tn_wi); emit_int_expr(c, ec_argv2[0], g_pre); buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "sp_int _t%d = %s;\n", tn_wi, nb_wi.p ? nb_wi.p : "0"); free(nb_wi.p);
+              Buf ob_wi; memset(&ob_wi, 0, sizeof ob_wi);
+              if (wi_argc > 0 && wi_argv) emit_int_expr(c, wi_argv[0], &ob_wi);
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_int _t%d = ", toff_wi);
-              if (wi_argc > 0 && wi_argv) { emit_expr(c, wi_argv[0], g_pre); }
-              else { buf_puts(g_pre, "0"); }
-              buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "sp_int _t%d = %s;\n", toff_wi, ob_wi.p ? ob_wi.p : "0"); free(ob_wi.p);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk_wi, tres_wi, rk_wi);
               emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres_wi);
@@ -4754,8 +4777,14 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               /* assign second param (index) */
               const char *idx_p_wi = block_param_name(c, block, 1);
               if (idx_p_wi) {
+                /* a proc's parameter (`map(&proc { |(x, y), i| })`) is a
+                   boxed slot: the index is boxed into it */
+                Scope *isc_wi = comp_scope_of(c, block);
+                LocalVar *ilv_wi = isc_wi ? scope_local(isc_wi, idx_p_wi) : NULL;
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(idx_p_wi), tidx_wi);
+                if (ilv_wi && ilv_wi->type == TY_POLY)
+                  buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", rename_local(idx_p_wi), tidx_wi);
+                else buf_printf(g_pre, "lv_%s = _t%d;\n", rename_local(idx_p_wi), tidx_wi);
               }
               if (block_param_is_multi(c, block, 0)) {
                 int lc_wi = block_param_multi_count(c, block, 0);
@@ -4959,7 +4988,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "lv_%s = sp_yielded_args(_t%d, sp_poly_iter_elem(_t%d, _t%d));\n",
                  rename_local(restn2), tpair2, trecv2, ti2);
     }
-    for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
+    /* a `next <v>` answers for this element: the body writes a slot and the
+       push below reads it, where the bare `continue` of a tail read skipped
+       the push and dropped the element */
+    int nx2 = spair < 0 && bn2 >= 1 && fold_body_has_next(c, body2);
+    if (!nx2) for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
     Buf vb2; memset(&vb2, 0, sizeof vb2);
     if (spair >= 0 && bn2 >= 1) {
@@ -4994,6 +5027,15 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "}\n");
       buf_printf(&vb2, "_t%d", tv3);
+    }
+    else if (nx2) {
+      int tv4 = ++g_tmp;
+      char tvbuf4[24]; snprintf(tvbuf4, sizeof tvbuf4, "_t%d", tv4);
+      emit_indent(g_pre, g_indent);
+      if (res_poly2) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tv4, tv4);
+      else { emit_ctype(c, ty_array_elem(restype2), g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv4, default_value_from_compiler(c, ty_array_elem(restype2))); }
+      emit_block_value_into(c, block, tvbuf4, res_poly2, g_indent);
+      buf_puts(&vb2, tvbuf4);
     }
     else if (bn2 < 1) buf_puts(&vb2, "sp_box_nil()");
     else if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &vb2);
@@ -5172,6 +5214,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        boxed -- nil is a value in this slot, and a falsy one. */
     if (cty == TY_VOID || cty == TY_NIL) cty = TY_POLY;
     if (cty == TY_UNKNOWN) cty = TY_INT;
+    /* A `next v` of another class than the tail shares the slot: `next false`
+       into the Integer slot of `x if x > 0` was 0, which reads truthy, and the
+       element was kept. Carry both boxed. */
+    { TyKind nxv = block_next_value_ntype(c, nt_ref(c->nt, block, "body"));
+      if (nxv != TY_UNKNOWN && nxv != TY_VOID && nxv != TY_NIL && nxv != cty) cty = TY_POLY; }
     int cond_poly = (cty == TY_POLY);
     int tv = ++g_tmp;
     char tvbuf[24]; snprintf(tvbuf, sizeof tvbuf, "_t%d", tv);
@@ -5332,6 +5379,14 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
       if (res_poly && body_ty != TY_POLY) {
         Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);
         buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
+      }
+      else if (!res_poly && body_ty == TY_POLY && is_mapbang && !sp_streq(rk, "Int") && !sp_streq(rk, "Float")) {
+        /* map! writes back into the receiver's own typed array, and a
+           boxed block value (a proc's, `map!.with_index(&pr)`) may be any
+           class; the typed array cannot take it, and an unchecked store did
+           not build */
+        unsupported_feature(c, id, "map!.with_index with a block whose value is untyped, on a typed Array");
+        buf_puts(g_pre, "0");
       }
       else if (!res_poly) emit_typed_sink_text(c, bb[bn - 1], sp_streq(rk, "Int") ? TY_INT : sp_streq(rk, "Float") ? TY_FLOAT : TY_UNKNOWN, vb.p ? vb.p : "", g_pre);
       else buf_puts(g_pre, vb.p ? vb.p : "");
@@ -5601,7 +5656,7 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_enum_with_index_result(_t%d, _t%d)", te, tres);
+  buf_printf(b, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
   (void)body;
   return 1;
 }
@@ -10155,8 +10210,10 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
                   sp_streq(aty, "SelfNode") || sp_streq(aty, "NilNode") ||
                   sp_streq(aty, "StringNode"))) root = 0;
       /* only a fresh allocation needs protecting; a non-allocating heap
-         expression (e.g. a ternary over two already-live reads) does not. */
-      else if (!subtree_may_allocate(nt, argv[k])) root = 0;
+         expression (e.g. a ternary over two already-live reads) does not.
+         Asked without the decision registry: a global or a class variable
+         is lent as its slot, and a temp here would be a copy of it. */
+      else if (!subtree_allocates(nt, argv[k])) root = 0;
       if (!root && !seq) continue;
       int ht = ++g_tmp;
       /* Evaluate into a side buffer first: the expression may push its own

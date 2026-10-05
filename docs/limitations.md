@@ -66,11 +66,15 @@ URI::FTP or the scheme registry behind it. An https request needs the
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches.
-`OpenSSL::Digest::SHA256` / `SHA1` / `MD5` and `OpenSSL::HMAC.hexdigest` are
-there, over the runtime's own crypto rather than libssl -- class-method forms
-only, and no HMAC-MD5. `Cipher`, `PKey`,
-most of `X509`, and the incremental digest object API are not there, and a
-program that names them fails to compile rather than at run time. Spinel
+`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
+object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
+`hexdigest`, `digest_length`), `OpenSSL::HMAC`, `OpenSSL::KDF.hkdf` /
+`pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
+own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
+input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
+each described in its file under `packages/openssl/openssl/`. Most of `X509`
+is not there: a call to a method the package does not define compiles into
+CRuby's NoMethodError, raised when it is reached. Spinel
 implements no TLS and bundles no trust anchors: the chain is validated against
 the operating system's store, so a CA it stops trusting stops being trusted
 here on an OS update. The package exists only where libssl's headers were
@@ -126,6 +130,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 | `IO::Buffer` | the full in-memory API, CRuby-faithful: `new` (INTERNAL/MAPPED flags), `get_value`/`set_value`/`get_values`/`set_values` over all 18 type symbols (little/big-endian, `u64` round-trips Bignums under `--int-overflow=promote`), `get_string`/`set_string` (NUL-safe binary), `resize`/`clear`/`copy`/`size`, `slice` (live views, safe across a source `resize`), `transfer`/`free`/`dup`, `<=>`/`==`, `hexdump`/`inspect`/`to_s`, the predicates, the tiling bitwise family (`&` `\|` `^` `~` and `and!`/`or!`/`xor!`/`not!`), `locked`, `IO::Buffer.for(string)`/.string/.size_of, the CRuby exception classes (`IO::Buffer::AccessError` etc.), and the IO integration: `#read`/`#write`/`#pread`/`#pwrite` against an IO (one syscall each, answering the count, 0 at EOF or -errno; a blocking read on a socket or pipe parks the green thread, and the buffer is locked for the duration) and `IO::Buffer.map(file, size, offset, flags)` as an mmap view (READONLY / SHARED / PRIVATE; munmap'd by the finalizer; `resize` refused as for EXTERNAL). Passed to an `ffi_func` pointer argument, a buffer hands C its base address for the call ([FFI.md](FFI.md)). No `require` needed, as in CRuby. A literal type symbol compiles to a direct typed accessor (the wasm-runtime / binary-protocol hot path) | `#read` serves the bytes the IO's own stream already buffered before reading the descriptor (a `getc` followed by a `read` sees the next bytes); CRuby's reads the descriptor directly and can skip what its buffer holds. Three more deliberate divergences: `IO::Buffer.for(string)` copies (Spinel strings are immutable, so unobservable) and its write-through BLOCK form raises `NotImplementedError`; `each`/`each_byte`/`values` are block-form only (no Enumerator, as with StringIO); `get_string`'s third (encoding) argument is not accepted |
 | The value of `super` in `initialize` (`c = super`, `super.frozen?`, `c = if f then super else [] end`) when the parent's `initialize` is the program's own | refused at compile time, naming the line | an `initialize` is compiled to return nothing, since `new` drops its value; one whose value a subclass's `super` asks for would return its last value instead |
 | `Array#hash` (and arrays as hash keys) | unsupported | a builtin is additive, but array *keys* need the fundamental key-dispatch above |
+| `IO.popen` | refused at compile time, naming it | the bundled `open3` package's `Open3.capture2` / `capture3` (with `stdin_data:`) and `Process.spawn` with pipes cover what it is used for; the method itself is a stream held open over a child, which the open3 package does not model yet |
 | Sockets | TCP / UDP / UNIX-domain, as IO handles -- see below | additive: each missing class and method is its own runtime binding |
 | Passing data through a named pipe (FIFO) between two threads, **on macOS** | the reader gets nothing and the program hangs; Linux answers what CRuby answers | not the open, which is what #4394 was about, and not any change since: a reader and a writer exchanging three lines through one `mkfifo` path fails on macOS against a tree with no runtime change at all (#4406), so it is the readiness path a FIFO descriptor reaches once both ends exist. A pipe (`IO.pipe`) or a UNIX-domain socket carries the same traffic and works on both. Opening a FIFO no longer stalls the other green threads on either platform |
 | `class LoadError` / `class NameError` / `class Exception` … reopenings of a builtin exception class (activesupport's `core_ext/load_error.rb`, `core_ext/name_error.rb`, `Exception#as_json`) | supported | the class stays the runtime's: `raise LoadError, msg`, `LoadError.new(msg)`, `rescue LoadError => e`, `is_a?` and `e.class` behave as before the reopening (they used to build a shadowing user class, so `raise LoadError, msg` was a TypeError). The added methods take the runtime exception as self and are reached on a rescued or constructed exception and on a user subclass's instances; a bare `message` / `key` / `name` / `path` inside one is the exception's own. When several reopenings define one name (`Exception#brief` and `KeyError#brief`), a base-typed receiver is told apart by its runtime class, most-derived first in declaration order; a poly (run-time-typed) receiver does not see these methods yet |
@@ -696,7 +701,8 @@ Not yet shared:
 - a repeated keyword whose later value is a String variable bound to an appending parameter, unless the value is already passed as a shared handle;
 
 - through `Thread.new` or `Fiber#resume`, a String variable handed to a block parameter that appends to it, unless its read already hands over the shared handle or the local is read only as that argument;
-- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`), a stored String variable when the value parameter appends to it;
+- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`, `values_at` or `fetch_values`), a stored String variable when the value parameter appends to it;
+- through a Hash's `[key, value]` pairs (`h.to_a`, `h.first`, `h.min_by { }`, `k, v = h.first`, an iterator over them), a String value that is then mutated;
 - through `yield` into a capture-wrapper block, a String variable whose captured parameter appends to it without already being the shared handle, including a splatted yield;
 - through an Array's chained index into an appending block;
 

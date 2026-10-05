@@ -112,6 +112,11 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
 
+/* String#lines' argument shapes besides none: (sep), (chomp: ...) and
+   (sep, chomp: ...), sep a String -- what a boxed receiver takes the
+   typed String path for. */
+int poly_lines_args(Compiler *c, int argc, const int *argv);
+
 /* `recv` is a blockless call making an Enumerator that yields two values per
    element: each_with_index, with_index, each_with_object, with_object. */
 int enum_pair_source_call(const NodeTable *nt, int recv);

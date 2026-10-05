@@ -860,7 +860,23 @@ static SP_NORETURN void uk_unknown_directive(char type, const char *fmt, size_t 
   int bin = sp_str_is_binary(fmt);
   if (t >= 0x20 && t < 0x7f) o += (size_t)snprintf(msg + o, cap - o, "unknown unpack directive '%c' in '", type);
   else o += (size_t)snprintf(msg + o, cap - o, "unknown unpack directive '\\x%02x' in '", t);
-  for (size_t i = 0; i < flen; i++) {
+  /* A format every character of which is printable is shown as it is, as
+     CRuby's rb_str_quote_unprintable leaves it ('Cé'); only one holding an
+     unprintable character is escaped as a whole. */
+  int printable = 1;
+  for (size_t i = 0; i < flen && printable; i++) {
+    unsigned char ch = (unsigned char)fmt[i];
+    if (ch < 0x20 || ch == 0x7f) printable = 0;
+    else if (ch >= 0x80) {
+      int len = bin ? 0 : ch >= 0xC2 && ch < 0xE0 ? 2 : ch >= 0xE0 && ch < 0xF0 ? 3 : ch >= 0xF0 && ch < 0xF5 ? 4 : 0;
+      if (!len || i + (size_t)len > flen) { printable = 0; break; }
+      for (int j = 1; j < len; j++)
+        if (((unsigned char)fmt[i + j] & 0xC0) != 0x80) { printable = 0; break; }
+      i += (size_t)len - 1;
+    }
+  }
+  if (printable) { memcpy(msg + o, fmt, flen); o += flen; }
+  for (size_t i = 0; i < flen && !printable; i++) {
     unsigned char ch = (unsigned char)fmt[i];
     const char *esc = NULL;
     switch (ch) {

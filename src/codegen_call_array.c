@@ -970,6 +970,18 @@ int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b) {
   const char *k = array_kind(rt);
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  /* transpose of an Array of Integers, Floats or Strings: CRuby converts
+     each element to an Array, which a scalar cannot -- TypeError, and an
+     empty one answers [] */
+  if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY) {
+    const char *k = array_kind(rt);
+    int t = ++g_tmp;
+    const char *en = rt == TY_INT_ARRAY ? "Integer" : rt == TY_FLOAT_ARRAY ? "Float" : "String";
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+    buf_printf(b, "; if (_t%d && sp_%sArray_length(_t%d) > 0) sp_raise_cls(\"TypeError\","
+                  " \"no implicit conversion of %s into Array\"); sp_%sArray_new(); })", t, k, t, en, k);
+    return 1;
+  }
   if (rt != TY_POLY_ARRAY) return 0;
   if (sp_streq(name, "transpose") && argc == 0) {
     buf_puts(b, "sp_int_array_transpose("); emit_expr(c, recv, b); buf_puts(b, ")");
@@ -989,6 +1001,17 @@ int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   const char *k = array_kind(rt);
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  /* an array of numbers, Strings, Symbols or booleans holds no Array for
+     assoc or rassoc to match: nil, once the receiver and the key are
+     evaluated, as CRuby answers */
+  if (rt != TY_POLY_ARRAY && argc == 1 && (sp_streq(name, "assoc") || sp_streq(name, "rassoc"))) {
+    TyKind et = ty_array_elem(rt);
+    if (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_boxed(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+      return 1;
+    }
+  }
   if (rt != TY_POLY_ARRAY) return 0;
   if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
     buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -1285,10 +1308,17 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
-    /* a Float initial value folds to a Float (bare sp_float, not boxed) */
+    /* a Float initial value folds to a Float (bare sp_float, not boxed),
+       through sp_poly_sum_seed, the seeded fold the boxed receiver already
+       takes: the receiver evaluated before the seed, the seed added first.
+       Adding the seed to a plain fold of the elements summed in the wrong
+       order and skipped an element that is no number, where CRuby raises
+       the seed's own TypeError. */
     if (init_t == TY_FLOAT) {
-      buf_puts(b, "("); emit_float_expr(c, argv[0], b);
-      buf_puts(b, " + sp_PolyArray_sum_float("); emit_expr(c, recv, b); buf_puts(b, "))");
+      /* typed boxed (analyze: a Complex element answers a Complex), the fold's
+         own value; a Float slot, if anything still types it so, unboxed */
+      if (comp_ntype(c, id) == TY_POLY) { emit_poly_sum_seed(c, recv, argv[0], b); return 1; }
+      buf_puts(b, "sp_poly_to_f("); emit_poly_sum_seed(c, recv, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     /* an Integer (or poly) seed folds via sp_poly_add so Float/Rational/
@@ -1341,8 +1371,16 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
       else emit_expr(c, argv[ai], b);   /* already a poly array */
       buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
     }
+    /* ... and its length too: one aliasing the receiver is appended as it
+       was, not as an earlier append grew it (CRuby) */
+    int lb = g_tmp + 1; g_tmp += argc;
     for (int ai = 0; ai < argc; ai++)
-      buf_printf(b, " sp_PolyArray_append_all(_t%d, _t%d);", t, base + ai);
+      buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", lb + ai, base + ai);
+    for (int ai = 0; ai < argc; ai++) {
+      int ti = ++g_tmp;
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));",
+                 ti, ti, lb + ai, ti, t, base + ai, ti);
+    }
     buf_printf(b, " _t%d; })", t);
     return 1;
   }
@@ -1534,6 +1572,30 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     emit_boxed(c, argv[0], b);
     buf_printf(b, ", %d)%s", bop, se ? "; })" : "");
     return 1;
+  }
+  /* poly.difference / union / intersection: the named forms of - | & over
+     one or more arrays, folded left to right, for an Array receiver only --
+     another kind's - or | is no set operation, and it has no such method */
+  if (recv >= 0 && argc >= 1 && comp_ntype(c, recv) == TY_POLY &&
+      is_named_set_operator(name) && !user_defines_or_reads(c, name)) {
+    int splat = 0;
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
+    if (!splat) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
+                    " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                    " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", t, t, t, name, t);
+      for (int a = 0; a < argc; a++) {
+        if (sp_streq(name, "difference")) buf_printf(b, " _t%d = sp_poly_sub(_t%d, ", t, t);
+        else buf_printf(b, " _t%d = sp_poly_bitop(_t%d, ", t, t);
+        emit_boxed(c, argv[a], b);
+        if (sp_streq(name, "difference")) buf_puts(b, ");");
+        else buf_printf(b, ", %d);", sp_streq(name, "union") ? 1 : 0);
+      }
+      buf_printf(b, " _t%d; })", t);
+      return 1;
+    }
   }
   /* `poly >> n`: through sp_poly_shr, which keeps a bignum receiver in bignum
      space. Truncating to int64 here made a positive value past 2^63 negative,
@@ -1948,4 +2010,15 @@ int emit_call_untyped_array_arms(Buf *b, const NodeTable *nt, const char *name, 
     }
   }
   return 0;
+}
+
+/* The scalar case precedes the structural Array arms, as it did before
+   joining the transpose row's emitter. */
+int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
+                                const char *name, int argc, Buf *b) {
+  if (rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY && rt != TY_STR_ARRAY) return 0;
+  const BuiltinOp *op = bop_find(BOP_ANY_ARRAY, name, argc, nt_ref(c->nt, id, "block") >= 0);
+  if (!op || op->emit != BOPE_ARRAY_TRANSPOSE) return 0;
+  BopCtx x = { id, recv, argc, rt, name, op, NULL, 0 };
+  return emit_op_array_transpose(c, &x, b);
 }

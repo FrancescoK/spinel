@@ -1,0 +1,3 @@
+name? got bob
+"l2\n"
+[EOFError, "end of file reached"]

@@ -1,0 +1,9 @@
+a|b|
+a|b|
+a|b|
+hi
+/
+a|
+x-
+#<ArgumentError: wrong first argument>
+#<ArgumentError: wrong number of arguments (given 0, expected 1+)>

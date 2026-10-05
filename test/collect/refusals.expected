@@ -4,6 +4,14 @@ spinel: 1 refusal, nothing written
 == test/collect/gap_inside_capturing_proc.rb [promote] rc=1
 spinel: unsupported class variable read (no class scope): node N (ClassVariableReadNode)
 spinel: 1 refusal, nothing written
+== test/reject/anon_superclass_reflection.rb [default] rc=1
+spinel: test/reject/anon_superclass_reflection.rb:0: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+== test/reject/anon_superclass_reflection.rb [promote] rc=1
+spinel: test/reject/anon_superclass_reflection.rb:0: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+== test/reject/anon_superclass_struct_ancestors.rb [default] rc=1
+spinel: test/reject/anon_superclass_struct_ancestors.rb:0: unsupported `ancestors` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+== test/reject/anon_superclass_struct_ancestors.rb [promote] rc=1
+spinel: test/reject/anon_superclass_struct_ancestors.rb:0: unsupported `ancestors` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
 == test/reject/array_push_other_class_temporary.rb [default] rc=1
 spinel: an Array push given a String, which no conversion keeps in its sp_int slot
 spinel: 1 refusal, nothing written
@@ -35,6 +43,12 @@ spinel: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1
 spinel: 1 refusal, nothing written
 == test/reject/bind_call_class_value_block_target.rb [promote] rc=1
 spinel: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
+spinel: 1 refusal, nothing written
+== test/reject/builtin_value_ivar_set.rb [default] rc=1
+spinel: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
+spinel: 1 refusal, nothing written
+== test/reject/builtin_value_ivar_set.rb [promote] rc=1
+spinel: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
 spinel: 1 refusal, nothing written
 == test/reject/class_body_block_next.rb [default] rc=1
 spinel: next in a block that is a class body (the block of Class.new, Module.new, Struct.new or Data.define): the definitions after it would be made or not at run time
@@ -108,6 +122,14 @@ spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_source_line.rb [promote] rc=1
 spinel: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
+== test/reject/class_named_like_builtin_module.rb [default] rc=1
+spinel: test/reject/class_named_like_builtin_module.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module.rb [promote] rc=1
+spinel: test/reject/class_named_like_builtin_module.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module_path.rb [default] rc=1
+spinel: test/reject/class_named_like_builtin_module_path.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module_path.rb [promote] rc=1
+spinel: test/reject/class_named_like_builtin_module_path.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_paren_superclass_rescue.rb [default] rc=1
 spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass expression (RescueModifierNode): write the superclass as a constant
 == test/reject/class_paren_superclass_rescue.rb [promote] rc=1
@@ -116,6 +138,34 @@ spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass e
 spinel: the constant name Class__reopen is reserved by the compiler
 == test/reject/class_reopen_reserved_name.rb [promote] rc=1
 spinel: the constant name Class__reopen is reserved by the compiler
+== test/reject/class_reopens_builtin_module.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module.rb:0: Comparable is not a class (TypeError)
+== test/reject/class_reopens_builtin_module.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module.rb:0: Comparable is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_alias.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_alias.rb:0: Foo is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_alias.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_alias.rb:0: Foo is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_class_new.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:0: unsupported class name 'Kernel': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_class_new.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:0: unsupported class name 'Kernel': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_errno.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_errno.rb:0: Errno is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_errno.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_errno.rb:0: Errno is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_kernel.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_kernel.rb:0: Kernel is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_kernel.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_kernel.rb:0: Kernel is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_rooted.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_rooted.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_superclass_method_call.rb [default] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
+== test/reject/class_superclass_method_call.rb [promote] rc=1
+spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_then_module.rb [default] rc=1
 spinel: Thing is not a module (the first declaration, at line 0, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
@@ -188,10 +238,18 @@ spinel: 1 refusal, nothing written
 == test/reject/forwarding_super_yielding_optional.rb [promote] rc=1
 spinel: `super(...)` into a method that yields and takes an optional or *rest parameter: the forwarded arguments cannot leave one out
 spinel: 1 refusal, nothing written
+== test/reject/hash_pair_string_mutation.rb [default] rc=1
+spinel: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
+== test/reject/hash_pair_string_mutation.rb [promote] rc=1
+spinel: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
 == test/reject/hash_values_at_appending_block.rb [default] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_values_at_appending_block.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/include_module_from_expression.rb [default] rc=1
+spinel: test/reject/include_module_from_expression.rb:0: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
+== test/reject/include_module_from_expression.rb [promote] rc=1
+spinel: test/reject/include_module_from_expression.rb:0: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
 == test/reject/instance_exec_default_ivar_write.rb [default] rc=1
 spinel: an instance variable written in a block that instance_exec or instance_eval runs on a value with no instance variable layout (nil, a builtin value, Object.new): the value has no slot to hold it at run time
 spinel: 1 refusal, nothing written
@@ -203,6 +261,18 @@ spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed
 spinel: 1 refusal, nothing written
 == test/reject/instance_exec_refusal_moved_scope.rb [promote] rc=1
 spinel: ObjectSpace is not supported by AOT compilation: there is no class-keyed allocation registry to walk -- the GC tracks bytes, not a live-object index (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/instance_exec_untraced_proc_param.rb [default] rc=1
+spinel: instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal
+spinel: 1 refusal, nothing written
+== test/reject/instance_exec_untraced_proc_param.rb [promote] rc=1
+spinel: instance_exec/instance_eval of a proc parameter some call site hands a value spinel cannot trace to a proc literal
+spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [default] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
+spinel: 1 refusal, nothing written
+== test/reject/io_popen.rb [promote] rc=1
+spinel: IO.popen is not supported (Open3.capture2 / capture3 or Process.spawn cover its uses)
 spinel: 1 refusal, nothing written
 == test/reject/io_reopen_yielding_call.rb [default] rc=1
 spinel: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
@@ -484,6 +554,12 @@ spinel: 1 refusal, nothing written
 spinel: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_two_modules.rb [promote] rc=1
 spinel: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
+== test/reject/map_bang_with_index_untyped_proc.rb [default] rc=1
+spinel: map!.with_index with a block whose value is untyped, on a typed Array
+spinel: 1 refusal, nothing written
+== test/reject/map_bang_with_index_untyped_proc.rb [promote] rc=1
+spinel: map!.with_index with a block whose value is untyped, on a typed Array
+spinel: 1 refusal, nothing written
 == test/reject/method_of_builtin_module.rb [default] rc=1
 spinel: ENV.method(:each) is not supported: a Method object of a builtin module or class function has no compiled function to bind. Call ENV.each directly, or wrap it in a lambda
 spinel: 1 refusal, nothing written
@@ -712,6 +788,12 @@ spinel: a String stored in a Hash is passed to an appending value block: a Strin
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_values_variable.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/string_iter_block_argument.rb [default] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/string_iter_block_argument.rb [promote] rc=1
+spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
+spinel: 1 refusal, nothing written
 == test/reject/string_ivar_alias_lent_call.rb [default] rc=1
 spinel: a String instance variable written from a local is passed to an appending parameter (a String is not yet shared by reference through a lent instance variable written from a local). Return the String from the method and assign it, or append to it in the caller.
 == test/reject/string_ivar_alias_lent_call.rb [promote] rc=1

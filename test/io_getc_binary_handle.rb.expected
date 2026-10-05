@@ -1,0 +1,19 @@
+true
+[206]
+#<Encoding:BINARY (ASCII-8BIT)>
+[88]
+[227]
+[129, 130]
+nil
+true
+[206]
+#<Encoding:BINARY (ASCII-8BIT)>
+[155]
+[122]
+nil
+EOFError
+false
+[206, 155]
+#<Encoding:UTF-8>
+[122]
+[206]

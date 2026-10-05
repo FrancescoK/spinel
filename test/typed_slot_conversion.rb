@@ -173,7 +173,7 @@ end
 p trace("recv", [1]).product(trace("arg", [2]))
 
 # nil where CRuby has a default, and the slots that are not the int slot
-path = "/tmp/spinel_typed_slot_conversion.txt"
+path = "/tmp/spinel_typed_slot_conversion_#{Process.pid}.txt"
 File.write(path, "x")
 p File.utime(nil, nil, path)
 File.delete(path)

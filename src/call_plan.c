@@ -36,6 +36,7 @@ int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {
 }
 
 static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
+  p->send_fallback = -1;
   p->mi = mi; p->owner_ci = (short)owner;
   p->via = (unsigned char)via; p->dispatch = (unsigned char)dispatch;
   p->by_name = 0;
@@ -54,6 +55,7 @@ static const char *cplan_reopen_class(TyKind rt) {
   case TY_TIME:   return "Time";
   case TY_THREAD: return "Thread";
   case TY_FIBER:  return "Fiber";
+  case TY_RANDOM: return "Random";
   case TY_CLASS:  return "Class";
   case TY_BOOL:   return "TrueClass";
   default:        return NULL;
@@ -69,6 +71,18 @@ static void cplan_object_reopen(Compiler *c, const char *name, CallPlan *p) {
   if (omi >= 0) cplan_set(p, omi, oci, UC_REOPEN, CP_DIRECT);
 }
 
+/* A method the program adds to Object under the name of a class-gated
+   exception accessor (UncaughtThrowError#tag, KeyError#key, ...): every
+   exception but those classes answers it, as CRuby's lookup reaches Object.
+   Its scope, or -1 (none, or one taking arguments or a block). */
+int cplan_exc_object_method(Compiler *c, const char *name) {
+  if (!is_gated_exception_accessor(name)) return -1;
+  int oc = comp_class_index(c, "Object");
+  int mi = oc >= 0 ? comp_method_in_class(c, oc, name) : -1;
+  if (mi < 0 || comp_method_vis_declared(c, oc, name, NULL) == SP_VIS_PRIVATE ||
+      c->scopes[mi].nparams != 0 || c->scopes[mi].yields) return -1;
+  return mi;
+}
 /* the reopenings of builtin exception classes that define name: the first
    stands for them, picked among at run time by the class name */
 static void cplan_exc_reopen(Compiler *c, const char *name, CallPlan *p) {
@@ -278,11 +292,23 @@ static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
   cplan_set(p, -1, -1, UC_NONE, CP_NONE);
   NodeKind k = nt_kind(c->nt, id);
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) cplan_resolve_super(c, id, p);
-  else if (k == NK_CallNode) cplan_resolve_call(c, id, p);
+  else if (k == NK_CallNode) {
+    cplan_resolve_call(c, id, p);
+    int recv = nt_ref(c->nt, id, "receiver");
+    const char *name = nt_str(c->nt, id, "name");
+    if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+        nt_str(c->nt, id, "send_blind") && nt_ref(c->nt, id, "block") < 0 && name &&
+        send_blind_recv_owns(c, recv, TY_POLY, name)) {
+      int mi = comp_method_index(c, name);
+      if (mi >= 0 && !c->scopes[mi].yields) p->send_fallback = mi;
+    }
+  }
 }
 
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
-  if (p->mi < 0 || mi < 0) return 0;
+  if (mi < 0) return 0;
+  if (p->send_fallback == mi) return 1;
+  if (p->mi < 0) return 0;
   if (p->mi == mi) return 1;
   if (p->dispatch < CP_SWITCH) return 0;
   const char *name = nt_str(c->nt, id, "name");
@@ -954,6 +980,8 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
   int kwh = ps->kwh, plain = kwh < 0 && splat_a < 0;
   if (ps->index) cpoly_family(p, cap, PB_INDEX_CASES);
   if (sp_streq(name, "read_nonblock") && ps->pos_argc == 1 && splat_a < 0) cpoly_family(p, cap, PB_IO_READ_NB);
+  if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 1 && plain)
+    cpoly_family(p, cap, PB_IO_READPARTIAL);
   if (sp_streq(name, "write") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_WRITE);
   if (sp_streq(name, "syswrite") && argc == 1 && plain) cpoly_family(p, cap, PB_IO_SYSWRITE);
   if ((is_text_print(name)) && plain) cpoly_family(p, cap, PB_IO_PRINT);

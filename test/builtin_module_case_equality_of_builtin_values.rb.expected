@@ -1,0 +1,15 @@
+Time: true false
+Symbol: true false
+Rational: true false
+Float: true false
+Integer: true false
+String: true false
+Enumerator: false true
+Range: false true
+Range: false true
+Hash: false true
+Array: false true
+Dir: false true
+NilClass: false false
+false false
+true true true

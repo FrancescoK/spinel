@@ -19,3 +19,23 @@ def lg(x) = ($l << x; x)
 p({b: 2}.each_with_object([], &(lg(:seq); proc { |(k, v), m| m << k })))
 p lg({c: 3}).each_with_object(lg([]), &(lg(:blk); proc { |(k, v), m| m << v }))
 p $l
+
+# Reads precede assignments in the block expression, at the call site.
+a = [1]
+p a.map(&(a = [2]; proc { |x| x }))
+memo = [10]
+p [1].each_with_object(memo, &(memo = [20]; proc { |x, m| m << x }))
+flag = false
+p(flag && [1].map(&(raise "boom"; proc { |x| x })))
+p(true || [1].map(&(raise "boom"; proc { |x| x })))
+p(false ? [1].map(&(raise "boom"; proc { |x| x })) : :skip)
+p [1].map(&(1; proc { |x| x + 2 }))
+
+flag = true
+p(flag && [1].map(&(puts :taken; proc { |x| x })))
+2.times { p [1].map(&(puts :again; proc { |x| x })) }
+def pair(a,b)
+  p a, b
+end
+a = [1]
+pair(a, [2].map(&(a = [9]; proc { |x| x })))

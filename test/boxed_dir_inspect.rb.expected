@@ -1,7 +1,7 @@
-#<Dir:/tmp/sp_boxed_dir_inspect>
-"#<Dir:/tmp/sp_boxed_dir_inspect>"
+#<Dir:sp_boxed_dir_inspect>
+"#<Dir:sp_boxed_dir_inspect>"
 Dir
 Dir
-[#<Dir:/tmp/sp_boxed_dir_inspect>, 1]
-{dir: #<Dir:/tmp/sp_boxed_dir_inspect>}
+[#<Dir:sp_boxed_dir_inspect>, 1]
+{dir: #<Dir:sp_boxed_dir_inspect>}
 "undefined method 'no_such_method' for an instance of Dir"

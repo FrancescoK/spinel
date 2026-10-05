@@ -1,6 +1,6 @@
 # gets and readline on an IO handle read out of a container (a File, a pipe
 # reader) take the separator, limit and `chomp:` arguments a typed File takes.
-path = "/tmp/sp_boxed_file_gets_args.txt"
+path = "/tmp/sp_boxed_file_gets_args_#{Process.pid}.txt"
 File.write(path, "hello\nworld\nend")
 def fresh(path) = [File.open(path), 0][0]
 

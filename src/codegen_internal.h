@@ -13,6 +13,7 @@
 #include "codegen.h"
 #include "compiler.h"
 #include "analyze.h"
+#include "decide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,7 +119,7 @@ int cvar_global_slot(Compiler *c, int node, char *out, size_t cap);
 int lent_global_slot_rebound(Compiler *c, int arg, const char *slot);
 void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const char *target, const char *pname);
 int strbuf_ivar_owner(Compiler *c, int node);
-/* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell (codegen_util.c) */
+/* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell, 3 explicit flag (codegen_util.c) */
 int ivar_set_kind(Compiler *c, int cid, const char *ivn);
 const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *expr, char *buf, size_t cap);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
@@ -143,6 +144,7 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
 int str_mut_var_recv(Compiler *c, int recv);
+void emit_str_frozen_check(Compiler *c, int recv, Buf *b);
 int strbuf_boxed_elem_read(Compiler *c, int v);
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b);
 int strbuf_object_ref(Compiler *c, int recv, Buf *b);
@@ -163,7 +165,8 @@ int builtin_method_known(const char *cls, const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int name_is_enumerable_module_method(const char *m);
-int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all, Buf *b);
+int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *name, int all,
+                                   int arg, Buf *b);
 int scope_reads_callee(Compiler *c, int si);
 int sp_yield_site_type(const Compiler *c, int id, TyKind *out);
 TyKind block_next_value_ntype(const Compiler *c, int node);
@@ -185,7 +188,11 @@ void argov_reserve(void);
 extern int  g_setter_stmt_id;
 extern int  g_sn_skip;   /* safe-nav re-entry marker (see codegen_util.c) */
 extern int  g_cls_tag_skip;   /* poly-dispatch builtin-arm re-entry marker */
+/* Ask subtree_may_allocate before leaving something unrooted across `id`:
+   its "no" is a keyed decision (src/decide.c). subtree_allocates is the
+   bare fact, for a caller whose answer licenses no such omission. */
 int subtree_may_allocate(const NodeTable *nt, int id);
+int subtree_allocates(const NodeTable *nt, int id);
 int subtree_has_side_effect(Compiler *c, int id);
 int loop_has_valued_break(Compiler *c, int root);
 /* Can evaluating the subtree store into an ivar, class variable or global? A
@@ -260,6 +267,7 @@ extern int g_ie_res_poly;
 extern const char *g_self;
 extern const char *g_self_deref;
 extern const char *g_inline_recv_expr;
+void emit_into_pre_line(Compiler *c, void (*fn)(Compiler *, int, Buf *), int node);
 extern int g_inline_recv_class;
 /* When emitting class/module body statements, the class index (-1 outside). */
 extern int g_class_body_id;
@@ -550,6 +558,7 @@ const char *rename_local(const char *nm);
 
 
 void emit_expr(Compiler *c, int id, Buf *b);
+void emit_constant_slot(Compiler *c, int id, Buf *b);
 void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b);
 void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, Buf *b);
 /* The store check (--check-stores): see codegen_util.c. */
@@ -565,6 +574,7 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 
 /* ---- forward decls ---- */
 
+int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b);
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
@@ -623,6 +633,7 @@ int  push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind 
 void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
+void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b);
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
 /* emit_args_filled over the arguments `argv[0..argc)`, a run of some call's
    arguments (`raise Cls, msg` passes Cls.new the message alone); `argsNode`
@@ -798,6 +809,7 @@ void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent);
 int sg_activates_ci(Compiler *c, int node);
 int subtree_has_param_named_pub(const NodeTable *nt, int id, const char *nm);
 const char *past_open_parens(const char *s);
+int text_diverges(const char *txt);
 int inlined_local_needs_volatile(Compiler *c, LocalVar *lv);
 void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, int din);
 /* A parameter a closure captures is a heap cell: the `lv_<uniq>` a call
@@ -920,6 +932,7 @@ extern SpDiag *g_diags;
 extern int g_ndiags;
 extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driver */
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
+extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
@@ -1019,6 +1032,9 @@ void emit_cvar_set_flag(Compiler *c, int cid, const char *nm, int as_expr, Buf *
 void emit_cvar_set_flag_after(Compiler *c, int cid, const char *nm, Buf *b);
 extern int g_ivar_nil_guarded_id;
 int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out);
+/* the same for any receiver the call guards: an ivar as above, or a param or
+   local that can hold nil (codegen_call.c) */
+int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
@@ -1100,6 +1116,8 @@ int unwrap_parens(Compiler *c, int id);
 /* Collect a String `<<` chain's args outermost-first (max 64); *base gets
    the node the chain bottoms out at. Returns the link count. */
 int str_append_chain(Compiler *c, int recv, int *chain, int *base);
+int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv);
+int emit_str_append_chain_handle(Compiler *c, int id, Buf *b);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 const char *int_arith_fn(const char *op);
 const char *bigint_arith_fn(const char *op);
@@ -1444,8 +1462,9 @@ int view_mark(void);
    pushed and popped like a view (view_push_arm / view_pop) and put back by
    view_unwind: the node whose dispatch declines its own re-entry (the
    method dispatch's g_pd_skip, the block dispatch's g_prbd_skip), and
-   g_poly_builtin_arm, under which no user class owns a name. */
-typedef struct { int pd_skip, prbd_skip, builtin_arm; } ArmCtx;
+   g_poly_builtin_arm, under which no user class owns a name. send_split
+   prevents a boxed send's class arm from splitting the same call again. */
+typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split; } ArmCtx;
 extern ArmCtx g_arm;
 #define g_pd_skip (g_arm.pd_skip)
 #define g_prbd_skip (g_arm.prbd_skip)
@@ -1468,6 +1487,7 @@ int view_push_repr(Compiler *c, int id, int flag, int v);
    that reads the flags or the type keys on it */
 unsigned view_epoch(void);
 void view_unwind(int mark);   /* back to a view_mark(): views, arm contexts and bindings */
+int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b);
 /* The concurrency handles' row emitters (codegen_call_concurrency.c) */
 int emit_op_thread_set_report(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_thread_raise(Compiler *c, const BopCtx *x, Buf *b);
@@ -1512,6 +1532,9 @@ int emit_op_hash_take(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_drop(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_compact(Compiler *c, const BopCtx *x, Buf *b);
+/* Range row emitters (codegen_call_numeric.c) */
+int emit_op_range_clone(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b);
 /* Array row emitters (codegen_call_array.c) */
 int emit_op_array_shift_n(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_cycle_n(Compiler *c, const BopCtx *x, Buf *b);
@@ -1532,6 +1555,11 @@ int emit_op_array_compact_bang(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_flatten(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_push(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_insert_n(Compiler *c, const BopCtx *x, Buf *b);
+int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
+                                const char *name, int argc, Buf *b);
+int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);
@@ -1599,8 +1627,11 @@ int diagnose_eval_call(Compiler *c, int id);
 int diagnose_unsupported_call(Compiler *c, int id);
 int diag_user_defines(Compiler *c, const char *name);
 int recv_user_defines(Compiler *c, const char *name);
+int emit_object_ivar_list(Compiler *c, int recv, int cid, Buf *b);
 int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKind rt,
                           int cid, int argc, const int *argv, Buf *b);
+const char *case_map_suffix(Compiler *c, int argc, const int *argv);
+int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b);
 int user_defines_or_reads(Compiler *c, const char *name);
 int native_class_defines(Compiler *c, const char *name);
 const char *array_index_bad_class(Compiler *c, int id);
@@ -1758,6 +1789,7 @@ void emit_str_expr_sep(Compiler *c, int node, Buf *b);
 /* strict with CRuby's rb_convert_type wording ("of nil into Integer") */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b);
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
+int emit_unresolved_coerced_text(Compiler *c, int node, TyKind target, const char *txt, Buf *b);
 int call_answers_no_value(Compiler *c, int node);
 void emit_int_divisor(Compiler *c, int node, Buf *b);
 void emit_float_expr(Compiler *c, int node, Buf *b);

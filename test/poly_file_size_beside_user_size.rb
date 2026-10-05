@@ -8,7 +8,7 @@ class Memory
   def initialize(n) = @n = n
   def size = @n
 end
-path = "/tmp/sp_file_size_beside_user_size.txt"
+path = "/tmp/sp_file_size_beside_user_size_#{Process.pid}.txt"
 File.write(path, "hello")
 class Host
   def initialize(path)

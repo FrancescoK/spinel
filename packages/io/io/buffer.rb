@@ -150,15 +150,18 @@ class IO::Buffer
     end
   end
 
-  # The BLOCK form only: without a block CRuby answers LocalJumpError (after
-  # taking the lock -- observable, so mirrored). NO ensure: in CRuby an
-  # exception out of the block leaves the buffer locked.
+  # The BLOCK form only: without a block CRuby answers LocalJumpError. The
+  # lock is taken first (an already locked buffer raises LockedError), and
+  # released on the way out, by an exception or a missing block too, as
+  # Ruby 4.0.7 does; 4.0.4 left it locked.
   def locked
     __lock
-    raise LocalJumpError, "no block given" unless block_given?
-    result = yield self
-    __unlock
-    result
+    begin
+      raise LocalJumpError, "no block given" unless block_given?
+      yield self
+    ensure
+      __unlock
+    end
   end
 
   # One read(2) / write(2) / pread(2) / pwrite(2) against `io`, answering

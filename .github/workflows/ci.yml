@@ -36,7 +36,8 @@ jobs:
   # Slice 1 of each lane carries the C-side test legs, the property gates,
   # the benchmarks and optcarrot.
   posix:
-    name: ${{ matrix.os }} / ${{ matrix.cc }} (${{ matrix.shard }}/${{ matrix.nshards }})
+    # The slice shows in the name only when the corpus is split.
+    name: ${{ matrix.os }} / ${{ matrix.cc }}${{ matrix.nshards > 1 && format(' ({0}/{1})', matrix.shard, matrix.nshards) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -127,7 +128,9 @@ jobs:
         # Opt level is compiler-specific -- they behave oppositely on the
         # spinel_rt.h-heavy per-test TUs (800+ static fns):
         #   gcc:   -O1 prunes unreferenced statics + DCEs before the costly
-        #          codegen, so -O1 compiles ~9x FASTER than -O0 (2.7 vs 25ms).
+        #          codegen, so -O1 compiles faster than -O0 (0.54 vs 0.94 s a
+        #          file on 2026-10-05; the header was far smaller when this
+        #          was first measured at 2.7 vs 25 ms).
         #   clang: -O1 still runs the full optimizer over every emitted inline
         #          static, so -O1 is ~2.5x SLOWER than -O0 (213 vs 88ms/file).
         # So gcc builds tests at -O1 and clang at -O0. Correctness is opt-level
@@ -144,27 +147,38 @@ jobs:
         # the -m32 lane paid until it got the same wrapper. The override
         # is kept as the spelling of the opt level per compiler; NO_CCACHE=1
         # would be the way to actually unwrap.
-        run: make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=${{ matrix.shard }}/${{ matrix.nshards }} ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
+        #
+        # The gcc lane runs one eighth of the corpus, a different eighth each
+        # run (the run number picks it), beside the C-side legs. The whole
+        # corpus under gcc is what `make gate` runs before every push to
+        # master, so the lane repeated it, and it had become the slowest job
+        # by far: 45 minutes of a 51-minute job on run 37272572814. Nearly
+        # every push touches lib/spinel_rt.h, which every test's C includes,
+        # so sccache missed on 96% of 6,366 compiles, and gcc takes about
+        # 0.5 s a file on this header where clang -O0 takes 0.08 s (1.4 s on
+        # the runner). The clang lanes and the -m32 lane still run every
+        # test; the eighth keeps a different gcc than the maintainer's own
+        # in the loop.
+        run: |
+          shard="${{ matrix.shard }}/${{ matrix.nshards }}"
+          if [ "${{ matrix.cc }}" = gcc ]; then shard="$(( GITHUB_RUN_NUMBER % 8 + 1 ))/8"; fi
+          echo "corpus slice: $shard"
+          make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=$shard ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
 
-      # Inference/allocation property gates. These assert the SHAPE of the
-      # generated C -- that a slot keeps its typed representation, that the
-      # alloc report keeps its format -- which the output diffs above cannot
-      # see: a boxed hash still prints the right answer. They lived only in the
-      # local `make check` target, so an Int-keyed hash lost its typed variant
-      # and stayed that way for weeks with CI green throughout. Linux/gcc only:
-      # what they read is compiler- and OS-independent.
-      - name: Run inference and allocation property gates
+      # spin's end-to-end check: it builds real projects, which a clean
+      # checkout on another machine is worth seeing. Linux/gcc only.
+      #
+      # alloc-report-test, infer-test and scale-test ran here too. What they
+      # read is the generated C and a count of the front end's work, neither
+      # of which depends on the machine or the C compiler, and `make gate`
+      # runs all three before every push to master (gate-props), so the lane
+      # only repeated an answer already known: about 3.5 minutes a run. They
+      # were put here when the pre-push gate did not include them (an Int-
+      # keyed hash lost its typed variant for weeks with CI green); it has
+      # since.
+      - name: Run spin's end-to-end check
         if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc' && matrix.shard == 1
-        run: make alloc-report-test infer-test spin-check
-
-      # The front end's scaling, as a work ratio between a program and one four
-      # times its size (see scale-test in the Makefile). A per-node rescan of
-      # the node table has come back four times, each found weeks late by hand
-      # profiling (rubys/roundhouse#72); this makes the next one a red build.
-      # The count is deterministic, so one lane is enough.
-      - name: Run the front-end scaling test
-        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc' && matrix.shard == 1
-        run: make -j$(getconf _NPROCESSORS_ONLN) build/spinel-work && make scale-test
+        run: make spin-check
 
       # Benchmark integration test. Compiles every benchmark/*.rb through
       # the full pipeline (cc -Werror) and diffs the output against CRuby.
@@ -222,7 +236,7 @@ jobs:
   # fixed there; splitting the lane into slices would halve it but take one
   # more runner per run, which is what queues the pool when pushes cluster.
   linux32:
-    name: ubuntu-latest / gcc -m32
+    name: ubuntu-latest / clang -m32
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # A hung apt-get in the toolchain step held this job for over four
@@ -231,7 +245,7 @@ jobs:
     # 20 minutes.
     timeout-minutes: 60
     env:
-      CC: sccache gcc -m32
+      CC: sccache clang -m32
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_STARTUP_TIMEOUT: "30"
       SCCACHE_IDLE_TIMEOUT: "0"
@@ -245,8 +259,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .sccache
-          key: sccache-ubuntu-latest-gcc-m32-${{ github.run_id }}
-          restore-keys: sccache-ubuntu-latest-gcc-m32-
+          key: sccache-ubuntu-latest-clang-m32-${{ github.run_id }}
+          restore-keys: sccache-ubuntu-latest-clang-m32-
 
       - name: Pre-start sccache server
         run: sccache --start-server
@@ -269,13 +283,15 @@ jobs:
       - name: Build (parse + regexp + spinelc), 32-bit
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
-      # -Og: the lane checks word-size assumptions, not what an optimizer
-      # makes of them (the gcc lanes' -O1 covers that), and the corpus is
-      # all compile time: -Og ran it in 164 s where -O1 took 246 s (the full
-      # 32-bit corpus on 16 cores, cold), every program passing either way.
-      # -O0 is slower than both, from the size of what it emits.
+      # clang -O0: the lane checks word-size assumptions, not what an
+      # optimizer makes of them, and the corpus is all compile time. Nearly
+      # every push misses sccache for the whole corpus (the runtime header
+      # changed), and on that header gcc -m32 -Og takes 0.34 s a file where
+      # clang -m32 -O0 with its precompiled header takes 0.10 s; an eighth
+      # of the corpus ran in 32 s against 14 s on 16 cores (2026-10-05).
+      # Under gcc the lane took 26 to 28 minutes of a run.
       - name: Run the test corpus as 32-bit programs
-        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-Og
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0
 
       - name: sccache stats
         if: always()

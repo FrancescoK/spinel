@@ -18,7 +18,7 @@ p format(fmt, *args)
 printf("%s|%s\n", *args)
 $stdout.printf("%s;%s\n", *args)
 
-path = "/tmp/spinel_format_splat_test.txt"
+path = "/tmp/spinel_format_splat_test_#{Process.pid}.txt"
 File.open(path, "w") { |f| f.printf("%s=%s\n", *args) }
 p File.read(path)
 File.delete(path)

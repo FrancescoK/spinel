@@ -21,13 +21,13 @@ rescue StandardError
   true           # ENOTTY and friends: reached the method, no tty to measure
 end
 
-File.write("/tmp/sp_ttyws.txt", "x")
+File.write("/tmp/sp_ttyws_#{Process.pid}.txt", "x")
 
 # A block parameter over a literal array: the shape that regressed.
 [STDOUT].each { |s| p s.tty?.class }
 
 # A file handle out of a container answers false, not NoMethodError.
-File.open("/tmp/sp_ttyws.txt") do |f|
+File.open("/tmp/sp_ttyws_#{Process.pid}.txt") do |f|
   [f].each { |s| p s.tty? }
   handles = [f, f]
   p handles[0].tty?
@@ -50,7 +50,7 @@ rescue StandardError
   nil
 end
 
-File.open("/tmp/sp_ttyws.txt") do |f|
+File.open("/tmp/sp_ttyws_#{Process.pid}.txt") do |f|
   p probe_tty(f)
   p winsize_reachable?(f)
 end
@@ -58,8 +58,8 @@ other = untyped
 p probe_tty(other).equal?(:no_method) == false || other.nil?
 
 # isatty is the same method under its second name.
-File.open("/tmp/sp_ttyws.txt") do |f|
+File.open("/tmp/sp_ttyws_#{Process.pid}.txt") do |f|
   [f].each { |s| p s.isatty }
 end
 
-File.delete("/tmp/sp_ttyws.txt")
+File.delete("/tmp/sp_ttyws_#{Process.pid}.txt")

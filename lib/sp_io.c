@@ -872,12 +872,25 @@ sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, 
   if (n < 0) sp_file_raise_errno("send", host ? host : "");
   return (sp_int)n;
 }
+static long sp_io_buffered(sp_File *f);
 /* #recv reads one datagram (or up to `len` stream bytes) as a String;
    #recvfrom pairs it with the sender's address, CRuby's 4-element form. */
 const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   extern int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out);
   sp_sock_require(f, "recv");
   if (len <= 0) return sp_str_from_bytes("", 0);
+  /* bytes a read on the stream already pulled into stdio's buffer are the
+     peer's next ones: served first, as readpartial does, or recv stepped
+     over them (#7195) */
+  long pend = sp_io_buffered(f);
+  if (pend > 0) {
+    size_t want = (size_t)len < (size_t)pend ? (size_t)len : (size_t)pend;
+    char *r = sp_str_alloc(want);
+    size_t got = fread(r, 1, want, f->fp);
+    r[got] = 0;
+    sp_str_set_len(r, got);
+    return r;
+  }
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
   int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, NULL, 0, NULL);
@@ -1406,10 +1419,11 @@ void sp_File_ungetbyte(sp_File *f, sp_int byte) {
   SP_IO_OPEN(f);
   ungetc((int)(unsigned char)byte, f->fp);
 }
-/* IO#binmode?: true after #binmode, or for a handle opened in binary mode. */
+/* IO#binmode?: true after #binmode, or for a handle opened in binary mode.
+   A socket is binary too, as CRuby's is (its encoding is BINARY). */
 sp_bool sp_File_binmode_p(sp_File *f) {
   SP_IO_OPEN(f);
-  if (f->bin_flag) return 1;
+  if (f->bin_flag || f->is_sock) return 1;
   return f->mode && strchr(f->mode, 'b') != NULL;
 }
 void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; }

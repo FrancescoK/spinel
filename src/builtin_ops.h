@@ -49,6 +49,8 @@ typedef enum { BF_ANY, BF_NONE, BF_REQUIRED } BopBlock;
    only types the call; codegen leaves it to the legacy chain. */
 typedef enum {
   BOPE_NONE,
+  BOPE_RANGE_CLONE,      /* Range#clone(freeze: ...) */
+  BOPE_RANGE_FREEZE,     /* Range#freeze */
   BOPE_TEMPLATE,          /* arg, its placeholders filled (codegen_ops.c) */
   BOPE_PSTATUS_SUCCESS,   /* Process::Status#success?: true, false or nil */
   BOPE_PSTATUS_EQ,        /* Process::Status#== / #eql? with no operand */
@@ -66,6 +68,7 @@ typedef enum {
   /* Complex and Rational (codegen_call_numeric.c) */
   BOPE_RATIONAL_ROUND,    /* Rational#round/floor/ceil/truncate with digits or half: */
   /* String (codegen_call_recv.c) */
+  BOPE_POLY_CASE_OPTIONS, /* boxed String/Symbol case mapping with options */
   BOPE_STR_SET_N,         /* String#squeeze / #delete / #count over several sets */
   BOPE_STR_AFFIX_ANY,     /* String#start_with? / #end_with? over several candidates */
   /* Hash (codegen_call_hash.c) */
@@ -130,6 +133,10 @@ typedef enum {
   BOPE_ARRAY_SLICE_GROUPS, /* Array#slice_before / slice_after without a block (stage 3) */
   BOPE_ARRAY_JOIN_STR,    /* Array#* with a String (stage 4) */
   BOPE_ARRAY_PRED_CLASS,  /* Array#any? / all? / none? / one? with a Class (stage 5) */
+  BOPE_IVAR_REFLECTION,   /* reflection on a builtin value without ivar slots */
+  BOPE_FLOAT_RATIONALIZE,
+  BOPE_STRING_SCAN_CHECKED,
+  BOPE_STRING_SLICE,     /* String#slice!: lvalue and pattern-dependent */
   BOPE__COUNT
 } BopEmit;
 
@@ -165,6 +172,7 @@ typedef struct BuiltinOp {
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
+#define BOP_IVAR_LESS ((TyKind)-4)  /* ty_builtin_ivar_less, at the reflection lookup */
 #define BOP_ANY_HASH  ((TyKind)-2)   /* every Hash kind (ty_is_hash) */
 #define BOP_ANY_ARRAY ((TyKind)-3)   /* every Array kind (ty_is_array) */
 

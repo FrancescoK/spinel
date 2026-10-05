@@ -13,7 +13,7 @@ def all(io)
   io.rewind
 end
 
-path = "/tmp/spinel_poly_io_each_iterators.txt"
+path = "/tmp/spinel_poly_io_each_iterators_#{Process.pid}.txt"
 File.write(path, "a\nb\n")
 File.open(path) do |f|
   all(f)

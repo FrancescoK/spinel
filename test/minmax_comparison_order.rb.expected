@@ -8,8 +8,8 @@ ArgumentError: comparison of Integer with nil failed
 ArgumentError: comparison of Integer with nil failed
 ArgumentError: comparison of NilClass with 2.5 failed
 ArgumentError: comparison of Float with nil failed
-ArgumentError: comparison of String with 1 failed
-ArgumentError: comparison of String with 1 failed
+ArgumentError: comparison of Integer with String failed
+ArgumentError: comparison of Integer with String failed
 ArgumentError: comparison of Integer with String failed
 ArgumentError: comparison of Integer with String failed
 ArgumentError: comparison of NilClass with 1 failed

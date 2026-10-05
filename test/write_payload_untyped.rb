@@ -5,7 +5,7 @@
 # boxing it wrote an empty file.
 require "stringio"
 
-dir = "/tmp/spinel_write_payload_untyped"
+dir = "/tmp/spinel_write_payload_untyped_#{Process.pid}"
 if Dir.exist?(dir)
   Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }
   Dir.rmdir(dir)

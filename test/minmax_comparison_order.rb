@@ -1,8 +1,10 @@
 # An incomparable pair in min or max is named as CRuby names it. A literal's
 # min and max (`[a, b].max`) compare each new element with the extreme so
 # far, where Array#max on an array value compares the extreme with the new
-# element: `[1, nil].max` says "NilClass with 1", `a = [1, nil]; a.max`
-# "Integer with nil". min(n) and max(n) cut and sort as CRuby's nmin does,
+# element: `[1, x].max` with x nil says "NilClass with 1", `a = [1, nil];
+# a.max` "Integer with nil". A literal of static elements only (`[1, nil]`,
+# `[1, "a"]` with frozen string literals) is a prebuilt Array in CRuby and
+# takes Array#max's order. min(n) and max(n) cut and sort as CRuby's nmin does,
 # which decides both the pair they name and the order equal elements come
 # out in, and a negative size is "negative size (-1)".
 

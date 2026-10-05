@@ -4,6 +4,12 @@
 
 /* ---- The boxed-receiver face table (see types.h) ---- */
 static const PolyFace ty_poly_face_tbl[] = {
+  /* Random stored in a mixed container keeps its instance surface. The
+     typed call also checks invalid counts; bytes without arguments belongs
+     to String and keeps its existing dispatch. */
+  {"rand", PF_RANDOM, 0, -1, -1},
+  {"bytes", PF_RANDOM, 1, -1, -1},
+  {"seed", PF_RANDOM, 0, -1, -1},
   /* String value-form mutators: the non-bang transform runs against the
      unboxed contents and the result is written back through the box. */
   {"gsub!", PF_STRING | PF_STR_BANG, 0, -1, -1}, {"sub!", PF_STRING | PF_STR_BANG, 0, -1, -1},
@@ -34,12 +40,14 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"times", PF_INT, 0, 0, 1}, {"upto", PF_INT, 1, 1, 1}, {"downto", PF_INT, 1, 1, 1},
   {"step", PF_INT | PF_FLOAT, 0, 2, 1},   /* no limit: the endless Integer walk (the Float arm declines it) */
   /* the blockless form materializes the sequence the way the typed
-     emitters do (an Integer or a Float array), boxed since the two arms
-     disagree, so `.to_a` / `.map` read it as the Enumerator's answer (#4779) */
-  {"step", PF_INT | PF_FLOAT, 1, 2, 0},
+     emitters do (an Integer or a Float array), boxed since the arms
+     disagree, so `.to_a` / `.map` read it as the Enumerator's answer (#4779);
+     an Integer or Float Range's step(n) materializes the same way */
+  {"step", PF_INT | PF_FLOAT | PF_RANGE | PF_FRANGE, 1, 2, 0},
   /* A Range of each kind owns step and bsearch with a block: unboxed to its
-     own by-value struct, the typed emitter walks it. The blockless forms
-     answer an Enumerator (an ArithmeticSequence) no typed emitter builds.
+     own by-value struct, the typed emitter walks it. A blockless step(n)
+     takes the row above; blockless bsearch answers an Enumerator no typed
+     emitter builds.
      An Array owns bsearch too: a row for the name decides every receiver
      kind, so leaving it out made a boxed Array's bsearch a NoMethodError. */
   {"step", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 1, 1},
@@ -646,3 +654,10 @@ int ty_object_protocol_answers(TyKind rt, TyKind at, const char *name, int argc)
 const TyTraits ty_traits[TY_TRAITS_N] = {
 #include "ty_traits.inc"
 };
+
+/* A builtin value's type, which lays out no instance variables: a String,
+   a number, true, false, nil, a Symbol, a Range, an Array or a Hash. */
+int ty_builtin_ivar_less(TyKind t) {
+  return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_NIL ||
+         t == TY_SYMBOL || t == TY_BIGINT || t == TY_RANGE || ty_is_array(t) || ty_is_hash(t);
+}

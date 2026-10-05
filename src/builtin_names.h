@@ -10,7 +10,9 @@
 #ifndef SPINEL_BUILTIN_NAMES_H
 #define SPINEL_BUILTIN_NAMES_H
 
+int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
+int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
 int is_round_family(const char *n);   /* round ceil floor truncate */
 int is_push_alias(const char *n);     /* push << append */
@@ -173,5 +175,18 @@ int is_array_hash_or_object_class(const char *n); /* Array Hash Object */
 int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
+
+int is_string_append_or_prepend(const char *n); /* << concat prepend */
+
+int is_string_append(const char *n); /* << concat: appends answering the receiver */
+
+int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+
+int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+
+int is_gated_exception_accessor(const char *n); /* accessors owned by specific exception classes */
+int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
+
+int is_builtin_reopen_name(const char *name);
 
 #endif

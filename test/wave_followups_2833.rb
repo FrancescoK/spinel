@@ -2,7 +2,7 @@
 # children (#2834), boolean operator Method objects (#2835), deferred
 # handler captures (#2836), NoMethodError#args (#2837), find_index
 # pair destructuring.
-path = "/tmp/sp_ff"
+path = "/tmp/sp_ff_#{Process.pid}"
 File.write(path, "hello\nworld\n")
 v = File.foreach(path) { |line| line }; p v
 fe = File.foreach(path).class;           p fe
@@ -10,7 +10,7 @@ acc = []
 File.foreach(path) { |l| acc << l }
 p acc
 File.delete(path)
-d = "/tmp/sp_dir34"
+d = "/tmp/sp_dir34_#{Process.pid}"
 Dir.mkdir(d) unless Dir.exist?(d)
 File.write("#{d}/x", "")
 a = []; Dir.open(d) { |dir| a = dir.children }

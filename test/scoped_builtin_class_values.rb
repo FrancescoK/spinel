@@ -5,7 +5,7 @@ p Math::DomainError.superclass
 p Process::Status
 p Process::Status.superclass
 begin; raise Math::DomainError, "d"; rescue Math::DomainError => e; p e.class; end
-q = "/tmp/sp_stat_probe"
+q = "/tmp/sp_stat_probe_#{Process.pid}"
 File.write(q, "hi")
 p File.stat(q).class
 File.open(q) { |f| p f.stat.class }

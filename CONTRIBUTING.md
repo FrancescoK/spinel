@@ -24,6 +24,35 @@ please rebase onto the current `master`, run `make gate` again and push.
 Many pull requests touch the same functions, so keep a branch small and
 rebase it early rather than late.
 
+## The gate in the commit
+
+Run `make hooks` once: it points git at the hooks in `tools/hooks`. When
+`make gate` passes, it records the tree it tested and the `master` it was
+merged with. `git commit --amend --no-edit` then adds a trailer such as
+
+```
+Gate: green tree c5355fd0df33 master c55f919a6452 (linux-aarch64 gcc-14.2.0) tests 5642/0
+```
+
+The trailer goes only on a commit that, merged with that `master`, gives
+exactly the tested tree; a commit that changed after the gate loses it.
+A rebase or any other rewrite keeps the trailer's text but not its truth.
+`ruby tools/gate.rb verify <commit>` checks it the same way and says OK,
+MISMATCH or NO GATE TRAILER. The pre-commit hook (`ruby tools/gate.rb
+check`) refuses a commit that grows `emit_call_body` or any function over
+1,000 lines, adds a test whose `.expected` differs from CRuby run with
+`--enable-frozen-string-literal` (unless the test is marked
+`# spinel: not-cruby`, below), or writes to a fixed `/tmp` path. Where the
+gate can't pass natively, `ruby tools/gate.rb linux` runs it in a Linux
+container on this branch merged with `master`, and records the same stamp.
+
+`make gate`'s stamp and the `.expected` comparison use `GATE_RUBY`, else
+`ruby` from `PATH` when it is Ruby 4.0 or later (`tools/gate-ruby` picks
+it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
+`make gate` skips the stamp and passes or fails exactly as it would
+otherwise, and the `.expected` comparison is skipped with a warning. `make gate-tool-test`
+tests `tools/gate.rb` itself.
+
 ## What the review checks
 
 - **Same answer as CRuby.** Compare a new test's output with CRuby 4.0
@@ -37,6 +66,10 @@ rebase it early rather than late.
   - A test whose values pass 2^31 (including through `to_r`, `**` or a
     Bignum) starts with `# spinel: int64`; the 32-bit lane runs every other
     test.
+  - A test whose `.expected` is Spinel's own answer and legitimately differs
+    from CRuby's (a refusal message, a Spinel-only API) carries
+    `# spinel: not-cruby` and a reason in its first lines; the pre-commit
+    hook then does not compare it with CRuby.
   - Use `Dir.tmpdir` for temporary files, not a fixed `/tmp` path, and no
     OS-specific paths.
   - Give every new test its `.expected` file.
