@@ -31051,6 +31051,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= desugar_array_at(c);                 /* a.at(i) -> a[i] */
     ch |= desugar_array_first_last(c);         /* arr.first -> arr[0], arr.last -> arr[-1] */
     ch |= desugar_to_h_block(c);               /* recv.to_h{|e|[k,v]} -> recv.map{...}.to_h */
+    ch |= desugar_unpack_block(c);             /* s.unpack(f){|v|..} -> (s.unpack(f).each{|v|..}; nil) */
     ch |= desugar_to_proc_block_arg(c);        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
     ch |= desugar_proc_expr_block_arg(c);      /* &(a >> b) -> hoisted temp */
     ch |= desugar_to_hash_splat(c);            /* f(**obj) -> f(**obj.to_hash) */
