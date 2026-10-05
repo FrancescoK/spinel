@@ -451,7 +451,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *frn = fp ? rename_local(fp) : NULL;
       int bbody = nt_ref(nt, block, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      TyKind res = comp_ntype(c, id);
+      TyKind res = repr_of(c, id).as_ty;
       int rv = ++g_tmp, tf = ++g_tmp;
       int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
       buf_puts(b, "({ ");
@@ -469,7 +469,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
       if (bn > 0) {
-        TyKind lty = comp_ntype(c, bb[bn-1]);
+        TyKind lty = repr_of(c, bb[bn-1]).as_ty;
         /* Emit last stmt as expression when it has a usable non-void value.
            For void/nil/unknown side-effecting calls (e.g. f.print), emit_stmt
            handles g_pre correctly; then synthesize a return value. */
@@ -547,7 +547,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *dpn = dp0 ? rename_local(dp0) : NULL;
       int dbody = nt_ref(nt, dblk, "body");
       int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
-      TyKind dres = comp_ntype(c, id);
+      TyKind dres = repr_of(c, id).as_ty;
       int dscalar = is_scalar_ret(dres) && dres != TY_VOID && dres != TY_NIL && dres != TY_UNKNOWN;
       int td = ++g_tmp, tdv = ++g_tmp;
       buf_puts(b, "({ ");
@@ -1726,7 +1726,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_expr(c, recv, b);
       buf_puts(b, ", SP_BUILTIN_ENUMERATOR), ");
       emit_boxed(c, argv[0], b);
-      if (comp_ntype(c, id) == TY_INT) buf_printf(b, "); _t%d; })", t);
+      if (repr_of(c, id).as_ty == TY_INT) buf_printf(b, "); _t%d; })", t);
       else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
       return 1;
     }
@@ -1774,7 +1774,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                              repr_of(c, argv[0]).kind == RK_BOXED)) {
         Buf rv; memset(&rv, 0, sizeof rv);
         buf_puts(&rv, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, argv[0], &rv); buf_puts(&rv, ", 0)");
-        TyKind rk = comp_ntype(c, id);
+        TyKind rk = repr_of(c, id).as_ty;
         if (rk == TY_POLY || rk == TY_UNKNOWN) buf_puts(b, rv.p);
         else emit_unbox_text(c, rk, rv.p, b);
         free(rv.p);
