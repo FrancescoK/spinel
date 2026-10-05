@@ -16829,6 +16829,24 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       view_unbind(g_n_argov - 1);
       return 1;
     }
+    /* deconstruct_keys on a boxed receiver: a Struct or Data answers its
+       members by key at run time, where the Hash face below raised
+       NoMethodError for anything but a Hash */
+    if (grt == TY_POLY && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+        sp_streq(nt_str(nt, id, "name"), "deconstruct_keys") &&
+        !user_defines_or_reads(c, "deconstruct_keys")) {
+      Buf db; memset(&db, 0, sizeof db);
+      buf_puts(&db, "sp_poly_deconstruct_keys(");
+      emit_boxed(c, recv, &db);
+      buf_puts(&db, ", ");
+      emit_boxed(c, argv[0], &db);
+      buf_puts(&db, ")");
+      /* the value arm of `&.` holds a boxed answer */
+      if (g_sn_skip == id) emit_boxed_text(c, TY_POLY_POLY_HASH, db.p, b);
+      else buf_puts(b, db.p);
+      free(db.p);
+      return 1;
+    }
     if (grt == TY_POLY && g_pp_hash_node != id &&
         ty_poly_hash_face_name(nt_str(nt, id, "name")) &&
         g_n_argov < MAX_ARG_OVERRIDE) {

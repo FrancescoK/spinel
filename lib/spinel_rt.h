@@ -15053,6 +15053,44 @@ static sp_PolyPolyHash *sp_poly_as_pp_hash(sp_RbVal v, const char *nm) {
   }
   return sp_poly_hash_merge(v, sp_box_nil());
 }
+/* deconstruct_keys(keys) on a boxed receiver. A Struct or Data answers as
+   CRuby's Struct#deconstruct_keys: nil asks for every member; more keys than
+   members answer {}; otherwise each key in turn -- a member's Symbol or String
+   name, or for a Struct an index -- adds that member under the key as given,
+   and the first key naming no member ends the hash there. A Data takes names
+   only. Any other receiver is a Hash, answering itself, or NoMethodError. */
+static sp_PolyPolyHash *sp_poly_deconstruct_keys(sp_RbVal v, sp_RbVal keys) {
+  sp_RbVal m = (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_h_fn) ? sp_obj_to_h_fn(v) : sp_box_nil();
+  if (!(m.tag == SP_TAG_OBJ && m.cls_id == SP_BUILTIN_SYM_POLY_HASH)) return sp_poly_as_pp_hash(v, "deconstruct_keys");
+  sp_SymPolyHash *mh = (sp_SymPolyHash *)m.v.p; SP_GC_ROOT(mh);
+  int is_data = sp_obj_is_data_fn && sp_obj_is_data_fn(v.cls_id);
+  sp_PolyPolyHash *out = sp_PolyPolyHash_new(); SP_GC_ROOT(out);
+  if (keys.tag == SP_TAG_NIL) {
+    for (sp_int i = 0; i < mh->len; i++)
+      sp_PolyPolyHash_set(out, sp_box_sym(mh->order[i]), sp_SymPolyHash_get(mh, mh->order[i]));
+    return out;
+  }
+  if (keys.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(keys.cls_id))
+    sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Array or nil)", sp_poly_class_name(keys)));
+  sp_PolyArray *ks = sp_poly_to_a_arr(keys); SP_GC_ROOT(ks);
+  if (ks->len > mh->len) return out;
+  for (sp_int i = 0; i < ks->len; i++) {
+    sp_RbVal k = ks->data[i];
+    sp_sym s = (sp_sym)-1;
+    if (k.tag == SP_TAG_SYM) s = (sp_sym)k.v.i;
+    else if (k.tag == SP_TAG_STR) s = sp_sym_intern(k.v.s ? k.v.s : "");
+    else if (is_data) sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
+    else {
+      sp_int ix = sp_poly_arg_int_chk(k);
+      if (ix < 0) ix += mh->len;
+      if (ix < 0 || ix >= mh->len) return out;
+      s = mh->order[ix];
+    }
+    if (!sp_SymPolyHash_has_key(mh, s)) return out;
+    sp_PolyPolyHash_set(out, k, sp_SymPolyHash_get(mh, s));
+  }
+  return out;
+}
 /* A boxed HANDLE back as its own pointer, for the exclusive-name face: the
    call site compiles the handle's own body against the result, so the runtime
    kind has to be checked first. A value of any other kind raises the
