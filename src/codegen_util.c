@@ -2451,9 +2451,12 @@ int sb_shadowed_reader(int node) {
    reads as the shadow `lv__sbT`, with the handle marks lifted. Answers T, or 0
    when `recv` is no such call. */
 int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv) {
-  if (recv < 0 || nt_kind(c->nt, recv) != NK_CallNode) return 0;
+  /* a global holding the handle (--share-strings) is such a slot too:
+     strbuf_slot_ref answers for it only then */
+  int gv = recv >= 0 && nt_kind(c->nt, recv) == NK_GlobalVariableReadNode && !sb_shadowed_reader(recv);
+  if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
-  if (!rp.handle && !rp.demand) return 0;
+  if (!gv && !rp.handle && !rp.demand) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
   int tH = ++g_tmp;
@@ -2531,6 +2534,15 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     if (fit) snprintf(out, cap, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     free(rb2.p);
     return fit;
+  }
+  /* a global holding the handle (--share-strings, #6765) */
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_GlobalVariableReadNode) {
+    /* inside the shim over it, the read is its plain shadow */
+    if (sb_shadowed_reader(recv)) return 0;
+    LocalVar *gv = repr_handle_gvar(c, recv);
+    if (!gv) return 0;
+    snprintf(out, cap, "gv_%s", gv->name);
+    return 1;
   }
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, recv, "name");

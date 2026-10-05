@@ -169,5 +169,9 @@ int repr_str_shares(const Compiler *c, int holder);
 int repr_str_elems_share(const Compiler *c, int holder);
 /* the rule over a class's facts (SHF_*, the count of its holders) */
 int repr_str_class_shares(unsigned flags, int holders);
+/* The global a read or write node names, when it holds the shared handle
+   (TY_STRBUF + str_shared, under the flag); NULL otherwise. Its C slot is
+   gv_<name>. */
+LocalVar *repr_handle_gvar(const Compiler *c, int node);
 
 #endif
