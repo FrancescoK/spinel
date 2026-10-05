@@ -26460,13 +26460,16 @@ static int du_first_write(const NodeTable *nt, int stmts, const char *nm) {
   du_memo[j].stmts = stmts; du_memo[j].nm = nm; du_memo[j].first = first; du_memo_n++;
   return first;
 }
+void du_memo_free(void) {
+  free(du_memo); du_memo = NULL; du_memo_cap = du_memo_n = 0;
+}
 /* The parent of each node as the program's tree reaches it: a desugar can
    leave a detached node that still names a live child (the parentheses
    around a rewritten expression), and an_parent_map, which takes whichever
    referrer comes last, then walked a read up into that dead copy and found
    no write ahead of it. A node the program does not reach keeps
    an_parent_map's answer. */
-static int *du_parent_map(const NodeTable *nt) {
+int *du_parent_map(const NodeTable *nt) {
   int *par = an_parent_map(nt);
   if (!par) return NULL;
   char *seen = calloc((size_t)nt->count + 1, 1);
@@ -26521,7 +26524,6 @@ static int du_param_binds(const NodeTable *nt, int n, const char *nm, int depth)
    filled one list at a time on first need: asked by a scan of the list for
    every read, a long body read many times cost its length per read. -1 for
    a node not in its parent's list. */
-typedef struct { int *pos; char *done; } DUPos;
 static int du_stmt_index(const NodeTable *nt, const int *par, DUPos *dp, int p, int cur) {
   if (!dp->done[p]) {
     int bn = 0; const int *b = nt_arr(nt, p, "body", &bn);
@@ -26531,7 +26533,7 @@ static int du_stmt_index(const NodeTable *nt, const int *par, DUPos *dp, int p, 
   }
   return dp->pos[cur];
 }
-static int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm) {
+int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm) {
   int cur = rd, below = -1;
   for (int guard = 0; guard < 4096; guard++) {
     int p = par[cur];
@@ -26637,7 +26639,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       if (du_read_maybe_unset(nt, par, &dp, r, nm)) { lv->maybe_unset = 1; lv->nullable_int = 1; }
     }
     free(par); free(dp.pos); free(dp.done);
-    free(du_memo); du_memo = NULL; du_memo_cap = du_memo_n = 0;
+    du_memo_free();
   }
   /* An --rbs `Integer?` return is the seeded form of the same property the
      rounds below infer, so start the propagation from it. */
@@ -32995,6 +32997,11 @@ static void an_phase_storage(Compiler *c) {
 
 /* Value-type objects: a small, immutable, scalar-only leaf class is represented by value, unless an instance is boxed, held in a class variable or captured by a proc (analyze_program's steps, in their order) */
 static void an_phase_value_types(Compiler *c) {
+  /* The nil fact (analyze_nil.c, #7444): whether each object-typed node and
+     slot may hold nil, from the settled types, ahead of the layout choice
+     below, which a value that may be nil cannot take. It changes no type
+     and no flag the passes before it read; nothing below reads it yet. */
+  an_nil_facts(c);
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,
      scalar-only leaf whose instances never need a heap pointer (never boxed,
