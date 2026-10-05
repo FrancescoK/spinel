@@ -11054,21 +11054,19 @@ static void emit_face_value(Compiler *c, TyKind slot, TyKind nat, const char *va
 /* An arm under the silent emittability probe the dynamic-send dispatch
    uses: a typed emitter that declines the call longjmps out of emit, and
    the arm is dropped rather than the build. Everything the arm may have
-   changed on the way out is put back -- the receiver's type override and
-   the inference pin emit_face_arm restores only on its normal return, the
-   argument overrides, the conversion hold, the prelude, and the recovery
-   point itself, which the driver armed for the whole unit. The arm's
-   prelude is captured to `pre` and its value to `val`; answers 0 when the
-   arm was dropped. */
+   changed on the way out is put back -- the receiver's type view and face
+   pin emit_face_arm pops only on its normal return (view_unwind pops them
+   otherwise), the argument overrides, the conversion hold, the prelude,
+   and the recovery point itself, which the driver armed for the whole
+   unit. The arm's prelude is captured to `pre` and its value to `val`;
+   answers 0 when the arm was dropped. */
 static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box,
                           Buf *pre, Buf *val, TyKind *nat) {
-  int recv = nt_ref(c->nt, id, "receiver");
   Buf *sv_pre = g_pre;
   int sv_probe = g_unsup_probe;
   ConvHold *sv_hold = g_conv_hold;
   int sv_argov = g_n_argov;
   int sv_open_defaults = g_open_defaults;
-  TyKind sv_ty = c->ntype[recv];
   jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
   volatile int ok = 1;
   int sv_moves = comp_scope_move_depth(), sv_views = view_mark();
@@ -11076,7 +11074,6 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
   if (setjmp(g_unsup_recover) == 0) *nat = emit_face_arm(c, id, kind, flags, box, val);
   else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
   memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-  c->ntype[recv] = sv_ty;
   view_unbind(sv_argov);
   g_open_defaults = sv_open_defaults;
   g_conv_hold = sv_hold;
