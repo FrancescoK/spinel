@@ -109,8 +109,11 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by
    the handle in front of it, which only sp_mark_string reaches, and the
    object walk skips the payload. The slot's C type is the one thing every
-   emitter agrees on, so the choice is made here rather than at each site. */
-#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, default: (uintptr_t)0)
+   emitter agrees on, so the choice is made here rather than at each site.
+   A local a rescue can write is `const char * volatile`, the one other
+   spelling of a String slot the compiler emits, and is a String all the
+   same. */
+#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, const char *volatile *: (uintptr_t)2, default: (uintptr_t)0)
 #define SP_GC_ROOT(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | _SP_GC_SLOT_TAG(v)))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
    walker routes it through sp_mark_rbval (the object pointer sits in a union at
