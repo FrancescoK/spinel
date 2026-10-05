@@ -127,7 +127,7 @@ def t_string_index_from
   # Negative start counts from end.
   puts s.index(".", -1).to_s      # "" (not found, nil.to_s)
   puts s.index(".", -2).to_s      # 5    (last dot)
-  puts s.index(".", -100).to_s    # 1    (clamps to 0)
+  puts s.index(".", -100).to_s    # "" (before the start: nil, as CRuby)
   
   # Out-of-range positive start.
   puts s.index(".", 100).to_s     # "" (not found, nil.to_s)
