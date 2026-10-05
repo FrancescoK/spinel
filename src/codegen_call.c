@@ -507,7 +507,7 @@ int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b
    the plain C comparison, which is exact then: an Integer literal converts
    without rounding, and against a Float literal below 2^53 a rounded
    Integer is already past it. */
-static int int_flt_lit_exact(Compiler *c, int id) {
+int int_flt_lit_exact(Compiler *c, int id) {
   if (nt_kind(c->nt, id) == NK_IntegerNode)
     return !nt_str(c->nt, id, "bigval") && llabs(nt_int(c->nt, id, "value", 0)) <= (1LL << 53);
   if (nt_kind(c->nt, id) == NK_FloatNode) {
@@ -11968,6 +11968,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     if (fr && fr != 5 && fr != 6 && fr != 7 && fa && fa != 5 && fa != 6 && fa != 7) {
       if (fr == fa) {
         if (fr == 2) emit_str_eq_ordered(c, recv, argv[0], 1, b);
+        /* an Integer against a Float is equal exactly, as == is (#7505) */
+        else if (emit_int_float_cmp(c, recv, argv[0], "==", b)) {}
         else { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
       else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), ("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }

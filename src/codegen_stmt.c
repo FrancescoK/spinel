@@ -3083,6 +3083,23 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
     emit_boxed_text(c, pt, sn, b);
     buf_printf(b, ", _t%d); })", tp);
   }
+  /* an Integer scrutinee against a Float value, or the reverse, is equal
+     exactly, as == is (#7505); a literal within 2^53 keeps the plain C
+     comparison, which is exact then */
+  else if (repr_of(c, valnode).kind != RK_BOXED &&
+           ((pt == TY_INT && comp_ntype(c, valnode) == TY_FLOAT) ||
+            (pt == TY_FLOAT && comp_ntype(c, valnode) == TY_INT)) &&
+           !int_flt_lit_exact(c, valnode)) {
+    int tc = ++g_tmp;
+    char sv[32], cv[32];
+    snprintf(sv, sizeof sv, "_t%d", t);
+    snprintf(cv, sizeof cv, "_t%d", tc);
+    buf_printf(b, "({ %s _t%d = ", pt == TY_INT ? "sp_float" : "sp_int", tc);
+    emit_expr(c, valnode, b);
+    buf_puts(b, "; ");
+    emit_int_flt_rel(b, pt == TY_INT ? sv : cv, pt == TY_INT ? cv : sv, 1, "==");
+    buf_puts(b, "; })");
+  }
   else {
     buf_printf(b, "(_t%d == ", t);
     if (repr_of(c, valnode).kind == RK_BOXED) {
@@ -5491,6 +5508,21 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
         buf_puts(b, ", ");
         emit_boxed_text(c, pt, sref2, b);
         buf_puts(b, ")");
+      }
+      /* an Integer subject against a Float pattern, or the reverse, is
+         equal exactly, as == is (#7505); a literal within 2^53 keeps the
+         plain C comparison, which is exact then */
+      else if (((pt == TY_INT && ct == TY_FLOAT) || (pt == TY_FLOAT && ct == TY_INT)) &&
+               !int_flt_lit_exact(c, cond)) {
+        int tc = ++g_tmp;
+        char sv[32], cv[32];
+        snprintf(sv, sizeof sv, "_t%d", t);
+        snprintf(cv, sizeof cv, "_t%d", tc);
+        buf_printf(b, "({ %s _t%d = ", ct == TY_INT ? "sp_int" : "sp_float", tc);
+        emit_expr(c, cond, b);
+        buf_puts(b, "; ");
+        emit_int_flt_rel(b, pt == TY_INT ? sv : cv, pt == TY_INT ? cv : sv, 1, "==");
+        buf_puts(b, "; })");
       }
       else {
         buf_printf(b, "(_t%d == ", t); emit_expr(c, cond, b); buf_puts(b, ")");
