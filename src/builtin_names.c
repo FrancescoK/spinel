@@ -101,6 +101,10 @@ int is_self_copy(const char *n) {
          sp_streq(n, "itself");
 }
 
+int is_self_answer(const char *n) {
+  return sp_streq(n, "freeze") || sp_streq(n, "itself");
+}
+
 int is_int_step(const char *n) {
   return sp_streq(n, "times") || sp_streq(n, "upto") || sp_streq(n, "downto");
 }
