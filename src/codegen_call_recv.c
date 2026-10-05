@@ -384,9 +384,9 @@ static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_s
 /* The direct call of the container conversion obj_container_conv found:
    the compiled #to_ary / #to_hash of the defining class on the operand. */
 static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
-  TyKind t = comp_ntype(c, node);
+  int by_value = repr_of(c, node).kind == RK_VOBJ;
   buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
-  if (!comp_ty_value_obj(c, t)) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
+  if (!by_value) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
   buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, "))");
 }
 
