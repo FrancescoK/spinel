@@ -2096,6 +2096,19 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (ty_is_object(ur) || ur == TY_POLY) { *out = TY_POLY; return 1; }
       }
     }
+    /* a program's == answering anything but a bool (a Symbol, nil) answers
+       it through the boxed call too, where the boxed-operator dispatch can
+       call it (one positional, no rest): sp_poly_eq_value hands it back */
+    if (sp_streq(name, "==") && argc == 1) {
+      for (int k = 0; k < c->nclasses; k++) {
+        if (c->classes[k].is_native_class) continue;
+        int mi = comp_method_in_chain(c, k, name, NULL);
+        if (mi < 0 || mi >= c->nscopes) continue;
+        TyKind ur = (TyKind)c->scopes[mi].ret;
+        if (ur != TY_BOOL && ur != TY_UNKNOWN && ur != TY_VOID &&
+            c->scopes[mi].nparams >= 1 && c->scopes[mi].rest_idx < 0) { *out = TY_POLY; return 1; }
+      }
+    }
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
