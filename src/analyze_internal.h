@@ -318,7 +318,7 @@ TyKind ivar_value_ty(ClassInfo *ci, int iv);
 int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out);
-int infer_arysub_call(Compiler *c, int id, TyKind *out);
+int infer_bsub_call(Compiler *c, int id, TyKind *out);
 int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out);
 /* bop_find for the call `id`, recording the row under --plan-check */

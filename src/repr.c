@@ -60,8 +60,8 @@ int repr_dyn_cls(const Compiler *c, TyKind t) {
   /* an exception's object starts with its class name, not a class id, so
      it is boxed with the static id (emit_boxed) */
   if (c->classes[cid].is_value_type || class_is_exc_subclass((Compiler *)c, cid)) return 0;
-  /* an Array subclass instance is boxed as its Array (arysub_box_id) */
-  if (c->classes[cid].ary_root > 0) return 0;
+  /* a builtin subclass instance is boxed as its builtin (bsub_box_id) */
+  if (c->classes[cid].bsub_root > 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (k != cid && c->classes[k].parent == cid) return 1;
   return 0;

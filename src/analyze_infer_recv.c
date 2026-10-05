@@ -1109,18 +1109,18 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   return 0;
 }
 
-/* An Array method given an Array subclass instance as the Array it compares,
-   combines or copies (comp_arysub_args_viewed): answered with the argument
-   pinned to the instance's Array, as the emitter views it (#7449). The face
-   pins one node, so it is the first such argument. */
-static int infer_arysub_arg_call(Compiler *c, int id, TyKind rt, TyKind *out) {
+/* A builtin's method given a builtin subclass instance as the Array (Hash,
+   String) it compares, combines or copies (comp_bsub_args_viewed): answered
+   with the argument pinned to the instance's builtin, as the emitter views it
+   (#7449). The face pins one node, so it is the first such argument. */
+static int infer_bsub_arg_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   int args = nt_ref(c->nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
   for (int i = 0; i < an; i++) {
     TyKind at = infer_type(c, av[i]);
-    if (comp_ty_ary_root(c, at) < 0) continue;
-    if (!comp_arysub_args_viewed(c, id, rt)) return 0;
-    TyKind k = comp_ary_kind(c, ty_object_class(at));
+    if (comp_ty_bsub_root(c, at) < 0) continue;
+    if (!comp_bsub_args_viewed(c, id, rt, comp_ty_bsub_base(c, at))) continue;
+    TyKind k = comp_bsub_kind(c, ty_object_class(at));
     if (k == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
     an_face_push(av[i], k);
     *out = infer_call(c, id);
@@ -1130,21 +1130,22 @@ static int infer_arysub_arg_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   return 0;
 }
 
-/* A call on an Array subclass instance that Array answers (#7449): the call
-   re-inferred with its receiver pinned to the embedded Array's kind, as a
-   boxed receiver's face is, and the emitter re-enters the Array emitters under
-   the same pin. A method whose answer is its receiver answers the instance. */
-int infer_arysub_call(Compiler *c, int id, TyKind *out) {
-  if (!c->has_arysub) return 0;
+/* A call on a builtin subclass instance that the builtin answers (#7449):
+   the call re-inferred with its receiver pinned to the embedded builtin's
+   kind, as a boxed receiver's face is, and the emitter re-enters the
+   builtin's emitters under the same pin. A method whose answer is its
+   receiver answers the instance. */
+int infer_bsub_call(Compiler *c, int id, TyKind *out) {
+  if (!c->has_bsub) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
   /* Kernel#Array hands an Array back as it is, an Array subclass instance
-     included */
-  int an = comp_arysub_kernel_array(c, id);
-  if (an >= 0 && comp_ty_ary_root(c, infer_type(c, an)) >= 0) { *out = infer_type(c, an); return 1; }
+     included (Kernel#Hash, Kernel#String alike) */
+  int kb = BSUB_NONE, an = comp_bsub_kernel_conv(c, id, &kb);
+  if (an >= 0 && comp_ty_bsub_base(c, infer_type(c, an)) == kb) { *out = infer_type(c, an); return 1; }
   if (recv < 0 || face_of(recv) != TY_UNKNOWN) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
-  if (!comp_arysub_call(c, id, rt, &k)) return infer_arysub_arg_call(c, id, rt, out);
-  int self = comp_arysub_self_result(c, id);
+  if (!comp_bsub_call(c, id, rt, &k)) return infer_bsub_arg_call(c, id, rt, out);
+  int self = comp_bsub_result_form(c, id, rt) == BSR_SELF;
   TyKind r = TY_UNKNOWN;
   if (k != TY_UNKNOWN) {
     an_face_push(recv, k);
