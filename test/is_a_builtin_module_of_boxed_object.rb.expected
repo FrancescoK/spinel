@@ -1,0 +1,5 @@
+Version: true false true
+Shelf: false true false
+Integer: true false true
+String: true false true
+NilClass: false false false
