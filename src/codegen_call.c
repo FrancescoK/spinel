@@ -4948,6 +4948,12 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     buf_printf(b, " (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM) ? (", tv, tv);
     for (int j = 0; j < argc; j++) {
       if (j) buf_puts(b, " || ");
+      /* start_with?(/re/): the pattern matches at index 0, as the typed
+         String path answers it */
+      if (sp_streq(name, "start_with?") && re_lit_index(c, argv[j]) >= 0) {
+        buf_printf(b, "(sp_re_match(sp_re_pat_%d, _s%d) == 0)", re_lit_index(c, argv[j]), tv);
+        continue;
+      }
       buf_printf(b, "%s(_s%d, ", fn, tv);
       emit_str_expr(c, argv[j], b);
       buf_puts(b, ")");
