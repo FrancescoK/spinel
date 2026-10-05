@@ -3819,6 +3819,13 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
   return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
 }
 
+/* The runtime `[]` for a boxed receiver and a boxed key: under
+   --share-strings a String key may be its shared handle, which the lookup
+   reads through (sp_poly_index_poly_h). */
+const char *poly_index_poly_fn(const Compiler *c) {
+  return c->share_strings ? "sp_poly_index_poly_h" : "sp_poly_index_poly";
+}
+
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {

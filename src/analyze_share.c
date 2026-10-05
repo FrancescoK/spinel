@@ -2117,6 +2117,12 @@ void share_routes_check(Compiler *c) {
   }
 }
 
+int share_routes_failing(Compiler *c) {
+  int n = 0;
+  for (int i = 0; i < c->nshare_route; i++) n += !sh_route_ok(c, &c->share_route[i]);
+  return n;
+}
+
 void share_routes_free(Compiler *c) {
   for (int i = 0; i < c->nshare_route; i++) free(c->share_route[i].msg);
   free(c->share_route);
