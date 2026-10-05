@@ -68,6 +68,12 @@ int share_class_holders(const Compiler *c, int h);
 unsigned share_elem_flags(const Compiler *c, int e);
 int share_elem_holders(const Compiler *c, int e);
 
+/* Under --share-strings, once the analysis is final: mark each argument
+   that reads a shared handle into a parameter that only reads it for the
+   length of the call as strbuf_read_raw, so it hands over the live buffer
+   instead of a copy (#7482). Answers how many it marked. */
+int share_mark_borrows(Compiler *c);
+
 /* The stats' second build, with every union with UNKNOWN dropped: would
    the holder with h's key share without what the walk does not follow? */
 struct ShareFacts *share_facts_build_closed(Compiler *c);

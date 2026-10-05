@@ -15958,7 +15958,7 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth) {
    the call: the live handle can serve them through sp_String_cstr, with no
    copy. Deliberately narrow -- nothing here allocates from the pointer or
    retains it, so no collection can run while an interior pointer is held. */
-static int an_str_read_only_accessor(const char *n) {
+int an_str_read_only_accessor(const char *n) {
   return sp_streq(n, "getbyte") || sp_streq(n, "bytesize") ||
          sp_streq(n, "length") || sp_streq(n, "size") || sp_streq(n, "empty?");
 }
@@ -34035,6 +34035,9 @@ void analyze_program(Compiler *c) {
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
             g_fixpoint_rounds >= 128 ? " (CAP -- did not converge)" : "");
+  /* --share-strings: a read-only parameter borrows a handle's bytes, read
+     off the final types and flags (#7482) */
+  share_mark_borrows(c);
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
 }
