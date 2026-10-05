@@ -10735,6 +10735,17 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
   sp_poly_arr_set(v, idx, val);
   return v;
 }
+/* sp_poly_index_poly for --share-strings, where a String key may come boxed
+   as its shared handle: the key reads as its live value, which the
+   String-keyed arms test (SP_TAG_STR). A Proc's, a Method's or a curried
+   Proc's [] is a call, and a user object's [] its own method: each takes
+   the handle itself, as the String the caller holds. */
+static sp_RbVal sp_poly_index_poly_h(sp_RbVal recv, sp_RbVal idx) {
+  if (sp_poly_is_strbuf(idx) && !sp_poly_is_call_aref(recv) && !sp_poly_is_user_obj(recv) &&
+      !(recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_CURRY))
+    idx = sp_poly_strbuf_deref(idx);
+  return sp_poly_index_poly(recv, idx);
+}
 /* poly_val[poly_key] = val: fully dynamic dispatch for poly recv + poly key. */
 static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
