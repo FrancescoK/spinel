@@ -1111,6 +1111,15 @@ int main(int argc, char **argv) {
   }
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   bi_put_toks(&bi, "cflag", ffi_cflags.p);
+  /* Every flag that changes how the generated C compiles goes before the
+     source: a split build (cc_split_build) compiles its parts with the flags
+     in front of the source only, and one placed after it reached the link
+     alone. The overflow mode there left each part with the runtime header's
+     raise-mode Integer arithmetic, so an --int-overflow=promote program of a
+     few MB raised RangeError where it should have made a Bignum. */
+  s_add(&cmd, ov_define); s_add(&cmd, " ");
+  if (want_g) s_add(&cmd, "-g ");
+  if (profile) s_add(&cmd, "-fno-omit-frame-pointer ");
   size_t cc_src_at = cmd.p ? strlen(cmd.p) : 0;   /* the flags before the source */
   s_add_arg(&cmd, c_path);
   size_t cc_src_end = cmd.p ? strlen(cmd.p) : 0;
@@ -1227,10 +1236,7 @@ int main(int argc, char **argv) {
       bi_put(&bi, "lib", link_extra[li]);
     }
   if (uses_threads) { s_add(&cmd, "-lpthread "); bi_put(&bi, "lib", "-lpthread"); }
-  s_add(&cmd, ov_define); s_add(&cmd, " ");
   bi_put(&bi, "define", ov_define);
-  if (want_g) s_add(&cmd, "-g ");
-  if (profile) s_add(&cmd, "-fno-omit-frame-pointer ");
 #if !defined(__APPLE__)
   if (debug && !target_wasi) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
 #endif
