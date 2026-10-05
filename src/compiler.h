@@ -193,6 +193,10 @@ typedef struct {
                        modifier `if`, one branch, a loop body), so the read
                        answers nil, and the slot starts as its nil sentinel
                        as an or-written one does */
+  int elems_shared; /* --share-strings: a String container whose elements
+                       the rule shares settled in its poly form, and its
+                       elements are boxed handles (repr_of_slot's
+                       elems_handle) */
   int str_shared;   /* (TY_STRBUF) a shared-mutable string: it is aliased
                        (`s2 = s1`) AND mutated in place, so the whole alias set
                        holds the one sp_String* handle -- reads hand out the live
@@ -467,6 +471,8 @@ typedef struct {
   unsigned char *cvar_nullable_int; /* the Integer or Float class variable can
                                        hold the nil sentinel, as
                                        ivar_nullable_int for an ivar */
+  unsigned char *cvar_str_shared;   /* --share-strings: the TY_STRBUF slot is
+                                       the shared handle, as ivar_str_shared */
   int ncvars, ccvars;
   char **readers;      /* attr reader method names (no '@') */
   int nreaders, creaders;

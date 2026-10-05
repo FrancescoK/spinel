@@ -14694,9 +14694,7 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
       g = k > 0 ? st[k - 1] : -1;
     }
-    if (g >= 0 && (nt_kind(nt, g) == NK_GlobalVariableReadNode || nt_kind(nt, g) == NK_GlobalVariableWriteNode) &&
-        repr_handle_gvar(c, g))
-      return 1; }
+    if (g >= 0 && repr_handle_static(c, g)) return 1; }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
@@ -16215,6 +16213,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       Scope *s = &c->scopes[sh->scope];
       LocalVar *lv = &s->locals[sh->local];
       if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
+        /* a typed String Array settles in its poly form, whose boxes hold
+           the handle; a String written in is boxed as one */
+        if ((lv->type == TY_STR_ARRAY || lv->type == TY_POLY_ARRAY) && repr_str_elems_share(c, h) &&
+            !lv->rbs_seeded && (lv->type != TY_POLY_ARRAY || !lv->elems_shared)) {
+          lv->type = TY_POLY_ARRAY;
+          lv->elems_shared = 1;
+          changed = 1;
+        }
         if (repr_str_elems_share(c, h)) changed |= strbuf_demand_container_stores(c, lv->name, s);
         continue;
       }
@@ -16227,7 +16233,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         lv->type = TY_STRBUF; lv->str_shared = 1;
         changed = 1;
       }
-      else if (!lv->is_block_param && strbuf_slot_eligible(c, lv->name, s, lv)) {
+      /* a block's parameter holds the handle as a local does: what binds it
+         (a yield, an iterator) hands over the handle */
+      else if (lv->is_block_param) {
+        lv->type = TY_STRBUF; lv->str_shared = 1;
+        changed = 1;
+      }
+      else if (strbuf_slot_eligible(c, lv->name, s, lv)) {
         lv->type = TY_STRBUF; lv->str_shared = 1;
         changed = 1;
       }
@@ -16242,15 +16254,40 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
     }
-    /* a global holds the handle the way a top-level ivar's C global does */
-    else if (sh->kind == SHK_GVAR && repr_str_shares(c, h)) {
-      LocalVar *gv = comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
+    /* a class variable, in each class with one of the name, as an ivar does */
+    else if (sh->kind == SHK_CVAR && repr_str_shares(c, h)) {
+      for (int k = 0; k < c->nclasses; k++) {
+        ClassInfo *ci = &c->classes[k];
+        int i = sh->name ? comp_cvar_index(ci, sh->name) : -1;
+        if (i < 0 || (ci->cvar_types[i] != TY_STRING && ci->cvar_types[i] != TY_STRBUF)) continue;
+        if (ci->cvar_types[i] == TY_STRBUF && ci->cvar_str_shared[i]) continue;
+        ci->cvar_types[i] = TY_STRBUF;
+        ci->cvar_str_shared[i] = 1;
+        changed = 1;
+      }
+    }
+    /* a global or a constant holds the handle the way a top-level ivar's C
+       global does */
+    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
+      LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
+                                           : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
       if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;   /* a box holds the handle */
       if (gv->type == TY_STRBUF && gv->str_shared) continue;
       gv->type = TY_STRBUF;
       gv->str_shared = 1;
       changed = 1;
     }
+  }
+  /* a container literal no holder names, iterated in place by a block
+     (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
+     stores are the handles the block's parameters bind */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    int r = nt_ref(c->nt, n, "receiver"), blk = nt_ref(c->nt, n, "block");
+    if (r < 0 || blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
+    r = unwrap_parens(c, r);
+    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
+        share_node_elems_share(c, r))
+      changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
   }
   return changed;
 }
@@ -19051,6 +19088,12 @@ static int convert_byref_handle_params(Compiler *c,
          keyword's handle stayed in the callee's. */
       int strbuf_mut = (pp->is_param && pp->type == TY_STRBUF && !pp->str_shared &&
                         an_param_mutated_in_place(c, mi2, pj));
+      /* --share-strings: a by-value String parameter the callee mutates (a
+         name group that could not lend its slot) is a copy, which a handle
+         argument must not be handed: it converts as a lent one does */
+      if (c->share_strings && !strbuf_mut && pp->is_param && !pp->is_block_param && !pp->byref_out &&
+          pp->type == TY_STRING && an_param_mutated_in_place(c, mi2, pj))
+        strbuf_mut = 1;
       if (!pp->byref_out && !is_handle && !poly_mut && !strbuf_mut) continue;
       /* one pass over this method's call sites: detect a handle arg, and
          (once converted) pull plain-local args into the shared set */
@@ -19186,7 +19229,8 @@ static int convert_byref_handle_params(Compiler *c,
         }
         /* a global holding the handle (--share-strings) hands it over as an
            ivar's read does */
-        else if (nt_kind(nt, an2) == NK_GlobalVariableReadNode && repr_handle_gvar(c, an2) &&
+        else if (repr_static_read_kind(nt_kind(nt, an2)) &&
+                 repr_handle_static(c, an2) &&
                  (pp->type == TY_POLY || (pp->type == TY_STRBUF && pp->str_shared)) && !c->strbuf_box[an2]) {
           c->strbuf_box[an2] = 1;
           comp_sn_retype(c, an2, TY_STRBUF);
@@ -20930,6 +20974,13 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
   if (!lv || lv->is_cell) return 0;
   if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
   int changed = 0;
+  /* --share-strings: a block's parameter the rule made the handle hands it
+     over as a handle local does: only the read is left to mark */
+  if (c->share_strings && lv->is_block_param && lv->type == TY_STRBUF && lv->str_shared) {
+    if (!mark_read || c->strbuf_box[a]) return 0;
+    c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF);
+    return 1;
+  }
   /* the method's own parameter, handed on (`def via(s, f) = f.call(s)`): it
      takes the handle, and convert_byref_handle_params pulls via's callers in
      on its next run */
@@ -22260,6 +22311,45 @@ static int promote_dyncall_string_args(Compiler *c) {
   changed |= ctor_pull_args(c);
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n))
     if (dyn_call_site(c, n)) changed |= dyn_pull_site_args(c, n);
+  /* --share-strings: a capture wrapper's call (`->(__cap_a) { .. }.call(a)`,
+     desugar_block_capture_wrap) hands its parameter a variable holding the
+     handle as the handle */
+  if (c->share_strings)
+    for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+      int r = nt_ref(nt, n, "receiver");
+      if (nt_kind(nt, n) != NK_CallNode || r < 0 || nt_kind(nt, r) != NK_LambdaNode || !nt_int(nt, r, "cap_iife", 0))
+        continue;
+      int a = nt_ref(nt, n, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      for (int k = 0; k < ac; k++)
+        if (local_is_handle(c, av[k])) changed |= dyn_pull_arg(c, av[k], 1);
+    }
+  /* --share-strings: a Thread's or a Fiber's argument that reads an ivar, a
+     global, a constant or a class variable holding the handle hands it to
+     a block parameter that is one, or boxes it (an_thread_arg_block) */
+  if (c->share_strings)
+    for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+      int blk = nt_kind(nt, n) == NK_CallNode ? an_thread_arg_block(c, n) : -1;
+      if (blk < 0) continue;
+      int a = nt_ref(nt, n, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      for (int k = 0; k < ac; k++) {
+        const char *bp = block_param_name(c, blk, k);
+        LocalVar *pv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
+        if (!pv || (!repr_of_slot(c, pv).handle && pv->type != TY_POLY) || c->strbuf_box[av[k]]) continue;
+        int handle = repr_handle_static(c, av[k]);
+        if (!handle && nt_kind(nt, av[k]) == NK_InstanceVariableReadNode) {
+          const char *ivn = nt_str(nt, av[k], "name");
+          int cid = ivn ? an_ivar_owner(c, av[k]) : -1;
+          int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], ivn) : -1;
+          handle = iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+        }
+        if (!handle) continue;
+        c->strbuf_box[av[k]] = 1;
+        comp_sn_retype(c, av[k], TY_STRBUF);
+        changed = 1;
+      }
+    }
   /* a yield into a real proc is the same call (dyn_yield_site) */
   for (int n = comp_kind_first(c, NK_YieldNode); n >= 0; n = comp_kind_next(c, n))
     if (nt_kind(nt, n) == NK_YieldNode && dyn_yield_site(c, n) >= 0) changed |= dyn_pull_site_args(c, n);

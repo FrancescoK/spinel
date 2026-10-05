@@ -435,8 +435,20 @@ int local_is_handle(Compiler *c, int a) {
 }
 /* A local that is the shared handle, as a reference to the handle itself
    rather than the copy a plain read of it takes. 0 when it is none. */
+/* An iterator's element text `src` (of type `want`) bound to block
+   parameter pv: a parameter that is the shared handle (--share-strings)
+   takes a fresh handle of a String element, which keeps a frozen one
+   frozen, or the handle a boxed element holds; any other takes `src`. */
+void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const char *src, Buf *b) {
+  if (repr_of_slot(c, pv).kind == RK_STRBUF && want == TY_STRING) buf_printf(b, "sp_String_new_shared(%s)", src);
+  else if (repr_of_slot(c, pv).kind == RK_STRBUF && want == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(%s)", src);
+  else buf_puts(b, src);
+}
 int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
-  if (!local_is_handle(c, a)) return 0;
+  /* under --share-strings a global or an ivar holding the handle is one too */
+  if (!local_is_handle(c, a) && !repr_handle_static(c, a) &&
+      !(c->share_strings && a >= 0 && nt_kind(c->nt, a) == NK_InstanceVariableReadNode))
+    return 0;
   /* a value that ran first, ahead of a later one that rebinds the local
      (`yield(s, (s = +"q"; 1))`), is the handle it read then: the slot holds
      the new String by now (ran_first_handle, as emit_boxed asks it) */
@@ -4023,6 +4035,19 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     else buf_printf(&rb, "sp_%sArray_new()", array_kind(et) ? array_kind(et) : "Int");
   }
   else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+  /* --share-strings: a block parameter that is the shared handle takes a
+     fresh String receiver as a handle of its own, and tap answers it */
+  if (is_tap && et == TY_STRING && c->share_strings && p0) {
+    Scope *hsc = comp_scope_of(c, block);
+    LocalVar *hlv = hsc ? scope_local(hsc, p0) : NULL;
+    if (repr_of_slot(c, hlv).handle) {
+      Buf wb; memset(&wb, 0, sizeof wb);
+      buf_printf(&wb, "sp_String_new_shared(%s)", rb.p ? rb.p : "NULL");
+      free(rb.p);
+      rb = wb;
+      et = TY_STRBUF;
+    }
+  }
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
   if (needs_root(et)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, et, tr, g_pre); buf_puts(g_pre, "\n"); }
@@ -6284,7 +6309,7 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
         snprintf(src0, sizeof src0, "%s->order[_t%d]", rb.p, t);
       emit_indent(b, indent + 1);
       buf_printf(b, "lv_%s = ", p0);
-      if (box0) emit_boxed_text(c, want0, src0, b); else buf_puts(b, src0);
+      if (box0) emit_boxed_text(c, want0, src0, b); else emit_strbuf_param_bind(c, pv0, want0, src0, b);
       buf_puts(b, ";\n");
     }
     if (p1) {
@@ -6299,7 +6324,7 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
         snprintf(src1, sizeof src1, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
       emit_indent(b, indent + 1);
       buf_printf(b, "lv_%s = ", p1);
-      if (box1) emit_boxed_text(c, want1, src1, b); else buf_puts(b, src1);
+      if (box1) emit_boxed_text(c, want1, src1, b); else emit_strbuf_param_bind(c, pv1, want1, src1, b);
       buf_puts(b, ";\n");
     }
     emit_loop_body(c, body, b, indent + 1);
@@ -6356,7 +6381,7 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
       buf_printf(b, "lv_%s = ", p0);
       if (box) emit_boxed_text(c, want, src, b);
       else if (unbox) emit_unbox_text(c, pv->type, src, b);
-      else buf_puts(b, src);
+      else emit_strbuf_param_bind(c, pv, want, src, b);
       buf_puts(b, ";\n");
     }
     emit_loop_body(c, body, b, indent + 1);

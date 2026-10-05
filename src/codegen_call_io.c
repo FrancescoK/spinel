@@ -8,6 +8,18 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
+
+/* A line loop's block parameter `pn` of call `id`, declared in the loop and
+   bound to the fresh line in _t<lt>: a parameter that is the shared handle
+   (--share-strings) wraps it in a handle of its own. */
+static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Buf *b) {
+  Scope *s = comp_scope_of(c, id);
+  LocalVar *lv = s ? scope_local(s, pn) : NULL;
+  if (repr_of_slot(c, lv).kind == RK_STRBUF)
+    buf_printf(b, " sp_String *lv_%s = sp_String_new_shared(_t%d); SP_GC_ROOT(lv_%s);", pn, lt, pn);
+  else buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", pn, lt, pn);
+}
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -1224,7 +1236,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                  lt, lt, lt, rf, ls, ll, lc);
       if (bpn && file_block_param_poly(c, id, bpn))
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
-      else if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
+      else if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
       return 1;
@@ -1272,7 +1284,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          way IO#each_line below does */
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_argf_gets()) != NULL) {", lt, lt, lt);
-      if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
+      if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_puts(b, " } (&sp_argf_obj); })");
       return 1;
@@ -1343,7 +1355,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (skip_dots)
         buf_printf(b, " if (sp_str_eq(_t%d, (&(\"\\xff\" \".\")[1])) ||"
                       " sp_str_eq(_t%d, (&(\"\\xff\" \"..\")[1]))) continue;", tdn, tdn);
-      if (dbpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", dbpn, tdn, dbpn);
+      if (dbpn) emit_line_param_decl(c, id, dbpn, tdn, b);
       for (int k = 0; k < dbbn; k++) emit_stmt(c, dbbb[k], b, 0);
       buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
       return 1;
