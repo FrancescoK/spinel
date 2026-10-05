@@ -8,6 +8,67 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
+
+/* The output buffer `ob` of read(len, buf), readpartial and sysread(len,
+   buf) and pread(len, off, buf), when it is not a String. CRuby converts
+   the length (and offset), then takes the buffer through StringValue: nil
+   is no buffer, a boxed String is filled -- rebound here, as the String arms
+   rebind a String local -- and any other class is TypeError. The arms took
+   every buffer for a String, and an Integer, a nil or a boxed one did not
+   build. Emits the read `fn` over the rendered handle `r` with the `nint`
+   Integer arguments before the buffer, and answers 1; a String buffer
+   answers 0 and keeps its arm. The handle is held first and a nil one is
+   NoMethodError once the arguments have run, as CRuby dispatches. */
+static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
+                               int nint, int ob, Buf *b) {
+  TyKind bt = comp_ntype(c, ob);
+  int boxed = repr_of(c, ob).kind == RK_BOXED;
+  if (!boxed && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
+  int tf = ++g_tmp, ti = g_tmp + 1;
+  g_tmp += nint;
+  buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); ", tf, r, tf);
+  for (int k = 0; k < nint; k++) {
+    buf_printf(b, "sp_int _t%d = ", ti + k); emit_int_expr(c, argv[k], b); buf_puts(b, "; ");
+  }
+  int tb = ++g_tmp, ts = ++g_tmp, tr = ++g_tmp;
+  if (boxed) {
+    buf_printf(b, "sp_RbVal _t%d = ", tb); emit_boxed(c, ob, b);
+    buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%s\")", tf, name);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); const char *_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d);"
+                  " if (_t%d) sp_str_check_mutable(_t%d); ", tb, ts, tb, tb, ts, ts);
+  }
+  else {
+    /* the buffer runs as an argument, then the nil test, then its class */
+    int tv = ++g_tmp;
+    if (bt == TY_NIL) { buf_puts(b, "(void)("); emit_expr(c, ob, b); buf_puts(b, "); "); }
+    else {
+      emit_ctype(c, bt, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, ob, b);
+      buf_printf(b, "; (void)_t%d; ", tv);
+      if (needs_root(bt)) { emit_gc_root_tmp(c, bt, tv, b); buf_puts(b, " "); }
+    }
+    buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", tf, name);
+    /* nil is no buffer; no String slot holds a Rational or a Complex (the
+       slot's own refusal), and CRuby's TypeError is known here; any other
+       class converts as a String argument does */
+    if (bt == TY_RATIONAL || bt == TY_COMPLEX)
+      buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into String\"); ",
+                 bt == TY_RATIONAL ? "Rational" : "Complex");
+    else if (bt != TY_NIL) {
+      int bind = view_bind(ob, "_t%d", tv);
+      buf_puts(b, "(void)("); emit_str_expr(c, ob, b); buf_puts(b, "); ");
+      view_unbind(bind);
+    }
+  }
+  buf_printf(b, "const char *_t%d = %s(_t%d", tr, fn, tf);
+  for (int k = 0; k < nint; k++) buf_printf(b, ", _t%d", ti + k);
+  buf_puts(b, "); ");
+  if (boxed && nt_kind(c->nt, ob) == NK_LocalVariableReadNode) {
+    buf_printf(b, "if (_t%d) ", ts); emit_expr(c, ob, b); buf_printf(b, " = sp_box_str(_t%d); ", tr);
+  }
+  buf_printf(b, "_t%d; })", tr);
+  return 1;
+}
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -147,6 +208,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
       int tio2 = ++g_tmp;
+      char tio[32]; snprintf(tio, sizeof tio, "_t%d", tio2);
       /* pos=, sysseek, flock, fcntl and advise, answering what the typed
          arms answer: the offset pos= set, sysseek's and fcntl's integers,
          flock's status, nil from advise. The receiver and then the
@@ -431,6 +493,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                       "(given %d, expected 1..2)\"); (const char *)0; })", argc);
       }
       /* the same (len, outbuf) rebind the typed arm makes (#3336) */
+      else if (sp_streq(name, "readpartial") && argc == 2 &&
+               emit_io_read_outbuf(c, name, "sp_File_readpartial", tio, argv, 1, argv[1], b))
+        buf_puts(b, "; })");
       else if (sp_streq(name, "readpartial") && argc >= 1) {
         const char *sbp = NULL;
         if (argc >= 2 && nt_type(nt, argv[1]) &&
@@ -471,6 +536,22 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 }
 
 /* the instance methods of an IO / File handle (TY_IO) */
+/* readpartial and sysread take (len, buf) and pread (len, off, buf); a
+   longer list was read as though its last arguments were a buffer, and an
+   Integer there did not build. CRuby evaluates the arguments and raises
+   ArgumentError before it reads, NoMethodError for a nil handle. */
+static int emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  int pread = sp_streq(name, "pread");
+  if (!(pread || sp_streq(name, "readpartial") || sp_streq(name, "sysread")) || argc <= (pread ? 3 : 2)) return 0;
+  int tf = ++g_tmp;
+  buf_printf(b, "({ sp_File *_t%d = %s; ", tf, r);
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+  buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", tf, name);
+  buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); "
+                "(const char *)0; })", argc, pread ? "2..3" : "1..2");
+  return 1;
+}
+
 int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
     const char *r = NULL;
@@ -670,7 +751,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
     }
     if (sp_streq(name, "read")) {
-      if (argc >= 2 && nt_type(nt, argv[1]) &&
+      if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_read_n", r, argv, 1, argv[1], b)) {}
+      else if (argc >= 2 && nt_type(nt, argv[1]) &&
                sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
         /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
         const char *bnm = nt_str(nt, argv[1], "name");
@@ -716,6 +798,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_File_set_close_on_exec(%s, _t%d); ", r, tv);
       else buf_printf(b, "sp_File_set_autoclose(%s, _t%d); ", r, tv);
       buf_printf(b, "_t%d; })", tv);
+      free(rb.p); return 1;
+    }
+    if (emit_io_read_overcount(c, name, r, argv, argc, b)) { free(rb.p); return 1; }
+    if (sp_streq(name, "pread") && argc == 3 && emit_io_read_outbuf(c, name, "sp_File_pread", r, argv, 2, argv[2], b)) {
       free(rb.p); return 1;
     }
     if (sp_streq(name, "pread") && argc >= 1) {
@@ -809,6 +895,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_puts(b, ", 1)");
         }
       }
+      free(rb.p); return 1;
+    }
+    if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 2 &&
+        emit_io_read_outbuf(c, name, "sp_File_readpartial", r, argv, 1, argv[1], b)) {
       free(rb.p); return 1;
     }
     if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {
