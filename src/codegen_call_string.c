@@ -29,7 +29,9 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       return 1;
     }
     if (rre >= 0 && sp_streq(name, "match?") && argc == 2) {
-      buf_printf(b, "sp_re_match_p_at(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b);
+      /* the subject converts as match(str, pos)'s does: a boxed or nil one
+         went into the const char * slot raw */
+      buf_printf(b, "sp_re_match_p_at(sp_re_pat_%d, ", rre); emit_str_expr_nilable(c, argv[0], b);
       buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return 1;
     }
@@ -311,7 +313,7 @@ no_gsub_enum:
   /* /re/.match(str) and /re/.match(str, pos) */
   {
     int rre = re_lit_index(c, recv);
-    if (rre >= 0 && sp_streq(name, "match") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
+    if (rre >= 0 && sp_streq(name, "match") && (argc == 1 || argc == 2) && nt_ref(nt, id, "block") >= 0) {
       /* /re/.match(str) { |m| body }: the same block form String#match already
          had -- yield the MatchData on a hit and evaluate to the block's value,
          nil on a miss. Without the arm the MatchData itself was the value and
@@ -322,8 +324,12 @@ no_gsub_enum:
       int mbody = nt_ref(nt, mblk, "body");
       int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
       int tm = ++g_tmp, tr2 = ++g_tmp;
-      buf_printf(b, "({ sp_MatchData *_t%d = sp_re_matchdata(sp_re_pat_%d, ", tm, rre);
+      /* match(str, pos) { |m| ... } starts the scan at pos, as without a
+         block: its MatchData was the value, where the call is typed by the
+         block's */
+      buf_printf(b, "({ sp_MatchData *_t%d = sp_re_matchdata%s(sp_re_pat_%d, ", tm, argc == 2 ? "_at" : "", rre);
       emit_str_expr(c, argv[0], b);
+      if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
       if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
@@ -436,7 +442,21 @@ no_gsub_enum:
                        tv, rp.p, tv);
             free(rp.p); return 1;
           }
-          if (sp_streq(name, "!~")) {
+          if (sp_streq(name, "!~") && argc == 1) {
+            /* a poly receiver answers as the literal pattern's poly arm does:
+               nil !~ is true, a String or a Symbol tests the negated match,
+               any other class has no =~. Read raw, the box went into
+               sp_re_match's const char * slot. */
+            if (rt == TY_POLY) {
+              int tv = ++g_tmp;
+              buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
+              buf_printf(b, "); SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR ? sp_re_match(%s, _t%d.v.s) < 0"
+                            " : _t%d.tag == SP_TAG_SYM ? sp_re_match(%s, sp_sym_to_s((sp_sym)_t%d.v.i)) < 0"
+                            " : _t%d.tag == SP_TAG_NIL ? 1"
+                            " : (sp_raise_nomethod(sp_nomethod_msg(\"=~\", _t%d)), 0)); })",
+                         tv, tv, rp.p, tv, tv, rp.p, tv, tv, tv);
+              free(rp.p); return 1;
+            }
             buf_printf(b, "(sp_re_match(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ") < 0)");
             free(rp.p); return 1;
           }
