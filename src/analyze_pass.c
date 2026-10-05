@@ -5780,9 +5780,60 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
   }
   return ch;
 }
+/* The walk follows every write of a local, to depth 6, and the writes of
+   one local reach the same values again and again: unmemoized, a function
+   of W writes to one local walked W^6 paths. A visit that changed nothing
+   is recorded (wbas_note) with the depth it ran at, under the current
+   generation; a later visit of the same node at that depth or deeper, in
+   the same generation, makes a subset of the same calls in the same state,
+   which change nothing either, and is skipped (wbas_seen). Each walk from
+   outside starts a generation, and so does every call that may write the
+   analysis state (wbas_touch), whether or not it reports a change: the
+   pin re-asserted on a local re-derived from its writes writes without one. */
+static struct { int cap; unsigned *gen[2]; signed char *depth[2]; } wbas_memo;
+static unsigned wbas_gen = 1;
+static void wbas_touch(void) {
+  if (++wbas_gen == 0) {
+    for (int f = 0; f < 2; f++) memset(wbas_memo.gen[f], 0, sizeof(unsigned) * (size_t)wbas_memo.cap);
+    wbas_gen = 1;
+  }
+}
+static int wbas_seen(int f, int v, int depth) {
+  return v >= 0 && v < wbas_memo.cap && wbas_memo.gen[f][v] == wbas_gen && wbas_memo.depth[f][v] <= depth;
+}
+static void wbas_note(Compiler *c, int f, int v, int depth, unsigned gen) {
+  if (v < 0 || gen != wbas_gen) return;
+  if (v >= wbas_memo.cap) {
+    int cap = c->nt->count > v ? c->nt->count : v + 1;
+    for (int k = 0; k < 2; k++) {
+      wbas_memo.gen[k] = (unsigned *)realloc(wbas_memo.gen[k], sizeof(unsigned) * (size_t)cap);
+      wbas_memo.depth[k] = (signed char *)realloc(wbas_memo.depth[k], (size_t)cap);
+      if (!wbas_memo.gen[k] || !wbas_memo.depth[k]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memset(wbas_memo.gen[k] + wbas_memo.cap, 0, sizeof(unsigned) * (size_t)(cap - wbas_memo.cap));
+    }
+    wbas_memo.cap = cap;
+  }
+  if (wbas_memo.gen[f][v] != gen || wbas_memo.depth[f][v] > depth) {
+    wbas_memo.gen[f][v] = gen; wbas_memo.depth[f][v] = (signed char)depth;
+  }
+}
+static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
-  const NodeTable *nt = c->nt;
+  /* `elem` is the same throughout one walk from outside, which the memo
+     relies on: one walk's generation is closed on both ends */
+  if (depth == 0) wbas_touch();
   v = unwrap_parens(c, v);
+  int ch = 0;
+  if (!wbas_seen(0, v, depth)) {
+    unsigned gen = wbas_gen;
+    ch = widen_boxed_array_sources_1(c, v, elem, depth);
+    if (!ch) wbas_note(c, 0, v, depth, gen);
+  }
+  if (depth == 0) wbas_touch();
+  return ch;
+}
+static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth) {
+  const NodeTable *nt = c->nt;
   /* Only once the optimistic rounds have settled: a slot is boxed for a
      round or two while its evidence arrives, and a widening is for good. */
   if (v < 0 || depth > 6 || elem == TY_UNKNOWN || g_infer_optimistic) return 0;
@@ -5795,7 +5846,9 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
       local_all_writes_empty_array(c, comp_scope_of(c, v), nt_str(nt, v, "name"))) return 0;
   if (ty_is_array(vt)) {
     if (vt == TY_POLY_ARRAY || ty_is_ptr_array(vt) || elem == ty_array_elem(vt)) return 0;
-    return widen_arg_array(c, v);
+    int w = widen_arg_array(c, v);
+    wbas_touch();
+    return w;
   }
   if (vt != TY_POLY) return 0;
   NodeKind k = nt_kind(nt, v);
@@ -5849,7 +5902,7 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
       for (int e = 0; e < 2; e++) {
         TyKind was = *ev[e];
         TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
-        if (now != was) { *ev[e] = now; ch = 1; }
+        if (now != was) { *ev[e] = now; ch = 1; wbas_touch(); }
       }
       return ch;
     }
@@ -5875,6 +5928,7 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
       ch |= leaves_widen_to_poly_array(c, wl, nl, 1);
       if (!lv->poly_array_pin) { lv->poly_array_pin = 1; ch = 1; }
       lv->type = TY_POLY_ARRAY;
+      wbas_touch();
     }
     return ch;
   }
@@ -5904,6 +5958,7 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
   if (n > 0 && leaves_need_pin(c, lv, n, elem) && leaves_widen_to_poly_array(c, lv, n, 0)) {
     ch |= leaves_widen_to_poly_array(c, lv, n, 1);
     if (!m->ret_poly_array_pin) { m->ret_poly_array_pin = 1; ch = 1; }
+    wbas_touch();
     return ch;
   }
   for (int i = 0; i < n; i++) ch |= widen_boxed_array_sources(c, lv[i], elem, depth + 1);
@@ -5915,7 +5970,8 @@ static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth)
 static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) {
   const NodeTable *nt = c->nt;
   int lits[32], ch = 0;
-  if (depth > 6) return 0;
+  if (depth > 6 || wbas_seen(1, r, depth)) return 0;
+  unsigned gen = wbas_gen;
   int nl = container_literals(c, r, lits, 0, 32, 0);
   for (int q = 0; q < nl; q++) {
     int en = 0; const int *ev = nt_arr(nt, lits[q], "elements", &en);
@@ -5925,6 +5981,7 @@ static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) 
         ch |= widen_boxed_array_sources(c, el, elem, depth + 1);
     }
   }
+  if (!ch) wbas_note(c, 1, r, depth, gen);
   return ch;
 }
 
