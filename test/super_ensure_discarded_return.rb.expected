@@ -1,0 +1,9 @@
+block
+record 1
+record 2
+ensure
+block
+record 3
+ensure
+nil return
+nil ensure

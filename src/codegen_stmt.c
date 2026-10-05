@@ -7565,6 +7565,14 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
       buf_puts(b, "; ");
     }
   }
+  else {
+    /* A discarded return still evaluates its arguments before the ensure,
+       including in a statement-position inline with no return slot. */
+    for (int k = 0; k < n; k++) {
+      if (node_is_pure_literal(c->nt, a[k])) continue;
+      buf_puts(b, "(void)("); emit_expr(c, a[k], b); buf_puts(b, "); ");
+    }
+  }
   /* inside a rescue/else clause the region's frame is already popped, so
      0 is a valid count; popping one anyway takes a caller's handler */
   int pops = g_exc_frame_depth - ctx->exc_base;
