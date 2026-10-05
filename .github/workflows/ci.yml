@@ -127,7 +127,9 @@ jobs:
         # Opt level is compiler-specific -- they behave oppositely on the
         # spinel_rt.h-heavy per-test TUs (800+ static fns):
         #   gcc:   -O1 prunes unreferenced statics + DCEs before the costly
-        #          codegen, so -O1 compiles ~9x FASTER than -O0 (2.7 vs 25ms).
+        #          codegen, so -O1 compiles faster than -O0 (0.54 vs 0.94 s a
+        #          file on 2026-10-05; the header was far smaller when this
+        #          was first measured at 2.7 vs 25 ms).
         #   clang: -O1 still runs the full optimizer over every emitted inline
         #          static, so -O1 is ~2.5x SLOWER than -O0 (213 vs 88ms/file).
         # So gcc builds tests at -O1 and clang at -O0. Correctness is opt-level
@@ -144,7 +146,23 @@ jobs:
         # the -m32 lane paid until it got the same wrapper. The override
         # is kept as the spelling of the opt level per compiler; NO_CCACHE=1
         # would be the way to actually unwrap.
-        run: make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=${{ matrix.shard }}/${{ matrix.nshards }} ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
+        #
+        # The gcc lane runs one eighth of the corpus, a different eighth each
+        # run (the run number picks it), beside the C-side legs. The whole
+        # corpus under gcc is what `make gate` runs before every push to
+        # master, so the lane repeated it, and it had become the slowest job
+        # by far: 45 minutes of a 51-minute job on run 37272572814. Nearly
+        # every push touches lib/spinel_rt.h, which every test's C includes,
+        # so sccache missed on 96% of 6,366 compiles, and gcc takes about
+        # 0.5 s a file on this header where clang -O0 takes 0.08 s (1.4 s on
+        # the runner). The clang lanes and the -m32 lane still run every
+        # test; the eighth keeps a different gcc than the maintainer's own
+        # in the loop.
+        run: |
+          shard="${{ matrix.shard }}/${{ matrix.nshards }}"
+          if [ "${{ matrix.cc }}" = gcc ]; then shard="$(( GITHUB_RUN_NUMBER % 8 + 1 ))/8"; fi
+          echo "corpus slice: $shard"
+          make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=$shard ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
 
       # Inference/allocation property gates. These assert the SHAPE of the
       # generated C -- that a slot keeps its typed representation, that the
