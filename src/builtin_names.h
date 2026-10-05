@@ -133,6 +133,7 @@ int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */
 int is_match_operator(const char *n); /* !~ =~ */
 int is_div_or_mod(const char *n); /* % / */
+int is_div_or_modulo(const char *n); /* div modulo: the named floored quotient and remainder */
 int is_add_or_mul(const char *n); /* * + */
 int is_push_operator(const char *n); /* << push */
 int is_eq_or_eql(const char *n); /* == eql? */
