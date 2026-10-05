@@ -12324,6 +12324,14 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* The builtin arm of a boxed ivar access, once the program can write an ivar
+   on a builtin value (Compiler.bivar_table): a value of any builtin class
+   (a negative cls_id) takes `stmt`, which asks the runtime's map. Nothing
+   without the flag. */
+static void emit_bivar_arm(Compiler *c, int tv, const char *stmt, Buf *b) {
+  if (c->bivar_table) buf_printf(b, " default: if (_t%d.cls_id < 0) %s; break;", tv, stmt);
+}
+
 /* Instance-variable and field access on a boxed receiver: an ivar write, a field read dispatched over every class that has it, instance_variable_get and _set, instance_variables (emit_poly_call's arms, in their order) */
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
@@ -12389,7 +12397,13 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       /* a bare Object keeps its ivars in a table of its own */
       buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
                  tv, sym, tv);
+      /* a builtin value: the runtime's map, or FrozenError (emit_bivar_arm) */
+      char bst[320];
+      snprintf(bst, sizeof bst, "sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), _ivs%d)", tv, sym, tv);
+      emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
+      /* an immediate, a String: FrozenError, or refused when it runs */
+      if (c->bivar_table) buf_printf(b, "else %s; ", bst);
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
         char ivn[24]; snprintf(ivn, sizeof ivn, "_ivs%d", tv);
         emit_unbox_text(c, res, ivn, b);
@@ -12435,6 +12449,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       buf_printf(b, " case SP_BUILTIN_OBJECT: _ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;",
                  tv, tv, sym);
+      char bst[320];
+      snprintf(bst, sizeof bst, "_ivg%d = sp_bivar_get(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
+      emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
         /* a receiver whose class lacks the slot answers nil: an Integer or
@@ -12473,7 +12490,11 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(b, " case %d: _ivd%d = %s; break;", k, tv, set ? set : "TRUE");
       }
       buf_printf(b, " case SP_BUILTIN_OBJECT: _ivd%d = sp_Object_ivar_defined((sp_Object *)_t%d.v.p, "
-                    "sp_sym_intern(\"%s\")); break; } _ivd%d; })", tv, tv, sym, tv);
+                    "sp_sym_intern(\"%s\")); break;", tv, tv, sym);
+      char bst[320];
+      snprintf(bst, sizeof bst, "_ivd%d = sp_bivar_defined(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
+      emit_bivar_arm(c, tv, bst, b);
+      buf_printf(b, " } _ivd%d; })", tv);
       { *out = 1; return 1; }
     }
   }
@@ -12498,8 +12519,11 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       buf_puts(b, " break;");
     }
-    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break; }"
-                  " if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv, tv, tv);
+    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break;", tv, tv);
+    char bst[96];
+    snprintf(bst, sizeof bst, "_ivl%d = sp_bivar_list(_t%d)", tv, tv);
+    emit_bivar_arm(c, tv, bst, b);
+    buf_printf(b, " } if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv);
     { *out = 1; return 1; }
   }
   return 0;

@@ -10305,13 +10305,16 @@ static inline sp_bool sp_poly_frozen(sp_RbVal v) {
 /* The instance variables of a builtin value (lib/sp_gc.c's map, which does
    not keep the value alive): an Array, a Hash or a Random keeps them in a
    symbol table of its own, made on its first write, the table an Object.new
-   instance keeps. A frozen value (every immediate, a Range, anything frozen)
+   instance keeps; so does an exception reached through an untyped value (a
+   rescued error a reporter marks). A frozen value (every immediate, a Range,
+   anything frozen)
    raises FrozenError on a write, as in CRuby. A String is copied between its
    representations, and the other builtins reached here keep no identity
    Spinel can key on, so a write to one is refused when it runs. */
 static int sp_bivar_keyed(sp_RbVal o) {
   return o.tag == SP_TAG_OBJ && o.v.p &&
-         (sp_poly_is_array_kind(o.cls_id) || sp_poly_is_hash_kind(o.cls_id) || o.cls_id == SP_BUILTIN_RANDOM);
+         (sp_poly_is_array_kind(o.cls_id) || sp_poly_is_hash_kind(o.cls_id) || o.cls_id == SP_BUILTIN_RANDOM ||
+          o.cls_id == SP_BUILTIN_EXCEPTION);
 }
 /* a name given at run time: CRuby's NameError for one that is no ivar's */
 static sp_sym sp_bivar_name(sp_sym k) {
@@ -10350,12 +10353,17 @@ static const char *sp_bivar_tbl_inspect(void *tp) {
   return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
 }
 static sp_RbVal sp_bivar_set(sp_RbVal o, sp_sym k, sp_RbVal v) {
-  if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS)
-    sp_raise_frozen_obj(o, sp_str_concat((&("\xff" "can't modify frozen ")[1]), sp_poly_class_name(o)));
+  if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
+    /* rooted: the receiver's inspect allocates before the message is built */
+    SP_GC_ROOT_RBVAL(o);
+    const char *what = sp_str_concat((&("\xff" "can't modify frozen ")[1]), sp_poly_class_name(o));
+    SP_GC_ROOT_STR(what);
+    sp_raise_frozen_obj(o, what);
+  }
   if (!sp_bivar_keyed(o))
     sp_raise_cls("NotImplementedError",
                  sp_sprintf("instance_variable_set on a %s is not supported: Spinel keeps instance variables "
-                            "only on an Array, a Hash, a Random and objects of the program's classes",
+                            "only on an Array, a Hash, a Random, an exception and objects of the program's classes",
                             sp_poly_class_name(o)));
   SP_GC_ROOT_RBVAL(o); SP_GC_ROOT_RBVAL(v);
   sp_SymPolyHash *t = (sp_SymPolyHash *)sp_ivtbl_get(o.v.p);
