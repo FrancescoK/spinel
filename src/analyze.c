@@ -8871,6 +8871,19 @@ static int te_tail_is_value(const NodeTable *nt, int n, int depth) {
       int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       return ac > 0 && te_tail_is_value(nt, av[0], depth + 1);
     }
+    /* a call answers its value -- `@a.select { |x| yield x }` an Array --
+       unless it is an each-like iteration, whose value (the receiver)
+       nobody keeps */
+    case NK_CallNode: {
+      const char *cn = nt_str(nt, n, "name");
+      if (!cn) return 0;
+      if (strncmp(cn, "each", 4) == 0 || sp_streq(cn, "times") || sp_streq(cn, "upto") ||
+          sp_streq(cn, "downto") || sp_streq(cn, "step") || sp_streq(cn, "loop")) return 0;
+      /* nor is the guard's own Enumerator a value of the block form */
+      if (sp_streq(cn, "to_enum") || sp_streq(cn, "enum_for") || strncmp(cn, "__to_enum_", 10) == 0)
+        return 0;
+      return 1;
+    }
     default: return 0;
   }
 }
