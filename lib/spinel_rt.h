@@ -3936,8 +3936,18 @@ static SP_INLINE sp_RbVal sp_poly_ary_chk(sp_RbVal v, const char *m, int range_o
 /* `length` on a boxed receiver: nil, a number and a user object have none, and
    sp_poly_length answers 0 for all three -- so `v.length` on a nil read out of
    a hash miss answered 0 instead of raising NoMethodError (#3974). */
+static sp_RbVal sp_poly_struct_values(sp_RbVal v);   /* defined below */
+static sp_int sp_poly_arr_len(sp_RbVal a);           /* defined below */
+/* A Struct's size and length are its member count; a program object of any
+   other class has neither. -1 when v is no Struct. */
+static sp_int sp_poly_struct_size(sp_RbVal v) {
+  if (!sp_poly_is_user_obj(v)) return -1;
+  sp_RbVal sv = sp_poly_struct_values(v);
+  return (sv.tag == SP_TAG_OBJ && sv.v.p && sp_poly_is_array_kind(sv.cls_id)) ? sp_poly_arr_len(sv) : -1;
+}
 static sp_int sp_poly_length_m(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
+  { sp_int n = sp_poly_struct_size(v); if (n >= 0) return n; }
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
       v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL || sp_poly_is_user_obj(v) ||
       (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
@@ -3984,6 +3994,7 @@ void sp_enum_index_search_each_raise(void *e);   /* lib/sp_cold.c: raise for a b
 static sp_int sp_poly_size(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_frange_iter_raise((*(sp_FloatRange *)v.v.p), 0); return 0; }  /* a Float range has no size (TypeError) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
+  { sp_int n = sp_poly_struct_size(v); if (n >= 0) return n; }
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_BOOL || v.tag == SP_TAG_FLT ||
       sp_poly_is_user_obj(v))
     sp_raise_poly_nomethod("size", v);
