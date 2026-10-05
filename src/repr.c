@@ -577,9 +577,10 @@ static void repr_share_seal(Compiler *c) {
     }
   if (stats) {
     fprintf(stderr, "share-stats: string-holders=%d shared=%d local=%d (param=%d) ivar=%d gvar=%d "
-            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d\n",
+            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d borrows=%d\n",
             n_str, n_shared, n_kind[SHK_LOCAL], n_param, n_kind[SHK_IVAR], n_kind[SHK_GVAR],
-            n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only, bad >= 0);
+            n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only, bad >= 0,
+            c->share_borrows);
     share_facts_drop(closed);
   }
   if (bad >= 0) {
