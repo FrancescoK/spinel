@@ -865,7 +865,7 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
      or a typed array on its own path; and it is what a_block_is_lifted read
      when the analysis's last capture pass decided the capture cells, so a
      call routed here has them celled. */
-  if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!poly_enum_op_for(name)) return 0;
   /* A block whose body yields can only be SPLICED: routing it to the dispatch
@@ -898,7 +898,7 @@ int sn_guard_pending(Compiler *c, int id) {
   const char *op = nt_str(nt, id, "call_operator");
   if (!op || !sp_streq(op, "&.")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  return recv >= 0 && comp_ntype(c, recv) == TY_POLY;
+  return recv >= 0 && repr_of(c, recv).kind == RK_BOXED;
 }
 
 
@@ -1109,7 +1109,7 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
     buf_puts(b, ")");
     return;
   }
-  int boxed = comp_ntype(c, id) == TY_POLY;
+  int boxed = repr_of(c, id).kind == RK_BOXED;
   /* the receiver first, then the arguments, each evaluated once: every
      arm, and the builtin's, reads them from temps */
   int trv = ++g_tmp;
@@ -2209,7 +2209,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
    not an Integer -- nil above all -- has no such method (NoMethodError), where
    the argument conversion raised TypeError for it. */
 void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
-  if (comp_ntype(c, recv) == TY_POLY) {
+  if (repr_of(c, recv).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_int_recv("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name);
     return;
   }
@@ -2218,7 +2218,7 @@ void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
 /* Kernel#Rational's argument: as emit_rat_coerce, but a boxed nil is the
    TypeError Rational(nil) raises rather than the integer 0. */
 static void emit_rat_kernel_arg(Compiler *c, int node, Buf *b) {
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_kernel_rational_arg("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2234,7 +2234,7 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   /* A boxed operand decides at runtime: a Rational stays exact, a Float
      converts exactly, anything else reads as an integer. Reading it as an
      integer unconditionally turned Rational(<3/4>, 2) into (0/1). */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_kernel_rational("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2248,7 +2248,7 @@ void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
   /* a poly operand (e.g. a Complex read out of a poly array) unboxes at
      runtime -- a boxed Complex keeps its components, a real number is re+0i */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_as_complex("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2380,7 +2380,7 @@ int poly_shl_root_slot(Compiler *c, int recv) {
   }
   int kind = nt_kind(nt, slot);
   if (kind != NK_LocalVariableReadNode && kind != NK_InstanceVariableReadNode) return -1;
-  return comp_ntype(c, slot) == TY_POLY ? slot : -1;
+  return repr_of(c, slot).kind == RK_BOXED ? slot : -1;
 }
 
 int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr);
@@ -3374,7 +3374,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
 static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b) {
   if (argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
   if (argc == 1) {
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_expr(c, argv[0], b);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) emit_expr(c, argv[0], b);
     else emit_boxed(c, argv[0], b);
     return;
   }
@@ -3574,7 +3574,7 @@ void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) {
 static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, int exc,
                                          const char *klass, Buf *b) {
   TyKind at = comp_ntype(c, argv[0]);
-  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || comp_ntype(c, id) != TY_POLY ||
+  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || repr_of(c, id).kind != RK_BOXED ||
       !(at == TY_NIL || at == TY_POLY ||
         ((at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, argv[0]))))
     return 0;
@@ -3731,8 +3731,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
        sp_RbVal is not a conversion, it is a C error, and a parameter with
        no evidence is poly (a Method captured with method(:Complex) has
        exactly that shape) */
-    int re_poly = comp_ntype(c, argv[0]) == TY_POLY;
-    int im_poly = argc >= 2 && comp_ntype(c, argv[1]) == TY_POLY;
+    int re_poly = repr_of(c, argv[0]).kind == RK_BOXED;
+    int im_poly = argc >= 2 && repr_of(c, argv[1]).kind == RK_BOXED;
     if (re_poly || im_poly) {
       /* A boxed component carries its class at RUN time, and the flag says
          which components render as Float. Read off the static type it is
@@ -3900,7 +3900,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b);
       return 1;
     }
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+    if (argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
       emit_rat_kernel_arg(c, argv[0], b);
       return 1;
     }
@@ -3944,10 +3944,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          which cannot be C-cast to an integer -- unbox it with sp_poly_to_i
          (#3184). */
       Buf nb; memset(&nb, 0, sizeof nb);
-      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(&nb, "sp_poly_arg_i_msg("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ", \"can't convert nil into Rational\")"); free(t0.p); }
+      if (repr_of(c, argv[0]).kind == RK_BOXED) { buf_puts(&nb, "sp_poly_arg_i_msg("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ", \"can't convert nil into Rational\")"); free(t0.p); }
       else { buf_puts(&nb, "(sp_int)("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "0"); buf_puts(&nb, ")"); free(t0.p); }
       Buf db; memset(&db, 0, sizeof db);
-      if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(&db, "sp_poly_arg_i_msg("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ", \"can't convert nil into Rational\")"); free(t1.p); }
+      if (repr_of(c, argv[1]).kind == RK_BOXED) { buf_puts(&db, "sp_poly_arg_i_msg("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ", \"can't convert nil into Rational\")"); free(t1.p); }
       else { buf_puts(&db, "(sp_int)("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "0"); buf_puts(&db, ")"); free(t1.p); }
       buf_printf(b, "({ sp_int _t%d = %s; sp_int _t%d = %s;"
                     " if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
@@ -4019,7 +4019,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         (argc == 0 ||
          (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT ||
                         comp_ntype(c, argv[0]) == TY_NIL ||
-                        comp_ntype(c, argv[0]) == TY_POLY ||
+                        repr_of(c, argv[0]).kind == RK_BOXED ||
                         nt_kind(nt, argv[0]) == NK_NilNode)))) {
       if (argc == 1 && nt_kind(nt, argv[0]) != NK_NilNode) {
         /* the receiver is usually built right here; root it while the count
@@ -4570,7 +4570,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || comp_ntype(c, recv) != TY_POLY || !name) return 0;
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !name) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int argc; const int *argv = call_args(nt, id, &argc);
   if (user_defines_or_reads(c, name)) return 0;   /* a user class owns the name */
@@ -5085,7 +5085,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if ((is_pop_shift(name)) && argc == 1 &&
-      comp_ntype(c, argv[0]) == TY_POLY) {
+      repr_of(c, argv[0]).kind == RK_BOXED) {
     Buf qv; memset(&qv, 0, sizeof qv);
     buf_puts(&qv, "sp_poly_pop_any("); emit_expr(c, recv, &qv); buf_puts(&qv, ", ");
     emit_expr(c, argv[0], &qv); buf_printf(&qv, ", %d)", sp_streq(name, "shift") ? 1 : 0);
@@ -7285,11 +7285,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  int rt_boxed = repr_of(c, recv).kind == RK_BOXED;
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0) {
+  if (recv >= 0 && rt_boxed && argc == 0) {
     PolySpecials0 ps;
     poly_specials0(c, id, name, &ps);
     int is_lengthlike = ps.lengthlike;
@@ -7429,7 +7429,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* poly method dispatch with arguments: switch on the boxed object's cls_id
      and call the matching user method (or a builtin array `[]`), passing the
      arguments evaluated once into temps. */
-  if (recv >= 0 && rt == TY_POLY && argc > 0) {
+  if (recv >= 0 && rt_boxed && argc > 0) {
     PolySpecialsN ps;
     poly_specials_n(c, id, name, argc, argv, &ps);
     int is_index = ps.index;
@@ -8049,7 +8049,7 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   }
   if (argc == 7) {
     buf_puts(b, is_new ? ", " : "), ");
-    if (comp_ntype(c, argv[6]) == TY_POLY) {
+    if (repr_of(c, argv[6]).kind == RK_BOXED) {
       buf_puts(b, "sp_poly_to_f_with_rational("); emit_expr(c, argv[6], b); buf_puts(b, ")");
     }
     else if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
@@ -9862,7 +9862,7 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     if (mk) buf_printf(mv, "sp_%sArray_new()", mk);
     else emit_expr(c, vnode, mv);
   }
-  else if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, mv);
+  else if (cls->ivar_types[a] == TY_POLY && repr_of(c, vnode).kind != RK_BOXED) emit_boxed(c, vnode, mv);
   /* The reverse of that box: a POLY value into a CONCRETE member
      slot. A member name a second class also defines makes the read
      a poly dispatch, whose value is an sp_RbVal, while the
@@ -9870,7 +9870,7 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
      -- so the call did not compile, naming a line in
      <spinel-synthesized> (#4348). */
   else if (cls->ivar_types[a] != TY_POLY && cls->ivar_types[a] != TY_UNKNOWN &&
-           comp_ntype(c, vnode) == TY_POLY) {
+           repr_of(c, vnode).kind == RK_BOXED) {
     Buf pv; memset(&pv, 0, sizeof pv);
     emit_expr(c, vnode, &pv);
     emit_unbox_text(c, cls->ivar_types[a], pv.p ? pv.p : "sp_box_nil()", mv);
