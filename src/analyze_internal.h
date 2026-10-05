@@ -271,7 +271,7 @@ void specialize_inherited_cls_new(Compiler *c);
 void register_prepends(Compiler *c);
 void inherit_members(Compiler *c);
 int infer_inherited_ivars(Compiler *c);
-int infer_cvar_types(Compiler *c);
+int infer_cvar_types(Compiler *c, int nil_only);
 int infer_ivar_types(Compiler *c);
 /* 1 if `name` (incl '@') is an ivar pinned by an --rbs seed in class `ci`;
    the ivar inference write sites consult this to avoid widening a pinned slot. */
@@ -288,7 +288,7 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
 int reconcile_locals_reading_ivars(Compiler *c);
-int widen_object_locals_from_poly_writes(Compiler *c);
+int widen_locals_from_poly_writes(Compiler *c);
 int widen_arrays_from_map_bang(Compiler *c);
 void intern_block_params(Compiler *c);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);

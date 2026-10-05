@@ -6616,7 +6616,7 @@ static int is_cvar_write_kind(NodeKind k) {
    and unifies the stored type into its slot. An op-write stores the RHS type
    unless the slot holds an object (the operator method's return) or an array
    the operator combines with its own kind. */
-static int cvar_note_write(Compiler *c, int cid, int id) {
+static int cvar_note_write(Compiler *c, int cid, int id, int nil_only) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
@@ -6626,6 +6626,7 @@ static int cvar_note_write(Compiler *c, int cid, int id) {
   int changed = ci->ncvars != old_n;
   int vnode = nt_ref(nt, id, "value");
   TyKind cur = ci->cvar_types[idx];
+  if (nil_only && cur != TY_BOOL && cur != TY_SYMBOL) return changed;
   TyKind vt;
   if (nt_kind(nt, id) == NK_ClassVariableOperatorWriteNode) {
     vt = infer_type(c, vnode);
@@ -6654,8 +6655,9 @@ static int cvar_note_write(Compiler *c, int cid, int id) {
 }
 
 /* Register each class variable (@@x) in its owning class and infer its type
-   from the write sites' RHS. */
-int infer_cvar_types(Compiler *c) {
+   from the write sites' RHS. The late nil_only re-run widens only Bool and
+   Symbol slots, which have no nil representation. */
+int infer_cvar_types(Compiler *c, int nil_only) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   /* Pass 1: class body-level writes (comp_scope_of returns scope 0, class_id=-1,
@@ -6669,7 +6671,7 @@ int infer_cvar_types(Compiler *c) {
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
       if (is_cvar_write_kind(nt_kind(nt, s))) {
-        if (cvar_note_write(c, ci, s)) changed = 1;
+        if (cvar_note_write(c, ci, s, nil_only)) changed = 1;
       }
       else if (sp_streq(sty, "MultiWriteNode")) {
         int mln = 0;
@@ -6684,6 +6686,8 @@ int infer_cvar_types(Compiler *c) {
           if (!cnm) continue;
           ClassInfo *mcl = &c->classes[comp_cvar_owner(c, ci, cnm)];
           int midx = comp_cvar_intern(mcl, cnm);
+          if (nil_only && mcl->cvar_types[midx] != TY_BOOL &&
+              mcl->cvar_types[midx] != TY_SYMBOL) continue;
           TyKind mvt2 = (mels && mi < men) ? infer_type(c, mels[mi]) : TY_UNKNOWN;
           if (mvt2 == TY_NIL || mvt2 == TY_UNKNOWN) continue;
           TyKind mmerged = ty_unify(mcl->cvar_types[midx], mvt2);
@@ -6702,7 +6706,7 @@ int infer_cvar_types(Compiler *c) {
     int wcid = s->class_id;
     if (wcid < 0 && c->node_cbody && id < c->node_cap) wcid = c->node_cbody[id];
     if (wcid < 0) continue;
-    if (cvar_note_write(c, wcid, id)) changed = 1;
+    if (cvar_note_write(c, wcid, id, nil_only)) changed = 1;
   }
   /* A multiple-assignment target (`@@a, *@@r = ...`), in a method or a class
      body and on either side of a splat, declares its cvar too; the elements'
@@ -6724,7 +6728,7 @@ int infer_cvar_types(Compiler *c) {
     if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
     if (s->class_id >= 0 || id >= c->node_cap || c->node_cbody[id] < 0) continue;
-    if (cvar_note_write(c, c->node_cbody[id], id)) changed = 1;
+    if (cvar_note_write(c, c->node_cbody[id], id, nil_only)) changed = 1;
   }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
@@ -6745,6 +6749,8 @@ int infer_cvar_types(Compiler *c) {
     if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
     ClassInfo *scl = &c->classes[comp_cvar_owner(c, cci, cvn)];
     int idx = comp_cvar_intern(scl, cvn);
+    if (nil_only && scl->cvar_types[idx] != TY_BOOL &&
+        scl->cvar_types[idx] != TY_SYMBOL) continue;
     TyKind vt = infer_type(c, av[1]);
     if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
     TyKind merged = ty_unify(scl->cvar_types[idx], vt);
@@ -6759,7 +6765,7 @@ int infer_cvar_types(Compiler *c) {
     if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
     int tl_idx = comp_class_index(c, "Toplevel");
     if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
-    if (cvar_note_write(c, tl_idx, id)) changed = 1;
+    if (cvar_note_write(c, tl_idx, id, nil_only)) changed = 1;
   }
   /* Pass 4: a subclass can have interned a name before its superclass
      declared it, when a write in the subclass was reached first (the passes
