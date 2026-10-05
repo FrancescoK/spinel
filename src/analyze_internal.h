@@ -569,6 +569,7 @@ int class_is_exc_subclass(Compiler *c, int ci);
 int exc_subclass_defines(Compiler *c, const char *name);
 /* Defined in codegen_fold.c; 1 if class `k` is `anc` or a descendant of it. */
 int is_descendant(Compiler *c, int k, int anc);
+int reader_reads_shared_ivar(Compiler *c, int cls, const char *name);
 /* Defined in codegen_fold.c; distinct implementations of `name` across cid's
    subtree. */
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
