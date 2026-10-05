@@ -2629,7 +2629,12 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
     if (atmp_ty[0] == TY_POLY || atmp_ty[0] == TY_FLOAT || atmp_ty[0] == TY_INT) {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
                     " { _t%d = %s", tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "");
-      if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, _t%d)", tv, atmp[0]);
+      /* a boxed Range argument is covered by its ends, not as a scalar */
+      if (atmp_ty[0] == TY_POLY)
+        buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
+                      " ? sp_frange_cover_rng(*(sp_FloatRange *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
+                      " : sp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, _t%d))",
+                   atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0]);
       else buf_printf(b, "sp_frange_cover(*(sp_FloatRange *)_t%d.v.p, (sp_float)_t%d)", tv, atmp[0]);
       buf_printf(b, "%s; }\nelse ", ret == TY_POLY ? ")" : "");
     }
