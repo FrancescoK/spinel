@@ -22438,11 +22438,63 @@ static int g_fwd_taint;
    caller's String cannot be pulled in, and the refusal takes it. */
 #define FWD_REST_PAST 0x10000u
 #define FWD_REST_OPEN 0x20000u
+static int g_fwd_rest_depth;   /* forwarders being asked, nested */
+/* The POLY hand-ons one query asks, remembered for that query: a parameter
+   handed to many methods, each handing it on to many, reaches the same
+   (method, parameter, depth) by many paths, and asking each afresh made the
+   walk the number of paths up to the depth bound. Keyed by the depth as
+   well, since the bound cuts a deeper ask shorter, and holding the taint the
+   ask left, so a remembered answer leaves exactly what asking again would.
+   Only outside a rest forwarder being asked: there an answer leans on that
+   forwarder's partial bits. A query is one ask from outside (depth 0); the
+   passes between queries change the types the answers read, so each query
+   starts empty. */
+typedef struct { unsigned gen; int mi, j, depth; signed char r, taint; } FwdMemo;
+static FwdMemo *g_fwd_memo;
+static unsigned g_fwd_memo_cap, g_fwd_memo_n, g_fwd_memo_gen;
+static void fwd_memo_query(void) {
+  if (++g_fwd_memo_gen == 0) {   /* wrapped: forget every stamp */
+    if (g_fwd_memo) memset(g_fwd_memo, 0, sizeof(FwdMemo) * g_fwd_memo_cap);
+    g_fwd_memo_gen = 1;
+  }
+  g_fwd_memo_n = 0;
+}
+static unsigned fwd_memo_slot(int mi, int j, int depth) {
+  unsigned h = (unsigned)mi * 2654435761u ^ (unsigned)j * 40503u ^ (unsigned)depth * 97u;
+  unsigned k = h & (g_fwd_memo_cap - 1);
+  while (g_fwd_memo[k].gen == g_fwd_memo_gen &&
+         (g_fwd_memo[k].mi != mi || g_fwd_memo[k].j != j || g_fwd_memo[k].depth != depth))
+    k = (k + 1) & (g_fwd_memo_cap - 1);
+  return k;
+}
+static FwdMemo *fwd_memo_find(int mi, int j, int depth) {
+  if (!g_fwd_memo) return NULL;
+  FwdMemo *e = &g_fwd_memo[fwd_memo_slot(mi, j, depth)];
+  return e->gen == g_fwd_memo_gen ? e : NULL;
+}
+static void fwd_memo_put(int mi, int j, int depth, int r, int taint) {
+  if ((g_fwd_memo_n + 1) * 2 > g_fwd_memo_cap) {
+    FwdMemo *old = g_fwd_memo;
+    unsigned ocap = g_fwd_memo_cap;
+    g_fwd_memo_cap = ocap ? ocap * 2 : 1024;
+    g_fwd_memo = (FwdMemo *)calloc(g_fwd_memo_cap, sizeof(FwdMemo));
+    if (!g_fwd_memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (unsigned k = 0; k < ocap; k++)
+      if (old[k].gen == g_fwd_memo_gen) g_fwd_memo[fwd_memo_slot(old[k].mi, old[k].j, old[k].depth)] = old[k];
+    free(old);
+  }
+  FwdMemo *e = &g_fwd_memo[fwd_memo_slot(mi, j, depth)];
+  e->gen = g_fwd_memo_gen; e->mi = mi; e->j = j; e->depth = depth;
+  e->r = (signed char)r; e->taint = (signed char)taint;
+  g_fwd_memo_n++;
+}
+
 /* Does method mi append to what its parameter j is bound to: in place, lent,
    the handle, or a POLY parameter or a rest element it hands on? */
 static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   Scope *m = &c->scopes[mi];
   if (j < 0) return 0;
+  if (depth == 0 && g_fwd_rest_depth == 0) fwd_memo_query();
   /* a rest takes the arguments from its position on; a chain of them is
      memoized per method (fwd_rest_bits), so it does not count toward the
      depth, which bounds the POLY hand-ons below */
@@ -22456,9 +22508,17 @@ static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   if (!q || !q->is_param || q->is_block_param) return 0;
   if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
   if (q->type != TY_POLY) return 0;
-  if (an_param_mutated_in_place(c, mi, j)) return 1;
-  if (depth > 4) { g_fwd_taint |= 2; return 0; }
-  return fwd_poly_param_handed_on(c, mi, j, depth + 1);
+  int memo = g_fwd_rest_depth == 0;
+  FwdMemo *e = memo ? fwd_memo_find(mi, j, depth) : NULL;
+  if (e) { g_fwd_taint |= e->taint; return e->r; }
+  int outer = g_fwd_taint, r;
+  g_fwd_taint = 0;
+  if (an_param_mutated_in_place(c, mi, j)) r = 1;
+  else if (depth > 4) { g_fwd_taint |= 2; r = 0; }
+  else r = fwd_poly_param_handed_on(c, mi, j, depth + 1);
+  if (memo) fwd_memo_put(mi, j, depth, r, g_fwd_taint);
+  g_fwd_taint |= outer;
+  return r;
 }
 
 /* The position a call or `super`'s splat of local `rn` starts at among the
@@ -22488,7 +22548,6 @@ static int fwd_splat_start(Compiler *c, int u, const char *rn) {
 static unsigned *g_fwd_rest;
 static int g_fwd_n;
 static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn);
-static int g_fwd_rest_depth;   /* forwarders being asked, nested */
 static unsigned fwd_rest_bits(Compiler *c, int mi) {
   if (mi < 0 || mi >= g_fwd_n) return 0;
   if (g_fwd_rest[mi] & 0x40000000u) return g_fwd_rest[mi] & 0x3ffffu;
@@ -22557,6 +22616,7 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
   const NodeTable *nt = c->nt;
   if (depth > 4) { g_fwd_taint |= 2; return 0; }
+  if (depth == 0 && g_fwd_rest_depth == 0) fwd_memo_query();
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
   if (pj < 0 || pj >= m->nparams || !m->pnames[pj]) return 0;
