@@ -14807,6 +14807,117 @@ int desugar_builtin_reopen_self_class(Compiler *c) {
   return changed;
 }
 
+/* A bare constructor call in a class method of a reopened Time -- `at`,
+   `now`, `utc`, ... -- is Time's own (self is Time there), as is a name the
+   reopening's `class << self` aliases one to before defining it
+   (activesupport's `alias_method :at_without_coercion, :at`). Spelled with
+   the receiver, the call reaches the builtin; bare, it was refused. */
+static int tsc_ctor(const char *nm) {
+  static const char *const C[] = { "at", "now", "utc", "gm", "local", "mktime", NULL };
+  for (int i = 0; C[i]; i++) if (sp_streq(nm, C[i])) return 1;
+  return 0;
+}
+typedef struct { const char *name[32]; const char *target[32]; int n; const char *defs[128]; int nd; } TscNames;
+static int tsc_defined(const TscNames *t, const char *nm) {
+  for (int i = 0; i < t->nd; i++) if (sp_streq(t->defs[i], nm)) return 1;
+  return 0;
+}
+static const char *tsc_target(const TscNames *t, const char *nm) {
+  if (tsc_defined(t, nm)) return NULL;
+  if (tsc_ctor(nm)) return nm;
+  for (int i = 0; i < t->n; i++) if (sp_streq(t->name[i], nm)) return t->target[i];
+  return NULL;
+}
+static int tsc_walk(NodeTable *nt, int n, const TscNames *t) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_DefNode) return 0;
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;   /* may run under another self */
+  int changed = 0;
+  if (k == NK_CallNode && nt_ref(nt, n, "receiver") < 0) {
+    const char *nm = nt_str(nt, n, "name");
+    const char *tg = nm ? tsc_target(t, nm) : NULL;
+    if (tg) {
+      int r = nt_new_node(nt, "ConstantReadNode");
+      if (r >= 0) {
+        nt_node_set_str(nt, r, "name", "Time");
+        nt_node_set_ref(nt, n, "receiver", r);
+        if (!sp_streq(tg, nm)) nt_node_set_str(nt, n, "name", tg);
+        changed = 1;
+      }
+    }
+  }
+  const SpNode *nd = &nt->nodes[n];
+  int nr = nd->nr; int refs[64]; if (nr > 64) nr = 64;
+  for (int j = 0; j < nr; j++) refs[j] = nd->r[j].ref;
+  for (int j = 0; j < nr; j++) changed |= tsc_walk(nt, refs[j], t);
+  for (int j = 0; j < nt->nodes[n].na; j++) {
+    int an = nt->nodes[n].a[j].n;
+    int *ids = malloc(sizeof(int) * (size_t)(an + 1));
+    memcpy(ids, nt->nodes[n].a[j].ids, sizeof(int) * (size_t)an);
+    for (int q = 0; q < an; q++) changed |= tsc_walk(nt, ids[q], t);
+    free(ids);
+  }
+  return changed;
+}
+/* The class-method names the body defines (`def self.x`, defs in `class <<
+   self`) and the singleton aliases of a constructor made before any def of
+   the constructor's name. */
+static void tsc_collect(NodeTable *nt, int body, int in_sg, TscNames *t) {
+  int bn = 0; const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    int st = bs[k];
+    NodeKind sk = nt_kind(nt, st);
+    if (sk == NK_DefNode && (in_sg || nt_ref(nt, st, "receiver") >= 0) && t->nd < 128) {
+      const char *dn = nt_str(nt, st, "name");
+      if (dn) t->defs[t->nd++] = dn;
+    }
+    else if (sk == NK_SingletonClassNode) tsc_collect(nt, nt_ref(nt, st, "body"), 1, t);
+    else if (in_sg && sk == NK_CallNode && nt_ref(nt, st, "receiver") < 0) {
+      const char *cn = nt_str(nt, st, "name");
+      int a = nt_ref(nt, st, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (cn && sp_streq(cn, "alias_method") && an == 2 &&
+          nt_kind(nt, av[0]) == NK_SymbolNode && nt_kind(nt, av[1]) == NK_SymbolNode && t->n < 32) {
+        const char *nw = nt_str(nt, av[0], "value"), *od = nt_str(nt, av[1], "value");
+        if (nw && od && tsc_ctor(od) && !tsc_defined(t, od)) { t->name[t->n] = nw; t->target[t->n] = od; t->n++; }
+      }
+    }
+  }
+}
+static void tsc_rewrite(NodeTable *nt, int body, int in_sg, const TscNames *t, int *changed) {
+  int bn = 0; const int *bs = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  for (int k = 0; k < bn; k++) {
+    int st = bs[k];
+    NodeKind sk = nt_kind(nt, st);
+    if (sk == NK_DefNode && (in_sg || nt_ref(nt, st, "receiver") >= 0)) *changed |= tsc_walk(nt, nt_ref(nt, st, "body"), t);
+    else if (sk == NK_SingletonClassNode) tsc_rewrite(nt, nt_ref(nt, st, "body"), 1, t, changed);
+  }
+}
+int desugar_time_singleton_bare_ctor(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  char *top = calloc((size_t)(n0 > 0 ? n0 : 1), 1);
+  bsc_mark_toplevel(nt, nt->root_id, top);
+  TscNames t; memset(&t, 0, sizeof t);
+  for (int n = 0; n < n0; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
+    int cp = nt_ref(nt, n, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode || !nt_str(nt, cp, "name") ||
+        !sp_streq(nt_str(nt, cp, "name"), "Time")) continue;
+    tsc_collect(nt, nt_ref(nt, n, "body"), 0, &t);
+  }
+  for (int n = 0; n < n0; n++) {
+    if (nt_kind(nt, n) != NK_ClassNode || !top[n]) continue;
+    int cp = nt_ref(nt, n, "constant_path");
+    if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode || !nt_str(nt, cp, "name") ||
+        !sp_streq(nt_str(nt, cp, "name"), "Time")) continue;
+    tsc_rewrite(nt, nt_ref(nt, n, "body"), 0, &t, &changed);
+  }
+  free(top);
+  return changed;
+}
+
 /* `class Rational < Numeric` -- a builtin reopened with its own superclass
    named, as the bigdecimal gem's util.rb writes it -- is the reopening
    `class Rational` is: Ruby accepts the superclass because it is the one the

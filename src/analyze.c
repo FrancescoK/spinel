@@ -29097,6 +29097,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_errno_aliases(c);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
   desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
   desugar_builtin_reopen_self_class(c);  /* self.class in a reopened Hash -> Hash */
+  desugar_time_singleton_bare_ctor(c);   /* bare `at` in a Time class method -> Time.at */
   desugar_engine_branches(c);
   desugar_paren_def_body(c);            /* def m = (a; b) -> def m; a; b; end */
   desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --

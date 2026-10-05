@@ -600,6 +600,18 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       emit_time_in_zone(c, ts, struct_kwarg_value(c, argv[0], "in"), b);
       return 1;
     }
+    /* Time.at(x, *rest) and any other spread: every argument into one list,
+       which the runtime reads as Time.at's arguments, as for a lone splat */
+    if (sp_streq(name, "at") && argc >= 2) {
+      int any_splat = 0;
+      for (int k = 0; k < argc; k++) if (nt_kind(nt, argv[k]) == NK_SplatNode) any_splat = 1;
+      if (any_splat) {
+        buf_puts(b, "({ ");
+        int tf = emit_bm_flat_args(c, argv, argc, b);
+        buf_printf(b, " sp_time_at_args(sp_box_poly_array(_t%d)); })", tf);
+        return 1;
+      }
+    }
     /* Time.at(*args): the runtime reads the list as Time.at's arguments */
     if (sp_streq(name, "at") && argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode &&
         nt_ref(nt, argv[0], "expression") >= 0) {
