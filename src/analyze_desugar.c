@@ -5672,6 +5672,14 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   return 0;
 }
 
+/* An Array's or a Hash's fetch, delete or fetch_values, whose block is the
+   fallback for a missing key: without one, fetch raises KeyError (or
+   IndexError) and delete answers nil, which the blockless form does. */
+static int fwd_fallback_call(TyKind rt, const char *name) {
+  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
+  return sp_streq(name, "fetch") || sp_streq(name, "delete") || sp_streq(name, "fetch_values");
+}
+
 /* `recv.m(args) { |x| yield x }` -- a builtin given the enclosing method's
    own block -- becomes `block_given? ? <that call> : recv.m(args)`: the
    method is spliced into each of its sites, where block_given? is known, and
@@ -5854,6 +5862,15 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 1;
       pty[0] = TY_INT;
     }
+    else if (anon && fwd_fallback_call(rt, name)) {
+      /* `h.fetch(k, &)`, a method's own block as the fallback for a missing
+         key: the block takes the key (an Array's fetch the index, its delete
+         the value), bound boxed as the fallback arms bind a literal's.
+         Left in its &-form, the arm had no block body to run and the call
+         answered nil. */
+      arity = 1;
+      pty[0] = TY_POLY;
+    }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
@@ -5976,7 +5993,8 @@ int desugar_value_callable_forwards(Compiler *c) {
     /* the method's own block may be absent where it is called: a String
        builtin then answers its blockless form (split's Array, an
        Enumerator), not a yield to no block */
-    if (anon && rt == TY_STRING && fwd_method_called_blockless(c, comp_scope_of(c, id)))
+    if (anon && (rt == TY_STRING || fwd_fallback_call(rt, name)) &&
+        fwd_method_called_blockless(c, comp_scope_of(c, id)))
       fwd_branch_on_block_given(c, id);
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
