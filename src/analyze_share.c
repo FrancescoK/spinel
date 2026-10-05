@@ -22,6 +22,7 @@
 #include "builtin_names.h"
 #include "call_plan.h"
 #include "share.h"
+#include "repr.h"
 
 /* element-own flags (not merged by a union) */
 enum { SHE_WRITTEN = 1 };
@@ -1797,6 +1798,102 @@ int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
   while (F->parent[x] != x) x = F->parent[x];
   unsigned f = F->flags[x];
   return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & SHF_INDIRECT));
+}
+
+/* ---- a Hash key borrows a handle's bytes ----
+
+   A String the rule shares is an sp_String * handle, and a String-keyed
+   Hash call handed one as its key read it out through the handle's read
+   face, a full copy, before the store copied it again (sp_hash_key_str, the
+   copy CRuby makes when it dups and freezes a new key) or the lookup only
+   compared it. The key can take the handle's live buffer instead, as
+   strbuf_read_raw already lets a builtin accessor do (#5745), when nothing
+   runs between the borrow and the call: the receiver and every other
+   operand are plain reads. (A read-only parameter and a bound C function
+   borrow through master's own passes, mark_param_read_only_operands and
+   mark_native_str_operands, which run under the flag too.) */
+
+/* An operand evaluated beside the borrowed argument: a variable read, a
+   literal, or scalar arithmetic over those. Nothing in it can change the
+   String between the borrow and the call. */
+static int sh_plain_operand(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_SelfNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_StringNode: case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  case NK_CallNode: {
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
+    if (sh_has_targets(c, n) || !sh_plain_operand(c, recv)) return 0;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (!sh_plain_operand(c, argv[i])) return 0;
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* Is argument node a a read of a String slot held as the shared handle,
+   which reads out through the copying face? */
+static int sh_handle_read(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (c->strbuf_box[a] || c->strbuf_handle_demand[a] || c->strbuf_read_raw[a]) return 0;
+  if (nt_kind(nt, a) == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, a, "name");
+    LocalVar *lv = ln ? scope_local(comp_scope_of(c, a), ln) : NULL;
+    return lv && lv->type == TY_STRBUF && repr_of_slot(c, lv).kind == RK_STRBUF;
+  }
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, a, "name");
+    int cid = nm ? sh_ivar_owner(c, a) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
+  }
+  return 0;
+}
+
+
+/* Is call n a builtin String-keyed Hash call whose first argument is a key
+   it only compares, or copies to store? */
+static int sh_hash_key_call(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver");
+  const char *name = nt_str(nt, n, "name");
+  if (recv < 0 || !name) return 0;
+  TyKind rt = c->ntype[recv];
+  if (rt != TY_STR_INT_HASH && rt != TY_STR_STR_HASH && rt != TY_STR_POLY_HASH) return 0;
+  if (sh_has_targets(c, n)) return 0;
+  if (is_store_alias(name)) return rt != TY_STR_POLY_HASH;
+  return is_hash_key_lookup(name);
+}
+
+
+int share_mark_borrows(Compiler *c) {
+  if (!c->share_strings) return 0;
+  const NodeTable *nt = c->nt;
+  int marked = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc == 0 || nt_ref(nt, n, "block") >= 0) continue;
+    /* a String-keyed Hash's key: a lookup only compares it, and a store
+       copies it (sp_hash_key_str), as CRuby dups and freezes it */
+    if (sh_hash_key_call(c, n) && sh_handle_read(c, argv[0]) &&
+        sh_plain_operand(c, nt_ref(nt, n, "receiver"))) {
+      int plain = 1;
+      for (int i = 1; i < argc && plain; i++) plain = sh_plain_operand(c, argv[i]);
+      if (plain) { c->strbuf_read_raw[argv[0]] = 1; marked++; }
+    }
+  }
+  c->share_borrows = marked;
+  return marked;
 }
 
 /* SPINEL_SHARE_STATS=3: each in-place mutation whose class is UNKNOWN's,
