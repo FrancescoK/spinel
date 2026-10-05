@@ -13196,6 +13196,17 @@ static int biv_frozen_literal(const NodeTable *nt, int r) {
          k == NK_FalseNode || k == NK_SymbolNode || k == NK_StringNode || k == NK_RangeNode ||
          k == NK_RationalNode || k == NK_ImaginaryNode;
 }
+/* `instance_variable_set(..)`, or `send(:instance_variable_set, ..)` */
+static int biv_is_reflective_set(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm) return 0;
+  if (sp_streq(nm, "instance_variable_set")) return 1;
+  if (!sp_streq(nm, "send") && !sp_streq(nm, "public_send") && !sp_streq(nm, "__send__")) return 0;
+  int an = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  const char *sn = ac > 0 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL;
+  return sn && sp_streq(sn, "instance_variable_set");
+}
 static int biv_is_self_or_implicit(const NodeTable *nt, int call) {
   int r = nt_ref(nt, call, "receiver");
   return r < 0 || nt_kind(nt, r) == NK_SelfNode;
@@ -13217,7 +13228,7 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
     return;
   }
   if (k == NK_CallNode && mode == BIV_TABLE && biv_is_self_or_implicit(nt, node) &&
-      nt_str(nt, node, "name") && sp_streq(nt_str(nt, node, "name"), "instance_variable_set"))
+      biv_is_reflective_set(nt, node))
     c->bivar_table = 1;
   if (k == NK_InstanceVariableTargetNode)
     unsupported_feature(c, node, "an instance variable of a builtin value as a multiple-assignment target: "
@@ -13320,10 +13331,9 @@ int desugar_builtin_ivars(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   /* a reflective set on anything but self, or a literal that holds none,
-     can reach a builtin value */
+     can reach a builtin value; so can one sent by name */
   for (int id = 0; id < n0; id++)
-    if (nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") &&
-        sp_streq(nt_str(nt, id, "name"), "instance_variable_set") && !biv_is_self_or_implicit(nt, id) &&
+    if (nt_kind(nt, id) == NK_CallNode && biv_is_reflective_set(nt, id) && !biv_is_self_or_implicit(nt, id) &&
         !biv_frozen_literal(nt, nt_ref(nt, id, "receiver")))
       c->bivar_table = 1;
   for (int m = 0; m < n0; m++) {
