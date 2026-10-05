@@ -1135,7 +1135,13 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (emit_array_mutate_stmt(c, id, &mb, 0)) {
       buf_puts(b, "({ ");
       buf_puts(b, mb.p ? mb.p : "");
-      emit_expr(c, argv[argc - 1], b);
+      /* a value of a class with no #to_str (an Integer, a Symbol, nil, an
+         Array): the store raised CRuby's TypeError converting it, so the
+         String the call answers is never read. Evaluated again as the
+         value, it went into the String slot and did not build. */
+      if (want == TY_STRING && vt != TY_STRBUF && vt != TY_UNKNOWN && !ty_is_object(vt))
+        buf_puts(b, raise_tail_value(want));
+      else emit_expr(c, argv[argc - 1], b);
       buf_puts(b, "; })");
       free(mb.p);
       return 1;
