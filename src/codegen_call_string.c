@@ -1162,7 +1162,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
 /* Boxed slice! arguments select the same overloads as typed arguments.
    Keep the argument rooted and evaluate it once before re-entering the arms. */
 static int emit_string_slice_poly(Compiler *c, int id, int arg, Buf *b) {
-  if (repr_of(c, arg).kind != RK_BOXED || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  if (repr_of(c, arg).kind != RK_BOXED) return 0;
   int ta = ++g_tmp, tr = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, arg, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d);"
@@ -1236,18 +1236,6 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
                  re_lit_index(c, argv[0]), ts3);
     }
     buf_printf(b, " _hit%d; })", tm3);
-    return 1;
-  }
-  if (argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-    /* slice!(regexp): the removed first match (or nil), reassigning an
-       lvalue receiver with the remainder; sets the match registers. */
-    int to = ++g_tmp, ts2 = ++g_tmp, tr2 = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
-    buf_printf(b, "; const char *_t%d = _t%d;"
-                  " const char *_t%d = sp_str_slice_re(sp_re_pat_%d, _t%d, &_t%d);",
-               ts2, to, tr2, re_lit_index(c, argv[0]), to, ts2);
-    if (sb_asgn) { buf_puts(b, " "); emit_expr(c, recv, b); buf_printf(b, " = _t%d;", ts2); }
-    buf_printf(b, " _t%d; })", tr2);
     return 1;
   }
   if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
