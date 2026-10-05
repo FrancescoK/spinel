@@ -27912,7 +27912,8 @@ static int splat_dyn_arm_range(Compiler *c, int id, const char *name, int with_b
                                int *lo, int *hi, int *variadic) {
   if (!nt_int((NodeTable *)c->nt, id, "dyn_arm", 0)) return 0;
   int l, h;
-  if (!builtin_name_arity_span(name, with_block, &l, &h)) return 0;
+  if (!(name[0] >= 'A' && name[0] <= 'Z' && builtin_kernel_fn_span(name, with_block, &l, &h)) &&
+      !builtin_name_arity_span(name, with_block, &l, &h)) return 0;
   int v = 0;
   if (h < 0 || h > l + 3) { h = l + 3; v = 2; }
   if (lo) *lo = l;

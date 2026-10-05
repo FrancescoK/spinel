@@ -14601,6 +14601,16 @@ sp_builtin_cmeth_arity_spec_tbl[] = {
 #undef BAM
 #undef BAS
 #undef BAC
+int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi) {
+  for (int i = 0; sp_builtin_cmeth_arity_spec_tbl[i].cls; i++) {
+    const SpAritySpec *r = &sp_builtin_cmeth_arity_spec_tbl[i];
+    if (!sp_streq(r->cls, "Kernel") || !sp_streq(r->m, name)) continue;
+    *lo = with_block ? r->blk_min : r->min;
+    *hi = with_block ? r->blk_max : r->max;
+    return *lo >= 0;
+  }
+  return 0;
+}
 /* The row of one spec table for (cls, name), read for the bare or the
    block-carrying call. Answers whether the table has the row; exp receives
    CRuby's wording when argc falls outside the accepted counts. */

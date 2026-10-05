@@ -4745,11 +4745,11 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
         if (g_promote_mode && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
         { *out = kconv_integer_kind(c, argv[0], kw_argc < argc && kconv_noraise_kw(c, argc, argv)); return 1; }
       }
+      if (sp_streq(name, "Rational")) { *out = TY_RATIONAL; return 1; }
+      if (sp_streq(name, "Complex"))  { *out = TY_COMPLEX; return 1; }
       if (kw_argc == 1) {
         if (sp_streq(name, "Float"))    { *out = TY_FLOAT; return 1; }
         if (sp_streq(name, "String"))   { *out = TY_STRING; return 1; }
-        if (sp_streq(name, "Rational")) { *out = TY_RATIONAL; return 1; }
-        if (sp_streq(name, "Complex"))  { *out = TY_COMPLEX; return 1; }
         /* the emitter takes Hash on such a receiver as Kernel's too
            (codegen_call_kernel.c); left untyped, its value read as nil */
         if (sp_streq(name, "Hash"))     { *out = kconv_hash_kind(c, argv[0]); return 1; }
