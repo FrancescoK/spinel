@@ -32683,6 +32683,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= desugar_curry_block_arg(c);          /* iter(&curried) -> iter { |e| curried[e] } */
     ch |= desugar_yielder_block_arg(c);        /* src.each(&y) -> src.each { |e| y << e } */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
+    ch |= desugar_block_lone_rest(c);          /* m { |*b| } -> m { |x| b = [x] } on a builtin receiver */
     ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
     ch |= desugar_public_method(c);            /* recv.public_method(:m) -> recv.method(:m) */
     ch |= desugar_class_eval_value(c);

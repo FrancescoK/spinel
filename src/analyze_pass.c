@@ -9820,7 +9820,7 @@ int type_block_rest_params(Compiler *c) {
 
 /* Specialized builtin-iterator lowerings that bind only named block params:
    a block `*rest` param there would bind nil (or emit a misdeclared body), so
-   reject loudly. Receivers that resolve to user objects (or unknown) dispatch
+   refuse it. Receivers that resolve to user objects (or unknown) dispatch
    through the yield/invoke path, which binds rest correctly -- only builtin
    container/range/int receivers reach the specialized lowerings. The families
    that DO bind rest (map/collect, select/reject/filter, each/reverse_each,
@@ -9852,15 +9852,19 @@ void check_block_rest_support(Compiler *c) {
     if (!(ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_INT ||
           rt == TY_ENUMERATOR || rt == TY_STRING)) continue;
     {
-      /* report the param as written, not the shadow rename's slot name */
+      /* report the param as written, not the shadow rename's slot name; a
+         counted refusal (CR_FEATURE), not a compiler failure. A block whose
+         only parameter is the splat was rewritten to take the values by
+         name where the receiver's type allowed (desugar_block_lone_rest). */
       char disp[128]; snprintf(disp, sizeof disp, "%.*s", (int)block_param_written_len(rn), rn);
-      long long fid = nt_int(nt, id, "node_file", -1);
-      const char *file = fid >= 0 ? nt_file_path(nt, (int)fid) : NULL;
-      if (!file) file = nt->source_file ? nt->source_file : "source.rb";
-      fprintf(stderr, "spinel: %s:%d: a block splat parameter (*%s) is not supported by the `%s` lowering\n",
-              file, (int)nt_int(nt, id, "node_line", 0), disp, nm);
+      const char *cls = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" :
+                        rt == TY_INT ? "Integer" : rt == TY_ENUMERATOR ? "Enumerator" : "String";
+      char msg[320];
+      snprintf(msg, sizeof msg, "unsupported block splat parameter (*%s) for %s#%s: "
+               "the lowering binds named parameters only; take the values by name "
+               "(see docs/limitations.md)", disp, cls, nm);
+      unsupported_feature(c, id, msg);
     }
-    exit(1);
   }
 }
 
@@ -12033,6 +12037,109 @@ static int bdp_has_name(NodeTable *nt, int node) {
    rewriting one of those would change what it returns. Runs after inference,
    so the receiver's kind is known; the caller re-runs the fixpoint. */
 
+
+/* A block whose only parameter is a splat (`{ |*b| ... }`) given to a builtin
+   iterator that binds named parameters only (check_block_rest_support's
+   list, chunk, and the String and Range walks): the iterator yields one
+   value a step (two for each_with_object, chunk_while, slice_when and a
+   comparator of sort, min, max and minmax, three for a merge's conflict), and CRuby packs them into the splat, so the block is rewritten
+   to take them by name and build the splat itself (`{ |x| b = [x]; ... }`).
+   The in-place filters and map! are left out: they bind a splat themselves,
+   and a Hash's yield two values a step. A method of the program's own of the
+   name, and a receiver that is an Enumerator yielding several values a step
+   (each_with_index, with_index, with_object), keep the block as written. */
+int desugar_block_lone_rest(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int blk = nt_ref(nt, id, "block");
+    const char *nm = nt_str(nt, id, "name");
+    int yc = nm ? block_rest_yield_count(nm) : 0;
+    if (nt_kind(nt, blk) != NK_BlockNode || !yc || nt_ref(nt, id, "receiver") < 0) continue;
+    int rcv = nt_ref(nt, id, "receiver");
+    /* through parentheses to the value they answer, their last statement */
+    while (nt_kind(nt, rcv) == NK_ParenthesesNode) {
+      int rb = nt_ref(nt, rcv, "body"), rn = 0;
+      const int *rs = nt_kind(nt, rb) == NK_StatementsNode ? nt_arr(nt, rb, "body", &rn) : NULL;
+      rcv = rn >= 1 ? rs[rn - 1] : rb;
+    }
+    const char *rnm = nt_kind(nt, rcv) == NK_CallNode ? nt_str(nt, rcv, "name") : NULL;
+    if (rnm && (is_with_index_alias(rnm) || is_with_object_alias(rnm))) continue;
+    /* only a receiver the inference holds as a builtin collection, Range,
+       Integer or String: a boxed one's walk binds by what each step
+       yields at run time (an Enumerator's several values), and binds a
+       splat itself */
+    TyKind rt = rcv >= 0 ? infer_type(c, rcv) : TY_UNKNOWN;
+    if (!(ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt) || rt == TY_RANGE ||
+          rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_INT || rt == TY_STRING ||
+          rt == TY_STRBUF)) continue;
+    Scope *bs = comp_scope_of(c, blk);
+    if (!bs) continue;
+    int bp = nt_ref(nt, blk, "parameters");
+    int pn = nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+    if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) continue;
+    int nl = 0;
+    if (bp >= 0) nt_arr(nt, bp, "locals", &nl);
+    int nreq = 0, nopt = 0, npost = 0, nkw = 0;
+    nt_arr(nt, pn, "requireds", &nreq); nt_arr(nt, pn, "optionals", &nopt);
+    nt_arr(nt, pn, "posts", &npost); nt_arr(nt, pn, "keywords", &nkw);
+    int rest = nt_ref(nt, pn, "rest");
+    const char *rname = rest >= 0 ? nt_str(nt, rest, "name") : NULL;
+    if (!rname || nreq || nopt || npost || nkw || nl || nt_ref(nt, pn, "keyword_rest") >= 0 ||
+        nt_ref(nt, pn, "block") >= 0) continue;
+    int defined = 0;
+    for (int d = 0; d < n0 && !defined; d++)
+      if (nt_kind(nt, d) == NK_DefNode && nt_str(nt, d, "name") && sp_streq(nt_str(nt, d, "name"), nm)) defined = 1;
+    if (defined) continue;
+    int reqs[3], reads[3], first_new = nt->count;
+    for (int k = 0; k < yc; k++) {
+      char pnm[64]; snprintf(pnm, sizeof pnm, "__brest_%s_%d", comp_node_tag(c, blk), k);
+      reqs[k] = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, reqs[k], "name", pnm);
+      reads[k] = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, reads[k], "name", pnm);
+    }
+    int arr = nt_new_node(nt, "ArrayNode");
+    nt_node_set_arr(nt, arr, "elements", reads, yc);
+    int wr = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, wr, "name", rname);
+    nt_node_set_ref(nt, wr, "value", arr);
+    nt_node_set_int(nt, wr, "destr_splice", 1);   /* ours: an empty body still answers nil */
+    int body = nt_ref(nt, blk, "body");
+    int is_stmts = nt_kind(nt, body) == NK_StatementsNode;
+    int obn = 0;
+    const int *ob0 = is_stmts ? nt_arr(nt, body, "body", &obn) : NULL;
+    int cnt = 1 + (is_stmts ? obn : body >= 0);
+    int *bb = malloc(sizeof(int) * (size_t)cnt);
+    if (!bb) continue;
+    bb[0] = wr;
+    if (is_stmts) for (int i = 0; i < obn; i++) bb[1 + i] = ob0[i];
+    else if (body >= 0) bb[1] = body;
+    if (is_stmts) nt_node_set_arr(nt, body, "body", bb, cnt);
+    else {
+      int st = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, st, "body", bb, cnt);
+      nt_node_set_ref(nt, blk, "body", st);
+    }
+    free(bb);
+    nt_node_set_arr(nt, pn, "requireds", reqs, yc);
+    nt_node_set_ref(nt, pn, "rest", -1);
+    /* the scope is built: the names are its block parameters now, and the
+       splat's name an ordinary local of the block */
+    for (int k = 0; k < yc; k++) {
+      LocalVar *plv = scope_local_intern(bs, nt_str(nt, reqs[k], "name"));
+      plv->is_block_param = 1;
+    }
+    LocalVar *rlv = scope_local(bs, rname);
+    if (rlv) rlv->is_block_param = 0;
+    comp_grow_node_arrays(c);
+    for (int k = first_new; k < nt->count; k++) c->nscope[k] = c->nscope[blk];
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
 
 int desugar_block_destructure_params(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
