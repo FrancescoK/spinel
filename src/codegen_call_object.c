@@ -2158,7 +2158,7 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
         else emit_coerce(c, argv[1], mt, CO_HOLD, "an instance variable write", b);
         buf_puts(b, ")");
       }
-      else if (mt == TY_STRBUF && c->strbuf_handle_demand[id]) {
+      else if (mt == TY_STRBUF && repr_of(c, id).demand) {
         /* the caller asked for the HANDLE, not a reading of it. The
            out-of-line reader answers the same way for the same demand;
            inlined, it copied regardless, so `obj.reader.equal?(x)` compared

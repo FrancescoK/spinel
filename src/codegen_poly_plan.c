@@ -5,6 +5,7 @@
 
 #include "codegen_internal.h"
 #include "codegen_poly.h"
+#include "repr.h"
 #include "call_plan.h"
 
 /* ---- --plan-check: the arms one emitted switch wrote ----
@@ -709,7 +710,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
     TyKind at0 = atmp_ty[sa0];
     /* a shared-handle parameter takes a String of either form: its
        arm passes the handle (emit_poly_shared_arg) */
-    if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF))
+    if (repr_of_slot(c, pv0).handle && (at0 == TY_STRING || at0 == TY_STRBUF))
       continue;
     int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
     int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
