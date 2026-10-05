@@ -6514,6 +6514,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (!name) return TY_UNKNOWN;
   /* a boxed value's enum_for no generator serves (desugar_to_enum) */
   if (sp_streq(name, "__poly_enum_for")) return TY_ENUMERATOR;
+  { TyKind ar; if (infer_arysub_call(c, id, &ar)) return ar; }   /* Array's, on an Array subclass (#7449) */
 
   /* Array#to_a and #to_ary answer the receiver itself, and a boxed typed
      array can only hand out a converted copy as an sp_PolyArray. Where that
@@ -6881,7 +6882,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
         (((sp_streq(hn, "[]") || sp_streq(hn, "fetch") || sp_streq(hn, "delete")) && hac == 1) ||
          (sp_streq(hn, "values") && hac == 0))) {
       int hcls = hv_value_class(c, recv);
-      if (hcls >= 0) return sp_streq(hn, "values") ? ty_obj_array(hcls) : ty_object(hcls);
+      if (hcls >= 0) return !sp_streq(hn, "values") ? ty_object(hcls) : comp_ary_root(c, hcls) >= 0 ? TY_POLY_ARRAY : ty_obj_array(hcls);   /* an Array subclass boxes as its Array (#7449) */
     }
   }
   /* A block call on a poly receiver whose candidates include a YIELDING method
@@ -9210,6 +9211,21 @@ int an_program_news_object(Compiler *c) {
   return found;
 }
 
+/* The nodes infer_type answered as an Array subclass instance's Array
+   (ary_operand, #7449): the emitter casts each to that Array. */
+static unsigned char *g_ary_viewed;
+static int g_ary_viewed_cap;
+void an_ary_viewed_mark(Compiler *c, int id) {
+  if (id >= g_ary_viewed_cap) {
+    int cap = c->node_cap > id ? c->node_cap : id + 1;
+    g_ary_viewed = realloc(g_ary_viewed, (size_t)cap);
+    memset(g_ary_viewed + g_ary_viewed_cap, 0, (size_t)(cap - g_ary_viewed_cap));
+    g_ary_viewed_cap = cap;
+  }
+  g_ary_viewed[id] = 1;
+}
+int an_ary_viewed(int id) { return id >= 0 && id < g_ary_viewed_cap && g_ary_viewed[id]; }
+
 TyKind infer_type(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
   if (g_io_skip_reopen && id != g_io_skip_node) {
@@ -9241,6 +9257,17 @@ TyKind infer_type(Compiler *c, int id) {
   g_infer_depth++;
   TyKind t = infer_uncached(c, id);
   g_infer_depth--;
+  /* an Array subclass instance read where an Array is wanted -- a splat, a
+     destructuring, an element write that is no call (marked ary_operand) --
+     is its Array (#7449) */
+  if (ty_is_object(t) && comp_ty_ary_root(c, t) >= 0) {
+    long long op = nt_int(c->nt, id, "ary_operand", 0);
+    if (op == 1 || (op == 2 && comp_method_in_chain(c, ty_object_class(t), "[]", NULL) < 0 &&
+                    comp_method_in_chain(c, ty_object_class(t), "[]=", NULL) < 0)) {
+      t = comp_ary_kind(c, ty_object_class(t));
+      an_ary_viewed_mark(c, id);
+    }
+  }
   /* The builtin-only re-derivation (see an_builtin_only) asks what this call
      would be if no user class owned the name. That answer is not the node's
      real type, and neither are the child types derived under it, so the cache

@@ -3030,7 +3030,10 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
       int first = 1;
       for (int k = 0; k < c->nclasses; k++) {
         if (class_isa_user(c, k, cid, cn)) {
-          buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", tmp, k);
+          /* an Array subclass instance is boxed as its Array (#7449) */
+          if (c->classes[k].ary_root > 0)
+            buf_printf(b, "%ssp_arysub_cls_of(%s) == %d", first ? "" : " || ", tmp, k);
+          else buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", tmp, k);
           first = 0;
         }
       }
@@ -10619,6 +10622,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
 /* A CallNode statement: the statement-level fast paths ahead of emit_expr (emit_stmt_inner's arms, in their order) */
 static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   if (!(sp_streq(ty, "CallNode"))) return 0;
+  if (emit_arysub_call_stmt(c, id, b, indent)) return 1;   /* #7449 */
   /* Reflection-mutation calls (remove_method/undef_method/remove_class_variable)
      in a class body are otherwise dropped silently; report the documented
      limit instead of pretending they took effect (#2954, #2955). */
