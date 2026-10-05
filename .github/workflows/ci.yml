@@ -240,7 +240,7 @@ jobs:
   # fixed there; splitting the lane into slices would halve it but take one
   # more runner per run, which is what queues the pool when pushes cluster.
   linux32:
-    name: ubuntu-latest / gcc -m32
+    name: ubuntu-latest / clang -m32
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # A hung apt-get in the toolchain step held this job for over four
@@ -249,7 +249,7 @@ jobs:
     # 20 minutes.
     timeout-minutes: 60
     env:
-      CC: sccache gcc -m32
+      CC: sccache clang -m32
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_STARTUP_TIMEOUT: "30"
       SCCACHE_IDLE_TIMEOUT: "0"
@@ -263,8 +263,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .sccache
-          key: sccache-ubuntu-latest-gcc-m32-${{ github.run_id }}
-          restore-keys: sccache-ubuntu-latest-gcc-m32-
+          key: sccache-ubuntu-latest-clang-m32-${{ github.run_id }}
+          restore-keys: sccache-ubuntu-latest-clang-m32-
 
       - name: Pre-start sccache server
         run: sccache --start-server
@@ -287,13 +287,15 @@ jobs:
       - name: Build (parse + regexp + spinelc), 32-bit
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
-      # -Og: the lane checks word-size assumptions, not what an optimizer
-      # makes of them (the gcc lanes' -O1 covers that), and the corpus is
-      # all compile time: -Og ran it in 164 s where -O1 took 246 s (the full
-      # 32-bit corpus on 16 cores, cold), every program passing either way.
-      # -O0 is slower than both, from the size of what it emits.
+      # clang -O0: the lane checks word-size assumptions, not what an
+      # optimizer makes of them, and the corpus is all compile time. Nearly
+      # every push misses sccache for the whole corpus (the runtime header
+      # changed), and on that header gcc -m32 -Og takes 0.34 s a file where
+      # clang -m32 -O0 with its precompiled header takes 0.10 s; an eighth
+      # of the corpus ran in 32 s against 14 s on 16 cores (2026-10-05).
+      # Under gcc the lane took 26 to 28 minutes of a run.
       - name: Run the test corpus as 32-bit programs
-        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-Og
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0
 
       - name: sccache stats
         if: always()
