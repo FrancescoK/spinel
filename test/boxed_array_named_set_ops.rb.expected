@@ -1,0 +1,11 @@
+[3, 2]
+[3]
+[3, 1, 2, 1]
+[3, 1, 2, 9]
+[3, 1, 2, 9, 8]
+[3, 1, 2, 1.0]
+[3, 1]
+[3]
+[]
+[3, 1, 2, 1]
+undefined method 'union' for an instance of Integer
