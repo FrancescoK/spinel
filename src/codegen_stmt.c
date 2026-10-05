@@ -9105,31 +9105,12 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
     int writer_wins = (kind == SP_MEMBER_ATTR);
     if (!writer_wins) {
       Scope *arm = &c->scopes[kmi];
-      /* The parameter the value lands in: the first positional one -- a
-         `def x=(...)` or `def x=(*v)` takes it as its rest. A method one
-         value cannot call (a second required positional, a required
-         keyword) takes no arm, as a class without the writer takes none. */
-      int pos = -1, callable = 1;
-      for (int j = 0; j < arm->nparams && callable; j++) {
-        if (j == arm->kwrest_idx) continue;
-        int dflt = arm->pdefault && arm->pdefault[j] >= 0;
-        if (arm->pnames && arm->pnames[j] && callee_param_is_declared_kwarg(c, arm, arm->pnames[j])) {
-          if (!dflt) callable = 0;
-          continue;
-        }
-        if (pos < 0) { pos = j; continue; }
-        if (j != arm->rest_idx && !dflt) callable = 0;
-      }
-      if (pos < 0 || !callable) continue;
-      int into_rest = pos == arm->rest_idx;
       TyKind pt = TY_POLY;
-      if (arm->pnames && arm->pnames[pos]) {
-        LocalVar *pl = scope_local(arm, arm->pnames[pos]);
+      int api = arm_arg_param(c, arm);
+      if (api >= 0 && arm->pnames && arm->pnames[api]) {
+        LocalVar *pl = scope_local(arm, arm->pnames[api]);
         pt = (pl && pl->type != TY_UNKNOWN) ? pl->type : TY_POLY;
       }
-      /* the rest holds the value boxed, in a general Array */
-      if (into_rest && pt != TY_POLY_ARRAY && pt != TY_POLY) continue;
-      if (into_rest) pt = TY_POLY;
       /* Skip a class whose PARAMETER cannot take this concrete value -- the
          attr arm below has had this skip all along, and the method arm did
          not: an unrelated class's `def session=` seeded `(Integer?)` by an
@@ -9141,40 +9122,22 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
           pt != TY_POLY && pt != TY_UNKNOWN &&
           !(ty_is_numeric(at) && ty_is_numeric(pt)))
         continue;
-      buf_printf(b, " case %d: sp_%s_%s((sp_%s *)%s", k,
-                 c->classes[wmdc].c_name, mc(arm->name), c->classes[wmdc].c_name, objp);
-      for (int j = 0; j < arm->nparams; j++) {
-        buf_puts(b, ", ");
-        if (j == pos) {
-          int ra = -1;
-          if (into_rest) {
-            ra = ++g_tmp;
-            buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, ",
-                       ra, ra, ra);
-          }
-          if (pt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed_text(c, at, src, b);
-          else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, src, b);
-          else buf_puts(b, src);
-          if (into_rest) {
-            LocalVar *rl = scope_local(arm, arm->pnames[pos]);
-            char rt[24]; snprintf(rt, sizeof rt, "_t%d", ra);
-            buf_printf(b, "); ");
-            if (rl && rl->type == TY_POLY) emit_boxed_text(c, TY_POLY_ARRAY, rt, b);
-            else buf_puts(b, rt);
-            buf_puts(b, "; })");
-          }
-        }
-        else if (j == arm->kwrest_idx) {
-          LocalVar *kl = arm->pnames && arm->pnames[j] ? scope_local(arm, arm->pnames[j]) : NULL;
-          TyKind kt = kl && kl->type != TY_UNKNOWN ? kl->type : TY_POLY;
-          if (kt == TY_POLY) emit_boxed_text(c, TY_SYM_POLY_HASH, "sp_SymPolyHash_new()", b);
-          else buf_puts(b, kt == TY_POLY_POLY_HASH ? "sp_PolyPolyHash_new()" : "sp_SymPolyHash_new()");
-        }
-        else emit_arg_or_default(c, arm, j, -1, b);
-      }
-      /* a block parameter the method keeps: no block is given */
-      if (arm->blk_param && arm->blk_param[0] && !arm->yields) buf_puts(b, ", NULL");
-      buf_puts(b, "); break;");
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (pt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed_text(c, at, src, &vb);
+      else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, src, &vb);
+      else buf_puts(&vb, src);
+      char selfp[160];
+      snprintf(selfp, sizeof selfp, "((sp_%s *)%s)", c->classes[wmdc].c_name, objp);
+      const char *val = vb.p ? vb.p : "";
+      Buf pre; memset(&pre, 0, sizeof pre);
+      Buf args; memset(&args, 0, sizeof args);
+      char raise[640];
+      if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise))
+        buf_printf(b, " case %d: { %ssp_%s_%s(%s%s); break; }", k, pre.p ? pre.p : "",
+                   c->classes[wmdc].c_name, mc(arm->name), selfp, args.p ? args.p : "");
+      else
+        buf_printf(b, " case %d: { %s break; }", k, raise);
+      free(vb.p); free(pre.p); free(args.p);
       continue;
     }
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
