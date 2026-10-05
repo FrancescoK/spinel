@@ -1,0 +1,9 @@
+false
+[true, nil, false, true]
+[true, nil, false, true]
+[true, nil, false, true]
+[[:v, :value], [:v, :value]]
+[true, false, false]
+[[:v, :value], [:v, nil]]
+[false, true, true]
+[[:v, :value], [:v, :value]]

@@ -342,7 +342,7 @@ static int array_literal_plain(Compiler *c, int recv) {
 /* value_kind_misses for a needle searched for in the array `recv`: nil is no
    miss where the array can hold the sentinel. */
 static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
-  if (comp_ntype(c, node) == TY_NIL && elem_nil_sentinel(c, recv, rt)) return 0;
+  if (comp_ntype(c, node) == TY_NIL && (rt == TY_STR_ARRAY || elem_nil_sentinel(c, recv, rt))) return 0;
   return value_kind_misses(c, node, ty_array_elem(rt));
 }
 
@@ -1549,7 +1549,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
                  ti, ti, k, ta, ti, ta, ti, tv, tv, tc);
     else if (rt == TY_STR_ARRAY)
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
-                    " if (sp_str_cmp_bytes(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;",
+                    " if (sp_str_eq(sp_%sArray_get(_t%d, _t%d), _t%d)) _t%d++;",
                  ti, ti, k, ta, ti, k, ta, ti, tv, tc);
     else
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
@@ -2195,8 +2195,9 @@ else {
       /* a boxed needle, read as the block form above reads it */
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s) : (const char *)0; })",
-                 tv, rdl.p, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_delete(%s, NULL) : (const char *)0; })",
+                 tv, rdl.p, tv, tv, rdl.p);
     }
     else {
       buf_printf(b, "sp_%sArray_delete%s(%s, ", k, df_boxed ? "_key" : "", rdl.p);
@@ -2273,7 +2274,7 @@ else {
   int elem_mismatch = 0;
   /* ... except nil, in an array that can hold it as the sentinel */
   int nil_needle = argc == 1 && a0 == TY_NIL && elem_nil_sentinel(c, recv, rt);
-  if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
+  if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_NIL && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
       a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   if (is_index_query(name) && argc == 1 &&
@@ -2322,7 +2323,8 @@ else {
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
       buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s) : sp_box_nil(); })", tv, fn, ta, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : sp_box_nil(); })", tv, fn, ta, tv, tv, fn, ta);
       { *out = 1; return 1; }
     }
     if (nil_needle) {
@@ -2392,17 +2394,17 @@ else {
   }
   if ((sp_streq(name, "include?") || sp_streq(name, "member?") || sp_streq(name, "index") || sp_streq(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
     const char *fn = (is_membership_alias(name)) ? "include" : "index";
-    /* A boxed argument into a String array is an equality scan, so a value
-       that is not a String -- nil above all (`%w[..].include?(r.content_type)`
-       with a `String | nil` reader, #4458) -- answers "not there" rather
-       than being unboxed, which raised the conversion TypeError. */
-    TyKind sat = comp_ntype(c, argv[0]);
+    /* A boxed argument into a String array is an equality scan. A foreign
+       kind misses rather than raising in unboxing (#4458); nil searches
+       for a NULL element, which is distinct from the empty String. */
+    TyKind sat = repr_of(c, argv[0]).as_ty;
     if (rt == TY_STR_ARRAY && (sat == TY_POLY || sat == TY_NIL)) {
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
       buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s) : FALSE; })",
-                 tv, fn, ta, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : FALSE; })",
+                 tv, fn, ta, tv, tv, fn, ta);
       { *out = 1; return 1; }
     }
     /* The same for an Integer array: a search for a value of another kind
