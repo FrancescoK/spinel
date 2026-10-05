@@ -31,6 +31,18 @@ enum { SHE_WRITTEN = 1 };
 typedef struct ShareFacts {
   int n, cap;
   int *parent, *elem, *nhold, *nmem, *nelem, *hidx, *owner;
+  /* per root: the method scope every holder of the class is a plain local
+     of (no parameter, no captured local), or -1 none yet, or -2 when some
+     member is anything else */
+  int *lsc;
+  /* a method's return of a value, held back until the classes settle: one
+     whose class is still only that method's own locals hands the caller a
+     String nobody else names, and joins no class (sh_settle_rets) */
+  int *ret_m, *ret_v, nret, cret;
+  unsigned char *ret_done;
+  unsigned char *unused;   /* per node: a statement whose value is dropped */
+  /* the mutation sites, for SPINEL_SHARE_STATS=3: node, value */
+  int *mut_n, *mut_v, nmut, cmut;
   int *hcount;         /* per root, once built: holders storing a String */
   unsigned char *kind, *flags, *own;
   /* the holders, and their element */
@@ -81,6 +93,7 @@ static int sh_new(ShareFacts *F, int kind) {
     F->nelem = realloc(F->nelem, sizeof(int) * (size_t)nc);
     F->hidx = realloc(F->hidx, sizeof(int) * (size_t)nc);
     F->owner = realloc(F->owner, sizeof(int) * (size_t)nc);
+    F->lsc = realloc(F->lsc, sizeof(int) * (size_t)nc);
     F->kind = realloc(F->kind, (size_t)nc);
     F->flags = realloc(F->flags, (size_t)nc);
     F->own = realloc(F->own, (size_t)nc);
@@ -94,6 +107,7 @@ static int sh_new(ShareFacts *F, int kind) {
   F->nelem[e] = kind == SHK_ELEM;
   F->hidx[e] = -1;
   F->owner[e] = -1;
+  F->lsc[e] = -2;
   F->kind[e] = (unsigned char)kind;
   F->flags[e] = 0;
   F->own[e] = 0;
@@ -122,6 +136,8 @@ static void sh_union(ShareFacts *F, int a, int b) {
     F->nhold[rx] += F->nhold[ry];
     F->nmem[rx] += F->nmem[ry];
     F->nelem[rx] += F->nelem[ry];
+    if (F->lsc[rx] == -1 || F->lsc[ry] == -2) F->lsc[rx] = F->lsc[ry];
+    else if (F->lsc[ry] != -1 && F->lsc[ry] != F->lsc[rx]) F->lsc[rx] = -2;
     int ex = F->elem[rx], ey = F->elem[ry];
     if (ex < 0) F->elem[rx] = ey;
     else if (ey >= 0) {
@@ -147,8 +163,16 @@ static int sh_elem(ShareFacts *F, int x) {
   return F->elem[r];
 }
 
-static void sh_mark(ShareFacts *F, int x, unsigned fl) {
+static void sh_mark_at(ShareFacts *F, int x, unsigned fl, int node) {
   if (x < 0) return;
+  if (F->nmut >= F->cmut) {
+    F->cmut = F->cmut ? F->cmut * 2 : 64;
+    F->mut_n = realloc(F->mut_n, sizeof(int) * (size_t)F->cmut);
+    F->mut_v = realloc(F->mut_v, sizeof(int) * (size_t)F->cmut);
+  }
+  F->mut_n[F->nmut] = node;
+  F->mut_v[F->nmut] = x;
+  F->nmut++;
   F->flags[sh_find(F, x)] |= (unsigned char)fl;
 }
 
@@ -193,6 +217,7 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
   h->name = name ? strdup(name) : NULL;
   h->node = node;
   int e = sh_new(F, kind);
+  if (kind == SHK_LOCAL) F->lsc[e] = a;
   F->helem[i] = e;
   F->hidx[e] = i;
   F->hnext[i] = F->bucket[hb];
@@ -223,7 +248,11 @@ static int sh_local_of(ShareFacts *F, Compiler *c, Scope *s, const char *name, i
   if (!s || !name) return -1;
   LocalVar *lv = scope_local(s, name);
   if (!lv || !sh_may_hold(lv->type)) return -1;
-  return sh_holder(F, SHK_LOCAL, (int)(s - c->scopes), (int)(lv - s->locals), NULL, node);
+  int e = sh_holder(F, SHK_LOCAL, (int)(s - c->scopes), (int)(lv - s->locals), NULL, node);
+  /* a parameter's String is the caller's, a captured local's a proc's too */
+  if (e >= 0 && (lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives || s->def_node < 0))
+    F->lsc[sh_find(F, e)] = -2;
+  return e;
 }
 
 static int sh_local_at(ShareFacts *F, Compiler *c, int node) {
@@ -289,6 +318,21 @@ static void sh_lend(ShareFacts *F, int arg, int par, int direct) {
   F->lend_direct[F->nlend] = (unsigned char)direct;
   F->lend_done[F->nlend] = 0;
   F->nlend++;
+}
+
+/* method mi returns value v (see ShareFacts.ret_m) */
+static void sh_ret(ShareFacts *F, int mi, int v) {
+  if (mi < 0 || v < 0) return;
+  if (F->nret >= F->cret) {
+    F->cret = F->cret ? F->cret * 2 : 64;
+    F->ret_m = realloc(F->ret_m, sizeof(int) * (size_t)F->cret);
+    F->ret_v = realloc(F->ret_v, sizeof(int) * (size_t)F->cret);
+    F->ret_done = realloc(F->ret_done, (size_t)F->cret);
+  }
+  F->ret_m[F->nret] = mi;
+  F->ret_v[F->nret] = v;
+  F->ret_done[F->nret] = 0;
+  F->nret++;
 }
 
 /* ---- node values ---- */
@@ -624,8 +668,11 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
     return rv;
   case BSH_ARGS: {
-    /* one argument is the answer; several, an Array of them */
+    /* one argument is the answer; several, an Array of them, which joins
+       them only where something takes it (`p a, b` as a statement keeps
+       neither) */
     if (nv == 1) return vals[0];
+    if (F->unused[n]) return -1;
     int r = sh_new(F, SHK_VALUE);
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
     return r;
@@ -642,7 +689,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_FILL1:
     if (argc >= 2) {
       int b = sh_val(F, c, argv[1]);
-      sh_mark(F, b, SHF_MUT | (sh_holder_read(nt, argv[1]) ? 0 : SHF_INDIRECT));
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[1]) ? 0 : SHF_INDIRECT), n);
       return b;
     }
     return -1;
@@ -807,7 +854,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* an in-place String mutation of the receiver */
   if (maybe_str && sp_str_mutator(name, 0))
-    sh_mark(F, rv, SHF_MUT | (sh_holder_read(nt, recv) ? 0 : SHF_INDIRECT));
+    sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, recv) ? 0 : SHF_INDIRECT), n);
 
   /* a block passed as a value: a proc or a Method, called from wherever */
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
@@ -815,7 +862,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const char *sym = sh_lit_name(nt, bx);
     if (sym && bx >= 0 && nt_kind(nt, bx) == NK_SymbolNode) {
       /* `&:upcase!` runs the name on each element */
-      if (sp_str_mutator(sym, 0)) sh_mark(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT);
+      if (sp_str_mutator(sym, 0)) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
     else sh_union(F, sh_elem(F, rv), F->unknown);
@@ -1122,7 +1169,8 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
     for (int i = 0; i < nv; i++) {
-      sh_union(F, mi >= 0 ? sh_scope_holder(F, SHK_RET, mi) : -1, vals[i]);
+      if (nv == 1) sh_ret(F, mi, vals[i]);
+      else sh_union(F, mi >= 0 ? sh_scope_holder(F, SHK_RET, mi) : -1, vals[i]);
       if (nv > 1 && mi >= 0) sh_union(F, sh_elem(F, sh_scope_holder(F, SHK_RET, mi)), vals[i]);
     }
     return -1;
@@ -1181,6 +1229,29 @@ static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
   return F->nmem[r] == 1 && !(F->flags[r] & SHF_UNKNOWN);
 }
 
+/* A method's String built in its own locals and returned is handed over:
+   the locals die with the call, so the caller's name for it is the only
+   one, and the two need not share (`out = +""; out << x; out`, the
+   accumulator a builder returns). The return joins the method's value only
+   once its class reaches anything else: a parameter, a captured local,
+   another method's local or value, an ivar, a container (whose elements
+   could be named elsewhere), or what the walk does not follow. */
+static int sh_settle_rets(ShareFacts *F) {
+  int any = 0;
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int i = 0; i < F->nret; i++) {
+      if (F->ret_done[i]) continue;
+      int r = sh_find(F, F->ret_v[i]);
+      if (F->lsc[r] == F->ret_m[i] && F->elem[r] < 0 && !(F->flags[r] & SHF_UNKNOWN)) continue;
+      sh_union(F, sh_scope_holder(F, SHK_RET, F->ret_m[i]), F->ret_v[i]);
+      F->ret_done[i] = 1;
+      changed = any = 1;
+    }
+  }
+  return any;
+}
+
 static void sh_settle_lends(ShareFacts *F, Compiler *c) {
   for (int changed = 1; changed; ) {
     changed = 0;
@@ -1190,6 +1261,7 @@ static void sh_settle_lends(ShareFacts *F, Compiler *c) {
       F->lend_done[i] = 1;
       changed = 1;
     }
+    if (sh_settle_rets(F)) changed = 1;
   }
   /* a lent parameter's mutation is its argument's */
   for (int changed = 1; changed; ) {
@@ -1293,11 +1365,19 @@ static void sh_free(ShareFacts *F) {
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->mconst);
+  free(F->mut_n); free(F->mut_v);
+  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
   free(F);
+}
+
+/* the last statement of statements node st drops its value */
+static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st) {
+  int bn = 0; const int *bv = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &bn) : NULL;
+  if (bn > 0 && bv[bn - 1] >= 0 && bv[bn - 1] < F->nnodes) F->unused[bv[bn - 1]] = 1;
 }
 
 static ShareFacts *sh_build(Compiler *c, int closed) {
@@ -1311,13 +1391,28 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
   sh_mutable_consts(F, c);
+  F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
+  NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
+    int bn = 0; const int *bv = nt_arr(nt, st, "body", &bn);
+    for (int i = 0; i + 1 < bn; i++) if (bv[i] >= 0 && bv[i] < F->nnodes) F->unused[bv[i]] = 1;
+  }
+  /* the program's last statement, and a class body's, answer nothing */
+  for (int k = 0; k < 3; k++) {
+    if (k == 0) {
+      int root = nt->root_id;
+      int st = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+      sh_mark_last_unused(F, nt, st);
+      continue;
+    }
+    NT_FOREACH_KIND(nt, k == 1 ? NK_ClassNode : NK_ModuleNode, pn) sh_mark_last_unused(F, nt, nt_ref(nt, pn, "body"));
+  }
   for (int n = 0; n < F->nnodes; n++) sh_val(F, c, n);
   /* each method's value is its body's last, and its defaults bind its
      parameters */
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (m->def_node < 0) continue;
-    if (m->body >= 0) sh_union(F, sh_scope_holder(F, SHK_RET, mi), sh_stmts_val(F, c, m->body));
+    if (m->body >= 0) sh_ret(F, mi, sh_stmts_val(F, c, m->body));
     for (int j = 0; j < m->nparams; j++) {
       if (!m->pdefault || m->pdefault[j] < 0 || !m->pnames[j]) continue;
       int p = sh_local_of(F, c, m, m->pnames[j], m->def_node);
@@ -1677,4 +1772,21 @@ int share_mark_borrows(Compiler *c) {
   free(loud);
   c->share_borrows = marked;
   return marked;
+}
+
+/* SPINEL_SHARE_STATS=3: each in-place mutation whose class is UNKNOWN's,
+   which makes every String that meets what the walk does not follow a
+   handle (#6765's never-mutated proof under dynamic calls) */
+void share_dump_unknown_mutations(Compiler *c) {
+  const ShareFacts *F = c->share;
+  if (!F) return;
+  int ru = sh_root(F, F->unknown);
+  for (int i = 0; i < F->nmut; i++) {
+    if (sh_root(F, F->mut_v[i]) != ru) continue;
+    int n = F->mut_n[i];
+    int recv = nt_ref(c->nt, n, "receiver");
+    fprintf(stderr, "share-unknown-mut: line %d `%s` on %s (%s)\n", (int)nt_int(c->nt, n, "node_line", 0),
+            nt_str(c->nt, n, "name") ? nt_str(c->nt, n, "name") : "?",
+            recv >= 0 ? nt_type(c->nt, recv) : "-", recv >= 0 ? ty_name(c->ntype[recv]) : "-");
+  }
 }
