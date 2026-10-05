@@ -13712,7 +13712,10 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   if (spilled_argov) view_unbind(g_n_argov - 1);
   free(inner.p); free(boxed.p);
   char thrown[32]; snprintf(thrown, sizeof thrown, "sp_brk_throw(_brklt%d", tS);
-  if (light && body.p && strstr(body.p, thrown)) {
+  /* a block run as a proc (a boxed Hash's merge! block) throws its break
+     from the proc's own body, addressed by the serial its capture takes */
+  char homed[40]; snprintf(homed, sizeof homed, "_brkhome = _brklt%d;", tS);
+  if (light && body.p && (strstr(body.p, thrown) || strstr(body.p, homed))) {
     /* the light guess was wrong: rename the breaks onto the scoped form */
     char from1[24], to1[40], from2[24], to2[24];
     snprintf(from1, sizeof from1, "_brkv%d = ", tS);
