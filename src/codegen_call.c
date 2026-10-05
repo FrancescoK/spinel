@@ -15356,7 +15356,55 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
    native object -- takes the ordinary dispatch, re-entered below with the
    receiver already evaluated into the temp. */
 static int g_poly_arity_node = -1;
+/* A call on a boxed receiver whose name only builtin methods answer: CRuby
+   evaluates the receiver and the arguments before it looks the method up,
+   checks the count or converts an argument. The checks below and the face
+   coercions put the receiver's class test in the statement prelude, and the
+   arguments ran inside the call after it, or not at all once it raised:
+   `[nil, "ab"][k].center(f(5))` raised NoMethodError without running f. The
+   operands that have an effect run first, in order, into rooted temps the
+   re-entered call reads (emit_args_before); a plain receiver stays where it
+   is, since a String mutator writes its new contents back into it. A name a
+   user class answers, as an instance or a class method, takes the poly
+   dispatch, whose hoist runs the operands in order already
+   (hoist_dispatch_args), a splat or `**` among them; so does a call with
+   one, here. */
+static int g_poly_args_first_node = -1;
+static int emit_poly_args_first(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (g_poly_args_first_node == id) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || comp_ntype(c, recv) != TY_POLY || user_defines_or_reads(c, name)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return 0;
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  int eff = 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, argv[i]);
+    const char *aty = nt_type(nt, argv[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
+        (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 0;
+    if (!eff) eff = subtree_has_side_effect(c, argv[i]);
+  }
+  if (!eff) return 0;
+  int saved = g_n_argov;
+  int rebound = 0;
+  for (int i = 0; i < argc && !rebound; i++) rebound = read_rebound_by(c, recv, argv[i]);
+  if (subtree_has_side_effect(c, recv) || rebound) {
+    argov_reserve();
+    view_bind(recv, "_t%d", hoist_boxed_rooted(c, recv));
+  }
+  emit_args_before(c, argv, argc, NULL, 0, g_pre);
+  int sv = g_poly_args_first_node; g_poly_args_first_node = id;
+  emit_call(c, id, b);
+  g_poly_args_first_node = sv;
+  view_unbind(saved);
+  return 1;
+}
 static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
+  if (emit_poly_args_first(c, id, b)) return 1;
   if (g_poly_arity_node == id || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
   int n = poly_arity_plan(c, id, tests, exps);
@@ -15371,8 +15419,9 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
   for (int q = 0; q < n; q++) {
     buf_puts(g_pre, q ? "else if (" : "if (");
     buf_printf(g_pre, tests[q], tv, tv);
-    /* the arguments are not evaluated first, as CRuby does: rendered here,
-       their own hoisted statements would run on the dispatch path too */
+    /* the arguments with an effect ran ahead of the tests
+       (emit_poly_args_first); rendered here, their own hoisted statements
+       would run on the dispatch path too */
     buf_puts(g_pre, ") { ");
     buf_printf(g_pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\"); }\n",
                argc, exps[q]);
@@ -23730,7 +23779,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
   /* A provably wrong argument count raises before any type guard, as CRuby
      checks arity at dispatch (defined above). */
   if (emit_or_take_back(c, id, b, emit_builtin_arity_guard)) return;
-  /* ...and on a boxed receiver, for the classes that reject the count */
+  /* ...and on a boxed receiver, its operands first, then the classes that reject the count */
   if (emit_or_take_back(c, id, b, emit_poly_arity_guard)) return;
   /* String#upcase and friends' case-mapping options (defined above) */
   if (emit_or_take_back(c, id, b, emit_case_opts_guard)) return;
