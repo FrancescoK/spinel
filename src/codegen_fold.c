@@ -933,8 +933,8 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
        re-assigned variable, a call's answer) bisects its run-time bounds */
     int fvar = rn9 < 0 && comp_ntype(c, recv) == TY_FLOAT_RANGE;
     if (rn9 < 0 && !fvar) return 0;
-    TyKind blt9 = rleft >= 0 ? infer_type(c, rleft) : TY_NIL;
-    TyKind brt9 = rright >= 0 ? infer_type(c, rright) : TY_NIL;
+    TyKind blt9 = rleft >= 0 ? comp_ntype(c, rleft) : TY_NIL;
+    TyKind brt9 = rright >= 0 ? comp_ntype(c, rright) : TY_NIL;
     /* A half-open Float range (..2.5), (1.5..): CRuby bisects the doubles
        themselves, in the order of their bit patterns (sp_f2key), so an
        infinite bound is a bound like any other. Its answer is the least
@@ -5705,7 +5705,7 @@ int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
-  if (comp_ntype(c, recv) != TY_POLY || infer_type(c, recv) != TY_POLY) return 0;
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
