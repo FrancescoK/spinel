@@ -1328,6 +1328,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
   }
+  /* a library class's class method, or a C-bound class's method */
+  if ((rt == TY_CLASS && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
+       nt_str(nt, recv, "name") && is_lib_class_name(nt_str(nt, recv, "name"))) ||
+      (ty_is_object(rt) && c->classes[ty_object_class(rt)].is_native_class))
+    return sh_builtin(F, c, n, bop_share(BOP_LIB, name), rv, blk, 0);
   TyKind fam = sh_family(rt);
   int s = bop_share_named(fam, name);
   /* the Strings' answers-self names the face table lists */
