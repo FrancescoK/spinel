@@ -1232,7 +1232,7 @@ static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
-static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
+void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
   return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && nt_str(c->nt, v, "name") &&
@@ -1285,11 +1285,12 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       return repr_of_slot(c, vl).handle;
     }
     /* a global holding the handle (--share-strings), read or written */
-    case NK_GlobalVariableReadNode: {
+    case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode: {
       char gr[256];
       return depth > 0 && strbuf_slot_ref(c, v, gr, sizeof gr);
     }
-    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode: {
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
+    case NK_ConstantWriteNode: {
       char gr[256];
       return depth > 0 && strbuf_gvar_write_handle(c, v, gr, sizeof gr);
     }
@@ -1387,7 +1388,8 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
   }
 }
 /* Is v (through single-statement parentheses) a write (`=`, `||=`, `&&=`)
-   of a global holding the shared handle? Its slot's text to out. */
+   of a global (or `=` of a constant) holding the shared handle? Its slot's
+   text to out. */
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c)) return 0;
@@ -1396,17 +1398,15 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
     int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
     v = n == 1 ? st[0] : -1;
   }
-  if (v < 0 || (nt_kind(nt, v) != NK_GlobalVariableWriteNode && nt_kind(nt, v) != NK_GlobalVariableOrWriteNode &&
-                 nt_kind(nt, v) != NK_GlobalVariableAndWriteNode)) return 0;
-  LocalVar *gv = repr_handle_gvar(c, v);
-  if (!gv) return 0;
-  snprintf(out, cap, "gv_%s", gv->name);
-  return 1;
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+  if (k != NK_GlobalVariableWriteNode && k != NK_GlobalVariableOrWriteNode && k != NK_GlobalVariableAndWriteNode &&
+      k != NK_ConstantWriteNode && k != NK_ClassVariableWriteNode) return 0;
+  return repr_handle_static_ref(c, v, out, cap);
 }
 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
-static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
      HANDLE, not the buffer, so the two names denote one object: a later
      `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
@@ -11133,7 +11133,8 @@ else {
     if (frcv >= 0 && fnm && sp_streq(fnm, "freeze") && comp_ntype(c, frcv) == TY_STRING) {
       const char *rty2 = nt_type(nt, frcv);
       char gfz[256];   /* a global holding the handle (--share-strings) */
-      int gvh = nt_kind(nt, frcv) == NK_GlobalVariableReadNode && strbuf_slot_ref(c, frcv, gfz, sizeof gfz);
+      int gvh = repr_static_read_kind(nt_kind(nt, frcv)) &&
+                strbuf_slot_ref(c, frcv, gfz, sizeof gfz);
       if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") || sp_streq(rty2, "InstanceVariableReadNode") || gvh)) {
         int fargs = nt_ref(nt, id, "arguments");
         int fac = 0; if (fargs >= 0) nt_arr(nt, fargs, "arguments", &fac);
@@ -11417,7 +11418,17 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
     emit_indent(b, indent);
     buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
-    if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
+    /* --share-strings: a class variable holding the shared handle takes an
+       alias's handle or a fresh one, as a handle local's write does */
+    if (idx >= 0 && ct == TY_STRBUF && c->classes[sc].cvar_str_shared[idx]) {
+      LocalVar slot;
+      memset(&slot, 0, sizeof slot);
+      slot.type = TY_STRBUF;
+      slot.str_shared = 1;
+      if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
+      else emit_strbuf_value(c, &slot, v, b);
+    }
+    else if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     /* `@@x = nil` into a slot typed by its later writes is the slot's nil,
@@ -11477,6 +11488,15 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     int oidx = comp_cvar_index(&c->classes[sc], nm);
     TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
     emit_indent(b, indent);
+    /* --share-strings: a class variable holding the shared handle, as a
+       global's slot (#6765) */
+    if (ot == TY_STRBUF && c->classes[sc].cvar_str_shared[oidx]) {
+      emit_strbuf_orw_guard(c, ref, v, is_or, b);
+      buf_puts(b, " ");
+      emit_cvar_set_flag(c, sc, nm, 0, b);
+      buf_puts(b, "\n");
+      return 1;
+    }
     /* a boxed slot (one written nil and a bool, #4884) tests and stores as
        the value form does */
     buf_puts(b, is_or ? "if (!" : "if ");
@@ -12032,12 +12052,15 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     }
     emit_indent(b, indent);
     buf_printf(b, "%s_%s = ", pfx, key);
-    /* --share-strings: a global holding the shared handle takes an alias's
-       handle, or a fresh one (#6765) */
-    if (isg && repr_of_slot(c, lv).kind == RK_STRBUF) {
+    /* --share-strings: a global or a constant holding the shared handle
+       takes an alias's handle, or a fresh one (#6765) */
+    if (repr_of_slot(c, lv).kind == RK_STRBUF) {
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, lv, v, b);
       buf_puts(b, ";\n");
+      if (!isg && lv->init_guarded) {
+        emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
+      }
       return 1;
     }
     int vlit = empty_literal_node(c, v);
@@ -14778,7 +14801,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
   /* The same shim over a READER call that hands out the handle
      (`obj.name[0] = "X"`), whose call node reads as the shadow. */
   if ((rt == TY_STRING || rt == TY_STRBUF) &&
-      (nt_kind(nt, recv) == NK_CallNode || nt_kind(nt, recv) == NK_GlobalVariableReadNode) &&
+      (nt_kind(nt, recv) == NK_CallNode || (repr_share_rule(c) && repr_static_read_kind(nt_kind(nt, recv)))) &&
       (is_string_position_mutator(name))) {
     char srefR[1024];
     SbReaderSave svR;
