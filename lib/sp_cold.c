@@ -3856,15 +3856,18 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
   return out;
 }
 /* gsub(string, hash): every occurrence of the literal pattern replaced by
-   the hash's value for it ("" when absent), $~ the last occurrence. An
-   empty pattern matches at every character boundary, as CRuby's does. */
+   the hash's value for it ("" when absent or nil), $~ the last occurrence.
+   An empty pattern matches at every character boundary -- every byte of a
+   binary String -- as CRuby's does. */
 const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {SP_GC_ROOT_STR(pat);SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   if (!str || !pat) return str;
   size_t slen = strlen(str), plen = strlen(pat);
   const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
+  if (!rep) rep = "";
   SP_GC_ROOT_STR(rep);
   size_t rlen = strlen(rep), n = 0;
-  if (plen == 0) { for (size_t i = 0; i < slen; i++) if (((unsigned char)str[i] & 0xC0) != 0x80) n++; n++; }
+  int bin = sp_str_is_binary(str);
+  if (plen == 0) { for (size_t i = 0; i < slen; i++) if (bin || ((unsigned char)str[i] & 0xC0) != 0x80) n++; n++; }
   else for (const char *q = strstr(str, pat); q; q = strstr(q + plen, pat)) n++;
   if (n == 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t total = slen + n * rlen - (plen ? n * plen : 0);
@@ -3872,7 +3875,7 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
   size_t o = 0, last = 0;
   if (plen == 0) {
     for (size_t i = 0; i < slen; i++) {
-      if (((unsigned char)str[i] & 0xC0) != 0x80) { memcpy(out + o, rep, rlen); o += rlen; last = i; }
+      if (bin || ((unsigned char)str[i] & 0xC0) != 0x80) { memcpy(out + o, rep, rlen); o += rlen; last = i; }
       out[o++] = str[i];
     }
     memcpy(out + o, rep, rlen); o += rlen; last = slen;
