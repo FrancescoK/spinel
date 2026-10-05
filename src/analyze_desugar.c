@@ -221,7 +221,7 @@ int desugar_class_body_bare_new(Compiler *c) {
    has no const_get, so that is left for the ordinary NoMethodError. */
 int desugar_bare_class_self_calls(Compiler *c) {
   static const struct { const char *name; int argc; } surf[] = {
-    { "const_get", -1 }, { "superclass", 0 }, { "ancestors", 0 },
+    { "const_get", -1 }, { "superclass", 0 }, { "ancestors", 0 }, { "subclasses", 0 },
     { "include?", 1 }, { "to_s", 0 }, { "inspect", 0 }, { "frozen?", 0 },
   };
   NodeTable *nt = (NodeTable *)c->nt;
