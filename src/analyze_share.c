@@ -66,6 +66,11 @@ typedef struct ShareFacts {
   /* the method names a Method, `send` or define_method can reach */
   const char **dyn;
   int ndyn, cdyn, dyn_all, dyn_ivars;
+  /* the classes a send with a computed name is made on: their methods (and
+     their subclasses' and ancestors') are the ones it can reach */
+  int *dyn_cls, ndyn_cls, cdyn_cls;
+  int dyn_sym;         /* a send whose name is a Symbol value: it reaches the
+                          methods a Symbol literal of the program names */
   const char **mconst;
   int nmconst, cmconst;
   int unknown;
@@ -358,6 +363,42 @@ static int sh_holder_read(const NodeTable *nt, int n) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
          k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode;
+}
+
+/* A send with a computed name on an object of class cid (or on self in
+   one of its methods): it reaches cid's methods only. cid < 0: any. */
+static void sh_dyn_class(ShareFacts *F, int cid) {
+  if (cid < 0) { F->dyn_all = 1; return; }
+  for (int i = 0; i < F->ndyn_cls; i++) if (F->dyn_cls[i] == cid) return;
+  if (F->ndyn_cls >= F->cdyn_cls) {
+    F->cdyn_cls = F->cdyn_cls ? F->cdyn_cls * 2 : 8;
+    F->dyn_cls = realloc(F->dyn_cls, sizeof(int) * (size_t)F->cdyn_cls);
+  }
+  F->dyn_cls[F->ndyn_cls++] = cid;
+}
+
+/* Does the program make a Symbol at run time (`to_sym`, `intern`, an
+   interpolated Symbol)? Then a Symbol value may name any method. */
+static int sh_makes_symbols(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_InterpolatedSymbolNode) return 1;
+    if (k != NK_CallNode) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && is_symbol_conversion(nm)) return 1;
+  }
+  return 0;
+}
+
+/* Is `name` a Symbol literal of the program? */
+static int sh_symbol_literal(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_SymbolNode, n) {
+    const char *v = nt_str(nt, n, "value");
+    if (v && sp_streq(v, name)) return 1;
+  }
+  return 0;
 }
 
 static void sh_dyn_name(ShareFacts *F, const char *name) {
@@ -1060,7 +1101,25 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* the reflective names */
   if (is_send_family(name)) {
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
-    sh_dyn_name(F, lit);
+    int smi = sh_method_index(c, n);
+    /* in a method nothing calls (and the emitter drops: no proc form, no
+       exception #message / #to_s it calls regardless), a send reaches
+       nothing */
+    const Scope *sm = smi >= 0 ? &c->scopes[smi] : NULL;
+    if (sm && !sm->reachable && !sm->is_proc_form && sm->name && !is_exception_message(sm->name))
+      ;
+    else if (lit) sh_dyn_name(F, lit);
+    else {
+      /* a computed name reaches the receiver's class's methods: an object
+         of a known class, or self in an instance method of one */
+      Scope *ss = recv < 0 ? comp_scope_of(c, n) : NULL;
+      int cid = recv >= 0 ? (ty_is_object(rt) ? ty_object_class(rt) : -1)
+              : ss && !ss->is_cmethod ? ss->class_id : -1;
+      /* a Symbol name on a receiver of any class: one of the program's
+         Symbol literals, when it makes no Symbol at run time */
+      if (cid < 0 && argc >= 1 && c->ntype[argv[0]] == TY_SYMBOL && !sh_makes_symbols(c)) F->dyn_sym = 1;
+      else sh_dyn_class(F, cid);
+    }
     return sh_unknown_call(F, c, n, blk, UT_SEND);
   }
   /* a C function the program binds (ffi_func, a package's native_func):
@@ -1903,7 +1962,7 @@ static void sh_free(ShareFacts *F) {
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_call); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
-  free(F->dyn); free(F->union_stack);
+  free(F->dyn); free(F->dyn_cls); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
   free(F);
 }
@@ -2022,6 +2081,12 @@ static ShareFacts *sh_build_skip(Compiler *c, int closed, unsigned skip) {
     if (m->def_node < 0 || !m->name) continue;
     int reach = F->dyn_all || sp_streq(m->name, "method_missing");
     for (int k = 0; k < F->ndyn && !reach; k++) reach = sp_streq(F->dyn[k], m->name);
+    if (!reach && F->dyn_sym) reach = sh_symbol_literal(c, m->name);
+    for (int k = 0; k < F->ndyn_cls && !reach; k++) {
+      int cid = F->dyn_cls[k];
+      reach = m->class_id >= 0 && (m->class_id == cid || is_descendant(c, m->class_id, cid) ||
+                                   comp_method_in_chain(c, cid, m->name, NULL) == mi);
+    }
     if (!reach) continue;
     int o = sh_tagset(F, UT_DYN_REACH);
     for (int j = 0; j < m->nparams; j++)
