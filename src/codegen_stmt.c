@@ -7331,11 +7331,37 @@ static int emit_hash_tail_conversion(Compiler *c, int node, Buf *b) {
    `sp_box_nil()` carries no side-effect prelude, so discarding it is safe, and
    any other emission (e.g. a poly-dispatch `({...})`) is passed through
    unchanged. */
+/* Does call `node` name a program method, every definition of which is a
+   C void function (a value the program never gets back)? A call whose
+   type is merely unknown -- a builtin's, a reopened class's -- answers a
+   value and is not this. */
+static int call_names_only_void_methods(Compiler *c, int node) {
+  const char *nm = nt_str(c->nt, node, "name");
+  if (!nm || sp_streq(nm, "initialize")) return 0;
+  int any = 0;
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->name || !sp_streq(sc->name, nm) || sc->def_node < 0) continue;
+    if (!method_is_void(sc)) return 0;
+    any = 1;
+  }
+  return any;
+}
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
   if (g_ret_type == TY_POLY || (g_result_var && g_result_poly)) { emit_expr(c, node, b); return; }
+  /* A call that answers no type -- a method whose value is a call on a
+     constant defined nowhere, which raises NameError when it runs -- is a
+     C void function: evaluate it, and give the slot its nil (never reached,
+     but the slot's C type still needs a value; `return f()` did not build). */
+  if (g_ret_type != TY_UNKNOWN && nt_kind(c->nt, node) == NK_CallNode &&
+      comp_ntype(c, node) == TY_UNKNOWN && call_names_only_void_methods(c, node)) {
+    buf_puts(b, "((void)("); emit_expr(c, node, b); buf_puts(b, "), ");
+    emit_ret_nil(c, g_ret_type, b); buf_puts(b, ")");
+    return;
+  }
   /* An inlined body whose tail answers a different POINTER kind than the slot
      this emission types: the blockless `each` splice types its result from the
      CALL (an Enumerator) while the body's tail is `self`. That value is the
