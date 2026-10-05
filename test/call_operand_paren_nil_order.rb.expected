@@ -1,0 +1,16 @@
+start_with? TypeError
+start_with? [:a0, :a1]
+center TypeError
+center [:a0, :a1]
+delete! TypeError
+delete! [:a0, :a1]
+squeeze! TypeError
+squeeze! [:r, :a0, :a1]
+first TypeError
+first [:r, :a0]
+fetch TypeError
+fetch [:a0, :a1]
+union TypeError
+union [:a0, :a1]
+"bc"
+ok [:a0, :a1]

@@ -15662,6 +15662,16 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
                      tf5, tf5, tf5, bid);
         }
         else { buf_puts(b, "({ (void)("); emit_expr(c, ir, b); buf_puts(b, "); "); }
+        /* the arguments run before the method converts the index, as CRuby
+           runs them; the Boolean arm converts its own */
+        if (!sp_streq(badc, "Boolean")) {
+          int gac = 0; const int *gav = call_args(nt, id, &gac);
+          for (int i = 0; i < gac; i++) {
+            NodeKind gk = nt_kind(nt, gav[i]);
+            if (gk == NK_SplatNode || gk == NK_BlockArgumentNode || gk == NK_KeywordHashNode) continue;
+            buf_puts(b, "(void)("); emit_expr(c, gav[i], b); buf_puts(b, "); ");
+          }
+        }
         if (sp_streq(badc, "nil"))
           buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion from nil to integer\"); ");
         else if (sp_streq(badc, "Boolean")) {
@@ -18018,6 +18028,20 @@ static int operand_hoists_effect(Compiler *c, int node) {
   return 0;
 }
 
+/* A parenthesized operand, `(log << :a; v)`, runs its statements and
+   answers its last value, which the callee receives as it would a call's:
+   bound like one. Not when that value is a container literal, which binding
+   would materialize (see emit_operands_in_order). */
+static int paren_operand_bindable(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, node) != NK_ParenthesesNode) return 0;
+  int body = nt_ref(nt, node, "body"), n = 0;
+  const int *bd = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  if (n < 1) return 0;
+  NodeKind lk = nt_kind(nt, unwrap_parens(c, bd[n - 1]));
+  return lk != NK_ArrayNode && lk != NK_HashNode && lk != NK_RangeNode && lk != NK_KeywordHashNode;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
@@ -18104,11 +18128,14 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     /* a conditional's value is bound as a call's is: `f(a: r.int, b: c ? r.int : 0)`
        declined whole and left every keyword to C's order */
     int bindable = (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
-                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read);
+                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read ||
+                    paren_operand_bindable(c, operand[i]));
     if (!bindable) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, i, b);
     int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
     TyKind t = fr ? TY_STRING : comp_ntype(c, operand[i]);
-    if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
+    /* a nil value has no C type to bind: it runs for its effect, and its
+       uses read the 0 a nil slot takes (as emit_arg_first binds one) */
+    if (t == TY_UNKNOWN || t == TY_VOID) return 0;
     if (nb >= 8) return 0;
     node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; nb++;
   }
@@ -18150,7 +18177,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (ok) {
     for (int i = 0; i < nb; i++) {
       tmp[i] = ++g_tmp;
-      view_bind(node[i], "_t%d", tmp[i]);
+      if (ty[i] == TY_NIL) view_bind(node[i], "0");
+      else view_bind(node[i], "_t%d", tmp[i]);
     }
     int saved_node = g_operand_order_node;
     g_operand_order_node = id;
@@ -18170,6 +18198,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        the operand as its slot; bound, the store lands in the temp and the
        ivar keeps the old value. */
     for (int i = 0; i < nb && ok; i++) {
+      if (ty[i] == TY_NIL) continue;
       if (!text_uses_tmp(ob.p, tmp[i]) || text_assigns_tmp(ob.p, tmp[i])) ok = 0;
       else if (g_pre->p && g_pre->len > pre_mark &&
                text_uses_tmp(g_pre->p + pre_mark, tmp[i])) ok = 0;
@@ -18198,6 +18227,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nb; i++) {
     if (opp[i].p) buf_puts(b, opp[i].p);
     free(opp[i].p);
+    if (ty[i] == TY_NIL) {
+      buf_printf(b, "(void)(%s); ", opb[i].p ? opb[i].p : "0");
+      free(opb[i].p);
+      continue;
+    }
     emit_ctype(c, ty[i], b);
     buf_printf(b, " _t%d = %s; ", tmp[i], opb[i].p ? opb[i].p : default_value_from_compiler(c, ty[i]));
     /* a by-value object carries its Strings in the temp itself */
