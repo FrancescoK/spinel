@@ -11261,6 +11261,7 @@ int face_arg_misfit(Compiler *c, unsigned kind, int arg) {
    argument's type raises CRuby's TypeError; a receiver of no owner's kind
    raises the NoMethodError the call raised before. Answers 0 when no arm
    survives, and the call falls through to the arms after this one. */
+static int g_endless_step_node = -1;   /* the boxed step re-entering the face (endless Range check above) */
 static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   const NodeTable *nt = c->nt;
   char name[128];   /* kept, not borrowed: an arm's re-entry may rename the node (see emit_face_arm) */
@@ -12822,6 +12823,39 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     unsigned kinds = own & PF_OWNERS;
     if (own & PF_STR_BANG) { emit_face_str_bang(c, id, own, b); return 1; }
     if (kinds && !(kinds & (kinds - 1)) && emit_face_reentry(c, id, kinds, own, b)) return 1;
+    /* a blockless step(n) on a boxed ENDLESS Range walks as an Enumerator
+       (sp_poly_range_endless_step), decided at run time ahead of the face,
+       whose Range arm materializes and cannot fill an endless one; any other
+       receiver takes the face as before. The argument is read in either
+       branch, so only one without effects. */
+    if (kinds && (kinds & (kinds - 1)) && sp_streq(name, "step") && argc == 1 && !has_blk &&
+        g_endless_step_node != id && !subtree_has_side_effect(c, argv[0]) &&
+        comp_ntype(c, id) == TY_POLY) {
+      int tv = ++g_tmp, tr = ++g_tmp;
+      /* the receiver is read once, into the prelude: the face hoists its own
+         read of it there too, which has to come after */
+      Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tv, rb.p ? rb.p : "sp_box_nil()", tv);
+      free(rb.p);
+      buf_printf(b, "({ sp_RbVal _t%d; if (sp_poly_range_is_endless(_t%d)) _t%d = sp_poly_range_endless_step(_t%d, ",
+                 tr, tv, tr, tv);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "); else _t%d = ", tr);
+      int slot = view_bind(recv, "_t%d", tv);
+      int sv = g_endless_step_node; g_endless_step_node = id;
+      Buf fb; memset(&fb, 0, sizeof fb);
+      int ok = emit_face_switch(c, id, kinds, &fb);
+      g_endless_step_node = sv;
+      view_unbind(slot);
+      if (ok) {
+        buf_puts(b, fb.p ? fb.p : "sp_box_nil()");
+        buf_printf(b, "; _t%d; })", tr);
+        free(fb.p);
+        return 1;
+      }
+      free(fb.p);
+    }
     if (kinds && (kinds & (kinds - 1)) && emit_face_switch(c, id, kinds, b)) return 1;
     /* a declined re-entry may have renamed the node and restored it into
        fresh storage (see emit_face_arm): the name is read again */
