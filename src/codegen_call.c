@@ -17947,17 +17947,33 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
   return 1;
 }
 
+/* Is argument `node` a String value stored where a shared handle is wanted,
+   which the store wraps in a fresh handle (repr_of's RS_FRESH: `+"x"` in
+   `@a << +"x"` whose element is appended to later)? The store reads it as a
+   String with the handle mark lifted (emit_boxed_strbuf), so its temp is
+   rendered and declared that way; its stored type, the handle, declared an
+   sp_String * for the String. A receiver is read by its own call, as the
+   handle it renders (`s << a << b`). */
+static int operand_fresh_str(Compiler *c, int node) {
+  return comp_ntype(c, node) == TY_STRBUF && repr_of(c, node).strbuf_src == RS_FRESH;
+}
 /* One operand of emit_operands_in_order rendered into `out`, with the
    statements its emission hoists caught in `pre` rather than the enclosing
    statement's prelude: there they ran ahead of every operand, the ones to
    its left included (`new(a: r.int, b: f(NAMES.fetch(r.int)))` read the
-   second int first), so they are placed before this operand's binding. */
-static void render_operand(Compiler *c, int node, Buf *out, Buf *pre) {
+   second int first), so they are placed before this operand's binding. A
+   fresh String (operand_fresh_str) is rendered as the String. */
+static void render_operand(Compiler *c, int node, int fresh, Buf *out, Buf *pre) {
   memset(out, 0, sizeof *out);
   memset(pre, 0, sizeof *pre);
   Buf *sv = g_pre;
   g_pre = pre;
-  emit_expr(c, node, out);
+  if (fresh) {
+    int v = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    emit_str_expr(c, node, out);
+    view_pop(c, v);
+  }
+  else emit_expr(c, node, out);
   g_pre = sv;
 }
 /* Does what operand `node` hoists run code of its own -- a call in its
@@ -17997,7 +18013,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[8], nb = 0;
+  int node[8], fresh[8], nb = 0;
   TyKind ty[8];
   int operand[9], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
@@ -18063,10 +18079,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int bindable = (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read);
     if (!bindable) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, i, b);
-    TyKind t = comp_ntype(c, operand[i]);
+    int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
+    TyKind t = fr ? TY_STRING : comp_ntype(c, operand[i]);
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
     if (nb >= 8) return 0;
-    node[nb] = operand[i]; ty[nb] = t; nb++;
+    node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; nb++;
   }
   /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
      and some arithmetic -- have nothing to order and nothing to protect: none
@@ -18098,7 +18115,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      chain (#4925). */
   int operands_last = observable < 2;
   for (; !operands_last && rendered < nb && ok; rendered++) {
-    render_operand(c, node[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -18131,7 +18148,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
                text_uses_tmp(g_pre->p + pre_mark, tmp[i])) ok = 0;
     }
     for (; operands_last && rendered < nb && ok; rendered++) {
-      render_operand(c, node[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
