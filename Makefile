@@ -3237,6 +3237,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/renarrow_resets_return.rb -c --no-line-map -o "$$tmp/rrr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (renarrow_resets_return: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_Rng_next_u32(' "$$tmp/rrr.c" || { echo "infer-test: FAIL (a self-referential ivar through a return stayed boxed)"; ok=0; }; \
 	grep -q 'sp_float sp_Rng_uniform(' "$$tmp/rrr.c" || { echo "infer-test: FAIL (the Float built from it stayed boxed)"; ok=0; }; \
+	$(SPINEL) test/infer/io_buffer_get_value_unbound_offset.rb -c --no-line-map -o "$$tmp/gvu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (io_buffer_get_value_unbound_offset: -c)"; ok=0; }; \
+	grep -q 'sp_int sp_Machine_twice(sp_Machine \*self, sp_int lv_x) {' "$$tmp/gvu.c" && grep -q 'sp_int sp_Machine_step(sp_Machine \*self, sp_int lv_a) {' "$$tmp/gvu.c" || { echo "infer-test: FAIL (a get_value read before its offset was bound boxed a call cycle)"; ok=0; }; \
 	$(SPINEL) test/index_opassign_fused.rb -c --no-line-map -o "$$tmp/iof.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_opassign_fused: -c)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t[0-9]+ = lv_counts; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an Integer slot's op-assign still reads and writes through two bounds checks)"; ok=0; }; \
 	grep -qE 'sp_FloatArray \* _t[0-9]+ = lv_zsum; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (a Float slot's op-assign with a typed-array RHS is not folded in place)"; ok=0; }; \
