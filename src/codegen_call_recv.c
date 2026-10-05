@@ -11632,17 +11632,20 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
     }
   }
-  /* Numeric#arg / #angle / #phase and #rect / #rectangular on a poly value,
+  /* Numeric#arg / #angle / #phase, #rect / #rectangular and #polar on a poly value,
      answered as the typed arms answer them. A user method, reader or class
      method of the same name wins via poly dispatch. */
   if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
-       sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
+       sp_streq(name, "rect") || sp_streq(name, "rectangular") || sp_streq(name, "polar")) && argc == 0) {
     int has_user = 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)
       if (comp_poly_arm_defines_n(c, kk, name, argc) ||
           (!c->classes[kk].is_native_class && comp_reader_in_chain(c, kk, name, NULL)) ||
           comp_cmethod_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+    if (!has_user && sp_streq(name, "polar")) {
+      buf_puts(b, "sp_poly_polar("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+    }
     if (!has_user) {
       buf_printf(b, "%s(", is_rectangular_alias(name) ? "sp_poly_rect" : "sp_poly_arg");
       emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); { *out = 1; return 1; }
