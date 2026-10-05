@@ -2900,6 +2900,18 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "module_eval", BSH_EXEC },
   { BOP_ANY_RECV, "new",         BSH_NEW },
 
+  /* The library classes' class methods (File.read, Dir.entries, Process.pid)
+     and a C-bound class's methods (StringIO#gets) copy the bytes of a String
+     they are handed and answer Strings of their own; a block one runs is
+     handed new Strings (or a new IO). */
+  { BOP_LIB, "*",          BSH_PURE },
+  { BOP_LIB, "open",       BSH_ITER_FRESH },
+  { BOP_LIB, "foreach",    BSH_ITER_FRESH },
+  { BOP_LIB, "glob",       BSH_ITER_FRESH },
+  { BOP_LIB, "each_line",  BSH_ITER_FRESH },
+  { BOP_LIB, "each_char",  BSH_ITER_FRESH },
+  { BOP_LIB, "each",       BSH_ITER_FRESH },
+
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
   { BOP_CALLABLE, "()",          BSH_CALL },
