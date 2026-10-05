@@ -2482,14 +2482,18 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
 
 /* the flags of the row a call on a receiver of kind rt finds, the Array and
    Hash kinds through their family's rows */
-static unsigned bop_call_flags(TyKind rt, const char *name, int argc, int has_block) {
+const BuiltinOp *bop_find_call(TyKind rt, const char *name, int argc, int has_block) {
   TyKind lk = rt;
   if (rt == TY_STRBUF) lk = TY_STRING;
   else if (!bop_covers(rt)) {
     if (ty_is_array(rt)) lk = BOP_ANY_ARRAY;
     else if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
   }
-  const BuiltinOp *op = bop_find(lk, name, argc, has_block);
+  return bop_find(lk, name, argc, has_block);
+}
+
+static unsigned bop_call_flags(TyKind rt, const char *name, int argc, int has_block) {
+  const BuiltinOp *op = bop_find_call(rt, name, argc, has_block);
   return op ? op->flags : 0;
 }
 

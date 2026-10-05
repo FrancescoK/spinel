@@ -12616,11 +12616,11 @@ static void emit_class_ivar_list_arm(Compiler *c, int tv, Buf *b) {
 
 /* Instance-variable and field access on a boxed receiver: an ivar write, a field read dispatched over every class that has it, instance_variable_get and _set, instance_variables (emit_poly_call's arms, in their order) */
 
-/* The class a boxed receiver's ivars are read by: its cls_id, or for an
-   Array subclass instance, boxed as its Array, the class its scan names
+/* The class a boxed receiver's ivars are read by: its cls_id, or for a
+   builtin subclass instance, boxed as its builtin, the class its scan names
    (sp_bsub_cls_of, #7449), whose struct holds them. */
 static void emit_ivar_switch_key(Compiler *c, int tv, Buf *b) {
-  if (!program_has_arysub(c)) { buf_printf(b, "_t%d.cls_id", tv); return; }
+  if (!program_has_bsub(c)) { buf_printf(b, "_t%d.cls_id", tv); return; }
   buf_printf(b, "({ int _ik%d = sp_bsub_cls_of(_t%d); _ik%d >= 0 ? _ik%d : _t%d.cls_id; })", tv, tv, tv, tv, tv);
 }
 
