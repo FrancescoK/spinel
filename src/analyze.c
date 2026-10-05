@@ -3,6 +3,7 @@
 #include "analyze_internal.h"
 #include "repr.h"
 #include "decide.h"
+#include "call_plan.h"
 
 
 static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
@@ -18547,6 +18548,242 @@ static int mark_reader_read_only_operands(Compiler *c) {
   return changed;
 }
 
+/* A user method's parameter that only reads a String for the length of the
+   call takes the live buffer of a shared handle handed to it (#7482).
+
+   The handle's read face is a full copy, made so that no `const char *` can
+   outlive the bytes it points into: a growth reallocates them. A 31 MB byte
+   matrix passed to a read-only method once per row was copied 62,710 times
+   per pass. The copy is only needed where something could see the
+   difference, and here nothing can:
+
+   - the parameter keeps nothing: its every use is the receiver of an
+     accessor that reads through the pointer and keeps none
+     (an_str_read_only_accessor; a match would keep it in MatchData);
+   - nothing changes the String while the callee runs: the callee is quiet
+     (param_borrow_loud), and every other operand of the call is a plain
+     read, so nothing between the borrow and the call runs either;
+   - the parameter is a `const char *` slot, so the borrowed pointer is read
+     exactly as the copy would have been.
+
+   This makes nothing shared that was not: it applies only where the slot is
+   already a shared handle, and only changes whether its read copies, as
+   mark_reader_read_only_operands does for a reader's builtin accessor. */
+
+/* A type whose builtin methods run no user code and keep no String pointer
+   they are handed: a scalar, a String, and the typed containers of those. */
+static int param_borrow_plain_ty(TyKind t) {
+  switch (t) {
+  case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: case TY_NIL:
+  case TY_VOID: case TY_STRING: case TY_STRBUF: case TY_RANGE: case TY_FLOAT_RANGE:
+  case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
+  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY: case TY_STR_INT_HASH: case TY_INT_INT_HASH:
+  case TY_STR_STR_HASH: case TY_INT_STR_HASH: case TY_REGEX: case TY_MATCHDATA: case TY_TIME:
+  case TY_COMPLEX: case TY_RATIONAL: case TY_IO:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static int param_borrow_scalar_ty(TyKind t) {
+  return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL;
+}
+
+/* The user methods call n reaches (its plan's method and, for a switch,
+   every member), into out; 0 for a builtin. */
+static int param_borrow_targets(Compiler *c, int n, int *out, int cap) {
+  const CallPlan *p = cplan_user_fresh(c, n);
+  if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
+  CallPlan plan = *p;
+  int k = 0;
+  out[k++] = plan.mi;
+  if (plan.dispatch >= CP_SWITCH) {
+    const char *name = c->scopes[plan.mi].name;
+    for (int s = 0; s < c->nscopes && k < cap; s++)
+      if (s != plan.mi && c->scopes[s].name && name && sp_streq(c->scopes[s].name, name) &&
+          cplan_virtual_member(c, n, &plan, s))
+        out[k++] = s;
+  }
+  return k;
+}
+
+/* Could node n, run inside a callee, change a String, drop the last name of
+   one, or run code this cannot see? A user call, a yield, a super, a proc, a
+   reflective call, a builtin on or handed a value that can reach user code
+   (an object's to_s, ==, hash), an in-place String change, a write of a
+   variable that can hold a String. Deliberately coarse: a callee that does
+   any of it keeps the copy. */
+static int param_borrow_loud(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, n)) {
+  case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode: case NK_LambdaNode:
+  case NK_ClassVariableWriteNode: case NK_ClassVariableOrWriteNode:
+  case NK_ClassVariableAndWriteNode: case NK_ClassVariableOperatorWriteNode:
+  case NK_ClassVariableTargetNode: case NK_InstanceVariableTargetNode:
+  case NK_GlobalVariableTargetNode:
+    return 1;
+  case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode:
+  case NK_InstanceVariableAndWriteNode: case NK_InstanceVariableOperatorWriteNode: {
+    const char *nm = nt_str(nt, n, "name");
+    Scope *s = comp_scope_of(c, n);
+    int cid = s && s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int iv = nm && cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv < 0 || !param_borrow_scalar_ty(c->classes[cid].ivar_types[iv]);
+  }
+  case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode:
+  case NK_GlobalVariableAndWriteNode: case NK_GlobalVariableOperatorWriteNode: {
+    const char *nm = nt_str(nt, n, "name");
+    LocalVar *gv = nm ? comp_gvar(c, nm[0] == '$' ? nm + 1 : nm) : NULL;
+    return !gv || !param_borrow_scalar_ty(gv->type);
+  }
+  case NK_EmbeddedStatementsNode: {
+    /* `#{x}` calls x.to_s */
+    int st = nt_ref(nt, n, "statements");
+    int bn = 0; const int *bv = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    return bn > 0 && !param_borrow_plain_ty(c->ntype[bv[bn - 1]]);
+  }
+  case NK_CallNode: {
+    const char *name = nt_str(nt, n, "name");
+    if (!name) return 1;
+    int tg[64];
+    if (param_borrow_targets(c, n, tg, 64) > 0) return 1;
+    if (is_opaque_reaching_call(name)) return 1;
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if (recv >= 0 && !param_borrow_plain_ty(rt) && rt != TY_CLASS) return 1;
+    if ((rt == TY_STRING || rt == TY_STRBUF) && sp_str_mutator(name, 0)) return 1;
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) return 1;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    /* IO#read(n, buf) and its kin fill the buffer in place */
+    if (rt == TY_IO && argc >= 2) return 1;
+    for (int i = 0; i < argc; i++)
+      if (!param_borrow_plain_ty(c->ntype[argv[i]])) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* An operand evaluated beside the borrowed argument: a variable read, a
+   literal, or scalar arithmetic over those. */
+static int param_borrow_plain_operand(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_SelfNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_StringNode: case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  case NK_CallNode: {
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
+    int tg[64];
+    if (param_borrow_targets(c, n, tg, 64) > 0 || !param_borrow_plain_operand(c, recv)) return 0;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (!param_borrow_plain_operand(c, argv[i])) return 0;
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* Is argument node a a read of a String slot held as the shared handle,
+   which reads out through the copying face? */
+static int param_borrow_handle_read(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (c->strbuf_box[a] || c->strbuf_handle_demand[a] || c->strbuf_read_raw[a]) return 0;
+  if (nt_kind(nt, a) == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, a, "name");
+    LocalVar *lv = ln ? scope_local(comp_scope_of(c, a), ln) : NULL;
+    return lv && lv->type == TY_STRBUF && lv->str_shared && repr_of_slot(c, lv).kind == RK_STRBUF;
+  }
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, a, "name");
+    Scope *s = comp_scope_of(c, a);
+    /* a class method's @x is the class's own ivar, another slot */
+    if (!nm || !s || s->is_cmethod) return 0;
+    int cid = s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+  }
+  return 0;
+}
+
+static int mark_param_read_only_operands(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes;
+  unsigned char *loud = calloc((size_t)(ns > 0 ? ns : 1), 1);
+  int **other = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int *));
+  int marked = 0;
+  for (int s = 0; s < ns; s++)
+    if (c->scopes[s].def_node >= 0) other[s] = calloc((size_t)(c->scopes[s].nlocals + 1), sizeof(int));
+  /* one pass: which methods are loud, and how many uses of each local are
+     anything but an accessor's receiver (a block shares its method's scope) */
+  for (int n = 0; n < nt->count; n++) {
+    int si = c->nscope[n];
+    if (si < 0 || si >= ns || !other[si]) continue;
+    if (!loud[si] && param_borrow_loud(c, n)) loud[si] = 1;
+    NodeKind k = nt_kind(nt, n);
+    const char *ln = NULL;
+    int weight = 0;
+    if (k == NK_LocalVariableReadNode) { ln = nt_str(nt, n, "name"); weight = 1; }
+    else if (comp_is_local_write(k)) { ln = nt_str(nt, n, "name"); weight = 1 << 20; }
+    else if (k == NK_CallNode) {
+      int recv = nt_ref(nt, n, "receiver");
+      const char *nm = nt_str(nt, n, "name");
+      if (recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode && nm &&
+          an_str_read_only_accessor(nm) && nt_ref(nt, n, "block") < 0) {
+        ln = nt_str(nt, recv, "name"); weight = -1;
+      }
+    }
+    LocalVar *lv = ln ? scope_local(&c->scopes[si], ln) : NULL;
+    if (lv) other[si][lv - c->scopes[si].locals] += weight;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    if (nt_ref(nt, n, "block") >= 0) continue;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    int any = 0;
+    for (int i = 0; i < argc && !any; i++) any = param_borrow_handle_read(c, argv[i]);
+    if (!any) continue;
+    int tg[64];
+    int ntg = param_borrow_targets(c, n, tg, 64);
+    if (ntg == 0 || !param_borrow_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
+    int plain = 1;
+    for (int i = 0; i < argc && plain; i++)
+      plain = param_borrow_handle_read(c, argv[i]) || param_borrow_plain_operand(c, argv[i]);
+    if (!plain) continue;
+    for (int i = 0; i < argc; i++) {
+      if (!param_borrow_handle_read(c, argv[i])) continue;
+      int ok = 1;
+      for (int t = 0; t < ntg && ok; t++) {
+        Scope *m = &c->scopes[tg[t]];
+        int spread = -1, pj = -1;
+        for (int j = 0; j < m->nparams && pj < 0; j++)
+          if (arg_layout_param_node(c, m, n, j, &spread) == argv[i]) pj = j;
+        LocalVar *p = pj >= 0 && m->pnames[pj] && pj != m->rest_idx && pj != m->kwrest_idx
+                      ? scope_local(m, m->pnames[pj]) : NULL;
+        ok = p && !loud[tg[t]] && other[tg[t]] && other[tg[t]][p - m->locals] == 0 &&
+             p->is_param && !p->is_block_param && !p->is_cell && !p->cell_outlives &&
+             !p->byref_out && !p->str_shared && !p->rbs_seeded && p->type == TY_STRING;
+      }
+      if (ok) { c->strbuf_read_raw[argv[i]] = 1; marked++; }
+    }
+  }
+  for (int s = 0; s < ns; s++) free(other[s]);
+  free(other);
+  free(loud);
+  return marked;
+}
+
 static int mark_reader_identity_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -34012,6 +34249,9 @@ static void an_phase_reconcile_check(Compiler *c) {
      Nothing between there and here reads is_value_type, so clearing it is
      still in time for the emit. */
   an_heap_captured_classes(c);
+  /* a read-only parameter takes a shared handle's live buffer, read off the
+     final types and flags (#7482) */
+  mark_param_read_only_operands(c);
   /* A capped run emits from whatever the last round left, which need not be a
      fixpoint; that is a compiler bug worth hearing about, not a quiet log. */
   if (g_fixpoint_capped)
