@@ -29247,12 +29247,19 @@ static void refuse_lent_ivar_copies(Compiler *c) {
 }
 }
 
-/* A literal block belongs to this super, not to its caller's block. */
-static int super_forwards_caller_block(Compiler *c, int id) {
+/* Only an implicit block or the method's own block parameter forwards its
+   caller's block. A literal block or an unrelated proc belongs to super. */
+int super_forwards_caller_block(Compiler *c, int id) {
   NodeKind kind = nt_kind(c->nt, id);
   if (kind != NK_SuperNode && kind != NK_ForwardingSuperNode) return 0;
   int block = nt_ref(c->nt, id, "block");
-  return block < 0 || nt_kind(c->nt, block) != NK_BlockNode;
+  if (block < 0) return 1;
+  if (nt_kind(c->nt, block) != NK_BlockArgumentNode) return 0;
+  Scope *scope = comp_scope_of(c, id);
+  int expr = nt_ref(c->nt, block, "expression");
+  return scope && scope->blk_param && scope->blk_param[0] && expr >= 0 &&
+         nt_kind(c->nt, expr) == NK_LocalVariableReadNode &&
+         sp_streq(nt_str(c->nt, expr, "name"), scope->blk_param);
 }
 
 static void poly_ivar_set_reference(Compiler *c, int id, int recv) {
