@@ -868,23 +868,20 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
                    comp_ntype(c, recv) == TY_STR_RANGE) &&
       emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 1, b)) return 1;
-  /* freeze / frozen? on an array set/read the struct's frozen flag */
-  if (recv >= 0 && argc == 0 && comp_ntype(c, recv) != TY_POLY) {
+  /* freeze / frozen? on an array set/read the struct's frozen flag: builtin-op
+     rows of the same stage (builtin_ops.c) */
+  if (recv >= 0 && comp_ntype(c, recv) != TY_POLY) {
     TyKind crt = comp_ntype(c, recv);
-    const char *ck = (crt == TY_POLY_ARRAY) ? "Poly" : array_kind(crt);
-    /* An empty array literal infers TY_UNKNOWN and emits as sp_IntArray_new();
-       without this `[].freeze` dropped the call and `[].freeze.frozen?`
-       answered false (#3828). */
-    if (!ck) {
-      const char *rvt = nt_type(nt, recv);
-      int een = 0;
-      if (rvt && sp_streq(rvt, "ArrayNode") && (nt_arr(nt, recv, "elements", &een), een == 0))
-        ck = "Int";
-    }
+    TyKind ak = (crt == TY_POLY_ARRAY || array_kind(crt)) ? crt : TY_UNKNOWN;
+    /* An empty array literal infers TY_UNKNOWN and emits as sp_IntArray_new(),
+       so it reads them as an Integer array; without this `[].freeze` dropped
+       the call and `[].freeze.frozen?` answered false (#3828). */
+    if (ak == TY_UNKNOWN && is_empty_array_lit(nt, recv)) ak = TY_INT_ARRAY;
+    if (ak != TY_UNKNOWN && emit_builtin_op_stage(c, id, recv, ak, name, 1, b)) return 1;
     /* An empty hash literal is typed by context too, and its freeze fell
        through every arm the same way (#3828). Its frozen bit lives in the GC
        header, so the emitted pointer keeps its own type. */
-    if (!ck && sp_streq(name, "freeze")) {
+    if (ak == TY_UNKNOWN && argc == 0 && sp_streq(name, "freeze")) {
       const char *hvt = nt_type(nt, recv);
       int hen = 0;
       if (hvt && (sp_streq(hvt, "HashNode") || sp_streq(hvt, "KeywordHashNode")) &&
@@ -898,33 +895,12 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         return 1;
       }
     }
-    if (ck && sp_streq(name, "freeze")) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_%sArray *_t%d = ", ck, t); emit_expr(c, recv, b);
-      buf_printf(b, "; if (_t%d) _t%d->frozen = 1; _t%d; })", t, t, t);
-      return 1;
-    }
-    if (ck && sp_streq(name, "frozen?")) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen != 0)");
-      return 1;
-    }
   }
 
-  /* freeze / frozen? on hashes: use the GC-header frozen bit */
-  if (recv >= 0 && argc == 0 && ty_is_hash(comp_ntype(c, recv))) {
-    if (sp_streq(name, "to_h") && nt_ref(nt, id, "block") < 0) {  /* identity */
-      emit_expr(c, recv, b);
-      return 1;
-    }
-    if (sp_streq(name, "freeze")) {
-      buf_puts(b, "sp_gc_freeze("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return 1;
-    }
-    if (sp_streq(name, "frozen?")) {
-      buf_puts(b, "sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return 1;
-    }
-  }
+  /* freeze / frozen? on hashes use the GC-header frozen bit, and to_h is the
+     hash itself: builtin-op rows of the same stage */
+  if (recv >= 0 && ty_is_hash(comp_ntype(c, recv)) &&
+      emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 1, b)) return 1;
 
   /* frozen? on numeric/symbol scalars: always frozen in Ruby semantics.
      TY_STRING uses a runtime check because dup/String.new produce unfrozen strings. */

@@ -1894,7 +1894,6 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
   { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
   { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_DROP },
-  { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_SELF_EXACT },  /* identity */
   { BOP_ANY_HASH, "slice",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* a copy, or a key subset */
   { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "dup",              0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
@@ -1963,7 +1962,6 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "hash",             0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },
   { BOP_ANY_HASH, "default_proc=",    1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_NONE },  /* the assigned proc */
   { BOP_ANY_HASH, "compare_by_identity", 0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_HASH, "freeze",           0,   0, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_HASH, "merge",            1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "merge!",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "update",           0, 127, BF_ANY,      TY_UNKNOWN,     BOPE_NONE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
@@ -2323,6 +2321,17 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "all?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
   { BOP_ANY_ARRAY, "none?",                 1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
   { BOP_ANY_ARRAY, "one?",                  1,   1, BF_NONE,     TY_BOOL,       BOPE_ARRAY_PRED_CLASS, 0, BOP_K(TY_CLASS), 0, 0, 5 },
+  /* Array and Hash, any kind: freeze, frozen? and a Hash's to_h, rows of
+     stage 1 looked up in emit_call_freeze_dup_arms, ahead of the families'
+     own arms, where the Ranges' rows of the same names are. An Array keeps
+     its frozen flag in the struct, a Hash in its GC header. Hash#freeze
+     types nothing, as its row did before it emitted: the rules after the
+     lookup answer it. */
+  { BOP_ANY_ARRAY, "freeze",                0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; if (_t$t) _t$t->frozen = 1; _t$t; })", 0, 0, BOPF_SELF, 1 },
+  { BOP_ANY_ARRAY, "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r)->frozen != 0)", 0, 0, 0, 1 },
+  { BOP_ANY_HASH,  "freeze",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_gc_freeze($r)", 0, 0, BOPF_SELF, 1 },
+  { BOP_ANY_HASH,  "frozen?",               0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_gc_is_frozen($r)", 0, 0, 0, 1 },
+  { BOP_ANY_HASH,  "to_h",                  0,   0, BF_NONE,     BOPR_SELF,     BOPE_TEMPLATE, "$r", 0, 0, BOPF_SELF_EXACT, 1 },  /* identity */
   /* The reflection lookup alone asks this family, after earlier overrides.
      A set's result depends on its value argument, so inference supplies it. */
   { BOP_IVAR_LESS, "instance_variable_get",      1, 1, BF_NONE, TY_NIL,        BOPE_IVAR_REFLECTION, "get" },
