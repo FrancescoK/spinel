@@ -6909,6 +6909,10 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   for (int k = 0; k < on && i < 0; k++)
     if (sp_streq(nt_str(nt, op[k], "name"), pn)) { i = rn + k; dflt = nt_ref(nt, op[k], "value"); }
   if (i < 0) return 0;
+  /* Optional arguments precede the post-required arguments only when supplied. */
+  int posts = 0;
+  if (ps >= 0) nt_arr(nt, ps, "posts", &posts);
+  if (i >= rn && posts > 0) return 0;
   int si = (int)(s - c->scopes);
   for (int w = comp_lvw_first_sc(c, si, pn); w >= 0; w = comp_lvw_next_sc(c, w))
     if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
@@ -6959,8 +6963,8 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
     const char *un = nt_str(nt, u, "name");
     int known = 0;
     for (int j = 0; IT[j] && un && !known; j++) known = sp_streq(un, IT[j]);
-    if (!known || at != 0 || elems || rn != 1 && !sp_streq(un, "each_with_index") &&
-        !sp_streq(un, "each_with_object")) return 0;
+    if (!known || at != 0 || elems ||
+        (rn != 1 && !sp_streq(un, "each_with_index") && !sp_streq(un, "each_with_object"))) return 0;
     /* reassigned, it is not only the element */
     for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w))
       if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
@@ -6990,9 +6994,11 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
           for (int k = 0; k < ac; k++) if (!pivs_elems(c, av[k], set, depth + 1)) return 0;
         }
         else if (sp_streq(un, "[]=")) {
-          if (ac < 2 || !pivs_value(c, av[ac - 1], set, depth + 1)) return 0;
+          if (ac != 2 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
+          if (!pivs_value(c, av[1], set, depth + 1)) return 0;
         }
-        else if (array_mutator_name(un) || nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode)
+        else if (array_mutator_name(un) ||
+                 (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
           return 0;
       }
       /* handed as an argument it may be kept and grown, except to the
@@ -7100,7 +7106,8 @@ static int pivs_value(Compiler *c, int v, char *set, int depth) {
       if ((sp_streq(un, "[]") && ac == 1) || ((sp_streq(un, "first") || sp_streq(un, "last") ||
            sp_streq(un, "sample") || sp_streq(un, "shift") || sp_streq(un, "pop") || sp_streq(un, "min") ||
            sp_streq(un, "max")) && ac == 0) || ((sp_streq(un, "fetch") || sp_streq(un, "at")) && ac == 1))
-        return pivs_elems(c, r, set, depth + 1);
+        return (sp_streq(un, "fetch") && nt_ref(nt, v, "block") >= 0)
+                 ? 0 : pivs_elems(c, r, set, depth + 1);
       if ((sp_streq(un, "itself") || sp_streq(un, "dup") || sp_streq(un, "clone")) && ac == 0)
         return pivs_value(c, r, set, depth + 1);
       return 0;

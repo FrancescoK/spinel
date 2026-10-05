@@ -9277,32 +9277,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        runtime, also matching CRuby. A dynamic name -- or instance_variable_set
        to a valid name absent from the fixed object layout (no field to write) --
        cannot be represented and is diagnosed. */
-    /* instance_variables: the class's ivar layout is static, so the list is
-       a compile-time symbol array (the receiver evaluates for effect). */
+    /* instance_variables lists the assigned slots from the class layout. */
     if (sp_streq(name, "instance_variables") && argc == 0 && ty_is_object(rt)) {
       int ivcid = ty_object_class(rt);
       if (ivcid >= 0 && ivcid < c->nclasses) {
-        ClassInfo *ivc = &c->classes[ivcid];
-        int tia = ++g_tmp;
-        /* an ivar nothing has set yet is not listed (ivar_set_kind): its
-           slot is read off the receiver, held once */
-        int any1 = 0;
-        for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars && !any1; ji++)
-          any1 = ivar_set_kind(c, ivcid, ivc->ivars[ji]) == 1;
-        int tro = any1 ? ++g_tmp : -1;
-        if (any1) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
-        else { buf_printf(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, ");"); }
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
-        /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
-        for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
-          char ex[160], tb[256];
-          snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivc->ivars[ji] + 1));
-          const char *set = any1 ? ivar_set_test(c, ivcid, ivc->ivars[ji], ex, tb, sizeof tb) : NULL;
-          if (set) buf_printf(b, "if %s ", set);
-          buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
-        }
-        buf_printf(b, "_t%d; })", tia);
-        return 1;
+        return emit_object_ivar_list(c, recv, ivcid, b);
       }
     }
     if (ty_is_object(rt) &&
@@ -12275,7 +12254,10 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         TyKind t = c->classes[k].ivar_types[iv];
         if (t == TY_STRBUF) continue;
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
-        buf_printf(b, " case %d: ((sp_%s *)_t%d.v.p)->iv_%s = ", k, c->classes[k].c_name, tv, iv_c(sym + 1));
+        buf_printf(b, " case %d: ", k);
+        char obj[80]; snprintf(obj, sizeof obj, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, tv);
+        emit_frozen_obj_guard(c, k, obj, b);
+        buf_printf(b, "%s->iv_%s = ", obj, iv_c(sym + 1));
         if (t == TY_POLY) buf_puts(b, val);
         else if (nil_value(t)) {
           /* nil into a scalar or String slot is its in-band nil */
@@ -12284,7 +12266,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_puts(b, ")");
         }
         else emit_unbox_text(c, t, val, b);
-        buf_puts(b, "; break;");
+        buf_puts(b, ";");
+        if (ivar_set_kind(c, k, sym) == 3) buf_printf(b, " %s->_sp_set_%s = TRUE;", obj, iv_c(sym + 1));
+        buf_puts(b, " break;");
       }
       /* a bare Object keeps its ivars in a table of its own */
       buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
