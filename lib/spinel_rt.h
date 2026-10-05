@@ -3473,6 +3473,12 @@ static SP_UNUSED sp_int sp_poly_cmp_ans(sp_RbVal r, sp_RbVal a, sp_RbVal b) {
 }
 /* A method nil does not have, called on a boxed receiver that is nil:
    NoMethodError, answered as a value so it sits in an expression arm. */
+/* Symbol#id2name on a boxed receiver: the Symbol's name as a String, as
+   to_s answers it; a value of any other kind has no id2name. */
+static const char *sp_poly_sym_id2name(sp_RbVal v) {
+  if (v.tag != SP_TAG_SYM) sp_raise_nomethod(sp_nomethod_msg("id2name", v));
+  return sp_sym_to_s_chilled((sp_sym)v.v.i);
+}
 static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_box_nil(); }
 /* The bounds of `for i in lo..hi` read out of a box or an Integer slot that
    may hold nil: a nil end is an endless range (the loop runs until a break),
