@@ -380,7 +380,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     else if (cs_aty && sp_streq(cs_aty, "StringNode")) cs_qm = nt_str(nt, argv[0], "content");
     if (cs_qm) {
       LocalVar *cv = comp_const(c, cs_qm);
-      if (cv && cv->type != TY_UNKNOWN && comp_ntype(c, argv[1]) == cv->type) {
+      if (cv && cv->type != TY_UNKNOWN && repr_of(c, argv[1]).as_ty == cv->type) {
         buf_printf(b, "(cst_%s = ", cs_qm);
         emit_expr(c, argv[1], b);
         buf_printf(b, ", cst_%s)", cs_qm);
@@ -429,7 +429,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          class the program defines fell through to the NameError below (#3969). */
       { int cgc = comp_class_index(c, cg_qm);
         if (cgc >= 0) {
-          if (comp_ntype(c, id) == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cgc);
+          if (repr_of(c, id).as_ty == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cgc);
           else buf_printf(b, "sp_box_class((sp_Class){%d})", cgc);
           return 1;
         } }
@@ -1110,7 +1110,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             buf_printf(b, "sp_RbVal %s = ", _tvn); emit_one_arg(c, argv[0], 0, b);
             buf_printf(b, "; SP_GC_ROOT_RBVAL(%s); _t%d->iv_%s = ", _tvn, _atmp, iv_c(_abase));
             emit_unbox_text(c, _aivt, _tvn, b);
-            TyKind _nt = comp_ntype(c, id);
+            TyKind _nt = repr_of(c, id).as_ty;
             if (_nt == TY_POLY || _nt == TY_UNKNOWN) buf_printf(b, "; %s; })", _tvn);
             else buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
             return 1;
@@ -1154,7 +1154,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                                sp_streq(aty, "NilNode") || sp_streq(aty, "SymbolNode") ||
                                sp_streq(aty, "StringNode") || sp_streq(aty, "LocalVariableReadNode") ||
                                sp_streq(aty, "InstanceVariableReadNode") || sp_streq(aty, "SelfNode"));
-          TyKind at = comp_ntype(c, argv[0]);
+          TyKind at = repr_of(c, argv[0]).as_ty;
           if (simple) {
             buf_puts(b, "({ (void)(");
             g_setter_value_inner++; emit_call_body(c, id, b); g_setter_value_inner--;
@@ -1242,7 +1242,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int valid = 0;
       for (int k = 0; k < ncand; k++) if (comp_cmethod_in_chain(c, cand[k], name, NULL) >= 0) valid++;
       if (valid > 0) {
-        TyKind res = comp_ntype(c, id);
+        TyKind res = repr_of(c, id).as_ty;
         int void_res = (res == TY_VOID || res == TY_UNKNOWN);
         /* A literal block at the call site is lowered to one sp_Proc * temp
            shared by every candidate branch (lowering it per-branch would
@@ -3007,7 +3007,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            an sp_Room * straight into an sp_RbVal temp (#4428). The class-method
            dispatch a few thousand lines up has always boxed this seam; the bare
            sibling call is the same seam without the switch around it. */
-        TyKind slot_t = comp_ntype(c, id);
+        TyKind slot_t = repr_of(c, id).as_ty;
         TyKind kr = (TyKind)ms->ret;
         if (slot_t == TY_POLY && kr != TY_POLY && kr != TY_UNKNOWN && kr != TY_VOID &&
             !method_is_void(ms))
@@ -3180,7 +3180,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           { const char *ld = rt_cls ? ", " : emit_cmethod_self_cls_arg(c, defmi, cid, &dcb);
             emit_args_filled(c, defmi, nt_ref(nt, id, "arguments"), ld, &dcb); }
           buf_puts(&dcb, ")");
-          TyKind want = comp_ntype(c, id);
+          TyKind want = repr_of(c, id).as_ty;
           const char *dc = dcb.p ? dcb.p : "";
           if (want == TY_POLY && cret != TY_POLY && cret != TY_UNKNOWN &&
               cret != TY_VOID && cret != TY_NIL)
@@ -3492,7 +3492,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (oc_mi3 >= 0) {
           /* a method with no value (it raises, or ends in a void call) where
              the site's slot wants one: nil in that slot's type */
-          TyKind want3 = comp_ntype(c, id);
+          TyKind want3 = repr_of(c, id).as_ty;
           int void3 = method_is_void(&c->scopes[oc_mi3]) && want3 != TY_VOID &&
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
           if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
