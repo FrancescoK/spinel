@@ -23311,8 +23311,8 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
   }
   /* push/append/<< on an empty array literal in value position: the literal
      has no storage to mutate and returns self, so `[].push(1, 2)` is just the
-     array `[1, 2]`. Materialize a fresh poly array from the args (the empty
-     literal receiver infers TY_POLY_ARRAY). */
+     array `[1, 2]`, a fresh poly array of the args (the empty literal infers
+     TY_POLY_ARRAY). A splat with no block goes to emit_array_splat_mutator. */
   {
     const char *pnm = nt_str(nt, id, "name");
     int precv = nt_ref(nt, id, "receiver");
@@ -23323,7 +23323,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         nt_type(nt, precv) && sp_streq(nt_type(nt, precv), "ArrayNode") &&
         ({ int _n = 0; nt_arr(nt, precv, "elements", &_n); _n == 0; })) {
       int pargc = 0; const int *pargv = call_args(nt, id, &pargc);
-      if (pargc >= 1) {
+      if (pargc >= 1 && !(call_has_splat_arg(nt, pargv, pargc) && nt_ref(nt, id, "block") < 0)) {
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
         for (int a = 0; a < pargc; a++) {
@@ -23338,7 +23338,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
      in an Int/Float array (it would store 0), so widen the whole thing to a
      poly array. `[1, 2].unshift(nil)` == the poly array `[nil, 1, 2]`. Only the
      direct-literal receiver needs this -- a variable receiver is already
-     widened by the analyze pass. */
+     widened by the analyze pass, a blockless splat by emit_array_splat_mutator. */
   {
     const char *unm = nt_str(nt, id, "name");
     int urecv = nt_ref(nt, id, "receiver");
@@ -23346,13 +23346,13 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         nt_type(nt, urecv) && sp_streq(nt_type(nt, urecv), "ArrayNode")) {
       TyKind urt = comp_ntype(c, urecv);
       int uargc = 0; const int *uargv = call_args(nt, id, &uargc);
-      int has_nil = 0;
+      int has_nil = 0, spread = call_has_splat_arg(nt, uargv, uargc) && nt_ref(nt, id, "block") < 0;
       for (int a = 0; a < uargc; a++) {
         TyKind at = infer_type(c, uargv[a]);
         const char *anty = nt_type(nt, uargv[a]);
         if (at == TY_NIL || (anty && sp_streq(anty, "NilNode"))) { has_nil = 1; break; }
       }
-      if (has_nil && (urt == TY_INT_ARRAY || urt == TY_FLOAT_ARRAY) && uargc >= 1) {
+      if (has_nil && (urt == TY_INT_ARRAY || urt == TY_FLOAT_ARRAY) && !spread) {
         int en = 0; const int *elems = nt_arr(nt, urecv, "elements", &en);
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
