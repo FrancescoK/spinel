@@ -30,6 +30,7 @@ int g_final_bind_pass = 0;
 int g_infer_optimistic = 0;
 int g_infer_write_round = 0;
 int g_fixpoint_rounds = 0;
+static int g_fixpoint_capped = 0;   /* the round cap stopped the fixpoint short of settling */
 
 /* Defined in codegen.c (linked into the same binary). Used to specialize a
    `rescue <UserExc> => e` binding to the exception subclass's object type. */
@@ -30497,9 +30498,77 @@ static void an_phase_pre_fixpoint(Compiler *c) {
   compute_instantiated(c, 1);
 }
 
+/* A digest of every type the inference holds: each node's, each scope's
+   return and locals (its parameters among them), each class's instance
+   variables, the globals and the constants. */
+static uint64_t an_type_state(Compiler *c) {
+  uint64_t h = 0xCBF29CE484222325ull;
+#define AN_TS_MIX(t) (h = (h ^ (uint64_t)(uint32_t)(t)) * 0x100000001B3ull)
+  for (int id = 0; id < c->nt->count && id < c->node_cap; id++) AN_TS_MIX(c->ntype[id]);
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    AN_TS_MIX(sc->ret);
+    for (int i = 0; i < sc->nlocals; i++) AN_TS_MIX(sc->locals[i].type);
+  }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int iv = 0; iv < c->classes[k].nivars; iv++) AN_TS_MIX(c->classes[k].ivar_types[iv]);
+  for (int i = 0; i < c->ngvars; i++) AN_TS_MIX(c->gvars[i].type);
+  for (int i = 0; i < c->nconsts; i++) AN_TS_MIX(c->consts[i].type);
+#undef AN_TS_MIX
+  return h;
+}
+
+/* The slots a type waits a round to cross: each scope's return and locals,
+   each class's instance variables, the globals and the constants. */
+static int an_type_slots(Compiler *c) {
+  int n = c->ngvars + c->nconsts;
+  for (int s = 0; s < c->nscopes; s++) n += 1 + c->scopes[s].nlocals;
+  for (int k = 0; k < c->nclasses; k++) n += c->classes[k].nivars;
+  return n;
+}
+
+/* The round cap of an inference loop, the type states its rounds have ended
+   in, and the node count as the last of them ended. */
+typedef struct { int cap; int nseen, cseen; uint64_t *seen; int nodes; } AnRoundCap;
+
+/* The round cap is for an oscillation: slots that trade types round after
+   round never settle, and where the loop stops decides what is emitted. A
+   chain is not one. A type travels one call a round -- a return up to its
+   caller where the caller is defined first, a parameter down to its callee
+   where the callee is -- so 200 methods each answering the next one's value
+   take 200 rounds, and stopped at 128 the first 72 had no return type:
+   `p f1(1)` printed nil.
+
+   The two are told apart by where a round ends. An oscillation comes back
+   to a state it has been in; a chain ends each round in one it has not. So
+   the last round the cap allows earns one more when its state is new and
+   the round added no node: a rewrite that is undone and made again grows
+   the program every round and is never where it was, and the cap is what
+   ends that. The states are kept from the cap's halfway point on (a program
+   that settles before then is not measured). A program that has stopped
+   growing has finitely many, so a loop that never settles still ends; and
+   none is given more than four rounds for each slot a type waits a round to
+   cross (an_type_slots), a slot widening a few times at most.
+   Called as a round ends. */
+static void an_round_cap_step(Compiler *c, AnRoundCap *rc, int iter) {
+  if (iter < 64) return;
+  int grew = c->nt->count != rc->nodes;
+  rc->nodes = c->nt->count;
+  uint64_t st = an_type_state(c);
+  for (int i = 0; i < rc->nseen; i++)
+    if (rc->seen[i] == st) return;
+  if (rc->nseen == rc->cseen) {
+    rc->cseen = rc->cseen ? rc->cseen * 2 : 64;
+    rc->seen = realloc(rc->seen, (size_t)rc->cseen * sizeof *rc->seen);
+  }
+  rc->seen[rc->nseen++] = st;
+  if (!grew && iter + 1 == rc->cap && rc->cap < 128 + 4 * an_type_slots(c)) rc->cap++;
+}
+
 /* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
+  g_fixpoint_capped = 0;
   /* Two rounds. The proc-form clones are made between them: knowing which
      methods a poly dispatch will name needs settled receiver types, and the
      clones' own bodies then need inferring like any other. The second round is
@@ -30507,7 +30576,8 @@ static void an_phase_infer_fixpoint(Compiler *c) {
   for (int pf_round = 0; pf_round < 2; pf_round++) {
   if (pf_round == 1 && !make_yield_proc_forms(c)) break;
   g_infer_optimistic = 1;
-  for (int iter = 0; iter < 128; iter++) {
+  AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+  for (int iter = 0; iter < rc.cap; iter++) {
     if (iter + 1 > g_fixpoint_rounds) g_fixpoint_rounds = iter + 1;
     g_infer_round = iter + 1;
     int ch = 0;
@@ -30673,7 +30743,13 @@ static void an_phase_infer_fixpoint(Compiler *c) {
          untypable, so it now takes the pessimistic type and the slots it
          feeds settle on that. Everything resolvable has already settled
          concretely, so this second stage widens only what really is open. */
-      if (g_infer_optimistic) { g_infer_optimistic = 0; continue; }
+      if (g_infer_optimistic) {
+        g_infer_optimistic = 0;
+        /* settled, and on the last round the cap allows: the second stage
+           still has its round to run */
+        if (iter + 1 == rc.cap) rc.cap++;
+        continue;
+      }
       /* Converged: one backstop bind pass lets an empty array-literal arg
          fill a still-UNKNOWN parameter as an (empty) poly array. If it fills
          anything, keep iterating so dependent return types resolve. */
@@ -30686,7 +30762,10 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       }
       if (!ch && !desugar_mutator_recv_rebind(c)) break;
     }
+    an_round_cap_step(c, &rc, iter);
+    if (iter + 1 == rc.cap) g_fixpoint_capped = 1;
   }
+  free(rc.seen);
   g_infer_optimistic = 0;
   }
 
@@ -30831,7 +30910,8 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       char *ivrec = (char *)calloc((size_t)ivoff[ivncls] + 1, 1);
       TyKind *ivsnap = (TyKind *)malloc(sizeof(TyKind) * (size_t)(ivoff[ivncls] + 1));
       for (int k = 0; k < nrec; k++) ivrec[ivoff[recCi[k]] + recIv[k]] = 1;
-      for (int iter = 0; iter < 128; iter++) {
+      AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+      for (int iter = 0; iter < rc.cap; iter++) {
         /* Parameters bind from the SETTLED state of the previous iteration,
            before this one's re-clear. Bound after it, a parameter sampled
            whichever of an ivar's writes had been merged by then: a poly ivar
@@ -30936,7 +31016,11 @@ static void an_phase_infer_fixpoint(Compiler *c) {
           have_prevd = 1;
         }
         else if (!ch) break;
+        /* a return whose parameter was reset loses its type for a round,
+           and so in turn does each caller's up a chain */
+        an_round_cap_step(c, &rc, iter);
       }
+      free(rc.seen);
       /* the bind lags one iteration; take the settled state once more */
       infer_param_types(c);
       free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap);
@@ -33930,7 +34014,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   an_heap_captured_classes(c);
   /* A capped run emits from whatever the last round left, which need not be a
      fixpoint; that is a compiler bug worth hearing about, not a quiet log. */
-  if (g_fixpoint_rounds >= 128)
+  if (g_fixpoint_capped)
     fprintf(stderr, "spinel: warning: type inference did not converge in %d rounds; "
             "the output may be built from unsettled types (please report this program)\n",
             g_fixpoint_rounds);
@@ -33953,7 +34037,7 @@ void analyze_program(Compiler *c) {
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
-            g_fixpoint_rounds >= 128 ? " (CAP -- did not converge)" : "");
+            g_fixpoint_capped ? " (CAP -- did not converge)" : "");
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
 }
