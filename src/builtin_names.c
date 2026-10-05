@@ -145,6 +145,10 @@ int is_key_query(const char *n) {
          sp_streq(n, "include?") || sp_streq(n, "member?");
 }
 
+int is_hash_key_lookup(const char *n) {
+  return sp_streq(n, "[]") || is_key_query(n) || sp_streq(n, "fetch") || sp_streq(n, "delete");
+}
+
 int is_range_membership(const char *n) {
   return sp_streq(n, "cover?") || sp_streq(n, "include?") ||
          sp_streq(n, "member?") || sp_streq(n, "===");
