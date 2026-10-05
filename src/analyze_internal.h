@@ -260,6 +260,7 @@ int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max);
 void resolve_parents(Compiler *c);
 void resolve_inherited_aliases(Compiler *c);
 void process_include_body(Compiler *c, int ci, int body_node);
+void desugar_module_prepends(Compiler *c);
 void register_includes(Compiler *c);
 void register_include_attrs(Compiler *c);
 void rewrite_attr_supers(Compiler *c);
