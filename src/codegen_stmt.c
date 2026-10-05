@@ -14161,18 +14161,22 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
 /* concat(a, b, ...) onto the handle `sref`: the frozen check first, then
    every argument taken before anything is appended, as CRuby does (a handle
    argument reads as a copy, so `s.concat(s, s)` appends the String as it
-   was), then the appends in order */
+   was), then the frozen check, then the appends in order */
 static void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
   int base = g_tmp + 1; g_tmp += argc;
   emit_indent(b, indent);
-  buf_printf(b, "{ if (sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data);", sref, sref);
+  buf_puts(b, "{");
   char rt[1100]; snprintf(rt, sizeof rt, "sp_String_cstr(%s)", sref);
+  /* Every argument runs before the frozen check, as in CRuby. A boxed
+     argument may be this very String, whose sp_poly_to_s is the live buffer
+     the first append grows: it is staged as a copy. */
   for (int a = 0; a < argc; a++) {
-    buf_printf(b, " const char *_t%d = ", base + a);
+    int boxed = repr_of(c, argv[a]).kind == RK_BOXED;
+    buf_printf(b, " const char *_t%d = %s", base + a, boxed ? "sp_str_concat(" : "");
     emit_str_append_arg(c, argv[a], rt, b);
-    buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", base + a);
+    buf_printf(b, "%s; SP_GC_ROOT_STR(_t%d);", boxed ? ", \"\")" : "", base + a);
   }
-  buf_puts(b, "\n");
+  buf_printf(b, " if (sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data);\n", sref, sref);
   for (int a = 0; a < argc; a++) {
     emit_indent(b, indent + 1);
     buf_printf(b, "sp_String_append_bin(%s, _t%d);\n", sref, base + a);
