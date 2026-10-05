@@ -15832,7 +15832,45 @@ int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp) {
    in the fixpoint, before the lent slots are settled, so the method's own
    appends (an_param_mutated_in_place) are the evidence. */
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi);
-static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, int depth) {
+/* The methods one ask walks into, remembered for that ask: a parameter
+   handed to many methods, each handing it on to many, reaches the same
+   method's body by many paths, and walking it afresh for each made the ask
+   the number of paths up to the bound. Keyed by the depth the body is
+   entered at too, since both bounds below cut a deeper walk differently. An
+   ask is one call from outside; the passes between asks change the types
+   the answers read, so each ask starts empty. */
+typedef struct { unsigned gen; int mi, j, depth, r; } HandsMemo;
+static HandsMemo *g_hands_memo;
+static unsigned g_hands_memo_cap, g_hands_memo_n, g_hands_memo_gen;
+static unsigned hands_memo_slot(int mi, int j, int depth) {
+  unsigned h = (unsigned)mi * 2654435761u ^ (unsigned)j * 40503u ^ (unsigned)depth * 97u;
+  unsigned k = h & (g_hands_memo_cap - 1);
+  while (g_hands_memo[k].gen == g_hands_memo_gen &&
+         (g_hands_memo[k].mi != mi || g_hands_memo[k].j != j || g_hands_memo[k].depth != depth))
+    k = (k + 1) & (g_hands_memo_cap - 1);
+  return k;
+}
+static HandsMemo *hands_memo_find(int mi, int j, int depth) {
+  if (!g_hands_memo) return NULL;
+  HandsMemo *e = &g_hands_memo[hands_memo_slot(mi, j, depth)];
+  return e->gen == g_hands_memo_gen ? e : NULL;
+}
+static void hands_memo_put(int mi, int j, int depth, int r) {
+  if ((g_hands_memo_n + 1) * 2 > g_hands_memo_cap) {
+    HandsMemo *old = g_hands_memo;
+    unsigned ocap = g_hands_memo_cap;
+    g_hands_memo_cap = ocap ? ocap * 2 : 1024;
+    g_hands_memo = (HandsMemo *)calloc(g_hands_memo_cap, sizeof(HandsMemo));
+    if (!g_hands_memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (unsigned k = 0; k < ocap; k++)
+      if (old[k].gen == g_hands_memo_gen) g_hands_memo[hands_memo_slot(old[k].mi, old[k].j, old[k].depth)] = old[k];
+    free(old);
+  }
+  HandsMemo *e = &g_hands_memo[hands_memo_slot(mi, j, depth)];
+  e->gen = g_hands_memo_gen; e->mi = mi; e->j = j; e->depth = depth; e->r = r;
+  g_hands_memo_n++;
+}
+static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 64) return 0;
   NodeKind nk = nt_kind(nt, node);
@@ -15852,20 +15890,31 @@ static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, i
         /* past the bound the chain is taken as appending: a String shared
            that is never appended costs a handle, one not shared loses it */
         if (depth >= 48) return 1;
-        if (an_subtree_hands_to_appender(c, m->body, m->pnames[j], depth + 8)) return 1;
+        HandsMemo *e = hands_memo_find(mi, j, depth + 8);
+        int r = e ? e->r : an_subtree_hands_walk(c, m->body, m->pnames[j], depth + 8);
+        if (!e) hands_memo_put(mi, j, depth + 8, r);
+        if (r) return 1;
       }
     }
   }
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++)
-    if (an_subtree_hands_to_appender(c, nt_ref_at(nt, node, i), vn, depth + 1)) return 1;
+    if (an_subtree_hands_walk(c, nt_ref_at(nt, node, i), vn, depth + 1)) return 1;
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
     for (int k = 0; k < n; k++)
-      if (an_subtree_hands_to_appender(c, a[k], vn, depth + 1)) return 1;
+      if (an_subtree_hands_walk(c, a[k], vn, depth + 1)) return 1;
   }
   return 0;
+}
+static int an_subtree_hands_to_appender(Compiler *c, int node, const char *vn, int depth) {
+  if (++g_hands_memo_gen == 0) {   /* wrapped: forget every stamp */
+    if (g_hands_memo) memset(g_hands_memo, 0, sizeof(HandsMemo) * g_hands_memo_cap);
+    g_hands_memo_gen = 1;
+  }
+  g_hands_memo_n = 0;
+  return an_subtree_hands_walk(c, node, vn, depth);
 }
 
 /* The blocks that calls pass, listed by the method each call names, built
