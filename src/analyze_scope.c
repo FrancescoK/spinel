@@ -6963,8 +6963,8 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
     const char *un = nt_str(nt, u, "name");
     int known = 0;
     for (int j = 0; IT[j] && un && !known; j++) known = sp_streq(un, IT[j]);
-    if (!known || at != 0 || elems || rn != 1 && !sp_streq(un, "each_with_index") &&
-        !sp_streq(un, "each_with_object")) return 0;
+    if (!known || at != 0 || elems ||
+        (rn != 1 && !sp_streq(un, "each_with_index") && !sp_streq(un, "each_with_object"))) return 0;
     /* reassigned, it is not only the element */
     for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w))
       if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
@@ -6997,7 +6997,8 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
           if (ac != 2 || nt_kind(nt, av[0]) != NK_IntegerNode) return 0;
           if (!pivs_value(c, av[1], set, depth + 1)) return 0;
         }
-        else if (array_mutator_name(un) || nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode)
+        else if (array_mutator_name(un) ||
+                 (nt_ref(nt, u, "block") >= 0 && nt_kind(nt, nt_ref(nt, u, "block")) == NK_BlockArgumentNode))
           return 0;
       }
       /* handed as an argument it may be kept and grown, except to the
