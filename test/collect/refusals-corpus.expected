@@ -3,6 +3,9 @@ spinel: the operand of an `op=` given a Array, which no conversion keeps in its 
 spinel: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
 spinel: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
 spinel: 3 refusals, nothing written
+== test/array_push_stmt_operand_order.rb [promote] rc=1
+spinel: an attribute writer given a Array, which no conversion keeps in its sp_PolyArray * slot
+spinel: 1 refusal, nothing written
 == test/cvar_gc_root.rb [promote] rc=1
 spinel: the operand of an `op=` given a Array, which no conversion keeps in its sp_IntArray * slot
 spinel: 1 refusal, nothing written
