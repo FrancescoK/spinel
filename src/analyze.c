@@ -16358,17 +16358,24 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       changed = 1;
     }
   }
-  /* a container literal no holder names, iterated in place by a block
-     (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
-    int r = nt_ref(c->nt, n, "receiver"), blk = nt_ref(c->nt, n, "block");
-    if (r < 0 || blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
-    r = unwrap_parens(c, r);
-    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
-        share_node_elems_share(c, r))
-      changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
+  /* a container literal whose elements the rule shares settled in its poly
+     form (infer_uncached): its stores are the handles its boxes hold */
+  /* (a multiple assignment's value is no container: it binds each target
+     from its element) */
+  unsigned char *masgn_val = calloc((size_t)c->nt->count + 1, 1);
+  NT_FOREACH_KIND(c->nt, NK_MultiWriteNode, mw) {
+    int v = nt_ref(c->nt, mw, "value");
+    if (v >= 0) masgn_val[v] = 1;
   }
+  static const NodeKind lits[] = { NK_ArrayNode, NK_HashNode };
+  for (int li = 0; li < 2; li++)
+    NT_FOREACH_KIND(c->nt, lits[li], n) {
+      TyKind lt = c->ntype[n];
+      if (!masgn_val[n] && (lt == TY_POLY_ARRAY || (ty_is_hash(lt) && ty_hash_val(lt) == TY_POLY)) &&
+          share_node_elems_share(c, n))
+        changed |= strbuf_container_source_walk(c, n, 0, SB_DEMAND);
+    }
+  free(masgn_val);
   return changed;
 }
 

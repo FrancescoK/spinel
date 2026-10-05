@@ -937,7 +937,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
     if (sp_streq(name, "dump") && argc == 1) {
-      buf_puts(b, "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, repr_share_rule(c) ? "sp_marshal_dump_h(" : "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     /* Marshal.dump(obj, io): the bytes go to the stream and the stream comes
@@ -946,7 +946,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if (sp_streq(name, "dump") && argc == 2 && comp_ntype(c, argv[1]) == TY_IO) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_File *_t%d = ", t); emit_expr(c, argv[1], b);
-      buf_printf(b, "; sp_File_write_bin(_t%d, sp_marshal_dump(", t);
+      buf_printf(b, "; sp_File_write_bin(_t%d, %s(", t, repr_share_rule(c) ? "sp_marshal_dump_h" : "sp_marshal_dump");
       emit_boxed(c, argv[0], b);
       buf_printf(b, ")); _t%d; })", t);
       return 1;
