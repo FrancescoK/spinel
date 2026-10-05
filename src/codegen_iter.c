@@ -4843,7 +4843,7 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
 static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
-    TyKind et = infer_type(c, recv);
+    TyKind et = comp_ntype(c, recv);
     /* a receiver of no type -- a call proven to raise NoMethodError -- is
        the raise's sp_RbVal; `void _t` did not compile (#6213) */
     if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
@@ -6004,16 +6004,6 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     int is_ewi = sp_streq(name, "each_with_index");
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    /* The gate read the cached node type (poly); a cloned-body local can have
-       settled to a TYPED container since (a per-includer module-method clone
-       whose param pinned later, #2008). Re-infer and box the concrete kind --
-       a raw typed pointer must never initialize the sp_RbVal receiver. */
-    TyKind fresh_rt = infer_type(c, recv);
-    if (fresh_rt != TY_POLY && (ty_is_hash(fresh_rt) || ty_is_array(fresh_rt))) {
-      Buf bx; memset(&bx, 0, sizeof bx);
-      emit_boxed_text(c, fresh_rt, rb.p ? rb.p : "", &bx);
-      free(rb.p); rb = bx;
-    }
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
     /* Root the boxed receiver so a GC fired by the loop body doesn't free a
        freshly-built collection held only by this temp. */
