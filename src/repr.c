@@ -926,6 +926,34 @@ int repr_share_rule(const Compiler *c) { return c->share_strings; }
 
 /* ---- the handle answers of calls (--share-strings) ---- */
 
+/* A memo of an answer per method name (strbuf_poly_reader_handle), kept in
+   the Compiler: an open-addressed table of (name, answer). */
+static int repr_name_memo_get(Compiler *c, const char *nm) {
+  if (!c->name_memo_cap) return -1;
+  unsigned h = sp_strhash(nm) & (unsigned)(c->name_memo_cap - 1);
+  for (; c->name_memo[h].name; h = (h + 1) & (unsigned)(c->name_memo_cap - 1))
+    if (sp_streq(c->name_memo[h].name, nm)) return c->name_memo[h].ans;
+  return -1;
+}
+static void repr_name_memo_put(Compiler *c, const char *nm, int ans) {
+  if (2 * (c->name_memo_n + 1) > c->name_memo_cap) {
+    int ncap = c->name_memo_cap ? 2 * c->name_memo_cap : 64;
+    struct ReprNameMemo *old = c->name_memo;
+    int ocap = c->name_memo_cap;
+    c->name_memo = calloc((size_t)ncap, sizeof *c->name_memo);
+    c->name_memo_cap = ncap;
+    c->name_memo_n = 0;
+    for (int i = 0; i < ocap; i++) if (old[i].name) repr_name_memo_put(c, old[i].name, old[i].ans);
+    free(old);
+  }
+  unsigned h = sp_strhash(nm) & (unsigned)(c->name_memo_cap - 1);
+  while (c->name_memo[h].name) h = (h + 1) & (unsigned)(c->name_memo_cap - 1);
+  c->name_memo[h].name = nm;
+  c->name_memo[h].ans = ans;
+  c->name_memo_n++;
+}
+static int repr_poly_reader_name(Compiler *c, const char *nm);
+
 /* Under --share-strings: does every method call `id` reaches (its plan's,
    or each member of its switch) answer the handle on a path, or (unless
    `need_handle`) no String of its own on any? */
@@ -979,6 +1007,9 @@ int strbuf_call_answers_handle(Compiler *c, int id) {
     int cid = implicit_self_reader_cid(c, id);
     if (cid >= 0) return reader_reads_shared_ivar(c, cid, nt_str(nt, id, "name"));
   }
+  /* a reader on a boxed receiver: every class the box can hold that has
+     the name reads a shared ivar with it (strbuf_poly_reader_handle) */
+  else if (strbuf_poly_reader_handle(c, id)) return 1;
   /* a boxed receiver's dispatch can also reach a library method, whose
      String is its own and which leaves the side channel as the call found
      it: taken only where nothing before the dispatch publishes a handle (a
@@ -991,4 +1022,37 @@ int strbuf_call_answers_handle(Compiler *c, int id) {
       return 0;
   }
   return strbuf_call_targets_all(c, id, 1);
+}
+/* --share-strings: is `v` a reader called on a boxed receiver, such that
+   every class with a method or reader of the name answers a shared ivar's
+   handle with it (reader_reads_shared_ivar)? Then the dispatch, typed as
+   the handle, answers the slot in each arm. */
+int strbuf_poly_reader_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 ||
+      nt_ref(nt, v, "arguments") >= 0)
+    return 0;
+  int r = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (r < 0 || !nm || (comp_ntype(c, r) != TY_POLY && comp_ntype(c, r) != TY_UNKNOWN)) return 0;
+  /* the answer is the name's alone once the analysis is final: asked again
+     per call, it was a pass over every class per call */
+  int memo = repr_sealed() ? repr_name_memo_get(c, nm) : -1;
+  if (memo >= 0) return memo;
+  int ans = repr_poly_reader_name(c, nm);
+  if (repr_sealed()) repr_name_memo_put(c, nm, ans);
+  return ans;
+}
+/* (strbuf_poly_reader_handle's answer for reader name nm) */
+static int repr_poly_reader_name(Compiler *c, const char *nm) {
+  int any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (comp_class_is_module(c, &c->classes[k])) continue;
+    int rd = -1;
+    int has = comp_reader_in_chain(c, k, nm, &rd) || comp_method_in_chain(c, k, nm, NULL) >= 0;
+    if (!has) continue;
+    if (!reader_reads_shared_ivar(c, k, nm)) return 0;
+    any = 1;
+  }
+  return any;
 }

@@ -2168,6 +2168,11 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
       /* a handle parameter is NULL for a nil argument: it boxes as nil */
       if (at == TY_STRBUF) buf_printf(b, "(%s ? sp_box_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", tn, tn);
+      /* --share-strings: a String of its own the rule shares with the
+         parameter it binds goes as a handle of its own */
+      else if (repr_share_rule(c) && at == TY_STRING && call >= 0 &&
+               (share_node_shares(c, argv[k]) || share_call_yield_shares(c, call)))
+        buf_printf(b, "sp_box_nullable_obj(sp_String_new_shared(%s), SP_BUILTIN_STRBUF)", tn);
       else if (storable) emit_boxed_text(c, at, tn, b);
       else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ", ");
