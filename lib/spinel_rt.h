@@ -2161,10 +2161,10 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   if (sp_str_in_list(m, uni)) return 1;
   cn = sp_poly_class_name(v);
   if (!cn) return 0;
-  /* an Array subclass instance boxed as its Array answers Array's names
-     (#7449); its class's own are the caller's */
-  if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
-    cn = "Array";
+  /* a builtin subclass instance boxed as its builtin answers the builtin's
+     names (#7449); its class's own are the caller's */
+  if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_bsub_cls_fn(v) >= 0)
+    cn = sp_poly_is_array_kind(v.cls_id) ? "Array" : sp_poly_is_hash_kind(v.cls_id) ? "Hash" : cn;
   if (strcmp(cn, "Array") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
   if (strcmp(cn, "Hash") == 0)
@@ -10283,7 +10283,8 @@ extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
 #endif
 /* dup / clone (keep_frozen) of a builtin subclass instance boxed as its
    builtin (#7449): the program's own copy of its class, with the class's
-   initialize_copy; *handled stays FALSE for anything else. NULL in a
+   initialize_copy (keep_frozen 2: without it, as a builtin's method copies
+   its receiver); *handled stays FALSE for anything else. NULL in a
    program with no such class. sp_poly_dup (lib/sp_poly_cold.c) reads
    sp_bsub_dup_hook_lib, which SP_INSTALL_HOOK sets beside the static. */
 #ifdef SPINEL_EXT_HOST
@@ -14458,6 +14459,7 @@ static sp_RbVal sp_poly_hash_dproc_bridge(sp_PolyPolyHash *h, sp_RbVal key, void
   return sp_box_nil();
 }
 sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b);
+sp_PolyPolyHash *sp_bsub_hash_copy(sp_RbVal recv, sp_PolyPolyHash *ans);   /* lib/sp_poly_cold.c */
 /* A boxed hash as the concrete symbol-keyed variant: itself when it already is
    one, rebuilt when every key is a Symbol (a hash folded through the general
    merge path is a PolyPolyHash regardless of its keys), and a TypeError only
@@ -14790,6 +14792,8 @@ static sp_RbVal sp_poly_compact_val(sp_RbVal v) {
       sp_RbVal pair = pairs->data[i], val = sp_poly_arr_get(pair, 1);
       if (val.tag != SP_TAG_NIL) sp_PolyPolyHash_set(h, sp_poly_arr_get(pair, 0), val);
     }
+    /* a Hash subclass instance's compact is a copy of its class (#7449) */
+    h = sp_bsub_hash_copy(v, h);
     return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
   }
   return sp_box_poly_array(sp_poly_compact(v));

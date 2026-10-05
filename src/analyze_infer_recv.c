@@ -1145,14 +1145,16 @@ int infer_bsub_call(Compiler *c, int id, TyKind *out) {
   if (recv < 0 || face_of(recv) != TY_UNKNOWN) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
   if (!comp_bsub_call(c, id, rt, &k)) return infer_bsub_arg_call(c, id, rt, out);
-  int self = comp_bsub_result_form(c, id, rt) == BSR_SELF;
+  int form = comp_bsub_result_form(c, id, rt);
   TyKind r = TY_UNKNOWN;
   if (k != TY_UNKNOWN) {
     an_face_push(recv, k);
     r = infer_call(c, id);
     an_face_pop();
   }
-  *out = self ? rt : r;
+  /* a copy of the instance holds the builtin's answer when that answer is
+     the builtin's own kind (emit_bsub_call) */
+  *out = form == BSR_SELF || (form == BSR_COPY && r == k) ? rt : r;
   return 1;
 }
 
@@ -1770,7 +1772,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      typed Hash takes this whatever the program defines */
   if (recv >= 0 && (rt == TY_POLY || ty_is_hash(rt)) && sp_streq(name, "merge") && argc == 1 &&
       nt_ref(nt, id, "block") >= 0 && (rt != TY_POLY || !an_user_defines_or_reads(c, "merge")))
-    { *out = TY_POLY_POLY_HASH; return 1; }   /* the conflict block decides each value */
+    { *out = rt == TY_POLY && comp_has_bsub_base(c, BSUB_HASH) ? TY_POLY : TY_POLY_POLY_HASH; return 1; }
   /* `x.to_json` -- CRuby's json defines it on every core class. A user class
      that defines its own wins (the dispatch below sees it); everything else
      serializes through the generator, exactly as JSON.generate(x) does. */
@@ -1912,10 +1914,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       !an_user_recv_defines_method(c, name) &&
       (is_indexed_each(name)))
     { *out = TY_ENUMERATOR; return 1; }
-  /* Hash#merge on a poly value: a general PolyPoly hash. */
+  /* Hash#merge on a poly value: a general PolyPoly hash, or, where a Hash
+     subclass instance can be the receiver, a copy of its class (#7449):
+     boxed. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) && sp_streq(name, "merge"))
-    { *out = TY_POLY_POLY_HASH; return 1; }
+    { *out = comp_has_bsub_base(c, BSUB_HASH) ? TY_POLY : TY_POLY_POLY_HASH; return 1; }
   /* When ostruct is in the program, a bare reader on a poly value may be an
      OpenStruct member (any name, boxed value). The runtime dispatch checks the
      tag; type it poly so the member is not truncated to a class-name string

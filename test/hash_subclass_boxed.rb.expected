@@ -1,0 +1,70 @@
+Opts opts:1 n
+Sub sub:2
+Hash 1
+other Integer
+other String
+other Array
+[Opts, Sub, Hash, Integer, String, Array]
+[true, true, true, false, false, false]
+[false, false, true, false, false, false]
+[true, true, false, false, false, false]
+1
+[:a]
+Opts
+1
+"opts:1"
+[Opts]
+"opts:1"
+"sub:2"
+"no"
+3
+["opts:1", "sub:2"]
+false
+"n"
+false
+{a: 1}
+{a: 1, b: 2}
+Opts
+"{a: 1} and {x: 1, y: 2}"
+{a: 1}
+true
+true
+1
+[[:a, 1]]
+[[:a, 1]]
+[:a, 1]
+:a
+1
+true
+Sub
+Opts
+[Sub, Opts, Hash]
+true
+true
+false
+"copied b"
+"leaf copied l"
+Leaf
+{z: 2}
+[Base, "copied b", {k: 1}]
+[Leaf, "leaf copied l", {z: 2}]
+true
+"leaf copied f"
+false
+"hi 1"
+Base
+Tagged
+{a: 1, b: nil, c: 1}
+"t"
+Tagged
+Tagged
+Tagged
+{a: 1}
+"t"
+"t"
+Hash
+Hash
+Tagged
+{a: 1, b: nil}
+Hash
+Hash

@@ -29753,6 +29753,14 @@ static void bsub_super_into(Compiler *c, int at, int n, int base, const char *mn
   if (!init) {
     bsub_set_call(c, n, self, mn, args, blk);
     nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
+    /* a splatted argument (`super(key, *extras)`) is spread to the
+       builtin's arity as the desugar spreads it on any call; that ran before
+       this call existed */
+    const NodeTable *nt = c->nt;
+    int n0 = nt->count;
+    expand_static_splat_args(c, n, n + 1);
+    comp_grow_node_arrays(c);
+    for (int j = n0; j < nt->count; j++) { c->nscope[j] = c->nscope[at]; c->node_cbody[j] = c->node_cbody[at]; }
   }
   else if (an == 0 && blk < 0) bsub_set_call(c, n, self, "clear", -1, -1);
   else {
@@ -29863,6 +29871,44 @@ static void rewrite_bsub_self_call(Compiler *c, int id) {
   if (self >= 0) nt_node_set_ref((NodeTable *)c->nt, id, "receiver", self);
 }
 
+/* The Hash `Hash[args]` builds, spelled as `Hash[]`'s own desugar spells it
+   (it ran before this call existed): a Hash literal's copy, an Array
+   literal of pairs' to_h, or the keys and values written out as a Hash
+   literal; -1 for a form only the run time can read (a splat, a variable). */
+static int bsub_hash_pairs(Compiler *c, int at, int args) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int an = 0;
+  const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int av[64];
+  if (an > 64) return -1;
+  for (int i = 0; i < an; i++) av[i] = av0[i];
+  NodeKind k0 = an > 0 ? nt_kind(nt, av[0]) : NK_NilNode;
+  if (an == 1 && (k0 == NK_HashNode || k0 == NK_KeywordHashNode)) {
+    int en = 0; const int *el = nt_arr(nt, av[0], "elements", &en);
+    int h = bsub_node(c, "HashNode", at);
+    if (h >= 0) nt_node_set_arr(nt, h, "elements", el, en);
+    return h;
+  }
+  if (an == 1 && k0 == NK_ArrayNode) {
+    int t = bsub_new_call(c, at, av[0], "to_h", -1, -1);
+    if (t >= 0) nt_node_set_int(nt, t, "hash_brackets", 1);
+    return t;
+  }
+  if (an % 2) return -1;
+  int els[32];
+  for (int i = 0; i < an; i += 2) {
+    if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i + 1]) == NK_SplatNode) return -1;
+    int as = bsub_node(c, "AssocNode", at);
+    if (as < 0) return -1;
+    nt_node_set_ref(nt, as, "key", av[i]);
+    nt_node_set_ref(nt, as, "value", av[i + 1]);
+    els[i / 2] = as;
+  }
+  int h = bsub_node(c, "HashNode", at);
+  if (h >= 0) nt_node_set_arr(nt, h, "elements", els, an / 2);
+  return h;
+}
+
 /* `X.new(args) { blk }` for a builtin subclass none of whose classes defines
    initialize or self.new is the builtin's construction on an instance of X:
    `X.allocate.replace(Array.new(args) { blk })`, and `X.new` is
@@ -29899,6 +29945,18 @@ static void rewrite_bsub_new(Compiler *c, int id) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     src = bsub_node(c, "ArrayNode", id);
     if (src >= 0) nt_node_set_arr((NodeTable *)nt, src, "elements", av, an);
+  }
+  else if (brackets && bb->brackets == BSB_HASH_PAIRS) {
+    if (an == 0) { bsub_set_call(c, id, recv, "allocate", -1, -1); return; }
+    src = bsub_hash_pairs(c, id, args);
+    if (src < 0) {
+      char msg[300];
+      snprintf(msg, sizeof msg, "%s[...] with a splatted or computed argument is not supported yet "
+               "(whether it is one Hash, pairs, or keys and values is known only at run time); "
+               "pass a Hash literal", c->classes[k].name);
+      unsupported_feature(c, id, msg);
+      return;
+    }
   }
   else if (brackets) {
     int kn = bsub_node(c, "ConstantReadNode", id);

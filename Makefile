@@ -1723,11 +1723,11 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/co.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/co.out"; ok=0; }; fi; \
 	done; \
-	for spec in "subclass_hash:class Registry < Hash: subclassing Hash is not supported yet" \
-	            "subclass_string:class Name < String: subclassing String is not supported yet" \
-	            "subclass_hash_own_methods_only:class Opts < Hash: subclassing Hash" \
-	            "subclass_hash_class_new:Class.new(Hash): subclassing Hash" \
-	            "subclass_hash_class_new_block:class Registry < Hash: subclassing Hash" \
+	for spec in "subclass_string:class Name < String: subclassing String is not supported yet" \
+	            "subclass_hash_class_new:Class.new(Hash) without a block is not supported yet" \
+	            "subclass_hash_reopened:class Registry < Hash: subclassing Hash in a program that also reopens Hash" \
+	            "subclass_hash_zsuper_kw:a bare \`super\` into Hash from a method with keyword, post-rest" \
+	            "subclass_hash_brackets_splat:Registry[...] with a splatted or computed argument is not supported yet" \
 	            "subclass_range:class Span < Range: subclassing Range" \
 	            "subclass_thread_queue:class Jobs < Queue: subclassing Queue" \
 	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO" \
@@ -2213,7 +2213,10 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/builtin_ivar_boxed_reflection.rb \
                   test/array_subclass_boxed.rb \
                   test/array_subclass_methods.rb \
-                  test/array_subclass_copy.rb
+                  test/array_subclass_copy.rb \
+                  test/hash_subclass_boxed.rb \
+                  test/hash_subclass_methods.rb \
+                  test/hash_subclass_indifferent.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

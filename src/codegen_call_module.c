@@ -937,10 +937,11 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
     /* boxed as its builtin, a builtin subclass instance would dump as a
-       plain Hash (String), without its class and ivars (#7449); an Array
+       plain String, without its class and ivars (#7449); an Array or Hash
        subclass's is written as CRuby writes it (sp_mar_w) */
     if (sp_streq(name, "dump") && argc >= 1 && comp_ty_bsub_root(c, comp_ntype(c, argv[0])) >= 0 &&
-        comp_ty_bsub_base(c, comp_ntype(c, argv[0])) != BSUB_ARRAY) {
+        comp_ty_bsub_base(c, comp_ntype(c, argv[0])) != BSUB_ARRAY &&
+        comp_ty_bsub_base(c, comp_ntype(c, argv[0])) != BSUB_HASH) {
       const char *bn = comp_bsub_info(comp_ty_bsub_base(c, comp_ntype(c, argv[0])))->name;
       char msg[200];
       snprintf(msg, sizeof msg, "Marshal.dump of a%s %s subclass instance is not supported yet "

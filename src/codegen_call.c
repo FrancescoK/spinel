@@ -5082,10 +5082,14 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                tv, tv, tb, tv, tv, tb);
     return 1;
   }
-  /* Hash#merge(other): fold both hashes into a general PolyPoly hash. */
+  /* Hash#merge(other): fold both hashes into a general PolyPoly hash --
+     boxed where the call is (a Hash subclass instance's copy, #7449) */
   if (sp_streq(name, "merge") && argc == 1) {
-    buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
-    buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    int boxed = comp_ntype(c, id) == TY_POLY;
+    buf_puts(b, boxed ? "sp_box_nullable_obj((void *)sp_poly_hash_merge(" : "sp_poly_hash_merge(");
+    emit_boxed(c, recv, b);
+    buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+    buf_puts(b, boxed ? "), SP_BUILTIN_POLY_POLY_HASH)" : ")");
     return 1;
   }
   /* String#start_with? / #end_with? on a poly value (a `string?` param widened

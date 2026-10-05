@@ -998,22 +998,22 @@ spinel: class Stack < Array: subclassing Array in a program that also reopens Ar
 spinel: a bare `super` into Array from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
 == test/reject/subclass_array_zsuper_post.rb [promote] rc=1
 spinel: a bare `super` into Array from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
-== test/reject/subclass_hash.rb [default] rc=1
-spinel: class Registry < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
-== test/reject/subclass_hash.rb [promote] rc=1
-spinel: class Registry < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
+== test/reject/subclass_hash_brackets_splat.rb [default] rc=1
+spinel: Registry[...] with a splatted or computed argument is not supported yet (whether it is one Hash, pairs, or keys and values is known only at run time); pass a Hash literal
+== test/reject/subclass_hash_brackets_splat.rb [promote] rc=1
+spinel: Registry[...] with a splatted or computed argument is not supported yet (whether it is one Hash, pairs, or keys and values is known only at run time); pass a Hash literal
 == test/reject/subclass_hash_class_new.rb [default] rc=1
-spinel: Class.new(Hash): subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
+spinel: Class.new(Hash) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Hash`
 == test/reject/subclass_hash_class_new.rb [promote] rc=1
-spinel: Class.new(Hash): subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
-== test/reject/subclass_hash_class_new_block.rb [default] rc=1
-spinel: class Registry < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
-== test/reject/subclass_hash_class_new_block.rb [promote] rc=1
-spinel: class Registry < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
-== test/reject/subclass_hash_own_methods_only.rb [default] rc=1
-spinel: class Opts < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
-== test/reject/subclass_hash_own_methods_only.rb [promote] rc=1
-spinel: class Opts < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
+spinel: Class.new(Hash) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Hash`
+== test/reject/subclass_hash_reopened.rb [default] rc=1
+spinel: class Registry < Hash: subclassing Hash in a program that also reopens Hash is not supported yet
+== test/reject/subclass_hash_reopened.rb [promote] rc=1
+spinel: class Registry < Hash: subclassing Hash in a program that also reopens Hash is not supported yet
+== test/reject/subclass_hash_zsuper_kw.rb [default] rc=1
+spinel: a bare `super` into Hash from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
+== test/reject/subclass_hash_zsuper_kw.rb [promote] rc=1
+spinel: a bare `super` into Hash from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
 == test/reject/subclass_range.rb [default] rc=1
 spinel: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
 == test/reject/subclass_range.rb [promote] rc=1
