@@ -2,6 +2,7 @@
 #include "call_plan.h"
 #include "repr.h"
 #include "builtin_ops.h"
+#include "share.h"
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -2506,13 +2507,47 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   const char *nm = nt_str(nt, v, "name");
   return nm && (is_append_concat(nm) || str_self_call(nt, v));
 }
-/* A String bang method (bop_share_bang_self) called on a local that holds
-   the shared handle: its value is that local's String, or nil. */
+/* --share-strings: emit call `v`, which answers the shared handle
+   (strbuf_call_answers_handle), as that sp_String *: 1 when it did. Unlike
+   strbuf_slot_ref, no buffer bounds the text (a reader's override
+   dispatch is long). */
+int emit_strbuf_call_handle(Compiler *c, int v, Buf *b) {
+  if (!repr_share_rule(c)) return 0;
+  /* a call that ran first is read from its temp, the String it answered */
+  if (arg_ran_first(v, 0) || !strbuf_call_answers_handle(c, v)) return 0;
+  int sv = view_push_repr(c, v, VR_STRBUF_BOX, 1);
+  buf_puts(b, "(");
+  emit_expr(c, v, b);
+  buf_puts(b, ")");
+  view_pop(c, sv);
+  return 1;
+}
+/* --share-strings: is `v`, typed as the handle, one a store wraps in a
+   fresh handle (RS_FRESH) while it renders as a String of its own
+   (`+"x"`)? An append chain or a call answering its receiver renders the
+   handle itself (strbuf_marked_yields_handle). */
+int strbuf_fresh_renders_string(Compiler *c, int v) {
+  Repr r = repr_of(c, v);
+  if (r.strbuf_src != RS_FRESH) return 0;
+  return !(r.handle && nt_kind(c->nt, v) == NK_CallNode && strbuf_marked_yields_handle(c, v));
+}
+/* A String bang method (bop_share_bang_self) called on a slot that holds
+   the shared handle (a local, an ivar, a global, a constant, a class
+   variable): its value is that slot's String, or nil. */
 int strbuf_bang_self_local(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode || !bop_share_bang_self(nt_str(nt, v, "name"))) return 0;
   int r = nt_ref(nt, v, "receiver");
-  return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
+  if (r < 0) return 0;
+  /* a local's, a global's, a constant's or a class variable's slot */
+  if (nt_kind(nt, r) == NK_LocalVariableReadNode) return repr_of(c, r).kind == RK_STRBUF;
+  if (repr_handle_static(c, r)) return 1;
+  /* an ivar's shared slot (master takes only a local's) */
+  if (repr_share_rule(c) && nt_kind(nt, r) == NK_InstanceVariableReadNode) {
+    char sref[256];
+    return strbuf_slot_ref((Compiler *)c, r, sref, sizeof sref);
+  }
+  return 0;
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
@@ -2547,6 +2582,18 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     int fit = rb2.p && strlen(rb2.p) + 24 <= cap;
     if (fit) snprintf(out, cap, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     free(rb2.p);
+    return fit;
+  }
+  /* --share-strings: a bare reader of a shared ivar, or a call that answers
+     the handle on every path, marked to hand it out (the view the caller
+     pushed): the emitted call is the sp_String * itself */
+  if (recv >= 0 && repr_share_rule(c) && !arg_ran_first(recv, 0) && repr_of(c, recv).handle &&
+      strbuf_call_answers_handle(c, recv)) {
+    Buf rb3; memset(&rb3, 0, sizeof rb3);
+    emit_expr(c, recv, &rb3);
+    int fit = rb3.p && strlen(rb3.p) + 4 <= cap;
+    if (fit) snprintf(out, cap, "(%s)", rb3.p);
+    free(rb3.p);
     return fit;
   }
   /* a global or a constant holding the handle (--share-strings, #6765) */
