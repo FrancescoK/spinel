@@ -1880,7 +1880,8 @@ int strbuf_ivar_owner(Compiler *c, int node) {
           level, unconditionally (a `super` there runs the parent's);
      1 -- set exactly when it is not nil: every write the program makes to
           it stores a value that is never nil, so a nil slot is unset;
-     2 -- neither can be told; reflection lists it as before. */
+     2 -- neither can be told; reflection lists it as before;
+     3 -- a reflection-only slot has an explicit presence flag. */
 static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth);
 static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth) {
   if (cid < 0 || depth > 16) return 0;
@@ -1975,6 +1976,37 @@ static int ivs_subtree_writes(const NodeTable *nt, int n, const char *ivn, int d
 static int ivs_related(Compiler *c, int k, int cid) {
   return k == cid || is_descendant(c, k, cid) || is_descendant(c, cid, k);
 }
+/* A slot introduced only by reflection has no ordinary assignment emitter.
+   Its setter can keep presence separately even when the assigned value is nil.
+   Use the name across classes so inherited layouts agree on the extra field. */
+static int ivs_reflect_only(Compiler *c, const char *ivn) {
+  const NodeTable *nt = c->nt;
+  int found = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int j = 0; j < ci->nwriters; j++)
+      if (sp_streq(ci->writers[j], ivn + 1)) return 0;
+    if (ci->is_struct) {
+      int iv = comp_ivar_index(ci, ivn);
+      if (iv >= 0 && iv < ci->nmembers) return 0;
+    }
+  }
+  for (int n = 0; n < nt->count; n++) {
+    const char *t = nt_type(nt, n);
+    if (t && strncmp(t, "InstanceVariable", 16) == 0 && !strstr(t, "Read") &&
+        sp_streq(nt_str(nt, n, "name"), ivn)) return 0;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    if (!sp_streq(nt_str(nt, u, "name"), "instance_variable_set")) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac != 2) continue;
+    const char *sn = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                     nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (sp_streq(sn, ivn)) found = 1;
+  }
+  return found;
+}
 int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
   if (cid < 0 || cid >= c->nclasses || !ivn) return 2;
@@ -2046,13 +2078,20 @@ int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
       if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) kind = 2;
     }
   }
+  if (kind == 2 && ivs_reflect_only(c, ivn)) kind = 3;
   if (slot >= 0) memo[slot] = kind;
   return kind;
 }
 /* The C test that ivar `ivn` (of class `cid`, read as `expr`) is set, for
-   an ivar of kind 1; NULL when it is always reported as set. */
+   an ivar of kind 1 or 3; NULL when it is always reported as set. */
 const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *expr, char *buf, size_t cap) {
-  if (ivar_set_kind(c, cid, ivn) != 1) return NULL;
+  int kind = ivar_set_kind(c, cid, ivn);
+  if (kind == 3) {
+    size_t n = strlen(expr) - strlen(iv_c(ivn + 1)) - 3;
+    snprintf(buf, cap, "(%.*s_sp_set_%s)", (int)n, expr, iv_c(ivn + 1));
+    return buf;
+  }
+  if (kind != 1) return NULL;
   TyKind t = c->classes[cid].ivar_types[comp_ivar_index(&c->classes[cid], ivn)];
   if (t == TY_INT) snprintf(buf, cap, "(%s != SP_INT_NIL)", expr);
   else if (t == TY_FLOAT) snprintf(buf, cap, "(!sp_float_is_nil(%s))", expr);
