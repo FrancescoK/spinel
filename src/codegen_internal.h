@@ -136,6 +136,7 @@ int strbuf_bang_self_local(const Compiler *c, int v);
 int emit_strbuf_call_handle(Compiler *c, int v, Buf *b);
 void emit_boxed_str_operand(Compiler *c, int node, Buf *b);
 int strbuf_fresh_renders_string(Compiler *c, int v);
+int io_outbuf_handle_arg(Compiler *c, int v);
 int implicit_self_reader_cid(Compiler *c, int id);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name,
                                 const char *selfptr, const char *slot, Buf *b);
