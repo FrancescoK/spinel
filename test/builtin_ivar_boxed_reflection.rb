@@ -51,3 +51,33 @@ arr = [1]
 y = rand > 2 ? 1 : arr
 y.send(:instance_variable_set, :@q, 5)
 p arr.instance_variable_get(:@q), y.instance_variable_get(:@q)
+
+# a Proc and a class reached the same way: a class's ivar is the one its
+# class methods read, and one it does not declare lives beside it (a class
+# lists the ivars only its class methods wrote after the reflective sets:
+# sorted here, see docs/limitations.md)
+class Foo
+  def self.x = @x
+  def self.setx(v) = (@x = v)
+end
+class Bar
+  class << self
+    attr_accessor :level
+  end
+end
+def other(x, v)
+  x.instance_variable_set(:@other, v)
+  [x.instance_variable_get(:@other), x.instance_variables.sort]
+end
+def level(x, v)
+  x.instance_variable_set(:@level, v)
+  x.instance_variable_get(:@level)
+end
+p mark([Foo, 1][0], 5), Foo.x
+Foo.setx(6)
+p mark([Foo, 1][0], 7), Foo.x
+p other([Foo, 1][0], :o), other([1], 2)
+p level([Bar, 1][0], 3), Bar.level, level({}, 4)
+p mark(String, "s"), mark(Comparable, 1)
+pr = proc { 1 }
+p mark(pr, :v), mark(lambda { 2 }, 1), pr.call
