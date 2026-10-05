@@ -1,0 +1,4 @@
+[1, 3]
+[2, 5]
+undefined method 'minmax' for an instance of BareSub
+[1, 3]
