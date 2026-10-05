@@ -1,0 +1,4 @@
+"wrong number of arguments (given 2, expected 0..1)"
+ArgumentError
+"a"
+[:r, :a]
