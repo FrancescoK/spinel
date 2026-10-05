@@ -1701,6 +1701,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "unpack",          1,   1, BF_ANY,      TY_POLY_ARRAY, BOPE_TEMPLATE, "sp_str_unpack($r, $s0)", 0 },
   { TY_STRING, "unpack",          1,   2, BF_ANY,      TY_POLY_ARRAY, BOPE_NONE },
   { TY_STRING, "sub",             2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_str_str_hash($r, $e0, $e1)", 0, BOP_K(TY_STR_STR_HASH) },
+  { TY_STRING, "sub",             2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_str_str_hash($r, $e0, sp_StrPolyHash_to_s_values($e1))", 0, BOP_K(TY_STR_POLY_HASH) },
+  { TY_STRING, "sub",             2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub_str_str_hash($r, $e0, sp_StrIntHash_to_s_values($e1))", 0, BOP_K(TY_STR_INT_HASH) },
   { TY_STRING, "sub",             2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_sub($r, $s0, $s1)", 0 },
   { TY_STRING, "sub",             0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "center",          1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_center($r, $i0)", 0 },
@@ -1735,6 +1737,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0 },  /* the block form iterates and answers the receiver */
   { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, $e1)", 0, BOP_K(TY_STR_STR_HASH) },
+  { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrPolyHash_to_s_values($e1))", 0, BOP_K(TY_STR_POLY_HASH) },
+  { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrIntHash_to_s_values($e1))", 0, BOP_K(TY_STR_INT_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub($r, $s0, $s1)", 0 },
   { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0 },
 
