@@ -3461,7 +3461,8 @@ static int const_toplevel_alias(Compiler *c, const char *name) {
    statically typed object subject, decided from the class table: 1 when it
    wrote a condition, 0 when the pattern names neither a root the object
    belongs to, a class nil belongs to, the subject's class or one above it,
-   nor a module one of those includes (the caller decides the rest). */
+   nor a module one of those includes (the caller decides the rest). A class
+   below the subject's class gets a run-time test of the object's class id. */
 static int emit_obj_class_when(Compiler *c, TyKind pt, const char *cn, int t, Buf *b) {
   int cid = ty_object_class(pt);
   /* a class-aliasing constant (Alias = SomeClass) tests the aliased class,
@@ -3504,7 +3505,25 @@ static int emit_obj_class_when(Compiler *c, TyKind pt, const char *cn, int t, Bu
   /* a builtin exception above the class table: the runtime chain answers,
      asked of a live object only (sp_exc_is_a reads the NULL otherwise) */
   Buf eb; memset(&eb, 0, sizeof eb);
-  if (!emit_obj_exc_when(c, cid, cn, t, &eb)) { free(eb.p); return 0; }
+  if (!emit_obj_exc_when(c, cid, cn, t, &eb)) {
+    free(eb.p);
+    if (tcid < 0 || !is_descendant(c, tcid, cid)) return 0;
+    const char *acc = comp_ty_value_obj(c, pt) ? "." : "->";
+    int first = 1;
+    buf_puts(b, "(");
+    /* the tag read below dereferences the subject: a nil one has none */
+    if (obj_subject_nilable(c, pt)) buf_printf(b, "_t%d != NULL && (", t);
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k != tcid && !is_descendant(c, k, tcid)) continue;
+      if (!first) buf_puts(b, " || ");
+      buf_printf(b, "_t%d%scls_id == %d", t, acc, k);
+      first = 0;
+    }
+    if (first) buf_puts(b, "0");
+    if (obj_subject_nilable(c, pt)) buf_puts(b, ")");
+    buf_puts(b, ")");
+    return 1;
+  }
   if (obj_subject_nilable(c, pt)) buf_printf(b, "(_t%d != NULL && %s)", t, eb.p);
   else buf_puts(b, eb.p);
   free(eb.p);
@@ -3625,26 +3644,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
        the scrutinee's class is the pattern class or below it, and by the
        runtime tag when the pattern names a descendant of the static type. */
     if (ty_is_object(pt)) {
-      int cid = ty_object_class(pt);
-      int tcid = comp_class_index(c, cn2);
       if (emit_obj_class_when(c, pt, cn2, t, b)) return 1;
-      if (tcid >= 0 && is_descendant(c, tcid, cid)) {
-        const char *acc = comp_ty_value_obj(c, pt) ? "." : "->";
-        int first = 1;
-        buf_puts(b, "(");
-        /* the tag read below dereferences the subject: a nil one has none */
-        if (obj_subject_nilable(c, pt)) buf_printf(b, "_t%d != NULL && (", t);
-        for (int k = 0; k < c->nclasses; k++) {
-          if (k != tcid && !is_descendant(c, k, tcid)) continue;
-          if (!first) buf_puts(b, " || ");
-          buf_printf(b, "_t%d%scls_id == %d", t, acc, k);
-          first = 0;
-        }
-        if (first) buf_puts(b, "0");
-        if (obj_subject_nilable(c, pt)) buf_puts(b, ")");
-        buf_puts(b, ")");
-        return 1;
-      }
       buf_puts(b, "0");
       return 1;
     }
