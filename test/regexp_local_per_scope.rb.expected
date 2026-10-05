@@ -1,0 +1,23 @@
+true
+true
+false
+true
+false
+true
+true
+false
+false
+true
+false
+true
+false
+[true, ["x", "x"]]
+[true, [["x"], ["x"]]]
+true
+["b", 1, true, []]
+["d", 1, false, [["d"], ["d"]]]
+[["x", "x"], "a-b"]
+false
+true
+true
+false
