@@ -1,6 +1,6 @@
 # instance_variable_set on a String, which CRuby gives an instance
-# variable of its own: Spinel copies a String between its representations
-# and keeps no identity for the variable to live on, so it is refused
+# variable of its own: Spinel copies a String rather than sharing it, so it
+# has no identity for the variable yet (#6765), and the set is refused
 # rather than compiled without the variable.
 s = +"s"
 s.instance_variable_set(:@a, 1)
