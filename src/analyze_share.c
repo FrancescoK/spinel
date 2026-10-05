@@ -69,6 +69,7 @@ typedef struct ShareFacts {
   /* the classes a send with a computed name is made on: their methods (and
      their subclasses' and ancestors') are the ones it can reach */
   int *dyn_cls, ndyn_cls, cdyn_cls;
+  signed char *blk_follow;   /* per scope: sh_blkparam_followed, -1 not yet asked */
   int dyn_sym;         /* a send whose name is a Symbol value: it reaches the
                           methods a Symbol literal of the program names */
   const char **mconst;
@@ -670,13 +671,68 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
 /* A block literal handed to user method mi: its parameters take what mi
    yields, its value is what mi's yields answer; a block mi keeps as &blk
    may be called from anywhere. */
+/* Is method mi's `&b` parameter only ever called (`b.call(x)`, `b.(x)`,
+   `b[x]`, `b.yield(x)`) or tested (`b.nil?`, `!b`, `if b`) in its body, and
+   never written? Then a block passed to it is followed as a yield's is: its
+   parameters bind what the calls hand it (SHK_YIELD), and its value is what
+   they answer (SHK_BLKRET). */
+/* (every method's answer at once, in one pass over the nodes: a pass per
+   method with a `&b` was quadratic in them) */
+static void sh_blkparam_scan_all(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes;
+  int *reads = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int));
+  int *ok = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int));
+  unsigned char *written = calloc((size_t)(ns > 0 ? ns : 1), 1);
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    int pred = -1, node = -1, is_write = 0;
+    if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+        k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableTargetNode) { node = n; is_write = 1; }
+    else if (k == NK_LocalVariableReadNode) node = n;
+    else if (k == NK_IfNode || k == NK_UnlessNode) pred = nt_ref(nt, n, "predicate");
+    else if (k == NK_CallNode) {
+      const char *cn = nt_str(nt, n, "name");
+      int r = nt_ref(nt, n, "receiver");
+      if (cn && r >= 0 && (bop_share_named(BOP_CALLABLE, cn) == BSH_CALL || is_truth_query(cn))) pred = r;
+    }
+    if (node >= 0) {
+      int mi = sh_method_index(c, node);
+      const char *bn = mi >= 0 ? c->scopes[mi].blk_param : NULL;
+      const char *nm = nt_str(nt, node, "name");
+      if (bn && bn[0] && nm && sp_streq(nm, bn)) { if (is_write) written[mi] = 1; else reads[mi]++; }
+    }
+    if (pred >= 0 && nt_kind(nt, pred) == NK_LocalVariableReadNode) {
+      int mi = sh_method_index(c, pred);
+      const char *bn = mi >= 0 ? c->scopes[mi].blk_param : NULL;
+      const char *nm = nt_str(nt, pred, "name");
+      if (bn && bn[0] && nm && sp_streq(nm, bn)) ok[mi]++;
+    }
+  }
+  for (int mi = 0; mi < ns; mi++) {
+    const Scope *m = &c->scopes[mi];
+    const char *bn = m->blk_param;
+    F->blk_follow[mi] = (signed char)(bn && bn[0] && !m->is_lowered_yield && !m->is_proc_form &&
+                                      !written[mi] && reads[mi] == ok[mi]);
+  }
+  free(reads); free(ok); free(written);
+}
+static int sh_blkparam_followed(ShareFacts *F, Compiler *c, int mi) {
+  if (!F->blk_follow) {
+    F->blk_follow = malloc((size_t)(c->nscopes > 0 ? c->nscopes : 1));
+    sh_blkparam_scan_all(F, c);
+  }
+  return F->blk_follow[mi];
+}
+
 static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
   Scope *m = &c->scopes[mi];
-  if (m->yields) {
+  int followed = m->blk_param && sh_blkparam_followed(F, c, mi);
+  if (m->yields || followed) {
     sh_block_params(F, c, blk, sh_scope_holder(F, SHK_YIELD, mi), 1);
     sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
   }
-  if (m->blk_param || m->is_lowered_yield || m->is_proc_form) {
+  if ((m->blk_param && !followed) || m->is_lowered_yield || m->is_proc_form) {
     int o = sh_tagset(F, UT_BLKPARAM);
     sh_block_params(F, c, blk, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, blk), F->unknown);
@@ -1082,6 +1138,18 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
 
+  /* a call of a method's `&b` that only ever calls it: a yield */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode && bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
+    int mi = sh_method_index(c, n);
+    const char *bn = mi >= 0 ? c->scopes[mi].blk_param : NULL;
+    if (bn && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), bn) && sh_blkparam_followed(F, c, mi)) {
+      int y = sh_scope_holder(F, SHK_YIELD, mi);
+      int vals[64];
+      int nv = sh_args_vals(F, c, n, vals, 64);
+      for (int i = 0; i < nv; i++) sh_union(F, y, vals[i]);
+      return sh_scope_holder(F, SHK_BLKRET, mi);
+    }
+  }
   /* an in-place String mutation of the receiver */
   if (maybe_str && sp_str_mutator(name, 0))
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, recv) ? 0 : SHF_INDIRECT), n);
@@ -1962,7 +2030,7 @@ static void sh_free(ShareFacts *F) {
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_call); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
-  free(F->dyn); free(F->dyn_cls); free(F->union_stack);
+  free(F->dyn); free(F->dyn_cls); free(F->blk_follow); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
   free(F);
 }
@@ -2207,6 +2275,33 @@ int share_node_anchored(const Compiler *c, int n) {
   int r = sh_node_root(F, n, 0);
   return r >= 0 && F->anchored && F->anchored[r];
 }
+int share_call_yield_shares(Compiler *c, int n) {
+  ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, n, "receiver");
+  if (!F || recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  int mi = sh_method_index(c, n);
+  const char *bn = mi >= 0 ? c->scopes[mi].blk_param : NULL;
+  if (!bn || !nt_str(nt, recv, "name") || !sp_streq(nt_str(nt, recv, "name"), bn) || !sh_blkparam_followed(F, c, mi))
+    return 0;
+  /* (its YIELD holder, looked up as sh_holder keys it rather than by a
+     pass over every holder per call) */
+  unsigned hb = sh_key_hash(SHK_YIELD, mi, NULL) & (unsigned)(F->nbucket - 1);
+  for (int i = F->bucket ? F->bucket[hb] : -1; i >= 0; i = F->hnext[i])
+    if (F->h[i].kind == SHK_YIELD && F->h[i].scope == mi) {
+      int x = F->helem[i];
+      while (F->parent[x] != x) x = F->parent[x];
+      return repr_str_class_shares(F->flags[x], sh_class_holders(F, x));
+    }
+  return 0;
+}
+
+int share_node_shares(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  int r = sh_node_root(F, n, 0);
+  return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
+
 int share_node_elems_share(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 1);
