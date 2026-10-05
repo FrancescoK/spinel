@@ -27,6 +27,9 @@ const char *ffi_arg_str(const NodeTable *nt, int nid);
 int ffi_arg_int(const NodeTable *nt, int nid);
 TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
+/* a String accessor that reads through the pointer and keeps none past the
+   call (getbyte, bytesize, length, size, empty?) */
+int an_str_read_only_accessor(const char *n);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
 int ffi_find_writer(Compiler *c, const char *mod, const char *name);

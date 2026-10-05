@@ -926,6 +926,7 @@ typedef struct {
   int share_strings;
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
+  int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

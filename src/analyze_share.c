@@ -22,6 +22,8 @@
 #include "builtin_names.h"
 #include "call_plan.h"
 #include "share.h"
+#include "repr.h"
+#include "codegen_internal.h"
 
 /* element-own flags (not merged by a union) */
 enum { SHE_WRITTEN = 1 };
@@ -1441,4 +1443,238 @@ int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
   while (F->parent[x] != x) x = F->parent[x];
   unsigned f = F->flags[x];
   return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & SHF_INDIRECT));
+}
+
+/* ---- a read-only parameter borrows a handle's bytes (#7482) ----
+
+   A String the rule shares is an sp_String * handle, and a call passing one
+   to a `const char *` parameter reads it out through the handle's read face,
+   a full copy: O(len) per call. A parameter that only reads the String for
+   the length of the call can take the handle's live buffer instead, as
+   strbuf_read_raw already lets a builtin accessor do (#5745). Three facts
+   make that safe:
+
+   - the parameter keeps nothing: its every use is the receiver of one of
+     the accessors that read through the pointer and keep none past the
+     call (an_str_read_only_accessor; a match would keep it in MatchData);
+   - nothing changes the String while the callee runs, since a growth
+     reallocates the buffer the parameter points into: the callee is quiet
+     (sh_quiet_scopes), and every other operand of the call is a plain read;
+   - the parameter is a `const char *` at the end, so the copy was the read
+     face's and not a store's. */
+
+/* A type whose builtin methods run no user code and keep no String pointer
+   a caller hands them: a scalar, a String, and the typed containers of
+   those. An object, a box, a proc or a class can reach user code. */
+static int sh_plain_ty(TyKind t) {
+  switch (t) {
+  case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_BOOL: case TY_SYMBOL: case TY_NIL:
+  case TY_VOID: case TY_STRING: case TY_STRBUF: case TY_RANGE: case TY_FLOAT_RANGE:
+  case TY_STR_RANGE: case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY:
+  case TY_INT_ARRAY_ARRAY: case TY_FLOAT_ARRAY_ARRAY: case TY_STR_INT_HASH: case TY_INT_INT_HASH:
+  case TY_STR_STR_HASH: case TY_INT_STR_HASH: case TY_REGEX: case TY_MATCHDATA: case TY_TIME:
+  case TY_COMPLEX: case TY_RATIONAL: case TY_IO:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Is value v in a class the rule shares (one a handle may be in)? */
+static int sh_val_shares(const ShareFacts *F, int v) {
+  if (v < 0) return 0;
+  int r = sh_root(F, v);
+  return repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
+
+/* Can node n, run inside a callee, change a shared String or run code the
+   walk cannot see? A call to a user method, a yield, a super, a proc made
+   or called, a builtin on (or handed) a value that can reach user code, an
+   in-place mutation or a write of a String in a class the rule shares. */
+static int sh_node_loud(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, n)) {
+  case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode: case NK_LambdaNode:
+    return 1;
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+  case NK_LocalVariableOperatorWriteNode: case NK_InstanceVariableWriteNode:
+  case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
+  case NK_InstanceVariableOperatorWriteNode: case NK_GlobalVariableWriteNode:
+  case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
+  case NK_GlobalVariableOperatorWriteNode: case NK_ClassVariableWriteNode:
+  case NK_ClassVariableOrWriteNode: case NK_ClassVariableAndWriteNode:
+  case NK_ClassVariableOperatorWriteNode: case NK_LocalVariableTargetNode:
+  case NK_InstanceVariableTargetNode: case NK_GlobalVariableTargetNode:
+  case NK_ClassVariableTargetNode:
+    /* a write can drop the last name of the handle the parameter reads */
+    return sh_val_shares(F, F->nval[n]);
+  case NK_EmbeddedStatementsNode: {
+    /* `#{x}` calls x.to_s */
+    int st = nt_ref(nt, n, "statements");
+    int bn = 0; const int *bv = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    return bn > 0 && !sh_plain_ty(c->ntype[bv[bn - 1]]);
+  }
+  case NK_CallNode: {
+    const char *name = nt_str(nt, n, "name");
+    if (!name) return 1;
+    int tg[64];
+    if (sh_targets(c, n, tg, 64) > 0) return 1;
+    if (is_send_family(name) || sp_streq(name, "new") || sp_streq(name, "lambda") ||
+        sp_streq(name, "proc") || sp_streq(name, "freeze"))
+      return 1;
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if (recv >= 0 && !sh_plain_ty(rt) && rt != TY_CLASS) return 1;
+    int s = bop_share_named(recv >= 0 ? sh_family(rt) : BOP_KERNEL, name);
+    if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+    if (s == BSH_CALL || s == BSH_EXEC || s == BSH_METHOD_REF || s == BSH_IVAR_GET ||
+        s == BSH_IVAR_SET || s == BSH_FILL1 || s == BSH_NEW)
+      return 1;
+    if (recv >= 0 && sp_str_mutator(name, 0) && sh_val_shares(F, F->nval[recv])) return 1;
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) return 1;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (!sh_plain_ty(c->ntype[argv[i]])) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* An operand evaluated beside the borrowed argument: a variable read, a
+   literal, or scalar arithmetic over those. Nothing in it can change the
+   String between the borrow and the call. */
+static int sh_plain_operand(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ConstantReadNode: case NK_SelfNode: case NK_IntegerNode: case NK_FloatNode:
+  case NK_StringNode: case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    return 1;
+  case NK_CallNode: {
+    int recv = nt_ref(nt, n, "receiver");
+    TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
+    int tg[64];
+    if (sh_targets(c, n, tg, 64) > 0 || !sh_plain_operand(c, recv)) return 0;
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc; i++)
+      if (!sh_plain_operand(c, argv[i])) return 0;
+    return 1;
+  }
+  default:
+    return 0;
+  }
+}
+
+/* Is argument node a a read of a String slot held as the shared handle,
+   which reads out through the copying face? */
+static int sh_handle_read(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (c->strbuf_box[a] || c->strbuf_handle_demand[a] || c->strbuf_read_raw[a]) return 0;
+  if (nt_kind(nt, a) == NK_LocalVariableReadNode) {
+    const char *ln = nt_str(nt, a, "name");
+    LocalVar *lv = ln ? scope_local(comp_scope_of(c, a), ln) : NULL;
+    return lv && lv->type == TY_STRBUF && repr_of_slot(c, lv).kind == RK_STRBUF;
+  }
+  if (nt_kind(nt, a) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, a, "name");
+    int cid = nm ? strbuf_ivar_owner(c, a) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
+  }
+  return 0;
+}
+
+/* Parameter j of method mi, a `const char *` whose every use is an
+   accessor's receiver (uses[] counts the others, per local). */
+static int sh_param_borrows(Compiler *c, int mi, int j, int **other) {
+  Scope *m = &c->scopes[mi];
+  if (j < 0 || j >= m->nparams || !m->pnames[j] || j == m->rest_idx || j == m->kwrest_idx) return 0;
+  LocalVar *p = scope_local(m, m->pnames[j]);
+  if (!p || !p->is_param || p->is_block_param || p->is_cell || p->cell_outlives || p->byref_out) return 0;
+  if (p->type != TY_STRING || p->str_shared || p->rbs_seeded) return 0;
+  return other[mi] && other[mi][p - m->locals] == 0;
+}
+
+int share_mark_borrows(Compiler *c) {
+  if (!c->share_strings) return 0;
+  const NodeTable *nt = c->nt;
+  share_facts_build(c);
+  ShareFacts *F = c->share;
+  int ns = c->nscopes;
+  unsigned char *loud = calloc((size_t)(ns > 0 ? ns : 1), 1);
+  int **other = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int *));
+  for (int s = 0; s < ns; s++)
+    if (c->scopes[s].def_node >= 0) other[s] = calloc((size_t)(c->scopes[s].nlocals + 1), sizeof(int));
+  /* one pass: which methods are loud, and how each parameter is used */
+  for (int n = 0; n < nt->count; n++) {
+    int si = c->nscope[n];
+    if (si < 0 || si >= ns || !other[si]) continue;
+    if (!loud[si] && sh_node_loud(F, c, n)) loud[si] = 1;
+    NodeKind k = nt_kind(nt, n);
+    int lr = -1;
+    if (k == NK_LocalVariableReadNode) {
+      lr = n;
+      /* a read as an accessor's receiver is counted below, by its call */
+    }
+    else if (comp_is_local_write(k)) lr = n;
+    else if (k == NK_CallNode) {
+      int recv = nt_ref(nt, n, "receiver");
+      const char *nm = nt_str(nt, n, "name");
+      if (recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode && nm &&
+          an_str_read_only_accessor(nm) && nt_ref(nt, n, "block") < 0) {
+        LocalVar *lv = scope_local(&c->scopes[si], nt_str(nt, recv, "name"));
+        if (lv) other[si][lv - c->scopes[si].locals]--;
+      }
+    }
+    if (lr >= 0) {
+      LocalVar *lv = nt_str(nt, lr, "name") ? scope_local(&c->scopes[si], nt_str(nt, lr, "name")) : NULL;
+      /* a write counts double, so no accessor read can balance it */
+      if (lv) other[si][lv - c->scopes[si].locals] += k == NK_LocalVariableReadNode ? 1 : 1 << 20;
+    }
+  }
+  int marked = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int args = nt_ref(nt, n, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc == 0) continue;
+    int cand = -1;
+    for (int i = 0; i < argc && cand < 0; i++)
+      if (sh_handle_read(c, argv[i])) cand = i;
+    if (cand < 0) continue;
+    int tg[64];
+    int ntg = sh_targets(c, n, tg, 64);
+    if (ntg == 0 || !sh_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0) continue;
+    for (int i = 0; i < argc; i++) {
+      if (!sh_handle_read(c, argv[i])) {
+        if (!sh_plain_operand(c, argv[i])) { ntg = 0; break; }
+        continue;
+      }
+      int ok = 1;
+      for (int t = 0; t < ntg && ok; t++) {
+        Scope *m = &c->scopes[tg[t]];
+        int spread = -1, pj = -1;
+        for (int j = 0; j < m->nparams && pj < 0; j++)
+          if (arg_layout_param_node(c, m, n, j, &spread) == argv[i]) pj = j;
+        ok = pj >= 0 && !loud[tg[t]] && sh_param_borrows(c, tg[t], pj, other);
+      }
+      if (ok) {
+        c->strbuf_read_raw[argv[i]] = 1;
+        marked++;
+      }
+    }
+  }
+  for (int s = 0; s < ns; s++) free(other[s]);
+  free(other);
+  free(loud);
+  c->share_borrows = marked;
+  return marked;
 }
