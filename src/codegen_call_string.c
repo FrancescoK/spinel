@@ -165,7 +165,7 @@ no_gsub_enum:
     if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
         (is_match_family(name))) {
       const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-      const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
+      const char *dv9 = default_value_from_compiler(c, repr_of(c, id).as_ty);
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                  name, tn9, dv9 ? dv9 : "sp_box_nil()");
@@ -382,7 +382,7 @@ no_gsub_enum:
           if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
               (is_match_family(name))) {
             const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-            const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
+            const char *dv9 = default_value_from_compiler(c, repr_of(c, id).as_ty);
             buf_puts(b, "((void)("); emit_expr(c, recv, b);
             buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                        name, tn9, dv9 ? dv9 : "sp_box_nil()");
