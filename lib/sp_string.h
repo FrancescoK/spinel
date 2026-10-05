@@ -235,6 +235,31 @@ static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
+/* A String subclass instance's struct starts with its handle (#7449): the
+   handle is set up in place, inside the object the program allocates (with
+   sp_String_fin and its own scan), as sp_String_new_len sets a fresh one up,
+   the payload counted to that object's header. Empty, as String.new is. */
+static inline void sp_String_init_embedded(sp_String*s){
+  int64_t cap=16;
+  char*raw=(char*)malloc(SP_FD_OVH+cap);
+  if(!raw)sp_oom_die();
+  s->data=sp_fd_setup(raw);s->data[0]=0;s->len=0;s->cap=cap;s->binary=0;s->chilled=0;sp_fd_own(s);
+  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));h->size+=s->cap+SP_FD_OVH;sp_gc_bytes_add(s->cap+SP_FD_OVH);}
+  sp_fd_publish(s);
+}
+/* dup / clone of one: the bytes and the encoding tag of src into the blank
+   handle dst, which is not frozen yet */
+static inline void sp_String_copy_embedded(sp_String*dst,sp_String*src){
+  dst->binary=src->binary;
+  sp_String_set_bin(dst,src->data);
+}
+/* its #to_s where a String is printed (a copy: the handle's bytes change in
+   place) and its #inspect */
+const char*sp_str_concat(const char*a,const char*b);
+const char*sp_str_inspect(const char*s);
+static inline const char*sp_String_to_s_embedded(sp_String*s){return sp_str_concat(s->data,(&("\xff")[1]));}
+static inline const char*sp_String_inspect_embedded(sp_String*s){return sp_str_inspect(s->data);}
+
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */
 void sp_String_prepend(sp_String*s,const char*t);
 void sp_String_insert(sp_String*s,int64_t idx,const char*t);
