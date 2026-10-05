@@ -5758,10 +5758,6 @@ static void emit_zip_many_block(Compiler *c, int recv, int block, int body,
   emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tr);
   emit_boxed(c, recv, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tr);
-  if (repr_of(c, recv).kind == RK_BOXED) {
-    emit_indent(b, indent);
-    buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", tr, tr, tr);
-  }
   emit_indent(b, indent);
   buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", to, to);
   for (int j = 0; j < zargc; j++) {
@@ -5778,6 +5774,10 @@ static void emit_zip_many_block(Compiler *c, int recv, int block, int body,
       buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
       emit_boxed(c, zargv[j], b); buf_puts(b, ");\n");
     }
+  }
+  if (repr_of(c, recv).kind == RK_BOXED) {
+    emit_indent(b, indent);
+    buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", tr, tr, tr);
   }
   /* Operands are captured before yielding. The receiver is read again
      per row, so the block can change its later elements. */
@@ -5918,18 +5918,27 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
       Buf rb; memset(&rb, 0, sizeof rb);
       if (recv_poly) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
       Buf ob; memset(&ob, 0, sizeof ob);
-      if (arg_poly) emit_boxed(c, zargv[0], &ob); else emit_expr(c, zargv[0], &ob);
       if (recv_poly) {
         int trz = ++g_tmp;
         emit_indent(b, indent);
         buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trz, rb.p ? rb.p : "sp_box_nil()", trz);
-        emit_indent(b, indent);
-        buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", trz, trz, trz);
         free(rb.p); memset(&rb, 0, sizeof rb);
         buf_printf(&rb, "_t%d", trz);
+        /* Arguments run before method lookup can reject the receiver. Keep
+           an operand's own prelude after the receiver snapshot too. */
+        Buf *pre = g_pre;
+        g_pre = b;
+        if (arg_poly) emit_boxed(c, zargv[0], &ob); else emit_expr(c, zargv[0], &ob);
+        g_pre = pre;
+        hoist_loop_recv(c, arg_poly ? TY_POLY : a0t, &ob, b, indent);
+        emit_indent(b, indent);
+        buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) sp_raise_poly_nomethod(\"zip\", _t%d);\n", trz, trz, trz);
       }
-      else hoist_loop_recv(c, rt, &rb, b, indent);
-      if (ty_is_array(a0t)) hoist_loop_recv(c, a0t, &ob, b, indent);
+      else {
+        if (arg_poly) emit_boxed(c, zargv[0], &ob); else emit_expr(c, zargv[0], &ob);
+        hoist_loop_recv(c, rt, &rb, b, indent);
+        if (ty_is_array(a0t)) hoist_loop_recv(c, a0t, &ob, b, indent);
+      }
       Scope *zs = comp_scope_of(c, id);
       LocalVar *zlv0 = (p0 && zs) ? scope_local(zs, p0) : NULL;
       LocalVar *zlv1 = (p1n && zs) ? scope_local(zs, p1n) : NULL;
