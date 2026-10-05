@@ -153,6 +153,7 @@ int is_named_set_operator(const char *n); /* difference intersection union */
 int is_select_reject_bang(const char *n); /* filter! reject! select! */
 int is_element_pick(const char *n); /* first last sample */
 int is_extrema_family(const char *n); /* max min minmax */
+int block_rest_yield_count(const char *n); /* 1, 2 or 3: the values a named-parameter iterator yields a lone block splat a step */
 int is_io_wait(const char *n); /* wait_priority wait_readable wait_writable */
 int is_match_family(const char *n); /* !~ =~ match match? */
 int is_integer_iteration(const char *n); /* downto step times upto */
