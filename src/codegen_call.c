@@ -4432,17 +4432,17 @@ int poly_pred_kind(const char *name, int argc) {
   return 0;
 }
 
-/* A class test (is_a?, kind_of?, instance_of?, Class ===) of an Integer or
-   Float value. Such a slot holds nil as its sentinel, which the static type
-   cannot say, so the test reads the sentinel the way `nil?` does: nil is a
-   NilClass and not an Integer, and only the universal classes hold for both.
-   A literal number is never nil and keeps the constant. Answers 0 (nothing
-   emitted) for any other operand or class. */
+/* A class test (is_a?, kind_of?, instance_of?, Class ===) of an Integer,
+   Float or String value. Such a slot holds nil as its sentinel (NULL for a
+   String), which the static type cannot say, so the test reads the sentinel
+   the way `nil?` does: nil is a NilClass and not an Integer, and only the
+   universal classes hold for both. A literal is never nil and keeps the
+   constant. Answers 0 (nothing emitted) for any other operand or class. */
 int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *cn, int exact, Buf *b) {
   const NodeTable *nt = c->nt;
-  if ((t != TY_INT && t != TY_FLOAT) || !cn) return 0;
+  if ((t != TY_INT && t != TY_FLOAT && t != TY_STRING) || !cn) return 0;
   NodeKind nk = nt_kind(nt, node);
-  if (nk == NK_IntegerNode || nk == NK_FloatNode) return 0;
+  if (nk == NK_IntegerNode || nk == NK_FloatNode || nk == NK_StringNode) return 0;
   int yes = ty_matches_class(t, cn, exact);
   if (yes < 0) return 0;
   int nilcls = sp_streq(cn, "NilClass");
@@ -4452,7 +4452,8 @@ int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *cn, int 
   buf_puts(b, "({ "); emit_ctype(c, t, b); buf_printf(b, " _t%d = ", tn); emit_expr(c, node, b);
   buf_printf(b, "; %s(", nilcls ? "" : "!");
   if (t == TY_INT) buf_printf(b, "_t%d == SP_INT_NIL", tn);
-  else buf_printf(b, "sp_float_is_nil(_t%d)", tn);
+  else if (t == TY_FLOAT) buf_printf(b, "sp_float_is_nil(_t%d)", tn);
+  else buf_printf(b, "_t%d == NULL", tn);
   buf_puts(b, "); })");
   return 1;
 }

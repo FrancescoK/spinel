@@ -3583,8 +3583,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
       buf_puts(b, "!"); emit_slot_truthy(pt, ref, b);
     }
-    /* a no-match MatchData is a NULL pointer; `in nil` matches it */
-    else if (pt == TY_MATCHDATA) buf_printf(b, "(_t%d == NULL)", t);
+    /* a no-match MatchData is a NULL pointer, and a String slot holds nil
+       as NULL; `in nil` matches it */
+    else if (pt == TY_MATCHDATA || pt == TY_STRING) buf_printf(b, "(_t%d == NULL)", t);
     else if (ty_is_object(pt)) emit_obj_nil(c, pt, t, b);
     else buf_puts(b, (pt == TY_NIL) ? "1" : "0");
     return 1;
@@ -3659,8 +3660,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     int yes = ty_matches_class(pt, cn2, 0);
     /* a scalar subject holding its nil sentinel is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
-       nil too, as in the is_a? fold */
-    if (t == g_pm_sentinel_t && !is_object_root(cn2) && (yes > 0 || sp_streq(cn2, "NilClass"))) {
+       nil too, as in the is_a? fold. A String slot holds nil as NULL. */
+    if ((t == g_pm_sentinel_t || pt == TY_STRING) && !is_object_root(cn2) &&
+        (yes > 0 || sp_streq(cn2, "NilClass"))) {
       char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
       if (!sp_streq(cn2, "NilClass")) emit_slot_truthy(pt, ref, b);
       else { buf_puts(b, "!"); emit_slot_truthy(pt, ref, b); }
@@ -3814,7 +3816,8 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     }
     if (has_nested) { buf_puts(b, "0"); return 1; }
     /* a `Class` / `Class => v` element check is fully static against a typed
-       array's element type: a mismatching class can never match. */
+       array's element type: a mismatching class can never match. A String
+       element holds nil as NULL, so NilClass can match it. */
     {
       TyKind et2 = ty_array_elem(pt);
       int class_mismatch = 0;
@@ -3830,7 +3833,8 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         }
         if (classpat >= 0) {
           const char *cn2 = nt_str(nt, classpat, "name");
-          if (cn2 && ty_matches_class(et2, cn2, 0) <= 0) class_mismatch = 1;
+          if (cn2 && ty_matches_class(et2, cn2, 0) <= 0 &&
+              !(et2 == TY_STRING && sp_streq(cn2, "NilClass"))) class_mismatch = 1;
         }
       }
       if (class_mismatch) { buf_puts(b, "0"); return 1; }
@@ -5518,28 +5522,32 @@ static void emit_when_splat_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
   buf_puts(b, ")");
 }
 
-/* `when Integer` / `when NilClass` on an Integer or Float scrutinee: the
-   slot holds nil as its sentinel, which the static type cannot say, so the
-   arm reads it as is_a? does (#7049). The universal classes hold for nil as
-   well and keep the constant (answers 0, nothing emitted). */
+/* `when Integer` / `when NilClass` on an Integer, Float or String
+   scrutinee: the slot holds nil as its sentinel (NULL for a String), which
+   the static type cannot say, so the arm reads it as is_a? does (#7049). The
+   universal classes hold for nil as well and keep the constant (answers 0,
+   nothing emitted). */
 static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
-  if (pt != TY_INT && pt != TY_FLOAT) return 0;
+  if (pt != TY_INT && pt != TY_FLOAT && pt != TY_STRING) return 0;
   int yes = ty_matches_class(pt, cn, 0);
   int nilcls = sp_streq(cn, "NilClass");
   int univ = is_object_root(cn);
   if (yes < 0 || (!nilcls && (!yes || univ))) return 0;
   if (pt == TY_INT) buf_printf(b, "(_t%d %s SP_INT_NIL)", t, nilcls ? "==" : "!=");
-  else buf_printf(b, "(%ssp_float_is_nil(_t%d))", nilcls ? "" : "!", t);
+  else if (pt == TY_FLOAT) buf_printf(b, "(%ssp_float_is_nil(_t%d))", nilcls ? "" : "!", t);
+  else buf_printf(b, "(_t%d %s NULL)", t, nilcls ? "==" : "!=");
   return 1;
 }
 
 static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   int reidx = re_lit_index(c, cond);
   /* `when nil` on an Integer or Float scrutinee matches its nil sentinel:
-     compared as a number, nil read as 0 and matched a 0 */
-  if (nt_kind(c->nt, cond) == NK_NilNode && (pt == TY_INT || pt == TY_FLOAT)) {
+     compared as a number, nil read as 0 and matched a 0. A String
+     scrutinee holds nil as NULL. */
+  if (nt_kind(c->nt, cond) == NK_NilNode && (pt == TY_INT || pt == TY_FLOAT || pt == TY_STRING)) {
     if (pt == TY_INT) buf_printf(b, "(_t%d == SP_INT_NIL)", t);
-    else buf_printf(b, "sp_float_is_nil(_t%d)", t);
+    else if (pt == TY_FLOAT) buf_printf(b, "sp_float_is_nil(_t%d)", t);
+    else buf_printf(b, "(_t%d == NULL)", t);
   }
   else if (reidx >= 0 && pt == TY_STRING) {
     buf_printf(b, "(sp_re_match(sp_re_pat_%d, _t%d) >= 0)", reidx, t);

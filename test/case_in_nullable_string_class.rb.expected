@@ -1,0 +1,24 @@
+[:str, "a"]
+:nil
+:cmp
+:obj
+:obj
+:obj
+[:gap, nil]
+:has_nil
+:both
+:second_nil
+:other
+:nil
+:str
+:nil
+"a"
+"default"
+:str_or_nil
+:str_or_nil
+:nil_or_str
+:nil_or_str
+:str
+:nil
+:str
+:nil
