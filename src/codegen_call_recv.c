@@ -5,6 +5,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "builtin_ops.h"
 
 /* The value of the block a `fetch` or `delete` runs when it finds nothing, as
    `({ bind; leading statements; setup; value; })`. `bind` sets the block's
@@ -11009,6 +11010,17 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       (kind == PF_INT || kind == PF_FLOAT || kind == PF_RANGE || kind == PF_FRANGE || kind == PF_SRANGE) &&
       (is_integer_iteration(name)))
     nat = as;
+  /* ...and so does a written-back mutator its row says always answers the
+     receiver (delete_if, keep_if, sort!, merge!): inside the break wrapper
+     (emit_brk_wrapped_call) a break's value goes to the wrapper's slot, so
+     this text is the receiver in the face's kind, where the union said poly
+     and it was bound into an sp_RbVal raw. One that answers nil when nothing
+     changed (BOPF_SELF_OR_NIL) keeps the poly reading. */
+  if (nat == TY_POLY && (flags & PF_MUT) && (flags & PF_VAL_SELF) && box && g_brk_skip_id == id) {
+    int argc = 0;
+    call_args(nt, id, &argc);
+    if (bop_answers_self(as, name, argc, has_blk) == BOPF_SELF) nat = as;
+  }
   Buf cb; memset(&cb, 0, sizeof cb);
   emit_call(c, id, &cb);
   view_pop(c, fv);
