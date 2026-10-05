@@ -13391,7 +13391,7 @@ static void scan_prologue_features(Compiler *c) {
       if (nm && rv >= 0 && comp_ntype(c, rv) == TY_POLY &&
           (sp_streq(nm, "each") || sp_streq(nm, "each_pair") ||
            sp_streq(nm, "values") || sp_streq(nm, "values_at") ||
-           sp_streq(nm, "entries"))) reached = 1;
+           sp_streq(nm, "entries") || sp_streq(nm, "size") || sp_streq(nm, "length"))) reached = 1;
     }
     g_gen_obj_struct_values = reached;
   }
