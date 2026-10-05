@@ -10936,6 +10936,13 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               free(vb.p);
               return 1;
             }
+            /* the value form runs a receiver that runs code ahead of an
+               argument that builds ahead of the statement */
+            if (an >= 1 && call_operand_builds_ahead(c, id)) {
+              emit_indent(b, indent);
+              buf_puts(b, "(void)("); emit_expr(c, id, b); buf_puts(b, ");\n");
+              return 1;
+            }
             if (an >= 1) {
               int rc = ty_object_class(rt);
               char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
@@ -14017,6 +14024,9 @@ static int emit_array_mutate_stmt_dispatch(Compiler *c, int id, Buf *b, int inde
 }
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (push_stmt_takes_value_form(c, id)) return 0;
+  /* the value form runs an operand to the left of one that builds ahead
+     first; the statement arms put the build first */
+  if (call_operand_builds_ahead(c, id)) return 0;
   return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_dispatch);
 }
 /* The FrozenError an in-place String mutator raises before it reads its
