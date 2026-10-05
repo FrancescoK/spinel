@@ -2633,6 +2633,22 @@ static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope
 /* infer_write_types's pass that folds container usage into a local's type:
    an empty [] or {} takes its element, key and value types from how it is
    filled (answers whether it changed a type) */
+/* `a[i] op= v` stores `a[i] op v`, not v: a Float element combined with an
+   Integer operand by an arithmetic operator is a Float, so a Float Array (or
+   a Float-valued Hash) written `acc[i] /= 4` keeps its kind. Taking the
+   operand's own type as the stored value's widened the container to a boxed
+   PolyArray, and every read and write of it after that was boxed. */
+static TyKind index_op_write_value_type(Compiler *c, int id, int recv, TyKind vt) {
+  if (vt != TY_INT) return vt;
+  const char *op = nt_str(c->nt, id, "binary_operator");
+  if (!op || !(sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") ||
+               sp_streq(op, "/") || sp_streq(op, "%") || sp_streq(op, "**")))
+    return vt;
+  TyKind rt = infer_type(c, recv);
+  TyKind et = ty_is_array(rt) ? ty_array_elem(rt) : ty_is_hash(rt) ? ty_hash_val(rt) : TY_UNKNOWN;
+  return et == TY_FLOAT ? TY_FLOAT : vt;
+}
+
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -2921,6 +2937,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       kt = infer_type(c, argv[0]); vt = infer_type(c, nt_ref(nt, id, "value"));
       knode = argv[0];
       if (!sp_streq(ty, "IndexOperatorWriteNode")) vnode = nt_ref(nt, id, "value");
+      else vt = index_op_write_value_type(c, id, recv, (TyKind)vt);
     }
     else {
       continue;
