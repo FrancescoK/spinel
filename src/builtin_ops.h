@@ -334,6 +334,7 @@ typedef enum {
                      group_by's groups); answers containers of them */
   BSH_ITER_FIND,  /* block parameters bind elements; answers one of them */
   BSH_ITER_FRESH, /* block parameters bind fresh values (each_char, each_line) */
+  BSH_ITER_FRESH_RECV, /* the same, answering the receiver (gsub!, sub!) */
   BSH_ITER_MEMO0, /* inject/reduce: parameter 0 the memo (argument 0), the
                      others elements; answers the memo or the block's value */
   BSH_ITER_MEMO1, /* each_with_object: parameter 1 the memo (argument 0) */
@@ -359,5 +360,8 @@ typedef enum {
 int bop_share(TyKind fam, const char *name);
 /* the name's own row only, without the family's default */
 int bop_share_named(TyKind fam, const char *name);
+/* a String bang method answering its receiver, or nil when it changed
+   nothing (`strip!`, `gsub!`, `scrub!`) */
+int bop_share_bang_self(const char *name);
 
 #endif
