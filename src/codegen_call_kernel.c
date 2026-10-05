@@ -1369,8 +1369,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
               buf_printf(b, "sp_RbVal lv_%s = sp_box_str(_t%d); (void)lv_%s; ",
                          rename_local(dp0), t1, rename_local(dp0));
             else
-              buf_printf(b, "const char *lv_%s = _t%d; (void)lv_%s; ",
-                         rename_local(dp0), t1, rename_local(dp0));
+            { char src[32]; snprintf(src, sizeof src, "_t%d", t1);
+              emit_str_param_decl(c, id, dp0, rename_local(dp0), src, 0, b);
+              buf_printf(b, " (void)lv_%s; ", rename_local(dp0)); }
           }
           for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
           if (dval >= 0) {
