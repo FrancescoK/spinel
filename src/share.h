@@ -93,6 +93,9 @@ typedef struct ShareRoute {
   char *msg;           /* (a kept route's message) */
 } ShareRoute;
 ShareRoute share_route(int site, int value, int elems);
+/* The user methods a call reaches, as the walk binds them (its plan's
+   method, and each member of a switch); the count written to out. */
+int share_call_targets(Compiler *c, int call, int *out, int cap);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
 /* Can node n's value (a container) be reached again once its expression
