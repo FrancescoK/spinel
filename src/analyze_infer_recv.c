@@ -83,6 +83,9 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     { *out = TY_UNKNOWN; return 1; }
   }
   if (rt == TY_FLOAT_RANGE) {
+    /* a blockless step over an endless one is walked as it is read */
+    if (sp_streq(name, "step") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        range_lit_endless(c, nt_ref(nt, id, "receiver"))) { *out = TY_ENUMERATOR; return 1; }
     /* overlap? answers through sp_range_overlap_v, as an Integer Range's does */
     if (sp_streq(name, "overlap?") && argc == 1) { *out = TY_BOOL; return 1; }
     /* #size counts the integers the range enumerates: a Float answer, since an

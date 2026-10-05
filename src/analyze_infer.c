@@ -1359,6 +1359,24 @@ int range_lit_float_end(Compiler *c, int recv) {
 }
 
 
+/* An endless literal Range with a begin (`(1..)`, `(1.0...)`), written as
+   the receiver or held by a local whose only assignment it is. */
+int range_lit_endless(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int rnode = recv;
+  for (int g = 0; g < 8 && rnode >= 0 && nt_kind(nt, rnode) == NK_ParenthesesNode; g++) {
+    int pb = nt_ref(nt, rnode, "body");
+    int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    rnode = (pn == 1 && ps) ? ps[0] : -1;
+  }
+  if (rnode >= 0 && nt_kind(nt, rnode) != NK_RangeNode) {
+    int sl = local_sole_range_node(c, rnode);
+    if (sl >= 0) rnode = sl;
+  }
+  return rnode >= 0 && nt_kind(nt, rnode) == NK_RangeNode &&
+         nt_ref(nt, rnode, "left") >= 0 && nt_ref(nt, rnode, "right") < 0;
+}
+
 static int range_each_is_external(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
@@ -3566,6 +3584,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     if (sp_streq(name, "step")) {
       /* step with a block walks the range and returns self */
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
+      /* an endless one is walked as it is read: an Enumerator (sp_range_endless_step) */
+      if (argc == 1 && range_lit_endless(c, recv)) { *out = TY_ENUMERATOR; return 1; }
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
       int rn = an_unparen(nt, recv);

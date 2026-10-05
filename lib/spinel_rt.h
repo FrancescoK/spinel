@@ -5328,6 +5328,7 @@ static sp_RbVal sp_poly_str_mod(sp_RbVal a, sp_RbVal b);  /* fwd: defined beside
 /* Range#% (step) on a boxed Integer or Float Range, materialized as the
    typed `range % n` is (an Integer or a Float Array): an Integer step over
    an Integer Range walks Integers, any Float makes the walk Floats. */
+static sp_RbVal sp_range_endless_step_v(sp_RbVal first, sp_RbVal step);   /* boxed; defined with the Enumerator */
 static sp_RbVal sp_poly_range_pct(sp_RbVal a, sp_RbVal b) {
   /* CRuby raises this when the walk starts; materialized here, at the call */
   if (b.tag != SP_TAG_INT && b.tag != SP_TAG_FLT)
@@ -5335,6 +5336,9 @@ static sp_RbVal sp_poly_range_pct(sp_RbVal a, sp_RbVal b) {
                  b.tag == SP_TAG_NIL ? "nil" : b.tag == SP_TAG_BOOL ? (b.v.b ? "true" : "false") : sp_poly_class_name(b)));
   if (a.cls_id == SP_BUILTIN_RANGE) {
     sp_Range r = *(sp_Range *)a.v.p;
+    /* an endless one is walked as it is read */
+    if (!r.fe && r.last == INTPTR_MAX && r.first != INTPTR_MIN)
+      return sp_range_endless_step_v(sp_box_int(r.first), b);
     if (b.tag == SP_TAG_INT) {
       sp_range_int_only(r, "Range#step");
       return sp_box_nullable_obj((void *)sp_IntArray_from_range_step(r.first, r.last, b.v.i, r.excl), SP_BUILTIN_INT_ARRAY);
@@ -5343,6 +5347,8 @@ static sp_RbVal sp_poly_range_pct(sp_RbVal a, sp_RbVal b) {
                                                               sp_range_excl_end(r)), SP_BUILTIN_FLT_ARRAY);
   }
   sp_FloatRange f = *(sp_FloatRange *)a.v.p;
+  if ((f.omitted & SP_FRANGE_NO_END) && !(f.omitted & SP_FRANGE_NO_BEGIN))
+    return sp_range_endless_step_v(sp_box_float(f.first), b);
   return sp_box_nullable_obj((void *)sp_FloatArray_from_step(f.first, f.last, sp_poly_to_f(b), f.excl), SP_BUILTIN_FLT_ARRAY);
 }
 static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_OBJ && a.v.p && (a.cls_id == SP_BUILTIN_RANGE || a.cls_id == SP_BUILTIN_FLOAT_RANGE)) return sp_poly_range_pct(a, b); /* Two plain numbers first, as add/sub/mul already do (#3984). */ if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return sp_box_int(sp_imod(a.v.i, b.v.i)); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(a.v.f, b.v.f)); if (a.tag == SP_TAG_STR || sp_poly_is_strbuf(a)) return sp_poly_str_mod(sp_poly_strbuf_deref(a), b); /* the user-object arm has to come before the float one: a Float on either side otherwise converted the object to a number (0.0) and answered a division by zero where CRuby coerces. */ if (sp_poly_is_user_obj(a) || sp_poly_is_user_obj(b)) return sp_poly_binop_bad("%", a, b); /* a strbuf RECEIVER already returned through sp_poly_str_mod above */ if (SP_UNLIKELY(sp_poly_is_strbuf(b))) return sp_poly_mod(a, sp_poly_strbuf_deref(b)); if (SP_UNLIKELY(sp_poly_tower_mismatch(a, b))) return sp_poly_binop_bad("%", a, b); if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(sp_poly_to_f(a), sp_poly_to_f(b))); if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) return sp_box_rational(sp_rational_mod(sp_poly_as_rational(a), sp_poly_as_rational(b))); if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_mod(sp_poly_as_bigint(a), sp_poly_as_bigint(b))); /* the sibling helpers (div_m, remainder, fdiv, divmod) all refuse a non-numeric RECEIVER; `%` did not, so nil/Array/Hash/Symbol/true/false reaching here (a poly-dispatch collision default, or plain `nil % 1`) fell through to sp_poly_to_i below and answered 0 instead of raising the method they lack (#4816). */ if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a)) sp_raise_poly_nomethod("%", a); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }  /* sp_fmod: CRuby divisor-sign result + zero-divisor raise */
@@ -15595,6 +15601,42 @@ static void sp_endless_range_gen(sp_Fiber *f) {
   sp_endless_range_cap *cap = (sp_endless_range_cap *)f->user_data;
   sp_int v = cap->first;
   for (;;) { sp_Fiber_yield(sp_box_int(v)); v += cap->step; }
+}
+/* ...and a Float walk, first + i * step as CRuby's float step computes it, so
+   the steps do not accumulate rounding */
+typedef struct { sp_float first; sp_float step; } sp_endless_fstep_cap;
+static void sp_endless_fstep_gen(sp_Fiber *f) {
+  sp_endless_fstep_cap *cap = (sp_endless_fstep_cap *)f->user_data;
+  for (sp_int i = 0;; i++) sp_Fiber_yield(sp_box_float(cap->first + (sp_float)i * cap->step));
+}
+/* Range#step / Range#% without a block on an ENDLESS Range: CRuby answers an
+   arithmetic sequence that is walked only as far as it is read, where
+   materializing it raised RangeError. An Integer begin and step walk
+   Integers (sp_endless_range_gen), a Float on either side walks Floats; its
+   size is Infinity, and a step of 0 is ArgumentError, as in CRuby. */
+static sp_Enumerator *sp_range_endless_step(sp_RbVal first, sp_RbVal step) {
+  SP_GC_ROOT_RBVAL(first); SP_GC_ROOT_RBVAL(step);
+  sp_Enumerator *e;
+  if (first.tag == SP_TAG_INT && step.tag == SP_TAG_INT) {
+    if (step.v.i == 0) sp_raise_cls("ArgumentError", "step can't be 0");
+    sp_endless_range_cap *cap = (sp_endless_range_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+    SP_GC_ROOT(cap);
+    cap->first = first.v.i; cap->step = step.v.i;
+    e = sp_Enumerator_new_gen(sp_endless_range_gen, cap, sp_box_float(INFINITY));
+  }
+  else {
+    sp_float s = sp_poly_to_f(step);
+    if (s == 0.0) sp_raise_cls("ArgumentError", "step can't be 0");
+    sp_endless_fstep_cap *cap = (sp_endless_fstep_cap *)sp_gc_alloc(sizeof *cap, NULL, NULL);
+    SP_GC_ROOT(cap);
+    cap->first = sp_poly_to_f(first); cap->step = s;
+    e = sp_Enumerator_new_gen(sp_endless_fstep_gen, cap, sp_box_float(INFINITY));
+  }
+  e->meth = SPL("step");
+  return e;
+}
+static sp_RbVal sp_range_endless_step_v(sp_RbVal first, sp_RbVal step) {
+  return sp_box_obj(sp_range_endless_step(first, step), SP_BUILTIN_ENUMERATOR);
 }
 /* Blockless Kernel#loop: an infinite Enumerator yielding nil forever (#3236).
    Defined out-of-line in sp_cold.c (one linked copy, not per generated TU). */
