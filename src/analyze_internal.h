@@ -288,7 +288,7 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
 int reconcile_locals_reading_ivars(Compiler *c);
-int widen_object_locals_from_poly_writes(Compiler *c);
+int widen_locals_from_poly_writes(Compiler *c);
 int widen_arrays_from_map_bang(Compiler *c);
 void intern_block_params(Compiler *c);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
