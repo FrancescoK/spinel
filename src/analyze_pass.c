@@ -4752,6 +4752,8 @@ int dynamic_new_may_reach(Compiler *c, int call_id, int cid) {
    positionals, and each class the call can reach is constructed by it. Its
    initialize's parameters take the arguments' types as a static
    `K.new(a, b)` would give them. */
+static int wbas_shared;
+static void wbas_touch(void);
 static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
   const NodeTable *nt = c->nt;
   int an = nt_ref(nt, call_id, "arguments");
@@ -4797,6 +4799,8 @@ static int bind_dynamic_new_initializers(Compiler *c, int call_id) {
         else if (a == 0) at = TY_POLY;
         if (at == TY_UNKNOWN || at == mt) continue;
         sk->ivar_types[a] = TY_POLY; changed = 1;
+        /* before the next initialize this call binds walks */
+        if (wbas_shared) wbas_touch();
       }
       continue;
     }
@@ -5792,7 +5796,11 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
 
    Every call in the walk that may write the analysis state starts a new
    generation (wbas_touch), whether or not it reports a change: the pin a
-   local re-derived from its writes takes again writes without one. A walk
+   local re-derived from its writes takes again writes without one. A
+   parameter's boxed_push_elem and boxed_known_elem are the exception: the
+   walk reads them only where it joins its element kind into them, and the
+   join only grows, so a visit recorded as changing nothing still changes
+   nothing after one. A walk
    from outside opens and closes one too, except within infer_param_types
    (wbas_share_begin), whose call sites hand the same locals to one
    parameter after another: there a generation also ends wherever the pass
@@ -5904,12 +5912,22 @@ static void wbas_shadow_end(unsigned outer, unsigned gen, int got, const char *w
   }
   wbas_gen = outer;
 }
-static void wbas_share_begin(void) { wbas_shared++; wbas_touch(); }
-static void wbas_share_end(void) { wbas_shared--; wbas_touch(); }
 /* infer_param_types' per-node step: a change it reported ends the
    generation, and is kept in *any */
 static void wbas_share_step(int *changed, int *any) {
   if (*changed) { wbas_touch(); *any = 1; *changed = 0; }
+}
+/* The pass's own `changed` and `any`, which bind_args_params steps on as it
+   starts: a write the pass made earlier on the same node, between two of its
+   bindings, ends the generation before the next binding walks. */
+static int *wbas_share_changed, *wbas_share_any;
+static void wbas_share_begin(int *changed, int *any) {
+  wbas_shared++; wbas_touch();
+  wbas_share_changed = changed; wbas_share_any = any;
+}
+static void wbas_share_end(void) {
+  wbas_shared--; wbas_touch();
+  if (!wbas_shared) wbas_share_changed = wbas_share_any = NULL;
 }
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
@@ -5970,7 +5988,7 @@ static int widen_boxed_local_sources(Compiler *c, Scope *sc, const char *nm, Loc
     for (int e = 0; e < 2; e++) {
       TyKind was = *ev[e];
       TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
-      if (now != was) { *ev[e] = now; ch = 1; wbas_touch(); }
+      if (now != was) { *ev[e] = now; ch = 1; }
     }
     return ch;
   }
@@ -6335,6 +6353,10 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   int changed = 0, any_changed = 0;  /* any_changed: what wbas_share_step took out of changed */
+  /* what the pass changed before this binding, and what this binding
+     changes before it returns, ends the shared generation
+     (widen_boxed_array_sources) */
+  if (wbas_shared && wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
      __fwd_* params, positionally, so the callee's return type resolves (#1288).
@@ -6362,7 +6384,8 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       if (!p || p->rbs_seeded || !ep || ep->type == TY_UNKNOWN) continue;
       changed |= slot_take(c, p, ep->type, ep->why.node >= 0 ? ep->why.node : argv[0]);
     }
-    return changed;
+    wbas_share_step(&changed, &any_changed);
+    return any_changed;
   }
   /* Separate positional args from the trailing keyword-hash arg (if any). */
   int kwh = -1;
@@ -6681,7 +6704,8 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       }
     }
   }
-  return changed | any_changed;
+  wbas_share_step(&changed, &any_changed);
+  return any_changed;
 }
 
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm);
@@ -7721,7 +7745,7 @@ int infer_param_types(Compiler *c) {
   int changed = 0, any = 0;
   /* the walks the bindings start share what they found unchanged, until a
      binding reports a change (widen_boxed_array_sources) */
-  wbas_share_begin();
+  wbas_share_begin(&changed, &any);
   for (int id = 0; id < nt->count; id++, wbas_share_step(&changed, &any)) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
