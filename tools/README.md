@@ -609,6 +609,51 @@ wrap makes every operand a call of a user method, so a finding says that
 the call, given such operands, runs them out of order, not that the
 program as written answers wrong.
 
+## Cost tools: repr_diff, c_costs, alloc_diff
+
+A change can keep every answer right and still make programs slower: a
+String slot that becomes a shared handle copies its bytes at each call that
+only reads it (#7482), a receiver that may be a Struct moves to the
+out-of-line class dispatch. The tests, the probes and rubyspec check
+answers, so none of them sees it. These three compare two compilers on the
+same programs (#7501); `make repr-diff`, `make c-costs` and
+`make alloc-diff` run them with `REF_SPINEL=<another tree>/bin/spinel`
+against this tree's compiler over `COST_PROGS` (default: the corpus and
+the benchmarks).
+
+```
+tools/repr_diff.sh REF_SPINEL NEW_SPINEL PROGS...
+tools/c_costs.sh REF_SPINEL NEW_SPINEL PROGS...     # or REF.c NEW.c, --list FILE
+tools/alloc_diff.sh REF_SPINEL NEW_SPINEL PROGS...
+```
+
+- **repr_diff** pairs the slots of `spinel --dump-repr` (one sorted line
+  per local, parameter and method value, ivar, global and constant, with
+  the kind repr_of_slot gives it: scalar, sentinel, struct, vobj, ptr,
+  strbuf, boxed) and reports "N slots became shared handles (strbuf), M
+  became boxed, K left a by-value layout, J other changes", then each
+  slot. A compiler older than the flag is compared through the slot
+  declarations of its C (`sp_String *` against `const char *`).
+- **c_costs** counts, per program, the snapshot copies of a handle
+  (`sp_str_concat(sp_String_cstr(h), "")`), the other copy helpers
+  (`sp_*_dup`, `sp_*_copy`), the boxings, the out-of-line dispatches
+  (`sp_pd_*`) and the GC root registrations, everywhere and inside loops
+  (a `for`/`while`/`do` body or header, or a function a loop calls), and
+  lists each new copy inside a loop with its function: an O(len) operation
+  per iteration.
+- **alloc_diff** builds each program with both compilers, runs each binary
+  once under `SPINEL_ALLOC_REPORT` (with its `.args` and `.stdin`, as the
+  suite does) and flags a program whose allocations or bytes grew by more
+  than 20% and 1000 allocations or 64 KiB. Programs that print differently
+  on the two sides, or whose source reads the clock, threads, randomness or
+  the environment, are skipped and listed.
+
+The first two locate a cost and are cheap (no C compiler); the third
+measures it. #5113 against its parent, over #7482's repro (1 MB, 200
+calls): repr_diff reports `ivar Holder @buf: c=const char * -> c=sp_String
+*`, c_costs a new snapshot copy inside the loop of `sp_Holder_run`, and
+alloc_diff the bytes going from 1,000,091 to 202,000,123.
+
 ## Adding a tool
 
 Drop `tools/<name>.rb` (subset Ruby, `require_relative "tool_common"`

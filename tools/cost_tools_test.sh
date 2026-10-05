@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Exercise the cost tools (#7501): `spinel --dump-repr` on a small program,
+# and tools/repr_diff.sh, tools/c_costs.sh and tools/alloc_diff.sh against
+# stand-in compilers whose output is fixed here, so each summary is known.
+#
+#   tools/cost_tools_test.sh dump|repr|costs|alloc
+set -eu
+ROOT=$(pwd)
+T=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cost-tools-test.XXXXXX")
+trap 'rm -rf "$T"' EXIT
+cd "$T"
+
+# A stand-in compiler: `--dump-repr P` prints P.<side>.repr (and is
+# refused once a file no-dump-repr exists), `-S` prints
+# P.<side>.c, `P -o OUT` writes a program that prints P.<side>.out and
+# writes P.<side>.alloc as its allocation report; the new side's program
+# also reports one allocation per argument it was given. <side> is the
+# name the stand-in is invoked by.
+mock() {
+  cat > "$T/$1" <<'MOCK'
+#!/usr/bin/env bash
+side=$(basename "$0"); mode=; prog=; out=
+while [ "$#" -gt 0 ]; do
+  case "$1" in --dump-repr) mode=repr;; -S) mode=c;; -o) out=$2; shift;; *.rb) prog=$1;; esac
+  shift
+done
+case "$mode" in
+  repr) [ -f "$PWD/no-dump-repr" ] && { echo "spinel: unknown option '--dump-repr'" >&2; exit 1; }
+        [ -f "$prog.$side.repr" ] && cat "$prog.$side.repr"; exit 0;;
+  c) cat "$prog.$side.c";;
+  *) printf '#!/bin/sh\ncat "%s"\n[ -f "%s" ] && cp "%s" "$SPINEL_ALLOC_REPORT"\n[ %s = new ] && [ $# -gt 0 ] && echo "alloc;Args $#" >> "$SPINEL_ALLOC_REPORT"\nexit 0\n' \
+       "$PWD/$prog.$side.out" "$PWD/$prog.$side.alloc" "$PWD/$prog.$side.alloc" "$side" > "$out"
+     chmod +x "$out";;
+esac
+MOCK
+  chmod +x "$T/$1"
+}
+mock ref
+mock new
+
+case "$1" in
+dump)
+  cat > shapes.rb <<'RUBY'
+class Buf
+  attr_reader :s
+  def initialize(n)
+    @s = "\0".b * n
+    @s.setbyte(0, 65)
+    @hits = 0
+  end
+  def peek
+    t = @s
+    @hits += 1
+    t.getbyte(0)
+  end
+end
+Pt = Struct.new(:x, :y)
+$log = ["start"]
+LIMIT = 3
+def find(a, x)
+  a.index(x)
+end
+mixed = [1, "two"].first
+range = (1..LIMIT)
+buf = Buf.new(4)
+p buf.peek, mixed, range, $log.size, find([5, 6], 6), Pt.new(1, 2).x
+RUBY
+  "$ROOT/bin/spinel" --dump-repr shapes.rb
+  # the same compiler on both sides: nothing moves
+  bash "$ROOT/tools/repr_diff.sh" "$ROOT/bin/spinel" "$ROOT/bin/spinel" shapes.rb
+  ;;
+repr)
+  # a String ivar that becomes the shared handle, a local that becomes
+  # boxed, a Range that leaves its by-value layout, a slot only the new
+  # compiler has, and one that does not change
+  printf 'x\n' > a.rb; printf 'y\n' > b.rb
+  cat > a.rb.ref.repr <<'EOF'
+ivar Holder @buf: ptr ty=string
+local <main> r: struct ty=range
+local Holder#run v: scalar ty=int
+param Holder.use s: ptr ty=string
+EOF
+  cat > a.rb.new.repr <<'EOF'
+ivar Holder @buf: strbuf ty=strbuf handle
+local <main> r: ptr ty=poly_array
+local Holder#run t: scalar ty=int
+local Holder#run v: boxed ty=poly
+param Holder.use s: ptr ty=string
+EOF
+  cp a.rb.ref.repr b.rb.ref.repr; cp a.rb.ref.repr b.rb.new.repr
+  bash "$ROOT/tools/repr_diff.sh" ./ref ./new a.rb b.rb
+  # a compiler without --dump-repr: both sides compare their C instead
+  cat > a.rb.ref.c <<'EOF'
+struct sp_Holder_s {
+  sp_int cls_id;
+  const char * iv_buf;
+};
+static sp_RbVal gv_log = {0};
+static sp_int sp_Holder_s_use(const char * lv_s, sp_int lv_i) {
+    sp_Range lv_r = {0};
+  return 0;
+}
+EOF
+  sed -e 's/const char \* iv_buf/sp_String * iv_buf/' -e 's/sp_Range lv_r = {0}/sp_Range * lv_r = NULL/' \
+      -e 's/sp_int lv_i)/sp_RbVal lv_i)/' a.rb.ref.c > a.rb.new.c
+  touch no-dump-repr
+  bash "$ROOT/tools/repr_diff.sh" ./ref ./new a.rb
+  ;;
+costs)
+  # a snapshot copy in a loop body, one in a function only a loop calls,
+  # one outside any loop; a dup in a one-statement loop body; a dispatch
+  # whose prototype and definition are not calls; a GC root registered per
+  # iteration; braces and a call's name
+  # inside a string literal; a `while (0)`, which is no loop
+  cat > ref.c <<'EOF'
+static sp_RbVal sp_pd_0(sp_RbVal _t0);
+static sp_int sp_use(const char * lv_s) {
+  return sp_str_getbyte(lv_s, 0);
+}
+static sp_int sp_run(sp_Holder *self, sp_int lv_n) {
+  sp_int lv_t = 0;
+  for (sp_int _t1 = 0; _t1 < lv_n; _t1++) {
+    lv_t = sp_int_add(lv_t, sp_use(sp_String_cstr(self->iv_buf)));
+  }
+  puts("{ sp_str_concat(sp_String_cstr(x), y) }");
+  while (0) { sp_box_int(1); }
+  return lv_t;
+}
+static sp_RbVal sp_pd_0(sp_RbVal _t0) { return sp_box_int(0); }
+EOF
+  cat > new.c <<'EOF'
+static sp_RbVal sp_pd_0(sp_RbVal _t0);
+static sp_int sp_use(const char * lv_s) {
+  const char *_c = sp_str_concat(sp_String_cstr(sp_holder_buf), "");
+  return sp_str_getbyte(lv_s, 0);
+}
+static sp_int sp_run(sp_Holder *self, sp_int lv_n) {
+  sp_int lv_t = 0;
+  for (sp_int _t1 = 0; _t1 < lv_n; _t1++) {
+    lv_t = sp_int_add(lv_t, sp_use(sp_str_concat(sp_String_cstr(self->iv_buf), "")));
+    const char *_k = sp_str_b(lv_s); SP_GC_ROOT(_k);
+  }
+  for (sp_int _t2 = 0; _t2 < 3; _t2++) sp_keep(sp_str_dup(lv_s));
+  sp_RbVal _r = sp_pd_0(sp_box_int(lv_t));
+  puts("{ sp_str_concat(sp_String_cstr(x), y) }");
+  while (0) { sp_box_int(1); }
+  return sp_str_concat(sp_String_cstr(self->iv_buf), "") ? lv_t : 0;
+}
+static sp_RbVal sp_pd_0(sp_RbVal _t0) { return sp_box_int(0); }
+EOF
+  bash "$ROOT/tools/c_costs.sh" new.c
+  bash "$ROOT/tools/c_costs.sh" ref.c new.c prog.rb
+  printf 'one.rb ref.c new.c\ntwo.rb ref.c ref.c\nthree.rb ref.c missing.c\n' > list
+  bash "$ROOT/tools/c_costs.sh" --list list | head -1
+  ;;
+alloc)
+  # grew.rb allocates past the threshold, same.rb does not, args.rb gets
+  # the two words of its .args, quiet.rb prints differently, and clock.rb
+  # reads the clock
+  for p in grew same args quiet clock; do
+    printf 'p 1\n' > $p.rb
+    for side in ref new; do printf 'out\n' > $p.rb.$side.out
+      printf 'alloc;String 10\nalloc;Holder 2\n# bytes String 1000\n# bytes Holder 32\n' > $p.rb.$side.alloc; done
+  done
+  printf 'alloc;String 2010\nalloc;Holder 2\n# bytes String 2001000\n# bytes Holder 32\n' > grew.rb.new.alloc
+  printf 'alloc;String 11\nalloc;Holder 2\n# bytes String 1100\n# bytes Holder 32\n' > same.rb.new.alloc
+  printf '1000000 200\n' > args.rb.args
+  printf 'other\n' > quiet.rb.new.out
+  printf 'p Time.now\n' > clock.rb
+  bash "$ROOT/tools/alloc_diff.sh" ./ref ./new grew.rb same.rb args.rb quiet.rb clock.rb
+  ;;
+esac
