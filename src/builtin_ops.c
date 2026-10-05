@@ -1560,7 +1560,8 @@ static const BuiltinOp bop_rows[] = {
      (the needle), each_line and lines (the separator), scan (the pattern)
      and gsub (a blockless regexp literal) stay in infer_call_inner. The
      calls that answer the receiver carry BOPF_SELF, the bangs that answer
-     it or nil BOPF_SELF_OR_NIL (bop_answers_self). */
+     it or nil BOPF_SELF_OR_NIL, the ones that answer it or a copy of it
+     BOPF_SELF_CLASS (bop_answers_self). */
   { TY_STRING, "clear",           0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2332) */
   { TY_STRING, "[]=",             2,   3, BF_ANY,      TY_STRING,     BOPE_NONE },  /* the assigned string (#2370) */
   { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE },  /* clone(freeze: ...) */
@@ -1658,8 +1659,8 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "tr_s!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { TY_STRING, "delete_prefix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { TY_STRING, "delete_suffix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
-  { TY_STRING, "dedup",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_uminus_val($r)", 0 },
-  { TY_STRING, "dedup",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "dedup",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_uminus_val($r)", 0, 0, BOPF_SELF_CLASS },
+  { TY_STRING, "dedup",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },
   { TY_STRING, "succ!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   /* emit_call_body's arms ahead of the scalar chain: concat() (stage 1) and
@@ -1743,6 +1744,43 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrIntHash_to_s_values($e1))", 0, BOP_K(TY_STR_INT_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub($r, $s0, $s1)", 0 },
   { TY_STRING, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; _t$t ? sp_str_inspect(_t$t) : SPL(\"nil\"); })", 0 },
+  /* String: the methods no row above has, so that each has a row with its
+     counts, its block rule and whether it answers the receiver. They type
+     nothing: inference keeps the rules after the lookup and codegen the
+     legacy chain. Each fits only calls no row above fits. */
+  { TY_STRING, "%",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one */
+  { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
+  { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "eql?",                1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "<=>",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "<",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "<=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, ">",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, ">=",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "between?",            2,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "hash",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "length",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "size",                0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "dup",                 0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "freeze",              0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "byteindex",           1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "byterindex",          1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "match",               1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "match?",              1,   2, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "unpack1",             1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "unicode_normalize",   0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "unicode_normalize!",  0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "unicode_normalized?", 0,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "each_line",           0,   1, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* the walks answer the receiver */
+  { TY_STRING, "each_grapheme_cluster", 0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "each_codepoint",      0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "grapheme_clusters",   0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "each_line",           0,   1, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },  /* blockless: an Enumerator */
+  { TY_STRING, "each_grapheme_cluster", 0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },
+  { TY_STRING, "grapheme_clusters",   0,   0, BF_NONE,     TY_UNKNOWN,    BOPE_NONE },  /* an Array */
 
   /* Hash, any kind (BOP_ANY_HASH): the result kinds read off the name,
      arity and block form, some derived from the receiver's kind. []=/store,
@@ -2422,7 +2460,7 @@ int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
     else if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
   }
   const BuiltinOp *op = bop_find(lk, name, argc, has_block);
-  return op ? op->flags & (BOPF_SELF | BOPF_SELF_OR_NIL) : 0;
+  return op ? op->flags & (BOPF_SELF | BOPF_SELF_OR_NIL | BOPF_SELF_CLASS) : 0;
 }
 
 TyKind bop_result(const BuiltinOp *op, TyKind rt) {

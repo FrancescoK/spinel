@@ -176,8 +176,7 @@ typedef struct BuiltinOp {
    representation (BOPR_SELF is the receiver's kind, which a copy has too).
    Not flagged: a conversion that answers the receiver only when its class
    is exactly the builtin and a new builtin for a subclass instance
-   (Array#to_a, Hash#to_h, String#to_s and #to_str), and a method that
-   answers the receiver only when it was not frozen (String#+@). */
+   (Array#to_a, Hash#to_h, String#to_s and #to_str). */
 #define BOPF_SELF 2
 /* The call answers its receiver when it changed it, and nil when it changed
    nothing: the bang methods with a no-change contract (uniq!, compact!,
@@ -185,6 +184,12 @@ typedef struct BuiltinOp {
    that answers the receiver either way (sort!, reverse!, succ!) is
    BOPF_SELF. */
 #define BOPF_SELF_OR_NIL 4
+/* The call answers an object of the receiver's class: the receiver itself
+   or a copy of it, depending on whether it is frozen (String#+@ answers
+   the receiver when it is not frozen, a copy when it is; -@ and dedup the
+   receiver when it is frozen, a frozen copy when it is not). A subclass
+   instance answers an instance of that subclass. */
+#define BOPF_SELF_CLASS 8
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
@@ -256,8 +261,8 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
 
 /* Whether the builtin `name` called with argc arguments (and a block when
    has_block) on a receiver of kind rt answers that receiver: BOPF_SELF,
-   BOPF_SELF_OR_NIL, or 0 when it answers another value or no row has the
-   call. An Array or Hash kind reads its family's rows (BOP_ANY_ARRAY,
+   BOPF_SELF_OR_NIL, BOPF_SELF_CLASS, or 0 when it answers another value or
+   no row has the call. An Array or Hash kind reads its family's rows (BOP_ANY_ARRAY,
    BOP_ANY_HASH), a String buffer the String rows. The flags sit on the
    unguarded rows, the ones a lookup without the arguments' kinds finds. */
 int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
