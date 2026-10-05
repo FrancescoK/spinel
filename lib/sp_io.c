@@ -1419,10 +1419,11 @@ void sp_File_ungetbyte(sp_File *f, sp_int byte) {
   SP_IO_OPEN(f);
   ungetc((int)(unsigned char)byte, f->fp);
 }
-/* IO#binmode?: true after #binmode, or for a handle opened in binary mode. */
+/* IO#binmode?: true after #binmode, or for a handle opened in binary mode.
+   A socket is binary too, as CRuby's is (its encoding is BINARY). */
 sp_bool sp_File_binmode_p(sp_File *f) {
   SP_IO_OPEN(f);
-  if (f->bin_flag) return 1;
+  if (f->bin_flag || f->is_sock) return 1;
   return f->mode && strchr(f->mode, 'b') != NULL;
 }
 void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; }

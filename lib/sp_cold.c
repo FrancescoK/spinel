@@ -1800,7 +1800,12 @@ const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   sp_io_wait_readable(f);
   int ch = fgetc(f->fp);
   if (ch == EOF) return NULL;
-  int extra = ((ch & 0xE0) == 0xC0) ? 1 : ((ch & 0xF0) == 0xE0) ? 2 : ((ch & 0xF8) == 0xF0) ? 3 : 0;
+  /* A binary handle (a socket, a File opened "rb", one put in binmode) has
+     one-byte characters: reading on after a byte that looks like a UTF-8
+     lead took the next bytes with it, and on a socket waited for bytes the
+     peer had not sent (#7312). */
+  int bin = sp_File_binmode_p(f);
+  int extra = bin ? 0 : ((ch & 0xE0) == 0xC0) ? 1 : ((ch & 0xF0) == 0xE0) ? 2 : ((ch & 0xF8) == 0xF0) ? 3 : 0;
   char *r = sp_str_alloc((size_t)(1 + extra));
   size_t n = 0;
   r[n++] = (char)ch;
@@ -1811,6 +1816,7 @@ const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   }
   r[n] = 0;
   sp_str_set_len(r, n);
+  if (bin) sp_str_mark_binary(r);
   return r;
 }
 const char *sp_File_readchar(sp_File *f) {SP_GC_ROOT(f);
