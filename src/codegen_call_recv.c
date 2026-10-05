@@ -258,6 +258,19 @@ static int value_obj_compares(Compiler *c, int node) {
    here, and its class may define == (or ===, which the predicates use), so
    it stays on the comparing path when it does. Also the value slots that
    compare the same way: Hash#value?, Range#include? and #eql?. */
+
+/* Bind a String iterator's block parameter to element `_t<ti>` of the
+   StrArray `_t<ta>`. The parameter is the block's own String, unless the
+   scope holds it boxed -- the same block is another receiver's arm too (an
+   object whose each_line yields it), so the body reads the box: then the
+   line is stored into that boxed local rather than shadowing it. */
+static void emit_str_elem_param(Compiler *c, int blk, const char *bp, const char *bpn,
+                                int ta, int ti, Buf *b) {
+  if (bp && file_block_param_poly(c, blk, bp))
+    buf_printf(b, " lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", bpn, ta, ti);
+  else
+    buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", bpn, ta, ti);
+}
 static int value_kind_misses(Compiler *c, int node, TyKind ek) {
   TyKind t = comp_ntype(c, node);
   if (t == ek || t == TY_POLY || t == TY_UNKNOWN) return 0;
@@ -4355,7 +4368,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     int ebn = 0; const int *ebb = ebody >= 0 ? nt_arr(nt, ebody, "body", &ebn) : NULL;
     int ti = ++g_tmp;
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
-    if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
+    if (ebpn) emit_str_elem_param(c, eblk, ebp, ebpn, ta, ti, b);
     for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
     buf_printf(b, " } _t%d; })", tl);
     return 1;
@@ -11955,7 +11968,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, " sp_StrArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);",
                ta, sp_streq(name, "each_char") ? "sp_str_chars" : "sp_str_lines", ts, ta);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
-    if (ebpn) buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", ebpn, ta, ti);
+    if (ebpn) emit_str_elem_param(c, eblk, ebp, ebpn, ta, ti, b);
     for (int k2 = 0; k2 < ebn; k2++) emit_stmt(c, ebb[k2], b, 0);
     buf_printf(b, " } _t%d; })", ts);
     { *out = 1; return 1; }
