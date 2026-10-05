@@ -131,6 +131,8 @@ typedef enum {
   BOPE_ARRAY_JOIN_STR,    /* Array#* with a String (stage 4) */
   BOPE_ARRAY_PRED_CLASS,  /* Array#any? / all? / none? / one? with a Class (stage 5) */
   BOPE_IVAR_REFLECTION,   /* reflection on a builtin value without ivar slots */
+  BOPE_FLOAT_RATIONALIZE,
+  BOPE_STRING_SCAN_CHECKED,
   BOPE__COUNT
 } BopEmit;
 
