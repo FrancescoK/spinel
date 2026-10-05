@@ -10561,6 +10561,40 @@ int emit_try_convert_boxed(Compiler *c, const char *cname, int arg, Buf *b) {
   return 1;
 }
 
+/* A user exception subclass with no initialize: the generated constructor,
+   its first argument the message. Klass.new(...) and a bare new(...) in a
+   class method both build with it. */
+void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {
+  /* An ivar-bearing subclass needs its dedicated struct size --
+     sp_exc_new_sub would only allocate the base (#2772). */
+  const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
+  const char *par = exc_builtin_parent(c, ci);
+  if (c->classes[ci].nivars > 0)
+    buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
+               c->classes[ci].c_name, c->classes[ci].c_name, cn2);
+  else
+    buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
+  if (class_is_syserr(c, ci)) {
+    /* SystemCallError#initialize: the errno text, " - msg" */
+    char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn2);
+    emit_syserr_call(c, id, "sp_syserr_msg_a", lead, argc, argv, b);
+  }
+  else if (argc >= 1) {
+    /* an explicitly given message stays, even empty (#3713) */
+    if (comp_ntype(c, argv[0]) == TY_STRING) {
+      buf_puts(b, "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else {
+      int mt2 = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", mt2); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1])"
+                    " : sp_exc_msg_given(sp_poly_to_s(_t%d)); })", mt2, mt2);
+    }
+  }
+  else buf_puts(b, "(&(\"\\xff\")[1])");
+  buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
+}
+
 /* A .new call (and the default-hash form): user classes, Struct and Data, the builtin constructors (emit_class_new_call's arms, in their order) */
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
@@ -10624,37 +10658,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);
           buf_puts(b, ")");
         }
-        else {
-          /* no user initialize: create directly with first arg as message.
-             An ivar-bearing subclass needs its dedicated struct size --
-             sp_exc_new_sub would only allocate the base (#2772). */
-          const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
-          const char *par = exc_builtin_parent(c, ci);
-          if (c->classes[ci].nivars > 0)
-            buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
-                       c->classes[ci].c_name, c->classes[ci].c_name, cn2);
-          else
-            buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-          if (class_is_syserr(c, ci)) {
-            /* SystemCallError#initialize: the errno text, " - msg" */
-            char lead[192]; snprintf(lead, sizeof lead, "\"%s\", ", cn2);
-            emit_syserr_call(c, id, "sp_syserr_msg_a", lead, argc, argv, b);
-          }
-          else if (argc >= 1) {
-            /* an explicitly given message stays, even empty (#3713) */
-            if (comp_ntype(c, argv[0]) == TY_STRING) {
-              buf_puts(b, "sp_exc_msg_given("); emit_expr(c, argv[0], b); buf_puts(b, ")");
-            }
-            else {
-              int mt2 = ++g_tmp;
-              buf_printf(b, "({ sp_RbVal _t%d = ", mt2); emit_boxed(c, argv[0], b);
-              buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1])"
-                            " : sp_exc_msg_given(sp_poly_to_s(_t%d)); })", mt2, mt2);
-            }
-          }
-          else buf_puts(b, "(&(\"\\xff\")[1])");
-          buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
-        }
+        else emit_exc_new_no_init(c, id, ci, argc, argv, b);
         { *out = 1; return 1; }
       }
       /* yielding initialize: inline its body at the call site (the block

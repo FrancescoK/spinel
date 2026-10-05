@@ -2847,6 +2847,14 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           if (emit_native_ctor(c, id, new_cls, nargc, nargv, b)) return 1;
         }
         int initm = comp_method_in_chain(c, new_cls, "initialize", NULL);
+        /* an exception class with no `initialize` takes the first argument as
+           its message, exactly as the receiver `Klass.new(msg)` path does;
+           the plain constructor below dropped it */
+        if (initm < 0 && class_is_exc_subclass(c, new_cls)) {
+          int eargc; const int *eargv = call_args(nt, id, &eargc);
+          emit_exc_new_no_init(c, id, new_cls, eargc, eargv, b);
+          return 1;
+        }
         /* A Data/Struct class has no user `initialize`; its generated constructor
            takes one arg per member. Fill member-wise -- positionally, or by
            keyword when a trailing kwarg hash names each member -- exactly as the
