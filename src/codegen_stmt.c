@@ -1275,7 +1275,7 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       if (depth == 0) return 0;
       const char *vn = nt_str(nt, v, "name");
       LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
-      return vl && vl->type == TY_STRBUF && vl->str_shared;
+      return repr_of_slot(c, vl).handle;
     }
     default:
       return 0;
@@ -1379,19 +1379,21 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   char srefV[1024];
   LocalVar *vlv = NULL;
   int vplus = strbuf_uplus_operand(c, v);
-  if (lv->str_shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
+  int shared = repr_of_slot(c, lv).handle;
+  Repr rpv = repr_of(c, v);
+  if (shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
     buf_puts(b, srefV);
   /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
-  else if (lv->str_shared && vplus >= 0 && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
+  else if (shared && vplus >= 0 && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
     buf_printf(b, "sp_String_uplus(%s)", srefV);
-  else if (lv->str_shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+  else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
-  else if (lv->str_shared && nt_kind(c->nt, v) == NK_LocalVariableWriteNode &&
+  else if (shared && nt_kind(c->nt, v) == NK_LocalVariableWriteNode &&
            nt_str(c->nt, v, "name") &&
            (vlv = scope_local(comp_scope_of(c, v), nt_str(c->nt, v, "name"))) &&
-           vlv->type == TY_STRBUF && vlv->str_shared) {
+           repr_of_slot(c, vlv).handle) {
     buf_puts(b, "({ (void)(");
     emit_expr(c, v, b);
     buf_puts(b, "); ");
@@ -1402,7 +1404,7 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      : g`, paired by an_strbuf_alias_leaves): each arm hands over its own
      object, the handle for such a local and a fresh String for any other
      value. Wrapped whole, the value forked h off the String g names. */
-  else if (lv->str_shared && strbuf_cond_has_handle_leaf(c, v, 0)) {
+  else if (shared && strbuf_cond_has_handle_leaf(c, v, 0)) {
     char dst[32];
     snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
     buf_printf(b, "({ sp_String *%s = NULL; ", dst);
@@ -1414,18 +1416,18 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
      String, wrapped below as a new handle the way a store wraps one
      (emit_boxed); handed over bare, the C did not build. */
-  else if (comp_ntype(c, v) == TY_STRBUF &&
+  else if (rpv.as_ty == TY_STRBUF &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
-  else if (comp_ntype(c, v) == TY_STRBUF) {
+  else if (rpv.as_ty == TY_STRBUF) {
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
     buf_puts(b, "sp_String_new_shared(");
     emit_str_expr(c, v, b);
     buf_puts(b, ")");
     view_pop(c, sv);
   }
-  else if (comp_ntype(c, v) == TY_POLY || strbuf_boxed_elem_read(c, v)) {
+  else if (rpv.as_ty == TY_POLY || strbuf_boxed_elem_read(c, v)) {
     /* a container element read hands out the element's BOXED handle: take the
        handle out of the box, so the local and the element are one object and
        a mutation through either shows in the other (#3941) */
@@ -1437,7 +1439,7 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
        would fork a second buffer and break the alias (#3307 family) */
     int cb9 = str_alias_chain_base(c, v);
     char srefC9[1024];
-    if (cb9 != v && lv->str_shared &&
+    if (cb9 != v && shared &&
         strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
       buf_puts(b, "({ (void)(");
       emit_expr(c, v, b);
@@ -1625,7 +1627,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     else if (lv->type == TY_INT || lv->type == TY_FLOAT) buf_puts(b, nil_sentinel(lv->type));
     else buf_puts(b, default_value_from_compiler(c, lv->type));
   }
-  else if (lv && lv->type == TY_STRBUF) {
+  else if (repr_of_slot(c, lv).kind == RK_STRBUF) {
     emit_strbuf_value(c, lv, v, b);
   }
   else if (is_empty_array && lv && array_kind(lv->type)) {
@@ -10109,7 +10111,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     emit_indent(b, indent);
     /* A nil (or void) element has no scalar C type; hold it as a boxed poly
        temp so the slot is valid and a poly target can read it directly. */
-    TyKind elt = comp_ntype(c, els[i]);
+    TyKind elt = repr_of(c, els[i]).as_ty;
     /* An empty array/hash literal has no element type of its own, so elt stays
        UNKNOWN and the temp would be declared `void`. Two independent empty
        literals (`numbers, strings = [], []`) each take their matching target's
@@ -10155,8 +10157,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     LocalVar *htl = NULL;
     if (i < ln && nt_kind(nt, lefts[i]) == NK_LocalVariableTargetNode && nt_str(nt, lefts[i], "name"))
       htl = scope_local(comp_scope_of(c, id), nt_str(nt, lefts[i], "name"));
-    int hup = htl && htl->type == TY_STRBUF && htl->str_shared ? strbuf_uplus_operand(c, els[i]) : -1;
-    if (htl && htl->type == TY_STRBUF && htl->str_shared && elt != TY_STRBUF &&
+    int hshared = repr_of_slot(c, htl).handle;
+    int hup = hshared ? strbuf_uplus_operand(c, els[i]) : -1;
+    if (hshared && elt != TY_STRBUF &&
         ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
          (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)))) {
       /* `+s` is s itself unless s is frozen */
@@ -10938,7 +10941,7 @@ else {
             const char *lnm = nt_str(nt, frcv, "name");
             Scope *lsc = comp_scope_of(c, frcv);
             LocalVar *llv = (lnm && lsc) ? scope_local(lsc, lnm) : NULL;
-            if (llv && llv->type == TY_STRBUF) {
+            if (repr_of_slot(c, llv).kind == RK_STRBUF) {
               emit_indent(b, indent);
               buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
               return 1;
@@ -14860,7 +14863,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_puts(b, ", ");
       /* coerce a poly value (holds the element type at runtime) to the typed
          array's element representation */
-      TyKind vt = comp_ntype(c, argv[a]);
+      TyKind vt = repr_of(c, argv[a]).as_ty;
       /* a poly-array element must be boxed; emit_boxed also fixes a yield whose
          node type widened to poly but whose per-site value is concrete (#2454). */
       if (et == TY_POLY) emit_boxed(c, argv[a], b);
