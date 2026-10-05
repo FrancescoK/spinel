@@ -6,6 +6,7 @@
 #include "codegen_poly.h"
 #include "analyze_internal.h"
 #include "call_plan.h"
+#include "repr.h"
 
 static CallPlan *g_cp_memo = NULL;
 static unsigned char *g_cp_have = NULL;
@@ -1626,3 +1627,76 @@ void cplan_poly_free(PolyPlan *p) {
   free(p->arm);
   free(p);
 }
+
+/* ---- CN_*: a call's nil target (#7444) ---- */
+
+/* the builtin receivers whose nil target the plan decides: a typed pointer
+   whose NULL is nil */
+static int cplan_nil_family(TyKind t) {
+  return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO;
+}
+
+/* Does the program give nil a method `name` of its own: on NilClass,
+   Object, Kernel or BasicObject, or at the top level (a private Object
+   method, which CRuby names as such)? */
+static int cplan_nil_user_method(Compiler *c, const char *name) {
+  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  if (comp_method_index(c, name) >= 0) return 1;
+  for (int i = 0; owners[i]; i++) {
+    int k = comp_class_index(c, owners[i]);
+    if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  }
+  return 0;
+}
+
+int cplan_nil(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
+  int r = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  const char *op = nt_str(nt, id, "call_operator");
+  if (r < 0 || !nm || (op && sp_streq(op, "&."))) return CN_NONE;
+  /* the receiver as settled, not as a view retypes it: a poly arm's
+     unboxed String is never its box's nil */
+  TyKind rt = c->ntype[r];
+  if (!cplan_nil_family(rt) || comp_ntype(c, r) != rt) return CN_NONE;
+  Repr rr = repr_of(c, r);
+  if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
+  /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);
+     a class variable's arms write back into it */
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode) return CN_NONE;
+  /* a local or a global is tested in its slot, where a mutator writes
+     back: a slot that holds the pointer, or a shared String's handle; one
+     held another way (a box a read unboxes) is left as it is */
+  if (rk == NK_LocalVariableReadNode || rk == NK_GlobalVariableReadNode) {
+    const char *sn = nt_str(nt, r, "name");
+    LocalVar *lv = NULL;
+    if (sn && rk == NK_LocalVariableReadNode) {
+      Scope *sc = comp_scope_of(c, r);
+      lv = sc ? scope_local(sc, sn) : NULL;
+    }
+    else if (sn && sn[0] == '$') lv = comp_gvar(c, comp_resolve_gvar(c, sn + 1));
+    Repr sr = repr_of_slot(c, lv);
+    if (!lv || !(sr.kind == RK_STRBUF || (sr.kind == RK_PTR && sr.as_ty == rt))) return CN_NONE;
+  }
+  /* a shared String's handle a call renders is not bound like a value */
+  else if (rr.kind == RK_STRBUF) return CN_NONE;
+  /* a nil the program writes; not one the fact cannot bound (an element
+     read, a global, an ivar, a caller not seen, a builtin's answer), which
+     a hot loop over a receiver that is never nil would pay for */
+  int why = nil_fact_why(c, r);
+  if (why != NFW_NIL && why != NFW_NO_ELSE && why != NFW_SAFE_NAV && why != NFW_UNSET) return CN_NONE;
+  /* the definite-assignment walk over a temp the compiler wrote itself (a
+     desugared splat's receiver) is not the program's nil */
+  if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;
+  /* in a Ruby-defined builtin (builtins/enumerable.rb), only its receiver
+     is the program's value: its own locals are never nil */
+  if (enum_builtin_node(c, id)) {
+    const char *rn = nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+    if (!rn || !sp_streq(rn, "__self")) return CN_NONE;
+  }
+  if (cplan_nil_user_method(c, nm)) return CN_NONE;
+  return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
+}
+

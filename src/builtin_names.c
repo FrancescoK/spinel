@@ -720,3 +720,21 @@ int is_builtin_reopen_name(const char *name) {
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
          sp_streq(name, "Random");
 }
+
+/* CRuby's nil.public_methods: NilClass's own (to_a, to_s, inspect, &, ...)
+   and the ones every object has from Object and Kernel. A call of any other
+   name on nil raises NoMethodError. */
+int is_nil_method(const char *n) {
+  static const char *const names[] = {
+    "!", "!=", "!~", "&", "<=>", "==", "===", "=~", "^", "__id__", "__send__", "class",
+    "clone", "define_singleton_method", "display", "dup", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_eval", "instance_exec",
+    "instance_of?", "instance_variable_defined?", "instance_variable_get",
+    "instance_variable_set", "instance_variables", "is_a?", "itself", "kind_of?", "method",
+    "methods", "nil?", "object_id", "private_methods", "protected_methods", "public_method",
+    "public_methods", "public_send", "rationalize", "remove_instance_variable", "respond_to?",
+    "send", "singleton_class", "singleton_method", "singleton_methods", "tap", "then", "to_a",
+    "to_c", "to_enum", "to_f", "to_h", "to_i", "to_r", "to_s", "yield_self", "|", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
+  return 0;
+}

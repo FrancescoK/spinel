@@ -1,0 +1,9 @@
+class Object
+  def nbr_ints: (Array[Integer]?) -> Array[Integer]?
+  def nbr_strs: (Array[String]?) -> Array[String]?
+  def nbr_floats: (Array[Float]?) -> Array[Float]?
+  def nbr_rows: (Array[Array[Integer]]?) -> Array[Array[Integer]]?
+  def nbr_counts: (Hash[String, Integer]?) -> Hash[String, Integer]?
+  def nbr_names: (Hash[String, String]?) -> Hash[String, String]?
+  def nbr_str: (String?) -> String?
+end
