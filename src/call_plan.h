@@ -69,6 +69,11 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+/* The same plan resolved afresh and never kept, for a reader that runs in
+   the analysis, before the memo is codegen's to fill (the nil facts,
+   analyze_nil.c): it answers from the types as they stand. The answer
+   lasts until the next call. */
+const CallPlan *cplan_user_fresh(Compiler *c, int id);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, const char *name);
 

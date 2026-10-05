@@ -442,6 +442,14 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   return &g_cp_memo[id];
 }
 
+const CallPlan *cplan_user_fresh(Compiler *c, int id) {
+  static CallPlan fresh;
+  cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE);
+  if (id < 0 || id >= c->node_cap) return &fresh;
+  cplan_resolve(c, id, &fresh);
+  return &fresh;
+}
+
 /* ---- CP_REFUSE ---- */
 
 /* The positional-argument count of a CallNode (0 when it has none). */
