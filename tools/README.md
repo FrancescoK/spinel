@@ -169,22 +169,32 @@ or class variable, a block, proc, lambda, method or `Method#call` parameter,
 a method's return, an attr_reader and an aliased one, a Struct member, a
 Hash value, an Array element pushed, written in a literal, stored with
 `[]=`, left in a gap past the end or appended through a reader, an element
-read through a poly handle, a local a lambda captures, and the block
-parameters of `each_with_index`, `map` and `each_slice`), the read (47: `p`,
-interpolation, `nil?`, `===`, `case`/`when`, a Hash key, searches, `join`,
-`sum`, `max`, `sort`, `<=>`, `pack`, conversions, arithmetic, `||=`, splats,
-`zip`, `then` and more), the slot's type (Integer or Float), the top level
-or a method, and `--int-overflow=promote`. Every carrier takes a present
-value first, which types the slot, and each case prints the read of that
-value, of the source's, of a nil the carrier makes of its own (a gap, a
-short row), and, for an Array read of an Array carrier, of its whole Array,
-so a finding's kind names the first line that differs (`source: value` is a
-nil read as something else, `array: ...` a typed Array that holds one). The
-call-binding probe prints what it binds with `inspect`, which already reads
-the sentinel as nil, so it does not see this family. A pairwise run (the
-default: 1175 cases, taking all 2165 pairs of levels) takes about ten
-minutes at `--jobs 2`, and half an hour more to reduce what it finds; like
-`call_binding_probe` it is a probe to run by hand, not a gate.
+read through a poly handle, a local a lambda captures, the block parameters
+of `each_with_index`, `map` and `each_slice`, a Data member, an ivar only
+`instance_variable_set` wrote, read back by `instance_variable_get` or an
+attr_reader, `instance_variable_get` of a Struct beside an object with that
+ivar, an ivar of an object a splice or a fetch block brought into an Array
+or a Hash of other classes, and a write through a handle that may be another
+class by a setter, `send(:x=)`, `Struct#[]=` or `instance_variable_set`),
+the read (47: `p`, interpolation, `nil?`, `===`, `case`/`when`, a Hash key,
+searches, `join`, `sum`, `max`, `sort`, `<=>`, `pack`, conversions,
+arithmetic, `||=`, splats, `zip`, `then` and more), the slot's type
+(Integer, Float, Bool, whose present value is false, String or Symbol),
+whether the object a writing carrier writes into is frozen first (the write
+then raises FrozenError), the top level or a method, and
+`--int-overflow=promote`. Every carrier takes a present value first, which
+types the slot, and each case prints the read of that value, of the
+source's, of a nil the carrier makes of its own (a gap, a short row), and,
+for an Array read of an Array carrier, of its whole Array, so a finding's
+kind names the first line that differs (`source: value` is a nil read as
+something else, `array: ...` a typed Array that holds one). The call-binding
+probe prints what it binds with `inspect`, which already reads the sentinel
+as nil, so it does not see this family. A pairwise run (the default: 1741
+cases, taking 3338 of the 3370 pairs of levels; the others pair `frozen`
+with a carrier that writes nothing) takes a few minutes at `--jobs 4` when
+nothing differs, longer while it splits the programs that fail, and more to
+reduce what it finds; like `call_binding_probe` it is a probe to run by
+hand, not a gate.
 
 ## nil_narrowing_probe
 
