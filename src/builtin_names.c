@@ -34,6 +34,14 @@ int is_kind_query(const char *n) {
   return sp_streq(n, "is_a?") || sp_streq(n, "kind_of?") || sp_streq(n, "instance_of?");
 }
 
+/* A call that answers about the receiver itself without reading any of
+   its instance variables: its class, its identity, nil?, frozen?. */
+int is_member_blind_query(const char *n) {
+  return is_kind_query(n) || sp_streq(n, "class") || sp_streq(n, "object_id") ||
+         sp_streq(n, "__id__") || sp_streq(n, "nil?") || sp_streq(n, "frozen?") ||
+         sp_streq(n, "equal?") || sp_streq(n, "respond_to?");
+}
+
 int is_round_family(const char *n) {
   return sp_streq(n, "round") || sp_streq(n, "ceil") || sp_streq(n, "floor") || sp_streq(n, "truncate");
 }
@@ -846,3 +854,5 @@ int array_unseen_add_kind(const char *n) {
   if (sp_streq(n, "prepend")) return ARRAY_ADD_PREPEND;
   return ARRAY_ADD_NONE;
 }
+
+int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
