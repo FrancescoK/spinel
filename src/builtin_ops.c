@@ -1558,8 +1558,10 @@ static const BuiltinOp bop_rows[] = {
   /* String: the calls typed by name, arity and block form. Promote mode's
      to_i, casecmp (its operand), unpack1 (the format literal), byteindex
      (the needle), each_line and lines (the separator), scan (the pattern)
-     and gsub (a blockless regexp literal) stay in infer_call_inner. */
-  { TY_STRING, "clear",           0,   0, BF_ANY,      TY_STRING,     BOPE_NONE },  /* self (#2332) */
+     and gsub (a blockless regexp literal) stay in infer_call_inner. The
+     calls that answer the receiver carry BOPF_SELF, the bangs that answer
+     it or nil BOPF_SELF_OR_NIL (bop_answers_self). */
+  { TY_STRING, "clear",           0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2332) */
   { TY_STRING, "[]=",             2,   3, BF_ANY,      TY_STRING,     BOPE_NONE },  /* the assigned string (#2370) */
   { TY_STRING, "clone",           1,   1, BF_ANY,      TY_STRING,     BOPE_NONE },  /* clone(freeze: ...) */
   { TY_STRING, "encoding",        0,   0, BF_ANY,      TY_POLY,       BOPE_TEMPLATE, "sp_box_encoding(sp_str_is_binary($r) ? sp_encoding_binary() : sp_encoding_utf8())", 0 },  /* an Encoding value */
@@ -1598,19 +1600,19 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ sp_Range _t$t = sp_range_ix($e0); sp_str_byteslice_range($r, _t$t.first, _t$t.last, _t$t.excl, _t$t.first == INTPTR_MIN, _t$t.last == INTPTR_MAX); })", BOP_K(TY_RANGE) },
   { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_byteslice1($r, $i0)", 0 },
   { TY_STRING, "byteslice",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "bytesplice",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "append_as_bytes", 0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "bytesplice",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "append_as_bytes", 0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "b",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_b($r)", 0 },
   { TY_STRING, "b",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "encode",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "($r)", 0 },
   { TY_STRING, "encode",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "encode!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "encode!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "dump",            0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_dump($r)", 0 },
   { TY_STRING, "undump",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_undump($r)", 0 },
   { TY_STRING, "scrub",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_scrub($r, 0)", 0 },
   { TY_STRING, "scrub",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "scrub!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "scrub!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "crypt",           1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_crypt($r, $s0)", 0 },
   { TY_STRING, "crypt",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   /* index: a String or a Regexp needle, both a nullable int (SP_INT_NIL) */
@@ -1638,38 +1640,38 @@ static const BuiltinOp bop_rows[] = {
      contract carries nil as NULL through the nullable string. gsub! with a
      pattern alone and no block is an Enumerator of the matches, as gsub's. */
   { TY_STRING, "gsub!",           1,   1, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { TY_STRING, "gsub!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "sub!",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "upcase!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "downcase!",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "capitalize!",     0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "swapcase!",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "strip!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "lstrip!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "rstrip!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "chomp!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "chop!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "squeeze!",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "tr!",             0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "delete!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "reverse!",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "tr_s!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "delete_prefix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "delete_suffix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "gsub!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "sub!",            0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "upcase!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "downcase!",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "capitalize!",     0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "swapcase!",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "strip!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "lstrip!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "rstrip!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "chomp!",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "chop!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "squeeze!",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "tr!",             0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "delete!",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "reverse!",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "tr_s!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "delete_prefix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
+  { TY_STRING, "delete_suffix!",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_OR_NIL },
   { TY_STRING, "dedup",           0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_uminus_val($r)", 0 },
   { TY_STRING, "dedup",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "succ!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "succ!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "next!",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   /* emit_call_body's arms ahead of the scalar chain: concat() (stage 1) and
      nil? (stage 2), each looked up where its arm sat */
-  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, 0, 1 },
+  { TY_STRING, "concat",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF, 1 },
   { TY_STRING, "nil?",            0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(($r) == 0)", 0, 0, 0, 2 },  /* a nullable String carries nil as NULL */
-  { TY_STRING, "concat",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },  /* self (#2309) */
-  { TY_STRING, "<<",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "prepend",         0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0 },
-  { TY_STRING, "prepend",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "insert",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
-  { TY_STRING, "replace",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "concat",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* self (#2309) */
+  { TY_STRING, "<<",              0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "prepend",         0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF },
+  { TY_STRING, "prepend",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "insert",          0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { TY_STRING, "replace",         0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "ascii_only?",     0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_ascii_only($r)", 0 },
   { TY_STRING, "ascii_only?",     0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
   { TY_STRING, "valid_encoding?", 0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_valid_encoding($r)", 0 },
@@ -1683,19 +1685,19 @@ static const BuiltinOp bop_rows[] = {
   /* the iterators: blockless with no argument an Enumerator; with a block
      they iterate and answer the receiver */
   { TY_STRING, "each_char",       0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { TY_STRING, "each_char",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "each_char",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "each_byte",       0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { TY_STRING, "each_byte",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
+  { TY_STRING, "each_byte",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "each_codepoint",  0,   0, BF_NONE,     TY_ENUMERATOR, BOPE_NONE },
-  { TY_STRING, "chars",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
+  { TY_STRING, "chars",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "chars",           0, 127, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },
-  { TY_STRING, "bytes",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
+  { TY_STRING, "bytes",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "bytes",           0, 127, BF_ANY,      TY_INT_ARRAY,  BOPE_NONE },
   { TY_STRING, "codepoints",      0,   0, BF_NONE,     TY_INT_ARRAY,  BOPE_TEMPLATE, "sp_str_codepoints($r)", 0 },
-  { TY_STRING, "codepoints",      0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
+  { TY_STRING, "codepoints",      0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "codepoints",      0, 127, BF_ANY,      TY_INT_ARRAY,  BOPE_NONE },
   { TY_STRING, "split",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_split_ws($r)", 0 },
-  { TY_STRING, "split",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE },
+  { TY_STRING, "split",           0, 127, BF_REQUIRED, TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "split",           0, 127, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },
   { TY_STRING, "upto",            1,   1, BF_ANY,      TY_STR_ARRAY,  BOPE_NONE },  /* blockless: the materialized sequence */
   { TY_STRING, "unpack",          1,   1, BF_ANY,      TY_POLY_ARRAY, BOPE_TEMPLATE, "sp_str_unpack($r, $s0)", 0 },
@@ -1734,7 +1736,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
   { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "(sp_str_casecmp($r, $e0) == 0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
   { TY_STRING, "lines",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines($r)", 0 },
-  { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0 },  /* the block form iterates and answers the receiver */
+  { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0, 0, BOPF_SELF },  /* the block form iterates and answers the receiver */
   { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, $e1)", 0, BOP_K(TY_STR_STR_HASH) },
   { TY_STRING, "gsub",            2,   2, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_gsub_str_str_hash($r, $e0, sp_StrPolyHash_to_s_values($e1))", 0, BOP_K(TY_STR_POLY_HASH) },
@@ -2244,6 +2246,17 @@ const BuiltinOp *bop_find_stage(TyKind rt, const char *name, int argc, int has_b
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
   return op && (op->flags & BOPF_BOXED) ? op : NULL;
+}
+
+int bop_answers_self(TyKind rt, const char *name, int argc, int has_block) {
+  TyKind lk = rt;
+  if (rt == TY_STRBUF) lk = TY_STRING;
+  else if (!bop_covers(rt)) {
+    if (ty_is_array(rt)) lk = BOP_ANY_ARRAY;
+    else if (ty_is_hash(rt)) lk = BOP_ANY_HASH;
+  }
+  const BuiltinOp *op = bop_find(lk, name, argc, has_block);
+  return op ? op->flags & (BOPF_SELF | BOPF_SELF_OR_NIL) : 0;
 }
 
 TyKind bop_result(const BuiltinOp *op, TyKind rt) {
