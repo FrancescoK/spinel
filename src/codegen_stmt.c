@@ -8180,6 +8180,64 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   }
 }
 
+/* A deferred return runs only ensures belonging to its method, then pops
+   frames down to that method's exit. An inline exit is inside the caller's
+   protected regions, which must remain live after the call. */
+static void emit_ensure_return(Compiler *c, int eid, int has_retval, Buf *b, int indent) {
+  int base = g_method_pr_label ? g_method_pr_ensure_depth : 0;
+  if (g_ensure_depth > base) {
+    EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
+    buf_printf(b, "if (_retf%d) { ", eid);
+    if (has_retval && outer->has_retval)
+      buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
+    buf_printf(b, "_retf%d = 1; ", outer->lid);
+    /* A rescue between the ensures also leaves scope. Keep the ordinary
+       one-frame spelling when there are no other handlers to unwind. */
+    if (g_exc_frame_depth == outer->exc_base + 1 && rescues_crossed(outer->exc_base) == 0)
+      buf_puts(b, "sp_exc_top--; ");
+    else emit_frame_unwind(b, outer->exc_base, NULL);
+    buf_printf(b, "goto _ensure%d; }\n", outer->lid);
+    return;
+  }
+  /* An inline return leaves only the method's frames. The caller's
+     handlers stay live until control leaves their own protected body. */
+  {
+    char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
+    int base = g_method_pr_label ? g_method_pr_exc_depth : 0;
+    if (emit_frame_unwind(b, base, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
+  }
+  /* Inside an INLINED method the enclosing C function belongs to the
+     CALLER, so a raw `return` here returns from that one -- `return
+     _retv5;` of an sp_RbVal out of `main`, which C rejects and which is
+     not what the Ruby meant either. Funnel through the inline exit, the
+     single one every return at ensure-depth 0 already takes. The shape
+     that finds it pairs an early return with an ensure tail, which is the
+     resource idiom: `def self.open(..); r = new(..); return r unless
+     block_given?; begin; yield r; ensure; r.close; end; end`. */
+  if (g_method_pr_label) {
+    if (has_retval && g_method_pr_var)
+      buf_printf(b, "if (_retf%d) { %s = _retv%d; goto %s; }\n",
+                 eid, g_method_pr_var, eid, g_method_pr_label);
+    else
+      buf_printf(b, "if (_retf%d) goto %s;\n", eid, g_method_pr_label);
+  }
+  /* inside a first-class proc body routing returns through the boxed slot
+     (the universal proc return ABI) the deferred value returns through the
+     slot, not a raw C return of an sp_RbVal from an sp_int function */
+  else if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
+    buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
+  /* a proc body with a typed result publishes through the same boxed
+     slot: `lambda do ... :l ensure ... end` returned its sp_RbVal from
+     the sp_int proc function and did not compile (found under #4547) */
+  else if (has_retval && g_in_proc_body && !g_c_ret_void) {
+    char rv[32]; snprintf(rv, sizeof rv, "_retv%d", eid);
+    buf_printf(b, "if (_retf%d) { _sp_proc_poly_ret = ", eid);
+    emit_boxed_text(c, g_ret_type, rv, b);
+    buf_puts(b, "; return 0; }\n");
+  }
+  else emit_retf_return(eid, has_retval, b);
+}
+
 /* begin/body/rescue (ensure/else deferred) via the setjmp exception model.
    When resultvar != NULL, the body's and rescue handlers' values are
    assigned to it (begin/rescue as an expression). */
@@ -8398,16 +8456,9 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "sp_rescue_sp -= _brkf%d - 1; break; }\n", eid);
     }
     emit_indent(b, indent);
+    emit_ensure_return(c, eid, has_retval, b, indent);
     if (g_ensure_depth > 0) {
       EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-      if (has_retval && outer->has_retval) {
-        buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-                   eid, outer->lid, eid, outer->lid, outer->lid);
-      }
-      else {
-        buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-                   eid, outer->lid, outer->lid);
-      }
       /* Unhandled exception. It belongs to the nearest enclosing HANDLER,
          which is not always the enclosing ensure: a `begin ... rescue`
          between the two catches it in Ruby. Handing it straight to the outer
@@ -8429,42 +8480,6 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       }
     }
     else {
-      /* the deferred return leaves through every enclosing live begin frame:
-         pop them or their jmp_bufs dangle into this soon-dead C frame */
-      {
-        char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
-        if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
-      }
-      /* Inside an INLINED method the enclosing C function belongs to the
-         CALLER, so a raw `return` here returns from that one -- `return
-         _retv5;` of an sp_RbVal out of `main`, which C rejects and which is
-         not what the Ruby meant either. Funnel through the inline exit, the
-         single one every return at ensure-depth 0 already takes. The shape
-         that finds it pairs an early return with an ensure tail, which is the
-         resource idiom: `def self.open(..); r = new(..); return r unless
-         block_given?; begin; yield r; ensure; r.close; end; end`. */
-      if (g_method_pr_label) {
-        if (has_retval && g_method_pr_var)
-          buf_printf(b, "if (_retf%d) { %s = _retv%d; goto %s; }\n",
-                     eid, g_method_pr_var, eid, g_method_pr_label);
-        else
-          buf_printf(b, "if (_retf%d) goto %s;\n", eid, g_method_pr_label);
-      }
-      /* inside a first-class proc body routing returns through the boxed slot
-         (the universal proc return ABI) the deferred value returns through the
-         slot, not a raw C return of an sp_RbVal from an sp_int function */
-      else if (has_retval && g_ret_type == TY_POLY && proc_ret_slot())
-        buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
-      /* a proc body with a typed result publishes through the same boxed
-         slot: `lambda do ... :l ensure ... end` returned its sp_RbVal from
-         the sp_int proc function and did not compile (found under #4547) */
-      else if (has_retval && g_in_proc_body && !g_c_ret_void) {
-        char rv[32]; snprintf(rv, sizeof rv, "_retv%d", eid);
-        buf_printf(b, "if (_retf%d) { _sp_proc_poly_ret = ", eid);
-        emit_boxed_text(c, g_ret_type, rv, b);
-        buf_puts(b, "; return 0; }\n");
-      }
-      else emit_retf_return(eid, has_retval, b);
       /* Unhandled exception: re-raise using the saved class/message. */
       emit_indent(b, indent);
       buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);

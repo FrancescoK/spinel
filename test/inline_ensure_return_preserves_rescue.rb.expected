@@ -1,0 +1,113 @@
+ensure
+rescued ArgumentError
+end
+value statement
+ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+value expression
+ensure
+1
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+bare statement
+nil ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+bare expression
+nil ensure
+nil
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+call statement
+call ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+call expression
+call ensure
+2
+2
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+no block statement
+no block ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+no block expression
+no block ensure
+3
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+next statement
+ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+next expression
+ensure
+1
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+break statement
+ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+break expression
+ensure
+:break
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+bare break
+ensure
+nil
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+raising statement
+call rescued TypeError: ensure raised
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+raising expression
+call rescued TypeError: ensure raised
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+caller ensure statement
+ensure
+still in caller
+caller ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+caller ensure expression
+ensure
+1
+still in caller
+caller ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+[200, 200]
+nested expression
+5
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+nested raising ensure
+ensure raised
+after inner rescue
+outer ensure
+after call
+rescued ArgumentError: later
+rescued ArgumentError: missing keyword: :k
+done
