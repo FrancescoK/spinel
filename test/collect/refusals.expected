@@ -122,6 +122,14 @@ spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_source_line.rb [promote] rc=1
 spinel: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
 spinel: 1 refusal, nothing written
+== test/reject/class_named_like_builtin_module.rb [default] rc=1
+spinel: test/reject/class_named_like_builtin_module.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module.rb [promote] rc=1
+spinel: test/reject/class_named_like_builtin_module.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module_path.rb [default] rc=1
+spinel: test/reject/class_named_like_builtin_module_path.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_named_like_builtin_module_path.rb [promote] rc=1
+spinel: test/reject/class_named_like_builtin_module_path.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_paren_superclass_rescue.rb [default] rc=1
 spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass expression (RescueModifierNode): write the superclass as a constant
 == test/reject/class_paren_superclass_rescue.rb [promote] rc=1
@@ -130,6 +138,30 @@ spinel: test/reject/class_paren_superclass_rescue.rb:0: unsupported superclass e
 spinel: the constant name Class__reopen is reserved by the compiler
 == test/reject/class_reopen_reserved_name.rb [promote] rc=1
 spinel: the constant name Class__reopen is reserved by the compiler
+== test/reject/class_reopens_builtin_module.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module.rb:0: Comparable is not a class (TypeError)
+== test/reject/class_reopens_builtin_module.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module.rb:0: Comparable is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_alias.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_alias.rb:0: Foo is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_alias.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_alias.rb:0: Foo is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_class_new.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:0: unsupported class name 'Kernel': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_class_new.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_class_new.rb:0: unsupported class name 'Kernel': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_errno.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_errno.rb:0: Errno is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_errno.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_errno.rb:0: Errno is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_kernel.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_kernel.rb:0: Kernel is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_kernel.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_kernel.rb:0: Kernel is not a class (TypeError)
+== test/reject/class_reopens_builtin_module_rooted.rb [default] rc=1
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
+== test/reject/class_reopens_builtin_module_rooted.rb [promote] rc=1
+spinel: test/reject/class_reopens_builtin_module_rooted.rb:0: unsupported class name 'Comparable': collides with the builtin module of that name
 == test/reject/class_superclass_method_call.rb [default] rc=1
 spinel: test/reject/class_superclass_method_call.rb:0: unsupported superclass expression (a call other than Struct.new, Data.define or a blockless Class.new(Constant)): write the superclass as a constant
 == test/reject/class_superclass_method_call.rb [promote] rc=1
