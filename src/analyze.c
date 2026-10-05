@@ -30332,6 +30332,9 @@ static void an_phase_class_structure(Compiler *c) {
   synth_struct_each(c);
   synth_enum_to_a(c);
   synth_to_enum_generators(c);
+  /* a literal block the builtin ignores, once the program's own methods
+     are known and before blocks are inlined or typed */
+  desugar_ignored_blocks(c);
   /* pre-fixpoint: an empty `{}` block-method receiver types as the STR_POLY
      hash so infer_block_params declares its |k, v| params (#2336). */
   mark_empty_hash_receivers(c);
