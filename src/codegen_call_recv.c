@@ -7269,6 +7269,12 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, "sp_bigint_to_int(sp_bigint_div(sp_bigint_new_int(%s), ", r);
     emit_expr(c, argv[0], b); buf_puts(b, "))");
   }
+  /* a boxed divisor answers by its run-time kind: a Float floors the real
+     quotient as the typed arm above does. It was converted to an Integer
+     first, and 17.div(2.5) answered 8 where CRuby answers 6. */
+  else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+    buf_printf(b, "sp_int_div_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
   else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
   else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
            (comp_ntype(c, argv[0]) == TY_FLOAT ||
@@ -7309,6 +7315,12 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
     /* Integer % Rational lifts the receiver to n/1 (floor modulo) */
     buf_printf(b, "sp_rational_mod(sp_rational_new((sp_int)(%s), 1), ", r);
     emit_expr(c, argv[0], b); buf_puts(b, ")");
+  }
+  /* a boxed Float divisor answers a Float CRuby's way (17.modulo(2.5) is
+     2.0), which the Integer-typed call cannot hold: raise rather than answer
+     the modulo of a divisor cut to an Integer (it answered 1) */
+  else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+    buf_printf(b, "sp_int_modulo_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
   else if (sp_streq(name, "remainder") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {

@@ -3299,6 +3299,24 @@ static SP_INLINE sp_int sp_poly_arg_int_chk(sp_RbVal v) {
   if (v.tag == SP_TAG_INT && v.v.i != SP_INT_NIL) return v.v.i;
   return sp_poly_arg_int_chk_slow(v);
 }
+/* Integer#div / #modulo with a divisor known only at run time, in a call
+   typed Integer. A Float divisor floors the real quotient for div; for
+   modulo its answer is a Float, which the Integer slot cannot hold, so that
+   raises instead of answering the modulo of a truncated divisor. Any other
+   kind converts as an Integer argument does. */
+static inline sp_int sp_int_div_boxed(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) {
+    if (v.v.f == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+    if (isnan(v.v.f)) sp_raise_cls("FloatDomainError", "NaN");
+    return sp_float_fit_i(floor((double)a / v.v.f));
+  }
+  return sp_idiv(a, sp_poly_arg_int_chk(v));
+}
+static inline sp_int sp_int_modulo_boxed(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT)
+    sp_raise_cls("NotImplementedError", "Integer#modulo of a Float answers a Float, which this Integer-typed call cannot hold");
+  return sp_imod(a, sp_poly_arg_int_chk(v));
+}
 /* File.open's permission slot: nil is CRuby's default (SP_INT_NIL to the
    open entries), anything else converts as an Integer argument does. */
 static SP_INLINE sp_int sp_poly_arg_perm(sp_RbVal v) {
