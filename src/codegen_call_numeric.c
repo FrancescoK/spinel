@@ -603,11 +603,18 @@ int emit_op_range_clone(Compiler *c, const BopCtx *x, Buf *b) {
 
 int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b) {
   int t = ++g_tmp;
+  int rk = nt_kind(c->nt, x->recv);
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    buf_printf(b, "({ %s *_t%d = ", c_type_name(x->rt), t);
+    emit_constant_slot(c, x->recv, b);
+    buf_printf(b, "; _t%d->unfrozen = 0; *_t%d; })", t, t);
+    return 1;
+  }
   buf_printf(b, "({ %s _t%d = ", c_type_name(x->rt), t);
   emit_expr(c, x->recv, b);
   buf_printf(b, "; _t%d.unfrozen = 0; ", t);
-  int rk = nt_kind(c->nt, x->recv);
-  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+  if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
+      rk == NK_ClassVariableReadNode || rk == NK_GlobalVariableReadNode) {
     emit_expr(c, x->recv, b); buf_printf(b, " = _t%d; ", t);
   }
   buf_printf(b, "_t%d; })", t);

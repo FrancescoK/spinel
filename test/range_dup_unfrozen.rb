@@ -186,3 +186,151 @@ flagged.each do |r|
     p copy.inspect
   end
 end
+
+# Freezing a stored copy must update the slot read by a later frozen? call.
+puts "integer slots"
+$integer_range = (1..3).dup
+p $integer_range.frozen?
+$integer_range.freeze
+p $integer_range.frozen?
+IntegerCopy = (1..3).dup
+p IntegerCopy.frozen?
+IntegerCopy.freeze
+p IntegerCopy.frozen?
+class IntegerRangeSlots
+  @@copy = (1..3).dup
+  Copy = (1..3).dup
+  IntegerDynamicCopy = (1..3).dup
+  def self.freeze_copy
+    p @@copy.frozen?
+    @@copy.freeze
+    p @@copy.frozen?
+  end
+  def initialize
+    @copy = (1..3).dup
+  end
+  def freeze_copy
+    p @copy.frozen?
+    @copy.freeze
+    p @copy.frozen?
+  end
+end
+IntegerRangeSlots.freeze_copy
+IntegerRangeSlots.new.freeze_copy
+p IntegerRangeSlots::Copy.frozen?
+IntegerRangeSlots::Copy.freeze
+p IntegerRangeSlots::Copy.frozen?
+class OtherIntegerRangeSlots
+  IntegerDynamicCopy = (1..3).dup
+end
+puts "float slots"
+$float_range = (1.5...3.5).dup
+p $float_range.frozen?
+$float_range.freeze
+p $float_range.frozen?
+FloatCopy = (1.5...3.5).dup
+p FloatCopy.frozen?
+FloatCopy.freeze
+p FloatCopy.frozen?
+class FloatRangeSlots
+  @@copy = (1.5...3.5).dup
+  Copy = (1.5...3.5).dup
+  FloatDynamicCopy = (1.5...3.5).dup
+  def self.freeze_copy
+    p @@copy.frozen?
+    @@copy.freeze
+    p @@copy.frozen?
+  end
+  def initialize
+    @copy = (1.5...3.5).dup
+  end
+  def freeze_copy
+    p @copy.frozen?
+    @copy.freeze
+    p @copy.frozen?
+  end
+end
+FloatRangeSlots.freeze_copy
+FloatRangeSlots.new.freeze_copy
+p FloatRangeSlots::Copy.frozen?
+FloatRangeSlots::Copy.freeze
+p FloatRangeSlots::Copy.frozen?
+class OtherFloatRangeSlots
+  FloatDynamicCopy = (1.5...3.5).dup
+end
+puts "string slots"
+$string_range = ("a".."d").dup
+p $string_range.frozen?
+$string_range.freeze
+p $string_range.frozen?
+StringCopy = ("a".."d").dup
+p StringCopy.frozen?
+StringCopy.freeze
+p StringCopy.frozen?
+class StringRangeSlots
+  @@copy = ("a".."d").dup
+  Copy = ("a".."d").dup
+  StringDynamicCopy = ("a".."d").dup
+  def self.freeze_copy
+    p @@copy.frozen?
+    @@copy.freeze
+    p @@copy.frozen?
+  end
+  def initialize
+    @copy = ("a".."d").dup
+  end
+  def freeze_copy
+    p @copy.frozen?
+    @copy.freeze
+    p @copy.frozen?
+  end
+end
+StringRangeSlots.freeze_copy
+StringRangeSlots.new.freeze_copy
+p StringRangeSlots::Copy.frozen?
+StringRangeSlots::Copy.freeze
+p StringRangeSlots::Copy.frozen?
+class OtherStringRangeSlots
+  StringDynamicCopy = ("a".."d").dup
+end
+
+# The dynamic parent is evaluated once and only its selected constant freezes.
+$range_parent_reads = 0
+def range_parent(klass)
+  $range_parent_reads += 1
+  klass
+end
+range_parent(IntegerRangeSlots)::IntegerDynamicCopy.freeze
+p IntegerRangeSlots::IntegerDynamicCopy.frozen?
+p OtherIntegerRangeSlots::IntegerDynamicCopy.frozen?
+range_parent(OtherIntegerRangeSlots)::IntegerDynamicCopy.freeze
+p OtherIntegerRangeSlots::IntegerDynamicCopy.frozen?
+range_parent(FloatRangeSlots)::FloatDynamicCopy.freeze
+p FloatRangeSlots::FloatDynamicCopy.frozen?
+p OtherFloatRangeSlots::FloatDynamicCopy.frozen?
+range_parent(OtherFloatRangeSlots)::FloatDynamicCopy.freeze
+p OtherFloatRangeSlots::FloatDynamicCopy.frozen?
+range_parent(StringRangeSlots)::StringDynamicCopy.freeze
+p StringRangeSlots::StringDynamicCopy.frozen?
+p OtherStringRangeSlots::StringDynamicCopy.frozen?
+range_parent(OtherStringRangeSlots)::StringDynamicCopy.freeze
+p OtherStringRangeSlots::StringDynamicCopy.frozen?
+p $range_parent_reads
+
+# Boxed container reads and an ivar on a polymorphic receiver retain identity.
+puts "boxed slots"
+boxed_ranges = [0, (1..3).dup, (1.5...3.5).dup, ("a".."d").dup]
+[1, 2, 3].each do |i|
+  p boxed_ranges[i].frozen?
+  boxed_ranges[i].freeze
+  p boxed_ranges[i].frozen?
+end
+range_hash = { integer: (1..3).dup, float: (1.5...3.5).dup, string: ("a".."d").dup }
+[:integer, :float, :string].each do |key|
+  p range_hash[key].frozen?
+  range_hash[key].freeze
+  p range_hash[key].frozen?
+end
+[IntegerRangeSlots.new, FloatRangeSlots.new, StringRangeSlots.new].each do |obj|
+  obj.freeze_copy
+end
