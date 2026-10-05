@@ -57,6 +57,8 @@ typedef struct {
                              array read, which writes the test
                              (VR_NIL_TESTED 2) */
   unsigned big:1;         /* an Integer held as an sp_Bigint * */
+  unsigned elems_handle:1; /* a container slot whose String elements are
+                              boxed shared handles (--share-strings) */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
