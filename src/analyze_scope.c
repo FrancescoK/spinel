@@ -17,6 +17,8 @@ void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw) {
           (int)nw, ty_name(nw < 1000 ? nw : TY_POLY));
 }
 
+static int bc_builtin_module(const char *n);
+
 /* `...` forwards the caller's args verbatim, so rather than a rest array we
    synthesize concrete positional params whose count is the widest positional
    arg count across this method's call sites (the compiler already knows the
@@ -1101,10 +1103,37 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
                         "collides with the builtin class of that name\n", file, ln, cname);
       exit(1);
     }
+    /* The reverse: `class Comparable` reopens a builtin MODULE as a class,
+       which CRuby refuses with a TypeError. A nested or path-qualified name
+       is a fresh constant in CRuby, but the generated C name is the bare
+       tail and collides, so refuse that as unsupported. */
+    int cls_toplevel = class_id < 0 && cp >= 0 && nt_type(c->nt, cp) &&
+                       sp_streq(nt_type(c->nt, cp), "ConstantReadNode");
+    /* An earlier pass mangles a nested name to `Outer__Inner`: test the leaf. */
+    const char *cls_leaf = cname;
+    if (cname && !cls_toplevel) {
+      for (const char *q = strstr(cname, "__"); q; q = strstr(q + 1, "__")) cls_leaf = q + 2;
+    }
+    if (sp_streq(ty, "ClassNode") && cname && bc_builtin_module(cls_leaf)) {
+      int ln = (int)nt_int(c->nt, id, "node_line", 0);
+      const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
+      if (cls_toplevel)
+        fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cname);
+      else
+        fprintf(stderr, "spinel: %s:%d: unsupported class name '%s': "
+                        "collides with the builtin module of that name\n", file, ln, cls_leaf);
+      exit(1);
+    }
     /* `class CONST` where CONST aliases an existing class reopens that class.
        Rewrite the AST name so every later pass (registration, includes) agrees. */
     if (cname && cp >= 0 && comp_class_index(c, cname) < 0) {
       const char *real = resolve_class_alias(c, cname);
+      if (real && sp_streq(ty, "ClassNode") && cls_toplevel && bc_builtin_module(real)) {
+        int ln = (int)nt_int(c->nt, id, "node_line", 0);
+        const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
+        fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cname);
+        exit(1);
+      }
       if (real) {
         char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees cname */
         nt_set_str((NodeTable *)c->nt, cp, "name", buf);

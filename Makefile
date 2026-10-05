@@ -1514,6 +1514,20 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \
 	else grep -q "Thing is not a module" "$$tmp/m.out" || \
 	  { echo "reject-test: FAIL (#4309: rejected without saying why)"; sed -n 1,5p "$$tmp/m.out"; ok=0; }; fi; \
+	for spec in "class_reopens_builtin_module:Comparable is not a class (TypeError)" \
+	            "class_reopens_builtin_module_kernel:Kernel is not a class (TypeError)" \
+	            "class_reopens_builtin_module_errno:Errno is not a class (TypeError)" \
+	            "class_reopens_builtin_module_alias:Foo is not a class (TypeError)" \
+	            "class_reopens_builtin_module_rooted:collides with the builtin module" \
+	            "class_reopens_builtin_module_class_new:collides with the builtin module" \
+	            "class_named_like_builtin_module:collides with the builtin module" \
+	            "class_named_like_builtin_module_path:collides with the builtin module"; do \
+	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bm.c" >"$$tmp/bm.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: a builtin module reopened as a class)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/bm.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/bm.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/superclass_mismatch.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/s.c" >"$$tmp/s.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a class reopened with another superclass compiled)"; ok=0; \
