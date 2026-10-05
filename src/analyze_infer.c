@@ -8190,7 +8190,7 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
       }
     }
   }
-  { *out = yield_value_type(c, ymi); return 1; }
+  { *out = yield_value_type(c, ymi); if (*out == TY_UNKNOWN) *out = yield_value_type_via_super(c, ymi); return 1; }
   return 0;
 }
 
