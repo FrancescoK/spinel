@@ -864,7 +864,7 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
    its method to a class outside them. Into ks (sized nclasses). */
 static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
   int n = 0;
-  if (any_exc_reopen(c)) {
+  if (any_exc_reopen(c) || (is_element_access(name) && is_store_alias(name))) {
     for (int k = 0; k < c->nclasses; k++) ks[n++] = k;
     return n;
   }
@@ -872,6 +872,14 @@ static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
   const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
   for (int i = 0; i < npc; i++) ks[n++] = pcs[i].cls;
   return n;
+}
+
+/* Struct's builtin writer has no method scope, but still owns an arm. */
+int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
+  ClassInfo *k = &c->classes[cid];
+  return argc == 2 && (is_element_access(name) && is_store_alias(name)) && k->instantiated &&
+         k->is_struct && !k->is_data && !k->is_native_class &&
+         comp_resolve_member(c, cid, name, 0, NULL, NULL) == SP_MEMBER_NONE;
 }
 
 /* The arms emit_poly_user_arms0 writes, class by class, in its order. */
@@ -1156,6 +1164,10 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   int nks = cpoly_arm_classes(c, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
+    if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) {
+      cpoly_add(p, &cap, PA_STRUCT_SET, k, -1, ret, PC_SAME);
+      continue;
+    }
     if (c->classes[k].is_native_class) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {
         const NativeMethod *rm = NULL;
