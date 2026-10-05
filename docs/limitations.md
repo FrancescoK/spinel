@@ -707,6 +707,11 @@ Not yet shared:
 - through an Array's chained index into an appending block;
 
 - through a retained `scrub!` result that is appended to; `scrub!` with a block is also refused because the block would be ignored;
+- through a global variable: a String variable assigned from a global (`t = $g`, `t = $g.to_s`) or to one (`$g = s`, `$h = $g`), when one name is mutated in place and the other is read;
+- through a method that returns its String parameter (`def id(x) = x`, also `x.itself` or a bang method on it), when the result or the variable passed in is mutated in place and the other is read;
+- through a bang method's result, which is its receiver (`r = s.strip!`, `r = s.strip! || s`, `s.sub!(a, b) << x`), when the result is mutated in place and the receiver is read;
+- through `to_s` (or another call answering its String receiver) under a mutator whose argument reassigns the variable, when the variable is a String handle (`e.to_s << (e = +"b")`);
+- into an Array, a String variable added by `insert`, `prepend`, a `concat` of a literal, the later push of a chain (`a << t << s`) or a push into a global Array, or as the value of `s << x` or of a reader method (`a << sb` with `def sb = @s`), when the variable or the element is then mutated in place;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
 
