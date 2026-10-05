@@ -5184,6 +5184,50 @@ int desugar_to_h_block(Compiler *c) {
   return changed;
 }
 
+/* `str.unpack(fmt) { |v| body }` -> `(str.unpack(fmt).each { |v| body }; nil)`.
+   With a block, CRuby's unpack yields each value it decodes and answers nil.
+   The blockless unpack already decodes into an Array and each walks one, so
+   the call is rewritten onto that pair, as to_h's block form is onto map. A
+   program that defines its own unpack keeps the call as written. */
+int desugar_unpack_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int user = 0;
+  for (int k = 0; k < c->nclasses && !user; k++)
+    if (comp_method_in_chain(c, k, "unpack", NULL) >= 0) user = 1;
+  if (user) return 0;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "unpack")) continue;
+    int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || (nt_kind(nt, blk) != NK_BlockNode && nt_kind(nt, blk) != NK_BlockArgumentNode)) continue;
+    /* a boxed receiver that is no String raises in unpack either way */
+    TyKind rt = infer_type(c, recv);
+    if (rt != TY_STRING && rt != TY_POLY) continue;
+    int base = nt->count;
+    int call = nt_new_node(nt, "CallNode"), each = nt_new_node(nt, "CallNode");
+    int nil = nt_new_node(nt, "NilNode"), body = nt_new_node(nt, "StatementsNode");
+    if (call < 0 || each < 0 || nil < 0 || body < 0) continue;   /* node-table OOM: leave as-is */
+    nt_node_set_ref(nt, call, "receiver", recv);
+    nt_node_set_str(nt, call, "name", "unpack");
+    nt_node_set_ref(nt, call, "arguments", nt_ref(nt, id, "arguments"));
+    nt_node_set_ref(nt, each, "receiver", call);
+    nt_node_set_str(nt, each, "name", "each");
+    nt_node_set_ref(nt, each, "block", blk);
+    int stmts[2] = { each, nil };
+    nt_node_set_arr(nt, body, "body", stmts, 2);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", body);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;   /* new nodes share the scope */
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Descend `root`'s subtree (bounded to scope `sc`) tracking the nearest enclosing
    StatementsNode entry (curr_st/curr_idx). On reaching `target`, report that entry
    -- the innermost same-scope top-level statement whose subtree contains target.
