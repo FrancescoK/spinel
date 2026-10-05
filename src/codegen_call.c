@@ -983,7 +983,6 @@ static void emit_io_vis_msg(int vis, const char *name, const char *handle, Buf *
    NoMethodError as CRuby does. When the reopenings answer different
    types the call is boxed (io_reopen_ret_mixed), each answer boxed. */
 static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int caller);
-static int io_builtin_name(const char *m);
 int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
 void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw);
 /* The builtin's own emission of typed IO call `id` on the handle in _r<tv>,
@@ -14473,7 +14472,7 @@ sp_builtin_arity_spec_tbl[] = {
 #undef BAS
 #undef BAC
 /* Is `m` a method the builtin File (IO and its Enumerable included) has? */
-static int io_builtin_name(const char *m) {
+int io_builtin_name(const char *m) {
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
     if (sp_streq(r->cls, "File") && sp_streq(r->m, m)) return 1;
   /* the table leaves out these */

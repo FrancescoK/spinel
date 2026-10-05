@@ -3332,6 +3332,10 @@ static SP_INLINE sp_int sp_poly_arg_int_chk(sp_RbVal v) {
    offset's NUM2OFFT. */
 static SP_INLINE sp_int sp_poly_arg_int_chk_w(sp_RbVal v, int wording) {
   if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_INT && v.v.i == SP_INT_NIL)) sp_raise_nil_to_int(wording);
+  /* NUM2OFFT words a String and a boolean "from string", "from boolean" */
+  if (wording == 2 && (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)))
+    sp_raise_cls("TypeError", "no implicit conversion from string");
+  if (wording == 2 && v.tag == SP_TAG_BOOL) sp_raise_cls("TypeError", "no implicit conversion from boolean");
   return sp_poly_arg_int_chk(v);
 }
 /* Integer#div / #modulo with a divisor known only at run time, in a call
