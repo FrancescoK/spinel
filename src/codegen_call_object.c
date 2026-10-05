@@ -987,8 +987,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     }
     if (dkw_ok && comp_ty_bsub_root(c, drt) >= 0) {
-      /* a builtin subclass instance: its class's own copy (sp_X__dup), by the
-         class it carries when a subclass's instance can be behind it (#7449) */
+      /* a builtin subclass instance: its class's own copy (sp_X__copy, which
+         runs that class's initialize_copy), by the class it carries when a
+         subclass's instance can be behind it (#7449) */
       int cid = ty_object_class(drt), t = ++g_tmp, d = ++g_tmp;
       const char *cn = c->classes[cid].c_name;
       int mode = sp_streq(name, "dup") ? 0 : freeze_mode < 0 ? 1 : freeze_mode ? 3 : 2;
@@ -997,28 +998,23 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = !_t%d ? NULL : ", t, cn, d, t);
       for (int k = 0; k < c->nclasses; k++)
         if (k != cid && is_descendant(c, k, cid) && c->classes[k].instantiated)
-          buf_printf(b, "_t%d->cls_id == %d ? (sp_%s *)sp_%s__dup(_t%d, %d) : ",
+          buf_printf(b, "_t%d->cls_id == %d ? (sp_%s *)sp_%s__copy(_t%d, %d) : ",
                      t, k, cn, c->classes[k].c_name, t, mode);
-      buf_printf(b, "(sp_%s *)sp_%s__dup(_t%d, %d); SP_GC_ROOT(_t%d); ", cn, cn, t, mode, d);
-      /* the class's initialize_copy hook, as for any program object; its
-         super into the builtin is a replace, which the copy has already done */
+      buf_printf(b, "(sp_%s *)sp_%s__copy(_t%d, %d); SP_GC_ROOT(_t%d); ", cn, cn, t, mode, d);
+      /* the class's initialize_copy hook runs in the copy; its super into
+         the builtin is a replace, which the copy has already done. A hook
+         whose parameter is typed as neither an object nor a boxed value is
+         not run there (user_init_copy_scope), so it is refused here. */
       int defcls = -1;
       int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
       LocalVar *icp = ic >= 0 && c->scopes[ic].nparams == 1 && !c->scopes[ic].yields
         ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
-      if (ic >= 0 && (!icp || !ty_is_object(icp->type))) {
+      if (ic >= 0 && (!icp || !(ty_is_object(icp->type) || icp->type == TY_POLY))) {
         const char *bn = comp_bsub_info(comp_bsub_base(c, cid))->name;
         char msg[200];
         snprintf(msg, sizeof msg, "an initialize_copy of a%s %s subclass whose parameter is not "
                  "typed as the class is not supported yet", strchr("AEIOU", bn[0]) ? "n" : "", bn);
         unsupported_feature(c, id, msg);
-      }
-      else if (ic >= 0) {
-        const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] ? ", NULL" : "";
-        buf_printf(b, "if (_t%d) ", d);
-        emit_method_cname(c, &c->scopes[ic], b);
-        buf_printf(b, "((sp_%s *)_t%d, (sp_%s *)_t%d%s); ", c->classes[defcls].c_name, d,
-                   c->classes[ty_object_class(icp->type)].c_name, t, nb);
       }
       buf_printf(b, "_t%d; })", d);
       return 1;
