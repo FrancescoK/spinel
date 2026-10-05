@@ -289,6 +289,16 @@ const PolyPlan *cplan_poly_redispatch(Compiler *c, int id);
    Computed afresh. */
 const PolyPlan *cplan_poly_face(Compiler *c, int id);
 
+/* What the builtin surface alone answers call id, as the analysis recorded
+   it for the builtin arm that asks (an_record_builtin_answers), or
+   TY_UNKNOWN. */
+TyKind cplan_builtin_answer(const Compiler *c, int id);
+/* The value type of a poly dispatch's builtin default trials (PT_DEFAULT0,
+   PT_DEFAULT_N, PT_GENERIC_TAIL, PT_ARRAY_FALLBACK), which re-enter call id,
+   argc arguments, as the builtin it is (emit_poly_builtin_default); the
+   arms carry it as their vty. TY_UNKNOWN: the trial is not written. */
+TyKind cplan_poly_default_ty(Compiler *c, int id, int argc);
+
 /* --plan-check: the arms one emitted switch wrote, held against the plan.
    pa_resume(frame) drops frames a probe abandoned above it, before the
    switch observes again. */
