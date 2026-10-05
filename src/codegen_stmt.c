@@ -1232,6 +1232,7 @@ static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
+static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
@@ -1387,6 +1388,42 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
   }
 }
+/* An aliasing write's chain over a handle base (`r = s.to_s << x << y`),
+   under --share-strings: the base's handle is taken first, so an argument
+   that rebinds the variable cannot move it, and each link appends to it in
+   place, innermost first; the value is that handle. Only `to_s`, `to_str`,
+   `itself` and one-argument `<<` / `concat` of a String; 0 for anything
+   else, which keeps the value form. */
+static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args[32], na = 0;
+  for (int cur = unwrap_parens(c, v); cur != base; cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"))) {
+    if (cur < 0 || nt_kind(nt, cur) != NK_CallNode || na >= 32) return 0;
+    const char *nm = nt_str(nt, cur, "name");
+    /* a self-call that changes nothing; any other (clear, replace, freeze)
+       keeps the value form */
+    if (str_self_call(nt, cur)) {
+      if (nm && is_receiver_conversion(nm)) continue;
+      return 0;
+    }
+    int a = nt_ref(nt, cur, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (!nm || !is_append_concat(nm) || ac != 1) return 0;
+    TyKind at = comp_ntype(c, av[0]);
+    if (at != TY_STRING && at != TY_STRBUF) return 0;
+    args[na++] = av[0];
+  }
+  int th = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = %s; ", th, bref);
+  for (int i = na - 1; i >= 0; i--) {
+    buf_printf(b, "sp_String_append_bin(_t%d, ", th);
+    emit_str_expr(c, args[i], b);
+    buf_puts(b, "); ");
+  }
+  buf_printf(b, "_t%d; })", th);
+  return 1;
+}
+
 /* Is v (through single-statement parentheses) a write (`=`, `||=`, `&&=`)
    of a global (or `=` of a constant) holding the shared handle? Its slot's
    text to out. */
@@ -1490,7 +1527,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
        would fork a second buffer and break the alias (#3307 family) */
     int cb9 = str_alias_chain_base(c, v);
     char srefC9[1024];
-    if (cb9 != v && shared &&
+    if (cb9 != v && shared && repr_share_rule(c) &&
+        strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9) && emit_strbuf_chain_in_place(c, v, cb9, srefC9, b)) {
+      /* --share-strings: the chain ran on the base's own handle */
+    }
+    else if (cb9 != v && shared &&
         strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
       buf_puts(b, "({ (void)(");
       emit_expr(c, v, b);
@@ -1737,7 +1778,19 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     if (conv_reads_shared_storage(c, v))
       unsupported(c, v, "widening a typed array READ from an object into a poly slot "
                         "(the conversion copies, so writes would not be shared)");
-    emit_poly_array_from(c, v, b);
+    /* --share-strings: a String Array the rule shares the elements of has
+       each element boxed as a handle of its own */
+    if (repr_of_slot(c, lv).elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) {
+      int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
+      buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
+      emit_expr(c, v, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                    " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
+                    " SP_BUILTIN_STRBUF)); _t%d; })",
+                 ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
+    }
+    else emit_poly_array_from(c, v, b);
   }
   else if (lv && lv->type == TY_BIGINT) {
     TyKind vt = comp_ntype(c, v);
@@ -5441,7 +5494,7 @@ static int emit_when_string_range(Compiler *c, int cond, int t, Buf *b) {
   return 1;
 }
 
-static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, Buf *b);
+static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int subj, Buf *b);
 /* Does the subject temp of a `case` need a root? The subject is bound before
    the `when` operands are evaluated, and a fresh subject held only by its
    temp was collected under an operand that allocates. A constant, a literal
@@ -5957,7 +6010,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         }
         else {
           const char *cnty = nt_type(nt, conds[j]);
-          if (emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, b)) { /* literal lambda predicate */ }
+          if (emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, pred, b)) { /* literal lambda predicate */ }
           /* `when <proc>` (a variable): Proc#=== calls the proc with the
              subject, via the proc-call ABI (mirrors the case-as-value arm) */
           /* a Proc read out of a container arrives boxed: dispatch on the tag
@@ -6121,7 +6174,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
    (#4730). A boxed subject is unboxed into a scalar parameter, raising past
    the word as the other typed sinks do; a typed subject is boxed into a
    poly parameter. */
-static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
+static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int subj, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!nt_type(nt, cond) || !sp_streq(nt_type(nt, cond), "LambdaNode")) return 0;
   int lbody = nt_ref(nt, cond, "body");
@@ -6140,7 +6193,16 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, Buf 
     TyKind lt = plv ? plv->type : TY_UNKNOWN;
     char tt[24]; snprintf(tt, sizeof tt, "_t%d", t);
     buf_printf(b, "lv_%s = ", rename_local(lpnm));
-    if (pt == TY_POLY && lt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", tt);
+    char sref[1024];
+    /* a parameter that is the shared handle takes the subject's (the same
+       String: the lambda is called with it), or a handle of its own around
+       a subject that is a String of its own */
+    if (plv && repr_of_slot(c, plv).kind == RK_STRBUF && pt == TY_STRING) {
+      if (subj >= 0 && strbuf_slot_ref(c, subj, sref, sizeof sref))
+        buf_puts(b, sref);
+      else buf_printf(b, "sp_String_new_shared(%s)", tt);
+    }
+    else if (pt == TY_POLY && lt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", tt);
     else if (pt == TY_POLY && lt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", tt);
     else if (pt != TY_POLY && pt != TY_UNKNOWN && lt == TY_POLY) emit_boxed_text(c, pt, tt, b);
     else buf_puts(b, tt);
@@ -6365,7 +6427,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else {
         if (emit_when_typed_test(c, conds[j], t, pt, b)) { }
         else if (comp_ntype(c, conds[j]) == TY_PROC &&
-                 emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, b)) { /* literal lambda inlined */ }
+                 emit_when_lambda_inline(c, conds[j], typed_t, typed_pt, pred, b)) { /* literal lambda inlined */ }
         /* a Proc read out of a container arrives boxed: dispatch on the tag so
            it is CALLED and not compared (#3683) */
         else if (repr_of(c, conds[j]).kind == RK_BOXED) emit_when_boxed_test(c, conds[j], t, pt, b);
