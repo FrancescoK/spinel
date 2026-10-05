@@ -1306,7 +1306,8 @@ reject-test: $(SPINEL)
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	done; \
-	for t in test/reject/string_yield_captured_param.rb test/reject/string_yield_splat_captured.rb; do \
+	for t in test/reject/string_yield_captured_param.rb test/reject/string_yield_splat_captured.rb \
+	         test/reject/reader_string_elem_append.rb test/reject/reader_string_hash_value_mutate.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
