@@ -1671,6 +1671,16 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
      through a slot (emit_iter_step_value): a bare `next` answers nil, which
      only the boxed add refuses as CRuby does. */
   if (iter_step_needs_frame(c, block)) acct = TY_POLY;
+  /* And so does a seed of another class than the block's values, other
+     than a number: CRuby's accumulator is the seed, so `sum({}) { |x| x }`
+     raises from the Hash's missing `+` (fold_seed_typed, as the blockless
+     sum decides it), where the typed accumulator took the Hash as an sp_int
+     and did not build. */
+  if (argc == 1 && acct != TY_POLY) {
+    TyKind st = fold_seed_ntype(c, argv[0]);
+    if (st != TY_INT && st != TY_FLOAT && st != TY_POLY && st != TY_UNKNOWN && !fold_seed_typed(st, acct))
+      acct = TY_POLY;
+  }
   /* A poly block value (e.g. a product of values read out of poly containers,
      as in a range sum redispatched over an int array) accumulates into a boxed
      sp_RbVal via sp_poly_add, like the poly-receiver sum path. An empty range
