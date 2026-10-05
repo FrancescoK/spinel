@@ -825,36 +825,93 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
   return -1;
 }
 
-int comp_ary_root(Compiler *c, int cid) {
-  return cid >= 0 && cid < c->nclasses ? c->classes[cid].ary_root - 1 : -1;
-}
-int comp_ty_ary_root(Compiler *c, TyKind t) {
-  return ty_is_object(t) ? comp_ary_root(c, ty_object_class(t)) : -1;
-}
-/* An Array subclass nothing is ever put into holds boxed values, as an empty
-   `[]` that never settles does. While the inference is still optimistic an
-   unsettled kind stays unknown, so a later push can still narrow it. */
-TyKind comp_ary_kind(Compiler *c, int cid) {
-  int r = comp_ary_root(c, cid);
-  if (r < 0) return TY_UNKNOWN;
-  TyKind k = c->classes[r].ary_kind;
-  return k == TY_UNKNOWN && !g_infer_optimistic ? TY_POLY_ARRAY : k;
-}
-
 int builtin_instance_method_known(const char *cls, const char *m);
 /* A name an Array answers: its own methods and Enumerable's (#7449). */
 int comp_array_method_name(const char *n) {
   return builtin_instance_method_known("Array", n) || sp_streq(n, "to_enum") || sp_streq(n, "enum_for") ||
          sp_streq(n, "frozen?") || sp_streq(n, "!=");
 }
-/* Whether call `id` on a receiver of type rt, an Array subclass instance, is
-   Array's: no method, reader or writer of the class chain takes the name, it
-   asks nothing about the object itself, and Array (or Enumerable, which Array
-   includes) has it -- or a `super` into Array was rewritten into it
-   (builtin_only). *kind is the embedded Array's kind to answer it as. */
-int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
+
+/* The builtins a program class can subclass (#7449). A subclass nothing is
+   ever put into embeds the row's settled kind -- an Array holds boxed
+   values, as an empty `[]` that never settles does. */
+static const BsubKind bsub_array_kinds[] = {
+  { TY_INT_ARRAY, "sp_IntArray", "SP_BUILTIN_INT_ARRAY", "sp_IntArray_init_embedded", "sp_IntArray_fin",
+    NULL, "sp_IntArray_replace", "sp_IntArray_inspect" },
+  { TY_FLOAT_ARRAY, "sp_FloatArray", "SP_BUILTIN_FLT_ARRAY", "sp_FloatArray_init_embedded", "sp_FloatArray_fin",
+    NULL, "sp_FloatArray_replace", "sp_FloatArray_inspect" },
+  { TY_STR_ARRAY, "sp_StrArray", "SP_BUILTIN_STR_ARRAY", "sp_StrArray_init_embedded", "sp_StrArray_fin",
+    "sp_StrArray_scan", "sp_StrArray_replace", "sp_StrArray_inspect" },
+  /* a poly Array's growth installs its finalizer */
+  { TY_POLY_ARRAY, "sp_PolyArray", "SP_BUILTIN_POLY_ARRAY", "sp_PolyArray_init_embedded", NULL,
+    "sp_PolyArray_scan", "sp_PolyArray_replace", "sp_PolyArray_inspect" },
+  { TY_UNKNOWN, NULL, NULL, NULL, NULL, NULL, NULL, NULL },
+};
+static const BsubBase bsub_bases[BSUB_NBASES] = {
+  [BSUB_ARRAY]  = { "Array", "ary", comp_array_method_name, is_array_self_result_name,
+                    is_array_element_store_name, array_new_copies, TY_POLY_ARRAY, 1,
+                    BSE_ELEMENTS, BSB_ARRAY_LITERAL, "sp_poly_is_array_kind($v.cls_id)", bsub_array_kinds },
+  [BSUB_HASH]   = { "Hash", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 1, BSE_NONE, BSB_NONE, NULL, NULL },
+  [BSUB_STRING] = { "String", NULL, NULL, NULL, NULL, NULL, TY_UNKNOWN, 0, BSE_NONE, BSB_NONE, NULL, NULL },
+};
+const BsubBase *comp_bsub_info(int base) {
+  return base > BSUB_NONE && base < BSUB_NBASES ? &bsub_bases[base] : NULL;
+}
+const BsubKind *comp_bsub_kind_row(int base, TyKind t) {
+  const BsubBase *bb = comp_bsub_info(base);
+  if (!bb || !bb->kinds) return NULL;
+  const BsubKind *settled = NULL;
+  for (const BsubKind *k = bb->kinds; k->ctype; k++) {
+    if (k->kind == t) return k;
+    if (k->kind == bb->settled_kind) settled = k;
+  }
+  return settled;
+}
+int comp_bsub_base_named(const char *name) {
+  for (int k = BSUB_NONE + 1; name && k < BSUB_NBASES; k++)
+    if (bsub_bases[k].method_name && sp_streq(bsub_bases[k].name, name)) return k;
+  return BSUB_NONE;
+}
+int comp_bsub_base_of_kind(TyKind t) {
+  for (int k = BSUB_NONE + 1; k < BSUB_NBASES; k++)
+    if (bsub_bases[k].kind_of && bsub_bases[k].kind_of(t)) return k;
+  return BSUB_NONE;
+}
+
+int comp_bsub_root(Compiler *c, int cid) {
+  return cid >= 0 && cid < c->nclasses ? c->classes[cid].bsub_root - 1 : -1;
+}
+int comp_ty_bsub_root(Compiler *c, TyKind t) {
+  return ty_is_object(t) ? comp_bsub_root(c, ty_object_class(t)) : -1;
+}
+int comp_bsub_base(Compiler *c, int cid) {
+  return cid >= 0 && cid < c->nclasses ? c->classes[cid].bsub_base : BSUB_NONE;
+}
+int comp_ty_bsub_base(Compiler *c, TyKind t) {
+  return ty_is_object(t) ? comp_bsub_base(c, ty_object_class(t)) : BSUB_NONE;
+}
+int comp_ty_bsub_evidence(Compiler *c, TyKind t) {
+  const BsubBase *bb = comp_bsub_info(comp_ty_bsub_base(c, t));
+  return bb ? bb->evidence : BSE_NONE;
+}
+/* While the inference is still optimistic an unsettled kind stays unknown,
+   so a later store can still narrow it. */
+TyKind comp_bsub_kind(Compiler *c, int cid) {
+  int r = comp_bsub_root(c, cid);
+  if (r < 0) return TY_UNKNOWN;
+  TyKind k = c->classes[r].bsub_kind;
+  return k == TY_UNKNOWN && !g_infer_optimistic ? bsub_bases[c->classes[r].bsub_base].settled_kind : k;
+}
+
+/* Whether call `id` on a receiver of type rt, a builtin subclass instance,
+   is the builtin's: no method, reader or writer of the class chain takes the
+   name, it asks nothing about the object itself, and the builtin (or a
+   module it includes) has it -- or a `super` into the builtin was rewritten
+   into it (builtin_only). *kind is the embedded builtin's kind to answer it
+   as. */
+int comp_bsub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
   int cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
-  if (comp_ary_root(c, cid) < 0 || nt_kind(c->nt, id) != NK_CallNode) return 0;
+  if (comp_bsub_root(c, cid) < 0 || nt_kind(c->nt, id) != NK_CallNode) return 0;
   const char *n = nt_str(c->nt, id, "name");
   if (!n) return 0;
   if (!nt_int(c->nt, id, "builtin_only", 0)) {
@@ -866,44 +923,49 @@ int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
       snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
       if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
     }
-    if (is_arysub_object_name(n)) return 0;
-    if (!comp_array_method_name(n)) return 0;
+    if (is_bsub_object_name(n)) return 0;
+    if (!bsub_bases[comp_bsub_base(c, cid)].method_name(n)) return 0;
   }
-  *kind = comp_ary_kind(c, cid);
+  *kind = comp_bsub_kind(c, cid);
   return 1;
 }
-/* Array's answer to call `id` is its receiver, so on an Array subclass
-   instance it is the instance (#7449, is_array_self_result_name). */
-int comp_arysub_self_result(Compiler *c, int id) {
+/* The builtin's answer to call `id` on rt is its receiver, so on a builtin
+   subclass instance it is the instance (#7449, the row's self_result). */
+int comp_bsub_self_result(Compiler *c, int id, TyKind rt) {
+  const BsubBase *bb = comp_bsub_info(comp_ty_bsub_base(c, rt));
   const char *n = nt_str(c->nt, id, "name");
-  return n && is_array_self_result_name(n, nt_ref(c->nt, id, "block") >= 0);
+  return bb && n && bb->self_result(n, nt_ref(c->nt, id, "block") >= 0);
 }
 
 /* Whether the arguments of call `id`, on a receiver of type rt (-1: none),
-   are read as Arrays, so an Array subclass instance among them is its Array
-   (#7449): the methods of an Array receiver that compare, combine or copy
-   another Array -- not the stores, which keep the instance itself as an
-   element -- and Kernel#puts, which prints an Array's elements. */
-int comp_arysub_args_viewed(Compiler *c, int id, TyKind rt) {
+   that are instances of a subclass of builtin `base` are read as that
+   builtin, so each is its Array (Hash, String) (#7449): the methods of a
+   receiver of the same builtin that compare, combine or copy another --
+   not the stores, which keep the instance itself as an element -- and
+   Kernel#puts, which prints an Array's elements. */
+int comp_bsub_args_viewed(Compiler *c, int id, TyKind rt, int base) {
   const NodeTable *nt = c->nt;
   const char *n = nt_str(nt, id, "name");
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
-    return sp_streq(n, "puts") && comp_method_index(c, n) < 0;
-  return array_new_copies(rt) && !is_array_element_store_name(n);
+    return base == BSUB_ARRAY && sp_streq(n, "puts") && comp_method_index(c, n) < 0;
+  const BsubBase *bb = comp_bsub_info(base);
+  return bb && bb->kind_of(rt) && !bb->element_store(n);
 }
 
-/* `Array(x)`: of an Array subclass instance x it is x itself (Kernel#Array
-   takes an Array as it is, #7449). x's node, else -1; the caller asks x's
-   type. */
-int comp_arysub_kernel_array(Compiler *c, int id) {
+/* `Array(x)` (`Hash(x)`, `String(x)`): of an instance x of a subclass of
+   that builtin it is x itself (Kernel#Array takes an Array as it is,
+   #7449). x's node, else -1, and *base the builtin named; the caller asks
+   whether x's type is an instance of a subclass of it. */
+int comp_bsub_kernel_conv(Compiler *c, int id, int *base) {
   const NodeTable *nt = c->nt;
   const char *n = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
-  if (!n || !sp_streq(n, "Array") || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0 ||
+  if (!n || !comp_bsub_base_named(n) || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0 ||
       comp_method_index(c, n) >= 0) return -1;
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
+  *base = comp_bsub_base_named(n);
   return av[0];
 }
 

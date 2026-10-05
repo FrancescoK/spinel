@@ -4659,7 +4659,8 @@ static void check_unrewritten_delegators(Compiler *c) {
    (Set, Date, ...) are absent: a subclass of those works. OpenStruct is a
    type of the runtime's own here, so it is listed with the builtins. Array
    is listed too, but a subclass of it is no longer refused: its instances
-   are real Arrays (#7449, mark_array_subclasses). */
+   are real Arrays (#7449, mark_builtin_subclasses); so is any builtin with
+   a row in the builtin-subclass table (comp_bsub_base_named). */
 static const char *builtin_value_superclass(Compiler *c, int sc) {
   static const char *const refused[] = {
     "Array", "Hash", "String", "Range", "Proc", "Method", "UnboundMethod",
@@ -4694,7 +4695,7 @@ static const char *builtin_value_superclass(Compiler *c, int sc) {
 
 static const char *refused_builtin_superclass(Compiler *c, int sc) {
   const char *nm = builtin_value_superclass(c, sc);
-  return nm && sp_streq(nm, "Array") ? NULL : nm;
+  return nm && comp_bsub_base_named(nm) ? NULL : nm;
 }
 
 /* A program class whose superclass is a builtin of that kind, or a class a
@@ -4725,13 +4726,13 @@ static void check_builtin_subclasses(Compiler *c) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     const char *par = refused_builtin_superclass(c, sc);
-    /* a program that reopens Array has a class of its own named Array, which
-       resolve_parents would take for the superclass */
+    /* a program that reopens Array (Hash, String) has a class of its own of
+       that name, which resolve_parents would take for the superclass */
     if (!par && (par = builtin_value_superclass(c, sc)) != NULL) {
-      if (comp_class_index(c, "Array") >= 0) {
+      if (comp_class_index(c, par) >= 0) {
         char msg[400];
-        snprintf(msg, sizeof msg, "class %s < Array: subclassing Array in a program that "
-                 "also reopens Array is not supported yet", cn ? cn : "?");
+        snprintf(msg, sizeof msg, "class %s < %s: subclassing %s in a program that "
+                 "also reopens %s is not supported yet", cn ? cn : "?", par, par, par);
         unsupported_feature(c, sc, msg);
       }
       continue;
@@ -4760,11 +4761,13 @@ static void check_builtin_subclasses(Compiler *c) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (!av || ac != 1) continue;
     const char *par = builtin_value_superclass(c, av[0]);
-    if (par && sp_streq(par, "Array"))
+    if (par && comp_bsub_base_named(par)) {
       /* no class of the program's own stands for a class made by the call */
-      unsupported_feature(c, id, "Class.new(Array) without a block is not supported yet "
-                                 "(the call makes its class at run time); declare it as "
-                                 "`class Name < Array`");
+      char msg[300];
+      snprintf(msg, sizeof msg, "Class.new(%s) without a block is not supported yet "
+               "(the call makes its class at run time); declare it as `class Name < %s`", par, par);
+      unsupported_feature(c, id, msg);
+    }
     else if (par) {
       char what[64];
       snprintf(what, sizeof what, "Class.new(%s)", par);
@@ -4835,11 +4838,12 @@ static void refuse_anon_superclass_reflection(Compiler *c) {
   }
 }
 
-/* The classes whose chain reaches the builtin Array (#7449): each records the
-   root of its chain, the class right below Array, whose instances and its
-   descendants' share one embedded Array kind. A program that reopens Array
-   was refused above. */
-static void mark_array_subclasses(Compiler *c) {
+/* The classes whose chain reaches a builtin they can subclass (#7449,
+   comp_bsub_base_named): each records the builtin and the root of its chain,
+   the class right below the builtin, whose instances and its descendants'
+   share one embedded builtin kind. A program that reopens the builtin was
+   refused above. */
+static void mark_builtin_subclasses(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++) {
     int r = i;
     for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r && g < 256; g++)
@@ -4847,9 +4851,11 @@ static void mark_array_subclasses(Compiler *c) {
     int dn = c->classes[r].def_node;
     if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
     const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
-    if (par && sp_streq(par, "Array") && comp_class_index(c, "Array") < 0) {
-      c->classes[i].ary_root = r + 1;
-      c->has_arysub = 1;
+    int base = par ? comp_bsub_base_named(par) : BSUB_NONE;
+    if (base && comp_class_index(c, par) < 0) {
+      c->classes[i].bsub_base = base;
+      c->classes[i].bsub_root = r + 1;
+      c->has_bsub = 1;
     }
   }
 }
@@ -4873,7 +4879,7 @@ void resolve_parents(Compiler *c) {
       if (p >= 0 && p != i) c->classes[i].parent = p;
     }
   }
-  mark_array_subclasses(c);
+  mark_builtin_subclasses(c);
   /* A `class << self; attr_accessor :x` is a method of the singleton class,
      and a subclass's singleton class inherits it: the accessor answers
      through the subclass, on the subclass's own slot (nil until assigned),

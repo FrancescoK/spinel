@@ -189,8 +189,8 @@ int is_symbol_exception_accessor(const char *n); /* exception accessors that can
 
 int is_builtin_reopen_name(const char *name);
 
-/* Array subclasses (#7449) */
-int is_arysub_object_name(const char *n);        /* class is_a? dup ...: the object, not its elements */
+/* Builtin subclasses (#7449) */
+int is_bsub_object_name(const char *n);        /* class is_a? dup ...: the object, not its elements */
 int is_array_self_result_name(const char *n, int has_blk);  /* <<, push, each { } ...: answer the receiver */
 int is_array_element_store_name(const char *n);  /* << push insert []= ...: the argument is an element */
 

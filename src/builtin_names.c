@@ -721,10 +721,10 @@ int is_builtin_reopen_name(const char *name) {
          sp_streq(name, "Random");
 }
 
-/* An Array subclass instance's questions about the object itself rather
+/* A builtin subclass instance's questions about the object itself rather
    than its elements (#7449): the class's own answers, through the object
    paths. dup and clone keep the class and copy the elements. */
-int is_arysub_object_name(const char *n) {
+int is_bsub_object_name(const char *n) {
   static const char *const names[] = {
     "class", "singleton_class", "is_a?", "kind_of?", "instance_of?", "respond_to?",
     "equal?", "object_id", "__id__", "dup", "clone", "itself", "tap", "then",
@@ -756,7 +756,7 @@ int is_array_self_result_name(const char *n, int has_blk) {
 
 /* Array's methods that store their arguments as elements, keeping each as
    the value it is, where the others read an Array argument as an Array
-   (#7449, comp_arysub_args_viewed). */
+   (#7449, comp_bsub_args_viewed). */
 int is_array_element_store_name(const char *n) {
   return is_push_alias(n) || sp_streq(n, "unshift") || sp_streq(n, "prepend") ||
          sp_streq(n, "insert") || sp_streq(n, "[]=") || sp_streq(n, "fill") || sp_streq(n, "store");

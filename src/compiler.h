@@ -531,14 +531,17 @@ typedef struct {
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
   int is_native_class;
-  /* An Array subclass (#7449): its instances ARE Arrays -- the struct starts
-     with the Array by value, so a pointer to one is a pointer to its Array --
-     and Array's methods dispatch on them. ary_root is the class right below
-     Array in the chain, plus one (0: not an Array subclass); ary_kind, read
-     on that root (comp_ary_kind), is the kind of the Array every instance of
-     the chain embeds, folded from the elements the program puts in. */
-  int ary_root;
-  TyKind ary_kind;
+  /* A builtin subclass (`class Page < Array`, #7449): its instances ARE the
+     builtin -- the struct starts with the builtin's struct by value, so a
+     pointer to one is a pointer to its Array (Hash, String) -- and the
+     builtin's methods dispatch on them. bsub_base is the builtin (BSUB_*,
+     0: not a builtin subclass); bsub_root is the class right below the
+     builtin in the chain, plus one; bsub_kind, read on that root
+     (comp_bsub_kind), is the kind of the builtin every instance of the chain
+     embeds, folded from what the program puts in. */
+  int bsub_base;
+  int bsub_root;
+  TyKind bsub_kind;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
@@ -809,7 +812,7 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
-  int has_arysub;      /* some class is an Array subclass (ClassInfo.ary_root, #7449) */
+  int has_bsub;        /* some class is a builtin subclass (ClassInfo.bsub_base, #7449) */
 
   LocalVar *gvars;    /* global variables ($g), name without '$' */
   int ngvars, cgvars;
@@ -1156,19 +1159,65 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
-/* Array subclasses (#7449, ClassInfo.ary_root): the root of class cid's
-   Array chain or -1; the same for an object type (-1 for any other type);
-   the kind of the Array the chain's instances embed, TY_POLY_ARRAY once the
-   inference is past its optimistic stage with no element seen. */
-int        comp_ary_root(Compiler *c, int cid);
-int        comp_ty_ary_root(Compiler *c, TyKind t);
-TyKind     comp_ary_kind(Compiler *c, int cid);
-/* Call `id` on rt (an Array subclass instance) is Array's, answered as the
-   embedded Array's kind *kind; and Array's answer is the receiver itself. */
-int        comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind);
-int        comp_arysub_self_result(Compiler *c, int id);
-int        comp_arysub_args_viewed(Compiler *c, int id, TyKind rt);
-int        comp_arysub_kernel_array(Compiler *c, int id);
+/* Builtin subclasses (#7449, ClassInfo.bsub_base): one row per builtin a
+   program class can subclass (bsub_bases in compiler.c), read by every pass
+   that handles an instance of one -- the analysis, the dispatch, the boxing,
+   the class recovery -- so a builtin is added as a row, not as code. A row
+   whose method_name is NULL is a builtin whose subclasses are still refused
+   (check_builtin_subclasses). */
+enum { BSUB_NONE = 0, BSUB_ARRAY, BSUB_HASH, BSUB_STRING, BSUB_NBASES };
+/* how a store into an instance is evidence about the kind it embeds */
+enum { BSE_NONE, BSE_ELEMENTS, BSE_KEYED };
+/* what `X[a, b]` builds before it becomes the instance's contents */
+enum { BSB_NONE, BSB_ARRAY_LITERAL, BSB_CLASS_CALL };
+/* One kind the builtin can embed: its C spellings. */
+typedef struct {
+  TyKind kind;             /* TY_INT_ARRAY */
+  const char *ctype;       /* the struct, embedded by value: "sp_IntArray" */
+  const char *box_id;      /* the cls_id a box of it carries: "SP_BUILTIN_INT_ARRAY" */
+  const char *init;        /* sets an embedded one up: "sp_IntArray_init_embedded" */
+  const char *fin;         /* the finalizer the instance is allocated with, or NULL */
+  const char *scan;        /* marks its references (the instance's scan calls it), or NULL */
+  const char *replace;     /* (dst, src): dup's copy of the contents */
+  const char *inspect;     /* p / to_s of the instance */
+} BsubKind;
+typedef struct {
+  const char *name;                                /* the builtin class, "Array" */
+  const char *field;                               /* the embedded struct's member: "ary" */
+  int (*method_name)(const char *n);               /* the names it answers */
+  int (*self_result)(const char *n, int has_blk);  /* its methods answering the receiver */
+  int (*element_store)(const char *n);             /* its methods keeping an argument as it is */
+  int (*kind_of)(TyKind t);                        /* t is one of its kinds */
+  TyKind settled_kind;                             /* the kind once nothing was seen */
+  int enumerable;                                  /* it includes Enumerable */
+  int evidence;                                    /* BSE_* */
+  int brackets;                                    /* BSB_* */
+  const char *box_test;                            /* its boxes' cls_id, $v the box: "sp_poly_is_array_kind($v.cls_id)" */
+  const BsubKind *kinds;                           /* ended by a TY_UNKNOWN row */
+} BsubBase;
+const BsubBase *comp_bsub_info(int base);          /* NULL for BSUB_NONE */
+/* the spellings of kind t of builtin `base`: its own row, else the settled kind's */
+const BsubKind *comp_bsub_kind_row(int base, TyKind t);
+int        comp_bsub_base_named(const char *name); /* the BSUB_* of a subclassable builtin, else 0 */
+int        comp_bsub_base_of_kind(TyKind t);       /* the BSUB_* whose kinds include t, else 0 */
+/* The root of class cid's chain below a builtin, or -1; the same for an
+   object type (-1 for any other type); the chain's builtin (BSUB_*, 0 for
+   none); the kind of the builtin the chain's instances embed, the row's
+   settled_kind once the inference is past its optimistic stage with nothing
+   seen. */
+int        comp_bsub_root(Compiler *c, int cid);
+int        comp_ty_bsub_root(Compiler *c, TyKind t);
+int        comp_bsub_base(Compiler *c, int cid);
+int        comp_ty_bsub_base(Compiler *c, TyKind t);
+int        comp_ty_bsub_evidence(Compiler *c, TyKind t);   /* the row's evidence (BSE_*), BSE_NONE for none */
+TyKind     comp_bsub_kind(Compiler *c, int cid);
+/* Call `id` on rt (a builtin subclass instance) is the builtin's, answered
+   as the embedded builtin's kind *kind; and the builtin's answer is the
+   receiver itself. */
+int        comp_bsub_call(Compiler *c, int id, TyKind rt, TyKind *kind);
+int        comp_bsub_self_result(Compiler *c, int id, TyKind rt);
+int        comp_bsub_args_viewed(Compiler *c, int id, TyKind rt, int base);
+int        comp_bsub_kernel_conv(Compiler *c, int id, int *base);
 int        comp_array_method_name(const char *n);
 int        comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name);
 int        comp_builtin_name_reopened(Compiler *c, const char *name);

@@ -1129,10 +1129,10 @@ void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, i
    or to no arm when none is above it (NoMethodError). */
 static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b) {
-  /* an Array subclass instance is boxed as its Array: it keys by the class
-     its scan names (#7449) */
+  /* a builtin subclass instance is boxed as its builtin: it keys by the
+     class its scan names (#7449) */
   static int ary_done = 0;
-  if (!ary_done && program_has_arysub(c)) {
+  if (!ary_done && program_has_bsub(c)) {
     int kt = ++g_tmp;
     buf_printf(b, "({ int _ak%d = sp_arysub_cls_of(_t%d); _ak%d >= 0 ? _ak%d : ", kt, tv, kt, kt);
     ary_done = 1;
@@ -17475,12 +17475,16 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
                   "(%s.tag == SP_TAG_OBJ && (%s.cls_id == SP_BUILTIN_RATIONAL || "
                   "%s.cls_id == SP_BUILTIN_BIG_RATIONAL || %s.cls_id == SP_BUILTIN_COMPLEX)))",
                v, v, v, v, v, v, v);
-  else if (sp_streq(cn, "Array")) {
-    buf_printf(b, "(%s.tag == SP_TAG_OBJ && sp_poly_is_array_kind(%s.cls_id)", v, v);
-    /* an Array subclass instance is no instance of Array itself (#7449) */
-    if (exact && program_has_arysub(c)) buf_printf(b, " && sp_arysub_cls_of(%s) < 0", v);
+  else if (program_has_bsub(c) && comp_bsub_base_named(cn)) {
+    /* a builtin a program class subclasses: its row's box test, and a
+       builtin subclass instance, boxed as its builtin, is no instance of the
+       builtin itself (#7449) */
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && ", v);
+    bsub_expand(b, comp_bsub_info(comp_bsub_base_named(cn))->box_test, v);
+    if (exact) buf_printf(b, " && sp_arysub_cls_of(%s) < 0", v);
     buf_puts(b, ")");
   }
+  else if (sp_streq(cn, "Array")) buf_printf(b, "(%s.tag == SP_TAG_OBJ && sp_poly_is_array_kind(%s.cls_id))", v, v);
   else if (sp_streq(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && ((%s.cls_id <= -13 && %s.cls_id >= -20) || %s.cls_id == -34))", v, v, v, v);
   else if (sp_streq(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
   else {
@@ -17505,8 +17509,8 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
          receiver does */
       for (int k = 0; k < c->nclasses; k++)
         if (k == cid || (!exact && class_isa_user(c, k, cid, cn))) {
-          /* an Array subclass instance is boxed as its Array (#7449) */
-          if (c->classes[k].ary_root > 0)
+          /* a builtin subclass instance is boxed as its builtin (#7449) */
+          if (c->classes[k].bsub_root > 0)
             buf_printf(b, "%ssp_arysub_cls_of(%s) == %d", first ? "" : " || ", v, k);
           else buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", v, k);
           first = 0;
@@ -20074,7 +20078,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     } }
-  if (emit_arysub_call(c, id, b)) return;   /* Array's, on an Array subclass instance (#7449) */
+  if (emit_bsub_call(c, id, b)) return;   /* the builtin's, on a builtin subclass instance (#7449) */
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
@@ -22684,8 +22688,9 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
-  /* an Array subclass instance answers Array's names (#7449) */
-  if (!resolved && recv >= 0 && comp_ty_ary_root(c, rt) >= 0 && comp_array_method_name(qm))
+  /* a builtin subclass instance answers its builtin's names (#7449) */
+  if (!resolved && recv >= 0 && comp_ty_bsub_root(c, rt) >= 0 &&
+      comp_bsub_info(comp_ty_bsub_base(c, rt))->method_name(qm))
     { yes = resolved = 1; }
   /* A top-level def (a hoisted `module Kernel` method among them) is a
      private method of Object, so every receiver answers it to include_all:

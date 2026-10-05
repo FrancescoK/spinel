@@ -1006,8 +1006,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
       }
     }
-    if (dkw_ok && comp_ty_ary_root(c, drt) >= 0) {
-      /* an Array subclass instance: its class's own copy (sp_X__dup), by the
+    if (dkw_ok && comp_ty_bsub_root(c, drt) >= 0) {
+      /* a builtin subclass instance: its class's own copy (sp_X__dup), by the
          class it carries when a subclass's instance can be behind it (#7449) */
       int cid = ty_object_class(drt), t = ++g_tmp, d = ++g_tmp;
       const char *cn = c->classes[cid].c_name;
@@ -1021,14 +1021,18 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                      t, k, cn, c->classes[k].c_name, t, mode);
       buf_printf(b, "(sp_%s *)sp_%s__dup(_t%d, %d); SP_GC_ROOT(_t%d); ", cn, cn, t, mode, d);
       /* the class's initialize_copy hook, as for any program object; its
-         super into Array is a replace, which the copy has already done */
+         super into the builtin is a replace, which the copy has already done */
       int defcls = -1;
       int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
       LocalVar *icp = ic >= 0 && c->scopes[ic].nparams == 1 && !c->scopes[ic].yields
         ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
-      if (ic >= 0 && (!icp || !ty_is_object(icp->type)))
-        unsupported_feature(c, id, "an initialize_copy of an Array subclass whose parameter is not "
-                                   "typed as the class is not supported yet");
+      if (ic >= 0 && (!icp || !ty_is_object(icp->type))) {
+        const char *bn = comp_bsub_info(comp_bsub_base(c, cid))->name;
+        char msg[200];
+        snprintf(msg, sizeof msg, "an initialize_copy of a%s %s subclass whose parameter is not "
+                 "typed as the class is not supported yet", strchr("AEIOU", bn[0]) ? "n" : "", bn);
+        unsupported_feature(c, id, msg);
+      }
       else if (ic >= 0) {
         const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] ? ", NULL" : "";
         buf_printf(b, "if (_t%d) ", d);
@@ -2285,4 +2289,111 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
     return 1;
   }
   return 0;
+}
+
+/* ---- Builtin subclass instances (#7449) ----
+   A call the builtin answers on a builtin subclass instance (comp_bsub_call)
+   is the builtin's call: the receiver is bound to its Array (Hash, String)
+   -- the same pointer, since the instance starts with it -- and the call
+   re-enters the emitters under the kind the inference pinned it to
+   (infer_bsub_call), as a boxed receiver's face does (emit_face_arm). A
+   call whose answer is its receiver answers the instance. */
+typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; } BsubView;
+
+/* Bind node n, a builtin subclass instance, to its builtin -- the same
+   pointer cast -- evaluating anything but a variable once, ahead of the
+   call. */
+static int bsub_bind(Compiler *c, int n) {
+  const char *at = bsub_ctype(c, ty_object_class(comp_ntype(c, n)));
+  NodeKind nk = nt_kind(c->nt, n);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, n, &rb);
+  char cast[96];
+  snprintf(cast, sizeof cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
+  int slot;
+  if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && strlen(cast) < sizeof g_argov_text[0])
+    slot = view_bind(n, "%s", cast);
+  else {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s *_t%d = (%s *)(%s); SP_GC_ROOT(_t%d);\n", at, t, at, rb.p ? rb.p : "NULL", t);
+    slot = view_bind(n, "_t%d", t);
+  }
+  free(rb.p);
+  return slot;
+}
+
+/* Bind and retype the receiver of call `id` when the call is the builtin's
+   on a builtin subclass instance, and the arguments the call reads as its
+   builtin (comp_bsub_args_viewed); 0 when there is neither. */
+static int bsub_view_open(Compiler *c, int id, BsubView *v) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
+  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN;
+  if (comp_bsub_call(c, id, rt, &k) && comp_bsub_info(comp_ty_bsub_base(c, rt))->kind_of(k)) {
+    v->bound = bsub_bind(c, recv);
+    v->vr = view_push(c, recv, k);
+    v->vf = view_push_face(recv, k);
+    /* a call that answers its receiver: the Array emitter's answer, as the
+       pinned inference types it -- the Array itself, or boxed where a `!`
+       method can answer nil -- is turned back into the instance below */
+    if (comp_bsub_self_result(c, id, rt)) {
+      v->nat = infer_uncached(c, id);
+      v->vi = view_push(c, id, v->nat);
+    }
+    rt = k;
+  }
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an && v->nv < 16; i++) {
+    TyKind at = comp_ntype(c, av[i]);
+    if (comp_ty_bsub_root(c, at) < 0 || !comp_bsub_args_viewed(c, id, rt, comp_ty_bsub_base(c, at))) continue;
+    int slot = bsub_bind(c, av[i]);
+    if (v->bound < 0) v->bound = slot;
+    v->views[v->nv++] = view_push(c, av[i], comp_bsub_kind(c, ty_object_class(at)));
+  }
+  return v->bound >= 0;
+}
+static void bsub_view_close(Compiler *c, BsubView *v) {
+  for (int i = v->nv - 1; i >= 0; i--) view_pop(c, v->views[i]);
+  if (v->vi >= 0) view_pop(c, v->vi);
+  if (v->vf >= 0) view_pop(c, v->vf);
+  if (v->vr >= 0) view_pop(c, v->vr);
+  view_unbind(v->bound);
+}
+
+int emit_bsub_call(Compiler *c, int id, Buf *b) {
+  if (!c->has_bsub) return 0;
+  int kb = BSUB_NONE, ka = comp_bsub_kernel_conv(c, id, &kb);
+  if (ka >= 0 && comp_ty_bsub_base(c, comp_ntype(c, ka)) == kb) { emit_expr(c, ka, b); return 1; }
+  int recv = nt_ref(c->nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  BsubView v;
+  if (!bsub_view_open(c, id, &v)) return 0;
+  const char *cn = recv >= 0 && ty_is_object(rt) ? c->classes[ty_object_class(rt)].c_name : NULL;
+  if (v.vi >= 0 && v.nat == TY_POLY) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_call(c, id, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d.v.p; })", t, cn, t);
+  }
+  else {
+    if (v.vi >= 0) buf_printf(b, "((sp_%s *)(", cn);
+    emit_call(c, id, b);
+    if (v.vi >= 0) buf_puts(b, "))");
+  }
+  bsub_view_close(c, &v);
+  return 1;
+}
+
+/* The statement form: the statement emitters' own Array paths (the in-place
+   mutators, the loops) take it. */
+int emit_bsub_call_stmt(Compiler *c, int id, Buf *b, int indent) {
+  if (!c->has_bsub) return 0;
+  BsubView v;
+  if (!bsub_view_open(c, id, &v)) return 0;
+  emit_stmt_inner(c, id, b, indent);
+  bsub_view_close(c, &v);
+  return 1;
 }
