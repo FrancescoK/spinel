@@ -1780,7 +1780,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* true <=> true is 0; nil <=> nil is 0; any other bool/nil pairing is nil */
     if (nm0 && sp_streq(nm0, "<=>") && ac0 == 1 &&
         (rt0 == TY_BOOL || rt0 == TY_NIL)) {
-      TyKind at0 = comp_ntype(c, av0[0]);
+      TyKind at0 = repr_of(c, av0[0]).as_ty;
       if (rt0 == TY_BOOL && at0 == TY_BOOL) {
         int t1 = ++g_tmp, t2 = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = ", t1); emit_expr(c, rv0, b);
@@ -1794,8 +1794,8 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
       /* a boxed operand can hold the same singleton: `false <=> key`, the
-         key a boxed false, is 0 */
-      if (at0 == TY_POLY || at0 == TY_UNKNOWN) {
+         key a boxed false, is 0. A NULL String operand is nil too. */
+      if (at0 == TY_POLY || at0 == TY_UNKNOWN || (rt0 == TY_NIL && at0 == TY_STRING)) {
         buf_puts(b, "sp_box_int_or_nil(");
         emit_poly_cmp_ordered(c, "sp_poly_spaceship", rv0, av0[0], b);
         buf_puts(b, ")");
