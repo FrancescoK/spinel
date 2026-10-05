@@ -1410,21 +1410,21 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* Numeric#arg / #angle / #phase (0, pi or a Complex's angle) and #rect /
-     #rectangular (a pair) on a poly value, where the dispatch answers them
+     #rectangular and #polar (a pair) on a poly value, where the dispatch answers them
      (sp_poly_arg, sp_poly_rect): unless a class of the program's own has a
      method, a reader or a class method of the name, the test emit_poly_call
      makes. The builtin-only derivation, which shapes the dispatch's default
      arm, answers them either way, as that arm does. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase") ||
-       sp_streq(name, "rect") || sp_streq(name, "rectangular"))) {
+       sp_streq(name, "rect") || sp_streq(name, "rectangular") || sp_streq(name, "polar"))) {
     int own = 0;
     for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
       if (comp_poly_arm_defines_n(c, k, name, argc) ||
           (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL)) ||
           comp_cmethod_in_chain(c, k, name, NULL) >= 0) own = 1;
     if (!own) {
-      *out = (is_rectangular_alias(name)) ? TY_POLY_ARRAY : TY_POLY;
+      *out = (is_rectangular_alias(name) || sp_streq(name, "polar")) ? TY_POLY_ARRAY : TY_POLY;
       return 1;
     }
   }
