@@ -43,20 +43,31 @@ jobs:
           assert all(name != "base" for name, _ in heads), "a head may not be called base"
           # the rubyspec gate in shards of suites (the Run step's case)
           rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3, 4, 5)] if "rubyspec" in legs else []
+          # the sharded probes (the Run step's case), each on the base and
+          # every head: brow the builtin-row probe in --shard slices of its
+          # ops; dc, lit, op and ord Matz's corpus probes, each shard every
+          # n-th program of the tool's default FILE set. <LEG>_SHARDS in
+          # verify.conf overrides a count.
+          sharded = {"brow": 4, "dc": 8, "lit": 2, "op": 4, "ord": 2}
+          sp = []
+          for leg, d in sharded.items():
+              if leg in legs:
+                  of = int(os.environ.get(leg.upper() + "_SHARDS", d))
+                  sp += [{"leg": leg, "shard": k, "of": of} for k in range(1, of + 1)]
           jobs = []
           for leg in ("cb", "vf", "nn"):
               if leg in legs:
                   jobs.append({"leg": leg, "name": "base", "sha": base, "shard": 0})
-          jobs += [dict(j, name="base", sha=base) for j in rs]
+          jobs += [dict(j, name="base", sha=base) for j in rs + sp]
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
               for leg in ("cb", "vf", "nn", "cdiff", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
-              jobs += [dict(j, name=name, sha=sha) for j in rs]
+              jobs += [dict(j, name=name, sha=sha) for j in rs + sp]
           builds = []
-          if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec")):
+          if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec", *sharded)):
               builds.append({"name": "base", "sha": base, "dir": "base"})
           if any(leg != "gate" for leg in legs):
               builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
@@ -170,6 +181,8 @@ jobs:
       NAME: ${{ matrix.name }}
       SHA: ${{ matrix.sha }}
       SHARD: ${{ matrix.shard }}
+      # a sharded probe's count of shards (the plan's `sharded`)
+      OF: ${{ matrix.of }}
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_STARTUP_TIMEOUT: "30"
       SCCACHE_IDLE_TIMEOUT: "0"
