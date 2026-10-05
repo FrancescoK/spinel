@@ -2448,9 +2448,11 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      would otherwise lower to the unresolved-call raise even when the value
      is a genuine Time. Give the switch a SP_BUILTIN_TIME arm so a real Time
      formats and nil/anything-else raises NoMethodError, matching CRuby
-     (issue #2457, the family2 nilable value-method dispatch gap). Only when
-     no user class defines strftime, so the default-raise arm is unambiguous. */
-  int is_strftime = ncand == 0 && sp_streq(name, "strftime") && argc == 1 &&
+     (issue #2457, the family2 nilable value-method dispatch gap). Beside
+     user classes that define strftime the Time arm joins theirs, and the
+     switch's own default raises (#7334): a program-defined Date left a real
+     Time with no arm at all. */
+  int is_strftime = sp_streq(name, "strftime") && argc == 1 &&
                     infer_type(c, argv[0]) == TY_STRING;
   /* cover? on a container-read Range; gcdlcm on a container-read int
      receiver (#3234): builtin pre-arms, no user candidates required */
@@ -3430,13 +3432,18 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
   }
   /* strftime on a poly value that is really a Time: format it; nil or any
      other runtime class raises NoMethodError as CRuby does. */
-  if (is_strftime) {
+  /* beside user arms the call's type is theirs: the Time arm joins only
+     where its String fits (a user strftime answering something else keeps
+     the switch it had) */
+  if (is_strftime && (ps->ncand == 0 || ret == TY_STRING || ret == TY_POLY)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRFTIME, -1, TY_UNKNOWN, PC_SAME);
     if (ret == TY_POLY)
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d)); break;", tr, tv, atmp[0]);
     else
       buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
-    buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);
+    /* with user arms in the switch, the default is theirs to emit */
+    if (ps->ncand == 0)
+      buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);
   }
   /* the poly value may actually be a string-keyed hash: dispatch `[]` /
      `fetch` to the matching hash storage, boxing the value into the poly
@@ -3669,7 +3676,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
      `"abc".include?(:x)` is a TypeError in CRuby, not a NoMethodError --
      so those names keep their existing answer rather than gain a
      mislabelled raise (#3394). */
-  if (!is_pred && !is_strftime && !is_aref && !is_aref2 && !is_fetch && !is_include &&
+  if (!is_pred && !(is_strftime && ps->ncand == 0) && !is_aref && !is_aref2 && !is_fetch && !is_include &&
       !is_push && !is_cover && !is_gcdlcm && !is_strdel && !is_strsplit &&
       !is_pdelete && !is_pdig && !is_pvalues_at && !is_pfirstn && !is_pmerge) {
         if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_GENERIC, -1, TY_UNKNOWN, PC_SAME);
