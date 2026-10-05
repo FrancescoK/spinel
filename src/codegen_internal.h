@@ -225,6 +225,10 @@ int subtree_may_run_proc(Compiler *c, int id);
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
 int subtree_is_pure_read(Compiler *c, int id);
+/* Does an operand of the call build into the statement's prelude, ahead of
+   an operand to its left that runs code (`a.push((log << :a; 1), [log.size])`,
+   codegen_call.c)? Then only emit_operands_in_order orders them. */
+int call_operand_builds_ahead(Compiler *c, int id);
 /* Is the call a reader the emitter lowers to a plain field read? *allocates is
    set when the read builds a copy (a shared String slot). codegen_call.c */
 int call_is_field_read(Compiler *c, int id, int *allocates);
