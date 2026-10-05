@@ -3479,14 +3479,18 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
                       ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
       /* STRBUF base: the buffer appends in place (its cstr read is not an
          lvalue, so the concat-and-write-back form below can't serve it) */
-      if (nchain > 0 && repr_of_slot(c, blv).kind == RK_STRBUF &&
-          bty && sp_streq(bty, "LocalVariableReadNode")) {
+      /* a global or a constant holding the handle (--share-strings) too */
+      char sref9[256];
+      int static9 = nchain > 0 && repr_handle_static_ref(c, cur, sref9, sizeof sref9);
+      if (nchain > 0 && (static9 || (repr_of_slot(c, blv).kind == RK_STRBUF &&
+          bty && sp_streq(bty, "LocalVariableReadNode")))) {
         int tb9 = ++g_tmp;
         /* through emit_local_ref: a block made a real proc reads the
            base through its capture (`*_cap->c_s`), a captured local
            through its cell -- `lv_s` exists in neither */
         buf_printf(b, "({ sp_String *_t%d = ", tb9);
-        emit_local_ref(c, cur, nt_str(nt, cur, "name"), b);
+        if (static9) buf_puts(b, sref9);
+        else emit_local_ref(c, cur, nt_str(nt, cur, "name"), b);
         buf_puts(b, ";");
         for (int j = nchain; j >= 0; j--) {  /* innermost link first */
           int arg = j > 0 ? chain[j - 1] : argv[0];
@@ -3845,7 +3849,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (is_string_position_mutator(nmS))) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
       /* a global holding the handle (--share-strings) */
-      if (nt_kind(ntS, recvS) == NK_GlobalVariableReadNode &&
+      if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
       const char *sbn = strbuf_local_name(c, recvS);
       if (sbn && g_nren < MAX_RENAME) {
@@ -7939,7 +7943,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         sp_streq(nmS, "setbyte")) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
-      if (nt_kind(ntS, recvS) == NK_GlobalVariableReadNode &&
+      if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       const char *sbn = strbuf_local_name(c, recvS);
       if (sbn && g_nren < MAX_RENAME) {

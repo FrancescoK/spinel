@@ -2454,7 +2454,7 @@ int sb_shadowed_reader(int node) {
 int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv) {
   /* a global holding the handle (--share-strings) is such a slot too:
      strbuf_slot_ref answers for it only then */
-  int gv = repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_GlobalVariableReadNode && !sb_shadowed_reader(recv);
+  int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
   if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
   if (!gv && !rp.handle && !rp.demand) return 0;
@@ -2536,14 +2536,11 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     free(rb2.p);
     return fit;
   }
-  /* a global holding the handle (--share-strings, #6765) */
-  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_GlobalVariableReadNode) {
+  /* a global or a constant holding the handle (--share-strings, #6765) */
+  if (repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
     /* inside the shim over it, the read is its plain shadow */
     if (sb_shadowed_reader(recv)) return 0;
-    LocalVar *gv = repr_handle_gvar(c, recv);
-    if (!gv) return 0;
-    snprintf(out, cap, "gv_%s", gv->name);
-    return 1;
+    return repr_handle_static_ref(c, recv, out, cap);
   }
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, recv, "name");
