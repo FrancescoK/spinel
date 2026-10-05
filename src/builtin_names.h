@@ -33,6 +33,7 @@ int is_select_bang(const char *n);    /* select! filter! keep_if reject! delete_
 int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */
+int is_self_answer(const char *n);    /* freeze itself: the receiver itself, never a copy */
 int is_int_step(const char *n);       /* times upto downto: Integer's counting iterators */
 int is_equality_name(const char *n);  /* equal? eql? == */
 int is_bits_query(const char *n);     /* allbits? anybits? nobits? */
