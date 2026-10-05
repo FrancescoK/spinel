@@ -72,6 +72,12 @@ int share_class_holders(const Compiler *c, int h);
 unsigned share_elem_flags(const Compiler *c, int e);
 int share_elem_holders(const Compiler *c, int e);
 
+/* Under --share-strings, once the analysis is final: mark each String-keyed
+   Hash call's key that reads a shared handle, with nothing run between the
+   read and the call, as strbuf_read_raw, so it hands over the live buffer
+   instead of a copy. Answers how many it marked. */
+int share_mark_borrows(Compiler *c);
+
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
 void share_dump_unknown_mutations(Compiler *c);
 
