@@ -192,12 +192,20 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   /* Blockless any?/all?/none?/one? on a BOXED receiver: walk the elements and
      count the truthy ones, the way the typed-array arms do. A widened array
      (an element read, a destructured multi-value return) had no arm at all and
-     raised NoMethodError naming Array, the class that defines them (#3967). */
-  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && rt == TY_POLY &&
+     raised NoMethodError naming Array, the class that defines them (#3967).
+     A pattern argument counts the elements it matches with === instead, as
+     the typed arms do; it is evaluated after the receiver, before the walk. */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && rt == TY_POLY &&
+      (argc == 0 || (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+                     nt_kind(nt, argv[0]) != NK_KeywordHashNode)) &&
       is_quantifier(name) &&
       !user_defines_or_reads(c, name)) {
-    int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+    int ta = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+    if (argc == 1) {
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tp); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tp);
+    }
     buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
     emit_poly_iter_obj_reject(c, ta, name, b);
     /* the same receiver check the each emitter makes: nil is no collection,
@@ -206,8 +214,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
     buf_printf(b, "sp_int _t%d = sp_poly_arr_len_ex(_t%d); sp_int _t%d = 0;"
                   " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                  " if (sp_poly_truthy(sp_poly_each_elem(_t%d, _t%d))) _t%d++; ",
-               tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tcnt);
+                  " if (", tn, ta, tcnt, ti, ti, tn, ti);
+    if (argc == 1) buf_printf(b, "sp_poly_case_eq(_t%d, sp_poly_each_elem(_t%d, _t%d))", tp, ta, ti);
+    else buf_printf(b, "sp_poly_truthy(sp_poly_each_elem(_t%d, _t%d))", ta, ti);
+    buf_printf(b, ") _t%d++; ", tcnt);
     if (sp_streq(name, "any?"))       buf_printf(b, "_t%d > 0; })", tcnt);
     else if (sp_streq(name, "all?"))  buf_printf(b, "_t%d == _t%d; })", tcnt, tn);
     else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tcnt);
