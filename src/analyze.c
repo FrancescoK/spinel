@@ -16264,12 +16264,13 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
 }
 /* Every ReturnNode grouped by the scope comp_scope_of gives it, in node
    order: scope i's are (*list)[(*start)[i] .. (*start)[i + 1]). The caller
-   frees both. 0 when out of memory. */
-static int an_returns_by_scope(Compiler *c, int **start, int **list) {
+   frees both. Out of memory stops the compile: without the grouping the
+   deep-return loop would skip its remaining call sites. */
+static void an_returns_by_scope(Compiler *c, int **start, int **list) {
   const NodeTable *nt = c->nt;
   int ns = c->nscopes > 0 ? c->nscopes : 1, nr = 0;
   int *st = calloc((size_t)ns + 1, sizeof(int));
-  if (!st) return 0;
+  if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int u = 0; u < nt->count; u++) {
     if (nt_kind(nt, u) != NK_ReturnNode) continue;
     st[(int)(comp_scope_of(c, u) - c->scopes) + 1]++;
@@ -16278,13 +16279,12 @@ static int an_returns_by_scope(Compiler *c, int **start, int **list) {
   for (int i = 0; i < ns; i++) st[i + 1] += st[i];
   int *ls = malloc((size_t)(nr > 0 ? nr : 1) * sizeof(int));
   int *fill = malloc((size_t)ns * sizeof(int));
-  if (!ls || !fill) { free(st); free(ls); free(fill); return 0; }
+  if (!ls || !fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(fill, st, (size_t)ns * sizeof(int));
   for (int u = 0; u < nt->count; u++)
     if (nt_kind(nt, u) == NK_ReturnNode) ls[fill[comp_scope_of(c, u) - c->scopes]++] = u;
   free(fill);
   *start = st; *list = ls;
-  return 1;
 }
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
@@ -17043,7 +17043,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     const char *mn = nt_str(nt, wv, "name");
     int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
     if (mi3 <= 0) continue;
-    if (!ret_start && !an_returns_by_scope(c, &ret_start, &ret_list)) break;
+    if (!ret_start) an_returns_by_scope(c, &ret_start, &ret_list);
     /* every return tail (implicit + explicit) must be a shared slot read */
     int shared_ok = 1, saw_tail = 0;
     { int lastT = scope_body_last(c, mi3);
