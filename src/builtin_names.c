@@ -720,3 +720,10 @@ int is_builtin_reopen_name(const char *name) {
          sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
          sp_streq(name, "Random");
 }
+
+int array_unseen_add_kind(const char *n) {
+  if (sp_streq(n, "concat")) return ARRAY_ADD_CONCAT;
+  if (sp_streq(n, "insert")) return ARRAY_ADD_INSERT;
+  if (sp_streq(n, "prepend")) return ARRAY_ADD_PREPEND;
+  return ARRAY_ADD_NONE;
+}
