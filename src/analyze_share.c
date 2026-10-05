@@ -31,6 +31,17 @@ enum { SHE_WRITTEN = 1 };
    so a container of the class can be reached again (sh_finalize) */
 enum { SHF_OUT = 8 };
 
+/* A callable value: v its value; node the lambda's or the block's node, or
+   -1 for a Method of every method named mname (in class mcid's chain and
+   below it, or anywhere when mcid < 0). escaped: its class met UNKNOWN, so
+   its parameters and value have. */
+struct ShCallable { int v, node, mcid; const char *mname; unsigned char escaped; };
+/* A call of a callable value: the receiver's value rv, the arguments'
+   values, the answer av. unk: the receiver's class met UNKNOWN (or holds no
+   callable the walk made), so the arguments and answer have. bound: per
+   callable, already bound. */
+struct ShCallSite { int rv, av, nargs, *args; unsigned char unk, *bound; };
+
 typedef struct ShareFacts {
   int n, cap;
   int *parent, *elem, *nhold, *nmem, *nelem, *hidx, *owner;
@@ -70,6 +81,11 @@ typedef struct ShareFacts {
      their subclasses' and ancestors') are the ones it can reach */
   int *dyn_cls, ndyn_cls, cdyn_cls;
   signed char *blk_follow;   /* per scope: sh_blkparam_followed, -1 not yet asked */
+  /* the callables the walk follows (a lambda, a proc's or a kept block's
+     body, a Method of a named method) and the sites that call one: settled
+     after the walk (sh_settle_callables) */
+  struct ShCallable *cbl; int ncbl, ccbl;
+  struct ShCallSite *cs; int ncs, ccs;
   int dyn_sym;         /* a send whose name is a Symbol value: it reaches the
                           methods a Symbol literal of the program names */
   const char **mconst;
@@ -95,7 +111,7 @@ typedef struct ShareFacts {
 enum { UT_TARGET = 1, UT_BLKPARAM, UT_METHOD_REF, UT_DYN_IVAR, UT_SEND, UT_BSH_CALL, UT_RECVLESS,
        UT_POLY_CALLABLE, UT_EXC, UT_SYMPROC, UT_FIBER, UT_THREAD, UT_BLOCK_VALUE, UT_STR_REOPEN,
        UT_OPWRITE, UT_YIELD_TOP, UT_BREAK, UT_LAMBDA, UT_SELF_STR, UT_DYN_REACH, UT_IVARS_ALL,
-       UT_NONAME, UT_EXEC, UT_POLY_NEW, UT_NOROW, UT_SUPER, UT__N };
+       UT_NONAME, UT_EXEC, UT_POLY_NEW, UT_NOROW, UT_SUPER, UT_CALLABLE_ESC, UT_CALL_OPAQUE, UT_CALLABLE_SRC, UT__N };
 
 
 /* ---- the union-find ---- */
@@ -272,6 +288,9 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
 
 /* Can a value of type t hold a String, or a container of them? An object's
    Strings sit in its ivars, which are holders of their own. */
+/* a proc's, a lambda's or a Method's slot: a callable flows through it */
+static int sh_may_call(TyKind t) { return t == TY_PROC || t == TY_METHOD || t == TY_CURRY; }
+
 static int sh_may_hold(TyKind t) {
   if (ty_is_object(t) || ty_is_obj_array(t)) return 0;
   switch (t) {
@@ -292,8 +311,11 @@ static int sh_may_hold(TyKind t) {
 static int sh_local_of(ShareFacts *F, Compiler *c, Scope *s, const char *name, int node) {
   if (!s || !name) return -1;
   LocalVar *lv = scope_local(s, name);
-  if (!lv || !sh_may_hold(lv->type)) return -1;
+  if (!lv || (!sh_may_hold(lv->type) && !sh_may_call(lv->type))) return -1;
+  int nh0 = F->nh;
   int e = sh_holder(F, SHK_LOCAL, (int)(s - c->scopes), (int)(lv - s->locals), NULL, node);
+  /* a proc's or a Method's slot holds no String */
+  if (F->nh > nh0 && sh_may_call(lv->type)) F->nhold[e] = 0;
   /* a parameter's String is the caller's, a captured local's a proc's too */
   if (e >= 0 && (lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives || s->def_node < 0))
     F->lsc[sh_find(F, e)] = -2;
@@ -314,9 +336,11 @@ static int sh_ivar_owner(Compiler *c, int node) {
 static int sh_ivar(ShareFacts *F, Compiler *c, int cid, const char *name, int node) {
   if (cid < 0 || !name) return -1;
   int iv = comp_ivar_index(&c->classes[cid], name);
-  if (iv >= 0 && !sh_may_hold(c->classes[cid].ivar_types[iv])) return -1;
+  TyKind it = iv >= 0 ? c->classes[cid].ivar_types[iv] : TY_UNKNOWN;
+  if (iv >= 0 && !sh_may_hold(it) && !sh_may_call(it)) return -1;
   int nh0 = F->nh;
   int e = sh_holder(F, SHK_IVAR, cid, -1, name, node);
+  if (F->nh > nh0 && sh_may_call(it)) F->nhold[e] = 0;
   /* a superclass's ivar of the name is the same slot of the same object:
      one written in A#initialize and changed in B#bang (B < A) */
   if (F->nh > nh0)
@@ -347,8 +371,11 @@ static void sh_ivar_store(ShareFacts *F, Compiler *c, int l, int vn, int v) {
 static int sh_gvar(ShareFacts *F, Compiler *c, const char *name, int node) {
   if (!name) return -1;
   LocalVar *gv = comp_gvar(c, name[0] == '$' ? name + 1 : name);
-  if (gv && !sh_may_hold(gv->type)) return -1;
-  return sh_holder(F, SHK_GVAR, 0, -1, name, node);
+  if (gv && !sh_may_hold(gv->type) && !sh_may_call(gv->type)) return -1;
+  int nh0 = F->nh;
+  int e = sh_holder(F, SHK_GVAR, 0, -1, name, node);
+  if (F->nh > nh0 && gv && sh_may_call(gv->type)) F->nhold[e] = 0;
+  return e;
 }
 
 static int sh_scope_holder(ShareFacts *F, int kind, int mi) {
@@ -572,7 +599,10 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
   if (blk < 0 || v < 0) return;
   int bp = nt_ref(nt, blk, "parameters");
   if (bp < 0) return;
-  if (nt_kind(nt, bp) != NK_BlockParametersNode) {
+  /* a synthesized lambda's parameters are the ParametersNode itself
+     (desugar_block_capture_wrap) */
+  int pn = nt_kind(nt, bp) == NK_ParametersNode ? bp : -1;
+  if (pn < 0 && nt_kind(nt, bp) != NK_BlockParametersNode) {
     /* `_1` / `it`: the parameters by name */
     for (int i = 0; ; i++) {
       const char *pn = block_param_name(c, blk, i);
@@ -581,7 +611,7 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
     }
     return;
   }
-  int pn = nt_ref(nt, bp, "parameters");
+  if (pn < 0) pn = nt_ref(nt, bp, "parameters");
   if (pn < 0) return;
   int nreq = 0; const int *reqs = nt_arr(nt, pn, "requireds", &nreq);
   int nopt = 0; nt_arr(nt, pn, "optionals", &nopt);
@@ -605,6 +635,128 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
 
 static int sh_block_val(ShareFacts *F, Compiler *c, int blk) {
   return blk >= 0 ? sh_stmts_val(F, c, nt_ref(c->nt, blk, "body")) : -1;
+}
+
+/* ---- callables (a lambda, a proc's or a kept block's body, a Method) ----
+
+   A callable is a value of its own, which flows through the holders a proc
+   or a Method lives in as a String does. A call of a callable value records
+   a site; once the walk is done, sh_settle_callables binds each site's
+   arguments to the parameters of the callables its receiver's class holds,
+   and its answer to their values. A callable whose class meets UNKNOWN has
+   escaped, and a site whose receiver's class meets it (or holds no callable
+   the walk made) calls what the walk does not see: both join UNKNOWN, as
+   every proc did before. */
+
+static int sh_callable_new(ShareFacts *F, Compiler *c, int node, const char *mname, int mcid) {
+  /* the body is walked here, whoever calls it */
+  if (node >= 0) (void)sh_block_val(F, c, node);
+  if (F->ncbl >= F->ccbl) {
+    F->ccbl = F->ccbl ? F->ccbl * 2 : 16;
+    F->cbl = realloc(F->cbl, sizeof *F->cbl * (size_t)F->ccbl);
+  }
+  int v = sh_new(F, SHK_VALUE);
+  F->cbl[F->ncbl++] = (struct ShCallable){ v, node, mcid, mname, 0 };
+  return v;
+}
+
+/* a call of the callable value rv with the arguments' values; answers the
+   call's value */
+static int sh_callsite_new(ShareFacts *F, int rv, const int *vals, int nv) {
+  if (F->ncs >= F->ccs) {
+    F->ccs = F->ccs ? F->ccs * 2 : 16;
+    F->cs = realloc(F->cs, sizeof *F->cs * (size_t)F->ccs);
+  }
+  struct ShCallSite *q = &F->cs[F->ncs++];
+  memset(q, 0, sizeof *q);
+  q->rv = rv;
+  q->av = sh_new(F, SHK_VALUE);
+  q->nargs = nv;
+  q->args = nv > 0 ? malloc(sizeof(int) * (size_t)nv) : NULL;
+  for (int i = 0; i < nv; i++) q->args[i] = vals[i];
+  return q->av;
+}
+
+/* the methods a Method callable names */
+static int sh_callable_method(Compiler *c, const struct ShCallable *k, int mi) {
+  const Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || !m->name || !sp_streq(m->name, k->mname)) return 0;
+  /* a top-level def is a private method of every object */
+  if (k->mcid < 0 || m->class_id < 0) return 1;
+  return (comp_method_in_chain(c, k->mcid, m->name, NULL) == mi ||
+                              is_descendant(c, m->class_id, k->mcid));
+}
+
+/* bind callable k to arguments joined in a (-1 none) and answer av */
+static void sh_callable_bind(ShareFacts *F, Compiler *c, const struct ShCallable *k, int a, int av) {
+  if (k->node >= 0) {
+    if (a >= 0) sh_block_params(F, c, k->node, a, 1);
+    if (av >= 0) sh_union(F, sh_block_val(F, c, k->node), av);
+    return;
+  }
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    if (!sh_callable_method(c, k, mi)) continue;
+    Scope *m = &c->scopes[mi];
+    if (a >= 0)
+      for (int j = 0; j < m->nparams; j++) {
+        int p = m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1;
+        sh_union(F, j == m->rest_idx || j == m->kwrest_idx ? sh_elem(F, p) : p, a);
+      }
+    if (av >= 0) sh_union(F, sh_scope_holder(F, SHK_RET, mi), av);
+    if (m->yields && a == F->unknown) {
+      sh_union(F, sh_scope_holder(F, SHK_YIELD, mi), F->unknown);
+      sh_union(F, sh_scope_holder(F, SHK_BLKRET, mi), F->unknown);
+    }
+  }
+}
+
+static void sh_settle_callables(ShareFacts *F, Compiler *c) {
+  if (F->ncs == 0 && F->ncbl == 0) return;
+  for (int i = 0; i < F->ncs; i++) F->cs[i].bound = calloc((size_t)(F->ncbl > 0 ? F->ncbl : 1), 1);
+  for (int changed = 1, final = 0; changed || !final;) {
+    if (!changed) final = 1;
+    changed = 0;
+    int ru = sh_find(F, F->unknown);
+    for (int k = 0; k < F->ncbl; k++) {
+      struct ShCallable *cb = &F->cbl[k];
+      if (cb->escaped || sh_find(F, cb->v) != ru) continue;
+      cb->escaped = 1;
+      int o = sh_tagset(F, UT_CALLABLE_ESC);
+      sh_callable_bind(F, c, cb, F->unknown, F->unknown);
+      F->tag = o;
+      changed = 1;
+      ru = sh_find(F, F->unknown);
+    }
+    for (int i = 0; i < F->ncs; i++) {
+      struct ShCallSite *q = &F->cs[i];
+      if (q->unk) continue;
+      int r = sh_find(F, q->rv);
+      int any = 0;
+      if (r != ru)
+        for (int k = 0; k < F->ncbl; k++) {
+          if (sh_find(F, F->cbl[k].v) != r) continue;
+          any = 1;
+          if (q->bound[k]) continue;
+          q->bound[k] = 1;
+          int a = -1;
+          for (int t = 0; t < q->nargs; t++) a = sh_join(F, a, q->args[t]);
+          sh_callable_bind(F, c, &F->cbl[k], a, q->av);
+          changed = 1;
+        }
+      /* a receiver that met UNKNOWN, or (once the binding holds still)
+         holds no callable the walk made */
+      if (r == ru || (final && !any)) {
+        q->unk = 1;
+        int o = sh_tagset(F, UT_CALL_OPAQUE);
+        for (int t = 0; t < q->nargs; t++) sh_union(F, q->args[t], F->unknown);
+        sh_union(F, q->av, F->unknown);
+        F->tag = o;
+        changed = 1;
+        final = 0;
+        ru = sh_find(F, F->unknown);
+      }
+    }
+  }
 }
 
 /* the literal name a `send`, `method` or `instance_variable_*` names */
@@ -635,6 +787,9 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
     if (a >= 0) {
       int v = sh_val(F, c, a);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
+      /* a proc or a Method flows into the parameter (no lend: sh_settle_callables reads it) */
+      else if (sh_may_call(scope_local(m, m->pnames[j]) ? scope_local(m, m->pnames[j])->type : TY_UNKNOWN))
+        sh_union(F, p, v);
       else sh_lend(F, v, p, sh_holder_read(nt, a), call, a);
     }
     else if (spread >= 0) sh_union(F, p, sh_elem(F, sh_val(F, c, spread)));
@@ -731,6 +886,11 @@ static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
   if (m->yields || followed) {
     sh_block_params(F, c, blk, sh_scope_holder(F, SHK_YIELD, mi), 1);
     sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
+  }
+  /* a block a `&b` method keeps or hands on: a callable its parameter holds */
+  if (m->blk_param && m->blk_param[0] && !followed && !m->is_lowered_yield && !m->is_proc_form) {
+    int bp = sh_local_of(F, c, m, m->blk_param, m->def_node);
+    if (bp >= 0) { sh_union(F, bp, sh_callable_new(F, c, blk, NULL, -1)); return; }
   }
   if ((m->blk_param && !followed) || m->is_lowered_yield || m->is_proc_form) {
     int o = sh_tagset(F, UT_BLKPARAM);
@@ -1016,10 +1176,21 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
     return bv;
   case BSH_CALL:
+    if (rv >= 0 && !lit_blk) return sh_callsite_new(F, rv, vals, nv);
     return sh_unknown_call(F, c, n, blk, UT_BSH_CALL);
   case BSH_METHOD_REF:
-    /* the method it names is called from wherever the Method goes; a
-       define_method body is called with what the walk does not see */
+    /* `method(:m)`, `o.method(:m)`: a Method of the m the receiver's class
+       answers to, called where the Method goes */
+    if (is_method_object_ref(nt_str(nt, n, "name")) &&
+        argc == 1 && sh_lit_name(nt, argv[0]) && !lit_blk) {
+      int r0 = nt_ref(nt, n, "receiver");
+      TyKind rt0 = r0 >= 0 ? c->ntype[r0] : TY_VOID;
+      Scope *ss = r0 < 0 ? comp_scope_of(c, n) : NULL;
+      int mcid = r0 >= 0 ? (ty_is_object(rt0) ? ty_object_class(rt0) : -1) : ss && !ss->is_cmethod ? ss->class_id : -1;
+      return sh_callable_new(F, c, -1, sh_lit_name(nt, argv[0]), mcid);
+    }
+    /* a define_method body (or a Method of a computed name) is called with
+       what the walk does not see */
     sh_dyn_name(F, argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL);
     if (lit_blk) {
       int o = sh_tagset(F, UT_METHOD_REF);
@@ -1138,6 +1309,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
 
+  /* a proc's or a Method's to_proc is the same callable */
+  if (recv >= 0 && is_proc_conversion(name) && argc == 0 && sh_may_call(rt) && rv >= 0) return rv;
   /* a call of a method's `&b` that only ever calls it: a yield */
   if (recv >= 0 && nt_kind(nt, recv) == NK_LocalVariableReadNode && bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
     int mi = sh_method_index(c, n);
@@ -1163,7 +1336,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (sp_str_mutator(sym, 0)) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
-    else { int o = sh_tagset(F, UT_SYMPROC); sh_union(F, sh_elem(F, rv), F->unknown); F->tag = o; }
+    else {
+      /* a proc or a Method called with each element */
+      int fv = bx >= 0 && nt_kind(nt, bx) != NK_SymbolNode ? sh_val(F, c, bx) : -1;
+      if (fv >= 0) { int ev = sh_elem(F, rv); sh_callsite_new(F, fv, &ev, ev >= 0); }
+      else { int o = sh_tagset(F, UT_SYMPROC); sh_union(F, sh_elem(F, rv), F->unknown); F->tag = o; }
+    }
   }
 
   /* the reflective names */
@@ -1275,6 +1453,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
          yields goes where the walk does not follow */
+      else if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_ref(nt, blk, "expression") >= 0 &&
+               nt_kind(nt, nt_ref(nt, blk, "expression")) != NK_SymbolNode &&
+               sh_val(F, c, nt_ref(nt, blk, "expression")) >= 0 &&
+               (c->scopes[tg[i]].yields || (c->scopes[tg[i]].blk_param && c->scopes[tg[i]].blk_param[0]))) {
+        int fv = sh_val(F, c, nt_ref(nt, blk, "expression"));
+        Scope *tm = &c->scopes[tg[i]];
+        /* the method calls it as its block: its yields are the calls */
+        if (tm->yields) {
+          int y = sh_scope_holder(F, SHK_YIELD, tg[i]);
+          sh_union(F, sh_callsite_new(F, fv, &y, 1), sh_scope_holder(F, SHK_BLKRET, tg[i]));
+        }
+        int bp = tm->blk_param && tm->blk_param[0] ? sh_local_of(F, c, tm, tm->blk_param, tm->def_node) : -1;
+        if (bp >= 0) sh_union(F, bp, fv);
+      }
       else if (blk >= 0 && c->scopes[tg[i]].yields) {
         int o = sh_tagset(F, UT_BLOCK_VALUE);
         sh_union(F, sh_scope_holder(F, SHK_YIELD, tg[i]), F->unknown);
@@ -1309,6 +1501,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
 
   /* a builtin */
+  if (recv < 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && is_proc_constructor(name))
+    return sh_callable_new(F, c, blk, NULL, -1);
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
@@ -1316,6 +1510,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
     /* a proc or a Method in the box: called with what it is handed */
+    if (bop_share_named(BOP_CALLABLE, name) == BSH_CALL && rv >= 0 && blk < 0) {
+      int vals[64];
+      int nv = sh_args_vals(F, c, n, vals, 64);
+      return sh_join(F, sh_callsite_new(F, rv, vals, nv), sh_container_default(F, c, n, rv, blk));
+    }
     if (bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
       sh_unknown_call(F, c, n, blk, UT_POLY_CALLABLE);
       return sh_join(F, sh_unk_val(F, UT_POLY_CALLABLE), sh_container_default(F, c, n, rv, blk));
@@ -1463,6 +1662,17 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_CaseNode: case NK_CaseMatchNode: {
     int r = -1;
     int nw = 0; const int *ws = nt_arr(nt, n, "conditions", &nw);
+    /* `when pr` with a proc, a lambda or a Method calls it with the
+       subject (`pr === subject`) */
+    int subj = nt_kind(nt, n) == NK_CaseNode ? nt_ref(nt, n, "predicate") : -1;
+    for (int i = 0; i < nw && subj >= 0; i++) {
+      int wc = 0; const int *conds = nt_arr(nt, ws[i], "conditions", &wc);
+      for (int j = 0; j < wc; j++) {
+        if (nt_kind(nt, conds[j]) != NK_LambdaNode && !sh_may_call(c->ntype[conds[j]])) continue;
+        int rv = sh_val(F, c, conds[j]), sv = sh_val(F, c, subj);
+        if (rv >= 0) (void)sh_callsite_new(F, rv, &sv, sv >= 0 ? 1 : 0);
+      }
+    }
     for (int i = 0; i < nw; i++) r = sh_join(F, r, sh_stmts_val(F, c, nt_ref(nt, ws[i], "statements")));
     return sh_join(F, r, sh_val(F, c, nt_ref(nt, n, "else_clause")));
   }
@@ -1571,13 +1781,8 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     F->tag = o;
     return -1;
   }
-  case NK_LambdaNode: {
-    int o = sh_tagset(F, UT_LAMBDA);
-    sh_block_params(F, c, n, F->unknown, 1);
-    sh_union(F, sh_block_val(F, c, n), F->unknown);
-    F->tag = o;
-    return -1;
-  }
+  case NK_LambdaNode:
+    return sh_callable_new(F, c, n, NULL, -1);
   case NK_CallNode:
     return sh_call(F, c, n);
   case NK_SuperNode: case NK_ForwardingSuperNode:
@@ -1599,9 +1804,14 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   int v = sh_val_compute(F, c, n);
   /* a value whose type holds no String is none, whatever it flowed
      through (a write's target is still unified above) */
-  if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) &&
+  if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) && !sh_may_call(c->ntype[n]) &&
       nt_kind(c->nt, n) != NK_StatementsNode && nt_kind(c->nt, n) != NK_ParenthesesNode)
     v = -1;
+  /* a proc or a Method the walk did not make (`m.to_proc`, `h.default_proc`):
+     what calls it is not followed */
+  if (v < 0 && sh_may_call(c->ntype[n]) && nt_kind(c->nt, n) != NK_StatementsNode &&
+      nt_kind(c->nt, n) != NK_ParenthesesNode && nt_kind(c->nt, n) != NK_NilNode)
+    v = sh_unk_val(F, UT_CALLABLE_SRC);
   /* a fresh container a call answers (`s.split(",")`, `h.keys`) is a value
      of its own: what iterates it binds its elements, which nothing else
      names until then */
@@ -2037,6 +2247,8 @@ static void sh_free(ShareFacts *F) {
   free(F->lend_arg); free(F->lend_par); free(F->lend_call); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->dyn_cls); free(F->blk_follow); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
+  for (int i = 0; i < F->ncs; i++) { free(F->cs[i].args); free(F->cs[i].bound); }
+  free(F->cs); free(F->cbl);
   free(F);
 }
 
@@ -2181,6 +2393,7 @@ static ShareFacts *sh_build_skip(Compiler *c, int closed, unsigned skip) {
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
     F->tag = o;
   }
+  sh_settle_callables(F, c);
   sh_settle_lends(F, c);
   sh_finalize(F);
   return F;
@@ -2205,7 +2418,7 @@ const char *share_unknown_tag_name(int t) {
   static const char *const nm[UT__N] = { "-", "target", "blkparam", "method_ref", "dyn_ivar", "send",
     "bsh_call", "recvless", "poly_callable", "exc", "symproc", "fiber", "thread", "block_value",
     "str_reopen", "opwrite", "yield_top", "break", "lambda", "self_str", "dyn_reach", "ivars_all",
-    "noname", "exec", "poly_new", "norow", "super" };
+    "noname", "exec", "poly_new", "norow", "super", "callable_escape", "call_opaque", "callable_src" };
   return t > 0 && t < UT__N ? nm[t] : "?";
 }
 void share_facts_drop(ShareFacts *F) { sh_free(F); }
