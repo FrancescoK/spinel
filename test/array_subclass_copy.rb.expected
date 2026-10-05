@@ -1,0 +1,12 @@
+"copied b"
+"leaf copied l"
+Leaf
+[2]
+[Base, "copied b", [1]]
+[Leaf, "leaf copied l", [2]]
+true
+"leaf copied f"
+[3]
+false
+[3, 4]
+false
