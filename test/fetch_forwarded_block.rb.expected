@@ -1,0 +1,15 @@
+"q!"
+KeyError: key not found: "q"
+1
+1
+"q?"
+18
+IndexError: index 9 outside of array bounds: -2...2
+"q!"
+nil
+14
+nil
+[1, "zz"]
+"q"
+"q"
+KeyError: key not found: :q
