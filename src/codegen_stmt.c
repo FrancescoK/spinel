@@ -1510,6 +1510,15 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && emit_strbuf_call_handle(c, v, b)) {
     /* emitted: the handle itself */
   }
+  /* --share-strings: a read into a buffer that is the handle answers that
+     buffer (or nil at the end of the stream) */
+  else if (shared && io_outbuf_handle_arg(c, v) >= 0 &&
+           strbuf_slot_ref(c, io_outbuf_handle_arg(c, v), srefV, sizeof srefV)) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tr);
+    emit_expr(c, v, b);
+    buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, srefV);
+  }
   /* --share-strings (#6765): `r = s.strip!` names s's String when the bang
      changed it, and nil when not; the call changes s's handle in place, so
      r takes that handle. Wrapped fresh, r forked off s. */
