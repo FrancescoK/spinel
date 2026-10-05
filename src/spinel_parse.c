@@ -367,6 +367,36 @@ static void emit_ref(int id, const char *field, pm_node_t *child) {
   out_add("R %d %s %d", id, field, cid);
 }
 
+/* A block's or lambda's own locals (params + first-assigned-inside), joined
+   with commas: Ruby scoping makes the non-param ones FRESH on every call, and
+   a name the enclosing scope assigns only after the block's text is the
+   block's own, not the enclosing one. */
+static void out_block_locals(int id, const pm_constant_id_list_t *locals) {
+  if (locals->size == 0) return;
+  /* join the names in one pass (single cstr per name, no strcat rescans) */
+  size_t total = 1;
+  char **nms = malloc(locals->size * sizeof(char *));
+  if (!nms) return;
+  for (size_t li = 0; li < locals->size; li++) {
+    nms[li] = cstr(locals->ids[li]);
+    total += strlen(nms[li]) + 1;
+  }
+  char *joined = malloc(total);
+  if (joined) {
+    char *w = joined;
+    for (size_t li = 0; li < locals->size; li++) {
+      if (li) *w++ = ',';
+      size_t nl2 = strlen(nms[li]);
+      memcpy(w, nms[li], nl2); w += nl2;
+    }
+    *w = '\0';
+    out_add("S %d locals %s", id, joined);
+    free(joined);
+  }
+  for (size_t li = 0; li < locals->size; li++) free(nms[li]);
+  free(nms);
+}
+
 static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
   if (!list || list->size == 0) {
     out_add("A %d %s ", id, field);
@@ -1332,31 +1362,7 @@ static int flatten_node(pm_node_t *node) {
     /* Block-local variables (params + first-assigned-inside): Ruby scoping
        makes non-param locals FRESH on every block invocation; codegen needs
        the list to reset them per iteration in fused loops. */
-    if (n->locals.size > 0) {
-      /* join the names in one pass (single cstr per name, no strcat rescans) */
-      size_t total = 1;
-      char **nms = malloc(n->locals.size * sizeof(char *));
-      if (nms) {
-        for (size_t li = 0; li < n->locals.size; li++) {
-          nms[li] = cstr(n->locals.ids[li]);
-          total += strlen(nms[li]) + 1;
-        }
-        char *joined = malloc(total);
-        if (joined) {
-          char *w = joined;
-          for (size_t li = 0; li < n->locals.size; li++) {
-            if (li) *w++ = ',';
-            size_t nl2 = strlen(nms[li]);
-            memcpy(w, nms[li], nl2); w += nl2;
-          }
-          *w = '\0';
-          out_add("S %d locals %s", id, joined);
-          free(joined);
-        }
-        for (size_t li = 0; li < n->locals.size; li++) free(nms[li]);
-        free(nms);
-      }
-    }
+    out_block_locals(id, &n->locals);
     /* Serialize block parameters */
     if (n->parameters) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
@@ -1605,6 +1611,7 @@ else {
   case PM_LAMBDA_NODE: {
     pm_lambda_node_t *n = (pm_lambda_node_t *)node;
     N("LambdaNode");
+    out_block_locals(id, &n->locals);
     if (n->parameters) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
