@@ -417,35 +417,42 @@ int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b) {
 
 /* replace(other). An argument of the receiver's own variant is copied in
    place. Replace with a DIFFERENT hash variant: the receiver slot has
-   widened to the universal PolyPoly hash (see infer), so clear it and
-   re-fill from the boxed other's [k, v] pairs -- never the raw-pointer
-   mispatch that used to hang inspect (#2374). Any other argument is left
-   to the arms after the lookup. */
+   widened to the universal PolyPoly hash (see infer), so it takes the boxed
+   other's entries (sp_poly_hash_replace) -- never the raw-pointer mispatch
+   that used to hang inspect (#2374). Either way the other's default value
+   and default proc come with its entries, as in CRuby
+   (`Hash.new(1).replace(b: 2).default` is nil); they stayed the receiver's.
+   A lowered bang transform keeps the receiver's defaults instead.
+   Any other argument is left to the arms after the lookup. */
 int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   TyKind rt = x->rt;
   const char *hn = ty_hash_cname(rt);
+  int keep_default = nt_str(c->nt, x->id, "bang_splice") != NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   if (comp_ntype(c, argv[0]) == rt) {
-    int trp = ++g_tmp;
+    int trp = ++g_tmp, to = ++g_tmp;
     buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
     buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
-    buf_printf(b, " sp_%sHash_replace(_t%d, ", hn, trp); emit_expr(c, argv[0], b);
-    buf_printf(b, "); _t%d; })", trp);
+    buf_printf(b, " SP_GC_ROOT(_t%d); %s _t%d = ", trp, c_type_name(rt), to); emit_expr(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash_replace(_t%d, _t%d);", to, hn, trp, to);
+    if (!keep_default) {
+      buf_printf(b, " if (_t%d && _t%d) { sp_gc_wb((void *)_t%d); _t%d->default_v = _t%d->default_v;",
+                 trp, to, trp, trp, to);
+      if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)   /* the dproc variants */
+        buf_printf(b, " _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", trp, to, trp, to);
+      buf_puts(b, " }");
+    }
+    buf_printf(b, " _t%d; })", trp);
     return 1;
   }
   if (rt == TY_POLY_POLY_HASH && ty_is_hash(comp_ntype(c, argv[0]))) {
-    int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+    int th = ++g_tmp;
     buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
-    buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
-    buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
-    buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, to);
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
-                  " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
-                  " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
-               ti, ti, tn, ti, to, ti, th, th);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); (void)sp_poly_hash_replace(sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH), ", th, th);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %d); _t%d; })", keep_default, th);
     return 1;
   }
   return 0;
