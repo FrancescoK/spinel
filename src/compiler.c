@@ -661,10 +661,12 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
     ci->cvars = realloc(ci->cvars, sizeof(char *) * (size_t)ci->ccvars);
     ci->cvar_types = realloc(ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
+    ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
   }
   ci->cvars[ci->ncvars] = strdup(name);
   ci->cvar_types[ci->ncvars] = TY_UNKNOWN;
   ci->cvar_nullable_int[ci->ncvars] = 0;
+  ci->cvar_str_shared[ci->ncvars] = 0;
   return ci->ncvars++;
 }
 
