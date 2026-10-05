@@ -1,0 +1,34 @@
+NoMethodError: undefined method 'detect' for nil
+NoMethodError: undefined method 'detect' for nil
+NoMethodError: undefined method 'detect' for nil
+NoMethodError: undefined method 'detect' for an instance of Integer
+NoMethodError: undefined method 'collect_concat' for nil
+NoMethodError: undefined method 'min' for nil
+NoMethodError: undefined method 'max' for nil
+NoMethodError: undefined method 'min_by' for nil
+NoMethodError: undefined method 'max_by' for nil
+NoMethodError: undefined method 'slice' for nil
+NoMethodError: undefined method 'slice' for nil
+"b"
+NoMethodError: undefined method 'keys' for nil
+NoMethodError: undefined method 'values' for nil
+NoMethodError: undefined method 'compare_by_identity?' for nil
+NoMethodError: undefined method 'keys' for an instance of Integer
+TypeError: wrong argument type NilClass (expected String or Integer)
+TypeError: wrong argument type Array (expected String or Integer)
+TypeError: wrong argument type Float (expected String or Integer)
+"ABc"
+NoMethodError: undefined method 'magnitude' for nil
+NoMethodError: undefined method 'imag' for nil
+NoMethodError: undefined method 'conj' for an instance of Symbol
+NoMethodError: undefined method 'abs' for nil
+"abAB"
+TypeError: wrong argument type NilClass (expected String or Integer)
+FrozenError: can't modify frozen String: "ab"
+NoMethodError: undefined method 'append_as_bytes' for nil
+NoMethodError: undefined method 'detect' for nil
+NoMethodError: undefined method 'detect' for nil
+NoMethodError: undefined method 'min_by' for nil
+NoMethodError: undefined method 'slice' for nil
+NoMethodError: undefined method 'slice' for an instance of Integer
+[:r, :a0, :a1]

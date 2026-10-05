@@ -8170,14 +8170,18 @@ int desugar_builtins(Compiler *c) {
     /* collect_concat is flat_map under another name: the call takes the
        name the definition has (a program that defines collect_concat
        itself keeps its call) */
+    /* (the name the program wrote stays on the call, for the messages that
+       name the method: CRuby's NoMethodError for nil says `detect`) */
     if (cn0 && sp_streq(cn0, "collect_concat") && builtin_enum_name_index("flat_map") >= 0 &&
         !program_defines_name(nt, n0, "collect_concat")) {
+      nt_node_set_str(nt, id, "said_name", cn0);
       cn0 = "flat_map";
       nt_node_set_str(nt, id, "name", cn0);
     }
     /* detect is find under another name, the same way */
     if (cn0 && sp_streq(cn0, "detect") && builtin_enum_name_index("find") >= 0 &&
         !program_defines_name(nt, n0, "detect")) {
+      nt_node_set_str(nt, id, "said_name", cn0);
       cn0 = "find";
       nt_node_set_str(nt, id, "name", cn0);
     }
