@@ -29,6 +29,12 @@ extern int g_promote_mode;
    choose. Off in every normal build. */
 extern int g_plan_check;
 
+/* Set by main.c from --nil-check (#7444): the nil fact the analysis decides
+   (analyze_nil.c) is held against the answers the helpers that decide it
+   today give, at each place they answer, and every disagreement reported on
+   stderr. Off in every normal build; the C is the same either way. */
+extern int g_nil_check;
+
 /* The nil fact (analyze_nil.c, #7444): whether an object-typed value may be
    nil, decided once by the analysis for every node and every slot (a local,
    a parameter, a block parameter, a global, a constant, an ivar, a method's

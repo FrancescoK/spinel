@@ -16227,6 +16227,7 @@ char *codegen_program(const NodeTable *nt) {
     exit(1);
   }
   if (g_plan_check) ucall_report(c);
+  if (g_nil_check) nil_check_report(c);
   comp_free(c);
   { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
     if (types_out && !(keep && *keep)) return strdup(""); }
