@@ -14075,6 +14075,11 @@ int infer_block_params(Compiler *c) {
                  to a const char * */
               sp_streq(name, "transform_keys") || sp_streq(name, "transform_values") ||
               sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
+              /* each_pair is each's alias: left off, its key param kept the
+                 Symbol a round typed it with while one site's Symbol-keyed
+                 Hash was all the receiver held, and once another site widened
+                 the receiver to a boxed value a String key read as a Symbol */
+              sp_streq(name, "each_pair") ||
               sp_streq(name, "delete_if") || sp_streq(name, "keep_if") ||
               sp_streq(name, "select!") || sp_streq(name, "filter!") ||
               sp_streq(name, "reject!")))
