@@ -626,3 +626,7 @@ int is_array_hash_or_object_class(const char *n) {
 int is_ivar_access(const char *n) {
   return sp_streq(n, "instance_variable_get") || sp_streq(n, "instance_variable_set");
 }
+
+int is_string_append_or_prepend(const char *n) {
+  return is_append_concat(n) || sp_streq(n, "prepend");
+}
