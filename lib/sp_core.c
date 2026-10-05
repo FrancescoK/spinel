@@ -52,14 +52,17 @@ sp_int sp_str_to_i_cruby(const char *s) {SP_GC_ROOT_STR(s);
   int any = 0;
   while (*p) {
     if (*p >= '0' && *p <= '9') {
-      /* Signed-overflow on `v * 10 + digit` is undefined behavior;
+      /* Accumulate the signed value: the magnitude of INTPTR_MIN does not
+         fit sp_int, even though the negative value does. Signed-overflow
+         on `v * 10 + digit` is undefined behavior;
          detect via sp_ckd_*_iptr (sp_compat.h). CRuby promotes to Bignum
          on overflow but spinel's int model is int64-only -- raise
          RangeError instead of silently saturating, so a user-side
          `rescue` can react. */
-      sp_int t;
+      sp_int t, digit = (sp_int)(*p - '0');
+      if (neg) digit = -digit;
       if (sp_ckd_mul_iptr(v, 10, &t) ||
-          sp_ckd_add_iptr(t, (sp_int)(*p - '0'), &v)) {
+          sp_ckd_add_iptr(t, digit, &v)) {
         sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
       }
       any = 1;
@@ -73,7 +76,7 @@ else {
     }
   }
   if (!any) return 0;
-  return neg ? -v : v;
+  return v;
 }
 
 /* `String#to_f`: parse a leading float, tolerating `_` between digits as a
