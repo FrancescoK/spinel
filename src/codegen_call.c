@@ -18396,13 +18396,22 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   return 1;
 }
 
+/* What a nil receiver of call `id` raises: NoMethodError naming the method,
+   or for the to_ary that converts an Array operator's operand
+   (desugar_array_op_to_ary marks it) CRuby's TypeError for the operand. */
+static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
+  if (nt_str(c->nt, id, "ary_conv"))
+    snprintf(out, n, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\")");
+  else
+    snprintf(out, n, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", nt_str(c->nt, id, "name"));
+}
 /* The guard as a statement ahead of a statement-form emission of call `id`,
    which runs with g_ivar_nil_guarded_id naming it so it is not guarded twice */
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent) {
   emit_indent(b, indent);
+  char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
   buf_puts(b, "if (("); emit_expr(c, recv, b);
-  buf_printf(b, ") == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
-             nt_str(c->nt, id, "name"));
+  buf_printf(b, ") == NULL) %s;\n", nr);
 }
 
 /* Run statement emitter `fn` for call `id` behind the ivar nil guard: the
@@ -20340,8 +20349,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, grecv, &rb);
     Buf decl; memset(&decl, 0, sizeof decl);
     emit_ctype(c, comp_ntype(c, grecv), &decl);
-    buf_printf(&decl, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
-               tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(c->nt, id, "name"));
+    char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
+    buf_printf(&decl, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) %s; ",
+               tg, rb.p ? rb.p : "NULL", tg, tg, nr);
     int slot = view_bind(grecv, "_t%d", tg);
     size_t pre0 = g_pre ? g_pre->len : 0;
     Buf cb; memset(&cb, 0, sizeof cb);
@@ -20378,9 +20388,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, cb.p ? cb.p : "");
     }
     else {
+      char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
       buf_puts(b, "(("); emit_expr(c, grecv, b);
-      buf_printf(b, ") == NULL ? sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())) : (void)0, ",
-                 nt_str(c->nt, id, "name"));
+      buf_printf(b, ") == NULL ? %s : (void)0, ", nr);
       buf_puts(b, cb.p ? cb.p : "");
       buf_puts(b, ")");
     }
