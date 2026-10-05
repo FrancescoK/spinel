@@ -681,6 +681,7 @@ static void emit_merge_blk_param(Compiler *c, int blk, const char *pn, TyKind vt
 }
 
 static int emit_blk_value_via_next(Compiler *c, int blk, TyKind vt, Buf *b);
+static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind a0, const char *r);
 static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b);
 
 /* An operand whose evaluation cannot allocate: a local's read or a scalar
@@ -4418,6 +4419,22 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
     }
     buf_printf(b, " : (sp_StrArray *)(sp_raise_nomethod(sp_nomethod_msg(\"split\", _t%d)), (void *)0); })", tv);
+    return 1;
+  }
+  /* poly.lines(sep) / lines(chomp: ...) / lines(sep, chomp: ...): the typed
+     String path's lines over the receiver read as a String, which raises
+     NoMethodError for anything else, as the argumentless poly.lines does */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "lines") && nt_ref(nt, id, "block") < 0 &&
+      poly_lines_args(c, argc, argv) && !user_defines_or_reads(c, "lines")) {
+    int tl = ++g_tmp;
+    char rl[32]; snprintf(rl, sizeof rl, "_t%d", tl);
+    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", tl); emit_expr(c, recv, b);
+    buf_printf(b, ", \"lines\"); SP_GC_ROOT(_t%d); ", tl);
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      buf_printf(b, "sp_str_lines_sep(%s, ", rl); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else str_arms_convert(c, id, b, nt, name, recv, argc, argv, TY_UNKNOWN, rl);
+    buf_puts(b, "; })");
     return 1;
   }
   /* `poly.map! { |x| ... }` / `collect!` where poly is an array read out of a

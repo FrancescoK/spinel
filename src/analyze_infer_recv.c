@@ -1316,6 +1316,15 @@ static int call_is_safe_nav(const NodeTable *nt, int id) {
 }
 
 /* Boxed (poly) receivers: the run of poly-face arms of infer_call */
+int poly_lines_args(Compiler *c, int argc, const int *argv) {
+  const NodeTable *nt = c->nt;
+  int kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
+           sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode");
+  if (argc == 1) return kw || infer_type(c, argv[0]) == TY_STRING;
+  if (argc == 2) return kw && infer_type(c, argv[0]) == TY_STRING;
+  return 0;
+}
+
 int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1601,6 +1610,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
       (sp_streq(name, "chars") || sp_streq(name, "lines")) &&
       nt_ref(nt, id, "block") < 0)
+    { *out = an_user_defines_or_reads(c, name) ? TY_POLY : TY_STR_ARRAY; return 1; }
+  /* lines(sep), lines(chomp: ...) and lines(sep, chomp: ...) on a poly
+     value: the same Array of Strings the typed String answers */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "lines") && nt_ref(nt, id, "block") < 0 &&
+      poly_lines_args(c, argc, argv))
     { *out = an_user_defines_or_reads(c, name) ? TY_POLY : TY_STR_ARRAY; return 1; }
   /* A blockless grouping enumerator on a boxed Array -- an Array read out of a
      container -- materializes to the groups themselves, an Array of Arrays. */
