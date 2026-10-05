@@ -54,7 +54,30 @@ emit() {
 CIDENT_FLAGS=${CIDENT_FLAGS-}
 export CIDENT_FLAGS
 FLAGKEY=$(printf "%s" "$CIDENT_FLAGS" | tr -c 'A-Za-z0-9=' '_')
-REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}
+# Include supporting files as well as entry points: require_relative and
+# compile-time reads can change a program without changing its own bytes.
+CORPUS=$(find test benchmark packages/*/test -type f 2>/dev/null; [ -f "$OC" ] && echo "$OC")
+CORPUS=$(printf '%s\n' "$CORPUS" | LC_ALL=C sort)
+CORPUSKEY=$({
+  printf '%s\n' "$CORPUS"
+  printf '%s\n' "$CORPUS" | git hash-object --stdin-paths
+} | git hash-object --stdin)
+REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}-$CORPUSKEY
+# A cold cache has one builder. Hold the lock through comparison so no
+# other run can remove or read its outputs while they are being written.
+# The lock is flock(2) on fd 9, which the kernel drops once no process
+# holds that descriptor any more, however the holder ended: a run killed
+# with SIGKILL leaves no stale lock, and compiles it orphaned keep the
+# cache locked only until they exit. macOS has no flock(1); perl has flock.
+LOCK=$REFDIR.lock
+mkdir -p "$(dirname "$REFDIR")"
+exec 9>"$LOCK"
+cident_lock() {
+  perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or die "cident: cannot lock: $!\n";
+    flock($fh, LOCK_EX) or die "cident: cannot lock: $!\n"'
+}
+cident_lock || exit 2
+trap 'exit 2' HUP INT TERM
 if [ ! -f "$REFDIR/.done" ]; then
   # The C embeds the compiler's own tree path in a few string literals,
   # together with their lengths. A reference tree at a path of the same
