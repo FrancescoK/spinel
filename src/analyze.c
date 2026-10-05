@@ -16262,6 +16262,30 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
   sb_elem_nactive--;
   return r;
 }
+/* Every ReturnNode grouped by the scope comp_scope_of gives it, in node
+   order: scope i's are (*list)[(*start)[i] .. (*start)[i + 1]). The caller
+   frees both. 0 when out of memory. */
+static int an_returns_by_scope(Compiler *c, int **start, int **list) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes > 0 ? c->nscopes : 1, nr = 0;
+  int *st = calloc((size_t)ns + 1, sizeof(int));
+  if (!st) return 0;
+  for (int u = 0; u < nt->count; u++) {
+    if (nt_kind(nt, u) != NK_ReturnNode) continue;
+    st[(int)(comp_scope_of(c, u) - c->scopes) + 1]++;
+    nr++;
+  }
+  for (int i = 0; i < ns; i++) st[i + 1] += st[i];
+  int *ls = malloc((size_t)(nr > 0 ? nr : 1) * sizeof(int));
+  int *fill = malloc((size_t)ns * sizeof(int));
+  if (!ls || !fill) { free(st); free(ls); free(fill); return 0; }
+  memcpy(fill, st, (size_t)ns * sizeof(int));
+  for (int u = 0; u < nt->count; u++)
+    if (nt_kind(nt, u) == NK_ReturnNode) ls[fill[comp_scope_of(c, u) - c->scopes]++] = u;
+  free(fill);
+  *start = st; *list = ls;
+  return 1;
+}
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
@@ -17005,6 +17029,10 @@ static int promote_shared_stored_strings(Compiler *c) {
      (receiverless, uniquely-named) callee yields a shared handle -- r joins
      the set and the call is marked so the emitter picks the handle off the
      side channel (#3227 P6). */
+  /* the callee's explicit returns, in node order, from one walk of the table
+     grouped by scope: walking the whole table per call site made this loop
+     (call sites x table) on a large program */
+  int *ret_start = NULL, *ret_list = NULL;
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
     int wv = nt_ref(nt, w, "value");
@@ -17015,7 +17043,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     const char *mn = nt_str(nt, wv, "name");
     int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
     if (mi3 <= 0) continue;
-    Scope *m3 = &c->scopes[mi3];
+    if (!ret_start && !an_returns_by_scope(c, &ret_start, &ret_list)) break;
     /* every return tail (implicit + explicit) must be a shared slot read */
     int shared_ok = 1, saw_tail = 0;
     { int lastT = scope_body_last(c, mi3);
@@ -17023,9 +17051,8 @@ static int promote_shared_stored_strings(Compiler *c) {
         saw_tail = 1;
         if (!an_arg_is_shared_handle(c, lastT)) shared_ok = 0;
       } }
-    for (int u = 0; shared_ok && u < nt->count; u++) {
-      if (nt_kind(nt, u) != NK_ReturnNode) continue;
-      if (comp_scope_of(c, u) != m3) continue;
+    for (int r = ret_start[mi3]; shared_ok && r < ret_start[mi3 + 1]; r++) {
+      int u = ret_list[r];
       int ra = nt_ref(nt, u, "arguments");
       int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
       saw_tail = 1;
@@ -17054,9 +17081,8 @@ static int promote_shared_stored_strings(Compiler *c) {
       int lastD = scope_body_last(c, mi3);
       int tails[33]; int ntails = 0;
       if (lastD >= 0 && ntails < 32) tails[ntails++] = lastD;
-      for (int u = 0; u < nt->count && ntails < 32; u++) {
-        if (nt_kind(nt, u) != NK_ReturnNode) continue;
-        if (comp_scope_of(c, u) != m3) continue;
+      for (int r = ret_start[mi3]; r < ret_start[mi3 + 1] && ntails < 32; r++) {
+        int u = ret_list[r];
         int ra = nt_ref(nt, u, "arguments");
         int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
         if (rn2 == 1) tails[ntails++] = rv2[0];
@@ -17082,6 +17108,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (clv3->type != TY_POLY && (clv3->type != TY_STRBUF || !clv3->str_shared))
       {  clv3->type = TY_STRBUF; clv3->str_shared = 1; changed = 1;  }
   }
+  free(ret_start); free(ret_list);
   /* Container-read alias (`r = rows[0]; r.upcase!`): the local is another name
      for the element, so an in-place mutation through it has to land on the
      container's own string. Demand that container's stores into handles,
