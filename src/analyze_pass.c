@@ -5783,55 +5783,224 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
 /* The walk follows every write of a local, to depth 6, and the writes of
    one local reach the same values again and again: unmemoized, a function
    of W writes to one local walked W^6 paths. A visit that changed nothing
-   is recorded (wbas_note) with the depth it ran at, under the current
-   generation; a later visit of the same node at that depth or deeper, in
-   the same generation, makes a subset of the same calls in the same state,
-   which change nothing either, and is skipped (wbas_seen). Each walk from
-   outside starts a generation, and so does every call that may write the
-   analysis state (wbas_touch), whether or not it reports a change: the
-   pin re-asserted on a local re-derived from its writes writes without one. */
-static struct { int cap; unsigned *gen[2]; signed char *depth[2]; } wbas_memo;
-static unsigned wbas_gen = 1;
+   is recorded with the depth it ran at and the element kind it carried,
+   under the current generation; a later visit of the same value, with the
+   same kind, at that depth or deeper and in the same generation, makes a
+   subset of the same calls in the same state, which change nothing either,
+   and is skipped (wbas_seen). A value is a node, the container an element
+   is read out of, or a boxed local, every read of which walks the same.
+
+   Every call in the walk that may write the analysis state starts a new
+   generation (wbas_touch), whether or not it reports a change: the pin a
+   local re-derived from its writes takes again writes without one. A walk
+   from outside opens and closes one too, except within infer_param_types
+   (wbas_share_begin), whose call sites hand the same locals to one
+   parameter after another: there a generation also ends wherever the pass
+   reports a change, at each node it binds and before each walk in
+   bind_args_params, and it closes with the pass.
+
+   With SPINEL_WBAS_SHADOW set, a visit skipped on the strength of a record
+   another walk from outside left is made all the same, in a fresh
+   generation, and must answer 0 and write nothing (wbas_shadow_end). */
+typedef struct { unsigned gen, walk; TyKind elem; signed char depth; } WbasRec;
+static struct { int cap; WbasRec *rec[2]; } wbas_memo;
+static struct { int cap, used; const LocalVar **key; WbasRec *rec; } wbas_lmemo;
+static unsigned wbas_gen = 1, wbas_gen_next = 1, wbas_walk = 0;
+static int wbas_shared = 0;
 static void wbas_touch(void) {
-  if (++wbas_gen == 0) {
-    for (int f = 0; f < 2; f++) memset(wbas_memo.gen[f], 0, sizeof(unsigned) * (size_t)wbas_memo.cap);
-    wbas_gen = 1;
+  if (++wbas_gen_next == 0) {
+    for (int f = 0; f < 2; f++)
+      for (int i = 0; i < wbas_memo.cap; i++) wbas_memo.rec[f][i].gen = 0;
+    for (int i = 0; i < wbas_lmemo.cap; i++) wbas_lmemo.rec[i].gen = 0;
+    wbas_gen_next = 1;
   }
+  wbas_gen = wbas_gen_next;
 }
-static int wbas_seen(int f, int v, int depth) {
-  return v >= 0 && v < wbas_memo.cap && wbas_memo.gen[f][v] == wbas_gen && wbas_memo.depth[f][v] <= depth;
+static int wbas_shadow_on(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("SPINEL_WBAS_SHADOW") != NULL;
+  return on;
 }
-static void wbas_note(Compiler *c, int f, int v, int depth, unsigned gen) {
+/* 1 when `r` lets a visit at `depth` carrying `elem` be skipped; *shadow
+   says it was left by another walk from outside */
+static int wbas_rec_holds(const WbasRec *r, TyKind elem, int depth, int *shadow) {
+  if (r->gen != wbas_gen || r->elem != elem || r->depth > depth) return 0;
+  *shadow = wbas_shadow_on() && r->walk != wbas_walk;
+  return 1;
+}
+static void wbas_rec_put(WbasRec *r, TyKind elem, int depth) {
+  if (r->gen == wbas_gen && r->elem == elem && r->depth <= depth) return;
+  r->gen = wbas_gen; r->walk = wbas_walk; r->elem = elem; r->depth = (signed char)depth;
+}
+static int wbas_seen(int f, int v, TyKind elem, int depth, int *shadow) {
+  return v >= 0 && v < wbas_memo.cap && wbas_rec_holds(&wbas_memo.rec[f][v], elem, depth, shadow);
+}
+static void wbas_note(Compiler *c, int f, int v, TyKind elem, int depth, unsigned gen) {
   if (v < 0 || gen != wbas_gen) return;
   if (v >= wbas_memo.cap) {
     int cap = c->nt->count > v ? c->nt->count : v + 1;
     for (int k = 0; k < 2; k++) {
-      wbas_memo.gen[k] = (unsigned *)realloc(wbas_memo.gen[k], sizeof(unsigned) * (size_t)cap);
-      wbas_memo.depth[k] = (signed char *)realloc(wbas_memo.depth[k], (size_t)cap);
-      if (!wbas_memo.gen[k] || !wbas_memo.depth[k]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      memset(wbas_memo.gen[k] + wbas_memo.cap, 0, sizeof(unsigned) * (size_t)(cap - wbas_memo.cap));
+      wbas_memo.rec[k] = (WbasRec *)realloc(wbas_memo.rec[k], sizeof(WbasRec) * (size_t)cap);
+      if (!wbas_memo.rec[k]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memset(wbas_memo.rec[k] + wbas_memo.cap, 0, sizeof(WbasRec) * (size_t)(cap - wbas_memo.cap));
     }
     wbas_memo.cap = cap;
   }
-  if (wbas_memo.gen[f][v] != gen || wbas_memo.depth[f][v] > depth) {
-    wbas_memo.gen[f][v] = gen; wbas_memo.depth[f][v] = (signed char)depth;
+  wbas_rec_put(&wbas_memo.rec[f][v], elem, depth);
+}
+/* A boxed local's record, in an open-addressed table where a record of
+   another generation is a free slot. Rebuilt with the current
+   generation's records alone once half the slots were ever used. */
+static int wbas_local_slot(const LocalVar *lv) {
+  unsigned mask = (unsigned)(wbas_lmemo.cap - 1);
+  unsigned h = (unsigned)(((uintptr_t)lv >> 3) * 2654435761u) & mask;
+  while (wbas_lmemo.rec[h].gen == wbas_gen && wbas_lmemo.key[h] != lv) h = (h + 1) & mask;
+  return (int)h;
+}
+static int wbas_local_seen(const LocalVar *lv, TyKind elem, int depth, int *shadow) {
+  if (!wbas_lmemo.cap) return 0;
+  int h = wbas_local_slot(lv);
+  return wbas_lmemo.key[h] == lv && wbas_rec_holds(&wbas_lmemo.rec[h], elem, depth, shadow);
+}
+static void wbas_local_note(const LocalVar *lv, TyKind elem, int depth, unsigned gen) {
+  if (gen != wbas_gen) return;
+  if (2 * (wbas_lmemo.used + 1) > wbas_lmemo.cap) {
+    int ocap = wbas_lmemo.cap, live = 0;
+    for (int i = 0; i < ocap; i++) live += wbas_lmemo.rec[i].gen == wbas_gen;
+    const LocalVar **okey = wbas_lmemo.key;
+    WbasRec *orec = wbas_lmemo.rec;
+    int cap = ocap ? ocap : 256;
+    while (4 * (live + 1) > cap) cap *= 2;
+    wbas_lmemo.cap = cap; wbas_lmemo.used = 0;
+    wbas_lmemo.key = (const LocalVar **)calloc((size_t)cap, sizeof(LocalVar *));
+    wbas_lmemo.rec = (WbasRec *)calloc((size_t)cap, sizeof(WbasRec));
+    if (!wbas_lmemo.key || !wbas_lmemo.rec) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (orec[i].gen != wbas_gen) continue;
+      int h = wbas_local_slot(okey[i]);
+      wbas_lmemo.key[h] = okey[i]; wbas_lmemo.rec[h] = orec[i]; wbas_lmemo.used++;
+    }
+    free(okey); free(orec);
   }
+  int h = wbas_local_slot(lv);
+  if (wbas_lmemo.key[h] != lv) {
+    if (!wbas_lmemo.key[h]) wbas_lmemo.used++;
+    wbas_lmemo.key[h] = lv; wbas_lmemo.rec[h].gen = 0;
+  }
+  wbas_rec_put(&wbas_lmemo.rec[h], elem, depth);
+}
+/* A shadowed visit runs in a generation of its own, which a record of
+   another walk cannot be in; the one it interrupted resumes after it. */
+static unsigned wbas_shadow_begin(void) {
+  unsigned outer = wbas_gen;
+  wbas_touch();
+  return outer;
+}
+static void wbas_shadow_end(unsigned outer, unsigned gen, int got, const char *what, int node) {
+  if (got || wbas_gen != gen) {
+    fprintf(stderr, "spinel: internal error: widen_boxed_array_sources skipped the %s at node %d, which %s\n",
+            what, node, got ? "widens" : "writes the analysis state");
+    exit(70);
+  }
+  wbas_gen = outer;
+}
+static void wbas_share_begin(void) { wbas_shared++; wbas_touch(); }
+static void wbas_share_end(void) { wbas_shared--; wbas_touch(); }
+/* infer_param_types' per-node step: a change it reported ends the
+   generation, and is kept in *any */
+static void wbas_share_step(int *changed, int *any) {
+  if (*changed) { wbas_touch(); *any = 1; *changed = 0; }
 }
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth);
 static int widen_boxed_array_sources(Compiler *c, int v, TyKind elem, int depth) {
-  /* `elem` is the same throughout one walk from outside, which the memo
-     relies on: one walk's generation is closed on both ends */
-  if (depth == 0) wbas_touch();
+  if (depth == 0) { wbas_walk++; if (!wbas_shared) wbas_touch(); }
   v = unwrap_parens(c, v);
-  int ch = 0;
-  if (!wbas_seen(0, v, depth)) {
+  int ch = 0, shadow = 0;
+  if (!wbas_seen(0, v, elem, depth, &shadow)) {
     unsigned gen = wbas_gen;
     ch = widen_boxed_array_sources_1(c, v, elem, depth);
-    if (!ch) wbas_note(c, 0, v, depth, gen);
+    if (!ch) wbas_note(c, 0, v, elem, depth, gen);
   }
-  if (depth == 0) wbas_touch();
+  else if (shadow) {
+    unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
+    wbas_shadow_end(outer, gen, widen_boxed_array_sources_1(c, v, elem, depth), "value", v);
+  }
+  if (depth == 0 && !wbas_shared) wbas_touch();
   return ch;
 }
+/* The read of boxed local `nm` of scope `sc` (widen_boxed_array_sources):
+   what it is written, bound or handed. The same for every read of it. */
+static int widen_boxed_local_sources(Compiler *c, Scope *sc, const char *nm, LocalVar *lv,
+                                     TyKind elem, int depth) {
+  const NodeTable *nt = c->nt;
+  int ch = 0;
+  if (lv->is_block_param) {
+    /* what an element iterator hands its block: an element of the
+       receiver, or a Hash's value */
+    int si = (int)(sc - c->scopes);
+    for (int e = bp_ix_first(c, nm, si); e >= 0; e = bp_ix.next[e]) {
+      if (bp_ix.scope[e] != si || !sp_streq(bp_ix.name[e], nm)) continue;
+      int call = bp_ix.call[e], bi = bp_ix.idx[e];
+      int r = nt_ref(nt, call, "receiver");
+      const char *cn = nt_str(nt, call, "name");
+      if (r < 0 || !cn) continue;
+      TyKind rt = infer_type(c, r), yt[2];
+      int elem_at = -1;
+      if (ty_is_hash(rt))
+        elem_at = sp_streq(cn, "each_value") ? 0 : is_each_or_pair(cn) ? 1 : -1;
+      else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0)
+        elem_at = 0;
+      if (bi == elem_at) ch |= widen_boxed_elem_sources(c, r, elem, depth + 1);
+    }
+    /* a proc or lambda literal's parameter: what its calls pass there */
+    int lit = local_proc_literal_param_of(c, sc, nm);
+    if (lit >= 0) ch |= widen_proc_call_args(c, lit, nm, elem, depth + 1);
+  }
+  /* a `for` variable, bound as a block parameter is */
+  NT_FOREACH_KIND(nt, NK_ForNode, f) {
+    int ix = nt_ref(nt, f, "index");
+    if (ix < 0 || nt_kind(nt, ix) != NK_LocalVariableTargetNode || comp_scope_of(c, f) != sc ||
+        !sp_streq(nt_str(nt, ix, "name"), nm)) continue;
+    ch |= widen_boxed_elem_sources(c, nt_ref(nt, f, "collection"), elem, depth + 1);
+  }
+  if (lv->is_block_param) return ch;
+  if (lv->is_param) {
+    if (lv->type != TY_POLY) return 0;
+    TyKind *ev[2] = { &lv->boxed_push_elem, &lv->boxed_known_elem };
+    for (int e = 0; e < 2; e++) {
+      TyKind was = *ev[e];
+      TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
+      if (now != was) { *ev[e] = now; ch = 1; wbas_touch(); }
+    }
+    return ch;
+  }
+  /* every value it is written, each followed on its own; where one the
+     store cannot fit can only be converted at the slot, and all of them
+     are arrays, the local is pinned to the general Array */
+  int wl[32], nl = 0, all = !local_has_target_write(c, sc, nm);
+  for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+    int w = lw_shared_node(r);
+    NodeKind wk = nt_kind(nt, w);
+    if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+    if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode) { all = 0; continue; }
+    ch |= widen_boxed_array_sources(c, nt_ref(nt, w, "value"), elem, depth + 1);
+    int got = all ? value_leaves(c, nt_ref(nt, w, "value"), wl, nl, 32) : -1;
+    if (got < 0) { all = 0; continue; }
+    for (int i = nl; i < got; i++)
+      if (!(nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
+            sp_streq(nt_str(nt, wl[i], "name"), nm))) wl[nl++] = wl[i];
+  }
+  /* The pin is re-asserted at the end of every round's write pass, where
+     the local re-derives from its writes: a change is only a new pin. */
+  if (all && leaves_need_pin(c, wl, nl, elem) && leaves_widen_to_poly_array(c, wl, nl, 0)) {
+    ch |= leaves_widen_to_poly_array(c, wl, nl, 1);
+    if (!lv->poly_array_pin) { lv->poly_array_pin = 1; ch = 1; }
+    lv->type = TY_POLY_ARRAY;
+    wbas_touch();
+  }
+  return ch;
+}
+
 static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int depth) {
   const NodeTable *nt = c->nt;
   /* Only once the optimistic rounds have settled: a slot is boxed for a
@@ -5865,71 +6034,20 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
     Scope *sc = nm ? comp_scope_of(c, v) : NULL;
     LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
     if (!lv || lv->rbs_seeded) return 0;
-    int ch = 0;
-    if (lv->is_block_param) {
-      /* what an element iterator hands its block: an element of the
-         receiver, or a Hash's value */
-      int si = (int)(sc - c->scopes);
-      for (int e = bp_ix_first(c, nm, si); e >= 0; e = bp_ix.next[e]) {
-        if (bp_ix.scope[e] != si || !sp_streq(bp_ix.name[e], nm)) continue;
-        int call = bp_ix.call[e], bi = bp_ix.idx[e];
-        int r = nt_ref(nt, call, "receiver");
-        const char *cn = nt_str(nt, call, "name");
-        if (r < 0 || !cn) continue;
-        TyKind rt = infer_type(c, r), yt[2];
-        int elem_at = -1;
-        if (ty_is_hash(rt))
-          elem_at = sp_streq(cn, "each_value") ? 0 : is_each_or_pair(cn) ? 1 : -1;
-        else if ((ty_is_array(rt) || rt == TY_POLY) && ty_block_yield(TY_POLY_ARRAY, cn, yt, 2) > 0)
-          elem_at = 0;
-        if (bi == elem_at) ch |= widen_boxed_elem_sources(c, r, elem, depth + 1);
+    /* every read of the local walks the same: keyed by the local, not by
+       the read, which a function of W writes copying one local into
+       another reads W times */
+    int shadow = 0;
+    if (wbas_local_seen(lv, elem, depth, &shadow)) {
+      if (shadow) {
+        unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
+        wbas_shadow_end(outer, gen, widen_boxed_local_sources(c, sc, nm, lv, elem, depth), "local read", v);
       }
-      /* a proc or lambda literal's parameter: what its calls pass there */
-      int lit = local_proc_literal_param_of(c, sc, nm);
-      if (lit >= 0) ch |= widen_proc_call_args(c, lit, nm, elem, depth + 1);
+      return 0;
     }
-    /* a `for` variable, bound as a block parameter is */
-    NT_FOREACH_KIND(nt, NK_ForNode, f) {
-      int ix = nt_ref(nt, f, "index");
-      if (ix < 0 || nt_kind(nt, ix) != NK_LocalVariableTargetNode || comp_scope_of(c, f) != sc ||
-          !sp_streq(nt_str(nt, ix, "name"), nm)) continue;
-      ch |= widen_boxed_elem_sources(c, nt_ref(nt, f, "collection"), elem, depth + 1);
-    }
-    if (lv->is_block_param) return ch;
-    if (lv->is_param) {
-      if (lv->type != TY_POLY) return 0;
-      TyKind *ev[2] = { &lv->boxed_push_elem, &lv->boxed_known_elem };
-      for (int e = 0; e < 2; e++) {
-        TyKind was = *ev[e];
-        TyKind now = was == TY_UNKNOWN ? elem : (was == elem ? was : TY_POLY);
-        if (now != was) { *ev[e] = now; ch = 1; wbas_touch(); }
-      }
-      return ch;
-    }
-    /* every value it is written, each followed on its own; where one the
-       store cannot fit can only be converted at the slot, and all of them
-       are arrays, the local is pinned to the general Array */
-    int wl[32], nl = 0, all = !local_has_target_write(c, sc, nm);
-    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
-      int w = lw_shared_node(r);
-      NodeKind wk = nt_kind(nt, w);
-      if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
-      if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode) { all = 0; continue; }
-      ch |= widen_boxed_array_sources(c, nt_ref(nt, w, "value"), elem, depth + 1);
-      int got = all ? value_leaves(c, nt_ref(nt, w, "value"), wl, nl, 32) : -1;
-      if (got < 0) { all = 0; continue; }
-      for (int i = nl; i < got; i++)
-        if (!(nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
-              sp_streq(nt_str(nt, wl[i], "name"), nm))) wl[nl++] = wl[i];
-    }
-    /* The pin is re-asserted at the end of every round's write pass, where
-       the local re-derives from its writes: a change is only a new pin. */
-    if (all && leaves_need_pin(c, wl, nl, elem) && leaves_widen_to_poly_array(c, wl, nl, 0)) {
-      ch |= leaves_widen_to_poly_array(c, wl, nl, 1);
-      if (!lv->poly_array_pin) { lv->poly_array_pin = 1; ch = 1; }
-      lv->type = TY_POLY_ARRAY;
-      wbas_touch();
-    }
+    unsigned gen = wbas_gen;
+    int ch = widen_boxed_local_sources(c, sc, nm, lv, elem, depth);
+    if (!ch) wbas_local_note(lv, elem, depth, gen);
     return ch;
   }
   if (k != NK_CallNode) return 0;
@@ -5967,11 +6085,25 @@ static int widen_boxed_array_sources_1(Compiler *c, int v, TyKind elem, int dept
 
 /* The same for the arrays that are elements of the container `r` (the
    values of a Hash), as far as its literals show them (container_literals). */
+static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth);
 static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) {
+  int shadow = 0;
+  if (depth > 6) return 0;
+  if (wbas_seen(1, r, elem, depth, &shadow)) {
+    if (shadow) {
+      unsigned outer = wbas_shadow_begin(), gen = wbas_gen;
+      wbas_shadow_end(outer, gen, widen_boxed_elem_sources_1(c, r, elem, depth), "container", r);
+    }
+    return 0;
+  }
+  unsigned gen = wbas_gen;
+  int ch = widen_boxed_elem_sources_1(c, r, elem, depth);
+  if (!ch) wbas_note(c, 1, r, elem, depth, gen);
+  return ch;
+}
+static int widen_boxed_elem_sources_1(Compiler *c, int r, TyKind elem, int depth) {
   const NodeTable *nt = c->nt;
   int lits[32], ch = 0;
-  if (depth > 6 || wbas_seen(1, r, depth)) return 0;
-  unsigned gen = wbas_gen;
   int nl = container_literals(c, r, lits, 0, 32, 0);
   for (int q = 0; q < nl; q++) {
     int en = 0; const int *ev = nt_arr(nt, lits[q], "elements", &en);
@@ -5981,7 +6113,6 @@ static int widen_boxed_elem_sources(Compiler *c, int r, TyKind elem, int depth) 
         ch |= widen_boxed_array_sources(c, el, elem, depth + 1);
     }
   }
-  if (!ch) wbas_note(c, 1, r, depth, gen);
   return ch;
 }
 
@@ -6203,7 +6334,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
-  int changed = 0;
+  int changed = 0, any_changed = 0;  /* any_changed: what wbas_share_step took out of changed */
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
      __fwd_* params, positionally, so the callee's return type resolves (#1288).
@@ -6423,8 +6554,10 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* A boxed argument hides its arrays the same way, one step further:
        they are followed back to where they are built, and each one the
        store cannot fit widens there (widen_boxed_array_sources). */
-    if (p->type == TY_POLY && at == TY_POLY && p->boxed_known_elem != TY_UNKNOWN)
+    if (p->type == TY_POLY && at == TY_POLY && p->boxed_known_elem != TY_UNKNOWN) {
+      wbas_share_step(&changed, &any_changed);
       changed |= widen_boxed_array_sources(c, anode, p->boxed_known_elem, 0);
+    }
     /* ...and so do the elements a splice through it takes from another of
        its parameters, as far as this call's argument for it shows them */
     if (p->type == TY_POLY && at == TY_POLY && p->store_elems_src) {
@@ -6437,6 +6570,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
         /* a general Array's elements are of no one kind: any typed array
            the splice reaches widens */
         if (e == TY_UNKNOWN || e == TY_NIL || e == TY_VOID || (e == TY_POLY && t != TY_POLY_ARRAY)) continue;
+        wbas_share_step(&changed, &any_changed);
         changed |= widen_boxed_array_sources(c, anode, e, 0);
       }
     }
@@ -6547,7 +6681,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       }
     }
   }
-  return changed;
+  return changed | any_changed;
 }
 
 static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm);
@@ -7584,8 +7718,11 @@ static int infer_conditional_writer_param(Compiler *c, int id) {
 
 int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
+  int changed = 0, any = 0;
+  /* the walks the bindings start share what they found unchanged, until a
+     binding reports a change (widen_boxed_array_sources) */
+  wbas_share_begin();
+  for (int id = 0; id < nt->count; id++, wbas_share_step(&changed, &any)) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
@@ -8238,7 +8375,8 @@ int infer_param_types(Compiler *c) {
       if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
     }
   }
-  return changed;
+  wbas_share_end();
+  return changed | any;
 }
 
 /* The type a `for` loop binds to its index variable: position `pos` of a
