@@ -645,7 +645,7 @@ int is_string_append(const char *n) {
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
-    "sub!", "gsub!", "tr!", "tr_s!", "delete!", "squeeze!", "delete_prefix!", "delete_suffix!",
+    "sub!", "gsub!", "chomp!", "scrub!", "tr!", "tr_s!", "delete!", "squeeze!", "delete_prefix!", "delete_suffix!",
     "append_as_bytes", "force_encoding", "encode!", "unicode_normalize!", NULL };
   for (int i = 0; MUT[i]; i++)
     if (sp_streq(n, MUT[i])) return 1;

@@ -28445,6 +28445,8 @@ static int desugar_mutator_recv_rebind(Compiler *c) {
     if (pfx[0] == 'L') nt_node_set_int(nt, vr, "depth", nt_int(nt, base, "depth", 0));
     nt_node_set_str(nt, w, "name", tn);
     nt_node_set_ref(nt, w, "value", vr);
+    int nc = bo_shallow_copy(nt, id);
+    if (nc < 0) continue;
     long long bl = nt_int(nt, base, "node_line", 0), bf = nt_int(nt, base, "node_file", 0),
               bc = nt_int(nt, base, "node_col", 0);
     nt_node_reset(nt, base, "LocalVariableReadNode");
@@ -28456,8 +28458,6 @@ static int desugar_mutator_recv_rebind(Compiler *c) {
     nt_node_set_int(nt, vr, "node_file", bf);
     nt_node_set_int(nt, vr, "node_col", bc);
     scope_local_intern(sc, tn);
-    int nc = bo_shallow_copy(nt, id);
-    if (nc < 0) continue;
     int stm[2] = { w, nc };
     int stmts = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, stmts, "body", stm, 2);
