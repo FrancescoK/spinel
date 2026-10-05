@@ -233,7 +233,7 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
   else
     buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Array\");",
                conv_builtin_class_name(at));
-  buf_printf(b, " %s; })", raise_tail_value(comp_ntype(c, x->id)));
+  buf_printf(b, " %s; })", raise_tail_value(repr_of(c, x->id).as_ty));
   return 1;
 }
 
@@ -1719,7 +1719,7 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
   /* Fiber[:k] = v (expression form) */
   if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
     if (fiber_storage_recv(nt, recv)) {
-      TyKind fvt = comp_ntype(c, argv[1]);
+      TyKind fvt = repr_of(c, argv[1]).as_ty;
       /* Fiber storage is poly-valued. A nil/void/untyped value has no scalar
          C slot -- carry it boxed (`void _t = nil` is otherwise a type error). */
       int fval_poly = (fvt == TY_POLY || fvt == TY_UNKNOWN || fvt == TY_NIL || fvt == TY_VOID);
@@ -1745,7 +1745,7 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
   /* `[]=` in expression position: mutate and return the assigned value.
      Ruby's `(h[k] = v)` and `(a[i] = v)` evaluate to v. */
   if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
-    TyKind vt = comp_ntype(c, argv[1]);
+    TyKind vt = repr_of(c, argv[1]).as_ty;
     if (ty_is_hash(rt)) {
       const char *hn = ty_hash_cname(rt);
       if (hn) {
