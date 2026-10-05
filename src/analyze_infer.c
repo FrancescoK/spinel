@@ -2775,7 +2775,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) cm = 1;
         if (!cm) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       }
-      if (sp_streq(name, "rewind")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+      /* boxed: an Enumerator answers itself, a stream its 0 */
+      if (sp_streq(name, "rewind")) { *out = TY_POLY; return 1; }
       /* a stat's predicates, as the TY_IO arms type them, where the poly-IO
          arm emits them (not where a class method may own the name): size?
          is the int-or-nil count */
