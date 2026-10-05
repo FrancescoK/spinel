@@ -62,6 +62,24 @@ if [ "$1" = corpus ]; then
   rm test/b.rb
   check removed
   printf 'builds: '; find "$T" -name 'build-*' | wc -l | tr -d ' '
+elif [ "$1" = abandoned ]; then
+  # A run killed with SIGKILL runs no cleanup. The next run must still get
+  # the lock once the killed run's own processes are gone.
+  touch "$T/hold"
+  bash tools/cident.sh HEAD > "$T/first" 2>&1 & first=$!
+  for ((i=0; i<200; i++)); do
+    [ "$(find "$T" -name 'build-*' | wc -l)" -ge 1 ] && break
+    sleep 0.05
+  done
+  kill -KILL "$first"; wait "$first" 2>/dev/null || :
+  rm "$T/hold"
+  bash tools/cident.sh HEAD > "$T/second" 2>&1 & second=$!
+  for ((i=0; i<600 && $(kill -0 "$second" 2>/dev/null && echo 1 || echo 0); i++)); do sleep 0.05; done
+  if kill -0 "$second" 2>/dev/null; then
+    kill -KILL "$second"; echo "second: blocked"
+  elif grep -q '1 identical, 0 differ, 0 refusal changes' "$T/second"; then
+    echo "second: identical"
+  else echo "second: incomplete"; fi
 else
   touch "$T/hold"
   bash tools/cident.sh HEAD > "$T/first" 2>&1 & first=$!
@@ -71,7 +89,7 @@ else
   done
   bash -x tools/cident.sh HEAD > "$T/second" 2>&1 & second=$!
   for ((i=0; i<200; i++)); do
-    if grep -q '+ sleep 1' "$T/second" || [ "$(find "$T" -name 'build-*' | wc -l)" -ge 2 ]; then break; fi
+    if grep -q '+ cident_lock' "$T/second" || [ "$(find "$T" -name 'build-*' | wc -l)" -ge 2 ]; then break; fi
     sleep 0.05
   done
   rm "$T/hold"
