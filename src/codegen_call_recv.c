@@ -5067,7 +5067,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
                  both the runtime receiver and key kind. */
               buf_printf(b, " sp_RbVal _t%d = ", tk);
               emit_expr(c, argv[di], b);
-              buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) _t%d = sp_poly_index_poly(_t%d, _t%d);", tr, tr, tr, tk);
+              buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL) _t%d = %s(_t%d, _t%d);", tr, tr, poly_index_poly_fn(c), tr, tk);
             }
             else {
               buf_printf(b, " sp_int _t%d = ", tk);
@@ -12549,7 +12549,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
            the hash, string or Struct arms, so the cls_id test and the cold
            call behind it are dead code on this read. analyze established the
            proof for the GC root elision; this is the same fact paying twice. */
-        buf_puts(b, at != TY_INT ? "sp_poly_index_poly("
+        buf_puts(b, at != TY_INT ? (repr_share_rule(c) ? "sp_poly_index_poly_h(" : "sp_poly_index_poly(")
                     : expr_is_arr_or_nil(c, recv) && decide_node(c->nt, recv, "aon-get", NULL) ? "sp_poly_arr_get_aon("
                                                   : "sp_poly_arr_get_hash(");
         emit_expr(c, recv, b);
@@ -12559,7 +12559,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       }
       /* a non-poly key (e.g. a Method): box it, then index polymorphically */
       if (at != TY_UNKNOWN) {
-        buf_puts(b, "sp_poly_index_poly("); emit_expr(c, recv, b);
+        buf_printf(b, "%s(", poly_index_poly_fn(c)); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         { *out = 1; return 1; }
       }
@@ -13081,18 +13081,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
          and takes one argument or two -- and with a splat only the run time
          knows which. Branch on the key list's length; any other length is the
          ArgumentError CRuby raises. */
-      buf_printf(b, "(_t%d->len == 1 ? sp_poly_index_poly(_t%d, _t%d->data[0])"
+      buf_printf(b, "(_t%d->len == 1 ? %s(_t%d, _t%d->data[0])"
                     " : _t%d->len == 2"
                     " ? sp_poly_slice(_t%d, sp_poly_arg_i(_t%d->data[0]), sp_poly_arg_i(_t%d->data[1]))"
                     " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments\"), sp_box_nil()))",
-                 tkeys, tsv, tkeys, tkeys, tsv, tkeys, tkeys);
+                 tkeys, poly_index_poly_fn(c), tsv, tkeys, tkeys, tsv, tkeys, tkeys);
     }
     else if (g_poly_builtin_arm && (argc == 1 || argc == 2)) {
       /* the builtin arm of a dispatch a user class owning `slice` opened: the
          value is a builtin here, but the `[]` re-entry below would ask that
          class's `[]` too and find no arm for an Array (#5114) */
       if (argc == 1) {
-        buf_printf(b, "sp_poly_index_poly(_t%d, ", tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "%s(_t%d, ", poly_index_poly_fn(c), tsv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       }
       else {
         buf_printf(b, "sp_poly_slice(_t%d, sp_poly_arg_i(", tsv); emit_boxed(c, argv[0], b);

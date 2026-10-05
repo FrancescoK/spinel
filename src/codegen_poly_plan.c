@@ -3636,7 +3636,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     buf_puts(b, " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:"
                 " case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_STR_STR_HASH:"
                 " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:");
-    char gx[64], hx[64]; snprintf(gx, sizeof gx, "sp_poly_index_poly(_t%d, _t%d)", tv, atmp[0]);
+    char gx[64], hx[64]; snprintf(gx, sizeof gx, "%s(_t%d, _t%d)", poly_index_poly_fn(c), tv, atmp[0]);
     snprintf(hx, sizeof hx, "sp_poly_has_key(_t%d, _t%d)", tv, atmp[0]);
     buf_printf(b, " _t%d = ", tr);
     if (is_fetch) buf_printf(b, "%s ? ", hx);
@@ -4092,7 +4092,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
                kb.p ? kb.p : "sp_box_nil()", argc == 2,
                db.p ? db.p : "sp_box_nil()");
     else
-      snprintf(gen, sizeof gen, "sp_poly_index_poly(_t%d, %s)", tv, kb.p ? kb.p : "sp_box_nil()");
+      snprintf(gen, sizeof gen, "%s(_t%d, %s)", poly_index_poly_fn(c), tv, kb.p ? kb.p : "sp_box_nil()");
     if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
     else { buf_printf(b, " default: _t%d = ", tr);
            emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gen, b);
