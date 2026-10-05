@@ -199,4 +199,8 @@ int is_builtin_reopen_name(const char *name);
 
 int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
 
+/* Array subclasses (#7449) */
+int is_arysub_object_name(const char *n);        /* class is_a? dup ...: the object, not its elements */
+int is_arysub_kernel_name(const char *n);        /* to_enum frozen? != ...: answered as the Array */
+
 #endif

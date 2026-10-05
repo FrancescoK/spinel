@@ -1706,16 +1706,18 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/co.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/co.out"; ok=0; }; fi; \
 	done; \
-	for spec in "subclass_array:class Stack < Array: subclassing Array is not supported yet" \
-	            "subclass_hash:class Registry < Hash: subclassing Hash is not supported yet" \
+	for spec in "subclass_hash:class Registry < Hash: subclassing Hash is not supported yet" \
 	            "subclass_string:class Name < String: subclassing String is not supported yet" \
 	            "subclass_hash_own_methods_only:class Opts < Hash: subclassing Hash" \
-	            "subclass_array_toplevel_path:class Points < Array: subclassing Array" \
 	            "subclass_hash_class_new:Class.new(Hash): subclassing Hash" \
 	            "subclass_hash_class_new_block:class Registry < Hash: subclassing Hash" \
 	            "subclass_range:class Span < Range: subclassing Range" \
 	            "subclass_thread_queue:class Jobs < Queue: subclassing Queue" \
-	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO"; do \
+	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO" \
+	            "subclass_array_class_new_call:Class.new(Array) without a block is not supported yet" \
+	            "subclass_array_reopened:class Stack < Array: subclassing Array in a program that also reopens Array" \
+	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest" \
+	            "subclass_array_marshal:Marshal.dump of an Array subclass instance is not supported yet"; do \
 	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sb.c" >"$$tmp/sb.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a subclass of a builtin has none of its parent's methods)"; ok=0; \
@@ -2192,7 +2194,9 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/builtin_value_ivar_reflection.rb \
                   test/builtin_ivar_gc.rb \
                   test/builtin_ivar_frozen_copy.rb \
-                  test/builtin_ivar_boxed_reflection.rb
+                  test/builtin_ivar_boxed_reflection.rb \
+                  test/array_subclass_boxed.rb \
+                  test/array_subclass_methods.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

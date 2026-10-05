@@ -4672,8 +4672,10 @@ static void check_unrewritten_delegators(Compiler *c) {
    lexical lookup may well find that class instead. Object, BasicObject, the
    exceptions, Struct / Data, Numeric, and package classes written in Ruby
    (Set, Date, ...) are absent: a subclass of those works. OpenStruct is a
-   type of the runtime's own here, so it is listed with the builtins. */
-static const char *refused_builtin_superclass(Compiler *c, int sc) {
+   type of the runtime's own here, so it is listed with the builtins. Array
+   is listed too, but a subclass of it is no longer refused: its instances
+   are real Arrays (#7449, mark_array_subclasses). */
+static const char *builtin_value_superclass(Compiler *c, int sc) {
   static const char *const refused[] = {
     "Array", "Hash", "String", "Range", "Proc", "Method", "UnboundMethod",
     "Integer", "Float", "Symbol", "Rational", "Complex",
@@ -4705,15 +4707,20 @@ static const char *refused_builtin_superclass(Compiler *c, int sc) {
   return nm;
 }
 
+static const char *refused_builtin_superclass(Compiler *c, int sc) {
+  const char *nm = builtin_value_superclass(c, sc);
+  return nm && sp_streq(nm, "Array") ? NULL : nm;
+}
+
 /* A program class whose superclass is a builtin of that kind, or a class a
    package binds to C (StringIO), is refused where it is declared: it would
    build and then answer differently from CRuby (#7075). The fix is a real
-   subclass -- an instance that IS an Array with the subclass's methods
-   dispatched on it -- which spinel does not have yet; rewriting the class
-   into one that delegates to a wrapped value answers differently too
-   (`is_a?`, `==`, `p`), so wrapping is left to the program. `Class.new(Hash)`
-   without a block is the same class spelled as a call (the block form
-   arrives here already rewritten into a ClassNode). */
+   subclass -- an instance that IS a Hash with the subclass's methods
+   dispatched on it -- which Array has (#7449) and the others do not yet;
+   rewriting the class into one that delegates to a wrapped value answers
+   differently too (`is_a?`, `==`, `p`), so wrapping is left to the program.
+   `Class.new(Hash)` without a block is the same class spelled as a call (the
+   block form arrives here already rewritten into a ClassNode). */
 static void refuse_builtin_subclass(Compiler *c, int at, const char *what, const char *par) {
   char msg[512];
   snprintf(msg, sizeof msg,
@@ -4733,6 +4740,17 @@ static void check_builtin_subclasses(Compiler *c) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     const char *par = refused_builtin_superclass(c, sc);
+    /* a program that reopens Array has a class of its own named Array, which
+       resolve_parents would take for the superclass */
+    if (!par && (par = builtin_value_superclass(c, sc)) != NULL) {
+      if (comp_class_index(c, "Array") >= 0) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "class %s < Array: subclassing Array in a program that "
+                 "also reopens Array is not supported yet", cn ? cn : "?");
+        unsupported_feature(c, sc, msg);
+      }
+      continue;
+    }
     if (!par) {
       NodeKind sk = nt_kind(nt, sc);
       if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) continue;
@@ -4756,8 +4774,13 @@ static void check_builtin_subclasses(Compiler *c) {
     int args = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (!av || ac != 1) continue;
-    const char *par = refused_builtin_superclass(c, av[0]);
-    if (par) {
+    const char *par = builtin_value_superclass(c, av[0]);
+    if (par && sp_streq(par, "Array"))
+      /* no class of the program's own stands for a class made by the call */
+      unsupported_feature(c, id, "Class.new(Array) without a block is not supported yet "
+                                 "(the call makes its class at run time); declare it as "
+                                 "`class Name < Array`");
+    else if (par) {
       char what[64];
       snprintf(what, sizeof what, "Class.new(%s)", par);
       refuse_builtin_subclass(c, id, what, par);
@@ -4827,6 +4850,25 @@ static void refuse_anon_superclass_reflection(Compiler *c) {
   }
 }
 
+/* The classes whose chain reaches the builtin Array (#7449): each records the
+   root of its chain, the class right below Array, whose instances and its
+   descendants' share one embedded Array kind. A program that reopens Array
+   was refused above. */
+static void mark_array_subclasses(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++) {
+    int r = i;
+    for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r && g < 256; g++)
+      r = c->classes[r].parent;
+    int dn = c->classes[r].def_node;
+    if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
+    const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
+    if (par && sp_streq(par, "Array") && comp_class_index(c, "Array") < 0) {
+      c->classes[i].ary_root = r + 1;
+      c->has_arysub = 1;
+    }
+  }
+}
+
 void resolve_parents(Compiler *c) {
   check_class_redeclarations(c);
   check_blk_param_writes(c);
@@ -4846,6 +4888,7 @@ void resolve_parents(Compiler *c) {
       if (p >= 0 && p != i) c->classes[i].parent = p;
     }
   }
+  mark_array_subclasses(c);
   /* A `class << self; attr_accessor :x` is a method of the singleton class,
      and a subclass's singleton class inherits it: the accessor answers
      through the subclass, on the subclass's own slot (nil until assigned),
