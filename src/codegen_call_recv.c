@@ -13238,6 +13238,30 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
     if (!poly_name_user_claimed(c, name, argc)) {
       /* ceil / floor / truncate with a precision had no arm at all and
          raised NoMethodError on a Float (#4532) */
+      /* truncate's receiver may be an IO (the round family's name a File
+         answers too, io_builtin_name), whose argument is an offset:
+         CRuby words its nil by NUM2OFFT (`no implicit conversion from
+         nil`), the numbers' by NUM2LONG, so the argument is converted by
+         the receiver's kind at run time. An Integer argument that cannot
+         be nil converts alike for both and keeps the plain arm below. The
+         receiver is read twice: a pure read beside a pure argument as it
+         is, anything else held in a rooted temp (or the one an operand
+         order rewrite already bound) */
+      int ta = argv[0];
+      if (io_builtin_name(name) &&
+          !(comp_ntype(c, ta) == TY_INT && (nt_kind(nt, ta) == NK_IntegerNode || !repr_nil_scalar(c, ta, TY_INT)))) {
+        Buf rb = {0, 0, 0};
+        int held = 0;
+        if (subtree_is_pure_read(c, recv) && subtree_is_pure_read(c, ta)) emit_expr(c, recv, &rb);
+        else held = hold_recv_open(c, recv, 0, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
+        const char *rv = rb.p ? rb.p : "sp_box_nil()";
+        buf_printf(b, "sp_poly_prec_n(%s, sp_poly_arg_int_chk_w(", rv);
+        emit_boxed(c, ta, b);
+        buf_printf(b, ", (%s).tag == SP_TAG_OBJ && (%s).cls_id == SP_BUILTIN_IO ? 2 : 0), SP_PREC_TRUNC)", rv, rv);
+        if (held) buf_puts(b, "; })");
+        free(rb.p);
+        { *out = 1; return 1; }
+      }
       if (sp_streq(name, "round")) buf_puts(b, "sp_poly_round_n(");
       else buf_puts(b, "sp_poly_prec_n(");
       emit_expr(c, recv, b); buf_puts(b, ", ");

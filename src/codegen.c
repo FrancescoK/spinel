@@ -650,9 +650,13 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
     if (!cn) return 0;
     buf_puts(b, "({ (void)(");
     emit_expr(c, node, b);
-    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into %s\"); %s; })",
-               cn, want == TY_STRING ? "String" : "Integer",
-               want == TY_STRING ? "(const char *)0" : "(sp_int)0");
+    /* an IO offset (NUM2OFFT) words a String "from string" */
+    if (want == TY_INT && wording == 2 && (t == TY_STRING || t == TY_STRBUF))
+      buf_puts(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion from string\"); (sp_int)0; })");
+    else
+      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into %s\"); %s; })",
+                 cn, want == TY_STRING ? "String" : "Integer",
+                 want == TY_STRING ? "(const char *)0" : "(sp_int)0");
     return 1;
   }
   if (t == TY_NIL && nil_ok) return 0;
@@ -671,6 +675,12 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
                : wording         ? "no implicit conversion of nil into Integer"
                                  : "no implicit conversion from nil to integer",
                dv);
+  }
+  else if (want == TY_INT && wording == 2) {
+    /* NUM2OFFT words either boolean alike */
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, node, b);
+    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion from boolean\"); %s; })", dv);
   }
   else {
     const char *into = want == TY_STRING ? "String" : "Integer";
