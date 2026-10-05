@@ -17,8 +17,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, sp_int...) ABI, evaluating recv once. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
-       sp_streq(name, "==="))) {
+      is_method_invoke(name)) {
     int mn = method_recv_node(c, recv);
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);

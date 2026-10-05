@@ -963,8 +963,14 @@ int a_block_is_lifted(Compiler *c, int id) {
   /* a literal block on a first-class proc's .call is lifted onto the
      _sp_proc_blk side-channel as a real proc (#2648), so its captures need
      cells exactly like any other escaping block */
-  if (is_call_alias(name) &&
-      recv >= 0 && infer_type(c, recv) == TY_PROC) return 1;
+  if (recv >= 0 && is_method_invoke(name)) {
+    TyKind rt = infer_type(c, recv);
+    if (rt == TY_PROC && is_call_alias(name)) return 1;
+    /* Method invocation also materializes its literal block, including when
+       the Method is held in a local. The capture pass revisits this query
+       after inference settles, before storage is consumed by codegen. */
+    if (rt == TY_METHOD) return 1;
+  }
   /* so is Fiber.blocking { }'s, which sp_Fiber_blocking_proc calls */
   if (sp_streq(name, "blocking") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Fiber")) return 1;
