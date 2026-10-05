@@ -14138,7 +14138,8 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(sp_str_concat(sp_str_sub_range(");
       emit_expr(c, recv, b); buf_printf(b, ", 0, _t%d), ", ti);
       if (nt_kind(nt, argv[1]) == NK_SplatNode) emit_str_insert_text(c, argv[1], b);
-      else emit_expr(c, argv[1], b);
+      /* a String, as StringValue takes it: nil or a number is a TypeError */
+      else emit_str_expr(c, argv[1], b);
       buf_puts(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, (sp_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_printf(b, "))); }\n");
       return 1;
@@ -14461,16 +14462,15 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         emit_indent(b, indent);
         emit_expr(c, cur, b); buf_puts(b, " = sp_str_append_grow(");
         emit_expr(c, cur, b); buf_puts(b, ", ");
-        if (at == TY_INT) {
-          buf_puts(b, "sp_int_codepoint_to_str_in("); emit_expr(c, cur, b); buf_puts(b, ", ");
-          emit_expr(c, arg, b); buf_puts(b, ")");
-        }
-        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
-        /* a string-typed arg whose value is really the unresolved-call gate's
-           sp_raise_nomethod(...) poly (`s << time_or_nil.strftime(...)`, the
-           receiver being nilable): emit_str_expr coerces it to the string slot,
-           keeping the raise, instead of passing the sp_RbVal through raw. */
-        else emit_str_expr(c, arg, b);
+        /* an Integer is a codepoint, a boxed one too, and anything else takes
+           the strict String slot: a boxed nil is CRuby's TypeError, where its
+           rendering was appended. A string-typed arg whose value is really the
+           unresolved-call gate's sp_raise_nomethod(...) poly (`s <<
+           time_or_nil.strftime(...)`, the receiver being nilable) is coerced to
+           the string slot, keeping the raise (emit_str_expr). */
+        { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, cur, &rb);
+          emit_str_append_arg(c, arg, rb.p ? rb.p : "", b);
+          free(rb.p); }
         buf_puts(b, ");\n");
       }
       return 1;
