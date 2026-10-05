@@ -6595,10 +6595,17 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
   else if ((is_substitution(name)) && argc == 2 &&
            nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
+    /* a Hash replacement takes the Hash overload, as with a literal pattern */
+    TyKind ht = comp_ntype(c, argv[1]);
+    const char *hconv = repl_hash_to_s_fn(ht);
+    const char *suf = (ht == TY_STR_STR_HASH || hconv) ? "_str_str_hash" : "";
     Buf rp; memset(&rp, 0, sizeof rp);
     emit_regex_pat_to_buf(c, argv[0], &rp);
-    buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
-    emit_str_expr(c, argv[1], b); buf_puts(b, ")");
+    buf_printf(b, "sp_re_%s%s(%s, %s, ", name, suf, rp.p ? rp.p : "NULL", r);
+    if (ht == TY_STR_STR_HASH) emit_expr(c, argv[1], b);
+    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else emit_str_expr(c, argv[1], b);
+    buf_puts(b, ")");
     free(rp.p);
   }
   else if ((is_substitution(name)) && argc == 2 &&

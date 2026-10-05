@@ -8515,10 +8515,13 @@ static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_c
    gives a frozen copy. */
 /* A String-keyed Hash of any values as the replacement Hash of sub/gsub:
    each value read as its to_s (nil as ""), the String-to-String Hash the
-   substitution helpers take, as CRuby converts hash[match] with to_s. */
+   substitution helpers take, as CRuby converts hash[match] with to_s; its
+   default value is converted too. */
 static sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h) {
   SP_GC_ROOT(h);
   sp_StrStrHash *r = sp_StrStrHash_new(); SP_GC_ROOT(r);
+  /* a missing match reads the default, as its to_s (nil's "" is no default) */
+  if (h && h->default_v.tag != SP_TAG_NIL) r->default_v = sp_poly_to_s(h->default_v);
   if (h) for (sp_int i = 0; i < h->len; i++) {
     const char *k = h->order[i];
     sp_StrStrHash_set(r, k, sp_poly_to_s(sp_StrPolyHash_get(h, k)));
@@ -8529,6 +8532,7 @@ static sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h) {
 static sp_StrStrHash *sp_StrIntHash_to_s_values(sp_StrIntHash *h) {
   SP_GC_ROOT(h);
   sp_StrStrHash *r = sp_StrStrHash_new(); SP_GC_ROOT(r);
+  if (h && h->default_v != SP_INT_NIL) r->default_v = sp_int_to_s(h->default_v);
   if (h) for (sp_int i = 0; i < h->len; i++) {
     const char *k = h->order[i];
     sp_int v = sp_StrIntHash_get(h, k);
