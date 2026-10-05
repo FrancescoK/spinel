@@ -8,15 +8,15 @@
 #
 # Takes the cases of tools/value_flow_gen.rb -- a covering array of strength
 # T (default 2) over where the value comes from, what carries it, how it is
-# read, the slot's type, the scope and the mode, or N random rows, with
-# --only pinning factors to a level each (a case that cannot take one is left
-# out) -- runs them B to a program under CRuby and under spinel, and compares
-# each case's lines. A case prints its read of a present value, of the
-# source's value and of a nil its carrier makes, so a difference is named by
-# the role of the first line that differs (`source: value` is a nil that read
-# as something else) and how it differs. An exception CRuby raises is part of
-# the expected answer. The cases of one program share the mode spinel
-# compiles them in.
+# read, the slot's type, whether a written object is frozen first, the scope
+# and the mode, or N random rows, with --only pinning factors to a level each
+# (a case that cannot take one is left out) -- runs them B to a program under
+# CRuby and under spinel, and compares each case's lines. A case prints its
+# read of a present value, of the source's value and of a nil its carrier
+# makes, so a difference is named by the role of the first line that differs
+# (`source: value` is a nil that read as something else) and how it differs.
+# An exception CRuby raises is part of the expected answer. The cases of one
+# program share the mode spinel compiles them in.
 #
 # The call-binding probe (tools/call_binding_probe.rb) prints what it binds
 # with `inspect`, which already asks a typed slot for its nil; the reads this
