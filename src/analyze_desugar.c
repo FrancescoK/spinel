@@ -7065,11 +7065,18 @@ static int dmp_instance_method_alias(NodeTable *nt, int call, const char *cn, in
   if (!sp_streq(cn, "define_method") || blk >= 0 || nt_kind(nt, src) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, src, "name");
   int recv = nt_ref(nt, src, "receiver");
-  if (!nm || !sp_streq(nm, "instance_method") || nt_ref(nt, src, "block") >= 0 ||
-      (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
+  if (!nm || nt_ref(nt, src, "block") >= 0 || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
   int sargs = nt_ref(nt, src, "arguments");
   int sn = 0; const int *sv = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sn) : NULL;
-  if (sn != 1 || nt_kind(nt, sv[0]) != NK_SymbolNode) return 0;
+  /* `send(:instance_method, :x)` (or __send__ / public_send) is the same
+     UnboundMethod; it was left as a call, and the method never defined */
+  if ((sp_streq(nm, "send") || sp_streq(nm, "__send__") || sp_streq(nm, "public_send")) &&
+      sn == 2 && nt_kind(nt, sv[0]) == NK_SymbolNode &&
+      sp_streq(nt_str(nt, sv[0], "value"), "instance_method")) {
+    nm = "instance_method";
+    sv++; sn--;
+  }
+  if (!sp_streq(nm, "instance_method") || sn != 1 || nt_kind(nt, sv[0]) != NK_SymbolNode) return 0;
   int args = nt_ref(nt, call, "arguments");
   int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
   if (nt_kind(nt, av[0]) == NK_StringNode) {
