@@ -1554,6 +1554,7 @@ int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
                                 const char *name, int argc, Buf *b);
 int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b);

@@ -134,6 +134,7 @@ typedef enum {
   BOPE_IVAR_REFLECTION,   /* reflection on a builtin value without ivar slots */
   BOPE_FLOAT_RATIONALIZE,
   BOPE_STRING_SCAN_CHECKED,
+  BOPE_STRING_SLICE,     /* String#slice!: lvalue and pattern-dependent */
   BOPE__COUNT
 } BopEmit;
 

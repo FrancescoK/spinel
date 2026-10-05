@@ -186,6 +186,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_THREAD_SET_REPORT] = emit_op_thread_set_report,
   [BOPE_FLOAT_RATIONALIZE] = emit_op_float_rationalize,
   [BOPE_STRING_SCAN_CHECKED] = emit_op_string_scan_checked,
+  [BOPE_STRING_SLICE] = emit_op_string_slice,
   [BOPE_THREAD_RAISE] = emit_op_thread_raise,
   [BOPE_THREAD_TLS] = emit_op_thread_tls,
   [BOPE_MUTEX_SLEEP] = emit_op_mutex_sleep,
