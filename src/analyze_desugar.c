@@ -4593,7 +4593,9 @@ int desugar_array_at(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "at")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || nt_ref(nt, id, "block") >= 0) continue;
+    /* CRuby's at ignores a literal block, so `a.at(i) { }` is the same read;
+       a block argument (`&pr`) is left as written */
+    if (recv < 0 || nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) continue;
     if (nt_int(nt, id, "dyn_arm", 0)) continue;   /* same reason as first/last */
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
