@@ -390,6 +390,8 @@ static void usage(void) {
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext cruby        Also generate the CRuby extension shim (<out>_ext.c)\n"
+    "  --share-strings  Prototype (#6765): a mutable String is shared by\n"
+    "              reference unless the analysis proves it local\n"
     "  --no-inline-hot  Do not force small leaf methods inline (default: do).\n"
     "                 Forcing is worth a sixth of optcarrot's frame rate and\n"
     "                 costs up to twice the C compile time\n"
@@ -503,6 +505,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
     else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
+    else if (sp_streq(a, "--share-strings")) { set_env("SPINEL_SHARE_STRINGS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
