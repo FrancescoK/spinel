@@ -2063,7 +2063,7 @@ static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid,
   int td = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", td);
   emit_boxed(c, recv, b);
-  buf_puts(b, "; (void)(");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (void)(", td);
   emit_boxed(c, value, b);
   buf_printf(b, "); sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); ", td, dn);
   Repr rp = repr_of(c, id);
