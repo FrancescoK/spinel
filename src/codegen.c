@@ -2325,6 +2325,9 @@ int cmethod_takes_self_cls(Compiler *c, int si) {
       if (nt_kind(c->nt, nid) == NK_SelfNode) { ans = 1; break; }
       /* super in `self.new` constructs whichever class received the call */
       if (comp_super_is_class_new(c, nid)) { ans = 1; break; }
+      /* and any other super runs the method it reaches on that class, which
+         may read it even where this body does not */
+      if (nt_kind(c->nt, nid) == NK_SuperNode || nt_kind(c->nt, nid) == NK_ForwardingSuperNode) { ans = 1; break; }
       const char *ty = nt_type(c->nt, nid);
       if (ty && sp_streq(ty, "CallNode") && nt_ref(c->nt, nid, "receiver") < 0) {
         const char *nm = nt_str(c->nt, nid, "name");
