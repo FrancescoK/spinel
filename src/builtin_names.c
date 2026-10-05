@@ -163,6 +163,14 @@ int is_hash_key_lookup(const char *n) {
   return sp_streq(n, "[]") || is_key_query(n) || sp_streq(n, "fetch") || sp_streq(n, "delete");
 }
 
+int is_array_store_family(const char *n) {
+  return is_push_unshift(n) || sp_streq(n, "insert") || sp_streq(n, "concat");
+}
+
+int is_positional_insert(const char *n) {
+  return sp_streq(n, "insert");
+}
+
 int is_proc_conversion(const char *n) {
   return sp_streq(n, "to_proc");
 }

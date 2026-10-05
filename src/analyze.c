@@ -16299,6 +16299,39 @@ static unsigned share_types_digest(Compiler *c) {
    handle at each of its stores. A holder whose kind has no handle yet is left as it
    is; repr_seal refuses it. The route rules after this only carry the
    handles it made, and add none it did not (#6765's stats count them). */
+/* global `name` when it holds a container */
+static LocalVar *share_gvar_container(Compiler *c, const char *name) {
+  LocalVar *gv = comp_gvar(c, name[0] == '$' ? name + 1 : name);
+  return gv && (ty_is_array(gv->type) || ty_is_hash(gv->type)) ? gv : NULL;
+}
+
+/* --share-strings: demand the Strings stored into global `name`'s
+   container (`$b << x`, `$b.push(x)`, `$b[i] = x`, `$b = [x]`) as the
+   handles its poly boxes hold. */
+static int share_gvar_demand_stores(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    int r = nt_ref(nt, w, "receiver");
+    const char *wn = nt_str(nt, w, "name");
+    if (r < 0 || !wn || nt_kind(nt, r) != NK_GlobalVariableReadNode || !nt_str(nt, r, "name") ||
+        !sp_streq(nt_str(nt, r, "name"), name))
+      continue;
+    int a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (is_array_store_family(wn))
+      for (int i = is_positional_insert(wn) ? 1 : 0; i < an; i++) changed |= strbuf_demand_store_leaf(c, av[i], 0);
+    else if (is_store_alias(wn) && an >= 2) changed |= strbuf_demand_store_leaf(c, av[an - 1], 0);
+  }
+  NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    int v = nt_ref(nt, w, "value");
+    if (wn && sp_streq(wn, name) && v >= 0 && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode))
+      changed |= strbuf_container_source_walk(c, v, 0, SB_DEMAND);
+  }
+  return changed;
+}
+
 /* --share-strings: ivar `name` of class cid is a box (it also holds nil,
    or another kind) whose class the rule shares: each String written into it
    (an ivar write, an attribute writer, instance_variable_set) is boxed as
@@ -16415,6 +16448,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     }
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
+    /* a global's container whose elements the rule shares: settled in
+       its poly form, whose boxes hold the handles stored into it */
+    else if (sh->kind == SHK_GVAR && sh->name && share_gvar_container(c, sh->name) && repr_str_elems_share(c, h)) {
+      LocalVar *gv = share_gvar_container(c, sh->name);
+      if (gv->type == TY_STR_ARRAY && !gv->rbs_seeded) { gv->type = TY_POLY_ARRAY; gv->elems_shared = 1; changed = 1; }
+      if (gv->type == TY_POLY_ARRAY || (ty_is_hash(gv->type) && ty_hash_val(gv->type) == TY_POLY))
+        changed |= share_gvar_demand_stores(c, sh->name);
+    }
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
       LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
                                            : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
@@ -16455,7 +16496,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     int a = nt_ref(c->nt, n, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
     for (int i = 0; i < ac; i++)
+      /* (a slot's read; a String of its own goes as a handle of its own,
+         emit_proc_call_args) */
       if ((c->ntype[av[i]] == TY_STRING || c->ntype[av[i]] == TY_STRBUF) &&
+          (nt_kind(c->nt, av[i]) == NK_LocalVariableReadNode || nt_kind(c->nt, av[i]) == NK_InstanceVariableReadNode) &&
           (share_node_shares(c, av[i]) || share_call_yield_shares(c, n)))
         changed |= strbuf_demand_store_leaf(c, av[i], 0);
   }

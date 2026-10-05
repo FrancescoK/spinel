@@ -5102,7 +5102,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
     TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    int use_shadow_sc = iter_param_needs_shadow(c, clv0, et);
     int tm = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
@@ -5132,7 +5132,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       clv0->type = csaved0;
     }
     else {
-      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      if (p0) {
+        char src[64]; snprintf(src, sizeof src, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
+        emit_indent(b, bodyIndent);
+        emit_elem_param_bind(c, block, 0, p0_orig, p0, "Str", TY_UNKNOWN, src, b);
+        buf_puts(b, ";\n");
+      }
       emit_loop_body(c, body, b, bodyIndent);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
