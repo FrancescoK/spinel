@@ -991,7 +991,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
     int dargs = nt_ref(nt, id, "arguments");
     int dargc = 0; const int *dargv = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dargc) : NULL;
-    TyKind drt = comp_ntype(c, recv);
+    Repr drr = repr_of(c, recv);
+    TyKind drt = drr.as_ty;
     /* clone(freeze: true/false): -1 = not given (copy the receiver's state),
        0 = false, 1 = true. Only a single `freeze:` keyword arg is accepted. */
     int freeze_mode = -1, dkw_ok = (dargc == 0);
@@ -1008,7 +1009,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
       }
     }
-    if (dkw_ok && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
+    if (dkw_ok && ty_is_object(drt) && drr.kind != RK_VOBJ) {
       int cid = ty_object_class(drt);
       /* native-bound classes have no generated pool/struct copy; their dup
          dispatches to a declared native_method instead */
@@ -1630,7 +1631,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         /* A value-type object is passed BY VALUE (sp_X, not sp_X *): casting
            it to a pointer is not a conversion the C compiler accepts, so a
            class with ivars that defines #! did not build (#3819). */
-        int nval = comp_ty_value_obj(c, comp_ntype(c, nr2));
+        int nval = repr_of(c, nr2).kind == RK_VOBJ;
         buf_printf(b, "sp_%s_%s(", c->classes[ndef].c_name, mc(nn2));
         if (!nval) buf_printf(b, "(sp_%s *)", c->classes[ndef].c_name);
         buf_puts(b, "(");
