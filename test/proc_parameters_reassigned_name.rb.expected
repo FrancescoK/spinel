@@ -1,0 +1,19 @@
+[[:req, :k]]
+[[:opt, :k], [:opt, :j]]
+[[:req, :k], [:opt, :m], [:rest, :r], [:req, :z]]
+[[:opt, :k]]
+[[:req, :k], [:req, :j]]
+2
+"12"
+6
+[[:req, :k]]
+4
+9
+7
+[[:req, :k]]
+[[:req, :v__bpin]]
+"#<Method: Box#bump(k, j=...)>"
+3
+2
+129
+"cut_it_down_to"

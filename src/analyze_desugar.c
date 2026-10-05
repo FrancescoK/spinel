@@ -11389,6 +11389,51 @@ static int rbp_captured(const NodeTable *nt, int node, const char *name, int lev
   return 0;
 }
 
+/* The slot names this pass invents, each with the length of the name it
+   stands for: what a program prints (`Proc#parameters`, `Method#inspect`) is
+   the name it wrote. A slot name steps past one the program itself uses, so
+   no name the program wrote is taken for a slot. The shadow rename runs
+   later, so a slot may carry its suffix too; any other name is its whole
+   self. */
+static struct { char **name; size_t *len; int n; } rbp_slots;
+
+size_t reassigned_param_written_len(const char *name) {
+  if (!name) return 0;
+  size_t n = block_param_written_len(name);
+  for (int i = 0; i < rbp_slots.n; i++)
+    if (strlen(rbp_slots.name[i]) == n && !memcmp(rbp_slots.name[i], name, n)) return rbp_slots.len[i];
+  return strlen(name);
+}
+
+/* True when the program itself uses `name`. Only a name with `__bpin` in it
+   can clash with a slot's, so those are collected once. */
+static int rbp_program_uses(const NodeTable *nt, int n0, const char *name) {
+  static const NodeTable *seen;
+  static char **used;
+  static int nused;
+  if (seen != nt) {
+    seen = nt;
+    for (int id = 0; id < n0; id++) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || !strstr(nm, "__bpin") || reassigned_param_written_len(nm) != strlen(nm)) continue;
+      used = realloc(used, sizeof(char *) * (size_t)(nused + 1));
+      used[nused++] = strdup(nm);
+    }
+  }
+  for (int i = 0; i < nused; i++) if (sp_streq(used[i], name)) return 1;
+  return 0;
+}
+
+static void rbp_slot_name(const NodeTable *nt, int n0, const char *orig, char *buf, size_t n) {
+  snprintf(buf, n, "%s__bpin", orig);
+  for (int k = 1; rbp_program_uses(nt, n0, buf); k++) snprintf(buf, n, "%s__bpin_%d", orig, k);
+  if (reassigned_param_written_len(buf) != strlen(buf)) return;
+  rbp_slots.name = realloc(rbp_slots.name, sizeof(char *) * (size_t)(rbp_slots.n + 1));
+  rbp_slots.len = realloc(rbp_slots.len, sizeof(size_t) * (size_t)(rbp_slots.n + 1));
+  rbp_slots.name[rbp_slots.n] = strdup(buf);
+  rbp_slots.len[rbp_slots.n++] = strlen(orig);
+}
+
 int desugar_reassigned_block_params(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -11409,9 +11454,9 @@ int desugar_reassigned_block_params(Compiler *c) {
       /* a parameter a nested block or lambda captures keeps its one cell per
          iteration, which only a block parameter has */
       if (rbp_captured(nt, body, pn, 0)) continue;
-      char orig[160], renamed[176];
+      char orig[160], renamed[192];
       snprintf(orig, sizeof orig, "%s", pn);
-      snprintf(renamed, sizeof renamed, "%s__bpin", orig);
+      rbp_slot_name(nt, n0, orig, renamed, sizeof renamed);
       nt_set_str(nt, rq[i], "name", renamed);
       int w = fwd_new_node_like(nt, rq[i], "LocalVariableWriteNode");
       nt_node_set_str(nt, w, "name", orig);
