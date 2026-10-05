@@ -11380,10 +11380,20 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable) {\n");
   buf_puts(b, "  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+    /* a reopened Time or Range is keyed by its builtin id, and its method
+       takes self by value (see emit_user_binop_dispatch); the reopenings of
+       other builtins are not boxed as one object id this switch reaches */
+    const char *bcase = NULL, *bself = NULL;
+    if (is_builtin_reopen(c->classes[k].name)) {
+      if (sp_streq(c->classes[k].name, "Time")) { bcase = "SP_BUILTIN_TIME"; bself = "*(sp_Time *)a.v.p"; }
+      else if (sp_streq(c->classes[k].name, "Range")) { bcase = "SP_BUILTIN_RANGE"; bself = "*(sp_Range *)a.v.p"; }
+      else continue;
+    }
+    else if (!c->classes[k].instantiated) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "<=>", &defcls);
     if (mi < 0) continue;
+    if (bcase && defcls != k) continue;
     Scope *m = &c->scopes[mi];
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
     if (m->ret != TY_INT && m->ret != TY_POLY && m->ret != TY_FLOAT) continue;  /* unusable return -> not-comparable */
@@ -11437,7 +11447,19 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     else {
       continue;
     }
-    buf_printf(b, "    case %d: {\n", cid);
+    /* the callee and its self, as the class's own methods take them */
+    char callee[200], selfarg[200];
+    if (bcase) {
+      Buf nb; memset(&nb, 0, sizeof nb); emit_method_cname(c, m, &nb);
+      snprintf(callee, sizeof callee, "%s", nb.p ? nb.p : ""); free(nb.p);
+      snprintf(selfarg, sizeof selfarg, "%s", bself);
+      buf_printf(b, "    case %s: {\n", bcase);
+    }
+    else {
+      snprintf(callee, sizeof callee, "sp_%s_%s", dcn, mc("<=>"));
+      snprintf(selfarg, sizeof selfarg, "%s(sp_%s *)a.v.p", self_vt ? "*" : "", dcn);
+      buf_printf(b, "    case %d: {\n", cid);
+    }
     if (obj_operand) {
       /* The operand param was inferred to a single class (`pcid`), but the
          `<=>` body (defined up the chain, e.g. a Comparable mixin) works for
@@ -11461,23 +11483,20 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (m->ret == TY_INT) {
       /* a `<=>` that also answers nil is a nullable Integer (the nil join):
          its sentinel is the not-comparable answer */
-      buf_printf(b, "      sp_int _ri = (sp_int)sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
-                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+      buf_printf(b, "      sp_int _ri = (sp_int)%s(%s, %s);\n", callee, selfarg, argbuf);
       if (m->ret_nullable_int) buf_puts(b, "      if (_ri == SP_INT_NIL) { *comparable = FALSE; return 0; }\n");
       buf_puts(b, "      *comparable = TRUE; return _ri;\n");
     }
     else if (m->ret == TY_FLOAT) {
       /* a Float `<=>` result is a valid comparison (CRuby): use its sign */
-      buf_printf(b, "      sp_float _rf = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
-                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+      buf_printf(b, "      sp_float _rf = %s(%s, %s);\n", callee, selfarg, argbuf);
       if (m->ret_nullable_int) buf_puts(b, "      if (sp_float_is_nil(_rf)) { *comparable = FALSE; return 0; }\n");
       buf_puts(b, "      *comparable = TRUE; return (_rf > 0) - (_rf < 0);\n");
     }
     else {
       /* poly `<=>`: an Integer or Float result is comparable (use its sign);
          nil or any other type (String, ...) is incomparable -> ArgumentError */
-      buf_printf(b, "      sp_RbVal _r = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
-                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+      buf_printf(b, "      sp_RbVal _r = %s(%s, %s);\n", callee, selfarg, argbuf);
       buf_puts(b, "      if (_r.tag == SP_TAG_INT) { *comparable = TRUE; return _r.v.i; }\n");
       buf_puts(b, "      if (_r.tag == SP_TAG_FLT) { *comparable = TRUE; return (_r.v.f > 0) - (_r.v.f < 0); }\n");
       buf_puts(b, "      *comparable = FALSE; return 0;\n");
@@ -15727,7 +15746,10 @@ char *codegen_program(const NodeTable *nt) {
      is itself never instantiated. */
   g_has_user_cmp = 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+    /* a reopened Time or Range is instantiated by the runtime itself */
+    const char *kn = c->classes[k].name;
+    int breopen = kn && is_builtin_reopen(kn) && (sp_streq(kn, "Time") || sp_streq(kn, "Range"));
+    if (!c->classes[k].instantiated && !breopen) continue;
     if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
   }
   g_has_user_binop = 0;
