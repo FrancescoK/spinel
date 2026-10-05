@@ -3868,11 +3868,16 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
   return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
 }
 
-/* The runtime `[]` for a boxed receiver and a boxed key: under
-   --share-strings a String key may be its shared handle, which the lookup
-   reads through (sp_poly_index_poly_h). */
+/* The runtime `[]=` for a boxed receiver and a boxed key: under
+   --share-strings a String key may be its shared handle, which a hash reads
+   through (sp_poly_set_poly_h). */
+const char *poly_set_poly_fn(const Compiler *c) {
+  return repr_share_rule(c) ? "sp_poly_set_poly_h" : "sp_poly_set_poly";
+}
+/* The runtime `[]` for a boxed receiver and a boxed key, read through a
+   handle key the same way (sp_poly_index_poly_h). */
 const char *poly_index_poly_fn(const Compiler *c) {
-  return c->share_strings ? "sp_poly_index_poly_h" : "sp_poly_index_poly";
+  return repr_share_rule(c) ? "sp_poly_index_poly_h" : "sp_poly_index_poly";
 }
 
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
