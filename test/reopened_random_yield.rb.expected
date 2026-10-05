@@ -1,0 +1,18 @@
+[:blk, [1]]
+[:blk, [2]]
+[:proc, [3]]
+[:proc, [4]]
+[5, [5, :literal]]
+[6, [6, :literal]]
+[7, [7, [8, 9]]]
+[8, [8, [8, 9]]]
+9
+9
+11
+12
+[12, [8, 9]]
+[13, [8, 9]]
+[:random_missing, [14]]
+[:array_missing, [15]]
+[:forwarded, 16]
+[:forwarded, 17]

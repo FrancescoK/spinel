@@ -1987,6 +1987,14 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     if (fwd) {
       Scope *encl = comp_scope_of(c, call_id);
       int emi = encl ? (int)(encl - c->scopes) : -1;
+      /* An unrelated proc does not forward this method's caller block.
+         Its yield result uses the boxed proc ABI, as in yield_value_type. */
+      if (blk >= 0) {
+        int ex = nt_ref(c->nt, blk, "expression");
+        const char *pn = ex >= 0 && nt_kind(c->nt, ex) == NK_LocalVariableReadNode
+                         ? nt_str(c->nt, ex, "name") : NULL;
+        if (!encl || !encl->blk_param || !pn || !sp_streq(encl->blk_param, pn)) return TY_POLY;
+      }
       if (emi >= 0 && emi != mi) {
         TyKind ft = yvt_forwarded_value(c, emi);
         if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;

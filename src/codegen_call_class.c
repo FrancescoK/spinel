@@ -3337,6 +3337,18 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (pl->mi >= 0 && pl->via == UC_REOPEN && pl->dispatch == CP_DIRECT &&
           pl->owner_ci == comp_class_index(c, "Random")) {
         int mi = pl->mi, ci = pl->owner_ci;
+        /* A yielding reopen has only its proc form, as for Array and Hash.
+           Random's self is the runtime pointer rather than a boxed value. */
+        int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+        if (pf >= 0) {
+          int blk = nt_ref(nt, id, "block");
+          if (blk >= 0) blk = resolve_forwarded_block(c, blk);
+          Buf rb; memset(&rb, 0, sizeof rb);
+          emit_expr(c, recv, &rb);
+          emit_reopen_pf_call(c, id, pf, blk, rb.p, b);
+          free(rb.p);
+          return 1;
+        }
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
         emit_method_cname(c, &c->scopes[mi], b);
         buf_puts(b, "(");
