@@ -19101,10 +19101,22 @@ static const char *strvar_arg(Compiler *c, int a, int *shared) {
    call emitted that has one (`[s].each(&method(:m))` is rewritten to a
    block whose nodes have none). */
 static int g_refuse_call = -1, g_refuse_outer = -1;
-static __attribute__((noreturn)) void refuse_string_copy(Compiler *c, int arg, const char *target,
-                                                         const char *pname, const char *through,
-                                                         const char *why) {
+static int refuse_string_copy_routed(Compiler *c, int arg, int to, const char *pname);
+static int refuse_method_body(Compiler *c, const char *mname);
+static void refuse_string_copy(Compiler *c, int arg, const char *target,
+                               const char *pname, const char *through,
+                               const char *why) {
   int is_method = target && target[0] == '`';
+  /* --share-strings: a user method's parameter, by its method's name, is
+     the rule's first (refuse_string_copy_routed) */
+  if (is_method && c->share_strings) {
+    char mn[128];
+    size_t tl = strlen(target);
+    if (tl >= 3 && tl - 2 < sizeof mn && target[tl - 1] == '`') {
+      memcpy(mn, target + 1, tl - 2); mn[tl - 2] = 0;
+      if (refuse_string_copy_routed(c, arg, refuse_method_body(c, mn), pname)) return;
+    }
+  }
   if (nt_int(c->nt, arg, "node_line", 0) <= 0 && g_refuse_call >= 0) arg = g_refuse_call;
   if (nt_int(c->nt, arg, "node_line", 0) <= 0 && g_refuse_outer >= 0) arg = g_refuse_outer;
   char msg[768];
@@ -19131,24 +19143,30 @@ static __attribute__((noreturn)) void refuse_string_copy(Compiler *c, int arg, c
 /* refuse_string_copy for a route whose parameter pname is a local of the
    scope of node `to` (a block, a method's body): under --share-strings the
    route is the rule's first (share_route_defer). */
-static void refuse_string_copy_to(Compiler *c, int arg, int to, const char *target,
-                                  const char *pname, const char *through, const char *why) {
+static int refuse_string_copy_routed(Compiler *c, int arg, int to, const char *pname) {
   ShareRoute q = share_route(arg, arg, 0);
   q.to = to;
   q.to_name = pname;
   q.carry = arg;
-  if (to >= 0 && pname && share_route_defer(c, &q, "")) return;
+  return to >= 0 && pname && share_route_defer(c, &q, "");
+}
+static void refuse_string_copy_to(Compiler *c, int arg, int to, const char *target,
+                                  const char *pname, const char *through, const char *why) {
+  if (refuse_string_copy_routed(c, arg, to, pname)) return;
   refuse_string_copy(c, arg, target, pname, through, why);
 }
 
-/* The same for a parameter of the one method named mname (none when no
-   method or several have the name). */
-static void refuse_string_copy_named(Compiler *c, int arg, const char *mname, const char *target,
-                                     const char *pname, const char *through, const char *why) {
+/* The body of the one method named mname (-1 when no method or several
+   have the name): a node in its scope, for a route to its parameter. */
+static int refuse_method_body(Compiler *c, const char *mname) {
   int mi = -1, n = 0;
   for (int k = 0; mname && k < c->nscopes; k++)
     if (c->scopes[k].def_node >= 0 && c->scopes[k].name && sp_streq(c->scopes[k].name, mname)) { mi = k; n++; }
-  refuse_string_copy_to(c, arg, n == 1 ? c->scopes[mi].body : -1, target, pname, through, why);
+  return n == 1 ? c->scopes[mi].body : -1;
+}
+static void refuse_string_copy_named(Compiler *c, int arg, const char *mname, const char *target,
+                                     const char *pname, const char *through, const char *why) {
+  refuse_string_copy_to(c, arg, refuse_method_body(c, mname), target, pname, through, why);
 }
 
 /* Does a method's parameter take a String by value, so that a String
