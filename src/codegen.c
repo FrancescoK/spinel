@@ -1389,7 +1389,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     const char *bn0 = nt_str(c->nt, node, "name");
     Scope *bs0 = comp_scope_of(c, node);
     LocalVar *blv0 = bs0 ? scope_local(bs0, bn0) : NULL;
-    int th0 = blv0 && blv0->type == TY_STRBUF && blv0->str_shared ? ran_first_handle(node) : -1;
+    int th0 = repr_of_slot(c, blv0).handle ? ran_first_handle(node) : -1;
     if (th0 >= 0) {   /* ran first: the handle it read then, as above */
       buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th0);
       RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
@@ -1481,8 +1481,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
     }
   }
-  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && comp_ntype(c, node) == TY_STRING &&
-      c->poly_strbuf_lift[node])
+  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && repr_of(c, node).as_ty == TY_STRING &&
+      repr_of(c, node).poly_lift)
     unsupported_feature(c, node, "a String is not yet shared by reference through a narrowed boxed iterator element into an appending parameter");
   {
     const char *bty0 = nt_type(c->nt, node);
@@ -10918,7 +10918,7 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
   const char *vn = nt_str(c->nt, v, "name");
   Scope *vs = vn ? comp_scope_of(c, v) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  if (!lv || !lv->dyn_handle || lv->type != TY_STRBUF || !lv->str_shared) return 0;
+  if (!lv || !lv->dyn_handle || !repr_of_slot(c, lv).handle) return 0;
   emit_local_ref(c, v, vn, b);
   return 1;
 }

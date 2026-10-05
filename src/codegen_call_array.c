@@ -8,6 +8,7 @@
    emitted nothing) to leave it to the chain after the lookup. */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
 
@@ -1790,7 +1791,7 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
         /* a String stored as the shared handle (`hh[k] = +"d"` in a Hash's
            default block, whose value is what the read answers): boxed once,
            so the store and the expression's value are the one handle */
-        if (is_poly_hash && c->strbuf_box[argv[1]]) decl_type = TY_POLY;
+        if (is_poly_hash && repr_of(c, argv[1]).handle) decl_type = TY_POLY;
         emit_ctype(c, decl_type, b);
         buf_printf(b, " _t%d = ", tv);
         /* When the slot is poly but the rhs has no type yet (e.g. `{}`),
