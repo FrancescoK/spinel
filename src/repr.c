@@ -559,6 +559,7 @@ static void repr_share_seal(Compiler *c) {
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
     if (!carried && bad < 0) bad = h;
   }
+  if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
   if (stats && stats[0] == '2')
     for (int h = 0; h < nh; h++) {
       const ShareHolder *sh = share_holder(c, h);
