@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>   /* sp_sprintf */
 #include <unistd.h>
 #include "sp_alloc.h"   /* sp_str_alloc / sp_str_set_len / sp_raise_cls */
 #include "sp_array.h"   /* sp_StrArray for Dir.glob */
@@ -54,6 +55,11 @@ extern int sp_gc_rem_peak;   /* lib/sp_gc.c: high-water mark of the remembered s
 #elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
 #  define HAVE_EXECINFO_H 1
 #endif
+
+/* printf into a fresh heap string: the error-message and interpolation
+   formatter every runtime TU and the generated program call. */
+const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;char*b=sp_str_alloc((size_t)_sp_n);if(_sp_n<(int)sizeof(_sp_tmp)){memcpy(b,_sp_tmp,(size_t)_sp_n);}
+else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc gives _sp_n bytes + NUL) so long string interpolations aren't truncated. re-arm the va_list rather than va_copy so the common fast path pays nothing */va_start(ap,fmt);vsnprintf(b,(size_t)_sp_n+1,fmt,ap);va_end(ap);}return b;}
 
 /* Integer#% / Kernel#format "%b"/"%B"/"%o"/"%x"/"%X": non-decimal formatting
    with Ruby's flag, width, precision, and two's-complement-for-negative rules.
