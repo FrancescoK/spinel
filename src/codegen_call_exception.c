@@ -674,6 +674,15 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
       }
       buf_puts(b, "sp_explicit_cause_set = 1, sp_explicit_cause = (void *)(");
       if (cause_is_nil || !cause_exc) buf_puts(b, "0");
+      /* a boxed cause is the exception it holds, nil no cause, and
+         anything else CRuby's TypeError */
+      else if (comp_ntype(c, cause_node) == TY_POLY) {
+        int tc = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tc); emit_expr(c, cause_node, b);
+        buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL && _t%d.tag != SP_TAG_OBJ)"
+                      " sp_raise_cls(\"TypeError\", \"exception object expected\");"
+                      " _t%d.tag == SP_TAG_NIL ? (void *)0 : _t%d.v.p; })", tc, tc, tc, tc);
+      }
       else emit_expr(c, cause_node, b);
       buf_puts(b, "), ");
     }
