@@ -362,7 +362,7 @@ static int coerce_const_raise(const char *txt, const char *zero, Buf *b) {
    literal block (the proc ABI) or the tail's own type does not describe the
    emitted value (a control-flow tail can diverge or carry a `next`). */
 TyKind yield_site_type(Compiler *c, int node) {
-  TyKind u = comp_ntype(c, node);
+  TyKind u = repr_of(c, node).as_ty;
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_YieldNode || g_block_id < 0) return u;
   int body = nt_ref(nt, g_block_id, "body");
@@ -376,7 +376,7 @@ TyKind yield_site_type(Compiler *c, int node) {
       return u;
     default: break;
   }
-  TyKind t = comp_ntype(c, st[n - 1]);
+  TyKind t = repr_of(c, st[n - 1]).as_ty;
   return (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) ? u : t;
 }
 
@@ -2540,7 +2540,7 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
 /* The type the method's own yield nodes were compiled against. */
 static TyKind pf_yield_ty(Compiler *c, int id, int *found) {
   if (id < 0) return TY_UNKNOWN;
-  if (nt_kind(c->nt, id) == NK_YieldNode) { *found = 1; return comp_ntype(c, id); }
+  if (nt_kind(c->nt, id) == NK_YieldNode) { *found = 1; return repr_of(c, id).as_ty; }
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     TyKind t = pf_yield_ty(c, nt_ref_at(c->nt, id, i), found);
@@ -6490,7 +6490,7 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
   if (sp_streq(ty, "ReturnNode")) {
     int a = nt_ref(c->nt, id, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
-    return (an == 1) ? comp_ntype(c, av[0]) : TY_NIL;
+    return (an == 1) ? repr_of(c, av[0]).as_ty : TY_NIL;
   }
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
@@ -7053,7 +7053,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
         int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
         if (ran == 1) tail_ret_arg = rav[0];
       }
-      ret = comp_ntype(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]);
+      ret = repr_of(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]).as_ty;
     }
   }
   /* A non-lambda proc whose body does `return` returns non-locally to the method
@@ -10655,7 +10655,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (explicit_block_arg) g_current_scope_is_lowered = 0;
   if (fwd_yield_proc || explicit_block_arg) {
     g_yield_proc_ref = fwd_yield_proc;
-    g_yield_slot_ty = as_expr ? comp_ntype(c, id) : TY_UNKNOWN;
+    g_yield_slot_ty = as_expr ? repr_of(c, id).as_ty : TY_UNKNOWN;
   }
 
   if (as_expr) buf_puts(b, "({\n");
@@ -10716,7 +10716,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int sv_prexc = g_method_pr_exc_depth, sv_prens = g_method_pr_ensure_depth;
   char inl_lbl[32]; snprintf(inl_lbl, sizeof inl_lbl, "_sret%d", tag);
   if (as_expr) {
-    TyKind rt = comp_ntype(c, id);
+    TyKind rt = repr_of(c, id).as_ty;
     /* A nil or non-returning block has no C value type. As for an ordinary
        yielding call, its result still needs a slot while the body runs. */
     if (rt == TY_NIL || rt == TY_VOID || rt == TY_UNKNOWN) rt = TY_POLY;
@@ -11034,7 +11034,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
       buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for %s\"), %s)",
-                 uname, scn2, raise_tail_value_c(c, comp_ntype(c, id)));
+                 uname, scn2, raise_tail_value_c(c, repr_of(c, id).as_ty));
       return;
     }
     if (g_plan_check) ucall_observe(c, id, cmi, cdef, 0);
@@ -11177,7 +11177,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);
         emit_struct_super_spread(c, cls, sargv, an, &sb);
-        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, comp_ntype(c, id)));
+        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, repr_of(c, id).as_ty));
         free(sb.p);
         return;
       }
@@ -11264,7 +11264,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         }
         buf_puts(b, ", ");
       }
-      buf_printf(b, "%s)", default_value_from_compiler(c, comp_ntype(c, id)));
+      buf_printf(b, "%s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
       return;
     }
     /* `super()` from an initialize no ancestor defines reaches Object's, which
@@ -11277,7 +11277,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
       if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
-        buf_puts(b, default_value_from_compiler(c, comp_ntype(c, id)));
+        buf_puts(b, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return;
       }
     }
@@ -11308,7 +11308,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int pk = emit_exc_reopen_pick_head(c, xr, xn, from, b);
         /* none above it: #message / #to_s are Exception's own, the stored
            message; any other name has no superclass method */
-        if ((is_exception_message(uname)) && comp_ntype(c, id) == TY_STRING)
+        if ((is_exception_message(uname)) && repr_of(c, id).as_ty == TY_STRING)
           buf_printf(b, "_xi%d < 0 ? sp_exc_message((struct sp_Exception_s *)%s) : ", pk, g_self);
         else
           buf_printf(b, "if (_xi%d < 0) sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"); ",
@@ -11382,7 +11382,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
        says what it answers -- has no concrete type, and default_value's "0"
        did not fit the sp_RbVal an interpolation reads (#4034). */
     buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"), %s)",
-               uname, scn, raise_tail_value_c(c, comp_ntype(c, id)));
+               uname, scn, raise_tail_value_c(c, repr_of(c, id).as_ty));
     return;
   }
   if (sp_streq(c->classes[defcls].name, "Object") || sp_streq(c->classes[defcls].name, "Array") ||
