@@ -7084,6 +7084,12 @@ static void sp_splat_puts(sp_RbVal a) {
   if (sp_poly_arr_len(a) == 0) { putchar(10); return; }
   sp_puts_elems(a);
 }
+/* io.print(*parts): each element written in turn, as print's own operands are */
+static SP_UNUSED void sp_File_splat_print(sp_File *f, sp_RbVal a) {
+  SP_GC_ROOT_RBVAL(a);
+  sp_int n = sp_poly_arr_len(a);
+  for (sp_int i = 0; i < n; i++) sp_File_write_poly(f, sp_poly_arr_get(a, i));
+}
 static void sp_splat_print(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
   for (sp_int i = 0; i < n; i++) sp_poly_print(sp_poly_arr_get(a, i));

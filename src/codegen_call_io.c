@@ -919,6 +919,30 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          sp_File_syswrite (which writes straight to the descriptor) rather
          than through the stdio-backed write entries. */
       int is_sw = sp_streq(name, "syswrite");
+      /* write(*parts): a splat contributes its elements, each converted and
+         written in turn, as the boxed receiver's arm does. The arms below
+         read a splat as one operand and wrote the Array's inspect (#7313). */
+      { int has_splat = 0, listable = !is_sw;
+        const char *wop = nt_str(nt, id, "call_operator");
+        if (wop && sp_streq(wop, "&.")) listable = 0;
+        for (int k = 0; k < argc && listable; k++) {
+          if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) listable = 0;
+          else if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+            int so = nt_ref(nt, argv[k], "expression");
+            if (splat_operand_ok(c, so >= 0 ? so : argv[k])) has_splat = 1; else listable = 0;
+          }
+        }
+        if (listable && has_splat) {
+          int tio4 = ++g_tmp, tpa4 = ++g_tmp, tn4 = ++g_tmp;
+          buf_printf(b, "({ sp_File *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+                     tio4, r, tpa4, tpa4);
+          emit_push_arg_list(c, argv, argc, tpa4, b);
+          buf_printf(b, "SP_IO_OPEN(_t%d); sp_int _t%d = 0; "
+                        "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
+                     tio4, tn4, tpa4, tn4, tio4, tpa4, tn4);
+          free(rb.p); return 1;
+        }
+      }
       if (argc == 1) {
         /* An operand whose class is only known at run time picks the entry by
            its TAG, not by its static type: chosen statically it took the plain
@@ -1064,6 +1088,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           aarr[k] = 1;
           emit_boxed(c, argv[k], &abs[k]);
         }
+        /* print(*parts): each element is written in turn; the splat's array
+           was written as one operand, its inspect (#7313) */
+        else if (!sp_streq(name, "puts") && nt_kind(nt, argv[k]) == NK_SplatNode) {
+          aarr[k] = 2;
+          emit_boxed(c, argv[k], &abs[k]);
+        }
         else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
         /* a boxed operand is written by its runtime tag: a String keeps its
            byte count, as the write arm does */
@@ -1099,7 +1129,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
             }
           }
           else buf_printf(g_pre, "%s(%s, %s); ",
-                          aarr[k] ? "sp_File_write_poly" : abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
+                          aarr[k] == 2 ? "sp_File_splat_print" : aarr[k] ? "sp_File_write_poly" : abin[k] ? "sp_File_write_bin" : "sp_File_write", r, at);
           free(abs[k].p);
         }
         if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
