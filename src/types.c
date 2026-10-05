@@ -85,9 +85,10 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"slice!", PF_STRING | PF_MUT, 1, 2, 0}, {"slice!", PF_ARRAY | PF_MUT, 1, 2, 0},
   /* The Hash mutators, on a Hash at run time; a typed variant takes the
      result back from the general copy it was normalized to, and the value is
-     the box, since the copy is detached once written back. */
-  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
-  {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
+     the box, since the copy is detached once written back. Their arguments
+     are Hashes. */
+  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF | PF_ARGS_OWN, 1, -1, 0},
+  {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF | PF_ARGS_OWN, 1, -1, 0},
   /* The names Array and Hash share: the receiver's run-time kind picks the
      arm. The in-place filters take their block; of the blockless names,
      assoc, rassoc and fetch_values keep their last-resort Hash rows below, so
