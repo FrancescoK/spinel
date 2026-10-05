@@ -8435,10 +8435,15 @@ int infer_param_types(Compiler *c) {
           changed |= bind_call_params(c, id, pcs[pi].mi);
       }
     }
-    /* a builtin receiver (a Hash, an Array, ...) whose class the program does
-       not reopen with the name: the call is Object's method (codegen's
-       universal fallback), which then takes this call's arguments */
+    /* A builtin receiver's own reopening takes this call's arguments too,
+       including non-Symbol keys that widen its keyword-rest hash. */
     else if (rt != TY_UNKNOWN && rt != TY_VOID && name) {
+      const char *bc = rt == TY_RANDOM ? "Random" : builtin_class_of_type(rt);
+      int bci = bc ? comp_class_index(c, bc) : -1;
+      int bmi = bci >= 0 && !nt_int(nt, id, "builtin_only", 0)
+                ? comp_method_in_chain(c, bci, name, NULL) : -1;
+      if (bmi >= 0) { changed |= bind_call_params(c, id, bmi); continue; }
+      /* Without one, the call reaches Object's universal fallback. */
       int ocb = comp_class_index(c, "Object");
       int omb = ocb >= 0 ? comp_method_in_chain(c, ocb, name, NULL) : -1;
       if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
