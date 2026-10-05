@@ -1359,6 +1359,24 @@ int range_lit_float_end(Compiler *c, int recv) {
 }
 
 
+/* An endless literal Range with a begin (`(1..)`, `(1.0...)`), written as
+   the receiver or held by a local whose only assignment it is. */
+int range_lit_endless(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int rnode = recv;
+  for (int g = 0; g < 8 && rnode >= 0 && nt_kind(nt, rnode) == NK_ParenthesesNode; g++) {
+    int pb = nt_ref(nt, rnode, "body");
+    int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    rnode = (pn == 1 && ps) ? ps[0] : -1;
+  }
+  if (rnode >= 0 && nt_kind(nt, rnode) != NK_RangeNode) {
+    int sl = local_sole_range_node(c, rnode);
+    if (sl >= 0) rnode = sl;
+  }
+  return rnode >= 0 && nt_kind(nt, rnode) == NK_RangeNode &&
+         nt_ref(nt, rnode, "left") >= 0 && nt_ref(nt, rnode, "right") < 0;
+}
+
 static int range_each_is_external(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
@@ -3566,6 +3584,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     if (sp_streq(name, "step")) {
       /* step with a block walks the range and returns self */
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
+      /* an endless one is walked as it is read: an Enumerator (sp_range_endless_step) */
+      if (argc == 1 && range_lit_endless(c, recv)) { *out = TY_ENUMERATOR; return 1; }
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
       int rn = an_unparen(nt, recv);
@@ -5254,14 +5274,13 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     else if (cgt && sp_streq(cgt, "StringNode")) cgn = nt_str(nt, argv[0], "content");
     /* const_get(name, false) searches only the receiver's own constants, so an
        inherited one is a NameError, not that constant's type (#3762) */
+    const char *cg_rnm = cgn ? const_get_recv_name(c, id, recv) : NULL;
     if (cgn && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
-      const char *cg_rty = nt_type(nt, recv);
-      const char *cg_rnm = (cg_rty && (sp_streq(cg_rty, "ConstantReadNode") ||
-                                       sp_streq(cg_rty, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
       if (cg_rnm && !const_owned_by_class(c, cg_rnm, cgn)) { *out = TY_POLY; return 1; }
     }
-    /* a CLASS or module name answers the class object itself (#3969) */
-    if (cgn && comp_class_index(c, cgn) >= 0) { *out = TY_CLASS; return 1; }
+    /* a CLASS or module name answers the class object itself (#3969) --
+       unless a value constant of that leaf is the receiver's own */
+    if (cgn && comp_class_index(c, cgn) >= 0 && !const_get_takes_value(c, cg_rnm, cgn)) { *out = TY_CLASS; return 1; }
     if (cgn) { LocalVar *cv = comp_const(c, cgn); if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; } { *out = TY_POLY; return 1; } }
   }
   if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) { *out = TY_BOOL; return 1; }
@@ -8240,6 +8259,35 @@ static TyKind infer_builtin_self(Compiler *c, int self_cls) {
   return ty_object(self_cls);
 }
 
+/* Is global `name` (resolved, without the `$`) assigned anywhere -- a write,
+   an op-write, a multiple-assignment target, an alias of it? */
+static int gvar_has_write(Compiler *c, const char *name) {
+  static const NodeTable *cnt = NULL; static int ccount = -1;
+  static char **names = NULL; static int nnames = 0;
+  const NodeTable *nt = c->nt;
+  if (!name) return 1;
+  if (cnt != nt || ccount != nt->count) {
+    for (int i = 0; i < nnames; i++) free(names[i]);
+    free(names); names = NULL; nnames = 0;
+    int cap = 0;
+    static const NodeKind WK[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+                                   NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+                                   NK_GlobalVariableTargetNode };
+    for (int q = 0; q < 5; q++)
+      NT_FOREACH_KIND(nt, WK[q], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || wn[0] != '$') continue;
+        const char *rn = comp_resolve_gvar(c, wn + 1);
+        if (!rn) continue;
+        if (nnames == cap) { cap = cap ? cap * 2 : 16; names = realloc(names, sizeof(char *) * (size_t)cap); }
+        names[nnames++] = strdup(rn);
+      }
+    cnt = nt; ccount = nt->count;
+  }
+  for (int i = 0; i < nnames; i++) if (sp_streq(names[i], name)) return 1;
+  return 0;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -8504,6 +8552,11 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    /* A global the program never assigns reads nil (the interpreter's own
+       flags, false) and is held boxed: it is that from the first round, so
+       an && / || or a condition around the read is not typed by its other
+       side alone (`backtrace && $DEBUG` cached Boolean, then read the box). */
+    if (lv && lv->type == TY_UNKNOWN && !gvar_has_write(c, rn)) return TY_POLY;
     return lv ? lv->type : TY_UNKNOWN;
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {

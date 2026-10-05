@@ -1744,6 +1744,8 @@ gc-phases-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # at level 2, alone and beside the full verifier, on both runtimes.
 GC_STRESS_TESTS := test/gc_root_frame_slots.rb \
                    test/gc_minor_byref_lent_slot.rb \
+                   test/struct_values_fresh_receiver_root.rb \
+                   test/hash_splat_to_a.rb \
                    test/proc_cell_capture_marked.rb \
                    test/poly_array_intersect.rb \
                    test/thread_new_args_rooted_across_fiber_alloc.rb \
@@ -3254,6 +3256,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/index_op_write_int_operand_float_elem.rb -c --no-line-map -o "$$tmp/iow.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_op_write_int_operand_float_elem: -c)"; ok=0; }; \
 	grep -q 'sp_FloatArray \* iv_acc;' "$$tmp/iow.c" && grep -q 'sp_FloatArray \* lv_acc = ' "$$tmp/iow.c" || { echo "infer-test: FAIL (a Float Array written a[i] op= <Integer> widened to a boxed PolyArray)"; ok=0; }; \
 	grep -q 'sp_PolyArray \* lv_ia = ' "$$tmp/iow.c" || { echo "infer-test: FAIL (an Integer Array written a[i] /= <Float> must widen)"; ok=0; }; \
+	$(SPINEL) test/infer/float_elem_fast_paths.rb -c --no-line-map -o "$$tmp/fefp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (float_elem_fast_paths: -c)"; ok=0; }; \
+	grep -q '__typeof__(cst_K)' "$$tmp/fefp.c" || { echo "infer-test: FAIL (a[i] += <constant> on a Float array missed the in-place fold)"; ok=0; }; \
+	grep -q 'sp_FloatArray_get_recv(lv_a' "$$tmp/fefp.c" && ! grep -q 'SP_FLOAT_NIL_CK(' "$$tmp/fefp.c" || { echo "infer-test: FAIL (a Float array element in a binary + - * / took the up-front nil check instead of the nil-free read)"; ok=0; }; \
 	$(SPINEL) test/infer/object_array_map.rb -c --no-line-map -o "$$tmp/oam.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_map: -c)"; ok=0; }; \
 	grep -q 'sp_PtrArray \* iv_list;' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an array of one class walked by map stayed boxed)"; ok=0; }; \
 	grep -q '(lv_x)->iv_name' "$$tmp/oam.c" || { echo "infer-test: FAIL (#4846 an element call is not a direct read)"; ok=0; }; \

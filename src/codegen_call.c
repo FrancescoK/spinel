@@ -13289,22 +13289,33 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
          hardware carries through the operator, so `nil + 1.0` read back as
          nil) is tested first, as every int helper tests SP_INT_NIL; only
          where the #3505 marking says the slot can hold it. */
+      /* An element of a Float array the loop holds the header of reads
+         nil-free in range and raises on a nil outside it (emit_nilfree_operand),
+         as op-assign does: the up-front test of both operands cost a
+         Float-array loop over 2x against `a[i] += x`. */
+      Buf lnf; memset(&lnf, 0, sizeof lnf);
+      Buf rnf; memset(&rnf, 0, sizeof rnf);
+      if (lfn && emit_nilfree_operand(c, recv, name, 1, &lnf)) lfn = 0;
+      if (rfn && emit_nilfree_operand(c, argv[0], name, 0, &rnf)) rfn = 0;
       int fguard = lfn || rfn;
       int tfg = fguard ? ++g_tmp : 0;
       if (fguard) buf_printf(b, "({ sp_float _t%d = ", tfg);
       else buf_puts(b, "(");
       if (lft9 == TY_INT) buf_puts(b, "(double)(");
       else if (lft9 == TY_BIGINT) buf_puts(b, "sp_bigint_to_double(");
-      emit_scalar_operand(c, recv, "0.0", b);
+      if (lnf.p) buf_puts(b, lnf.p);
+      else emit_scalar_operand(c, recv, "0.0", b);
       if (lft9 == TY_INT || lft9 == TY_BIGINT) buf_puts(b, ")");
       if (fguard) buf_printf(b, ", _t%d_r = ", tfg);
       else buf_printf(b, " %s ", name);
       if (rgt9 == TY_INT) buf_puts(b, "(double)(");
       else if (rgt9 == TY_BIGINT) buf_puts(b, "sp_bigint_to_double(");
-      emit_scalar_operand(c, argv[0], "0.0", b);
+      if (rnf.p) buf_puts(b, rnf.p);
+      else emit_scalar_operand(c, argv[0], "0.0", b);
       if (rgt9 == TY_INT || rgt9 == TY_BIGINT) buf_puts(b, ")");
       if (fguard) buf_printf(b, "; SP_FLOAT_NIL_CK(_t%d, _t%d_r, \"%s\"); _t%d %s _t%d_r; })", tfg, tfg, name, tfg, name, tfg);
       else buf_puts(b, ")");
+      free(lnf.p); free(rnf.p);
       return 1;
     }
     /* Time + int/float, Time - int/float, Time - Time */
@@ -17736,6 +17747,15 @@ int subtree_is_pure_read(Compiler *c, int id) {
     case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
     case NK_SymbolNode:
       return 1;
+    /* a constant the program defines reads its static (`cst_NAME`, see
+       emit_constant_expr), as an ivar or class variable read does; one read
+       during its own Class.new init can raise, and any other spelling (a
+       class value, an engine constant, an undefined name) is left out */
+    case NK_ConstantReadNode: {
+      const char *cn = nt_str(nt, id, "name");
+      LocalVar *cv = cn ? comp_const(c, cn) : NULL;
+      return cv && cv->type != TY_UNKNOWN && !cv->init_guarded;
+    }
     case NK_ParenthesesNode: case NK_StatementsNode:
       break;
     case NK_CallNode: {

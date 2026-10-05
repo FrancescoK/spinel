@@ -782,8 +782,10 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
     /* An arm that compiles to a NoMethodError raise (e.g. `u.details` where u is
        unresolvable) evaluates to sp_RbVal but never returns; the sibling arm has
        the concrete result type, so coerce the raise to it -- `(raise, default)`
-       -- to keep the C ternary's two arms the same type (#2949). */
-    if (ab.p && strncmp(ab.p, "sp_raise_nomethod(", 18) == 0 &&
+       -- to keep the C ternary's two arms the same type (#2949). The raise may
+       come parenthesized (`(u.details)`) or as a call on a raising receiver,
+       `((void)(<raise>), nil)` (`u.a && u.a.b`): both diverge the same way. */
+    if (ab.p && text_diverges(ab.p) &&
         res != TY_POLY && res != TY_UNKNOWN && res != TY_VOID) {
       buf_printf(b, "(%s, %s)", ab.p, default_value_from_compiler(c, res));
     }
@@ -4522,7 +4524,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   /* ivar OP= as expression: emit the mutation then read back the ivar. */
   if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
-    int sc = comp_scope_of(c, id)->class_id;
+    /* an instance_eval body's slot is its receiver's (see the statement form) */
+    int sc = g_ie_class_id >= 0 ? g_ie_class_id : comp_scope_of(c, id)->class_id;
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     /* the slot is read back as the read of the ivar finds it: a top-level

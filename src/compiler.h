@@ -1110,6 +1110,8 @@ int        recv_hash_new_default_arg(Compiler *c, int recv); /* the same through
 TyKind     hash_default_value_ty(Compiler *c, int dn);      /* the value type a Hash.new(d) default contributes */
 int        hash_new_blockless(Compiler *c, int recv);  /* blockless Hash.new / {} literal */
 int        const_owned_by_class(Compiler *c, const char *clsname, const char *constname);
+const char *const_get_recv_name(Compiler *c, int call, int recv);
+int        const_get_takes_value(Compiler *c, const char *rnm, const char *cgn);
 /* Class index of a `class_eval`/`module_eval { defs }` reopen, else -1.
    enclosing_class resolves bare/`self.` receivers (the class whose body we are
    directly in); ignored for constant receivers. */

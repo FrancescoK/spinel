@@ -5059,6 +5059,10 @@ static void synth_enum_to_a(Compiler *c) {
              when its #each never yields: the mixin is simply empty (#3755) */
           an_class_includes_enumerable(c, m->class_id))) continue;
     if (comp_method_in_class(c, m->class_id, "__enum_to_a") >= 0) continue;
+    /* a module's methods are compiled into each class that includes it,
+       which gets its own materializer; the module has no instances, and
+       one of its own called methods that exist only in those copies */
+    if (comp_class_is_module(c, &c->classes[m->class_id])) continue;
     int dup = 0;
     for (int k = 0; k < ncls; k++) if (cls[k] == m->class_id) { dup = 1; break; }
     if (dup) continue;
@@ -18592,7 +18596,8 @@ static int param_borrow_scalar_ty(TyKind t) {
 }
 
 /* The user methods call n reaches (its plan's method and, for a switch,
-   every member), into out; 0 for a builtin. */
+   every member), into out; 0 for a builtin, -1 when the switch has more
+   members than out can hold (none of them is checked). */
 static int param_borrow_targets(Compiler *c, int n, int *out, int cap) {
   const CallPlan *p = cplan_user_fresh(c, n);
   if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
@@ -18601,10 +18606,12 @@ static int param_borrow_targets(Compiler *c, int n, int *out, int cap) {
   out[k++] = plan.mi;
   if (plan.dispatch >= CP_SWITCH) {
     const char *name = c->scopes[plan.mi].name;
-    for (int s = 0; s < c->nscopes && k < cap; s++)
+    for (int s = 0; s < c->nscopes; s++)
       if (s != plan.mi && c->scopes[s].name && name && sp_streq(c->scopes[s].name, name) &&
-          cplan_virtual_member(c, n, &plan, s))
+          cplan_virtual_member(c, n, &plan, s)) {
+        if (k == cap) return -1;   /* more targets than can be checked: no borrow */
         out[k++] = s;
+      }
   }
   return k;
 }
@@ -18648,7 +18655,7 @@ static int param_borrow_loud(Compiler *c, int n) {
     const char *name = nt_str(nt, n, "name");
     if (!name) return 1;
     int tg[64];
-    if (param_borrow_targets(c, n, tg, 64) > 0) return 1;
+    if (param_borrow_targets(c, n, tg, 64) != 0) return 1;
     if (is_opaque_reaching_call(name)) return 1;
     int recv = nt_ref(nt, n, "receiver");
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
@@ -18684,7 +18691,7 @@ static int param_borrow_plain_operand(Compiler *c, int n) {
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
     if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
     int tg[64];
-    if (param_borrow_targets(c, n, tg, 64) > 0 || !param_borrow_plain_operand(c, recv)) return 0;
+    if (param_borrow_targets(c, n, tg, 64) != 0 || !param_borrow_plain_operand(c, recv)) return 0;
     int args = nt_ref(nt, n, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     for (int i = 0; i < argc; i++)
@@ -18757,7 +18764,7 @@ static int mark_param_read_only_operands(Compiler *c) {
     if (!any) continue;
     int tg[64];
     int ntg = param_borrow_targets(c, n, tg, 64);
-    if (ntg == 0 || !param_borrow_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
+    if (ntg <= 0 || !param_borrow_plain_operand(c, nt_ref(nt, n, "receiver"))) continue;
     int plain = 1;
     for (int i = 0; i < argc && plain; i++)
       plain = param_borrow_handle_read(c, argv[i]) || param_borrow_plain_operand(c, argv[i]);

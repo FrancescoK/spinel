@@ -2052,13 +2052,15 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
   return 1;
 }
 
-/* An op-assign's right operand that is an element of a Float array the
-   loop holds the header of, for a slot that cannot be nil: in range of an
+/* An operand of a Float `+ - * /` that is an element of a Float array the
+   loop holds the header of -- an op-assign's right operand for a slot that
+   cannot be nil, or either side of the binary operator: in range of an
    array that holds no nil the element is no nil either, so that read is the
    plain load it always was, and only the rest (out of range, or an array
-   that may hold nil) takes a get that raises on a nil. A marked array's nils
-   set no flag, so it is not one. Answers 1 when it emitted the read. */
-static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
+   that may hold nil) takes a get that raises on a nil, as the operator's
+   left (`left`) or right operand. A marked array's nils set no flag, so it
+   is not one. Answers 1 when it emitted the read. */
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -2072,8 +2074,8 @@ static int emit_nilfree_operand(Compiler *c, int v, const char *op, Buf *b) {
     return 0;
   int tk = ++g_tmp;
   buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, vav[0], b);
-  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_operand(",
-             tk, hn, hd, tk);
+  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_%s(",
+             tk, hn, hd, tk, left ? "recv" : "operand");
   emit_expr(c, vr, b);
   buf_printf(b, ", _t%d, \"%s\"); })", tk, op);
   return 1;
@@ -2137,7 +2139,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
   int nfread = 0;
-  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, &rb)) nfread = 1;
+  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, &rb)) nfread = 1;
   else if (t == TY_INT && fn && (is_div_or_mod(op))) emit_int_divisor(c, v, &rb);
   /* a boxed rhs of a Float op is kept boxed for the nil test below */
   else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
@@ -7331,11 +7333,37 @@ static int emit_hash_tail_conversion(Compiler *c, int node, Buf *b) {
    `sp_box_nil()` carries no side-effect prelude, so discarding it is safe, and
    any other emission (e.g. a poly-dispatch `({...})`) is passed through
    unchanged. */
+/* Does call `node` name a program method, every definition of which is a
+   C void function (a value the program never gets back)? A call whose
+   type is merely unknown -- a builtin's, a reopened class's -- answers a
+   value and is not this. */
+static int call_names_only_void_methods(Compiler *c, int node) {
+  const char *nm = nt_str(c->nt, node, "name");
+  if (!nm || sp_streq(nm, "initialize")) return 0;
+  int any = 0;
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->name || !sp_streq(sc->name, nm) || sc->def_node < 0) continue;
+    if (!method_is_void(sc)) return 0;
+    any = 1;
+  }
+  return any;
+}
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
   if (g_ret_type == TY_POLY || (g_result_var && g_result_poly)) { emit_expr(c, node, b); return; }
+  /* A call that answers no type -- a method whose value is a call on a
+     constant defined nowhere, which raises NameError when it runs -- is a
+     C void function: evaluate it, and give the slot its nil (never reached,
+     but the slot's C type still needs a value; `return f()` did not build). */
+  if (g_ret_type != TY_UNKNOWN && nt_kind(c->nt, node) == NK_CallNode &&
+      comp_ntype(c, node) == TY_UNKNOWN && call_names_only_void_methods(c, node)) {
+    buf_puts(b, "((void)("); emit_expr(c, node, b); buf_puts(b, "), ");
+    emit_ret_nil(c, g_ret_type, b); buf_puts(b, ")");
+    return;
+  }
   /* An inlined body whose tail answers a different POINTER kind than the slot
      this emission types: the blockless `each` splice types its result from the
      CALL (an Enumerator) while the body's tail is `self`. That value is the
@@ -11392,7 +11420,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
   if (sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
-    int sc = comp_scope_of(c, id)->class_id;
+    /* inside `obj.instance_eval { }` the slot is obj's, at the type its class
+       holds it (as the plain-write form reads it) */
+    int sc = g_ie_class_id >= 0 ? g_ie_class_id : comp_scope_of(c, id)->class_id;
     /* same scope ladder as the plain-write form: class body civ_, then the
        Toplevel pseudo-class global (a bare `self` here is undeclared C) */
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
@@ -14876,6 +14906,14 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
                     " sp_raise_nomethod(sp_nomethod_msg(\"push\", _t%d));", tr, tr, tr);
       for (int a = 0; a < argc; a++) buf_printf(b, " sp_poly_shl(_t%d, _t%d[%d]);", tr, ta, a);
       buf_puts(b, " } }\n");
+      return 1;
+    }
+    /* A splat, or more than one argument: the value form spreads the splat
+       and reads the receiver once. Appended here one argument at a time, a
+       splat went in as one Array and the receiver ran once per argument. */
+    if (!has_user && (splat || argc > 1)) {
+      emit_indent(b, indent);
+      buf_puts(b, "(void)("); emit_call(c, id, b); buf_puts(b, ");\n");
       return 1;
     }
     if (!has_user) {
