@@ -9175,6 +9175,26 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     size_t snl = nm ? strlen(nm) : 0;
     if (!nm || snl < 2 || nm[snl - 1] != '=' || crecv < 0) { unsupported(c, id, "multiple assignment call target"); return 1; }
     TyKind crt = comp_ntype(c, crecv);
+    /* a boxed receiver dispatches on its class, as the single setter does */
+    if (crt == TY_POLY) {
+      char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
+      TyKind at = val && vt != TY_NIL && vt != TY_VOID && vt != TY_UNKNOWN ? vt : TY_POLY;
+      int tv = ++g_tmp, tval = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_RbVal _t%d = ", tv);
+      if (recv_tmp >= 0) buf_printf(b, "_t%d", recv_tmp); else emit_boxed(c, crecv, b);
+      buf_puts(b, "; ");
+      emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
+      if (at == TY_POLY && !(val && vt == TY_POLY)) buf_puts(b, val && vt == TY_UNKNOWN ? val : "sp_box_nil()");
+      else buf_puts(b, val);
+      buf_printf(b, "; switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+      char src[32]; snprintf(src, sizeof src, "_t%d", tval);
+      char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
+      emit_boxed_writer_arms(c, base, nm, objp, src, at, b);
+      buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
+      buf_puts(b, " } }\n");
+      return 1;
+    }
     if (!ty_is_object(crt)) { unsupported(c, id, "multiple assignment call target non-object"); return 1; }
     int crc = ty_object_class(crt);
     int cdef = -1;
@@ -10308,6 +10328,11 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       if (!setnm || snlen < 2 || setnm[snlen - 1] != '=' || recv_id2 < 0)
         { unsupported(c, id, "multiple assignment call target"); continue; }
       TyKind rt2 = comp_ntype(c, recv_id2);
+      if (rt2 == TY_POLY) {
+        char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
+        masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
+        continue;
+      }
       if (!ty_is_object(rt2))
         { unsupported(c, id, "multiple assignment call target non-object"); continue; }
       char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
