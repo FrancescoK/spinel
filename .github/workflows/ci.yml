@@ -36,7 +36,8 @@ jobs:
   # Slice 1 of each lane carries the C-side test legs, the property gates,
   # the benchmarks and optcarrot.
   posix:
-    name: ${{ matrix.os }} / ${{ matrix.cc }} (${{ matrix.shard }}/${{ matrix.nshards }})
+    # The slice shows in the name only when the corpus is split.
+    name: ${{ matrix.os }} / ${{ matrix.cc }}${{ matrix.nshards > 1 && format(' ({0}/{1})', matrix.shard, matrix.nshards) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
