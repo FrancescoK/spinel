@@ -11934,31 +11934,50 @@ static void emit_user_init_copy_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n}\n");
 }
 
+/* sp_X__copy: dup (mode 0) or clone (mode 1 keeps the frozen state, 2 and
+   3 the one freeze: asks) of a builtin subclass instance of class X (#7449):
+   its own copy (sp_X__dup), then X's initialize_copy on the unfrozen copy,
+   then the frozen state, as CRuby's clone sets it after the hook. Every dup
+   of an instance comes here, typed (by the class it carries) or boxed. */
+static void emit_bsub_copies(Compiler *c, Buf *b) {
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].bsub_root <= 0) continue;
+    const char *cn = c->classes[k].c_name, *f = bsub_field(c, k);
+    buf_printf(b, "SP_UNUSED static void *sp_%s__copy(void *p, int mode) {\n", cn);
+    buf_printf(b, "  sp_%s *o = (sp_%s *)p; SP_GC_ROOT(o);\n", cn, cn);
+    buf_printf(b, "  sp_%s *d = (sp_%s *)sp_%s__dup(o, 0); SP_GC_ROOT(d);\n", cn, cn, cn);
+    int defcls = -1, mi = user_init_copy_scope(c, k, &defcls);
+    if (mi >= 0) {
+      TyKind pt = scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])->type;
+      buf_puts(b, "  ");
+      emit_method_cname(c, &c->scopes[mi], b);
+      buf_printf(b, "((sp_%s *)d, ", c->classes[defcls].c_name);
+      if (pt == TY_POLY) { buf_puts(b, "sp_box_obj(o, "); bsub_box_id(c, ty_object(k), b); buf_puts(b, ")"); }
+      else buf_printf(b, "(sp_%s *)o", c->classes[ty_object_class(pt)].c_name);
+      buf_puts(b, c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] ? ", NULL);\n" : ");\n");
+    }
+    char dv[64], ov[64];
+    snprintf(dv, sizeof dv, "d->%s", f); snprintf(ov, sizeof ov, "o->%s", f);
+    Buf x; memset(&x, 0, sizeof x);
+    buf_puts(&x, "mode == 1 ? "); bsub_frozen_get(c, k, ov, &x); buf_puts(&x, " : mode == 3");
+    buf_puts(b, "  if (mode) "); bsub_frozen_set(c, k, dv, x.p, b); buf_puts(b, ";\n");
+    free(x.p);
+    buf_puts(b, "  return d;\n}\n");
+  }
+}
+
 /* sp_bsub_dup_dispatch (sp_bsub_dup_hook): dup / clone of a builtin
    subclass instance held in a boxed value (#7449). The box is its builtin's,
    which the runtime's dup would copy as a plain one; the class its scan
-   names (sp_bsub_cls_of) makes its own copy (sp_X__dup), then runs that
-   class's initialize_copy, as a typed dup does. */
+   names (sp_bsub_cls_of) makes its own copy (sp_X__copy). */
 static void emit_bsub_dup_dispatch(Compiler *c, Buf *b) {
+  emit_bsub_copies(c, b);
   buf_puts(b, "static sp_RbVal sp_bsub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled) {\n"
               "  switch (sp_bsub_cls_of(v)) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].bsub_root <= 0) continue;
-    const char *cn = c->classes[k].c_name;
-    buf_printf(b, "    case %d: {\n      sp_%s *o = (sp_%s *)v.v.p; SP_GC_ROOT(o);\n"
-                  "      sp_%s *d = (sp_%s *)sp_%s__dup(o, keep_frozen ? 1 : 0); SP_GC_ROOT(d);\n",
-               k, cn, cn, cn, cn, cn);
-    int defcls = -1, mi = user_init_copy_scope(c, k, &defcls);
-    if (mi >= 0) {
-      TyKind pt = scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])->type;
-      buf_puts(b, "      ");
-      emit_method_cname(c, &c->scopes[mi], b);
-      buf_printf(b, "((sp_%s *)d, ", c->classes[defcls].c_name);
-      if (pt == TY_POLY) buf_puts(b, "v");
-      else buf_printf(b, "(sp_%s *)o", c->classes[ty_object_class(pt)].c_name);
-      buf_puts(b, c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] ? ", NULL);\n" : ");\n");
-    }
-    buf_puts(b, "      sp_RbVal r = v; r.v.p = d; *handled = TRUE; return r;\n    }\n");
+    buf_printf(b, "    case %d: { sp_RbVal r = v; r.v.p = sp_%s__copy(v.v.p, keep_frozen ? 1 : 0); *handled = TRUE; return r; }\n",
+               k, c->classes[k].c_name);
   }
   buf_puts(b, "    default: return v;\n  }\n}\n");
 }
@@ -12414,8 +12433,11 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_File *sp_user_to_io_dispatch(sp_RbVal v);\n");
   if (g_has_user_init_copy)
     buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig);\n");
-  if (program_has_bsub(c))
+  if (program_has_bsub(c)) {
     buf_puts(b, "static sp_RbVal sp_bsub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled);\n");
+    for (int k = 0; k < c->nclasses; k++)
+      if (c->classes[k].bsub_root > 0) buf_printf(b, "static void *sp_%s__copy(void *p, int mode);\n", c->classes[k].c_name);
+  }
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
