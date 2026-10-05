@@ -13523,6 +13523,8 @@ typedef struct EmitUnitState {
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
   int open_defaults;
   int loop_exc_base, loop_ensure_base, redo_depth;
+  /* whether the unit's block is a lowered method's proc parameter */
+  int current_scope_is_lowered, yield_lowered_fallback;
   TyKind ie_next_ty;
   int move_depth;   /* instance_exec scope moves (comp_scope_move_unwind) */
   int view_depth;   /* codegen views (view_unwind) */
@@ -13573,6 +13575,8 @@ void emit_unit_state_save(EmitUnitState *s) {
   s->lowered_blk_name = g_lowered_blk_name;
   s->yield_lowered_blk_fallback = g_yield_lowered_blk_fallback;
   s->yield_proc_ref = g_yield_proc_ref;
+  s->current_scope_is_lowered = g_current_scope_is_lowered;
+  s->yield_lowered_fallback = g_yield_lowered_fallback;
   s->cap_struct = g_cap_struct;
   s->cap_names = g_cap_names;
   s->iow_recv_ref = g_iow_recv_ref;
@@ -13624,6 +13628,8 @@ void emit_unit_state_restore(const EmitUnitState *s) {
   g_lowered_blk_name = s->lowered_blk_name;
   g_yield_lowered_blk_fallback = s->yield_lowered_blk_fallback;
   g_yield_proc_ref = s->yield_proc_ref;
+  g_current_scope_is_lowered = s->current_scope_is_lowered;
+  g_yield_lowered_fallback = s->yield_lowered_fallback;
   g_cap_struct = s->cap_struct;
   g_cap_names = s->cap_names;
   g_iow_recv_ref = s->iow_recv_ref;
