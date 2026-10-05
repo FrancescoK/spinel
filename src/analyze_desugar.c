@@ -1712,6 +1712,49 @@ int desugar_compose_method_operand(Compiler *c) {
   return changed;
 }
 
+/* Array#+ - | & concat <=> with a program object whose class answers #to_ary
+   with an Array: CRuby converts such an operand through to_ary, so the call
+   takes `w.to_ary` at the AST, where the object operand raised NoMethodError
+   (#7407 converts a boxed one at run time). Only when to_ary is known to
+   answer an Array, which is when the conversion and the call agree. */
+int desugar_array_op_to_ary(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !(sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "|") || sp_streq(nm, "&") ||
+                 sp_streq(nm, "concat") || sp_streq(nm, "<=>"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (recv < 0 || an != 1 || !av || nt_ref(nt, id, "block") >= 0) continue;
+    if (!ty_is_array(infer_type(c, recv))) continue;
+    TyKind at = infer_type(c, av[0]);
+    if (!ty_is_object(at)) continue;
+    int dc = -1;
+    int mi = comp_method_in_chain(c, ty_object_class(at), "to_ary", &dc);
+    if (mi < 0 || c->scopes[mi].nparams != 0 || !ty_is_array(c->scopes[mi].ret)) continue;
+    int base = nt->count;
+    int tp = nt_new_node(nt, "CallNode");
+    int na = nt_new_node(nt, "ArgumentsNode");
+    if (tp < 0 || na < 0) continue;
+    nt_node_set_ref(nt, tp, "receiver", av[0]);
+    nt_node_set_str(nt, tp, "name", "to_ary");
+    nt_node_set_str(nt, tp, "ary_conv", "1");   /* a nil operand: TypeError, not NoMethodError */
+    nt_node_set_ref(nt, tp, "arguments", -1);
+    nt_node_set_ref(nt, tp, "block", -1);
+    nt_node_set_arr(nt, na, "arguments", &tp, 1);
+    nt_node_set_ref(nt, id, "arguments", na);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* A String mutator whose receiver is an expression answering an existing
    String is sent to that String in CRuby: `(c ? s : t) << x`,
    `(@buf ||= +"") << x`, `(s).upcase!`, `s.to_s << x`. The mutator
