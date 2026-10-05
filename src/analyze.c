@@ -34508,6 +34508,9 @@ void analyze_program(Compiler *c) {
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
             g_fixpoint_capped ? " (CAP -- did not converge)" : "");
+  /* --share-strings: a String-keyed Hash's key borrows a handle's bytes,
+     read off the final types and flags */
+  share_mark_borrows(c);
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
   sp_timing_end(tm_an, "analysis", "");
