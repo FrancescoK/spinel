@@ -13776,6 +13776,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (push_stmt_takes_value_form(c, id)) return 0;
   return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_body);
 }
+/* The FrozenError an in-place String mutator raises before it reads its
+   arguments, hit or miss; a nil receiver is left to the mutator's own
+   NoMethodError */
+void emit_str_frozen_check(Compiler *c, int recv, Buf *b) {
+  buf_puts(b, "if ("); emit_expr(c, recv, b); buf_puts(b, ") sp_str_check_mutable(");
+  emit_expr(c, recv, b); buf_puts(b, ");");
+}
 /* emit_array_mutate_stmt_body's String mutators done by reassigning the
    receiver: replace, prepend, insert, concat, clear, delete_prefix! /
    delete_suffix! (answers 1 emitted, 0 declined, -1 to go on) */
@@ -13894,6 +13901,7 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
     }
     if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
       const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
+      emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
       return 1;
     }
@@ -14256,6 +14264,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     if (sp_streq(name, "slice!") && assignable2) {
       if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         /* remove the first occurrence */
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         /* sub would set `$~`, which slice! leaves alone; a program that
            never reads it has sub record nothing */
@@ -14270,6 +14279,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         /* slice!(i): one char at i; slice!(range): the range's span. Same
            clamped splice as the (start, len) arm below (OOB is a no-op). */
         int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         if (comp_ntype(c, argv[0]) == TY_RANGE) {
           int tr2 = ++g_tmp;
@@ -14306,6 +14316,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         /* splice out [i, i+len): head + tail, bounds clamped to the string in
            characters (a negative i counts from the end; OOB is a no-op) (#3084) */
         int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent); emit_str_frozen_check(c, recv, b); buf_puts(b, "\n");
         emit_indent(b, indent);
         buf_printf(b, "{ sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
