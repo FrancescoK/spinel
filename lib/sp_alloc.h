@@ -371,10 +371,13 @@ static inline char *sp_str_alloc_nogc(size_t len) {
 /* Copy a message onto the string heap so it can be held by a string root.
    The source is a bare literal (every raise the runtime and the generated
    code issue passes one) or an unrooted heap string; neither can be rooted
-   across an allocation, so the copy runs with no collection in between. */
+   across an allocation, so the copy runs with no collection in between. A
+   String with a header is copied to its byte length, so a message with a NUL
+   in it keeps the bytes after it (#7556). */
+static inline size_t sp_str_byte_len(const char *s);
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
-  size_t n = strlen(m);
+  size_t n = sp_str_byte_len(m);
   char *r = sp_str_alloc_nogc(n);
   memcpy(r, m, n);
   return r;

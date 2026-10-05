@@ -144,6 +144,14 @@ void sp_exc_syserr_init(sp_Exception *e) {
 }
 /* Create an exception for a `rescue => e` binding: like sp_exc_new but
    also looks up the parent class via the user hierarchy callback. */
+/* The exception's own copy of its message, to the String's byte length: a
+   message with a NUL in it keeps the bytes after it, as CRuby's does (#7556). */
+static const char *sp_exc_msg_copy(const char *m) {
+  size_t n = sp_str_byte_len(m);
+  char *r = sp_str_alloc(n);
+  memcpy(r, m, n);
+  return r;
+}
 sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
   if (sp_user_exc_parent_fn) {
@@ -177,9 +185,9 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if
      during the copy scans a consistent struct */
   SP_GC_ROOT(e);
   /* an explicitly given message stays, even empty (#3713) */
-  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg
+  e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
                             : (msg == sp_exc_no_msg ? "" : e->cls_name));
-  /* The sprintf can collect, and a collection promotes the rooted object it
+  /* The copy can collect, and a collection promotes the rooted object it
      is filling: an old holder then receives a young string. Recorded after
      the store, since the allocation would clear a record made before it. */
   sp_gc_wb((void *)e);
@@ -261,7 +269,7 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (msg != sp_e
      the tag byte at msg[-1], which only heap strings carry -- keeping a
      raise site's rodata literal would under-read one byte before it. */
   SP_GC_ROOT(e);
-  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg
+  e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
                             : (msg == sp_exc_no_msg ? ""
                                                     : (cls_name ? cls_name : "RuntimeError")));
   sp_gc_wb((void *)e);   /* same reason as sp_exc_new_sub_sized */
