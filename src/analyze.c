@@ -4,6 +4,7 @@
 #include "repr.h"
 #include "decide.h"
 #include "call_plan.h"
+#include "share.h"
 
 
 static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
@@ -16179,6 +16180,82 @@ static int block_yields_param_to_lender(Compiler *c, int blk, const char *bp, AC
   return a_yield_param_lent(c, body, ms, mi, bp, cb, 0);
 }
 
+/* A digest of every type the share classes read: inside the fixpoint the
+   rule is applied only once a whole round has left the types as they were,
+   so a guess made before the types settle (an untyped receiver read as a
+   call the walk cannot follow) does not leave a handle behind, which the
+   flags would keep. */
+static unsigned share_types_digest(Compiler *c) {
+  unsigned h = 2166136261u;
+  for (int i = 0; i < c->nt->count; i++) { h ^= (unsigned)c->ntype[i]; h *= 16777619u; }
+  for (int s = 0; s < c->nscopes; s++)
+    for (int l = 0; l < c->scopes[s].nlocals; l++) {
+      h ^= (unsigned)c->scopes[s].locals[l].type; h *= 16777619u;
+    }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].nivars; i++) {
+      h ^= (unsigned)c->classes[k].ivar_types[i]; h *= 16777619u;
+    }
+  return h;
+}
+
+/* --share-strings (#6765): apply the one rule. repr_str_shares says which
+   String holders are the shared handle; this sets the flags repr_of reads
+   for them, through each holder kind's own representation: a local or a
+   parameter takes STRBUF + str_shared (a lent parameter gives up its slot,
+   and convert_byref_handle_params then pulls its callers), an ivar the
+   shared slot, and a container whose elements share demands the handle at
+   each of its stores. A holder whose kind has no handle yet is left as it
+   is; repr_seal refuses it. The route rules after this only carry the
+   handles it made, and add none it did not (#6765's stats count them). */
+static int share_default_apply(Compiler *c, int in_fixpoint) {
+  if (!c->share_strings) return 0;
+  if (in_fixpoint) {
+    /* types that moved since the last round: ask for one more round, which
+       applies the rule if they then hold still */
+    unsigned d = share_types_digest(c);
+    if (d != c->share_sig) { c->share_sig = d; return 1; }
+  }
+  share_facts_build(c);
+  int changed = 0;
+  int nh = share_holder_count(c);
+  for (int h = 0; h < nh; h++) {
+    const ShareHolder *sh = share_holder(c, h);
+    if (sh->kind == SHK_LOCAL) {
+      Scope *s = &c->scopes[sh->scope];
+      LocalVar *lv = &s->locals[sh->local];
+      if (ty_is_array(lv->type) || ty_is_hash(lv->type)) {
+        if (repr_str_elems_share(c, h)) changed |= strbuf_demand_container_stores(c, lv->name, s);
+        continue;
+      }
+      if (!repr_str_shares(c, h)) continue;
+      if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;   /* a box holds the handle */
+      if (lv->type == TY_STRBUF && lv->str_shared && !lv->byref_out) continue;
+      if (lv->is_param && !lv->is_block_param) {
+        if (lv->rbs_seeded) continue;
+        if (lv->byref_out) { lv->byref_out = 0; lv->is_cell = 0; }
+        lv->type = TY_STRBUF; lv->str_shared = 1;
+        changed = 1;
+      }
+      else if (!lv->is_block_param && strbuf_slot_eligible(c, lv->name, s, lv)) {
+        lv->type = TY_STRBUF; lv->str_shared = 1;
+        changed = 1;
+      }
+    }
+    else if (sh->kind == SHK_IVAR) {
+      int iv = comp_ivar_index(&c->classes[sh->cid], sh->name);
+      if (iv < 0) continue;
+      TyKind it = c->classes[sh->cid].ivar_types[iv];
+      if (ty_is_array(it) || ty_is_hash(it)) {
+        if (repr_str_elems_share(c, h)) changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
+        continue;
+      }
+      if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
+    }
+  }
+  return changed;
+}
+
 /* Pure-alias pairs, as a pass of its own: promote_shared_stored_strings runs
    it in the fixpoint, and the post-fixpoint handle loop again, since a
    local convert_byref_handle_params pulls into the handle there (`t = s;
@@ -16648,6 +16725,8 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 }
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
+  /* --share-strings: the one rule decides first (#6765) */
+  changed |= share_default_apply(c, 1);
   sb_store_valid = 0;   /* this run's store index is built on first use */
   comp_ivarg_invalidate(c);   /* an_ivar_lent's, likewise */
   const NodeTable *nt = c->nt;
@@ -18058,6 +18137,8 @@ static int promote_params_stored_in_shared_ivars(Compiler *c,
                                                  const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  /* --share-strings: the one rule decides first (#6765) */
+  changed |= share_default_apply(c, 0);
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     int wv = nt_ref(nt, w, "value");
