@@ -12114,8 +12114,11 @@ static int hash_literal_sources(Compiler *c, int val, int depth, int *out, int c
     for (int p = 0; p < ls->nparams; p++)
       if (ls->pnames[p] && sp_streq(ls->pnames[p], ln)) { pidx = p; break; }
     if (pidx >= 0 && ls->name) {
-      /* a parameter: the arguments in its position at every call by name */
-      for (int id = 0; id < nt->count && n < cap; id++) {
+      /* a parameter: the arguments in its position at every call by name,
+         through the calls-by-name index -- a walk of the whole table for
+         each parameter reached made a program with a key operation on a
+         copy of a parameter in each of its methods quadratic */
+      for (int id = an_calls_named_first(c, ls->name); id >= 0 && n < cap; id = an_calls_named_next(id)) {
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *cn = nt_str(nt, id, "name");
         if (!cn || !sp_streq(cn, ls->name)) continue;
