@@ -1688,7 +1688,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* an array whose header the loop being emitted holds (hc_array):
        in range, read the element there; anything else, the get */
     char hd[48], hl[48], hw[48];
-    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && infer_type(c, argv[0]) == TY_INT &&
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && comp_ntype(c, argv[0]) == TY_INT &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       if (hc_index_in_range(c, recv, argv[0])) {   /* in range by the loop's own test */
         buf_printf(b, "%s[", hd); emit_int_expr(c, argv[0], b); buf_puts(b, "]");
@@ -1705,7 +1705,7 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, "sp_%sArray_get(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     /* a splat is its one element (emit_int_expr_ex), not a boxed index */
-    if (infer_type(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    if (comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
       /* a checked conversion, not a raw `.v.i`: the union read assumed
          the box held an Integer, so a boxed user object indexed by its
          pointer bits and the read answered a wrong element in silence;
@@ -10069,9 +10069,6 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
      answer natively; every traversal materializes the element array (#3064). */
   if (recv >= 0 && rt == TY_STR_RANGE) {
     TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-    /* a stale cache reads UNKNOWN; re-infer so a String operand is not
-       mistaken for an uncoverable one */
-    if (argc >= 1 && (a0 == TY_UNKNOWN || a0 == TY_POLY)) a0 = infer_type(c, argv[0]);
     int tr = ++g_tmp;
     if (is_range_membership(name) && argc == 1) {
       const char *fn = is_membership_alias(name) ?
