@@ -146,6 +146,23 @@ Dir.mktmpdir("gate-tool-test") do |dir|
     $VERBOSE = verbose
   end
   ok(v == 0 && err.empty?, "check reads a UTF-8 source under a US-ASCII locale")
+  sh("git", "rm", "-q", "--cached", "src/utf8.c")
+
+  # Under a C locale the CRuby that judges a test still answers as under
+  # UTF-8 (there `p` would print an accent as an escape), and a test's .args
+  # and a file name git prints unquoted hold bytes over 127.
+  sh("git", "config", "core.quotePath", "false")
+  File.write("test/caf\u00e9.rb.args", "caf\u00e9\n")
+  src = "puts ARGV[0]\np \"caf\u00e9\"\n"
+  locale = ENV["LC_ALL"]
+  Encoding.default_external = Encoding::US_ASCII
+  ENV["LC_ALL"] = "C"
+  v, _, err = check.("caf\u00e9", src, "caf\u00e9\n\"caf\u00e9\"\n")
+  ok(v == 0 && err.empty?, "check passes a test with a non-ASCII name, argument and output under a C locale")
+  v, _, err = check.("caf\u00e9", src, "cafe\n\"cafe\"\n")
+  ok(v == 1 && err.include?(".expected differs"), "check refuses its wrong .expected under a C locale")
+  Encoding.default_external = ext
+  ENV["LC_ALL"] = locale
 end
 
 if $fails > 0

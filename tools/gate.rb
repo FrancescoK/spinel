@@ -22,7 +22,7 @@ module Gate
   module_function
 
   def run(*cmd, env: {})
-    out, st = Open3.capture2(env, *cmd, err: File::NULL)
+    out, st = Open3.capture2(env, *cmd, err: File::NULL, binmode: true)
     out if st.success?
   rescue SystemCallError
     nil
@@ -143,7 +143,7 @@ module Gate
 
   def cruby(ruby, t, args)
     stdin = File.exist?("#{t}.stdin") ? "#{t}.stdin" : File::NULL
-    IO.popen([ruby, "--enable-frozen-string-literal", t, *args], in: stdin, err: File::NULL) do |io|
+    IO.popen([ruby, "--enable-frozen-string-literal", "--external-encoding=UTF-8", t, *args], in: stdin, err: File::NULL) do |io|
       reader = Thread.new { io.read }
       next reader.value if reader.join(20)
 
@@ -194,7 +194,7 @@ module Gate
         next warn("gate: #{t} has unstaged changes; .expected not checked")
       end
 
-      out = cruby(ruby, t, File.exist?("#{t}.args") ? File.read("#{t}.args").split : [])
+      out = cruby(ruby, t, File.exist?("#{t}.args") ? File.binread("#{t}.args").split : [])
       next warn("gate: #{t} ran over 20s under CRuby; .expected not checked") unless out
 
       errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out.b != show(":#{t}.expected")
