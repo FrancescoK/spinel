@@ -11,6 +11,7 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 /* --int-overflow=promote flag; see analyze.h. Default off. */
 int g_promote_mode = 0;
 int g_plan_check = 0;
+int g_nil_check = 0;
 
 /* Post-convergence bind pass: lets an empty array-literal argument fill a
    parameter that stayed UNKNOWN through the fixpoint (see bind_call_params);
@@ -32995,6 +32996,125 @@ static void an_phase_storage(Compiler *c) {
   }
 }
 
+/* The nil witness (#1686): the class whose instances node id shows may be
+   nil, which a by-value struct has no representation for, or -1. A slot
+   holding `nil | W` encodes nil as the heap pointer's NULL; the pointer
+   form's NULL-nil machinery (and the nil-guard narrowing) then applies
+   unchanged. The witnesses: a bare or nil `return` in a method answering W,
+   a nil written to a W local, optional parameter or ivar, and a W-valued
+   conditional with a nil arm or none. --nil-check holds these against the
+   nil fact (vt_nil_witness_check). */
+static int vt_nil_witness(Compiler *c, int id, const char *ty) {
+  const NodeTable *nt = c->nt;
+  if (sp_streq(ty, "ReturnNode")) {
+    int a2 = nt_ref(nt, id, "arguments");
+    int an2 = 0;
+    const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &an2) : NULL;
+    int is_nil = (an2 == 0) ||
+                 (nt_type(nt, av2[0]) && sp_streq(nt_type(nt, av2[0]), "NilNode"));
+    Scope *s2 = is_nil ? comp_scope_of(c, id) : NULL;
+    return s2 && ty_is_object(s2->ret) ? ty_object_class(s2->ret) : -1;
+  }
+  int v2 = nt_ref(nt, id, "value");
+  int nil_value = v2 >= 0 && nt_type(nt, v2) && sp_streq(nt_type(nt, v2), "NilNode");
+  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
+      sp_streq(ty, "LocalVariableAndWriteNode") ||
+      sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
+    if (!nil_value) return -1;
+    const char *nm2 = nt_str(nt, id, "name");
+    Scope *s2 = comp_scope_of(c, id);
+    LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
+    return lv2 && ty_is_object(lv2->type) ? ty_object_class(lv2->type) : -1;
+  }
+  if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
+    if (!nil_value) return -1;
+    Scope *s2 = comp_scope_of(c, id);
+    const char *ivn = nt_str(nt, id, "name");
+    int cid2 = s2 ? s2->class_id : -1;
+    /* an ivar a class body writes */
+    if (cid2 < 0 && sp_streq(ty, "InstanceVariableWriteNode") && c->node_cbody[id] >= 0)
+      cid2 = c->node_cbody[id];
+    if (cid2 < 0 || cid2 >= c->nclasses || !ivn) return -1;
+    int ix = comp_ivar_index(&c->classes[cid2], ivn);
+    TyKind it2 = ix >= 0 ? c->classes[cid2].ivar_types[ix] : TY_UNKNOWN;
+    return ty_is_object(it2) ? ty_object_class(it2) : -1;
+  }
+  if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
+    TyKind t2 = comp_ntype(c, id);
+    if (!ty_is_object(t2)) return -1;
+    /* a W-valued conditional with a nil arm (x = cond ? W.new : nil):
+       if either arm's tail is nil -- or the else arm is absent -- the
+       expression carries nil */
+    int nil_arm = 0;
+    int arms[2];
+    arms[0] = nt_ref(nt, id, "statements");
+    arms[1] = nt_ref(nt, id, sp_streq(ty, "IfNode") ? "subsequent" : "else_clause");
+    if (arms[1] < 0) nil_arm = 1;
+    for (int ai = 0; ai < 2 && !nil_arm; ai++) {
+      int an3 = arms[ai];
+      if (an3 < 0) continue;
+      const char *aty = nt_type(nt, an3);
+      if (aty && sp_streq(aty, "ElseNode")) an3 = nt_ref(nt, an3, "statements");
+      const char *aty2 = an3 >= 0 ? nt_type(nt, an3) : NULL;
+      if (aty2 && sp_streq(aty2, "StatementsNode")) {
+        int bn3 = 0;
+        const int *bb3 = nt_arr(nt, an3, "body", &bn3);
+        an3 = bn3 > 0 ? bb3[bn3 - 1] : -1;
+      }
+      if (an3 < 0) { nil_arm = 1; break; }
+      const char *lty = nt_type(nt, an3);
+      if (lty && sp_streq(lty, "NilNode")) nil_arm = 1;
+    }
+    return nil_arm ? ty_object_class(t2) : -1;
+  }
+  return -1;
+}
+
+/* --nil-check: for each class the value-type selection considered (bit 1),
+   whether a nil witness took it off the by-value layout (bit 2), against
+   whether the nil fact says one of its instances may be nil (a node or a
+   slot of the class). A FACT-ONLY class that kept the by-value layout has
+   lost a nil (#7444's reader-only Box); HELPER-ONLY means the fact missed
+   a witness. */
+static void vt_nil_witness_check(Compiler *c, const unsigned char *cand) {
+  const NodeTable *nt = c->nt;
+  unsigned char *fact = calloc((size_t)c->nclasses + 1, 1);
+  int *where = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
+  if (!fact || !where) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int q = 0; q < c->nclasses; q++) where[q] = -1;
+  for (int id = 0; id < nt->count; id++) {
+    TyKind t = c->ntype[id];
+    if (!ty_is_object(t) || !nil_fact_node(c, id)) continue;
+    int q = ty_object_class(t);
+    if (q >= 0 && q < c->nclasses && !fact[q]) { fact[q] = 1; where[q] = id; }
+  }
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (ty_is_object(sc->ret) && sc->ret_obj_may_nil) fact[ty_object_class(sc->ret)] = 1;
+    for (int k = 0; k < sc->nlocals; k++)
+      if (ty_is_object(sc->locals[k].type) && sc->locals[k].obj_may_nil)
+        fact[ty_object_class(sc->locals[k].type)] = 1;
+  }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].n_ivar_obj_may_nil && i < c->classes[k].nivars; i++)
+      if (c->classes[k].ivar_obj_may_nil[i] && ty_is_object(c->classes[k].ivar_types[i]))
+        fact[ty_object_class(c->classes[k].ivar_types[i])] = 1;
+  int n[3] = { 0, 0, 0 };
+  for (int q = 0; q < c->nclasses; q++) {
+    if (!(cand[q] & 1)) continue;
+    int helper = (cand[q] & 2) != 0;
+    int v = helper == fact[q] ? 0 : fact[q] ? 1 : 2;
+    n[v]++;
+    if (v == 0) continue;
+    fprintf(stderr, "nil-check: vt %s %s%s why=%s line %lld\n", v == 1 ? "FACT-ONLY" : "HELPER-ONLY",
+            c->classes[q].name, c->classes[q].is_value_type ? " by-value" : "",
+            nil_fact_why_name(where[q] >= 0 ? nil_fact_why(c, where[q]) : NFW_OPAQUE),
+            (long long)(where[q] >= 0 ? nt_int(nt, where[q], "node_line", 0) : 0));
+  }
+  fprintf(stderr, "nil-check: count vt agree %d fact-only %d helper-only %d guarded 0 init-set 0\n", n[0], n[1], n[2]);
+  free(fact); free(where);
+}
+
 /* Value-type objects: a small, immutable, scalar-only leaf class is represented by value, unless an instance is boxed, held in a class variable or captured by a proc (analyze_program's steps, in their order) */
 static void an_phase_value_types(Compiler *c) {
   /* The nil fact (analyze_nil.c, #7444): whether each object-typed node and
@@ -33043,6 +33163,11 @@ static void an_phase_value_types(Compiler *c) {
     if (has_sub) continue;
     ci->is_value_type = 1;   /* tentative; disqualified below */
   }
+  unsigned char *vt_cand = NULL;
+  if (g_nil_check) {
+    vt_cand = calloc((size_t)c->nclasses + 1, 1);
+    for (int i = 0; vt_cand && i < c->nclasses; i++) vt_cand[i] = c->classes[i].is_value_type ? 1 : 0;
+  }
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty) continue;
@@ -33077,86 +33202,12 @@ static void an_phase_value_types(Compiler *c) {
         }
       }
     }
-    /* nil-witness: a slot holding `nil | W` encodes nil as the heap
-       pointer's NULL; a by-value struct has no nil representation, so any
-       nil witness on a W-typed slot disqualifies the value layout (#1686).
-       The pointer form's NULL-nil machinery (and the nil-guard narrowing)
-       then applies unchanged. */
-    if (sp_streq(ty, "ReturnNode")) {
-      int a2 = nt_ref(c->nt, id, "arguments");
-      int an2 = 0;
-      const int *av2 = a2 >= 0 ? nt_arr(c->nt, a2, "arguments", &an2) : NULL;
-      int is_nil = (an2 == 0) ||
-                   (nt_type(c->nt, av2[0]) && sp_streq(nt_type(c->nt, av2[0]), "NilNode"));
-      if (is_nil) {
-        Scope *s2 = comp_scope_of(c, id);
-        if (s2 && ty_is_object(s2->ret)) {
-          int q = ty_object_class(s2->ret);
-          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-        }
-      }
-    }
-    if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
-        sp_streq(ty, "LocalVariableAndWriteNode") ||
-        sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
-      int v2 = nt_ref(c->nt, id, "value");
-      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
-        const char *nm2 = nt_str(c->nt, id, "name");
-        Scope *s2 = comp_scope_of(c, id);
-        LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
-        if (lv2 && ty_is_object(lv2->type)) {
-          int q = ty_object_class(lv2->type);
-          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-        }
-      }
-    }
-    if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
-      int v2 = nt_ref(c->nt, id, "value");
-      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
-        Scope *s2 = comp_scope_of(c, id);
-        const char *ivn = nt_str(c->nt, id, "name");
-        if (s2 && s2->class_id >= 0 && ivn) {
-          int ix = comp_ivar_index(&c->classes[s2->class_id], ivn);
-          TyKind it2 = ix >= 0 ? c->classes[s2->class_id].ivar_types[ix] : TY_UNKNOWN;
-          if (ty_is_object(it2)) {
-            int q = ty_object_class(it2);
-            if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-          }
-        }
-      }
-    }
-    if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
-      TyKind t2 = comp_ntype(c, id);
-      if (ty_is_object(t2)) {
-        /* a W-valued conditional with a nil arm (x = cond ? W.new : nil):
-           if either arm's tail is nil -- or the else arm is absent -- the
-           expression carries nil */
-        int nil_arm = 0;
-        int arms[2];
-        arms[0] = nt_ref(c->nt, id, "statements");
-        arms[1] = nt_ref(c->nt, id, sp_streq(ty, "IfNode") ? "subsequent" : "else_clause");
-        if (arms[1] < 0) nil_arm = 1;
-        for (int ai = 0; ai < 2 && !nil_arm; ai++) {
-          int an3 = arms[ai];
-          if (an3 < 0) continue;
-          const char *aty = nt_type(c->nt, an3);
-          if (aty && sp_streq(aty, "ElseNode")) an3 = nt_ref(c->nt, an3, "statements");
-          const char *aty2 = an3 >= 0 ? nt_type(c->nt, an3) : NULL;
-          if (aty2 && sp_streq(aty2, "StatementsNode")) {
-            int bn3 = 0;
-            const int *bb3 = nt_arr(c->nt, an3, "body", &bn3);
-            an3 = bn3 > 0 ? bb3[bn3 - 1] : -1;
-          }
-          if (an3 < 0) { nil_arm = 1; break; }
-          const char *lty = nt_type(c->nt, an3);
-          if (lty && sp_streq(lty, "NilNode")) nil_arm = 1;
-        }
-        if (nil_arm) {
-          int q = ty_object_class(t2);
-          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
-        }
-      }
-    }
+    /* nil-witness (#1686): a slot holding `nil | W` cannot hold W by value */
+    { int q = vt_nil_witness(c, id, ty);
+      if (q >= 0 && q < c->nclasses) {
+        c->classes[q].is_value_type = 0;
+        if (vt_cand) vt_cand[q] |= 2;
+      } }
     /* immutable check: an ivar write outside `initialize` defeats value type */
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
@@ -33242,31 +33293,6 @@ static void an_phase_value_types(Compiler *c) {
         }
       }
     }
-    /* A nil assignment to a value-object-typed slot makes it nullable. Value
-       types are stack values with no NULL encoding, so the class must be a
-       heap object instead. (ty_unify keeps an object type when it also sees
-       nil; this disqualifies the value-type representation for such a class.) */
-    if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "InstanceVariableWriteNode")) {
-      int v = nt_ref(c->nt, id, "value");
-      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "NilNode")) {
-        TyKind st = TY_UNKNOWN;
-        Scope *s = comp_scope_of(c, id);
-        const char *nm = nt_str(c->nt, id, "name");
-        if (sp_streq(ty, "LocalVariableWriteNode")) {
-          LocalVar *lv = (nm && s) ? scope_local(s, nm) : NULL;
-          if (lv) st = lv->type;
-        }
-        else {
-          int cid2 = s ? s->class_id : -1;
-          if (cid2 < 0 && c->node_cbody[id] >= 0) cid2 = c->node_cbody[id];
-          if (cid2 >= 0 && cid2 < c->nclasses && nm) {
-            int iv = comp_ivar_index(&c->classes[cid2], nm);
-            if (iv >= 0) st = c->classes[cid2].ivar_types[iv];
-          }
-        }
-        if (ty_is_object(st)) { int q = ty_object_class(st); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
-      }
-    }
   }
   /* An instance built inside a poly-returning method is liable to be boxed at
      the (poly) return -- sp_box_obj would carry a stack pointer. And an
@@ -33309,6 +33335,8 @@ static void an_phase_value_types(Compiler *c) {
     TyKind lt = comp_ntype(c, st[n - 1]);
     if (ty_is_object(lt)) { int q = ty_object_class(lt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
   }
+  if (vt_cand) vt_nil_witness_check(c, vt_cand);
+  free(vt_cand);
 }
 
 /* The final reconciliation and checks: hash literals and locals against their variables, operators on poly receivers, the rounds over the ivars' final types, lifted proc captures, array-or-nil slots, late poly arrays, then the seed contradictions and the late refusals (analyze_program's steps, in their order) */

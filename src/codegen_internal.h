@@ -920,6 +920,11 @@ void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add);
    them with inference's (codegen_util.c) */
 void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add);
 void ucall_report(Compiler *c);
+/* --nil-check (#7444): the calls nil_recv_guard decided, and the
+   end-of-compile report holding the analysis's nil fact against the codegen
+   helpers' answers there (codegen_call.c) */
+void nil_check_seen(int id);
+void nil_check_report(Compiler *c);
 /* --plan-check: codegen emitted the call node id (whatever it bound) */
 void ucall_emitted(int id);
 /* --plan-check: codegen emitted the visibility refusal for node id */
