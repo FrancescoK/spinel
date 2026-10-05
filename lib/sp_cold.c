@@ -1077,7 +1077,7 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
       for (sp_int i = 0; i < els->len; i++) {
         sp_RbVal e = els->data[i];
         if (e.tag == SP_TAG_INT) sp_IntArray_push(st, e.v.i);
-        else if (e.tag == SP_TAG_NIL) sp_IntArray_push(st, SP_INT_NIL);
+        else if (e.tag == SP_TAG_NIL) { sp_IntArray_push(st, SP_INT_NIL); sp_IntArray_note_nil(st); }
         else sp_typed_replace_elem_error(e, "Integer");
       }
       sp_IntArray_replace((sp_IntArray *)recv.v.p, st);
@@ -1089,7 +1089,7 @@ static void sp_typed_array_replace_boxed(sp_RbVal recv, sp_RbVal src) {
         sp_RbVal e = els->data[i];
         if (e.tag == SP_TAG_FLT) sp_FloatArray_push(st, e.v.f);
         else if (e.tag == SP_TAG_INT) sp_FloatArray_push(st, (sp_float)e.v.i);
-        else if (e.tag == SP_TAG_NIL) sp_FloatArray_push(st, sp_float_nil());
+        else if (e.tag == SP_TAG_NIL) { sp_FloatArray_push(st, sp_float_nil()); sp_FloatArray_note_nil(st); }
         else sp_typed_replace_elem_error(e, "Float");
       }
       sp_FloatArray_replace((sp_FloatArray *)recv.v.p, st);

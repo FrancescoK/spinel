@@ -13,6 +13,14 @@ p ints
 holes = [5, 5]
 refill(pick(holes), [nil, :a].first(1) + [7])
 p holes
+p holes.include?(nil)
+p holes.count(nil)
+p holes.compact
+
+floats = [1.5]
+refill(pick(floats), [nil, :a].first(1) + [2.5])
+p floats.include?(nil)
+p floats.compact
 
 words = ["old"]
 refill(pick(words), ["new", 1].first(1) + ["list"])
