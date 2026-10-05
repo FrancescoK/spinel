@@ -228,6 +228,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       if (emit_boxed_positional_io(c, recv, name, argc, argv, tio2, b)) return 1;
       if (boxed_desc_control_arity(name, argc)) {
         int trv = ++g_tmp, first_int = sp_streq(name, "advise") ? 1 : 0, tadv = 0;
+        /* an offset's nil is worded by NUM2OFFT (emit_int_expr_offt) */
+        int offt = is_io_offset_move(name);
         int targ[3] = {0, 0, 0}, theld[3] = {0, 0, 0};
         buf_printf(b, "({ sp_RbVal _t%d = ", trv);
         emit_boxed(c, recv, b);
@@ -244,7 +246,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           targ[ai] = ++g_tmp;
           if (ak == TY_INT || ak == TY_FLOAT) {
             buf_printf(b, "sp_int _t%d = ", targ[ai]);
-            emit_int_expr(c, argv[ai], b);
+            if (ai == 0 && offt) emit_int_expr_offt(c, argv[ai], b);
+            else emit_int_expr(c, argv[ai], b);
             buf_puts(b, "; ");
           }
           else {
@@ -262,7 +265,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "if (strcmp(sp_io_kind_name(_t%d), \"File\") != 0) "
                         "sp_raise_poly_nomethod(\"flock\", _t%d); ", tio2, trv);
         for (int ai = first_int; ai < argc; ai++)
-          if (theld[ai])
+          if (theld[ai] && ai == 0 && offt)
+            buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk_w(_t%d, 2); ", targ[ai], theld[ai]);
+          else if (theld[ai])
             buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", targ[ai], theld[ai]);
         if (sp_streq(name, "pos=")) {
           buf_printf(b, "sp_File_seek(_t%d, _t%d, 0); _t%d; })", tio2, targ[0], targ[0]);
@@ -480,7 +485,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_io_stat_handle(_t%d); })", tio2);
       else if (sp_streq(name, "seek") && argc >= 1) {
         buf_printf(b, "sp_File_seek(_t%d, ", tio2);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_int_expr_offt(c, argv[0], b); buf_puts(b, ", ");
         if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
@@ -488,15 +493,15 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_File_tell(_t%d); })", tio2);
       else if (sp_streq(name, "pread") && argc >= 1) {
         buf_printf(b, "sp_File_pread(_t%d, ", tio2);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+        emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+        if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
       else if (sp_streq(name, "pwrite") && argc >= 1) {
         buf_printf(b, "%s(_t%d, ", repr_of(c, argv[0]).as_ty == TY_STRING
                                    ? "sp_File_pwrite_bin" : "sp_File_pwrite", tio2);
         emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
-        if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+        if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
         buf_puts(b, "); })");
       }
       else if (sp_streq(name, "fsync") || sp_streq(name, "fdatasync"))
@@ -614,8 +619,9 @@ static void io_hold_effectful_recv(Compiler *c, const char *name, int recv, int 
    receiver that is no IO raises NoMethodError after them, as in CRuby.
    The held arguments convert once the handle is known, the first operand
    ahead of the offset as rb_io_pread and rb_io_pwrite do (pread's length
-   with to_int, pwrite's operand with to_s); without an offset the handle
-   raises CRuby's ArgumentError. A pread buffer that is a plain local is
+   with to_int, pwrite's operand with to_s; a nil length is worded as
+   NUM2SIZET words it, a nil offset as NUM2OFFT does); without an offset
+   the handle raises CRuby's ArgumentError. A pread buffer that is a plain local is
    checked mutable and rebound to the read result, as the typed arm does
    (#3131, #3335). Through the general arm, pwrite's string ran ahead of
    the receiver (its to_s went in front of the statement), the offset never
@@ -642,8 +648,8 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   if (is_w)
     buf_printf(b, "const char *_t%d = _t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_to_s(_t%d); SP_GC_ROOT_STR(_t%d); ",
                tfirst, th[0], th[0], th[0], tfirst);
-  else buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", tfirst, th[0]);
-  if (argc >= 2) buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", toff, th[1]);
+  else buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk_w(_t%d, 1); ", tfirst, th[0]);
+  if (argc >= 2) buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk_w(_t%d, 2); ", toff, th[1]);
   else buf_printf(b, "sp_int _t%d = 0; ", toff);
   if (is_w) {
     buf_printf(b, "_t%d.tag == SP_TAG_STR ? sp_File_pwrite_bin(_t%d, _t%d, _t%d)"
@@ -930,8 +936,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[2], b); buf_puts(b, "); ");
         buf_printf(b, "const char *_t%d = ", tpr);
       }
-      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      /* the length is NUM2SIZET's, the offset NUM2OFFT's: each words its
+         nil its own way */
+      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")");
       if (bufn) buf_printf(b, "; lv_%s = _t%d; _t%d; })", rename_local(bufn), tpr, tpr);
       free(rb.p); return 1;
@@ -942,7 +950,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_printf(b, "%s(%s, ", repr_of(c, argv[0]).as_ty == TY_STRING
                                ? "sp_File_pwrite_bin" : "sp_File_pwrite", r);
       emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+      if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")"); free(rb.p); return 1;
     }
     if (sp_streq(name, "reopen") && argc >= 1) {
