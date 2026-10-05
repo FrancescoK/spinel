@@ -32,6 +32,13 @@ static ReprKind repr_kind_of_type(const Compiler *c, TyKind t) {
   return RK_PTR;
 }
 
+/* The layout of a value stored as t that its type names and its kind does
+   not: an Integer is an sp_int scalar, and one held big an sp_Bigint *
+   pointer, which takes the Bignum helpers. */
+static void repr_layout(Repr *r, TyKind t) {
+  r->big = t == TY_BIGINT;
+}
+
 /* an object whose class some other class inherits from: its static type is
    only the base, so its box reads the class from the object */
 int repr_dyn_cls(const Compiler *c, TyKind t) {
@@ -195,6 +202,7 @@ Repr repr_of(const Compiler *c, int node) {
   TyKind kt = r.as_ty;
   r.kind = (unsigned char)repr_kind_of_type(c, kt);
   r.dyn_cls = repr_dyn_cls(c, kt);
+  repr_layout(&r, kt);
   if (repr_nil_scalar(c, node, kt)) {
     r.kind = RK_SENTINEL;
     r.may_nil = r.nil_scalar = 1;
@@ -234,7 +242,7 @@ ReprForm repr_box_form(const Compiler *c, Repr r) {
   }
   (void)c;
   if (t == TY_STRING) return RF_STR;
-  if (t == TY_BIGINT) return RF_BIGINT;
+  if (r.big) return RF_BIGINT;
   if (ty_is_ptr_array(t)) return RF_PTR_ARRAY;
   if (ty_is_object(t)) return r.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE;
   return RF_NULLABLE;
@@ -394,6 +402,7 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   r.kind = RK_NONE;
   if (!lv) return r;
   r.ty = r.as_ty = lv->type;
+  repr_layout(&r, lv->type);
   ReprKind k = repr_kind_of_type(c, lv->type);
   /* an Integer or Float slot some write leaves nil in: its sentinel */
   if ((lv->type == TY_INT || lv->type == TY_FLOAT) &&

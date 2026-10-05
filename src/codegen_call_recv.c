@@ -6865,8 +6865,8 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   /* clamp(lo, hi) with a Bignum bound: an sp_int receiver is inside any
      Bignum bound on that side, so only the sp_int side can bind (#3006) */
   else if (sp_streq(name, "clamp") && argc == 2 &&
-           (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
-    int tlo = comp_ntype(c, argv[0]) == TY_BIGINT, thi = comp_ntype(c, argv[1]) == TY_BIGINT;
+           (repr_of(c, argv[0]).big || repr_of(c, argv[1]).big)) {
+    int tlo = repr_of(c, argv[0]).big, thi = repr_of(c, argv[1]).big;
     buf_puts(b, "({ ");
     if (tlo) { buf_puts(b, "(void)("); emit_expr(c, argv[0], b); buf_puts(b, "); "); }
     if (thi) { buf_puts(b, "(void)("); emit_expr(c, argv[1], b); buf_puts(b, "); "); }
@@ -6933,7 +6933,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
      deliberately stays on sp_poly_int_digits / this face table rather
      than an is_a? split, measured too costly; see
      desugar_builtin_scalar_calls's own comment). */
-  else if (sp_streq(name, "digits") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+  else if (sp_streq(name, "digits") && argc == 1 && repr_of(c, argv[0]).big) {
     int tdb = ++g_tmp;
     buf_printf(b, "({ (void)("); emit_expr(c, argv[0], b);
     buf_printf(b, "); if ((%s) < 0) sp_raise_cls(\"Math::DomainError\", \"out of domain\");", r);
@@ -6942,7 +6942,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   }
   else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   else if (is_bits_query(name) &&
-           argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+           argc == 1 && repr_of(c, argv[0]).big) {
     /* A Bignum mask exceeds int64, so an int receiver can never cover all
        its bits (allbits? is always false); anybits?/nobits? test the
        receiver against the mask's low 64 bits -- the only ones an int
@@ -6964,7 +6964,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   /* pow(exp, mod) with a Bignum modulus: the result is bounded by the
      modulus but the intermediates are not, so run it in bigint (#3006) */
-  else if (sp_streq(name, "pow") && argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT) {
+  else if (sp_streq(name, "pow") && argc == 2 && repr_of(c, argv[1]).big) {
     buf_printf(b, "sp_bigint_powmod(sp_bigint_new_int(%s), ", r);
     emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
   }
@@ -6984,7 +6984,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   else if (sp_streq(name, "coerce") && argc == 1) {
     TyKind a0 = comp_ntype(c, argv[0]);
-    if (a0 == TY_BIGINT) {
+    if (repr_of(c, argv[0]).big) {
       /* [big_arg, receiver promoted to Bignum] -- a poly pair (#2419) */
       int ta = ++g_tmp, o = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = ", ta); emit_expr(c, argv[0], b);
@@ -7160,7 +7160,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
        shift (right answer on x86's masked shifts, garbage elsewhere).
        A Bignum index is far past the receiver's width, so the bit is the
        sign bit: 0 for a non-negative receiver, 1 for a negative one. */
-    if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+    if (repr_of(c, argv[0]).big) {
       buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
       buf_printf(b, "); (sp_int)((%s) < 0 ? 1 : 0); })", r);
     }
@@ -7210,7 +7210,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
      by something that does not always answers -1, 0, or a small
      quotient bounded by the receiver, so narrow the ANSWER instead,
      the same shape gcd/lcm's own TY_BIGINT arms below use. */
-  else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+  else if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).big) {
     buf_printf(b, "sp_bigint_to_int(sp_bigint_div(sp_bigint_new_int(%s), ", r);
     emit_expr(c, argv[0], b); buf_puts(b, "))");
   }
@@ -7236,7 +7236,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
     emit_expr(c, argv[0], b);
     buf_printf(b, "); sp_raise_cls(\"TypeError\", \"not an integer\"); (sp_int)(%s); })", r);
   }
-  else if (sp_streq(name, "gcd") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+  else if (sp_streq(name, "gcd") && argc == 1 && repr_of(c, argv[0]).big) {
     /* gcd(int, bignum) divides the int receiver, so it always fits an
        sp_int; compute via the bigint gcd then narrow (#3006) */
     buf_printf(b, "sp_bigint_to_int(sp_bigint_gcd(sp_bigint_new_int(%s), ", r);
@@ -7244,7 +7244,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   /* lcm(bignum) is at least as large as the argument, so it stays big */
-  else if (sp_streq(name, "lcm") && argc == 1 && comp_ntype(c, argv[0]) == TY_BIGINT) {
+  else if (sp_streq(name, "lcm") && argc == 1 && repr_of(c, argv[0]).big) {
     buf_printf(b, "sp_bigint_lcm(sp_bigint_new_int(%s), ", r);
     emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
