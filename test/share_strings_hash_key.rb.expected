@@ -1,0 +1,14 @@
+{"k" => 1}
+["k"]
+true
+false
+true
+"k!"
+false
+{"k!" => 2}
+"k!"
+2
+true
+{"k!?" => 3}
+true
+"K!?"
