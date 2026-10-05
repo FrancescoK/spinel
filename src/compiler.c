@@ -1951,6 +1951,76 @@ int comp_scall_next(const Compiler *c, int u) {
   return (u >= 0 && u < c->scall_count) ? c->scall_next[u] : -1;
 }
 
+/* Every ivar read handed to a call as an argument, chained by the ivar's
+   name: one entry per (CallNode, argument) pair. Asking whether an ivar is
+   lent to a callee walked every CallNode of the program once per question,
+   and a machine-generated program asks it for nearly every method. Chains
+   carry hash collisions: callers keep their name/owner filters. An argument
+   array rewritten in place (nt_node_set_arr) leaves the table's version
+   alone, so a caller that may run after such a rewrite drops the index with
+   comp_ivarg_invalidate first. */
+static void ivarg_build(Compiler *c) {
+  free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
+  c->ivarg_call = c->ivarg_arg = NULL;
+  const NodeTable *nt = c->nt;
+  int n = nt->count, np = 0;
+  for (int u = 0; u < n; u++) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = 0; k < ac; k++)
+      if (nt_kind(nt, av[k]) == NK_InstanceVariableReadNode && nt_str(nt, av[k], "name")) np++;
+  }
+  int nb = 16;
+  while (nb < np && nb < (1 << 22)) nb <<= 1;
+  if (!comp_chain_alloc(&c->ivarg_head, &c->ivarg_next, nb, np, &c->ivarg_built)) return;
+  c->ivarg_call = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
+  c->ivarg_arg = malloc((size_t)(np > 0 ? np : 1) * sizeof(int));
+  if (!c->ivarg_call || !c->ivarg_arg) {
+    free(c->ivarg_head); free(c->ivarg_next); free(c->ivarg_call); free(c->ivarg_arg);
+    c->ivarg_head = c->ivarg_next = c->ivarg_call = c->ivarg_arg = NULL;
+    c->ivarg_built = 0;
+    return;
+  }
+  c->ivarg_nbuckets = nb;
+  c->ivarg_count = np;
+  for (int b = 0; b < nb; b++) c->ivarg_head[b] = -1;
+  int e = np;
+  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int k = ac - 1; k >= 0; k--) {
+      if (nt_kind(nt, av[k]) != NK_InstanceVariableReadNode) continue;
+      const char *an = nt_str(nt, av[k], "name");
+      if (!an) continue;
+      unsigned b = sp_strhash(an) & (unsigned)(nb - 1);
+      e--;
+      c->ivarg_call[e] = u;
+      c->ivarg_arg[e] = av[k];
+      c->ivarg_next[e] = c->ivarg_head[b];
+      c->ivarg_head[b] = e;
+    }
+  }
+  c->ivarg_version = nt->version;
+  c->ivarg_built = 1;
+}
+int comp_ivarg_first(Compiler *c, const char *name) {
+  if (!c->ivarg_built || c->ivarg_version != c->nt->version) ivarg_build(c);
+  if (!c->ivarg_built || !name) return -1;
+  return c->ivarg_head[sp_strhash(name) & (unsigned)(c->ivarg_nbuckets - 1)];
+}
+void comp_ivarg_invalidate(Compiler *c) { c->ivarg_built = 0; }
+int comp_ivarg_next(const Compiler *c, int e) {
+  return (e >= 0 && e < c->ivarg_count) ? c->ivarg_next[e] : -1;
+}
+int comp_ivarg_call(const Compiler *c, int e) {
+  return (e >= 0 && e < c->ivarg_count) ? c->ivarg_call[e] : -1;
+}
+int comp_ivarg_arg(const Compiler *c, int e) {
+  return (e >= 0 && e < c->ivarg_count) ? c->ivarg_arg[e] : -1;
+}
+
 /* Every node of one kind, chained in node order. The string-promotion passes
    walked the whole table per fixpoint round with a kind filter as the first
    test; these chains hand them just the matching nodes. */

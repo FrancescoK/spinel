@@ -13108,20 +13108,16 @@ static int an_local_lent(Compiler *c, const char *vn, Scope *vs) {
 }
 
 /* The same for ivar `ivn` of class `cid`, handed by a call in one of its
-   methods. */
+   methods. The calls that hand an ivar on come from the by-name index, not
+   a walk of every call in the program: this is asked once per local/ivar
+   alias, and a machine-generated program has one in nearly every method. */
 static int an_ivar_owner(Compiler *c, int node);
 static int an_ivar_lent(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
   if (!ivn || cid < 0) return 0;
-  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
-    if (nt_kind(nt, u) != NK_CallNode) continue;
-    int a = nt_ref(nt, u, "arguments"), ac = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    int hit = 0;
-    for (int k = 0; k < ac && !hit; k++)
-      hit = nt_kind(nt, av[k]) == NK_InstanceVariableReadNode && sp_streq(nt_str(nt, av[k], "name"), ivn) &&
-            an_ivar_owner(c, av[k]) == cid;
-    if (!hit) continue;
+  for (int e = comp_ivarg_first(c, ivn); e >= 0; e = comp_ivarg_next(c, e)) {
+    int u = comp_ivarg_call(c, e), av = comp_ivarg_arg(c, e);
+    if (!sp_streq(nt_str(nt, av, "name"), ivn) || an_ivar_owner(c, av) != cid) continue;
     int mi = an_call_target_mi(c, u);
     if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
     if (mi < 0) continue;
@@ -16173,6 +16169,7 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   sb_store_valid = 0;   /* this run's store index is built on first use */
+  comp_ivarg_invalidate(c);   /* an_ivar_lent's, likewise */
   const NodeTable *nt = c->nt;
   /* mutated string locals: receivers of an in-place mutator */
   /* per-kind chains: these walks run every fixpoint round, and the full-table
