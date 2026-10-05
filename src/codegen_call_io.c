@@ -764,7 +764,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
         buf_printf(b, "const char *_t%d = sp_File_read_n(%s, ", trd, r);
         emit_int_expr(c, argv[0], b);
-        buf_printf(b, "); lv_%s = _t%d; _t%d; })", bnm ? rename_local(bnm) : "?", trd, trd);
+        /* a buffer that is the shared handle takes the bytes into the
+           handle, as readpartial's does (#7314) */
+        char hr[1024];
+        if (repr_share_rule(c) && strbuf_slot_ref(c, argv[1], hr, sizeof hr))
+          buf_printf(b, "); sp_String_replace(%s, _t%d); _t%d; })", hr, trd, trd);
+        else buf_printf(b, "); lv_%s = _t%d; _t%d; })", bnm ? rename_local(bnm) : "?", trd, trd);
       }
       else {
         /* read(nil) is read with no length: the rest of the stream */
