@@ -4741,8 +4741,8 @@ static sp_int sp_brat_part_i(sp_Bigint *b) {
   sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return 0;
 }
-static sp_RbVal sp_poly_numerator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).num); if (sp_poly_is_brat(v) && v.v.p) return sp_box_int(sp_brat_part_i(((sp_BigRational *)v.v.p)->num)); sp_raise_poly_nomethod("numerator", v); }
-static sp_RbVal sp_poly_denominator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return sp_box_int(1); if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).den); if (sp_poly_is_brat(v) && v.v.p) return sp_box_int(sp_brat_part_i(((sp_BigRational *)v.v.p)->den)); sp_raise_poly_nomethod("denominator", v); }
+static sp_RbVal sp_poly_numerator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return v; if (v.tag == SP_TAG_FLT) return sp_float_numerator(v.v.f); /* as the typed Float arm (#3011) */ if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).num); if (sp_poly_is_brat(v) && v.v.p) return sp_box_int(sp_brat_part_i(((sp_BigRational *)v.v.p)->num)); sp_raise_poly_nomethod("numerator", v); }
+static sp_RbVal sp_poly_denominator(sp_RbVal v) { if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return sp_box_int(1); if (v.tag == SP_TAG_FLT) return sp_box_int(sp_float_denominator(v.v.f)); if (sp_poly_is_rational(v)) return sp_box_int(sp_poly_as_rational(v).den); if (sp_poly_is_brat(v) && v.v.p) return sp_box_int(sp_brat_part_i(((sp_BigRational *)v.v.p)->den)); sp_raise_poly_nomethod("denominator", v); }
 static sp_RbVal sp_poly_nonzero(sp_RbVal v) { if (!sp_poly_tower_p(v)) sp_raise_poly_nomethod("nonzero?", v); return sp_poly_zero_p(v) ? sp_box_nil() : v; }
 /* String#getbyte on a poly value; nil (not 0) for an out-of-range index, per
    CRuby, so the result is boxed. */
