@@ -5445,17 +5445,24 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       if (finite) { nt_node_set_ref(nt, id, "receiver", lz_recv); continue; }
     }
-    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
-      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
-         chains the same way because it returns self. */
+    int mgblk = nt_ref(nt, id, "block");
+    if ((sp_streq(nm, "merge") ||
+         (is_hash_merge_bang(nm) && mgblk >= 0 && block_has_top_break(c, nt_ref(nt, mgblk, "body")))) &&
+        recv >= 0) {
+      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)... merge!
+         does not: CRuby evaluates every argument before the first merge, and
+         a chain ran a later one after it (or not at all, past a raise);
+         codegen takes several arguments (emit_hash_merge_misfit). A merge!
+         block that breaks still folds: the several-argument arm runs the
+         block as a proc, which a break cannot leave, while the chain's outer
+         call takes the break of every step. */
       int argsn = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
       if (an >= 2 && an <= 64) {
-        const char *mname = sp_streq(nm, "merge!") ? "merge!" : "merge";
+        const char *mname = nm;
         int av[64];
         memcpy(av, av0, (size_t)an * sizeof(int));
-        int mblk = nt_ref(nt, id, "block");
         int cur = recv;
         for (int j = 0; j < an - 1; j++) {
           int call = nt_new_node(nt, "CallNode");
@@ -5468,8 +5475,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           /* a conflict block applies at every merge step; a `break` in it
              leaves the whole call, so an inner step is no break target of
              its own (call_breaks) and its break reaches the outer call's */
-          if (mblk >= 0) {
-            nt_node_set_ref(nt, call, "block", mblk);
+          if (mgblk >= 0) {
+            nt_node_set_ref(nt, call, "block", mgblk);
             nt_node_set_str(nt, call, "merge_fold_step", "1");
           }
           cur = call;

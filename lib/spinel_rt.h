@@ -10600,6 +10600,17 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
    it cannot represent is skipped rather than mistyped. Backs the splatted
    `h.merge!(*hs)`, where the sources are only known at run time (#3848). */
 void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src);
+/* Hash#merge!/#update of a boxed Hash into a typed one, pair by pair through
+   the store []= takes (sp_poly_set_poly): a pair the destination's variant
+   cannot hold raises, where sp_poly_hash_merge_into skips it. */
+static SP_UNUSED void sp_poly_hash_merge_set(sp_RbVal dst, sp_RbVal src) {
+  sp_int n = sp_poly_length(src);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(src, i, &k, &v);
+    sp_poly_set_poly(dst, k, v);
+  }
+}
 /* poly_val[sym_key] = val: runtime dispatch for poly recv `[]=` with symbol key. */
 static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");

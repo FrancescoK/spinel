@@ -1,0 +1,16 @@
+TypeError: no implicit conversion of Symbol into Hash
+{"a" => "x", "c" => "z"}
+{"a" => 1, "c" => 2}
+{"a" => 1, "b" => 2, "c" => 3}
+{"a" => 6}
+[{"a" => 1, "b" => 2, "c" => 1}, [:a0, :a1]]
+TypeError: no implicit conversion of Float into Hash
+["no implicit conversion of Integer into Hash", {1 => 2, 3 => 4}]
+FrozenError: can't modify frozen Hash: {1 => 2}
+{"a" => 1, "d" => 4, "e" => 5}
+[:a0, :a1, :r, :b0, :b1]
+:x
+{"a" => 3, "b" => 2}
+:y
+:z
+{"a" => 4}
