@@ -9863,6 +9863,16 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     if (mk) buf_printf(mv, "sp_%sArray_new()", mk);
     else emit_expr(c, vnode, mv);
   }
+  /* --share-strings: a member that holds the shared handle takes an alias's
+     handle or a fresh one, as an ivar write does */
+  else if (repr_share_rule(c) && cls->ivar_types[a] == TY_STRBUF && cls->ivar_str_shared[a]) {
+    LocalVar slot;
+    memset(&slot, 0, sizeof slot);
+    slot.type = TY_STRBUF;
+    slot.str_shared = 1;
+    if (nt_kind(nt, vnode) == NK_NilNode) buf_puts(mv, "NULL");
+    else emit_strbuf_value(c, &slot, vnode, mv);
+  }
   else if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, mv);
   /* The reverse of that box: a POLY value into a CONCRETE member
      slot. A member name a second class also defines makes the read
@@ -19031,11 +19041,13 @@ static void refuse_string_copy(Compiler *c, int arg, const char *target,
     size_t tl = strlen(target);
     if (tl >= 3 && tl - 2 < sizeof mn && target[tl - 1] == '`') {
       memcpy(mn, target + 1, tl - 2); mn[tl - 2] = 0;
-      /* every method of the name the call may reach (an override chain,
-         `super`): the route must pass into each one's parameter */
+      /* the methods the call reaches by its plan, or else every method of
+         the name (an override chain, `super`): the route must pass into
+         each one's parameter */
+      int tg[64], ntg = g_refuse_call >= 0 ? share_call_targets(c, g_refuse_call, tg, 64) : 0;
       int any = 0, all = 1;
-      for (int k = 0; k < c->nscopes && all; k++) {
-        Scope *m = &c->scopes[k];
+      for (int k = 0; k < (ntg > 0 ? ntg : c->nscopes) && all; k++) {
+        Scope *m = &c->scopes[ntg > 0 ? tg[k] : k];
         if (m->def_node < 0 || !m->name || !sp_streq(m->name, mn) || !scope_local(m, pname)) continue;
         any = 1;
         all = refuse_string_copy_routed(c, arg, m->body, pname);
