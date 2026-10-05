@@ -8384,9 +8384,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (c->nilnarrow[id] != TY_UNKNOWN) return c->nilnarrow[id];
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
-    /* &block param that escapes (not yield-inlined): the LocalVar slot type is
-       TY_UNKNOWN, but the value is a Proc object when the method does not inline
-       the block (yields==0). Return TY_PROC so callers can type the return value. */
+    /* A kept &block reads as the Proc-or-NULL value passed by the caller. */
     if (nm && s && s->blk_param && s->blk_param[0] && sp_streq(nm, s->blk_param)
         && !s->yields)
       return TY_PROC;

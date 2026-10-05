@@ -391,8 +391,24 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   return r;
 }
 
+/* Method and constructor signatures pass a kept &block as sp_Proc *.
+   Check the slot as well as expression boxing: a read can infer Proc even
+   when a copied parameter's local was left untyped and widened to POLY. */
+static void repr_check_block_params(Compiler *c) {
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (!sc->blk_param || !sc->blk_param[0] || sc->yields) continue;
+    LocalVar *lv = scope_local(sc, sc->blk_param);
+    Repr r = repr_of_slot(c, lv);
+    if (!lv || !lv->is_param || r.ty != TY_PROC || r.kind != RK_PTR)
+      fprintf(stderr, "repr-check: conflict: method %s block parameter %s: "
+              "slot %s, signature sp_Proc *\n", sc->name ? sc->name : "?",
+              sc->blk_param, ty_name(r.ty));
+  }
+}
+
 void repr_seal(Compiler *c) {
-  (void)c;
+  if (g_repr_check) repr_check_block_params(c);
   repr_sealed_flag = 1;
 }
 
