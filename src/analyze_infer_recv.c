@@ -1870,8 +1870,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 3 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) && sp_streq(name, "bytesplice"))
     { *out = TY_POLY; return 1; }
-  /* String#replace/prepend/concat on a poly value: self, boxed */
-  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+  /* String#replace/prepend/concat on a poly value: self, boxed. replace
+     ignores a block, as the Array and Hash ones do, and its dispatch emits
+     the call the same with one. */
+  if (recv >= 0 && rt == TY_POLY && (nt_ref(nt, id, "block") < 0 || is_replace_name(name)) &&
       !an_user_recv_defines_method(c, name) && argc >= 1 &&
       (sp_streq(name, "replace") || sp_streq(name, "prepend") ||
        sp_streq(name, "concat")))

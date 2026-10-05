@@ -652,6 +652,10 @@ int is_string_append(const char *n) {
   return sp_streq(n, "<<") || sp_streq(n, "concat");
 }
 
+int is_replace_name(const char *n) {
+  return sp_streq(n, "replace");
+}
+
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
