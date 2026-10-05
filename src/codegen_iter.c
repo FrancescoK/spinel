@@ -2389,7 +2389,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      [1, 5, nil]. Leading requireds alone keep the lighter per-index read
      below. */
   int boxed_spread = autosplat && yc == 1 && yargs && nt_kind(nt, yargs[0]) != NK_SplatNode &&
-                     comp_ntype(c, yargs[0]) == TY_POLY && (O > 0 || Q > 0 || block_rest_name(c, blk));
+                     repr_of(c, yargs[0]).kind == RK_BOXED && (O > 0 || Q > 0 || block_rest_name(c, blk));
   int poly_splat_tmp = -1;   /* a boxed yielded value splatted at run time */
   TyKind self_ty = TY_UNKNOWN;
   /* One step of a boxed or Enumerator receiver, which a builtins/ method
@@ -3095,7 +3095,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                expression is what makes the splice's value the block's value
                (#3781). */
             (nt_type(nt, bd3[bn3 - 1]) && sp_streq(nt_type(nt, bd3[bn3 - 1]), "CallNode") &&
-             comp_ntype(c, bd3[bn3 - 1]) == TY_POLY) ||
+             repr_of(c, bd3[bn3 - 1]).kind == RK_BOXED) ||
             /* a scalar tail into the poly slot the yield was typed for (a
                block answering an Integer where another site's answers a
                String): boxed, or the splice handed the raw sp_int to an
@@ -3258,7 +3258,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   int block = nt_ref(nt, id, "block");
   if (!name || recv < 0 || block < 0) return 0;
   if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
-  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  if (repr_of(c, recv).kind != RK_BOXED) return 0;
   /* Only receivers whose poly value comes out of a BUILTIN container -- an
      index read (`arr[i]`) or an element accessor (first/last/fetch/...) -- or
      a plain local/ivar holding such. A constant (its own const-inline path),
@@ -3585,8 +3585,8 @@ int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || comp_ntype(c, id) != TY_POLY ||
-      comp_ntype(c, recv) != TY_POLY || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
+  if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || repr_of(c, id).kind != RK_BOXED ||
+      repr_of(c, recv).kind != RK_BOXED || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
   if (!sp_streq(name, "each_line") && !sp_streq(name, "each_char") && !sp_streq(name, "each_byte"))
     return 0;
   int native = 0;
@@ -4327,7 +4327,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   { const char *sop = nt_str(nt, id, "call_operator");
     int sn_recv = nt_ref(nt, id, "receiver");
     if (sop && sp_streq(sop, "&.") && g_sn_skip != id &&
-        sn_recv >= 0 && comp_ntype(c, sn_recv) == TY_POLY) return 0; }
+        sn_recv >= 0 && repr_of(c, sn_recv).kind == RK_BOXED) return 0; }
   if (!iter_value_answers_recv(c, id)) return 0;
   int block = nt_ref(nt, id, "block");
   int recv = nt_ref(nt, id, "receiver");
@@ -4340,7 +4340,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_each_wrap") &&
       nt_ref(nt, recv, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR &&
-      comp_ntype(c, id) == TY_POLY) {
+      repr_of(c, id).kind == RK_BOXED) {
     int tres = ++g_tmp;
     Buf wb; memset(&wb, 0, sizeof wb);
     g_enum_walk_res = tres;
@@ -5237,7 +5237,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
        not compile against it (#4665). A typed limit stays as it is: a Float
        one compares as a Float (`-5.upto(-1.3)` stops at -2). */
     Buf hi; memset(&hi, 0, sizeof hi);
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_int_expr(c, argv[0], &hi);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) emit_int_expr(c, argv[0], &hi);
     else emit_expr(c, argv[0], &hi);
     int ti = ++g_tmp;
     /* the limit sits in the loop condition, so a side-effecting one would be
@@ -6384,7 +6384,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      with g_sn_skip set, and that pass has to lower normally. */
   { const char *sop = nt_str(nt, id, "call_operator");
     if (sop && sp_streq(sop, "&.") && g_sn_skip != id &&
-        recv >= 0 && comp_ntype(c, recv) == TY_POLY) return 0; }
+        recv >= 0 && repr_of(c, recv).kind == RK_BOXED) return 0; }
   /* CRuby checks arity and argument classes at dispatch, before the
      iteration starts: a loop emitted here never reaches emit_call, so both
      guards run here too (3.step(4, 1, 2) { } ran the loop with the extra
@@ -6494,7 +6494,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       const char *inm = nt_str(nt, id, "name");
       int irecv = nt_ref(nt, id, "receiver");
       const char *pen = inm ? poly_enum_op_for(inm) : NULL;
-      if (rfb >= 0 && pen && irecv >= 0 && comp_ntype(c, irecv) == TY_POLY) {
+      if (rfb >= 0 && pen && irecv >= 0 && repr_of(c, irecv).kind == RK_BOXED) {
         Buf pb0; memset(&pb0, 0, sizeof pb0);
         if (!emit_forwarded_proc_arg(c, rfb, &pb0)) { free(pb0.p); return 0; }
         int tp0 = ++g_tmp;
