@@ -767,8 +767,9 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         _off += (size_t)snprintf((out_) + _off, _cap - _off, "**%s", _m->pnames[_i]); \
       else if (_m->pdefault[_i] >= 0) \
         _off += (size_t)snprintf((out_) + _off, _cap - _off, "%s=...", _m->pnames[_i]); \
-      else \
-        _off += (size_t)snprintf((out_) + _off, _cap - _off, "%s", _m->pnames[_i]); \
+      else /* a define_method block's assigned parameter: the name written, not its slot */ \
+        _off += (size_t)snprintf((out_) + _off, _cap - _off, "%.*s", \
+                                 (int)reassigned_param_written_len(_m->pnames[_i]), _m->pnames[_i]); \
     } \
     if (_off < _cap) _off += (size_t)snprintf((out_) + _off, _cap - _off, ")"); \
     { int _ln = scope_def_line(c, _m); \
