@@ -9350,6 +9350,13 @@ static sp_RbVal sp_poly_insert(sp_RbVal v, sp_int i, sp_RbVal x) {
   sp_raise_nomethod(sp_nomethod_msg("insert", v));
   return sp_box_nil();
 }
+/* String#insert takes a String (StringValue): nil, a number or another
+   class raises CRuby's TypeError, where sp_poly_insert stringifies what it
+   is handed. Array#insert takes any value. */
+static sp_RbVal sp_poly_insert_chk(sp_RbVal v, sp_int i, sp_RbVal x) {
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) x = sp_box_str(sp_poly_arg_str_chk(x));
+  return sp_poly_insert(v, i, x);
+}
 /* Array#insert with any number of values after the index: they go in
    consecutively from the resolved index, so a negative one is resolved
    against the length once, before the first of them. With none the array
