@@ -299,7 +299,7 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
   }
   if (ns0 && p0_lv) p0_lv->type = p0_actual;
   if (ns1 && p1_lv) p1_lv->type = p1_actual;
-  TyKind bret = (bb && bn > 0) ? comp_ntype(c, bb[bn - 1]) : TY_UNKNOWN;
+  TyKind bret = (bb && bn > 0) ? repr_of(c, bb[bn - 1]).as_ty : TY_UNKNOWN;
   /* A value-carrying next widens the block value past the tail, so the temp is
      boxed when a next yields a different type than the tail expression. */
   TyKind bnt = ie_block_break_next_ty(c, body);
@@ -770,7 +770,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
       else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d);\n", p0, shn, ts, tk);
     }
   }
-  TyKind bret = comp_ntype(c, bb[bn - 1]);
+  TyKind bret = repr_of(c, bb[bn - 1]).as_ty;
   Buf vb; memset(&vb, 0, sizeof vb);
   /* a `next <v>` answers for this pair: the body writes a slot and the
      set below reads it, where the bare `continue` of a tail read skipped
@@ -1530,7 +1530,7 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   int save = g_indent; g_indent++;
   /* CRuby stringifies a non-string block value (gsub { 2 } -> "2"): box a
      concretely non-string result and render it through sp_poly_to_s. */
-  TyKind gvt = st.slot ? st.slot_ty : comp_ntype(c, bb[bn - 1]);
+  TyKind gvt = st.slot ? st.slot_ty : repr_of(c, bb[bn - 1]).as_ty;
   Buf vb; memset(&vb, 0, sizeof vb);
   if (gvt == TY_POLY) { buf_puts(&vb, "sp_poly_to_s("); emit_iter_step_tail(c, &st, &vb); buf_puts(&vb, ")"); }
   else if (gvt != TY_STRING && gvt != TY_UNKNOWN && st.slot) {
@@ -1727,7 +1727,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
        array's `sum {}` is an Integer where it answers at all), so hand back
        what the caller's slot holds; a nil term raises inside the loop before
        this is reached. */
-    TyKind sret = comp_ntype(c, id);
+    TyKind sret = repr_of(c, id).as_ty;
     if (sret == TY_INT || sret == TY_FLOAT || sret == TY_STRING) {
       char accsrc[32]; snprintf(accsrc, sizeof accsrc, "_t%d", tacc);
       buf_puts(b, " ");
@@ -2226,7 +2226,7 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 2);
   /* a boolean group key boxes as true/false, not its 0/1 bits */
   buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, %s(_tkey_%d));\n", ta,
-             comp_ntype(c, bb[bn - 1]) == TY_BOOL ? "sp_box_bool" : "sp_box_int", ta);
+             repr_of(c, bb[bn - 1]).as_ty == TY_BOOL ? "sp_box_bool" : "sp_box_int", ta);
   emit_indent(g_pre, g_indent + 2);
   buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, sp_box_int_array(_t%d));\n", ta, tcur);
   emit_indent(g_pre, g_indent + 2);
@@ -2844,7 +2844,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       /* the fold accumulates boxed; unbox to the call's inferred scalar type
          so `c = [].reduce(5, :+)` lands in an sp_int slot (#2365) */
       {
-        TyKind want = comp_ntype(c, id);
+        TyKind want = repr_of(c, id).as_ty;
         char accs[24]; snprintf(accs, sizeof accs, "_t%d", tacc);
         /* no initial value and an empty receiver: nil, as the slot's sentinel */
         if (init_node < 0 && want == TY_INT)
@@ -2933,7 +2933,7 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
                ta, tn, k, ta, tsy);
     /* a statically-poly operand (a `|sym|` block param over a poly array)
        carries the symbol in its .v.i slot */
-    if (comp_ntype(c, symarg) == TY_SYMBOL) emit_expr(c, symarg, b);
+    if (repr_of(c, symarg).as_ty == TY_SYMBOL) emit_expr(c, symarg, b);
     else { buf_puts(b, "(sp_sym)("); emit_expr(c, symarg, b); buf_puts(b, ").v.i"); }
     buf_printf(b, "; sp_RbVal _t%d = ", tacc);
     int start;
@@ -3017,7 +3017,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (ren == 0) {
       int rargs = nt_ref(nt, id, "arguments");
       int rac = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &rac) : NULL;
-      TyKind selfty = comp_ntype(c, id);
+      TyKind selfty = repr_of(c, id).as_ty;
       int has_init = rac >= 1 && rav &&
                      !(nt_type(nt, rav[0]) && sp_streq(nt_type(nt, rav[0]), "SymbolNode"));
       if (has_init) {
@@ -3086,7 +3086,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   TyKind acc_ty = et;
   int init_empty_arr = 0, init_empty_hash = 0;
   if (init >= 0) {
-    TyKind it = comp_ntype(c, init);
+    TyKind it = repr_of(c, init).as_ty;
     /* an empty array-literal seed accumulates a poly array (mirrors the
        inference rule; the block decides the element mix) */
     if (it == TY_UNKNOWN && nt_type(nt, init) && sp_streq(nt_type(nt, init), "ArrayNode")) {
@@ -3504,7 +3504,7 @@ void emit_iter_step_open(Compiler *c, int block, int want_poly, int indent, Iter
   const NodeTable *nt = c->nt;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-  TyKind tt = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+  TyKind tt = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
   st->block = block; st->want_poly = want_poly; st->slot = 0; st->slot_ty = TY_UNKNOWN;
   if (iter_step_needs_frame(c, block)) {
     /* the slot holds every answer the step can give, a `next`'s too */
@@ -3530,7 +3530,7 @@ TyKind emit_iter_step_tail(Compiler *c, const IterStep *st, Buf *vb) {
   int body = nt_ref(nt, st->block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn == 0) { buf_puts(vb, "sp_box_nil()"); return TY_POLY; }
-  TyKind tt = comp_ntype(c, bb[bn - 1]);
+  TyKind tt = repr_of(c, bb[bn - 1]).as_ty;
   if (st->want_poly) { emit_boxed(c, bb[bn - 1], vb); return TY_POLY; }
   emit_expr(c, bb[bn - 1], vb);
   return tt;
@@ -3617,7 +3617,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int init = (argc > 0 && argv) ? argv[0] : -1;
   TyKind acc_ty = elem_t;
-  if (init >= 0) { TyKind it = comp_ntype(c, init); if (it != TY_UNKNOWN) acc_ty = it; }
+  if (init >= 0) { TyKind it = repr_of(c, init).as_ty; if (it != TY_UNKNOWN) acc_ty = it; }
   { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
   const char *p0 = rename_local(p0o);
   TyKind pair_ty = (elem_t == TY_INT) ? TY_INT_ARRAY : TY_POLY_ARRAY;
@@ -3901,7 +3901,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     /* An empty block body (e.g. `map { |x, i| }`) has bn == 0, so guard the
        bb[bn - 1] read and treat the absent tail value as nil -- a poly value so
        the temp initializes to sp_box_nil() rather than an integer 0. */
-    TyKind bt = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+    TyKind bt = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
     /* A body whose value IS nil types VOID here, and `void _tN` is not a
        declaration -- `select { nil }` never compiled, and `select {}` reaches
        the same place now that an empty body carries the nil it means (#4006).
@@ -3963,7 +3963,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   char res[32]; TyKind res_t;
   if (is_map || collect_pair || is_toh) {
     snprintf(res, sizeof res, "_t%d", tres);
-    res_t = is_toh ? toh_ht : collect_pair || sp_streq(rk, "Poly") ? TY_POLY_ARRAY : comp_ntype(c, id);
+    res_t = is_toh ? toh_ht : collect_pair || sp_streq(rk, "Poly") ? TY_POLY_ARRAY : repr_of(c, id).as_ty;
   }
   else if (is_cnt) { snprintf(res, sizeof res, "_t%d", tcnt); res_t = TY_INT; }
   else if (is_any || is_all || is_none) { snprintf(res, sizeof res, "_t%d", tflag); res_t = TY_BOOL; }
@@ -4393,7 +4393,7 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   TyKind dest_ty = g_bv_dest_ty; g_bv_dest_ty = TY_UNKNOWN;
   g_ie_next_ty = TY_UNKNOWN;
   if (!want_poly && bn > 0) {
-    TyKind dt = dest_ty != TY_UNKNOWN ? dest_ty : comp_ntype(c, bb[bn - 1]);
+    TyKind dt = dest_ty != TY_UNKNOWN ? dest_ty : repr_of(c, bb[bn - 1]).as_ty;
     if (ty_is_array(dt) || ty_is_hash(dt)) g_ie_next_ty = dt;
     /* an Integer or Float slot: a `next nil` spells the slot's sentinel */
     else if (dt == TY_INT || dt == TY_FLOAT) g_ie_next_ty = dt;
@@ -5160,7 +5160,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     /* select/reject: collect the block's value (next-aware) into a temp, then
        push the element when that value (negated for reject) is truthy -- so a
        `next <cond>` inside the block decides inclusion instead of being lost. */
-    TyKind cty = comp_ntype(c, bb[bn - 1]);
+    TyKind cty = repr_of(c, bb[bn - 1]).as_ty;
     /* A body whose value IS nil types VOID, and `void _tN` is not a
        declaration: `select { nil }` never compiled, and `select {}` reaches
        here now that an empty body carries the nil it means (#4006). Carry it
@@ -5717,7 +5717,7 @@ int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "{ (void)(%s); _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
   free(cb.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  if (comp_ntype(c, id) == TY_INT) buf_printf(b, "_t%d", tres);
+  if (repr_of(c, id).as_ty == TY_INT) buf_printf(b, "_t%d", tres);
   else buf_printf(b, "(_t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d))", tres, tres);
   return 1;
 }
@@ -6333,7 +6333,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
      the void call or its sp_int 0 was a C type error (#4930). */
   if (provided >= 0 && needs_root(pt) && pt != TY_POLY && !comp_ty_value_obj(c, pt) &&
       nt_kind(c->nt, provided) != NK_NilNode && !(p && (p->byref_out || p->str_shared))) {
-    TyKind at = comp_ntype(c, provided);
+    TyKind at = repr_of(c, provided).as_ty;
     if (at == TY_NIL || at == TY_VOID) {
       buf_puts(out, "({ (void)("); emit_expr(c, provided, out); buf_puts(out, "); NULL; })");
       return;
@@ -6879,7 +6879,7 @@ else if (dty && sp_streq(dty, "NilNode")) {
   }
   /* A default that cannot complete (`x: (raise "...")`) runs for its effect
      and never reaches the slot; the comma gives the slot's C type a value */
-  else if (pt != TY_POLY && comp_ntype(c, dv) == TY_VOID) {
+  else if (pt != TY_POLY && repr_of(c, dv).as_ty == TY_VOID) {
     buf_puts(out, "(");
     emit_expr(c, dv, out);
     buf_printf(out, ", %s)", pt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, pt));
@@ -7804,7 +7804,7 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
-  TyKind at = comp_ntype(c, v);
+  TyKind at = repr_of(c, v).as_ty;
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
      a variable's handle is taken too, just ahead, and recorded with the
@@ -7933,7 +7933,7 @@ static void emit_arg_first(Compiler *c, int v, int rebound, Buf *b) {
   if (arg_ran_first(x, 0)) return;
   int effect = subtree_has_side_effect(c, x);
   if (!effect && !rebound) return;
-  TyKind at = comp_ntype(c, x);
+  TyKind at = repr_of(c, x).as_ty;
   if (ty_is_object(at) || c_type_name(at)) {
     emit_arg_temp(c, x);
     return;
@@ -9827,7 +9827,7 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
    argument. Returns the temp. */
 static int emit_splat_in_place(Compiler *c, int splat, TyKind *at) {
   int inner = nt_ref(c->nt, splat, "expression");
-  TyKind t = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+  TyKind t = inner >= 0 ? repr_of(c, inner).as_ty : TY_UNKNOWN;
   Buf anon; memset(&anon, 0, sizeof anon);
   int is_anon = inner < 0 && emit_anon_rest_ref(c, splat, &anon);
   int boxed = !is_anon && inner >= 0 && (t == TY_POLY || t == TY_UNKNOWN || splat_operand_is_scalar(t));
@@ -10170,7 +10170,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (subtree_has_side_effect(c, argv[k])) { last_se = k; n_se++; }
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
       argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
-      TyKind at = comp_ntype(c, argv[k]);
+      TyKind at = repr_of(c, argv[k]).as_ty;
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.
          Nor is there anything to sequence: a valueless argument is a raise
@@ -10547,7 +10547,7 @@ static int reader_override_arms(Compiler *c, int id, int cid, const char *name, 
     if (kmi >= 0 && kmi != base_mi) any = 1;
   }
   if (!any) return 0;
-  TyKind ret = comp_ntype(c, id);
+  TyKind ret = repr_of(c, id).as_ty;
   if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
   if (ret != reader_ty && ret != TY_POLY) return 0;
   for (int k = 0; k < c->nclasses; k++) {
@@ -10591,7 +10591,7 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   const NodeTable *nt = c->nt;
   if (!reader_override_arms(c, id, cid, name, reader_ty)) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);
-  TyKind ret = comp_ntype(c, id);
+  TyKind ret = repr_of(c, id).as_ty;
   int argsNode = nt_ref(nt, id, "arguments");
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
@@ -10712,7 +10712,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   if (m && m->yields && blk_node >= 0 && g_nd_call_id >= 0 &&
       nt_ref(nt, g_nd_call_id, "block") == blk_node &&
       scope_proc_form_of(c, mi) >= 0) {
-    TyKind ct = comp_ntype(c, g_nd_call_id);
+    TyKind ct = repr_of(c, g_nd_call_id).as_ty;
     if (ct != TY_UNKNOWN) ret = ct;
   }
 
@@ -11023,7 +11023,7 @@ else {
         g_self_deref = saved_deref3;
         g_emitting_class_id = saved_emcls2;
       }
-      TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
+      TyKind att = p ? p->type : repr_of(c, k < argc ? argv[k] : -1).as_ty;
       if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
       atmp_ty[k] = att;
       /* A byref out-param takes the SLOT's address, so its temp is a
@@ -11047,7 +11047,7 @@ else {
       }
       /* an argument the call ran first (emit_args_before_binding) is its
          rooted temp already, when the slot takes it unconverted */
-      int ran_t = provided >= 0 && comp_ntype(c, provided) == att
+      int ran_t = provided >= 0 && repr_of(c, provided).as_ty == att
                     ? ran_first_temp(provided, argov_saved_d, ab.p) : -1;
       if (ran_t >= 0) atmp[k] = ran_t;
       else {
