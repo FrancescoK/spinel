@@ -4102,6 +4102,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
+  /* flatten(depth): the depth unwraps that many levels (sp_poly_flatten_d) */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      sp_streq(name, "flatten") && comp_ntype(c, argv[0]) == TY_INT &&
+      !recv_user_defines(c, name)) {
+    buf_puts(b, "sp_poly_flatten_d("); emit_expr(c, recv, b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", 1)");
+    return 1;
+  }
   /* `enum.drop(n)` / `enum.reject|select|filter { }` on an each_with_index-style
      Enumerator: materialize its pairs to a poly array and re-dispatch as the
      array form (drop returns a slice; the block forms run the block over each
