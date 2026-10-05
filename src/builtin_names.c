@@ -296,6 +296,10 @@ int is_text_print(const char *n) {
   return sp_streq(n, "puts") || sp_streq(n, "print");
 }
 
+int is_printf_name(const char *n) {
+  return sp_streq(n, "printf");
+}
+
 int is_match_operator(const char *n) {
   return sp_streq(n, "=~") || sp_streq(n, "!~");
 }

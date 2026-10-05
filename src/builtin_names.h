@@ -80,6 +80,7 @@ int is_store_alias(const char *n); /* []= store */
 int is_pop_shift(const char *n); /* pop shift */
 int is_prepend_alias(const char *n); /* prepend unshift */
 int is_text_print(const char *n); /* print puts */
+int is_printf_name(const char *n); /* printf: formats its operands, then writes them */
 int is_union_alias(const char *n); /* union | */
 int is_eq_or_ne(const char *n); /* != == */
 int is_size_or_count(const char *n); /* count size */
