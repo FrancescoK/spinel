@@ -26,6 +26,10 @@
 
 /* element-own flags (not merged by a union) */
 enum { SHE_WRITTEN = 1 };
+/* a class flag beside share.h's SHF_*: a value of the class leaves a call
+   to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
+   so a container of the class can be reached again (sh_finalize) */
+enum { SHF_OUT = 8 };
 
 typedef struct ShareFacts {
   int n, cap;
@@ -748,7 +752,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return -1;
   case BSH_ITER_FRESH: case BSH_FROZEN:
     return -1;
-  case BSH_RECV:
+  case BSH_RECV: case BSH_ITER_FRESH_RECV:
     return rv;
   case BSH_ELEM:
     /* `a[i, n]`, `a[r]`: a run of elements */
@@ -997,6 +1001,29 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (mod && (ffi_find_func(c, mod, name) >= 0 || comp_native_find(c, mod, name) >= 0)) return -1;
   }
 
+  /* `Thread.new(a) { |t| }` hands the block its arguments, and a resume
+     the program names, its Fiber's block; any other resume hands a Fiber's
+     block what the walk does not see. A Thread's value and a Fiber's
+     answers go where the walk does not follow. */
+  int fb = an_fiber_new_block(c, n);
+  if (fb >= 0) {
+    sh_block_params(F, c, fb, F->unknown, 1);
+    sh_union(F, sh_block_val(F, c, fb), F->unknown);
+    return -1;
+  }
+  int tb = an_thread_arg_block(c, n);
+  if (tb >= 0) {
+    int vals[64];
+    int nv = sh_args_vals(F, c, n, vals, 64), a = -1;
+    for (int i = 0; i < nv; i++) a = sh_join(F, a, vals[i]);
+    sh_block_params(F, c, tb, a, 1);
+    /* Thread.new (a constant receiver; Fiber#resume's is the fiber) */
+    if (nt_kind(nt, nt_ref(nt, n, "receiver")) == NK_ConstantReadNode) {
+      sh_union(F, sh_block_val(F, c, tb), F->unknown);
+      return -1;
+    }
+  }
+
   /* a user method */
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
@@ -1048,6 +1075,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       sh_bind(F, c, n, tg[i]);
       r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
+      /* a block passed as a value (`&proc`, `&method(:m)`): what the method
+         yields goes where the walk does not follow */
+      else if (blk >= 0 && c->scopes[tg[i]].yields) {
+        sh_union(F, sh_scope_holder(F, SHK_YIELD, tg[i]), F->unknown);
+        sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
+      }
       /* a method of a String reopen: self is the receiver */
       if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
           c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
@@ -1100,7 +1133,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* the Strings' answers-self names the face table lists */
   if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
   if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-  if (!s) s = bop_share(fam, name);
+  /* a family's "*" row is its default; a container's "*" is Array#*, and
+     its default is sh_container_default (a block binds what it holds) */
+  if (!s && fam != BOP_ANY_ARRAY && fam != BOP_ANY_HASH) s = bop_share(fam, name);
   if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH);
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk);
@@ -1355,6 +1390,7 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) &&
       nt_kind(c->nt, n) != NK_StatementsNode && nt_kind(c->nt, n) != NK_ParenthesesNode)
     v = -1;
+  if (v >= 0 && nt_kind(c->nt, n) == NK_CallNode && !F->unused[n]) F->flags[sh_find(F, v)] |= SHF_OUT;
   F->nval[n] = v;
   return v;
 }
@@ -1445,7 +1481,7 @@ static void sh_finalize(ShareFacts *F) {
   F->hcount = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
   for (int e = 0; e < n; e++)
     if (F->parent[e] == e)
-      anchored[e] = F->nhold[e] - F->nelem[e] > 0 || (F->flags[e] & SHF_UNKNOWN);
+      anchored[e] = F->nhold[e] - F->nelem[e] > 0 || (F->flags[e] & (SHF_UNKNOWN | SHF_OUT));
   for (int changed = 1; changed; ) {
     changed = 0;
     for (int e = 0; e < n; e++) {
@@ -1784,6 +1820,121 @@ int share_elem_holders(const Compiler *c, int e) {
   return sh_class_holders(F, e);
 }
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
+
+
+/* ---- master's route refusals under the flag (share.h) ---- */
+
+ShareRoute share_route(int site, int value, int elems) {
+  ShareRoute r;
+  memset(&r, 0, sizeof r);
+  r.site = site;
+  r.value = value;
+  r.elems = elems;
+  r.to = -1;
+  r.carry = -1;
+  return r;
+}
+
+static int sh_ivar_owner(Compiler *c, int node);
+/* A String bang method (bop_share_bang_self) called on a slot that holds
+   the shared handle -- a local, a global, a constant, a class variable or
+   an ivar: its value is that slot's String, or nil. */
+static int sh_bang_self_slot(const Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !bop_share_bang_self(nt_str(nt, v, "name"))) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  if (r < 0) return 0;
+  if (nt_kind(nt, r) == NK_LocalVariableReadNode) return repr_of(c, r).kind == RK_STRBUF;
+  if (nt_kind(nt, r) == NK_InstanceVariableReadNode) {
+    const char *nm = nt_str(nt, r, "name");
+    int cid = nm ? sh_ivar_owner((Compiler *)c, r) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+  }
+  return 0;
+}
+/* Does node n hand over the shared handle (or a box holding it), not a
+   copy of its bytes? */
+static int sh_carries_handle(const Compiler *c, int n) {
+  Repr r = repr_of(c, n);
+  /* a bang method on a handle local: a write hands over the local's handle
+     (emit_strbuf_value) */
+  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n);
+}
+
+/* The class of node n's value (with elems, of its elements), or -1. */
+static int sh_node_root(const ShareFacts *F, int n, int elems) {
+  if (!F || n < 0 || n >= F->nnodes || F->nval[n] < 0) return -1;
+  int r = sh_root(F, F->nval[n]);
+  if (elems) r = F->elem[r] >= 0 ? sh_root(F, F->elem[r]) : -1;
+  return r;
+}
+
+/* The class the route reaches: local to_name in the scope of node `to`,
+   or node `to`'s value (with to_elems, its elements). */
+static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
+  const ShareFacts *F = c->share;
+  if (!q->to_name) return sh_node_root(F, q->to, q->to_elems);
+  Scope *s = q->to >= 0 ? comp_scope_of((Compiler *)c, q->to) : NULL;
+  LocalVar *lv = s ? scope_local(s, q->to_name) : NULL;
+  int h = lv ? share_local_holder(c, (int)(s - c->scopes), (int)(lv - s->locals)) : -1;
+  return h >= 0 ? sh_root(F, F->helem[h]) : -1;
+}
+
+/* The route's answer from the final facts: 1 when it compiles as the rule
+   says, 0 when it has to stay refused. The facts must see the route (the
+   String and the holder it reaches in one class): a route the walk does
+   not follow says nothing about who else can see the copy. Then a class
+   the rule does not share has one name, and the copy is unobservable; one
+   it shares holds the handle in every holder (seal's holder check), and
+   the carrying node hands it along. */
+static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
+  const ShareFacts *F = c->share;
+  int v = sh_node_root(F, q->value, q->elems);
+  if (v < 0) return 0;
+  if (q->to >= 0 && sh_route_to_root(c, q) != v) return 0;
+  if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return 1;
+  return q->carry < 0 || sh_carries_handle(c, q->carry);
+}
+
+int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
+  if (!c->share_strings) return 0;
+  if (repr_sealed()) return sh_route_ok(c, q);
+  for (int i = 0; i < c->nshare_route; i++) {
+    const ShareRoute *r = &c->share_route[i];
+    if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
+        r->to_elems == q->to_elems && r->carry == q->carry &&
+        (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
+      return 1;
+  }
+  if (c->nshare_route >= c->cshare_route) {
+    c->cshare_route = c->cshare_route ? c->cshare_route * 2 : 16;
+    c->share_route = realloc(c->share_route, sizeof(ShareRoute) * (size_t)c->cshare_route);
+  }
+  ShareRoute *r = &c->share_route[c->nshare_route++];
+  *r = *q;
+  r->msg = strdup(msg);
+  return 1;
+}
+
+void share_routes_check(Compiler *c) {
+  for (int i = 0; i < c->nshare_route; i++) {
+    const ShareRoute *r = &c->share_route[i];
+    const char *stats = getenv("SPINEL_SHARE_STATS");
+    if (stats && stats[0] == '2')
+      fprintf(stderr, "share-route: site %d value %d%s to %d%s%s%s carry %d ok=%d\n", r->site, r->value,
+              r->elems ? " (elements)" : "", r->to, r->to_elems ? " (elements)" : "",
+              r->to_name ? " local " : "", r->to_name ? r->to_name : "", r->carry, sh_route_ok(c, r));
+    if (!sh_route_ok(c, r)) unsupported_feature(c, r->site, r->msg);
+  }
+}
+
+void share_routes_free(Compiler *c) {
+  for (int i = 0; i < c->nshare_route; i++) free(c->share_route[i].msg);
+  free(c->share_route);
+  c->share_route = NULL;
+  c->nshare_route = c->cshare_route = 0;
+}
 
 /* Under SPINEL_SHARE_STATS, a holder of `closed` (a build without UNKNOWN)
    with the same key as holder h of c->share: its class's facts. */
