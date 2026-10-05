@@ -1,0 +1,9 @@
+["Hello", " Wo", "rld\nfo", "o", "\n"]
+["Hello World", "foo"]
+["Hell", " W", "rld\nf", "", "\n"]
+["Hello World\n", "foo\n"]
+["Hello World\nfoo\n"]
+["Hello World\n", "foo\n"]
+["Hello World\n", "foo\n"]
+["Hello World", "foo"]
+undefined method 'lines' for an instance of Integer
