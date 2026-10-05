@@ -2137,7 +2137,16 @@ static int bare_gets_scan(const NodeTable *nt) {
       for (int k = 0; k < ac; k++)
         if (nt_kind(nt, av[k]) != NK_SplatNode) splats_only = 0;
       if (cn && sp_streq(cn, "print") && splats_only) return 0;
-      if (cn && sp_streq(cn, "~") && ac == 0) return 0;
+      /* `~re` is Regexp#~, a match against $_. `~5`, `~x` and `~self` are
+         Integer#~ (builtins/integer.rb spells the last in bit_length, so any
+         program that requires securerandom has one), and a bare gets beside
+         them is still ARGF's. Syntax only: a regexp literal, interpolated or
+         not, is the match; a Regexp held in a variable is not seen. */
+      if (cn && sp_streq(cn, "~") && ac == 0) {
+        int rcv = nt_ref(nt, i, "receiver");
+        if (rcv < 0 || nt_kind(nt, rcv) == NK_RegularExpressionNode ||
+            nt_kind(nt, rcv) == NK_InterpolatedRegularExpressionNode) return 0;
+      }
     }
     if (v && (sp_streq(v, "gets") || sp_streq(v, "print"))) return 0;
   }
