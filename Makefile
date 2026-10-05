@@ -2058,6 +2058,7 @@ GC_MINOR_TESTS := test/reflect_ivar_nil_presence.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
                   test/zip_boxed_receiver_argument_order.rb \
+                  test/poly_case_option_evaluation.rb \
                   test/data_ivar_set_value_gc.rb \
                   test/method_call_block_captures_outer.rb \
                   test/range_dup_unfrozen.rb \
