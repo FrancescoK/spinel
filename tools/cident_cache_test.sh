@@ -45,6 +45,13 @@ git init -q
 git add .
 git -c user.name=Test -c user.email=test@example.invalid commit -qm 'Fixture'
 run() { bash tools/cident.sh HEAD > "$T/out" 2>&1; }
+# Reap a background run within 30 s; a run still alive then is killed and
+# reported, so a locking regression fails the test instead of hanging it.
+reap() {
+  for ((i=0; i<600; i++)); do kill -0 "$1" 2>/dev/null || break; sleep 0.05; done
+  if kill -0 "$1" 2>/dev/null; then kill -KILL "$1"; wait "$1" 2>/dev/null; return 1; fi
+  wait "$1" 2>/dev/null; return 0
+}
 check() {
   if run && grep -q '0 differ, 0 refusal changes.*0 not in the reference' "$T/out"; then
     echo "$1: identical"
@@ -62,6 +69,23 @@ if [ "$1" = corpus ]; then
   rm test/b.rb
   check removed
   printf 'builds: '; find "$T" -name 'build-*' | wc -l | tr -d ' '
+elif [ "$1" = abandoned ]; then
+  # A run killed with SIGKILL runs no cleanup. The next run must still get
+  # the lock once the killed run's own processes are gone.
+  touch "$T/hold"
+  bash tools/cident.sh HEAD > "$T/first" 2>&1 & first=$!
+  for ((i=0; i<200; i++)); do
+    [ "$(find "$T" -name 'build-*' | wc -l)" -ge 1 ] && break
+    sleep 0.05
+  done
+  kill -KILL "$first"; wait "$first" 2>/dev/null || :
+  rm "$T/hold"
+  bash tools/cident.sh HEAD > "$T/second" 2>&1 & second=$!
+  if ! reap "$second"; then
+    echo "second: blocked"
+  elif grep -q '1 identical, 0 differ, 0 refusal changes' "$T/second"; then
+    echo "second: identical"
+  else echo "second: incomplete"; fi
 else
   touch "$T/hold"
   bash tools/cident.sh HEAD > "$T/first" 2>&1 & first=$!
@@ -71,15 +95,17 @@ else
   done
   bash -x tools/cident.sh HEAD > "$T/second" 2>&1 & second=$!
   for ((i=0; i<200; i++)); do
-    if grep -q '+ sleep 1' "$T/second" || [ "$(find "$T" -name 'build-*' | wc -l)" -ge 2 ]; then break; fi
+    if grep -qs '+ cident_lock' "$T/second" || [ "$(find "$T" -name 'build-*' | wc -l)" -ge 2 ]; then break; fi
     sleep 0.05
   done
   rm "$T/hold"
-  wait "$first" || :
-  wait "$second" || :
+  blocked=
+  reap "$first" || blocked="$blocked first"
+  reap "$second" || blocked="$blocked second"
   printf 'builds: '; find "$T" -name 'build-*' | wc -l | tr -d ' '
   for result in first second; do
-    if grep -q '1 identical, 0 differ, 0 refusal changes' "$T/$result"; then
+    if [[ " $blocked " == *" $result "* ]]; then echo "$result: blocked"
+    elif grep -q '1 identical, 0 differ, 0 refusal changes' "$T/$result"; then
       echo "$result: identical"
     else echo "$result: incomplete"; fi
   done

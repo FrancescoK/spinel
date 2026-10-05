@@ -65,10 +65,18 @@ CORPUSKEY=$({
 REFDIR=$ROOT/build/cident/$SHA${FLAGKEY:+-$FLAGKEY}-$CORPUSKEY
 # A cold cache has one builder. Hold the lock through comparison so no
 # other run can remove or read its outputs while they are being written.
+# The lock is flock(2) on fd 9, which the kernel drops once no process
+# holds that descriptor any more, however the holder ended: a run killed
+# with SIGKILL leaves no stale lock, and compiles it orphaned keep the
+# cache locked only until they exit. macOS has no flock(1); perl has flock.
 LOCK=$REFDIR.lock
 mkdir -p "$(dirname "$REFDIR")"
-while ! mkdir "$LOCK" 2>/dev/null; do sleep 1; done
-trap 'rmdir "$LOCK"' EXIT
+exec 9>"$LOCK"
+cident_lock() {
+  perl -MFcntl=:flock -e 'open(my $fh, ">&=", 9) or die "cident: cannot lock: $!\n";
+    flock($fh, LOCK_EX) or die "cident: cannot lock: $!\n"'
+}
+cident_lock || exit 2
 trap 'exit 2' HUP INT TERM
 if [ ! -f "$REFDIR/.done" ]; then
   # The C embeds the compiler's own tree path in a few string literals,
