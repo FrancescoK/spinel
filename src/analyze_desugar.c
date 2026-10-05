@@ -4668,6 +4668,63 @@ int desugar_array_first_last(Compiler *c) {
   return changed;
 }
 
+/* Interpolation is `to_s`, so a program that REOPENED the part's class with
+   its own to_s owns the conversion: `class Integer; def to_s(base = 10);
+   "INT"; end` makes "x#{5}y" read "xINTy" in CRuby, where the interpolation
+   planner would write the digits. Such a part becomes `<part>.to_s`, which
+   the ordinary call path answers through the reopen, and which inference
+   types like any other call. A String part is NOT one of them: CRuby's
+   interpolation uses a String value as it stands (objtostring's own fast
+   path) and never calls to_s on it, so a reopened String#to_s does not
+   change `"t=#{"ab"}"`. The rewrite cannot be taken back, so it waits for
+   settled types, as desugar_symbol_string_methods does. */
+int desugar_interp_reopened_to_s(Compiler *c) {
+  if (g_infer_optimistic) return 0;
+  const char *const names[] = { "Integer", "Float", "Symbol" };
+  const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL };
+  int own[3], any = 0;
+  for (int k = 0; k < 3; k++) {
+    int ci = comp_class_index(c, names[k]);
+    own[k] = ci >= 0 && comp_method_in_chain(c, ci, "to_s", NULL) >= 0;
+    any |= own[k];
+  }
+  if (!any) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_InterpolatedStringNode, id) {
+    int pn = 0;
+    const int *parts = nt_arr(nt, id, "parts", &pn);
+    for (int k = 0; k < pn; k++) {
+      if (nt_kind(nt, parts[k]) != NK_EmbeddedStatementsNode) continue;
+      int st = nt_ref(nt, parts[k], "statements");
+      int bn = 0;
+      const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+      int expr = bn > 0 ? body[bn - 1] : -1;
+      if (expr < 0) continue;
+      TyKind t = infer_type(c, expr);
+      int hit = 0;
+      for (int j = 0; j < 3; j++) if (own[j] && t == kinds[j]) hit = 1;
+      if (!hit) continue;
+      int tsc = nt_new_node(nt, "CallNode");
+      if (tsc < 0) continue;
+      nt_node_set_str(nt, tsc, "name", "to_s");
+      nt_node_set_ref(nt, tsc, "receiver", expr);
+      nt_node_set_ref(nt, tsc, "arguments", -1);
+      nt_node_set_ref(nt, tsc, "block", -1);
+      comp_grow_node_arrays(c);
+      c->nscope[tsc] = c->nscope[expr];
+      int *nb = malloc(sizeof *nb * (size_t)bn);
+      if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memcpy(nb, body, sizeof *nb * (size_t)bn);
+      nb[bn - 1] = tsc;
+      nt_node_set_arr(nt, st, "body", nb, bn);
+      free(nb);
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
 int desugar_array_at(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
