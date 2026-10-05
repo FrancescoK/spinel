@@ -652,8 +652,8 @@ force_encoding_spec__008	ERROR
 force_encoding_spec__009	ERROR
 force_encoding_spec__010	FAIL
 force_encoding_spec__011	PASS
-freeze_spec__001	FAIL
-freeze_spec__002	PASS
+freeze_spec__001	PASS
+freeze_spec__002	FAIL
 freeze_spec__003	PASS
 getbyte_spec__001	PASS
 getbyte_spec__002	PASS
