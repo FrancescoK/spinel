@@ -133,6 +133,7 @@ typedef enum {
   PA_NATIVE,      /* a native class's C binding */
   PA_ARITY,       /* the call's count is refused: ArgumentError */
   PA_SYNTH_ENUM,  /* a Struct's synthesized each/each_pair: an Enumerator */
+  PA_STRUCT_SET,  /* a Struct's builtin member write */
   PA_BUILTIN,     /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
   PA_TRIAL        /* an arm only an emission can decide: the call re-entered as the
                      builtin it is, kept unless it raises (key PA_KEY_TRIAL + its
@@ -263,6 +264,7 @@ const PolyPlan *cplan_poly(Compiler *c, int id);
    receiver form). Cheaper: the builtin families and trials, which only the
    --plan-check shadow compares, are left out. */
 const PolyPlan *cplan_poly_arms(Compiler *c, int id);
+int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc);
 /* A plan the caller keeps across emissions that may resolve others (a
    resolve outside the memo reuses one buffer); cplan_poly_free drops it. */
 PolyPlan *cplan_poly_copy(const PolyPlan *p);

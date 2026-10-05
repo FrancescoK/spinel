@@ -8648,6 +8648,8 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, ";");
       tvraw = tv;
     }
+    char obj[32]; snprintf(obj, sizeof obj, "_t%d", tw);
+    emit_frozen_obj_guard(c, ty_object_class(rt), obj, b);
     for (int i = 0; i < sc->nmembers; i++) {
       buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%lldLL))"
                     "||sp_rbval_eql_key(_t%d,sp_box_str(\"%s\"))){ _t%d->iv_%s = ",
@@ -12049,12 +12051,13 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
      Skip Fiber/Fiber.current storage receivers (handled later). */
   /* A user class that takes `[]=` with two arguments owns the name: the call
      goes to the class dispatch, whose builtin arm re-enters here for a real
-     Array or Hash. Taking it here stored into a boxed user object as if it
+     Array or Hash. A Struct's builtin writer needs its class arm too.
+     Taking it here stored into a boxed user object as if it
      were a hash and never ran the class's method (#4879). */
   int user_aset = 0;
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !user_aset; kk++)
-      if (comp_poly_arm_defines_n(c, kk, "[]=", 2)) user_aset = 1;
+      if (comp_poly_arm_defines_n(c, kk, "[]=", 2) || cplan_struct_aset(c, kk, name, argc)) user_aset = 1;
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !user_aset &&
       !sp_is_fiber_storage_recv(nt, recv)) {
     /* arr[range] = rhs on a poly receiver: a splice over the range's span. */
