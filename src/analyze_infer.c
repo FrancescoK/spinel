@@ -6495,6 +6495,31 @@ static TyKind infer_call_inner(Compiler *c, int id) {
            sp_streq(c->classes[k].name, "Time")))
         aci = k;
     }
+    /* a program object's alias of an attr_reader is that reader: rename
+       the call to it, so the name every object answers (`alias to_s
+       wrapped_string`) reads the ivar rather than Object's own method */
+    if (aci < 0) {
+      int oci = -1;
+      if (recv >= 0) { TyKind ort = infer_type(c, recv); if (ty_is_object(ort)) oci = ty_object_class(ort); }
+      else { int si = id < c->nt->count ? c->nscope[id] : -1; oci = si >= 0 ? c->scopes[si].class_id : -1; }
+      if (oci >= 0 && oci < c->nclasses && c->classes[oci].naliases > 0 &&
+          !is_builtin_reopen(c->classes[oci].name) &&
+          comp_method_in_chain(c, oci, name, NULL) < 0) {
+        const char *rn = comp_resolve_alias(c, oci, name);
+        /* not where a subclass defines either name: over the alias, or
+           over the reader the alias captured, which the renamed call would
+           reach instead; nor for an alias whose visibility is its own */
+        int over = 0;
+        for (int k = 0; k < c->nclasses && !over; k++)
+          if (k != oci && is_descendant(c, k, oci) &&
+              (comp_method_in_class(c, k, name) >= 0 || (rn && comp_method_in_class(c, k, rn) >= 0))) over = 1;
+        if (!over && rn && !sp_streq(rn, name) && comp_reader_in_chain(c, oci, rn, NULL) &&
+            comp_method_vis_in_chain(c, oci, name) == SP_VIS_PUBLIC) {
+          nt_node_set_str((NodeTable *)nt, id, "name", rn);
+          name = nt_str(nt, id, "name");
+        }
+      }
+    }
     /* a call already resolved to a captured builtin keeps it: its name is
        the builtin's now, which the class may alias to its own method */
     if (aci >= 0 && c->classes[aci].naliases > 0 && !nt_int(nt, id, "builtin_only", 0)) {
