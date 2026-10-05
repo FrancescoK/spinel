@@ -1536,9 +1536,18 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       if (cat == TY_NIL && elem_nil_sentinel(c, recv, rt) && !elem_nil_marked(c, recv, rt))
         buf_printf(b, " if (sp_%sArray_may_nil(_t%d))", k, ta);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", ti, ti, k, ta, ti);
-      buf_puts(b, " if (sp_poly_eq(");
-      emit_elem_boxed_text(c, recv, rt, arr, el, b);
-      buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
+      /* the predicates test `pattern === element` (a boxed Class, Range or
+         Regexp is no element's equal); count compares by == */
+      if (is_quantifier(name)) {
+        buf_printf(b, " if (sp_poly_case_eq(_t%d, ", tv);
+        emit_elem_boxed_text(c, recv, rt, arr, el, b);
+        buf_printf(b, ")) _t%d++;", tc);
+      }
+      else {
+        buf_puts(b, " if (sp_poly_eq(");
+        emit_elem_boxed_text(c, recv, rt, arr, el, b);
+        buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
+      }
     }
     else if (rt == TY_FLOAT_ARRAY && elem_nil_sentinel(c, recv, rt))
       /* a nil Float needle is the sentinel, a NaN that == never meets */
