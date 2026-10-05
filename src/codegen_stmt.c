@@ -10693,17 +10693,24 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       int tg = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb);
       emit_expr(c, grecv, &rb);
-      emit_indent(b, indent); buf_puts(b, "{ ");
-      emit_ctype(c, comp_ntype(c, grecv), b);
-      buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
+      /* declared at the statement's own level, not inside a block of its
+         own: the statement may root a temp of its own from this one, and a
+         method's root frame declares such temps at the top of the body,
+         where a block-scoped name is not visible (#7343) */
+      /* ... and ahead of what the statement hoists: its prelude is flushed
+         before the statement's own text, so the temp goes into the prelude
+         when there is one */
+      Buf *db = g_pre ? g_pre : b;
+      emit_indent(db, g_pre ? g_indent : indent);
+      emit_ctype(c, comp_ntype(c, grecv), db);
+      buf_printf(db, " _t%d = %s; SP_GC_ROOT(_t%d); if (_t%d == NULL) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));\n",
                  tg, rb.p ? rb.p : "NULL", tg, tg, nt_str(nt, id, "name"));
       free(rb.p);
       int slot = view_bind(grecv, "_t%d", tg);
       int sv = g_ivar_nil_guarded_id; g_ivar_nil_guarded_id = id;
-      emit_stmt_inner(c, id, b, indent + 1);
+      emit_stmt_inner(c, id, b, indent);
       g_ivar_nil_guarded_id = sv;
       view_unbind(slot);
-      emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
     if (grecv >= 0) {
