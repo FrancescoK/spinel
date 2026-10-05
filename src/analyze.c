@@ -24639,6 +24639,11 @@ static void nn_visit_children_generic(Compiler *c, int id, NNF *f, int ctx) {
   nn_replay(f, mark, ctx);
 }
 
+static int nn_ptr_cmp(const void *a, const void *b) {
+  uintptr_t x = (uintptr_t)*(LocalVar *const *)a, y = (uintptr_t)*(LocalVar *const *)b;
+  return (x > y) - (x < y);
+}
+
 /* The kills of a loop, replayed on the facts at its entry: a dry walk
    collects every write and call in it. `i += 1` keeps i non-nil and
    non-negative when every write of i in the loop is one. */
@@ -24649,18 +24654,24 @@ static void nn_loop_entry(Compiler *c, int id, NNF *f, int ctx) {
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) { NNF x; memset(&x, 0, sizeof x); nn_visit(c, nt_ref_at(nt, id, i), &x, ctx); }
   nn_dry = sv;
+  /* the locals some write in the loop does not increment, gathered once:
+     asked again for every write, a long loop body cost its writes squared */
+  LocalVar **plain = (LocalVar **)malloc(sizeof(LocalVar *) * (size_t)(nn_nlog - mark + 1));
+  int np = 0;
+  for (int j = mark; j < nn_nlog; j++)
+    if (nn_log[j].kind == NN_LOG_VAR && !nn_log[j].incr) plain[np++] = nn_log[j].lv;
+  qsort(plain, (size_t)np, sizeof(LocalVar *), nn_ptr_cmp);
   for (int i = mark; i < nn_nlog; i++) {
     if (nn_log[i].kind == NN_LOG_CALL) { nn_call_kill(f, ctx, 0); continue; }
     if (nn_log[i].kind == NN_LOG_IVAR) { nn_kill_rel_slot(f, nn_log[i].slot); continue; }
     LocalVar *lv = nn_log[i].lv;
-    int incr = 1;
-    for (int j = mark; j < nn_nlog; j++)
-      if (nn_log[j].kind == NN_LOG_VAR && nn_log[j].lv == lv && !nn_log[j].incr) incr = 0;
+    int incr = !bsearch(&lv, plain, (size_t)np, sizeof(LocalVar *), nn_ptr_cmp);
     int had = nn_has(f, lv), hadnn = nn_hasnn(f, lv);
     nn_kill(f, lv);
     if (incr && had) nn_add(f, lv);
     if (incr && hadnn) nn_addnn(f, lv);
   }
+  free(plain);
   nn_nlog = mark;
 }
 
