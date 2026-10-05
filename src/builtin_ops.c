@@ -83,10 +83,10 @@ static const BuiltinOp bop_rows[] = {
     "sp_box_str(sp_str_dump(sp_poly_recv_s($r, \"dump\")))", 0, 0, 0, 1 },
   { TY_POLY, "undump", 0, 0, BF_ANY, TY_POLY, BOPE_TEMPLATE,
     "sp_box_str(sp_str_undump(sp_poly_recv_s($r, \"undump\")))", 0, 0, 0, 1 },
-  { TY_POLY, "upcase", 1, 2, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
-  { TY_POLY, "downcase", 1, 2, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "1" },
-  { TY_POLY, "capitalize", 1, 2, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
-  { TY_POLY, "swapcase", 1, 2, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
+  { TY_POLY, "upcase", 1, BOP_ARGC_ANY, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
+  { TY_POLY, "downcase", 1, BOP_ARGC_ANY, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "1" },
+  { TY_POLY, "capitalize", 1, BOP_ARGC_ANY, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
+  { TY_POLY, "swapcase", 1, BOP_ARGC_ANY, BF_NONE, TY_POLY, BOPE_POLY_CASE_OPTIONS, "0" },
 
   /* Random's scalar readers and byte string, also used by its poly face. */
   { TY_RANDOM, "rand", 0, 0, BF_ANY, TY_FLOAT, BOPE_TEMPLATE, "sp_Random_rand_float($r)", 0, 0, 0 },
