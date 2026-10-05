@@ -3519,9 +3519,15 @@ repr-check-test: $(SPINEL)
 	@tools/repr_check.sh
 
 # nil-check (#7444): the analysis's nil fact held against the answers the
-# codegen helpers give today. Over the corpus nothing may be HELPER-ONLY,
-# and the C must be the same with the flag.
+# codegen helpers give today. #7444's shapes (test/nil_check/) must report
+# as recorded; over the corpus nothing may be HELPER-ONLY, and the C must be
+# the same with the flag.
 nil-check-test: $(SPINEL)
+	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-nil-check-shapes.XXXXXX"); \
+	$(SPINEL) -c --nil-check test/nil_check/shapes.rb -o "$$tmp/shapes.c" 2>&1 | grep '^nil-check:' > "$$tmp/got"; \
+	if diff -u test/nil_check/shapes.nil-check "$$tmp/got"; then echo "nil-check: shapes pass"; \
+	else echo "nil-check: shapes FAIL"; rm -rf "$$tmp"; exit 1; fi; \
+	rm -rf "$$tmp"
 	@tools/nil_check.sh
 
 cident: $(SPINEL)
