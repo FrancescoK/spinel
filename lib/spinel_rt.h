@@ -10699,14 +10699,15 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
     return FALSE;
   }
   /* Range#eql? compares endpoints with eql?, so an Integer bound is not eql?
-     to the same Float bound. A mixed literal like (0..1.0) is deliberately
-     carried on the integer representation (see the range literal rule in the
-     analyzer), which cannot tell that pair apart, so an integer Range answers
-     eql? only for itself; a String or Float Range has no such ambiguity and
-     compares by value through ==. */
+     to the same Float bound. A mixed literal like (0..1.0) is carried on the
+     integer representation with its Float end marked (fe), which
+     sp_range_eql compares, so two Integer Ranges compare by value; a String
+     or Float Range compares by value through ==. */
   if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
-      a.cls_id == SP_BUILTIN_RANGE && b.cls_id == SP_BUILTIN_RANGE)
-    return a.v.p == b.v.p;
+      a.cls_id == SP_BUILTIN_RANGE && b.cls_id == SP_BUILTIN_RANGE) {
+    if (a.v.p == b.v.p) return TRUE;
+    return a.v.p && b.v.p && sp_range_eql(*(sp_Range *)a.v.p, *(sp_Range *)b.v.p);
+  }
   return sp_poly_eq(a, b);
 }
 /* equal? for a poly value: object identity. Immediates (int, symbol, nil,
