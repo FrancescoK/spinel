@@ -114,6 +114,7 @@ int is_open_constructor(const char *n); /* new open */
 int is_succ_alias(const char *n); /* next succ */
 int is_path_reader(const char *n); /* path to_path */
 int is_io_position(const char *n); /* pos tell */
+int is_rewind_name(const char *n); /* rewind: an Enumerator's restart, or a stream's seek to its start */
 int is_sort_family(const char *n); /* sort sort! */
 int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */

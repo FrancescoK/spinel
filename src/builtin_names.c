@@ -420,6 +420,10 @@ int is_io_position(const char *n) {
   return sp_streq(n, "tell") || sp_streq(n, "pos");
 }
 
+int is_rewind_name(const char *n) {
+  return sp_streq(n, "rewind");
+}
+
 int is_byte_codepoint_each(const char *n) {
   return sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint");
 }
