@@ -18385,10 +18385,11 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || nil_answers_call(nm)) return 0;
-  TyKind rt = comp_ntype(c, recv);
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
   if (ty_is_object(rt)) {
     /* a user object slot: only a method of its class, as for a param */
-    if (comp_ty_value_obj(c, rt)) return 0;
+    if (rr.kind == RK_VOBJ) return 0;
     int ocid = ty_object_class(rt);
     if (comp_method_in_chain(c, ocid, nm, NULL) < 0 && !comp_reader_in_chain(c, ocid, nm, NULL))
       return 0;
@@ -18747,7 +18748,8 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   if (nt_str(nt, id, "call_operator") && sp_streq(nt_str(nt, id, "call_operator"), "&.")) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || nil_answers_call(nm)) return 0;
-  TyKind rt = comp_ntype(c, recv);
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
   if (nt_kind(nt, recv) == NK_InstanceVariableReadNode) {
     if (id == g_ivar_nil_guarded_id) return 0;
     return ivar_nil_recv_guard(c, id, recv_out);
@@ -18755,7 +18757,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   if (nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
     /* a global some write sets to nil (`$g = nil`), as a local below */
     const char *gn = nt_str(nt, recv, "name");
-    if (!gn || !ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+    if (!gn || !ty_is_object(rt) || rr.kind == RK_VOBJ) return 0;
     int gcid = ty_object_class(rt);
     if (comp_method_in_chain(c, gcid, nm, NULL) < 0 && !comp_reader_in_chain(c, gcid, nm, NULL) &&
         !nil_guard_writer(c, gcid, nm))
@@ -18771,7 +18773,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   }
   if (nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode) {
     /* a user method's own nil result (`find(1).v`, `M.box.hello`) */
-    if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+    if (!ty_is_object(rt) || rr.kind == RK_VOBJ) return 0;
     int rcid = ty_object_class(rt);
     if (comp_method_in_chain(c, rcid, nm, NULL) < 0 && !comp_reader_in_chain(c, rcid, nm, NULL) &&
         !nil_guard_writer(c, rcid, nm))
@@ -18785,7 +18787,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   Scope *sc = comp_scope_of(c, recv);
   const char *ln = nt_str(nt, recv, "name");
   LocalVar *lv = sc && ln ? scope_local(sc, ln) : NULL;
-  if (!lv || !ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+  if (!lv || !ty_is_object(rt) || rr.kind == RK_VOBJ) return 0;
   if (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)) return 0;
   int cid = ty_object_class(rt);
   if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL) &&
@@ -18951,9 +18953,10 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   int op = 0;
   for (int i = 0; nm && ops[i] && !op; i++) op = sp_streq(nm, ops[i]);
   if (!op || !read_rebound_by(c, recv, args)) return 0;
-  TyKind t = comp_ntype(c, recv);
+  Repr tr = repr_of(c, recv);
+  TyKind t = tr.as_ty;
   if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL ||
-      ty_is_struct_valued(t) || comp_ty_value_obj(c, t)) return 0;
+      tr.kind == RK_STRUCT || tr.kind == RK_VOBJ) return 0;
   int tn = ++g_tmp;
   Buf rb = expr_buf(c, recv);
   emit_indent(g_pre, g_indent);
