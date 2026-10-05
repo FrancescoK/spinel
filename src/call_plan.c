@@ -836,6 +836,7 @@ const CallPlan *cplan_refuse(Compiler *c, int id) {
 
 static void cpoly_family(PolyPlan *p, int *cap, int fam);
 static void cpoly_trial(PolyPlan *p, int *cap, int t);
+static void cpoly_default_trial(Compiler *c, int id, int argc, PolyPlan *p, int *cap, int t);
 static int cpoly_has_family(const PolyPlan *p, int fam);
 static int cpoly_str_trial(Compiler *c, int id, const char *name, int argc, const int *argv,
                            const TyKind *atmp_ty, TyKind ret, const PolyPlan *p);
@@ -1104,13 +1105,13 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
   cpoly_cases_n(c, id, name, argc, argv, ret, atmp_ty, &ps, splat_a, p, cap);
   if (cpoly_has_family(p, PB_ND_GENERIC) && !cpoly_has_family(p, PB_ND_REPLACE) &&
       !cpoly_has_family(p, PB_ND_ROUND) && !cpoly_has_family(p, PB_ND_NUM))
-    cpoly_trial(p, cap, PT_GENERIC_TAIL);
+    cpoly_default_trial(c, id, argc, p, cap, PT_GENERIC_TAIL);
   /* the families that write the switch's `default:` themselves */
   static const int dflt[] = { PB_ND_GENERIC, PB_ND_FIRSTN, PB_ND_KEYS, PB_ND_MERGE, PB_ND_AREF2, PB_ND_AREF,
                               PB_PUSH, PB_INCLUDE_CASES, PB_STRFTIME, PB_PRED_N };
   int has_default = 0;
   for (size_t i = 0; i < sizeof dflt / sizeof dflt[0]; i++) has_default |= cpoly_has_family(p, dflt[i]);
-  if (!is_setter_val && !has_default) cpoly_trial(p, cap, PT_DEFAULT_N);
+  if (!is_setter_val && !has_default) cpoly_default_trial(c, id, argc, p, cap, PT_DEFAULT_N);
 }
 
 /* The arms the user-class loop of a poly dispatch with arguments writes. */
@@ -1263,9 +1264,35 @@ static void cpoly_family(PolyPlan *p, int *cap, int fam) {
   cpoly_add(p, cap, PA_BUILTIN, PA_KEY_BUILTIN + fam, -1, TY_UNKNOWN, PC_SAME);
 }
 
-/* a trial arm the dispatch offers: what it answers is the emission's */
+/* a trial arm the dispatch offers: whether it is kept is the emission's */
 static void cpoly_trial(PolyPlan *p, int *cap, int t) {
   cpoly_add(p, cap, PA_TRIAL, PA_KEY_TRIAL + t, -1, TY_UNKNOWN, PC_SAME);
+}
+/* ... a builtin default trial, with the answer it re-enters the call for */
+static void cpoly_default_trial(Compiler *c, int id, int argc, PolyPlan *p, int *cap, int t) {
+  cpoly_add(p, cap, PA_TRIAL, PA_KEY_TRIAL + t, -1, cplan_poly_default_ty(c, id, argc), PC_SAME);
+}
+
+TyKind cplan_builtin_answer(const Compiler *c, int id) {
+  return c->builtin_ans && id >= 0 && id < c->node_cap ? c->builtin_ans[id] : TY_UNKNOWN;
+}
+
+/* The builtin answer the analysis recorded for a container or String read
+   (poly_builtin_ty) first: the narrower question, which the read's other
+   arms were built against. `to_s` / `inspect` answer a String on every
+   builtin receiver, with or without an argument (Integer#to_s(base)); the
+   analysis types them by the object protocol and never records the builtin
+   answer. respond_to? is every value's: a class overriding it gets an arm,
+   and any other value the answer the program would give without the
+   override. */
+TyKind cplan_poly_default_ty(Compiler *c, int id, int argc) {
+  if (id < 0 || id >= c->node_cap) return TY_UNKNOWN;
+  const char *name = nt_str(c->nt, id, "name");
+  TyKind bt = c->poly_builtin_ty ? c->poly_builtin_ty[id] : TY_UNKNOWN;
+  if (bt == TY_UNKNOWN && argc <= 1 && name && is_text_conversion(name)) bt = TY_STRING;
+  if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && name && sp_streq(name, "respond_to?")) bt = TY_BOOL;
+  if (bt == TY_UNKNOWN) bt = cplan_builtin_answer(c, id);
+  return bt;
 }
 
 static int cpoly_has_family(const PolyPlan *p, int fam) {
@@ -1459,8 +1486,8 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
        the builtin surface's, and the raise when it declines */
     int done = n1 > n0;
     for (int f = PB_D_ENUM_EACH; f <= PB_D_TO_H; f++) done |= cpoly_has_family(p, f);
-    if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_trial(p, &cap, PT_ARRAY_FALLBACK);
-    if (!done) cpoly_trial(p, &cap, PT_DEFAULT0);
+    if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_default_trial(c, id, 0, p, &cap, PT_ARRAY_FALLBACK);
+    if (!done) cpoly_default_trial(c, id, 0, p, &cap, PT_DEFAULT0);
   }
   else cpoly_user_arms_n(c, id, name, argc, nt_arr(c->nt, args, "arguments", &argc), p->ret, p, full);
 }

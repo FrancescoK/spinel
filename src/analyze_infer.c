@@ -165,6 +165,45 @@ TyKind an_builtin_answer(Compiler *c, int id) {
   return t;
 }
 
+/* The builtin answers the emission's builtin arms ask, recorded once the
+   types settle, so codegen reads them where it used to re-infer the call
+   mid-emission (#7100). Each is the question one arm asks:
+   - a call on a degraded receiver: the answer alone, as the poly
+     dispatch's default trials (cplan_poly_default_ty) and the why chain's
+     candidate test (why_poly_candidate) ask it;
+   - a call on a user object, of a name a user class owns: the answer with
+     the receiver read as poly, which is how the poly dispatch reads it when
+     it re-enters the call with the receiver boxed (#4023) or with a poly
+     value as an instance_eval self. A pin is not a no-op on a receiver that
+     is already poly (it turns off the memo and the face-sensitive rules),
+     so that one is asked as it is;
+   - a typed IO's call an IO reopening defines: the answer with the
+     reopenings out of sight (emit_io_builtin_call). */
+void an_record_builtin_answers(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (id >= c->node_cap) continue;
+    const char *name = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!name || recv < 0) continue;
+    TyKind rt = comp_ntype(c, recv);
+    int ks[16];
+    if (rt == TY_POLY || (ty_degraded(rt) && an_user_defines_or_reads(c, name)))
+      c->builtin_ans[id] = an_builtin_answer(c, id);
+    else if (ty_is_object(rt) && an_user_defines_or_reads(c, name)) {
+      an_face_push(recv, TY_POLY);
+      c->builtin_ans[id] = an_builtin_answer(c, id);
+      an_face_pop();
+    }
+    else if (rt == TY_IO && io_reopen_defs(c, name, 0, ks, 16) > 0) {
+      int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
+      g_io_skip_reopen = 1; g_io_skip_node = id;
+      c->builtin_ans[id] = an_builtin_answer(c, id);
+      g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
+    }
+  }
+}
+
 /* What call `id`, on a chain from a yield, answers at a site whose receiver
    is `kind`, for a site the per-site table (ty_recv_builtin_result) does not
    answer. Once a reopen answers one site (`class Array; def size = "arr";
