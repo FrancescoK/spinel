@@ -15320,6 +15320,7 @@ char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
+  if (g_dump_repr) { repr_dump(c); exit(0); }
   if (g_check_traits) exit(ty_traits_check(c) ? 1 : 0);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
   /* Only stack String slots selected by the existing setjmp policy seed

@@ -434,3 +434,131 @@ void repr_seal(Compiler *c) {
 }
 
 int repr_sealed(void) { return repr_sealed_flag; }
+
+/* ---- --dump-repr (#7501) ----
+   One line per slot with the representation chosen for it, sorted, so the
+   dumps two compilers give for one program can be diffed. A slot that
+   became a shared handle or a box, or left a by-value layout, costs at run
+   time without changing any output (#7482), and this is where it shows.
+   Locals, parameters, globals and constants are LocalVars and read through
+   repr_of_slot. An ivar and a method's value are not: they read their own
+   flags by the same rules. The dump only reads, and the compile stops after
+   it. */
+int g_dump_repr = 0;
+
+static const char *repr_kind_name(int k) {
+  static const char *const names[] = {
+    "none", "scalar", "sentinel", "struct", "vobj", "ptr", "strbuf", "boxed",
+  };
+  return k >= 0 && k <= RK_BOXED ? names[k] : "?";
+}
+
+/* an ivar's slot: every Integer ivar reads nil until written, as
+   repr_nil_scalar answers for its reads; a Float one when some write can
+   leave the sentinel */
+static Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
+  const ClassInfo *ci = &c->classes[cid];
+  Repr r;
+  memset(&r, 0, sizeof r);
+  r.ty = r.as_ty = ci->ivar_types[iv];
+  r.narrowed = TY_UNKNOWN;
+  r.kind = (unsigned char)repr_kind_of_type(c, r.ty);
+  if (r.ty == TY_INT || (r.ty == TY_FLOAT && ci->ivar_nullable_int[iv])) {
+    r.kind = RK_SENTINEL;
+    r.may_nil = 1;
+  }
+  if (ty_is_object(r.ty) && nil_fact_ivar(c, cid, ci->ivars[iv])) r.may_nil = 1;
+  if (r.ty == TY_STRBUF && ci->ivar_str_shared[iv]) r.handle = 1;
+  r.dyn_cls = repr_dyn_cls(c, r.ty);
+  return r;
+}
+
+/* a method's value: its nilable scalar is the sentinel */
+static Repr repr_of_ret(const Compiler *c, const Scope *sc) {
+  Repr r;
+  memset(&r, 0, sizeof r);
+  r.ty = r.as_ty = sc->ret;
+  r.narrowed = TY_UNKNOWN;
+  r.kind = (unsigned char)repr_kind_of_type(c, r.ty);
+  if ((r.ty == TY_INT || r.ty == TY_FLOAT) && (sc->ret_nullable_int || sc->ret_rbs_nilable)) {
+    r.kind = RK_SENTINEL;
+    r.may_nil = 1;
+  }
+  if (ty_is_object(r.ty) && sc->ret_obj_may_nil) r.may_nil = 1;
+  r.dyn_cls = repr_dyn_cls(c, r.ty);
+  return r;
+}
+
+/* a type's name, with the class of a user object or of an object array */
+static void repr_dump_ty(const Compiler *c, TyKind t, char *out, size_t n) {
+  TyKind e = ty_is_obj_array(t) ? ty_array_elem(t) : t;
+  if (ty_is_object(e) && ty_object_class(e) < c->nclasses)
+    snprintf(out, n, "%s%s", ty_is_obj_array(t) ? "obj_array:" : "obj:",
+             c->classes[ty_object_class(e)].name);
+  else snprintf(out, n, "%s", ty_name(t));
+}
+
+typedef struct { char **v; int n, cap; } ReprLines;
+
+static void repr_dump_line(const Compiler *c, ReprLines *ls, const char *where, Repr r) {
+  char ty[256], line[1024];
+  repr_dump_ty(c, r.ty, ty, sizeof ty);
+  snprintf(line, sizeof line, "%s: %s ty=%s%s%s%s", where, repr_kind_name(r.kind), ty,
+           r.handle ? " handle" : "", r.may_nil ? " may_nil" : "", r.dyn_cls ? " dyn_cls" : "");
+  if (ls->n == ls->cap) {
+    ls->cap = ls->cap ? ls->cap * 2 : 64;
+    ls->v = realloc(ls->v, (size_t)ls->cap * sizeof *ls->v);
+  }
+  ls->v[ls->n++] = strdup(line);
+}
+
+static int repr_line_cmp(const void *a, const void *b) {
+  return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* A method's name as the dump prints it: Class#m, Class.m for a class
+   method, <main> for the top level, and a mark for each copy of a method
+   another scope also emits. */
+static void repr_scope_label(const Compiler *c, const Scope *sc, char *out, size_t n) {
+  const char *cls = sc->class_id >= 0 && sc->class_id < c->nclasses ? c->classes[sc->class_id].name : NULL;
+  snprintf(out, n, "%s%s%s%s%s%s", cls ? cls : "", cls ? (sc->is_cmethod ? "." : "#") : "",
+           sc->name ? sc->name : "<main>", sc->is_proc_form ? "(proc)" : "",
+           sc->is_include_copy ? "(include)" : "", sc->is_extend_copy ? "(extend)" : "");
+}
+
+void repr_dump(const Compiler *c) {
+  ReprLines ls = {0};
+  char where[1024], label[512];
+  for (int si = 0; si < c->nscopes; si++) {
+    const Scope *sc = &c->scopes[si];
+    /* a method nothing calls is not run */
+    if (sc->def_node >= 0 && !sc->reachable) continue;
+    repr_scope_label(c, sc, label, sizeof label);
+    for (int k = 0; k < sc->nlocals; k++) {
+      const LocalVar *lv = &sc->locals[k];
+      if (!lv->name) continue;
+      snprintf(where, sizeof where, "%s %s %s", lv->is_param ? "param" : "local", label, lv->name);
+      repr_dump_line(c, &ls, where, repr_of_slot(c, lv));
+    }
+    if (sc->def_node >= 0) {
+      snprintf(where, sizeof where, "ret %s", label);
+      repr_dump_line(c, &ls, where, repr_of_ret(c, sc));
+    }
+  }
+  for (int cid = 0; cid < c->nclasses; cid++)
+    for (int iv = 0; iv < c->classes[cid].nivars; iv++) {
+      snprintf(where, sizeof where, "ivar %s %s", c->classes[cid].name, c->classes[cid].ivars[iv]);
+      repr_dump_line(c, &ls, where, repr_of_ivar(c, cid, iv));
+    }
+  for (int k = 0; k < c->ngvars; k++) {
+    snprintf(where, sizeof where, "gvar $%s", c->gvars[k].name);
+    repr_dump_line(c, &ls, where, repr_of_slot(c, &c->gvars[k]));
+  }
+  for (int k = 0; k < c->nconsts; k++) {
+    snprintf(where, sizeof where, "const %s", c->consts[k].name);
+    repr_dump_line(c, &ls, where, repr_of_slot(c, &c->consts[k]));
+  }
+  qsort(ls.v, (size_t)ls.n, sizeof *ls.v, repr_line_cmp);
+  for (int k = 0; k < ls.n; k++) { puts(ls.v[k]); free(ls.v[k]); }
+  free(ls.v);
+}
