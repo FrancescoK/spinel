@@ -2516,9 +2516,13 @@ int emit_strbuf_call_handle(Compiler *c, int v, Buf *b) {
   /* a call that ran first is read from its temp, the String it answered */
   if (arg_ran_first(v, 0) || !strbuf_call_answers_handle(c, v)) return 0;
   int sv = view_push_repr(c, v, VR_STRBUF_BOX, 1);
+  /* a boxed receiver's reader dispatch answers the handle itself */
+  int pr = strbuf_poly_reader_handle(c, v);
+  int st = pr ? view_push(c, v, TY_STRBUF) : -1;
   buf_puts(b, "(");
   emit_expr(c, v, b);
   buf_puts(b, ")");
+  if (pr) view_pop(c, st);
   view_pop(c, sv);
   return 1;
 }
@@ -2537,7 +2541,11 @@ void emit_boxed_str_operand(Compiler *c, int node, Buf *b) {
 int strbuf_fresh_renders_string(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   if (r.strbuf_src != RS_FRESH) return 0;
-  return !(r.handle && nt_kind(c->nt, v) == NK_CallNode && strbuf_marked_yields_handle(c, v));
+  if (!(r.handle && nt_kind(c->nt, v) == NK_CallNode && strbuf_marked_yields_handle(c, v))) return 1;
+  /* a call answering its receiver (`"q".freeze`, `s << x`) renders the
+     handle only on a receiver that is one */
+  int rc = nt_ref(c->nt, v, "receiver");
+  return rc >= 0 && repr_of(c, rc).kind != RK_STRBUF && !strbuf_call_answers_handle(c, rc);
 }
 /* --share-strings: is `v` a call of a proc, a lambda or a Method (whose
    answer comes back boxed through _sp_proc_poly_ret)? */
@@ -2666,7 +2674,11 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   if (recv >= 0 && repr_share_rule(c) && !arg_ran_first(recv, 0) && repr_of(c, recv).handle &&
       strbuf_call_answers_handle(c, recv)) {
     Buf rb3; memset(&rb3, 0, sizeof rb3);
+    /* (a boxed receiver's reader dispatch typed as the handle) */
+    int pr = strbuf_poly_reader_handle(c, recv);
+    int st = pr ? view_push(c, recv, TY_STRBUF) : -1;
     emit_expr(c, recv, &rb3);
+    if (pr) view_pop(c, st);
     int fit = rb3.p && strlen(rb3.p) + 4 <= cap;
     if (fit) snprintf(out, cap, "(%s)", rb3.p);
     free(rb3.p);
