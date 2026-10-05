@@ -16213,7 +16213,14 @@ static int an_param_appended_deep(Compiler *c, int mi, int j) {
    the stored String. The same demand the container-store rules make when a
    shared String is put IN; here the evidence is what is done to what comes
    OUT. Answers -1 when `an` is no element read of a container, else whether
-   it changed anything. */
+   it changed anything.
+
+   The walk can come back to the same read: a container that stores an
+   element of itself (`@m[to] = @m[from]`) has that read among its stores,
+   and demanding a poly store starts a fresh demand of it, depth and all.
+   That recursed until the stack ran out. A read whose walk is already under
+   way answers 0 -- the walk on the stack covers it. */
+static int *sb_elem_active, sb_elem_nactive, sb_elem_cap;
 static int strbuf_demand_elem_arg(Compiler *c, int an) {
   const NodeTable *nt = c->nt;
   if (an < 0 || nt_kind(nt, an) != NK_CallNode || !container_elem_read_p(nt, an)) return -1;
@@ -16228,17 +16235,32 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
     if (base < 0 || (nt_kind(nt, base) != NK_LocalVariableReadNode &&
                      nt_kind(nt, base) != NK_InstanceVariableReadNode)) return -1; }
   TyKind rt = infer_type(c, rr);
+  const char *cn = NULL;
+  Scope *cs = NULL;
   if (ty_is_array(rt) || ty_is_hash(rt)) {
     if (nt_kind(nt, rr) == NK_LocalVariableReadNode) {
-      const char *cn = nt_str(nt, rr, "name");
-      Scope *cs = cn ? comp_scope_of(c, rr) : NULL;
-      return cn && cs ? strbuf_demand_container_stores(c, cn, cs) : 0;
+      cn = nt_str(nt, rr, "name");
+      cs = cn ? comp_scope_of(c, rr) : NULL;
+      if (!cn || !cs) return 0;
     }
   }
   else if (!container_elem_read_p(nt, rr)) return -1;
+  for (int k = 0; k < sb_elem_nactive; k++)
+    if (sb_elem_active[k] == an) return 0;
+  if (sb_elem_nactive == sb_elem_cap) {
+    int ncap = sb_elem_cap ? sb_elem_cap * 2 : 16;
+    int *na = realloc(sb_elem_active, (size_t)ncap * sizeof(int));
+    if (!na) return 0;
+    sb_elem_active = na; sb_elem_cap = ncap;
+  }
+  sb_elem_active[sb_elem_nactive++] = an;
+  int r;
+  if (cn) r = strbuf_demand_container_stores(c, cn, cs);
   /* an element of an ivar's container, of another element, of a method's
      result: the stores that reach it, as for a mutator through one */
-  return strbuf_container_source_walk(c, rr, 0, SB_DEMAND);
+  else r = strbuf_container_source_walk(c, rr, 0, SB_DEMAND);
+  sb_elem_nactive--;
+  return r;
 }
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
