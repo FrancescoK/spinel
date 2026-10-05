@@ -2225,7 +2225,8 @@ int desugar_int_enum_with_index(Compiler *c) {
    everything. The call becomes the walk itself with a counter beside it:
      (c = off; h.select { |k, v| i = c; c = c + 1; ... })
    A `|pair, i|` block takes `pair = [k, v]` first; transform_values,
-   transform_keys and filter_map on an Array walk one value. each_with_index
+   transform_keys and an Array's filter_map, group_by, partition, min_by,
+   max_by, flat_map, find and find_index walk one value. each_with_index
    is with_index(0), and `h.transform_values.each { }` is the walk itself.
    A block that breaks keeps its shape (the walk's break is not ready), and so
    does one that redoes (its counter would move twice), or an offset that is
@@ -2296,7 +2297,13 @@ int desugar_hash_iter_with_index(Compiler *c) {
                (sp_streq(m, "select") || sp_streq(m, "filter") || sp_streq(m, "reject") ||
                 sp_streq(m, "filter_map") || sp_streq(m, "each") || sp_streq(m, "each_pair"));
     int transform = ty_is_hash(st) && (sp_streq(m, "transform_values") || sp_streq(m, "transform_keys"));
-    int single = transform || (ty_is_array(st) && sp_streq(m, "filter_map"));
+    /* an Array walk that calls its block once per element, in order, and
+       answers from those calls -- the counter numbers them as with_index does */
+    int single = transform || ((ty_is_array(st) || st == TY_POLY) &&
+                 (sp_streq(m, "filter_map") || sp_streq(m, "group_by") || sp_streq(m, "partition") ||
+                  sp_streq(m, "min_by") || sp_streq(m, "max_by") || sp_streq(m, "flat_map") ||
+                  sp_streq(m, "collect_concat") || sp_streq(m, "find") || sp_streq(m, "detect") ||
+                  sp_streq(m, "find_index")));
     if (!pair && !single) continue;
     if (sp_streq(nm, "each")) {
       /* h.transform_values.each { } -> h.transform_values { } */

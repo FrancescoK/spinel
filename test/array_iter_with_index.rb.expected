@@ -1,0 +1,22 @@
+{false => [3, 2], true => [1]}
+[[3], [1, 2]]
+2
+3
+[3, 0, 1, 1, 2, 2]
+[2, 1, 3]
+[1, 4]
+[1, 2]
+[0, 1, 4]
+[3]
+1
+2
+[3, 1]
+{true => [3, 2], false => [1]}
+[1, 4]
+{false => [3, 2], true => [1]}
+[[3], [1, 2]]
+2
+1
+{0 => [[:a, 1]], 1 => [[:b, 2]]}
+[:b, 2]
+NoMethodError: undefined method 'group_by' for an instance of Integer
