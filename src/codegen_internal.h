@@ -133,6 +133,11 @@ extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
 int strbuf_bang_self_local(const Compiler *c, int v);
+int emit_strbuf_call_handle(Compiler *c, int v, Buf *b);
+int strbuf_fresh_renders_string(Compiler *c, int v);
+int implicit_self_reader_cid(Compiler *c, int id);
+int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name,
+                                const char *selfptr, const char *slot, Buf *b);
 void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const char *src, Buf *b);
 /* `REF ||= v` / `REF &&= v` on a shared-handle String slot (codegen_expr.c) */
 void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b);

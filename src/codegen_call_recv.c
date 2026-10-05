@@ -6180,6 +6180,22 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* --share-strings: `h.freeze.equal?(g)` with h a handle slot -- freeze
+       (and itself) answer h's String, so the identity is h's handle against
+       g's; the call still runs for its effect */
+    if (!eq_sblv && repr_share_rule(c) && nt_kind(nt, recv) == NK_CallNode &&
+        nt_ref(nt, recv, "arguments") < 0 && nt_ref(nt, recv, "block") < 0 && nt_str(nt, recv, "name") &&
+        is_self_answer(nt_str(nt, recv, "name"))) {
+      char irefE[192], arefS[192];
+      int inner = nt_ref(nt, recv, "receiver");
+      if (inner >= 0 && strbuf_slot_ref(c, inner, irefE, sizeof irefE) &&
+          strbuf_slot_ref(c, argv[0], arefS, sizeof arefS)) {
+        buf_puts(b, "({ (void)(");
+        emit_expr(c, recv, b);
+        buf_printf(b, "); (sp_bool)(%s == %s); })", irefE, arefS);
+        eq_sblv = 1;
+      }
+    }
     if (!eq_sblv) {
       char arefE[192];
       if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {

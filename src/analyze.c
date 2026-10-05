@@ -16911,6 +16911,120 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
   }
   return ok;
 }
+/* --share-strings: the return tails of `node` (a method's last expression
+   or a `return`'s value), through parentheses and conditionals:
+   SCOPE_RET_FRESH when one answers a String of its own (a literal, a
+   builtin's answer such as `x + "!"` or `File.basename(p)`), so a handle a
+   read before it published is not its answer; SCOPE_RET_HANDLE when one
+   reads a shared handle (a slot, a reader of a shared ivar). nil (a missing
+   branch's too) is neither: the pickup answers nil for it. A bang method on
+   a handle and a write (whose value is its slot) are not fresh; a user
+   method's answer is what its own paths answer, as far as Scope.ret_kinds
+   says so far. */
+/* Does the reader call `node` (`k.n`, or a bare `n` in k's own method)
+   read an ivar that holds the shared handle? */
+static int an_call_reads_shared_ivar(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, node, "receiver") < 0) {
+    Scope *s = comp_scope_of(c, node);
+    if (!s || s->class_id < 0 || s->is_cmethod || nt_ref(nt, node, "block") >= 0) return 0;
+    int a = nt_ref(nt, node, "arguments"), an = 0;
+    if (a >= 0) nt_arr(nt, a, "arguments", &an);
+    return an == 0 && reader_reads_shared_ivar(c, s->class_id, nt_str(nt, node, "name"));
+  }
+  char ivb[300]; int defc = -1;
+  const char *ivn = an_reader_ivar_of(c, node, &defc, ivb, sizeof ivb);
+  int iv = ivn && defc >= 0 ? comp_ivar_index(&c->classes[defc], ivn) : -1;
+  return iv >= 0 && c->classes[defc].ivar_types[iv] == TY_STRBUF && c->classes[defc].ivar_str_shared[iv];
+}
+static int an_tail_kinds(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  switch (nt_kind(nt, node)) {
+  case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode:
+    return SCOPE_RET_FRESH;
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, node) == NK_ParenthesesNode ? nt_ref(nt, node, "body") : node;
+    if (body < 0) return 0;
+    if (nt_kind(nt, body) != NK_StatementsNode) return an_tail_kinds(c, body);
+    int k = 0; const int *st = nt_arr(nt, body, "body", &k);
+    return k > 0 ? an_tail_kinds(c, st[k - 1]) : 0;
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int then = nt_ref(nt, node, "statements");
+    int alt = nt_ref(nt, node, nt_kind(nt, node) == NK_IfNode ? "subsequent" : "else_clause");
+    if (alt >= 0 && nt_kind(nt, alt) == NK_ElseNode) alt = nt_ref(nt, alt, "statements");
+    return an_tail_kinds(c, then) | an_tail_kinds(c, alt);
+  }
+  case NK_CallNode: {
+    if (an_arg_is_shared_handle(c, node) || an_call_reads_shared_ivar(c, node)) return SCOPE_RET_HANDLE;
+    if (bop_share_bang_self(nt_str(nt, node, "name"))) return 0;
+    int mi = cplan_user_fresh(c, node)->mi;
+    return mi >= 0 ? c->scopes[mi].ret_kinds : SCOPE_RET_FRESH;
+  }
+  default:
+    return an_arg_is_shared_handle(c, node) ? SCOPE_RET_HANDLE : 0;
+  }
+}
+/* --share-strings: is `node` a return tail answering a String of its own in
+   a method another of whose paths answers the shared handle? Its value
+   clears the deep-return side channel (emit_expr), so a pickup of the
+   call wraps that String in a handle of its own rather than taking the
+   handle a read inside the method published. */
+int share_ret_clears(Compiler *c, int node) {
+  return c->share_ret_clear && node >= 0 && node < c->share_ret_clear_n && c->share_ret_clear[node];
+}
+/* Mark the tails of t (a body's last value, through parentheses and both
+   arms of a conditional) that answer a String of their own. */
+static void an_mark_fresh_tails(Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  if (t < 0) return;
+  switch (nt_kind(nt, t)) {
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, t) == NK_ParenthesesNode ? nt_ref(nt, t, "body") : t;
+    if (body < 0) return;
+    if (nt_kind(nt, body) != NK_StatementsNode) { an_mark_fresh_tails(c, body); return; }
+    int k = 0; const int *st = nt_arr(nt, body, "body", &k);
+    if (k > 0) an_mark_fresh_tails(c, st[k - 1]);
+    return;
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int alt = nt_ref(nt, t, nt_kind(nt, t) == NK_IfNode ? "subsequent" : "else_clause");
+    if (alt >= 0 && nt_kind(nt, alt) == NK_ElseNode) alt = nt_ref(nt, alt, "statements");
+    an_mark_fresh_tails(c, nt_ref(nt, t, "statements"));
+    an_mark_fresh_tails(c, alt);
+    return;
+  }
+  case NK_StringNode: case NK_InterpolatedStringNode: case NK_XStringNode: case NK_CallNode:
+    if (comp_ntype(c, t) == TY_STRING && an_tail_kinds(c, t) == SCOPE_RET_FRESH) c->share_ret_clear[t] = 1;
+    return;
+  default:
+    return;
+  }
+}
+/* --share-strings, once the return kinds are final: in each method that
+   answers both a String of its own and the shared handle, mark the tails
+   (its body's and its returns') answering a String of their own, whose
+   value clears the deep-return side channel (emit_expr asks
+   share_ret_clears), so a pickup of the call wraps that String in a handle
+   of its own rather than taking the handle a read inside the method
+   published. One pass, where codegen asked per expression with a pass over
+   every return. */
+static void an_mark_share_ret_clears(Compiler *c, const int *rs, const int *rl) {
+  const NodeTable *nt = c->nt;
+  free(c->share_ret_clear);
+  c->share_ret_clear_n = nt->count;
+  c->share_ret_clear = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    if (c->scopes[mi].def_node < 0 || c->scopes[mi].ret_kinds != (SCOPE_RET_FRESH | SCOPE_RET_HANDLE)) continue;
+    an_mark_fresh_tails(c, scope_body_last(c, mi));
+    for (int r = rs[mi]; r < rs[mi + 1]; r++) {
+      int ra = nt_ref(nt, rl[r], "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      if (rn == 1) an_mark_fresh_tails(c, rv[0]);
+    }
+  }
+}
 /* --share-strings: a String mutator whose receiver is a receiverless call
    of a uniquely named method answering a shared handle on every path
    (`def get = $g`, `get << x`): the rule shares that String, so the call is
@@ -33708,6 +33822,30 @@ static void an_phase_storage(Compiler *c) {
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (!ch) break;
+  }
+  /* --share-strings: what each method's return paths answer
+     (Scope.ret_kinds, the deep-return pickup's condition), now that the
+     handles are final. A method answering another's answer takes its kinds,
+     so the bits only grow, and the rounds run to the fixpoint: at most two
+     bits per method, however long a call chain is. */
+  if (c->share_strings) {
+    int *rs = NULL, *rl = NULL;
+    an_returns_by_scope(c, &rs, &rl);
+    for (int ch = 1; ch;) {
+      ch = 0;
+      for (int mi = 1; mi < c->nscopes; mi++) {
+        if (c->scopes[mi].def_node < 0) continue;
+        int k = c->scopes[mi].ret_kinds | an_tail_kinds(c, scope_body_last(c, mi));
+        for (int r = rs[mi]; r < rs[mi + 1]; r++) {
+          int ra = nt_ref(c->nt, rl[r], "arguments");
+          int rn = 0; const int *rv = ra >= 0 ? nt_arr(c->nt, ra, "arguments", &rn) : NULL;
+          k |= rn == 1 ? an_tail_kinds(c, rv[0]) : rn > 1 ? SCOPE_RET_FRESH : 0;
+        }
+        if (k != c->scopes[mi].ret_kinds) { c->scopes[mi].ret_kinds = k; ch = 1; }
+      }
+    }
+    an_mark_share_ret_clears(c, rs, rl);
+    free(rs); free(rl);
   }
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:

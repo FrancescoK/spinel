@@ -18120,6 +18120,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
     TyKind t = fr ? TY_STRING : comp_ntype(c, operand[i]);
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
+    /* --share-strings: typed as the handle but rendered as a String of its
+       own (wrapped where it is stored): held as that String */
+    if (repr_share_rule(c) && t == TY_STRBUF && strbuf_fresh_renders_string(c, operand[i])) t = TY_STRING;
     if (nb >= 8) return 0;
     node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; nb++;
   }
@@ -20885,7 +20888,7 @@ int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
    builtin-reopening fallbacks that must NOT preempt a builtin. */
 /* The class a receiverless call dispatches on when it names an attr reader
    there (and no def overrides it), else -1. */
-static int implicit_self_reader_cid(Compiler *c, int id) {
+int implicit_self_reader_cid(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || nt_ref(nt, id, "receiver") >= 0) return -1;
@@ -20936,13 +20939,19 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Repr rp = repr_of(c, id);
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
-      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      /* --share-strings: the copy publishes the handle, as a slot's read
+         face does, for a method answering it (the deep-return pickup) */
+      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; %s_t%d%s ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
+                 tv, g_self, g_self_deref, iv_c(rn), repr_share_rule(c) ? "(_sp_ret_strbuf = (void *)" : "", tv,
+                 repr_share_rule(c) ? ")" : "", tv);
       rty = TY_STRING;
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
-    /* a def in a subclass overrides the reader for that subclass */
-    if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
+    /* a def in a subclass overrides the reader for that subclass (the
+       handle itself, --share-strings: emit_reader_override_handle) */
+    if (!(rty == TY_STRBUF && repr_share_rule(c) && sp_streq(g_self_deref, "->") &&
+          emit_reader_override_handle(c, id, dispatch_cid, name, g_self, rb.p, b)) &&
+        !(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
           emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, b)))
       buf_puts(b, rb.p);
     free(rb.p);
@@ -23597,6 +23606,35 @@ static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt,
   return 1;
 }
 
+/* deep-return pickup (#3227 P6): a marked receiverless call to a method
+   whose every return path yields a shared handle -- reset the side
+   channel, run the ordinary call (its shared-slot tail read publishes),
+   then take the handle (falling back to a fresh wrap of the returned
+   copy if a path did not publish). An attr reader has no body to publish
+   from; its implicit-self read hands out the slot itself
+   (emit_implicit_self_member). Under --share-strings a method whose paths
+   answer only Strings of their own is not picked up (strbuf_call_publishes),
+   and a nil answer stays nil. 1 when it emitted. */
+static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
+  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0) return 0;
+  if (!(nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
+                                          : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS) &&
+      !(repr_share_rule(c) && nt_ref(c->nt, id, "receiver") >= 0 && strbuf_call_answers_handle(c, id)))
+    return 0;
+  if (!strbuf_call_publishes(c, id)) return 0;
+  int tvD = ++g_tmp;
+  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
+  int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
+  emit_call(c, id, b);
+  view_pop(c, vs);
+  if (repr_share_rule(c))
+    buf_printf(b, "; _v%d && _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                  " : sp_String_new_shared(_v%d); })", tvD, tvD);
+  else
+    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                  " : sp_String_new_shared(_v%d); })", tvD);
+  return 1;
+}
 /* The concurrency handles render as Object's default does, which is what
    CRuby prints for them: #<Thread::Mutex:0x...>. Without an arm they reached
    the nil-degrade in emit_call_body and `mutex.inspect` answered "[]" -- a
@@ -23657,25 +23695,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
-  /* deep-return pickup (#3227 P6): a marked receiverless call to a method
-     whose every return path yields a shared handle -- reset the side
-     channel, run the ordinary call (its shared-slot tail read publishes),
-     then take the handle (falling back to a fresh wrap of the returned
-     copy if a path did not publish). */
-  /* An attr reader has no body to publish from; its implicit-self read hands
-     out the slot itself (emit_implicit_self_member). */
-  if (c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 &&
-      (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
-                                         : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS)) {
-    int tvD = ++g_tmp;
-    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
-    int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
-    emit_call(c, id, b);
-    view_pop(c, vs);
-    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
-                  " : sp_String_new_shared(_v%d); })", tvD);
-    return;
-  }
+  if (emit_deep_return_pickup(c, id, b)) return;
 
   /* A program's own reopen of a builtin primitive owns the name, as it does
      in CRuby: `class Integer; def abs; 999; end; end` makes `(-5).abs` answer
