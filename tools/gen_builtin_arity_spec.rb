@@ -326,6 +326,196 @@ CLASS_TARGETS.each do |cls, meths|
     cm << [cls, m, *s] if s
   end
 end
+
+# Block use, per method name and positional count: whether every builtin
+# instance method of the name ignores a literal block at that count, so a
+# call can drop one (`[0.3, :x][k].rationalize { }`, `t.round { }`). CRuby's
+# reflection does not say: a C method's Method#arity and parameters leave
+# the block out, and the unused-block warning covers only methods written in
+# Ruby. So each method is called with a block that raises, at counts 0..3,
+# with a few sample arguments, and the block's use is read off the outcome:
+#
+#   - the block ran (it raised, or it ran and a rescue inside the method
+#     swallowed the raise), for any sample on any receiver: the count uses
+#     the block. The samples miss and hit (Hash#fetch, Hash#merge,
+#     String#sub), and the receivers add the states on which some methods
+#     run a block the probe receiver never reaches: an invalid-byte String
+#     (String#scrub), a file and a directory Pathname (Pathname#glob),
+#     empty ones;
+#   - the call returned on a receiver (an empty one aside, which may return
+#     before it looks at the arguments), the block did not run for any
+#     sample, and no Proc of the block outlived the call (a method that
+#     keeps the block, as define_singleton_method and to_enum do, uses it):
+#     the count ignores the block;
+#   - a count the method rejects with and without a block: the call raises
+#     the same ArgumentError either way, so a dropped block changes nothing;
+#   - anything else (every call raised): unproved, so the count keeps its
+#     block.
+#
+# A name is ignorable at a count only when every class that has it (a
+# Kernel/Object method once, for every class) ignores the block there or
+# rejects the count, and one of them ignores it; a forwarding name and a
+# name the probe skips never are. The proof is
+# dynamic: it covers the samples, not every argument, which is why a sample
+# set that makes the block run on any receiver wins.
+class BlockRanError < Exception; end
+# (a fresh Module for Module#prepend, #include and #extend, which take
+# nothing else, and :ascii for the case options of upcase and its kin;
+# each call gets its own copy)
+BLOCK_SAMPLES = [nil, 0, 1, 99, -1, "a", "z", "*", :a, :@a, :ascii, [1], {1 => 2}, {z: 1}, Module.new]
+# More receivers per class, each with whether a call returning on it is
+# evidence (:full) or only a block running is (:runs, an empty receiver)
+BLOCK_VARIANTS = {
+  "String" => [[-> { "a\xFF".dup.force_encoding(Encoding::UTF_8) }, :full], [-> { "".dup }, :runs]],
+  "Array" => [[-> { [] }, :runs]], "Hash" => [[-> { {} }, :runs]],
+  "Complex" => [[-> { Complex(1, 0) }, :full]],   # 1i converts to no real
+  # a file and a directory made afresh for each call: an earlier probe may
+  # have renamed, removed or replaced the probe receiver's "a"
+  "Pathname" => [[-> { FileUtils.rm_rf("e"); File.write("e", "ab"); Pathname.new("e") }, :full],
+                 [-> { FileUtils.rm_rf("d"); FileUtils.mkdir_p("d"); FileUtils.touch("d/x"); Pathname.new("d") }, :full]],
+}
+# Lazy's methods keep their blocks (Lazy#map); it has no arity rows of its own
+BLOCK_RECEIVERS = INSTANCE_RECEIVERS.merge("Lazy" => -> { (1..2).lazy })
+UNIVERSAL_OWNERS = [Kernel, Object, BasicObject]
+
+def block_outcome(thunk, m, args)
+  ran = false
+  File.chmod(0o644, "f") rescue nil  # a probed File#chmod(0) locks the probe file
+  r = thunk.call
+  Timeout.timeout(2) do
+    r.__send__(m, *args) { |*| ran = true; raise BlockRanError }  # PROBE_BLOCK_AT
+  end
+  ran ? :runs : :returned
+rescue BlockRanError
+  :runs
+rescue Timeout::Error
+  ran ? :runs : :timeout
+rescue ArgumentError => e
+  ran ? :runs : e.message.start_with?("wrong number of arguments") ? :count : :raised
+rescue Exception
+  ran ? :runs : :raised
+end
+PROBE_BLOCK_AT = [__FILE__, __LINE__ - 12]  # the probe block, twelve lines up
+
+def block_kept?(thunk, m, args)
+  mine = -> { ObjectSpace.each_object(Proc).count { |pr| pr.source_location == PROBE_BLOCK_AT } }
+  GC.disable
+  before = mine.call
+  block_outcome(thunk, m, args)
+  mine.call > before
+ensure
+  GC.enable
+end
+# the capture test finds the probe block's Procs
+unless block_kept?(-> { Object.new }, :define_singleton_method, [:a]) &&
+       !block_kept?(-> { 1 }, :abs, [])
+  abort "block-use probe: PROBE_BLOCK_AT does not name the probe block"
+end
+
+# The argument lists of count n: each sample n times, and for two or more
+# an index or a count ahead of samples of another kind, as a variadic
+# method's leading position takes one (insert(1, "a"), fill(0, 1)).
+BLOCK_MIXED = [[0, "a"], [1, "a"], ["a", 0], [0, [1]], [0, :a], [1, 1.5]]
+def block_vectors(n)
+  vs = BLOCK_SAMPLES.map { |v| Array.new(n, v) }
+  vs += BLOCK_MIXED.map { |a, b| [a, *Array.new(n - 1, b)] } if n >= 2
+  vs
+end
+
+# The counts (a bit each, 0..3) at which m ignores a block on these
+# receivers, and those it takes neither with nor without one. Each call gets
+# fresh samples: a method may write into one (IO#read's buffer).
+def block_ignored_mask(receivers, m)
+  mask = neither = 0
+  (0..3).each do |n|
+    runs = false
+    kept_at = nil
+    counts = 0
+    vectors = block_vectors(n)
+    receivers.each do |thunk, ev|
+      vectors.each do |vec|
+        o = block_outcome(thunk, m, vec.map(&:dup))
+        runs = true if o == :runs
+        kept_at ||= [thunk, vec.map(&:dup)] if o == :returned && ev == :full
+        counts += 1 if o == :count
+        break if runs || o == :timeout
+      end
+      break if runs
+    end
+    next if runs
+    # a count the method takes neither with a block nor without one raises
+    # the same ArgumentError either way, so the block is no matter there
+    if counts == receivers.size * vectors.size && probe_counts(receivers[0][0], m, n).is_a?(String)
+      neither |= 1 << n
+    elsif kept_at && !block_kept?(kept_at[0], m, kept_at[1])
+      mask |= 1 << n
+    end
+  end
+  [mask, neither]
+end
+
+block_masks = {}   # [owner, m] => mask
+name_keys = Hash.new { |h, k| h[k] = [] }
+BLOCK_RECEIVERS.each do |cls, thunk|
+  recv = thunk.call
+  skipped = INSTANCE_METHOD_SKIP - PROBE_ANYWAY.fetch(cls, [])
+  (recv.public_methods.map(&:to_s) - PROBE_ARTEFACTS.fetch(cls, [])).each do |m|
+    owner = (recv.method(m).owner rescue nil)
+    key = UNIVERSAL_OWNERS.include?(owner) ? ["Object", m] : [cls, m]
+    name_keys[m] << key
+    next if block_masks.key?(key)
+    block_masks[key] =
+      if FORWARDING.fetch(cls, []).include?(m) || skipped.include?(m) then [0, 0]
+      elsif key[0] == "Object" then block_ignored_mask([[INSTANCE_RECEIVERS["Object"], :full]], m)
+      else block_ignored_mask([[thunk, :full], *BLOCK_VARIANTS.fetch(cls, [])], m)
+      end
+  end
+end
+# The static cross-check: RBS core's signatures (the rbs gem Ruby ships)
+# declare each overload's block. A count at which any public instance
+# method of the name, in any core class, has an overload that takes a
+# block keeps its block, whatever the probe saw: either the probe missed a
+# block that runs only for some arguments or states, or the signature
+# declares a block CRuby ignores, and only the first kind matters. Read in
+# a fresh interpreter, as the arity dump below is.
+rbs_src = <<~'RUBY'
+  require "rbs"
+  require "json"
+  loader = RBS::EnvironmentLoader.new
+  env = RBS::Environment.from_loader(loader).resolve_type_names
+  builder = RBS::DefinitionBuilder.new(env: env)
+  out = Hash.new { |h, k| h[k] = Hash.new { |h2, k2| h2[k2] = [] } }
+  env.class_decls.each_key do |tn|
+    d = (builder.build_instance(tn) rescue next)
+    d.methods.each do |name, m|
+      next unless m.accessibility == :public
+      m.method_types.each do |mt|
+        f = mt.type
+        next unless mt.block && f.respond_to?(:required_positionals)
+        lo = f.required_positionals.size + f.trailing_positionals.size
+        hi = f.rest_positionals ? 3 : [lo + f.optional_positionals.size, 3].min
+        (lo..hi).each { |n| out[name.to_s][n] |= [tn.to_s.delete_prefix("::")] }
+      end
+    end
+  end
+  puts JSON.generate(out)
+RUBY
+require "rbconfig"
+rbs_blocks = JSON.parse(IO.popen([RbConfig.ruby, "-e", rbs_src], &:read).to_s) rescue nil
+abort "block-use probe: could not read RBS core's signatures (the rbs gem)" unless $?.success? && rbs_blocks&.any?
+rbs_disagree = []
+blk = name_keys.keys.sort.filter_map do |m|
+  # a count no class takes is no proof: some class the probe leaves out
+  # (IO::Buffer#each_byte(type, offset)) may take it and use the block
+  ms = name_keys[m].uniq.map { |k| block_masks[k] }
+  mask = ms.map { |ign, neither| ign | neither }.reduce(:&) & ms.map(&:first).reduce(:|)
+  rbs_blocks.fetch(m, {}).each do |n, owners|
+    next unless mask[n.to_i] == 1
+    mask &= ~(1 << n.to_i)
+    rbs_disagree << "#{m}/#{n} (#{owners.join(", ")})"
+  end
+  [m, mask] if mask > 0
+end
 # Method#arity of each class's OWN public instance methods, read straight off
 # CRuby rather than probed (a C method that counts its own arguments reads
 # -1 here; the spec tables above hold what it accepts), plus the Kernel
@@ -356,7 +546,9 @@ out = <<~C
      BAI carries both, BAM only Method#arity, BAS only instance counts,
      and BAC class/module counts. -1 maxima are unbounded; NULL messages
      and unproved -1 minima never reject a call. Block counts are separate.
-     Kernel Method#arity describes receiverless method(:name) wrappers. */
+     Kernel Method#arity describes receiverless method(:name) wrappers.
+     BAB gives, per method name, the positional counts (bit n for n, 0..3)
+     at which every builtin instance method of the name ignores a block. */
 C
 render = ->(tag, values) do
   fields = values.map { |v| v.nil? ? "NULL" : v.is_a?(String) ? v.dump : v.to_s }
@@ -368,7 +560,10 @@ end
 end
 inst.each { |r| render.("BAS", r) if counts.key?(r[0, 2]) }
 cm.each { |r| render.("BAC", r) }
-summary = "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
+blk.each { |r| render.("BAB", r) }
+summary = "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method + #{blk.length} block-use entries"
+$stderr.puts "block use: the probe saw these counts ignore a block an RBS core signature declares " \
+             "(kept): #{rbs_disagree.size}", *rbs_disagree.map { |d| "  #{d}" }
 if ARGV.include?("--check")
   if File.read(SOURCE) == out
     $stderr.puts "arity facts match #{ver}: #{summary}"
