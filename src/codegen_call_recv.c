@@ -8694,6 +8694,64 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt,
+                                const char *name, int recv, int argc, const int *argv, TyKind rt) {
+  /* A heap object slot can hold nil, the NULL pointer, and nil is an
+     instance of NilClass, Object, Kernel and BasicObject and of nothing
+     else: the arm below answers for the class alone, so `v.is_a?(Shape)` on
+     a `v` holding nil said true. The receiver is read once into a temp; the
+     arm below answers for a live object, reading the temp, and nil answers
+     as nil does. */
+  static int isa_nil_open = 0;
+  if (!isa_nil_open && recv >= 0 && ty_is_object(rt) && argc == 1 &&
+      !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode &&
+      is_kind_query(name) &&
+      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
+      g_n_argov < MAX_ARG_OVERRIDE) {
+    const char *ncn = isa_const_name(nt, argv[0]);
+    int dyn = !ncn && (comp_ntype(c, argv[0]) == TY_CLASS ||
+                       comp_ntype(c, argv[0]) == TY_POLY);
+    if (ncn || dyn) {
+      int exact = sp_streq(name, "instance_of?");
+      int tr = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "NULL");
+      if (dyn && subtree_has_side_effect(c, argv[0])) emit_gc_root_tmp(c, rt, tr, g_pre);
+      free(rb.p);
+      view_bind(recv, "_t%d", tr);
+      Buf ib; memset(&ib, 0, sizeof ib);
+      isa_nil_open = 1;
+      int ok = emit_object_call(c, id, &ib);
+      isa_nil_open = 0;
+      view_unbind(g_n_argov - 1);
+      if (ok) {
+        buf_printf(b, "(_t%d ? (%s) : ", tr, ib.p ? ib.p : "0");
+        if (dyn) {
+          int nk = builtin_class_id("NilClass");
+          buf_puts(b, "({ sp_Class _nc = ");
+          if (comp_ntype(c, argv[0]) == TY_POLY) buf_puts(b, "sp_isa_class_arg(");
+          emit_expr(c, argv[0], b);
+          if (comp_ntype(c, argv[0]) == TY_POLY) buf_puts(b, ")");
+          if (exact) buf_printf(b, "; _nc.cls_id == %d; })", nk);
+          else buf_printf(b, "; sp_class_le((sp_Class){%d}, _nc); })", nk);
+        }
+        else {
+          int yes = !comp_const(c, ncn) && comp_class_index(c, ncn) < 0 &&
+                    (sp_streq(ncn, "NilClass") ||
+                     (!exact && is_object_root(ncn)));
+          buf_printf(b, "%d", yes);
+        }
+        buf_puts(b, ")");
+        free(ib.p);
+        return 1;
+      }
+      free(ib.p);
+    }
+  }
+  return 0;
+}
+
 int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -8801,54 +8859,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
-  /* A heap object slot can hold nil, the NULL pointer, and nil is an
-     instance of NilClass, Object, Kernel and BasicObject and of nothing
-     else: the arm below answers for the class alone, so `v.is_a?(Shape)` on
-     a `v` holding nil said true. The receiver is read once into a temp; the
-     arm below answers for a live object, reading the temp, and nil answers
-     as nil does. */
-  static int isa_nil_open = 0;
-  if (!isa_nil_open && recv >= 0 && ty_is_object(rt) && argc == 1 &&
-      !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode &&
-      is_kind_query(name) &&
-      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
-      g_n_argov < MAX_ARG_OVERRIDE) {
-    const char *ncn = isa_const_name(nt, argv[0]);
-    int dyn = !ncn && comp_ntype(c, argv[0]) == TY_CLASS;
-    if (ncn || dyn) {
-      int exact = sp_streq(name, "instance_of?");
-      int tr = ++g_tmp;
-      Buf rb = expr_buf(c, recv);
-      emit_indent(g_pre, g_indent);
-      emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "NULL");
-      free(rb.p);
-      view_bind(recv, "_t%d", tr);
-      Buf ib; memset(&ib, 0, sizeof ib);
-      isa_nil_open = 1;
-      int ok = emit_object_call(c, id, &ib);
-      isa_nil_open = 0;
-      view_unbind(g_n_argov - 1);
-      if (ok) {
-        buf_printf(b, "(_t%d ? (%s) : ", tr, ib.p ? ib.p : "0");
-        if (dyn) {
-          int nk = builtin_class_id("NilClass");
-          buf_puts(b, "({ sp_Class _nc = "); emit_expr(c, argv[0], b);
-          if (exact) buf_printf(b, "; _nc.cls_id == %d; })", nk);
-          else buf_printf(b, "; sp_class_le((sp_Class){%d}, _nc); })", nk);
-        }
-        else {
-          int yes = !comp_const(c, ncn) && comp_class_index(c, ncn) < 0 &&
-                    (sp_streq(ncn, "NilClass") ||
-                     (!exact && is_object_root(ncn)));
-          buf_printf(b, "%d", yes);
-        }
-        buf_puts(b, ")");
-        free(ib.p);
-        return 1;
-      }
-      free(ib.p);
-    }
-  }
+  if (emit_object_kind_nil(c, id, b, nt, name, recv, argc, argv, rt)) return 1;
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
