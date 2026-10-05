@@ -115,8 +115,9 @@ TyKind infer_type(Compiler *c, int id);
    an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
    records nothing it derives: not the node-type cache, a poly call's
    builtin answer, --plan-check's call records, a block parameter's pinned
-   type or the narrowing memo. So asking cannot change what codegen reads
-   next. They nest. */
+   type, the narrowing memo or a call's alias resolution (its name and
+   builtin_only, kept for the inference asking). So asking cannot change
+   what codegen reads next. They nest. */
 void an_pure_read_begin(void);
 void an_pure_read_end(void);
 

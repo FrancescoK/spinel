@@ -138,7 +138,9 @@ int an_builtin_only_p(void) { return an_builtin_only; }
    receiver's type: recorded, that answer replaced the view's for the rest
    of the emission (a Range receiver re-entered as the IntArray it was
    materialized into read back as the Range, and was materialized again
-   from its own temp). */
+   from its own temp). A call's alias resolution renames the node and can
+   mark it builtin_only (infer_call_inner): a pure read keeps both for its
+   own inference and leaves the node as the analysis left it. */
 static int an_pure_reads = 0;
 void an_pure_read_begin(void) { an_pure_reads++; }
 void an_pure_read_end(void) { an_pure_reads--; }
@@ -4815,7 +4817,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
 }
 
 /* A method the program defines on the receiver (a class method, a Struct's member, a reopened builtin's method) and instance-variable reflection (infer_call_inner's rules, in their order) */
-static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
+static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int bonly, TyKind *out) {
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type.
      method_call_ret, not the raw scope ret: a tail-yield class method carries
      THIS call site's block value (the instance/implicit-self arms already
@@ -4951,7 +4953,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
 
   /* built-in class reopening: look up user-defined methods on scalar built-in
      types -- not for an alias that captured the builtin (builtin_only) */
-  if (recv >= 0 && !nt_int(nt, id, "builtin_only", 0)) {
+  if (recv >= 0 && !bonly && !nt_int(nt, id, "builtin_only", 0)) {
     const char *oc_cn = NULL;
     switch (rt) {
     case TY_STRING: oc_cn = "String"; break;
@@ -6515,6 +6517,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      or a value, whichever arm the name selects */
   { int dn = 0; nt_arr(nt, id, "dyn_cget_arms", &dn); if (dn > 0) return TY_POLY; }
   const char *name = nt_str(nt, id, "name");
+  int bonly = 0;   /* the alias resolution below found builtin_only (a pure read keeps it here) */
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
@@ -6581,8 +6584,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
               (comp_method_in_class(c, k, name) >= 0 || (rn && comp_method_in_class(c, k, rn) >= 0))) over = 1;
         if (!over && rn && !sp_streq(rn, name) && comp_reader_in_chain(c, oci, rn, NULL) &&
             comp_method_vis_in_chain(c, oci, name) == SP_VIS_PUBLIC) {
-          nt_node_set_str((NodeTable *)nt, id, "name", rn);
-          name = nt_str(nt, id, "name");
+          if (!an_pure_reads) nt_node_set_str((NodeTable *)nt, id, "name", rn);
+          name = an_pure_reads ? rn : nt_str(nt, id, "name");
         }
       }
     }
@@ -6592,11 +6595,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       int bi = 0;
       const char *rn = comp_resolve_alias_ex(c, aci, name, NULL, &bi);
       if (rn && !sp_streq(rn, name)) {
-        nt_node_set_str((NodeTable *)nt, id, "name", rn);
-        name = nt_str(nt, id, "name");
+        if (!an_pure_reads) nt_node_set_str((NodeTable *)nt, id, "name", rn);
+        name = an_pure_reads ? rn : nt_str(nt, id, "name");
         /* the alias captured the builtin: the class's own method of that
            name, defined or aliased after it, is not this call's */
-        if (bi) nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
+        if (bi) { bonly = 1; if (!an_pure_reads) nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1); }
       }
     }
   }
@@ -6843,7 +6846,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      a String-returning reopen. The scalar reopens (String, Integer, ...) keep
      their place further down, where their rules have long been ordered. */
   if (recv >= 0 && (rt == TY_RANGE || rt == TY_TIME || rt == TY_IO || rt == TY_CLASS) &&
-      !nt_int(nt, id, "builtin_only", 0)) {
+      !bonly && !nt_int(nt, id, "builtin_only", 0)) {
     const char *ecn = rt == TY_RANGE ? "Range" : rt == TY_TIME ? "Time" : "Class";
     int eci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, ecn);
     int emi = eci >= 0 ? comp_method_in_chain(c, eci, name, NULL) : -1;
@@ -6871,7 +6874,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      reopen's own `each_twice`): no builtin row types that call */
   if (recv >= 0 && name && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) &&
       (nt_ref(nt, id, "block") < 0 || !builtin_method_known(ty_is_hash(rt) ? "Hash" : "Array", name)) &&
-      !nt_int(nt, id, "builtin_only", 0)) {
+      !bonly && !nt_int(nt, id, "builtin_only", 0)) {
     int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
     int adc = -1, ami = aci >= 0 ? comp_method_in_chain(c, aci, name, &adc) : -1;
     /* the reopen's own method under this very name: an alias taken before the
@@ -6883,7 +6886,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      that class (nil included, as a NULL pointer), and `values` an array of it
      (#4846). */
   if (recv >= 0 && (rt == TY_STR_POLY_HASH || rt == TY_SYM_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
-    const char *hn = nt_str(nt, id, "name");
+    const char *hn = name;
     int hargs = nt_ref(nt, id, "arguments");
     int hac = 0; if (hargs >= 0) nt_arr(nt, hargs, "arguments", &hac);
     if (hn && nt_ref(nt, id, "block") < 0 &&
@@ -7268,7 +7271,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_handle_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 
-  { TyKind r; if (infer_user_method_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
+  { TyKind r; if (infer_user_method_call(c, id, nt, name, recv, argc, argv, rt, bonly, &r)) return r; }
 
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   /* Object receivers: the user-object face of infer_call (analyze_infer_recv.c). */
