@@ -3440,6 +3440,31 @@ static int engine_splice_list(NodeTable *nt, int body) {
   return changed;
 }
 
+/* `def m = (a; b)`: a def whose whole body is one parenthesized sequence
+   is that sequence's statements, as CRuby runs it. Left wrapped, the
+   method's value was the parentheses' rather than its last statement's, so
+   a yield there was typed once for every call site, and a call whose block
+   answers another kind stored the value in the first site's carrier. */
+int desugar_paren_def_body(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    int body = nt_ref(nt, d, "body"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn != 1 || nt_kind(nt, bb[0]) != NK_ParenthesesNode) continue;
+    int pb = nt_ref(nt, bb[0], "body"), pn = 0;
+    const int *pd = pb >= 0 && nt_kind(nt, pb) == NK_StatementsNode ? nt_arr(nt, pb, "body", &pn) : NULL;
+    if (pn < 2) continue;
+    int *cp = malloc(sizeof(int) * (size_t)pn);
+    if (!cp) continue;
+    memcpy(cp, pd, sizeof(int) * (size_t)pn);
+    nt_node_set_arr(nt, body, "body", cp, pn);
+    free(cp);
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_engine_branches(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -6585,13 +6610,33 @@ static int fwd_class_value_new_shape(const NodeTable *nt) {
 /* The number of arguments every call of `name` passes: -1 when they differ
    or one passes a splat, keywords or a `...` of its own, -2 when there is no
    call. */
+/* Does CallNode `id` call `name`: directly (*skip = 0), or through send,
+   __send__ or public_send with the name as a literal first argument
+   (*skip = 1, that argument is no argument of the callee's)? A forwarder's
+   callers were counted only when they spelled it directly, so
+   `o.send(:m, :x) { }` lost its block in the forwarder (#7213 sweep). */
+static int fwd_call_names(const NodeTable *nt, int id, const char *name, int *skip) {
+  const char *nm = nt_str(nt, id, "name");
+  *skip = 0;
+  if (!nm) return 0;
+  if (sp_streq(nm, name)) return 1;
+  if (!sp_streq(nm, "send") && !sp_streq(nm, "__send__") && !sp_streq(nm, "public_send")) return 0;
+  int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
+  if (ac < 1 || !av) return 0;
+  const char *lit = fwd_node_is(nt, av[0], "SymbolNode") ? nt_str(nt, av[0], "value")
+                  : fwd_node_is(nt, av[0], "StringNode") ? nt_str(nt, av[0], "content") : NULL;
+  if (!lit || !sp_streq(lit, name)) return 0;
+  *skip = 1;
+  return 1;
+}
 static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
   int n = -2;
   for (int id = 0; id < nt->count; id++) {
     if (!fwd_node_is(nt, id, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
+    int skip;
+    if (!fwd_call_names(nt, id, name, &skip)) continue;
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
+    av += skip; ac -= skip;
     for (int k = 0; k < ac; k++)
       if (fwd_node_is(nt, av[k], "SplatNode") || fwd_node_is(nt, av[k], "KeywordHashNode") ||
           fwd_node_is(nt, av[k], "ForwardingArgumentsNode")) return -1;
@@ -6717,8 +6762,8 @@ static int def_exists_by_name(const NodeTable *nt, const char *name) {
 static int any_call_passes_block(const NodeTable *nt, const char *name) {
   for (int id = 0; id < nt->count; id++) {
     if (!fwd_node_is(nt, id, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (nm && sp_streq(nm, name) && nt_ref(nt, id, "block") >= 0) return 1;
+    int skip;
+    if (fwd_call_names(nt, id, name, &skip) && nt_ref(nt, id, "block") >= 0) return 1;
   }
   return 0;
 }
@@ -7358,11 +7403,11 @@ int desugar_anon_block_param(Compiler *c) {
 static int any_call_passes_keywords(const NodeTable *nt, const char *name) {
   for (int id = 0; id < nt->count; id++) {
     if (!fwd_node_is(nt, id, "CallNode")) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name)) continue;
+    int skip;
+    if (!fwd_call_names(nt, id, name, &skip)) continue;
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac >= 1 && av && fwd_node_is(nt, av[ac - 1], "KeywordHashNode")) return 1;
+    if (ac >= 1 + skip && av && fwd_node_is(nt, av[ac - 1], "KeywordHashNode")) return 1;
   }
   return 0;
 }

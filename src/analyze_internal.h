@@ -451,6 +451,7 @@ void expand_static_splat_args(Compiler *c, int from, int count);
 int desugar_dynamic_method(Compiler *c);
 int desugar_method_call_runtime_name(Compiler *c);
 int desugar_engine_branches(Compiler *c);
+int desugar_paren_def_body(Compiler *c);
 int desugar_conditional_defs(Compiler *c);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
