@@ -1,0 +1,5 @@
+class Object
+  def transpose_ints: (Array[Integer]?) -> void
+  def transpose_floats: (Array[Float]?) -> void
+  def transpose_strings: (Array[String]?) -> void
+end
