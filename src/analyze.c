@@ -8927,10 +8927,16 @@ static int desugar_to_enum(Compiler *c) {
       changed = 1;
       continue;
     }
-    if (ty_is_object(rt) || toplevel) {
+    /* self in a reopened builtin (Array#extract!'s `to_enum(:extract!)`) is
+       boxed, but the helper is the reopening's own, as for a program class */
+    int reopen_ci = -1;
+    if (self_recv && !ty_is_object(rt) && es && es->class_id >= 0 && !es->is_cmethod &&
+        is_builtin_reopen(c->classes[es->class_id].name))
+      reopen_ci = es->class_id;
+    if (ty_is_object(rt) || toplevel || reopen_ci >= 0) {
       char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
       int helper = toplevel ? comp_method_index(c, hname)
-                            : comp_method_in_chain(c, ty_object_class(rt), hname, NULL);
+                 : comp_method_in_chain(c, reopen_ci >= 0 ? reopen_ci : ty_object_class(rt), hname, NULL);
       if (helper < 0) continue;  /* no yielding m: leave */
       if (extra > 0) continue;   /* user-class to_enum with args: PR follow-up (loud downstream) */
       /* `return enum_for(:m) unless block_given?` inside method m: a blockless
@@ -8944,7 +8950,9 @@ static int desugar_to_enum(Compiler *c) {
          blockless call site reads a boxed Enumerator its consumers dispatch
          on. */
       int value_form = es && es->body >= 0 && te_tail_is_value(nt, es->body, 0);
-      if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form &&
+      /* not in a reopened builtin, whose self tail is the boxed receiver:
+         the blockless call already reads the Enumerator (ret_noblock) */
+      if (self_recv && es && es->name && sp_streq(es->name, m) && !value_form && reopen_ci < 0 &&
           es->ret != TY_ENUMERATOR) {
         es->ret = TY_ENUMERATOR;
         es->ret_specialized = 1;
