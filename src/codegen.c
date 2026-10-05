@@ -13216,7 +13216,7 @@ static int why_poly_candidate(Compiler *c, int id) {
     any = si; break;
   }
   if (any < 0) return -1;
-  return ty_degraded(an_builtin_answer(c, id)) ? -1 : any;
+  return ty_degraded(cplan_builtin_answer(c, id)) ? -1 : any;
 }
 
 /* Follow a slot's why to the expression the poly was born at. `first` is

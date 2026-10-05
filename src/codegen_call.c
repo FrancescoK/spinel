@@ -1037,13 +1037,14 @@ int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
 void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw);
 /* The builtin's own emission of typed IO call `id` on the handle in _r<tv>,
    with the reopenings out of sight, or NULL when it does not fit the call's
-   slot or does not emit. */
+   slot or does not emit. Its type is the builtin's answer the analysis
+   recorded with the reopenings out of sight (an_record_builtin_answers). */
 static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   if (g_n_argov + 1 > MAX_ARG_OVERRIDE) return NULL;
   /* this may run inside another call's re-emission (an argument's call) */
   int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
   g_io_skip_reopen = 1; g_io_skip_node = id;
-  TyKind bt = an_builtin_answer(c, id);
+  TyKind bt = cplan_builtin_answer(c, id);
   TyKind ct = repr_of(c, id).as_ty;
   if (bt == TY_UNKNOWN || (bt != ct && ct != TY_POLY)) {
     g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
@@ -6143,10 +6144,11 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
    throwaway buffer.
 
    Both dispatches call it, the one with arguments only where no arm has
-   written the `default:` label yet (#4831). The builtin answer is asked
-   whenever the analysis did not record one: it records it only for a name
-   some user method answers at the call's arity, and `a.fill(v, 1, 2)`
-   beside a five-argument user fill has none.
+   written the `default:` label yet (#4831). The builtin answer is the one
+   the plan's default trial carries (cplan_poly_default_ty), which the
+   analysis records for every call on a poly receiver, not only for a name
+   some user method answers at the call's arity: `a.fill(v, 1, 2)` beside
+   a five-argument user fill has one too.
 
    Like the String pre-arm, it moves whatever the emission hoists into the
    prelude into the arm itself -- the `sp_poly_array_recv` an Array mutator
@@ -6285,17 +6287,8 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
         (is_splat || repr_of(c, argv[a]).as_ty != atmp_ty[a]))
       return 0;
   }
-  TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
-                ? c->poly_builtin_ty[id] : TY_UNKNOWN;
-  /* `to_s` / `inspect` answer a String on every builtin receiver, with or
-     without an argument (Integer#to_s(base)); the analysis types them by the
-     object protocol and never records the builtin answer. */
-  if (bt == TY_UNKNOWN && argc <= 1 && (is_text_conversion(name)))
-    bt = TY_STRING;
-  /* respond_to? is every value's: a class overriding it gets an arm, and
-     any other value the answer the program would give without the override */
-  if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
-  if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
+  /* the answer the plan's default trial carries */
+  TyKind bt = cplan_poly_default_ty(c, id, argc);
   if (bt == TY_UNKNOWN) return 0;
   if (ret != TY_POLY && bt != ret) return 0;
   int slot = view_bind(recv, "_t%d", tv);

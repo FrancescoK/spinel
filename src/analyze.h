@@ -266,6 +266,10 @@ int face_active(void);
 void an_face_push(int node, TyKind kind);
 void an_face_pop(void);
 int view_face_top(int *node, TyKind *kind);   /* codegen_view.c */
+/* A node read as another type for one question (codegen_view.c): the
+   builtin-answer record asks a call as the poly dispatch re-enters it. */
+int view_push(Compiler *c, int id, TyKind t);
+void view_pop(Compiler *c, int tok);
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 /* The name of a numbered block parameter (`_1`..`_9`) on this parameters node.

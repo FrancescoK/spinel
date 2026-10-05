@@ -36177,6 +36177,9 @@ static void an_phase_reconcile_check(Compiler *c) {
   /* a read-only parameter takes a shared handle's live buffer, read off the
      final types and flags (#7482) */
   mark_param_read_only_operands(c);
+  /* Last of the types: the builtin answers the dispatches' builtin arms
+     read, asked of the settled types (an_record_builtin_answers). */
+  an_record_builtin_answers(c);
   /* A capped run emits from whatever the last round left, which need not be a
      fixpoint; that is a compiler bug worth hearing about, not a quiet log. */
   if (g_fixpoint_capped)
