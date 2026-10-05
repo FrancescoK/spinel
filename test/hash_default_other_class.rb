@@ -1,0 +1,53 @@
+# Hash#default= with a default of another class than the Hash's values. A
+# Hash whose values are all Integers or all Strings keeps them, and its
+# default, in a typed slot, and the default was assigned there as it was: a
+# Float was truncated, true read as 1 and a Symbol as its id, and a String
+# or a boxed default did not build. CRuby answers the default for a missing
+# key, so it is value evidence as a store is: the Hash's values widen for
+# it, in a local, an instance, class or global variable, or a Hash a method
+# answers. A default of the values' class keeps the typed Hash.
+
+class C
+  @@c = {"a" => 1}
+
+  def initialize
+    @h = {"a" => 1}
+    @h.default = 1.5
+  end
+
+  def get(k) = @h[k]
+
+  def self.go
+    @@c.default = :none
+    @@c["q"]
+  end
+end
+
+def mk = {"a" => 1}
+
+def t(k)
+  h = {"a" => 1}
+  h.default = 1.5
+  p h["z"], h["a"]
+  i = {1 => 2}
+  i.default = true
+  p i[9]
+  s = {"a" => "x"}
+  s.default = :sym
+  p s["q"]
+  b = {1 => 2}
+  b.default = [true, 3][k]
+  p b[9]
+  m = mk
+  m.default = 2.5
+  p m["q"]
+  n = {"a" => 1}
+  n.default = 7
+  p n["z"]
+  p C.new.get("z"), C.go
+  $g = {1 => "x"}
+  $g.default = 4
+  p $g[5]
+end
+
+t(ARGV.size)
