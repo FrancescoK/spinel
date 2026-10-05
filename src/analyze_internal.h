@@ -27,6 +27,8 @@ const char *ffi_arg_str(const NodeTable *nt, int nid);
 int ffi_arg_int(const NodeTable *nt, int nid);
 TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
+/* `Fiber.new { }`'s block, or -1 */
+int an_fiber_new_block(Compiler *c, int v);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
 int ffi_find_writer(Compiler *c, const char *mod, const char *name);
