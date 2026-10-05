@@ -7223,10 +7223,11 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Kernel#p returns its argument (one arg; several return the array), so it
      composes as an expression: x = p(y), f(p(y)). Statement-position p keeps
      its own emitter; this types the value form. */
-  if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 && argc >= 2)
-    return TY_POLY_ARRAY;   /* p(a, b, ...) returns the array of its arguments */
-  if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 && argc == 1)
-    return infer_type(c, argv[0]);
+  if (recv < 0 && !an_bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 && argc >= 1) {
+    /* a splat among them leaves their count to run time: nil, the one, or the array */
+    for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return TY_POLY;
+    return argc >= 2 ? TY_POLY_ARRAY : infer_type(c, argv[0]);   /* p(a, b, ...) returns the array of its arguments */
+  }
   /* Object#instance_variables: a static symbol list for a typed object */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
       sp_streq(name, "instance_variables"))
