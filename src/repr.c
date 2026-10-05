@@ -417,6 +417,7 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   if (nil_fact_tracked(lv->type) && lv->obj_may_nil) r.may_nil = 1;
   /* str_shared refines TY_STRBUF; it can outlive that storage type */
   if (lv->type == TY_STRBUF && lv->str_shared) r.handle = 1;
+  r.elems_handle = lv->elems_shared && lv->type == TY_POLY_ARRAY;
   r.kind = (unsigned char)k;
   r.dyn_cls = repr_dyn_cls(c, lv->type);
   return r;
@@ -652,6 +653,23 @@ static void repr_share_seal(Compiler *c) {
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
     if (!carried && bad < 0) bad = h;
   }
+  /* a container literal no holder names, whose elements the rule shares
+     only once the facts settle after the fixpoint, kept a typed String
+     form: its elements would be copies */
+  int bad_lit = -1;
+  for (int n = 0; n < c->nt->count && bad_lit < 0; n++) {
+    NodeKind k = nt_kind(c->nt, n);
+    if (k != NK_ArrayNode && k != NK_HashNode) continue;
+    TyKind t = c->ntype[n];
+    int ne = 0;
+    nt_arr(c->nt, n, "elements", &ne);
+    /* an empty one holds no String yet: what is stored later goes through
+       the holder that keeps it; one nothing can reach again once its
+       expression is done (`p [a, b]`) keeps no name for its copies */
+    if (ne > 0 && (t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH) && share_node_elems_share(c, n) &&
+        share_node_anchored(c, n))
+      bad_lit = n;
+  }
   if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
   if (stats && stats[0] == '2')
     for (int h = 0; h < nh; h++) {
@@ -675,6 +693,10 @@ static void repr_share_seal(Compiler *c) {
   /* a route master refuses, left to the rule: refused as master does
      unless the final facts share its String */
   share_routes_check(c);
+  if (bad < 0 && bad_lit >= 0)
+    unsupported_feature(c, bad_lit, "under --share-strings, the Strings this literal holds are shared with "
+                        "another name and changed in place, and a typed String container cannot hold the "
+                        "shared handle yet (#6765)");
   if (bad >= 0) {
     const ShareHolder *sh = share_holder(c, bad);
     char nm[160];

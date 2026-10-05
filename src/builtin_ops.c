@@ -2821,6 +2821,10 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_KERNEL, "frozen?",  BSH_PURE },
   { BOP_KERNEL, "freeze",   BSH_PURE },
   { BOP_KERNEL, "loop",     BSH_ITER_FRESH },
+  /* a catch's block is handed its tag (a fresh one, or the one given);
+     throw compares the tag and keeps nothing */
+  { BOP_KERNEL, "catch",    BSH_ITER_FRESH },
+  { BOP_KERNEL, "throw",    BSH_PURE },
   { BOP_KERNEL, "p",        BSH_ARGS },
   { BOP_KERNEL, "pp",       BSH_ARGS },
   { BOP_KERNEL, "String",   BSH_ARGS },

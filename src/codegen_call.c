@@ -19026,12 +19026,21 @@ static void refuse_string_copy(Compiler *c, int arg, const char *target,
   int is_method = target && target[0] == '`';
   /* --share-strings: a user method's parameter, by its method's name, is
      the rule's first (refuse_string_copy_routed) */
-  if (is_method && c->share_strings) {
+  if (is_method && repr_share_rule(c) && pname) {
     char mn[128];
     size_t tl = strlen(target);
     if (tl >= 3 && tl - 2 < sizeof mn && target[tl - 1] == '`') {
       memcpy(mn, target + 1, tl - 2); mn[tl - 2] = 0;
-      if (refuse_string_copy_routed(c, arg, refuse_method_body(c, mn), pname)) return;
+      /* every method of the name the call may reach (an override chain,
+         `super`): the route must pass into each one's parameter */
+      int any = 0, all = 1;
+      for (int k = 0; k < c->nscopes && all; k++) {
+        Scope *m = &c->scopes[k];
+        if (m->def_node < 0 || !m->name || !sp_streq(m->name, mn) || !scope_local(m, pname)) continue;
+        any = 1;
+        all = refuse_string_copy_routed(c, arg, m->body, pname);
+      }
+      if (any && all) return;
     }
   }
   if (nt_int(c->nt, arg, "node_line", 0) <= 0 && g_refuse_call >= 0) arg = g_refuse_call;
@@ -19702,6 +19711,23 @@ static void refuse_splat_nonlocal(Compiler *c, int id, const char *name, int rec
   refuse_string_copy(c, sv, mname ? mt : NULL, pname, "a splat", "through a splat");
 }
 
+/* The lambda literal a local read `recv` holds, when every write of it is
+   that one literal; -1 otherwise. */
+static int refuse_local_lambda(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return -1;
+  const char *rn = nt_str(nt, recv, "name");
+  Scope *rs = rn ? comp_scope_of(c, recv) : NULL;
+  int lam = -1;
+  for (int w = rs ? comp_lvw_first(c, rn) : -1; w >= 0; w = comp_lvw_next(c, w)) {
+    if (comp_scope_of(c, w) != rs) continue;
+    int v = nt_kind(nt, w) == NK_LocalVariableWriteNode ? nt_ref(nt, w, "value") : -1;
+    if (v < 0 || nt_kind(nt, v) != NK_LambdaNode || (lam >= 0 && lam != v)) return -1;
+    lam = v;
+  }
+  return lam;
+}
+
 /* A splat of a local Array the program changes after its literal, holding
    a String the container rule cannot make the handle (a global pushed into
    it, another Array's contents through `replace`), into a parameter that
@@ -19726,6 +19752,15 @@ static void refuse_changed_splat(Compiler *c, int id, const char *name, int recv
   const char *pname = NULL, *mname = NULL;
   splat_appended_param(c, id, name, recv, dyn, p, &pname, &mname);
   if (!pname) return;
+  /* --share-strings: a proc a local holds, written once from a lambda
+     literal: the route is from the Array's elements to its parameter */
+  if (repr_share_rule(c) && !mname) {
+    int lam = refuse_local_lambda(c, recv);
+    ShareRoute q = share_route(sp, nt_ref(nt, sp, "expression"), 1);
+    q.to = lam;
+    q.to_name = pname;
+    if (lam >= 0 && share_route_defer(c, &q, "")) return;
+  }
   char mt[96]; if (mname) snprintf(mt, sizeof mt, "`%s`", mname);
   refuse_string_copy(c, sp, mname ? mt : NULL, pname, "a splat of an Array the program changes",
                      "through a splat of an Array that holds a copy");
@@ -20138,8 +20173,14 @@ static void refuse_string_copies(Compiler *c, int id) {
         unsupported_feature(c, id, "a String is not yet shared by reference through a fresh Array literal into an appending iterator block");
     }
     if (sp_streq(name, "tap") && (rt == TY_STRING || rt == TY_STRBUF) &&
-        rk != NK_LocalVariableReadNode && rk != NK_StringNode && rk != NK_InterpolatedStringNode)
-      unsupported_feature(c, id, "a String is not yet shared by reference through tap on a fresh String");
+        rk != NK_LocalVariableReadNode && rk != NK_StringNode && rk != NK_InterpolatedStringNode) {
+      /* --share-strings: a block parameter the rule made the handle takes
+         the receiver as one (emit_tap_then_expr) */
+      const char *tpn = block_param_name(c, blk, 0);
+      LocalVar *tpv = tpn ? scope_local(comp_scope_of(c, blk), tpn) : NULL;
+      if (!(repr_share_rule(c) && repr_of_slot(c, tpv).handle))
+        unsupported_feature(c, id, "a String is not yet shared by reference through tap on a fresh String");
+    }
   }
   int av[16];
   int dyn = is_proc_invoke(name);
