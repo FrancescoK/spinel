@@ -5516,6 +5516,19 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
   return str_in(name, names);
 }
 
+/* `src.each_slice(n).name` / `src.each_cons(n).name`, a blockless window
+   Enumerator over a collection, consumed by an element iterator: each
+   window is one Array, which ty_block_yield hands the window's own block */
+static int fwd_window_enum_iter(Compiler *c, int recv, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode || nt_ref(nt, recv, "block") >= 0) return 0;
+  const char *wn = nt_str(nt, recv, "name");
+  int src = nt_ref(nt, recv, "receiver");
+  TyKind st = src >= 0 ? infer_type(c, src) : TY_UNKNOWN, yt[2];
+  if (!wn || !is_each_window(wn) || ty_block_yield(st, wn, yt, 2) != 1) return 0;
+  return ty_block_yield(TY_POLY_ARRAY, name, yt, 2) == 1;
+}
+
 /* Hash's own select, filter, reject and to_h yield the key and the value as
    two values, where `each` and the Enumerable iterators yield the [k, v] pair
    as one: a proc taking |x| gets the key alone, and a lambda or Method of two
@@ -5937,6 +5950,13 @@ int desugar_value_callable_forwards(Compiler *c) {
          answered nil. */
       arity = 1;
       pty[0] = TY_POLY;
+    }
+    else if (rt == TY_ENUMERATOR && fwd_window_enum_iter(c, recv, name)) {
+      /* `a.each_slice(2).map(&pr)`: the windows' iterators take one Array
+         per step, as `each_slice(2, &pr)` does; left in the &-form, the
+         fold that unrolls these chains reads a literal block only */
+      arity = 1;
+      pty[0] = TY_UNKNOWN;
     }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
