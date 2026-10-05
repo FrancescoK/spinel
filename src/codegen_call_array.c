@@ -978,7 +978,8 @@ int emit_op_array_transpose(Compiler *c, const BopCtx *x, Buf *b) {
     int t = ++g_tmp;
     const char *en = rt == TY_INT_ARRAY ? "Integer" : rt == TY_FLOAT_ARRAY ? "Float" : "String";
     buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-    buf_printf(b, "; if (_t%d && sp_%sArray_length(_t%d) > 0) sp_raise_cls(\"TypeError\","
+    buf_printf(b, "; if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"transpose\", sp_box_nil()));"
+                  " if (sp_%sArray_length(_t%d) > 0) sp_raise_cls(\"TypeError\","
                   " \"no implicit conversion of %s into Array\"); sp_%sArray_new(); })", t, k, t, en, k);
     return 1;
   }
