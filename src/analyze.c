@@ -25368,10 +25368,12 @@ int nullable_int_value(Compiler *c, int v) {
   if (v < 0) return 0;
   if (nt_kind(nt, v) == NK_NilNode) return 1;
   /* `return e` / `(e)` carry their inner value unchanged; a block tail can be
-     either, and so can a method's own tail statement. */
+     either, and so can a method's own tail statement. A bare `return` answers
+     nil, which an Integer or Float return carries as the sentinel. */
   if (nt_kind(nt, v) == NK_ReturnNode) {
     int rv = nt_ref(nt, v, "arguments");
     int rn = 0; const int *ra = rv >= 0 ? nt_arr(nt, rv, "arguments", &rn) : NULL;
+    if (rn == 0) return 1;
     return ra && rn == 1 ? nullable_int_value(c, ra[0]) : 0;
   }
   /* A conditional's value is one of its arms, so it carries the sentinel if any
