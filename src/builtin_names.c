@@ -210,6 +210,11 @@ int is_str_each_iter(const char *n) {
          sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint");
 }
 
+int is_str_string_yield(const char *n) {
+  return sp_streq(n, "each_char") || sp_streq(n, "each_line") || sp_streq(n, "upto") ||
+         sp_streq(n, "chars") || sp_streq(n, "lines") || sp_streq(n, "split") || sp_streq(n, "scrub");
+}
+
 int is_diverging_call(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail") || sp_streq(n, "throw") ||
          sp_streq(n, "exit") || sp_streq(n, "exit!") || sp_streq(n, "abort");

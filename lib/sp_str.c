@@ -1344,45 +1344,73 @@ const char *sp_str_scrub_bang(const char *s, const char *repl) {
   sp_str_check_mutable(s);
   return r;
 }
+/* The length of the UTF-8 character at p (n bytes left), or of the invalid
+   sequence there, *bad set: a lead byte and the continuation bytes that fit
+   it before one that does not, as CRuby takes them (Unicode's maximal
+   subpart), so a truncated "\xE3\x81" is one sequence and an overlong
+   "\xC0\xAF" or a surrogate "\xED\xA0\x80" is one per byte. */
+static size_t sp_utf8_scan1(const unsigned char *p, size_t n, int *bad) {
+  unsigned char c = p[0], lo = 0x80, hi = 0xBF;
+  int need;
+  *bad = 0;
+  if (c < 0x80) return 1;
+  if (c >= 0xC2 && c <= 0xDF) need = 1;
+  else if (c >= 0xE0 && c <= 0xEF) { need = 2; if (c == 0xE0) lo = 0xA0; else if (c == 0xED) hi = 0x9F; }
+  else if (c >= 0xF0 && c <= 0xF4) { need = 3; if (c == 0xF0) lo = 0x90; else if (c == 0xF4) hi = 0x8F; }
+  else { *bad = 1; return 1; }
+  size_t k = 1;
+  for (; k <= (size_t)need; k++) {
+    if (k >= n || p[k] < lo || p[k] > hi) { *bad = 1; return k; }
+    lo = 0x80; hi = 0xBF;
+  }
+  return k;
+}
+/* String#scrub's walk: the offset of the first invalid sequence of s (bl
+   bytes) at or after `from`, its length in *len; bl when there is none. */
+sp_int sp_str_scrub_bad(const char *s, sp_int bl, sp_int from, sp_int *len) {
+  sp_int i = from;
+  while (i < bl) {
+    int bad;
+    size_t k = sp_utf8_scan1((const unsigned char *)s + i, (size_t)(bl - i), &bad);
+    if (bad) { *len = (sp_int)k; return i; }
+    i += (sp_int)k;
+  }
+  *len = 0;
+  return bl;
+}
+/* A replacement scrub's block answered: valid UTF-8, or CRuby's
+   ArgumentError naming it. */
+const char *sp_str_scrub_repl(const char *r) {
+  sp_int len, bl = (sp_int)sp_str_byte_len(r);
+  if (sp_str_scrub_bad(r, bl, 0, &len) < bl)
+    sp_raise_cls("ArgumentError", sp_sprintf("replacement must be valid byte sequence '%s'", sp_str_inspect(r)));
+  return r;
+}
+/* String#scrub: each invalid sequence (sp_str_scrub_bad) is replaced; a
+   NULL replacement is U+FFFD (3 UTF-8 bytes: EF BF BD), as in CRuby. */
 const char *sp_str_scrub(const char *s, const char *repl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(repl);
   if(!s)sp_nil_recv("scrub");
   static const char fffd[] = "\xEF\xBF\xBD";
   const char *r = repl ? repl : fffd;
   size_t rlen = strlen(r);
-  size_t bl = sp_str_byte_len(s);
-  size_t cap = bl + 64;
+  sp_int bl = (sp_int)sp_str_byte_len(s);
+  size_t cap = (size_t)bl + 64;
  /* malloc scratch (grown with realloc on invalid-byte runs); the final
     string is emitted at the exact length below. */
   char *out = (char *)malloc(cap);
   size_t olen = 0;
-  size_t i = 0;
+  sp_int i = 0;
   while (i < bl) {
-    unsigned char c = (unsigned char)s[i];
-    int expected = sp_utf8_char_len(c);
-    int valid = 1;
-    if (expected == 1) {
-      if (c >= 0x80) valid = 0;
-    }
-else {
-      if (i + (size_t)expected > bl) valid = 0;
-      else {
-        for (int k = 1; k < expected; k++) {
-          if (((unsigned char)s[i + k] & 0xC0) != 0x80) { valid = 0; break; }
-        }
-      }
-    }
-    if (valid) {
-      if (olen + (size_t)expected + 1 >= cap) { cap = ((olen + expected) * 2) + 64; out = (char*)realloc(out, cap); }
-      memcpy(out + olen, s + i, (size_t)expected);
-      olen += (size_t)expected;
-      i += (size_t)expected;
-    }
-else {
-      if (olen + rlen + 1 >= cap) { cap = ((olen + rlen) * 2) + 64; out = (char*)realloc(out, cap); }
-      memcpy(out + olen, r, rlen);
-      olen += rlen;
-      i += 1;
-    }
+    sp_int len, at = sp_str_scrub_bad(s, bl, i, &len);
+    if (at < bl && repl && i == 0) sp_str_scrub_repl(repl);   /* checked once, where it is used */
+    size_t keep = (size_t)(at - i), add = at < bl ? rlen : 0;
+    if (olen + keep + add + 1 >= cap) { cap = (olen + keep + add) * 2 + 64; out = (char *)realloc(out, cap); }
+    memcpy(out + olen, s + i, keep);
+    olen += keep;
+    memcpy(out + olen, r, add);
+    olen += add;
+    i = at + len;
+    if (at >= bl) break;
   }
   char *res = sp_str_alloc(olen);
   memcpy(res, out, olen);
