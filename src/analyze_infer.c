@@ -3439,10 +3439,13 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
        the result is poly (#2677). */
     if (sp_streq(name, "<=>") && argc == 1)
       { *out = infer_type(c, argv[0]) == TY_TIME ? TY_INT : TY_POLY; return 1; }
+    /* a program's own Object method answers what it returns, whatever its
+       name says (activesupport's Object#acts_like? gives a respond_to?
+       answer that may be boxed): asked before the predicate rule below */
+    { TyKind ort; if (object_reopen_answers(c, "Time", id, &ort)) { *out = ort; return 1; } }
     /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
        catch-all below swallows them */
     { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') { *out = TY_BOOL; return 1; } }
-    { TyKind ort; if (object_reopen_answers(c, "Time", id, &ort)) { *out = ort; return 1; } }
     /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
     { *out = TY_INT; return 1; }
   }
