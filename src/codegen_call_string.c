@@ -1029,7 +1029,7 @@ int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b) {
 int emit_str_append_chain_handle(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
-  if (!name || !is_append_concat(name)) return 0;
+  if (!name || !is_string_append_or_prepend(name)) return 0;
   int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   if (recv < 0 || argc < 1 || nt_ref(nt, id, "block") >= 0) return 0;
