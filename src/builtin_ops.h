@@ -304,9 +304,9 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
    receiver family and name. A name with no row on a family that has a
    default row ("*") takes the default; one on a family without a default
    is not followed (the analysis treats it as unknown). */
-#define BOP_KERNEL   ((TyKind)-4)   /* a receiverless builtin (Kernel) */
-#define BOP_ANY_RECV ((TyKind)-5)   /* Object's methods, on any receiver */
-#define BOP_CALLABLE ((TyKind)-6)   /* a proc, a lambda or a Method */
+#define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
+#define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
+#define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
 
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
