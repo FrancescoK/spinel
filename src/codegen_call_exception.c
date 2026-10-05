@@ -262,7 +262,11 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)((void*)(", t);
       emit_expr(c, recv, b);
       buf_printf(b, ")); sp_Exception_set_backtrace(_t%d, ", t);
-      emit_expr(c, argv[0], b);
+      /* the runtime stores a String Array: an Array whose kind only the
+         run time knows (a `callstack.map(&:to_s)` of an untyped
+         parameter) is converted from its box */
+      if (comp_ntype(c, argv[0]) == TY_STR_ARRAY) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_poly_as_str_array("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       buf_puts(b, "); })");
       return 1;
     }
