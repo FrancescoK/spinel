@@ -1513,8 +1513,9 @@ int g_re_init_needed = 0;
    and `[]=` store it, rather than the strict slot's TypeError: analyze marks
    the array it lands in (unshift, insert, fill) as able to hold one. */
 void emit_typed_elem_value(Compiler *c, int node, TyKind et, Buf *b) {
-  TyKind vt = comp_ntype(c, node);
-  if (vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING)) {
+  Repr vr = repr_of(c, node);
+  TyKind vt = vr.as_ty;
+  if (vr.kind == RK_BOXED && (et == TY_INT || et == TY_FLOAT || et == TY_STRING)) {
     buf_printf(b, "sp_poly_elem_%s(", et == TY_INT ? "i" : et == TY_FLOAT ? "f" : "s");
     emit_expr(c, node, b);
     buf_puts(b, ")");
@@ -2798,7 +2799,7 @@ void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b) {
   if (node >= 0 && (slot == TY_INT || slot == TY_FLOAT)) {
     const char *sent = slot == TY_INT ? "SP_INT_NIL" : "sp_float_nil()";
     if (nt_kind(c->nt, node) == NK_NilNode) { buf_puts(b, sent); return; }
-    TyKind vt = comp_ntype(c, node);
+    TyKind vt = repr_of(c, node).as_ty;
     if (vt == TY_NIL || vt == TY_VOID) {
       buf_puts(b, "({ (void)("); emit_expr(c, node, b); buf_printf(b, "); %s; })", sent);
       return;
@@ -2815,8 +2816,9 @@ void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b) {
    sink; a Bignum that does not fit raises there. Any other expression is
    emitted as it is. `text` is the already-rendered expression. */
 void emit_typed_sink_text(Compiler *c, int node, TyKind slot, const char *text, Buf *b) {
-  TyKind vt = node >= 0 ? comp_ntype(c, node) : TY_UNKNOWN;
-  if (vt == TY_POLY && poly_sink_unbox_fn(slot)) buf_printf(b, "%s(%s)", poly_sink_unbox_fn(slot), text);
+  Repr vr = repr_of(c, node);
+  TyKind vt = vr.as_ty;
+  if (vr.kind == RK_BOXED && poly_sink_unbox_fn(slot)) buf_printf(b, "%s(%s)", poly_sink_unbox_fn(slot), text);
   else if (vt == TY_BIGINT && slot == TY_INT) buf_printf(b, "sp_bigint_to_int(%s)", text);
   /* A block's value into a typed element (`fill { ... }`, a collect
      accumulator) is written as it is: where its class differs from the
@@ -3214,8 +3216,9 @@ const char *nil_store_sfx(Compiler *c, const char *k, int node) {
   if (!k || (!sp_streq(k, "Int") && !sp_streq(k, "Float"))) return "";
   if (node == NIL_STORE_BOXED) return "_nilable";   /* a boxed element, converted */
   if (node < 0) return "";
-  TyKind t = comp_ntype(c, node);
-  if (t == TY_NIL || t == TY_POLY || t == TY_UNKNOWN) return "_nilable";
+  Repr r = repr_of(c, node);
+  TyKind t = r.as_ty;
+  if (t == TY_NIL || r.kind == RK_BOXED || t == TY_UNKNOWN) return "_nilable";
   if (t != TY_INT && t != TY_FLOAT) return "";
   return enum_builtin_node(c, node) ? "_nilable" : "";
 }
@@ -3357,9 +3360,10 @@ int call_never_returns(Compiler *c, int id) {
   int mi = -1;
   if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) mi = comp_self_call_mi(c, id, nm);
   else {
-    TyKind rt = comp_ntype(c, recv);
+    Repr rr = repr_of(c, recv);
+    TyKind rt = rr.as_ty;
     if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
-    else if (rt == TY_POLY) {
+    else if (rr.kind == RK_BOXED) {
       /* a boxed receiver dispatches to whichever class defines the name;
          every one of them must raise (a builtin answering it would have
          given the call that builtin's type, not void) */
@@ -3695,7 +3699,8 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);
   if (ty && sp_streq(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return 0; }
   if (ty && sp_streq(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return 0; }
-  TyKind t = comp_ntype(c, id);
+  Repr tr = repr_of(c, id);
+  TyKind t = tr.as_ty;
   if (t == TY_SYMBOL) {
     buf_puts(b, "sp_sym_to_s("); emit_expr(c, id, b); buf_puts(b, ")");
     return 0;
@@ -3709,7 +3714,7 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
     buf_printf(b, "); _t%d ? _t%d : (const char *)&sp_catch_nil_tag; })", tp, tp);
     return 1;
   }
-  if (t == TY_POLY) {
+  if (tr.kind == RK_BOXED) {
     /* A boxed tag is whatever the value is: a Symbol or a String matches by
        name, an object by identity. The kind is the value's at run time, so
        the caller gets the sp_RbVal and -1, and asks sp_catch_tag_of for the
@@ -3777,7 +3782,7 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
 }
 
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
-  TyKind actual = comp_ntype(c, key);
+  int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {
     /* evaluate the key for its effects, then answer the value no key equals */
     buf_puts(b, "({ (void)(");
@@ -3791,7 +3796,7 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
      leftover of an older Hash.new{} model (its hash is PolyPoly now): it
      made `h[:a]` find "a"'s entry and `h.delete(:a)` remove it (#4531).
      :a != "a", so it is a miss like any other kind mismatch above. */
-  if (actual == TY_POLY && kt != TY_POLY) {
+  if (kboxed && kt != TY_POLY) {
     /* The union member is only valid when the tag agrees. A call site reached
        with a key of another kind -- the same method called with a String and
        with a Float -- read a Float's bits as a `const char *` and dereferenced
@@ -3807,7 +3812,7 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
     else                      buf_puts(b, "; _hk.tag == SP_TAG_INT ? _hk.v.i : SP_INT_NIL; })");
     return;
   }
-  if (kt == TY_POLY && actual != TY_POLY) {
+  if (kt == TY_POLY && !kboxed) {
     /* PolyPolyHash key: box the typed value into sp_RbVal */
     emit_boxed(c, key, b);
     return;
