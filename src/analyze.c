@@ -31792,6 +31792,104 @@ static void an_phase_late_widen(Compiler *c) {
     infer_type(c, id);
 }
 
+/* The only calls an_call_targets_scope can answer yes for, given a scope's
+   name: a call on that name, a call on a name some class aliases a method
+   under, and `new` for an `initialize`; and, given a call's name, the only
+   scopes. Asking every call of the program about every scope made the
+   passes below scopes times calls, every round; asking just these, in the
+   same order, gives the same answers in the same order. */
+typedef struct {
+  int nc, nb, nal, nsc;
+  int *calls;           /* the CallNodes, in kind-chain order */
+  const char **cname;   /* their names, by position */
+  int *byname;          /* positions with a name, by (name, position) */
+  int *aliased;         /* positions whose name is an alias, ascending */
+  int *scopes;          /* named scopes past the top, by (name, index) */
+  const char **sname;   /* scope names, by index */
+  int *buf, *sbuf;      /* the candidates of one ask */
+} PRCallIdx;
+static const char **g_prci_key;
+static int prci_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  int r = strcmp(g_prci_key[x], g_prci_key[y]);
+  return r ? r : (x > y) - (x < y);
+}
+static void prci_build(Compiler *c, PRCallIdx *x) {
+  const NodeTable *nt = c->nt;
+  int cap = 1;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) cap++;
+  x->nc = x->nb = x->nal = x->nsc = 0;
+  x->calls = (int *)malloc(sizeof(int) * (size_t)cap);
+  x->cname = (const char **)malloc(sizeof(char *) * (size_t)cap);
+  x->byname = (int *)malloc(sizeof(int) * (size_t)cap);
+  x->aliased = (int *)malloc(sizeof(int) * (size_t)cap);
+  x->buf = (int *)malloc(sizeof(int) * (size_t)cap * 3);
+  x->scopes = (int *)malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  x->sname = (const char **)malloc(sizeof(char *) * (size_t)(c->nscopes + 1));
+  x->sbuf = (int *)malloc(sizeof(int) * (size_t)(c->nscopes + 1) * 2);
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    const char *un = nt_str(nt, u, "name");
+    x->calls[x->nc] = u; x->cname[x->nc] = un;
+    if (un) {
+      x->byname[x->nb++] = x->nc;
+      if (an_alias_name(c, un)) x->aliased[x->nal++] = x->nc;
+    }
+    x->nc++;
+  }
+  for (int s = 0; s < c->nscopes; s++) {
+    x->sname[s] = c->scopes[s].name;
+    if (s > 0 && c->scopes[s].name) x->scopes[x->nsc++] = s;
+  }
+  g_prci_key = x->cname; qsort(x->byname, (size_t)x->nb, sizeof(int), prci_cmp);
+  g_prci_key = x->sname; qsort(x->scopes, (size_t)x->nsc, sizeof(int), prci_cmp);
+  g_prci_key = NULL;
+}
+static void prci_free(PRCallIdx *x) {
+  free(x->calls); free(x->cname); free(x->byname); free(x->aliased);
+  free(x->buf); free(x->scopes); free(x->sname); free(x->sbuf);
+}
+/* The run of `sorted` (n entries, keyed by key[]) named nm: its start, and
+   its length as the answer. */
+static int prci_run(const int *sorted, int n, const char **key, const char *nm, int *at) {
+  int lo = 0, hi = n;
+  while (lo < hi) { int mid = (lo + hi) / 2; if (strcmp(key[sorted[mid]], nm) < 0) lo = mid + 1; else hi = mid; }
+  int e = lo;
+  while (e < n && strcmp(key[sorted[e]], nm) == 0) e++;
+  *at = lo;
+  return e - lo;
+}
+/* Merge ascending runs a and b into out, dropping repeats; the count. */
+static int prci_merge(const int *a, int na, const int *b, int nb, int *out) {
+  int i = 0, j = 0, n = 0;
+  while (i < na || j < nb) {
+    int v = j >= nb || (i < na && a[i] <= b[j]) ? a[i++] : b[j++];
+    if (n == 0 || out[n - 1] != v) out[n++] = v;
+  }
+  return n;
+}
+/* The positions of the calls that can reach a scope named nm, ascending. */
+static int prci_calls_for(PRCallIdx *x, const char *nm) {
+  int at = 0, n1 = prci_run(x->byname, x->nb, x->cname, nm, &at);
+  int *t = x->buf + x->nc, *out = x->buf;
+  int nt = prci_merge(x->byname + at, n1, x->aliased, x->nal, t);
+  if (!sp_streq(nm, "initialize")) { memcpy(out, t, sizeof(int) * (size_t)nt); return nt; }
+  int n3 = prci_run(x->byname, x->nb, x->cname, "new", &at);
+  return prci_merge(t, nt, x->byname + at, n3, out);
+}
+/* The scopes a call named un can reach, ascending; -1 for every scope (an
+   alias reaches past the name). */
+static int prci_scopes_for(Compiler *c, PRCallIdx *x, const char *un) {
+  if (!un) return 0;
+  if (an_alias_name(c, un)) return -1;
+  int at = 0, n1 = prci_run(x->scopes, x->nsc, x->sname, un, &at);
+  if (!sp_streq(un, "new")) { memcpy(x->sbuf, x->scopes + at, sizeof(int) * (size_t)n1); return n1; }
+  int at3 = 0, n3 = prci_run(x->scopes, x->nsc, x->sname, "initialize", &at3);
+  int *t = x->sbuf + c->nscopes + 1;
+  memcpy(t, x->scopes + at, sizeof(int) * (size_t)n1);
+  return prci_merge(t, n1, x->scopes + at3, n3, x->sbuf);
+}
+
 /* The proc-return re-derivation: ret_proc_ret and proc_ret from the now-widened bodies, as a focused fixpoint, then the node-type cache refresh (analyze_program's steps, in their order) */
 static void an_phase_proc_returns(Compiler *c) {
   /* --int-overflow=promote: the widen above can change a proc body's return
@@ -32068,11 +32166,14 @@ static void an_phase_proc_returns(Compiler *c) {
         /* (9) a parameter bound from an argument that is a poly array now
            (a clone's receiver parameter included: the rewrite passes the
            receiver as the first argument) */
+        PRCallIdx ix;
+        prci_build(c, &ix);
         for (int s = 1; s < c->nscopes; s++) {
           Scope *sc = &c->scopes[s];
           if (!sc->name || sc->nparams <= 0) continue;
-          for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
-            if (nt_kind(nt, u) != NK_CallNode) continue;
+          int nk = prci_calls_for(&ix, sc->name);
+          for (int q = 0; q < nk; q++) {
+            int u = ix.calls[ix.buf[q]];
             if (!an_call_targets_scope(c, u, s, sc)) continue;
             int a = nt_ref(nt, u, "arguments"); int an = 0;
             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -32120,7 +32221,8 @@ static void an_phase_proc_returns(Compiler *c) {
             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
             block_site_types(c, &bsig, av, an, pos, absent, pos + np);
           }
-          else for (int s = 1; s < c->nscopes; s++) {
+          else for (int q = 0, nq = prci_scopes_for(c, &ix, un); nq < 0 ? q < c->nscopes - 1 : q < nq; q++) {
+            int s = nq < 0 ? q + 1 : ix.sbuf[q];
             if (!c->scopes[s].yields || !an_call_targets_scope(c, u, s, &c->scopes[s])) continue;
             const int *sites = NULL;
             int ns = block_sites(c, s, &sites);
@@ -32139,6 +32241,7 @@ static void an_phase_proc_returns(Compiler *c) {
           }
           free(pos); free(absent);
         }
+        prci_free(&ix);
         /* (10) a local pinned to a container's element kind whose container
            has widened: the read hands it a box now, so the pin no longer
            holds and the slot takes the box (int_array_array's `row = t[3]`) */
