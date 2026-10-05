@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "share.h"
 #include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
@@ -19044,6 +19045,29 @@ static __attribute__((noreturn)) void refuse_string_copy(Compiler *c, int arg, c
   unsupported_feature(c, arg, msg);
 }
 
+/* refuse_string_copy for a route whose parameter pname is a local of the
+   scope of node `to` (a block, a method's body): under --share-strings the
+   route is the rule's first (share_route_defer). */
+static void refuse_string_copy_to(Compiler *c, int arg, int to, const char *target,
+                                  const char *pname, const char *through, const char *why) {
+  ShareRoute q = share_route(arg, arg, 0);
+  q.to = to;
+  q.to_name = pname;
+  q.carry = arg;
+  if (to >= 0 && pname && share_route_defer(c, &q, "")) return;
+  refuse_string_copy(c, arg, target, pname, through, why);
+}
+
+/* The same for a parameter of the one method named mname (none when no
+   method or several have the name). */
+static void refuse_string_copy_named(Compiler *c, int arg, const char *mname, const char *target,
+                                     const char *pname, const char *through, const char *why) {
+  int mi = -1, n = 0;
+  for (int k = 0; mname && k < c->nscopes; k++)
+    if (c->scopes[k].def_node >= 0 && c->scopes[k].name && sp_streq(c->scopes[k].name, mname)) { mi = k; n++; }
+  refuse_string_copy_to(c, arg, n == 1 ? c->scopes[mi].body : -1, target, pname, through, why);
+}
+
 /* Does a method's parameter take a String by value, so that a String
    variable bound to it arrives as a copy? A handle parameter is shared
    through the static binders already (#3227, #5957), and a boxed one
@@ -19299,8 +19323,8 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
             DynReach r;
             dyn_value_kw_reach(c, g_yield_proc_expr, key, &r);
             if (r.app)
-              refuse_string_copy(c, value, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
-                                 "through a splatted Hash literal (`**{ k: v }`)");
+              refuse_string_copy_named(c, value, r.mname, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
+                                       "through a splatted Hash literal (`**{ k: v }`)");
           }
         }
         int v;
@@ -19962,7 +19986,7 @@ static void refuse_unplaced_lead(Compiler *c, int id, const char *name, int recv
       char why[160], mt[96];
       snprintf(why, sizeof why, "from %s ahead of a splat whose length decides which parameter takes it", kind);
       snprintf(mt, sizeof mt, "`%s`", m->name ? m->name : name);
-      refuse_string_copy(c, av[i], mt, m->pnames[j], "a call that gathers its arguments", why);
+      refuse_string_copy_to(c, av[i], m->body, mt, m->pnames[j], "a call that gathers its arguments", why);
     }
   }
 }
@@ -20187,8 +20211,8 @@ static void refuse_string_copies(Compiler *c, int id) {
             DynReach r;
             dyn_call_kw_reach(c, id, key, &r);
             if (r.app)
-              refuse_string_copy(c, value, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
-                                 "through a splatted Hash literal (`**{ k: v }`)");
+              refuse_string_copy_named(c, value, r.mname, NULL, key, "a splatted Hash literal (`**{ k: v }`)",
+                                       "through a splatted Hash literal (`**{ k: v }`)");
           }
         }
         int v, shared;
@@ -20289,8 +20313,8 @@ static void refuse_string_copies(Compiler *c, int id) {
             !thread_arg_runs_again(c, args[k], blk)) continue;
       }
       const char *through = sp_streq(name, "new") ? "`Thread.new`" : "`Fiber#resume`";
-      refuse_string_copy(c, args[k], "a block", proc_param_name(c, blk, k), through,
-                         sp_streq(name, "new") ? "through `Thread.new`" : "through `Fiber#resume`");
+      refuse_string_copy_to(c, args[k], blk, "a block", proc_param_name(c, blk, k), through,
+                            sp_streq(name, "new") ? "through `Thread.new`" : "through `Fiber#resume`");
     }
   }
   /* `C.new(s)`, `k.new(s)`, `new(s)` in a class method and `raise C, s`: an
