@@ -1,0 +1,34 @@
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+true
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+9
+[108, 108, 111, 0, 99, 111, 112, 121, 10]
+9
+[108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+true
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[112, 114, 101, 102, 105, 120, 58, 104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[112, 114, 101, 102, 105, 120, 58, 104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+11
+[104, 101, 108, 108, 111, 0, 99, 111, 112, 121, 10]
+[NoMethodError, "undefined method 'read' for nil"]
+[NoMethodError, "undefined method 'write' for nil"]
+[NoMethodError, "undefined method 'read' for an instance of Integer"]
+[NoMethodError, "undefined method 'write' for an instance of Integer"]
+[NoMethodError, "undefined method 'read' for true"]
+[NoMethodError, "undefined method 'write' for true"]
+[NoMethodError, "undefined method 'read' for an instance of Symbol"]
+[NoMethodError, "undefined method 'write' for an instance of Symbol"]
+[NoMethodError, "undefined method 'read' for an instance of Object"]
+[NoMethodError, "undefined method 'write' for an instance of Object"]

@@ -2057,6 +2057,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 GC_MINOR_TESTS := test/reflect_ivar_nil_presence.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
+                  test/io_copy_stream_boxed_path.rb \
                   test/data_ivar_set_value_gc.rb \
                   test/method_call_block_captures_outer.rb \
                   test/range_dup_unfrozen.rb \
