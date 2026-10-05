@@ -2715,9 +2715,8 @@ int method_call_param_shift(Compiler *c, int mn, int mi) {
   return (m->class_id < 0 && !m->is_cmethod) ? 1 : 0;
 }
 
-/* True when scope `scope_idx` contains an explicit `return` (such a method
-   cannot be inlined at its call sites). Shared by the inliner and the
-   valued-break detector. */
+/* True when scope `scope_idx` contains an explicit `return`, which needs
+   a return funnel when the method is inlined at its call sites. */
 int scope_has_return(Compiler *c, int scope_idx) {
   NT_FOREACH_KIND(c->nt, NK_ReturnNode, id)
     if (c->nscope[id] == scope_idx) return 1;
@@ -2727,7 +2726,7 @@ int scope_has_return(Compiler *c, int scope_idx) {
 /* Resolve a block-bearing CallNode to an INLINE-ABLE yielding user method:
    mirrors emit_inline_call_x's resolution (free function -> implicit-self
    chain -> Cls class method -> object-receiver chain) and its
-   yields/!return guard. -1 for anything else -- builtin iterators, `loop`,
+   yields guard. -1 for anything else -- builtin iterators, `loop`,
    `catch`, proc/lambda literals, and methods the inliner would refuse. */
 int call_user_yield_mi(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -2750,7 +2749,7 @@ int call_user_yield_mi(Compiler *c, int id) {
   }
   if (mi < 0) return -1;
   Scope *m = &c->scopes[mi];
-  if (!m->yields || scope_has_return(c, mi)) return -1;
+  if (!m->yields) return -1;
   return mi;
 }
 
