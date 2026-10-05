@@ -3971,8 +3971,16 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* a literal or a nil that makes nothing is nothing to keep */
       int lcon = !lmk && (nt_kind(nt, left) == NK_StringNode || nt_kind(nt, left) == NK_NilNode);
       int rcon = !rmk && (nt_kind(nt, right) == NK_StringNode || nt_kind(nt, right) == NK_NilNode);
-      if (!lran && !lcon && (rrun || (lmk && rmk))) lt = ++g_tmp;
-      if (!rran && !rcon && (lrun || (lmk && rmk))) rt = ++g_tmp;
+      /* a local the other end does not name and cannot reach through a
+         Proc still holds its String when the Range is made */
+      const char *ln = nt_kind(nt, left) == NK_LocalVariableReadNode ? nt_str(nt, left, "name") : NULL;
+      const char *rn = nt_kind(nt, right) == NK_LocalVariableReadNode ? nt_str(nt, right, "name") : NULL;
+      int lkept = !lmk && ln && !subtree_reads_local(nt, right, ln) &&
+                  !subtree_writes_local(c, right, ln) && !subtree_may_run_proc(c, right);
+      int rkept = !rmk && rn && !subtree_reads_local(nt, left, rn) &&
+                  !subtree_writes_local(c, left, rn) && !subtree_may_run_proc(c, left);
+      if (!lran && !lcon && !lkept && (rrun || (lmk && rmk))) lt = ++g_tmp;
+      if (!rran && !rcon && !rkept && (lrun || (lmk && rmk))) rt = ++g_tmp;
     }
     int bt = bind ? ++g_tmp : 0;
     if (bind) {
