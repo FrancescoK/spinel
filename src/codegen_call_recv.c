@@ -11441,6 +11441,10 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (sp_streq(name, "nil?") && !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
   }
+  /* Symbol#id2name: a Symbol's name, any other value's NoMethodError */
+  if (sp_streq(name, "id2name") && !user_defines_or_reads(c, name) && comp_ntype(c, id) == TY_STRING) {
+    buf_puts(b, "sp_poly_sym_id2name("); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; }
+  }
   /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
      pairs, anything else CRuby's NoMethodError. Skip when a user class
      defines to_a so its method wins the dispatch. */

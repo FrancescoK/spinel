@@ -1358,6 +1358,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      since Set#hash is exactly that loop (#4728). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "hash"))
     { *out = TY_INT; return 1; }
+  /* Symbol#id2name on a boxed receiver: the name as a String (sp_poly_sym_id2name) */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && sp_streq(name, "id2name") &&
+      !an_user_defines_or_reads(c, name))
+    { *out = TY_STRING; return 1; }
   /* blockless cycle(n) on a boxed receiver: the Enumerator sp_poly_cycle_n
      builds, and a countless cycle the endless one sp_poly_cycle builds,
      unless a class of the program's own has a method or a class
