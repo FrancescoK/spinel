@@ -54,6 +54,12 @@ p "f=#{1.5}"
 p "s=#{"ab"}"
 p "n=#{-5}"
 
+# A part that assigns converts its value the same way and still assigns: the
+# conversion used to read the variable back under the call's name, `to_s`,
+# and the C did not compile.
+p "w=#{w = 7}"
+p w
+
 # and a name no reopen defines still answers the builtin at run time
 p pick("ab").downcase
 p pick(5).zero?
