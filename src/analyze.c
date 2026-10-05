@@ -14898,6 +14898,18 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       c->strbuf_box[sn] = 1;
       return 1;
     }
+    /* a poly parameter stored into the container (`def <<(v) = @values
+       << v` reached through a poly receiver; its type may not be settled
+       yet, and a read that ends up typed is not lifted): the read lifts a String it
+       holds into the handle, stored back, and the callers' Strings are
+       pulled in as for any parameter appended to */
+    if (snv->is_param && !snv->is_cell && !snv->is_block_param &&
+        an_param_idx(sns, snm) >= 0 && (snv->type == TY_POLY || snv->type == TY_UNKNOWN)) {
+      if (c->poly_strbuf_lift[sn]) return 0;
+      c->poly_strbuf_lift[sn] = 1;
+      snv->poly_lift |= POLY_LIFT_APPENDED;
+      return 1;
+    }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -16428,6 +16440,91 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
   sb_elem_nactive--;
   return r;
 }
+/* A program method that hands out one element of a container it holds
+   (`def [](i) = @values[i]`, `def first = @values[0]`): a mutation through
+   its result (`h[0] << "!"`) reaches the container exactly as one through
+   `@values[i]` itself would, so the element read it answers is demanded as
+   an element read handed to an appender is. Answers whether anything
+   changed. A result that is another such call is followed (bounded). */
+static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || depth > 4 || nt_kind(nt, call) != NK_CallNode) return 0;
+  const char *mn = nt_str(nt, call, "name");
+  if (!mn) return 0;
+  int recv = nt_ref(nt, call, "receiver");
+  int cls = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *cs = comp_scope_of(c, call);
+    cls = cs ? cs->class_id : -1;
+    if (cls < 0) return 0;
+  }
+  else {
+    TyKind rt = infer_type(c, recv);
+    /* a receiver read out of a poly slot (a Hash with a default value)
+       resolves by name: every program class's method of that name */
+    if (rt != TY_POLY && !ty_is_object(rt)) return 0;
+    if (ty_is_object(rt)) cls = ty_object_class(rt);
+  }
+  int changed = 0;
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (cls >= 0) { if (mi != comp_method_in_chain(c, cls, mn, NULL)) continue; }
+    else if (!m->name || !sp_streq(m->name, mn) || m->class_id < 0 || m->is_cmethod) continue;
+    int vals[64], nv = 0;
+    int last = scope_body_last(c, mi);
+      if (last >= 0) vals[nv++] = last;
+    for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0 && nv < 64; u = comp_kind_next(c, u)) {
+      if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+      int ra = nt_ref(nt, u, "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      if (rn == 1) vals[nv++] = rv[0];
+    }
+    for (int k = 0; k < nv; k++) {
+      int v = vals[k];
+      if (nt_kind(nt, v) != NK_CallNode) continue;
+      int r = strbuf_demand_elem_arg(c, v);
+      if (r > 0) changed = 1;
+      else if (r < 0) changed |= strbuf_demand_user_elem_call(c, v, depth + 1);
+    }
+    if (cls >= 0) break;
+  }
+  return changed;
+}
+/* The container a program method hands its block on to, when its body
+   ends in `<container>.<iterator>(&blk)` with its own &blk (`def each(&b) =
+   @values.each(&b)`), called on `recv` by `name`; else -1. */
+static int strbuf_block_forward_container(Compiler *c, int recv, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || !name) return -1;
+  TyKind rt = infer_type(c, recv);
+  int mi = -1;
+  if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+  /* a receiver read out of a poly slot: the one program method of the name */
+  else if (rt == TY_POLY) {
+    for (int k = 1; k < c->nscopes; k++) {
+      Scope *m = &c->scopes[k];
+      if (!m->name || !sp_streq(m->name, name) || m->class_id < 0 || m->is_cmethod) continue;
+      if (mi > 0) return -1;
+      mi = k;
+    }
+  }
+  if (mi <= 0) return -1;
+  const char *bp = c->scopes[mi].blk_param;
+  if (!bp || !bp[0]) return -1;
+  int last = scope_body_last(c, mi);
+  if (last < 0 || nt_kind(nt, last) != NK_CallNode) return -1;
+  int ba = nt_ref(nt, last, "block"), inner = nt_ref(nt, last, "receiver");
+  if (ba < 0 || inner < 0 || nt_kind(nt, ba) != NK_BlockArgumentNode) return -1;
+  int bx = nt_ref(nt, ba, "expression");
+  if (bx < 0 || nt_kind(nt, bx) != NK_LocalVariableReadNode || !nt_str(nt, bx, "name") ||
+      !sp_streq(nt_str(nt, bx, "name"), bp)) return -1;
+  if (nt_kind(nt, inner) != NK_InstanceVariableReadNode && nt_kind(nt, inner) != NK_LocalVariableReadNode)
+    return -1;
+  /* the ivar's type may not be settled yet: anything not known to be
+     something other than a container */
+  TyKind it = infer_type(c, inner);
+  return ty_is_array(it) || ty_is_hash(it) || it == TY_UNKNOWN || it == TY_POLY ? inner : -1;
+}
 /* Every ReturnNode grouped by the scope comp_scope_of gives it, in node
    order: scope i's are (*list)[(*start)[i] .. (*start)[i + 1]). The caller
    frees both. Out of memory stops the compile: without the grouping the
@@ -16589,6 +16686,9 @@ static int promote_shared_stored_strings(Compiler *c) {
     }
     int mrecv = nt_ref(nt, mu, "receiver");
     if (mrecv < 0 || nt_kind(nt, mrecv) != NK_CallNode) continue;
+    /* an element a program method hands out (`h[0] << x` with `def [](i) =
+       @values[i]`): its container is the method's */
+    if (strbuf_demand_user_elem_call(c, mrecv, 0)) { changed = 1; continue; }
     /* every element read, not just `[]`: a mutation through `b.first` has to
        reach the container the same way (#4013) */
     if (!container_elem_read_p(nt, mrecv)) continue;
@@ -17081,7 +17181,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       }
       if (!strbuf_elem_first_iterator(itn)) continue;
     }
-    if (recv4 < 0) continue;
+      if (recv4 < 0) continue;
     const char *bp4 = block_param_name(c, blk4, 0);
     if (!bp4) continue;
     Scope *bs4 = comp_scope_of(c, blk4);
@@ -17104,6 +17204,11 @@ static int promote_shared_stored_strings(Compiler *c) {
       }
       alias_mut = 1;
     }
+    /* a program method handing its block on to a container's iterator
+       (`def each(&b) = @values.each(&b)`): the block binds that container's
+       elements, so they are what the mutation reaches */
+    { int fwd = strbuf_block_forward_container(c, recv4, itn);
+          if (fwd >= 0) { changed |= strbuf_container_source_walk(c, fwd, 0, SB_DEMAND); continue; } }
     /* An Array literal iterated in place (`[+"e"].each { |x| t = x; t << y;
        p x }`): its elements become handles, so the parameter is one the
        alias can share. A parameter appended to directly rebinds its own

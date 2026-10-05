@@ -11542,6 +11542,12 @@ static int user_dispatch_arg(Compiler *c, Scope *m, int pi, const char *v,
   else if (pt == TY_INT) { snprintf(guard, gsz, "%s.tag == SP_TAG_INT", v); snprintf(arg, asz, "%s.v.i", v); }
   else if (pt == TY_FLOAT) { snprintf(guard, gsz, "%s.tag == SP_TAG_FLT", v); snprintf(arg, asz, "%s.v.f", v); }
   else if (pt == TY_STRING) { snprintf(guard, gsz, "%s.tag == SP_TAG_STR", v); snprintf(arg, asz, "%s.v.s", v); }
+  /* a parameter that is the shared handle: a boxed handle is passed as
+     itself, a plain String box as a fresh handle */
+  else if (pt == TY_STRBUF) {
+    snprintf(guard, gsz, "(%s.tag == SP_TAG_STR || sp_poly_is_strbuf(%s))", v, v);
+    snprintf(arg, asz, "sp_poly_as_strbuf(%s)", v);
+  }
   else if (pt == TY_SYMBOL) { snprintf(guard, gsz, "%s.tag == SP_TAG_SYM", v); snprintf(arg, asz, "(sp_sym)%s.v.i", v); }
   else return 0;
   return 1;
