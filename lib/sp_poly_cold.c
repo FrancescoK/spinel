@@ -224,6 +224,11 @@ const char *sp_poly_class_name(sp_RbVal v)
     }
     case SP_TAG_BIGINT: return SPL("Integer");
     case SP_TAG_OBJ:
+      /* an Array subclass instance boxed as its Array (#7449) */
+      if (sp_bsub_cls_fn && sp_obj_cls_name_fn) {
+        int k = sp_bsub_cls_fn(v);
+        if (k >= 0) return sp_obj_cls_name_fn(k);
+      }
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
         case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
