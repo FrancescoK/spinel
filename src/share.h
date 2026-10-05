@@ -96,6 +96,12 @@ ShareRoute share_route(int site, int value, int elems);
 /* The user methods a call reaches, as the walk binds them (its plan's
    method, and each member of a switch); the count written to out. */
 int share_call_targets(Compiler *c, int call, int *out, int cap);
+/* Is call n a call of its method's `&b` that the facts follow as a yield
+   (sh_blkparam_followed), and does the rule share what it hands the
+   block? */
+int share_call_yield_shares(Compiler *c, int n);
+/* Does the rule share node n's value (a String)? */
+int share_node_shares(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
 /* Can node n's value (a container) be reached again once its expression

@@ -16365,6 +16365,22 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         changed |= strbuf_container_source_walk(c, n, 0, SB_DEMAND);
     }
   free(masgn_val);
+  /* a String a proc or Method call hands a block whose parameter the rule
+     shares (a block a `&b` method only calls, part of the facts' yield):
+     the argument is the handle the parameter binds */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    const char *cn = nt_str(c->nt, n, "name");
+    int r = nt_ref(c->nt, n, "receiver");
+    if (!cn || r < 0 || bop_share_named(BOP_CALLABLE, cn) != BSH_CALL) continue;
+    TyKind rt = c->ntype[r];
+    if (rt != TY_PROC && rt != TY_METHOD && rt != TY_POLY && rt != TY_UNKNOWN) continue;
+    int a = nt_ref(c->nt, n, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
+    for (int i = 0; i < ac; i++)
+      if ((c->ntype[av[i]] == TY_STRING || c->ntype[av[i]] == TY_STRBUF) &&
+          (share_node_shares(c, av[i]) || share_call_yield_shares(c, n)))
+        changed |= strbuf_demand_store_leaf(c, av[i], 0);
+  }
   return changed;
 }
 
