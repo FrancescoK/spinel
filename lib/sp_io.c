@@ -891,6 +891,11 @@ const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
     sp_str_set_len(r, got);
     return r;
   }
+  /* park until the peer writes, as readpartial does: a close from another
+     thread then wakes this one with CRuby's IOError, where a recv(2) already
+     blocked in the kernel answered EBADF, or read a descriptor that was by
+     then someone else's (#7555) */
+  sp_io_wait_readable(f);
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
   int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, NULL, 0, NULL);
@@ -912,6 +917,7 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   char ipbuf[64];
   int port = 0;
   if (len <= 0) { *ip_out = sp_str_from_bytes("", 0); *port_out = 0; return sp_str_from_bytes("", 0); }
+  sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
   int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
