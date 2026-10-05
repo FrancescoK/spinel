@@ -1270,12 +1270,9 @@ int emit_op_array_dig_n(Compiler *c, const BopCtx *x, Buf *b) {
        TypeError on a step that cannot be dug. Chaining index reads
        instead read the scalar the first step answered as if it were an
        array, so `[1].dig(0, 0)` answered 1 where Ruby raises (#3825). */
-    buf_puts(b, "sp_poly_dig_n(sp_box_obj(");
-    emit_expr(c, recv, b);
-    buf_printf(b, ", SP_BUILTIN_%s_ARRAY), %d, (sp_RbVal[]){",
-               rt == TY_INT_ARRAY ? "INT" : rt == TY_FLOAT_ARRAY ? "FLT" : "STR", argc);
-    for (int di = 0; di < argc; di++) { if (di) buf_puts(b, ", "); emit_boxed(c, argv[di], b); }
-    buf_puts(b, "})");
+    Buf rb = {0}; emit_boxed(c, recv, &rb);
+    emit_rooted_key_call(c, "sp_poly_dig_n", rb.p, argv, argc, b);
+    free(rb.p);
     return 1;
   }
   return 0;

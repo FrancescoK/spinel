@@ -2054,6 +2054,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/method_call_block_captures_outer.rb \
+GC_MINOR_TESTS := test/builtin_argument_array_roots.rb \
                   test/range_dup_unfrozen.rb \
                   test/zip_block_many_operands.rb \
                   test/block_arg_paren_sequence_proc.rb \
