@@ -190,4 +190,8 @@ int is_symbol_exception_accessor(const char *n); /* exception accessors that can
 
 int is_builtin_reopen_name(const char *name);
 
+/* Array subclasses (#7449) */
+int is_arysub_object_name(const char *n);        /* class is_a? dup ...: the object, not its elements */
+int is_arysub_kernel_name(const char *n);        /* to_enum frozen? != ...: answered as the Array */
+
 #endif
