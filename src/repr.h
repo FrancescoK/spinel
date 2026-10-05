@@ -102,6 +102,14 @@ int repr_sealed(void);
    0, every emitter takes master's form. */
 int repr_share_rule(const Compiler *c);
 
+/* --share-strings: the handle answers of calls (each 0 without the flag,
+   strbuf_call_publishes 1). Does reader `name` on self of class cls read
+   an ivar that holds the handle; does a marked call publish the handle its
+   method answers; does a call answer the handle itself? */
+int reader_reads_shared_ivar(Compiler *c, int cls, const char *name);
+int strbuf_call_publishes(Compiler *c, int id);
+int strbuf_call_answers_handle(Compiler *c, int id);
+
 /* R1 (--repr-check): the form a boxer gave a value, recorded at each of
    emit_boxed's and emit_boxed_text's returns, and the form repr_of predicts
    for it. */
