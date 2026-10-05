@@ -1432,6 +1432,16 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     buf_puts(b, ")");
     view_pop(c, sv);
   }
+  /* --share-strings (#6765): `r = s.strip!` names s's String when the bang
+     changed it, and nil when not; the call changes s's handle in place, so
+     r takes that handle. Wrapped fresh, r forked off s. */
+  else if (repr_share_rule(c) && shared && strbuf_bang_self_local(c, v) &&
+           strbuf_slot_ref(c, nt_ref(c->nt, v, "receiver"), srefV, sizeof srefV)) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tr);
+    emit_expr(c, v, b);
+    buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, srefV);
+  }
   else if (rpv.kind == RK_BOXED || strbuf_boxed_elem_read(c, v)) {
     /* a container element read hands out the element's BOXED handle: take the
        handle out of the box, so the local and the element are one object and
