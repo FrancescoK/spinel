@@ -15547,8 +15547,10 @@ static int smc_first(Compiler *c, int si) {
     int n = nt->count, ns = c->nscopes > 0 ? c->nscopes : 1;
     smc_head = malloc((size_t)ns * sizeof(int));
     smc_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
-    smc_built = smc_head && smc_next;
-    if (!smc_built) { free(smc_head); free(smc_next); smc_head = smc_next = NULL; return -1; }
+    /* no chain would answer "mutates nothing" for every method, which
+       drops the handle a callee's append needs */
+    if (!smc_head || !smc_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    smc_built = 1;
     for (int s = 0; s < ns; s++) smc_head[s] = -1;
     for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
       smc_next[u] = -1;
