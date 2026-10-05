@@ -538,6 +538,10 @@ int is_rewind_name(const char *n) {
   return sp_streq(n, "rewind");
 }
 
+int is_io_offset_move(const char *n) {
+  return sp_streq(n, "pos=") || sp_streq(n, "sysseek");
+}
+
 int is_byte_codepoint_each(const char *n) {
   return sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint");
 }
