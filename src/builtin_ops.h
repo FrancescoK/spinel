@@ -169,6 +169,53 @@ typedef struct BuiltinOp {
    check: emit_poly_builtin_method emits these names unboxed, so inference
    types the call with the row's result (bop_find_boxed). */
 #define BOPF_BOXED 1
+/* The call answers its receiver: the same object, not a copy, and so an
+   instance of a subclass answers that instance (<<, push, concat, replace,
+   clear, sort!, freeze, to_ary, each with a block, ...). A fact about
+   CRuby's method, whatever the row's result kind says about the value's
+   representation (BOPR_SELF is the receiver's kind, which a copy has too).
+   A conversion that answers the receiver only when its class is exactly
+   the builtin is BOPF_SELF_EXACT instead. */
+#define BOPF_SELF 2
+/* The call answers its receiver when it changed it, and nil when it changed
+   nothing: the bang methods with a no-change contract (uniq!, compact!,
+   select!, sub!, strip!, ...). Never set together with BOPF_SELF; a bang
+   that answers the receiver either way (sort!, reverse!, succ!) is
+   BOPF_SELF. */
+#define BOPF_SELF_OR_NIL 4
+/* The call answers an object of the receiver's class: the receiver itself
+   or a copy of it, depending on whether it is frozen (String#+@ answers
+   the receiver when it is not frozen, a copy when it is; -@ and dedup the
+   receiver when it is frozen, a frozen copy when it is not). A subclass
+   instance answers an instance of that subclass. */
+#define BOPF_SELF_CLASS 8
+/* The call answers its receiver when its class is exactly the builtin, and
+   a new object of the plain builtin for a subclass instance, without the
+   instance's ivars: Array#to_a, Hash#to_h without a block (the new Hash
+   keeps the default and the default proc), String#to_s and #to_str. */
+#define BOPF_SELF_EXACT 16
+/* The call answers a new object of the receiver's class, never the
+   receiver: a copy carrying its instance variables, and a Hash's default
+   and default proc, with the pairs or elements the method leaves (dup and
+   clone, Hash#merge and #compact). clone carries the frozen state too, the
+   others answer an unfrozen copy. String#encode, which answers an
+   instance of the receiver's class without its ivars, carries no flag. */
+#define BOPF_COPY_CLASS 32
+/* The call combines, compares or copies its arguments of the receiver's
+   builtin class as that builtin: a subclass instance among them is read
+   for its elements, pairs or bytes, and none of its own methods (each,
+   to_ary, to_hash, to_str, ==, <=>, ...) runs. Array#+ - & | <=> == eql?
+   concat replace union difference intersection intersect? product zip;
+   Hash#merge merge! update replace == eql? < <= > >=; String#+ concat <<
+   prepend insert replace == === eql? <=> < <= > >= between?. A method that
+   stores an argument as an element, key or value (push, <<, insert and []=
+   on an Array, store and []= on a Hash) or takes it as a pattern or
+   separator (String#include?, #sub, #split) is not flagged; for those the
+   flag's absence says nothing about how the argument is read. The rows'
+   argument kinds (arg0/arg1) cannot say this: they guard which row fits a
+   call, a guarded row is not found by a lookup without the arguments'
+   kinds, and they cover only the first two arguments. */
+#define BOPF_ARGS_BUILTIN 64
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
@@ -237,5 +284,18 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt);
 
 /* The BOPF_BOXED row of kind rt for `name`, or NULL. */
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);
+
+/* Whether the builtin `name` called with argc arguments (and a block when
+   has_block) on a receiver of kind rt answers that receiver, a copy of it,
+   or the plain builtin: BOPF_SELF, BOPF_SELF_OR_NIL, BOPF_SELF_CLASS,
+   BOPF_SELF_EXACT or BOPF_COPY_CLASS, or 0 when it answers another value
+   or no row has the call. An Array or Hash kind reads its family's rows
+   (BOP_ANY_ARRAY, BOP_ANY_HASH), a String buffer the String rows. The
+   flags sit on the unguarded rows, the ones a lookup without the
+   arguments' kinds finds. */
+int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
+/* Whether that call reads its arguments of the receiver's builtin class as
+   that builtin (BOPF_ARGS_BUILTIN), looked up as bop_answers_self does. */
+int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 
 #endif
