@@ -5407,14 +5407,12 @@ static int emit_case_container_eq(Compiler *c, int cond, int t, TyKind pt, Buf *
   return 1;
 }
 
-/* `when <obj>` against a poly subject in _t<t>: an object arm of a class
-   with its own === (or ==), inherited or not, is asked `obj === subj`, as
-   Ruby asks it, when that method takes one plain parameter, boxed, and
-   answers a boolean or a boxed value; the arm is held and rooted across
-   the call, and a nil arm matches a nil subject alone, as nil's === does.
-   0 otherwise, an arm of a class passed by value included: the caller
-   compares by value as before. */
-static int emit_when_poly_user_eq(Compiler *c, int cond, int t, Buf *b) {
+/* `when <obj>`: call an object's own === (or ==) with the boxed case subject
+   when it takes one plain boxed parameter and returns a boolean or boxed
+   value. The arm and subject stay rooted across the call. A nil arm matches
+   only a nil subject; return 0 for other patterns so the caller can use its
+   existing typed comparisons. */
+static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   TyKind wpt = comp_ntype(c, cond);
   int wcid = ty_is_object(wpt) ? ty_object_class(wpt) : -1;
   if (wcid < 0 || comp_ty_value_obj(c, wpt)) return 0;
@@ -5430,9 +5428,14 @@ static int emit_when_poly_user_eq(Compiler *c, int cond, int t, Buf *b) {
   int ta = ++g_tmp;
   buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", dcn, ta, dcn);
   emit_expr(c, cond, b);
-  buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d ? %s", ta, ta, ws->ret == TY_POLY ? "sp_poly_truthy(" : "(");
+  int ts = ++g_tmp;
+  buf_printf(b, "); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", ta, ts);
+  { char sref[24]; snprintf(sref, sizeof sref, "_t%d", t);
+    emit_boxed_text(c, pt, sref, b); }
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d ? %s", ts, ta,
+              ws->ret == TY_POLY ? "sp_poly_truthy(" : "(");
   emit_method_cname(c, ws, b);
-  buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, t, t);
+  buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
   return 1;
 }
 
@@ -5925,7 +5928,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           /* an Array or Hash subject compares by value (Array#=== and
              Hash#=== are Object#===, which is ==) */
           else if (emit_case_container_eq(c, conds[j], t, pt, b)) { }
-          else if (pt == TY_POLY && emit_when_poly_user_eq(c, conds[j], t, b)) { }
+          else if (emit_when_user_eq(c, conds[j], t, pt, b)) { }
           else if (pt == TY_POLY) {
             buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")");
           }
@@ -6264,7 +6267,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           }
         }
         else if (emit_case_container_eq(c, conds[j], t, pt, b)) { }
-        else if (pt == TY_POLY && emit_when_poly_user_eq(c, conds[j], t, b)) { }
+        else if (emit_when_user_eq(c, conds[j], t, pt, b)) { }
         else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
         else emit_case_obj_eq(c, conds[j], t, pt, b);
         } /* close non-ConstantReadNode else */
