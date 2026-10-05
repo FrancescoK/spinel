@@ -17941,7 +17941,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       state_read = local_read = 0;
     if (!local_read && (state_read ? effects < 1 : !subtree_has_side_effect(c, operand[i]))) continue;
     observable++;
-    int bindable = (k == NK_CallNode || k == NK_SuperNode ||
+    /* a conditional's value is bound as a call's is: `f(a: r.int, b: c ? r.int : 0)`
+       declined whole and left every keyword to C's order */
+    int bindable = (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read);
     if (!bindable) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, i, b);
     TyKind t = comp_ntype(c, operand[i]);
