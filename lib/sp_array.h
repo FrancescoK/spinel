@@ -395,6 +395,7 @@ sp_StrArray *sp_StrArray_shuffle(sp_StrArray *a);
 const char *sp_StrArray_sample(sp_StrArray *a);
 
 /* ---- poly/inspect-dependent ops (lib/sp_array.c; need sp_inspect.h/sp_str.h) ---- */
+void sp_str_upto_each(const char *s, const char *e, sp_int excl, int (*fn)(const char *, void *), void *arg);
 sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, sp_int excl);
 const char*sp_IntArray_inspect(sp_IntArray*a);
 const char*sp_FloatArray_inspect(sp_FloatArray*a);

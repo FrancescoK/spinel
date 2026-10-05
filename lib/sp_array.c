@@ -648,10 +648,47 @@ sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*r=sp_St
 const char *sp_StrArray_sample(sp_StrArray*a){SP_GC_ROOT(a);if(a->len<=0)return sp_str_empty;return a->data[sp_krand_below(a->len)];}
 
 /* ============ poly/inspect-dependent array ops (display, concat, to_poly) ============ */
-sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, sp_int excl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(e);
-  sp_StrArray *a = sp_StrArray_new();
-  SP_GC_ROOT(a);
-  if (!s || !e) return a;
+/* The members String#upto yields, in CRuby's rb_str_upto_each order of
+   cases, each a fresh copy (the frozen begin is not handed out) passed to
+   fn until it answers nonzero. */
+void sp_str_upto_each(const char *s, const char *e, sp_int excl, int (*fn)(const char *, void *), void *arg) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(e);
+  if (!s || !e) return;
+  size_t sl = sp_str_byte_len(s), el = sp_str_byte_len(e);
+  int ascii = 1;
+  for (size_t i = 0; i < sl; i++) if ((unsigned char)s[i] >= 0x80) ascii = 0;
+  for (size_t i = 0; i < el; i++) if ((unsigned char)e[i] >= 0x80) ascii = 0;
+  /* one ASCII character at each end: every byte between, so ("A".."c")
+     holds the punctuation between "Z" and "a" */
+  if (ascii && sl == 1 && el == 1) {
+    int lim = (unsigned char)e[0] + (excl ? 0 : 1);
+    for (int ch = (unsigned char)s[0]; ch < lim; ch++) {
+      char one = (char)ch;
+      if (fn(sp_str_from_bytes(&one, 1), arg)) return;
+    }
+    return;
+  }
+  /* two all-digit ends: the numbers between, zero-padded to the begin's
+     width, so ("9".."11") holds "9", "10", "11" (#3549) and ("1".."010")
+     stops at "10". Past 18 digits the succ walk below serves. */
+  int digits = ascii && sl > 0 && el > 0 && sl <= 18 && el <= 18;
+  for (size_t i = 0; digits && i < sl; i++) if (s[i] < '0' || s[i] > '9') digits = 0;
+  for (size_t i = 0; digits && i < el; i++) if (e[i] < '0' || e[i] > '9') digits = 0;
+  if (digits) {
+    long long bi = strtoll(s, NULL, 10), ei = strtoll(e, NULL, 10);
+    for (; excl ? bi < ei : bi <= ei; bi++) {
+      char buf[32];
+      int n = snprintf(buf, sizeof buf, "%.*lld", (int)sl, bi);
+      if (fn(sp_str_from_bytes(buf, (size_t)n), arg)) return;
+    }
+    return;
+  }
+  /* otherwise String#succ from the begin up to the end, never past the
+     end's length, so ("a".."bb") runs through "z" and on to "bb", and
+     ("aa".."z") -- whose begin is the end's successor -- is empty */
+  int cmp = sp_str_cmp_bytes(s, e);
+  if (cmp > 0 || (excl && cmp == 0)) return;
+  const char *after = sp_str_succ(e);
+  SP_GC_ROOT_STR(after);
   /* `cur` walks the range via String#succ, allocating a fresh heap string each
      step; the next sp_str_alloc can trigger a GC that would sweep both the
      array under construction and the current (unrooted) succ string, so the
@@ -659,27 +696,24 @@ sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, sp_int 
      reassignment. */
   const char *cur = s;
   SP_GC_ROOT_STR(cur);
-  int iters = 0;
-  /* Two all-digit endpoints walk numerically, so ("9".."11") holds "9", "10",
-     "11" -- a plain byte compare stops at once because "9" > "1" (#3549).
-     Anything else keeps the byte order, where ("y".."ab") is empty. */
-  size_t elen = strlen(e);
-  int numeric = *s && *e;
-  for (const char *q = s; numeric && *q; q++) if (*q < '0' || *q > '9') numeric = 0;
-  for (const char *q = e; numeric && *q; q++) if (*q < '0' || *q > '9') numeric = 0;
-  while (iters < 4096) {
-    size_t clen = strlen(cur);
-    int cmp = (numeric && clen != elen) ? (clen < elen ? -1 : 1)
-                                        : sp_str_cmp_bytes(cur, e);
-    if (cmp > 0) break;
-    if (cmp == 0 && excl) break;
-    char *copy = sp_str_alloc(strlen(cur));
-    strcpy(copy, cur);
-    sp_StrArray_push(a, copy);
-    if (cmp == 0) break;
+  while (!sp_str_eq(cur, after)) {
+    int last = !excl && sp_str_eq(cur, e);
+    if (fn(sp_str_from_bytes(cur, sp_str_byte_len(cur)), arg)) return;
+    if (last) return;
     cur = sp_str_succ(cur);
-    iters++;
+    if (excl && sp_str_eq(cur, e)) return;
+    size_t cl = sp_str_byte_len(cur);
+    if (cl > el || cl == 0) return;
   }
+}
+static int sp_str_upto_push(const char *m, void *arg) {
+  sp_StrArray_push((sp_StrArray *)arg, m);
+  return 0;
+}
+sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, sp_int excl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(e);
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  sp_str_upto_each(s, e, excl, sp_str_upto_push, a);
   return a;
 }
 const char*sp_IntArray_inspect(sp_IntArray*a){SP_GC_ROOT(a);return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_INT_ARRAY)):"nil";}

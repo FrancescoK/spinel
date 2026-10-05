@@ -5261,23 +5261,22 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
     return 1;
   }
 
-  /* "a".upto("e") { |c| ... } -- string succ-sequence loop, mirrors
-     sp_StrArray_from_string_range semantics (inclusive, 4096-cap) */
+  /* "a".upto("e") { |c| ... }: the members the range walk lists
+     (sp_StrArray_from_string_range), the receiver evaluated first */
   if (sp_streq(name, "upto") && rt == TY_STRING && p0) {
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     if (argc != 1) return 0;
-    int te = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp, tcmp = ++g_tmp;
-    emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", te); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
+    int tc = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp;
     emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", tc); emit_expr(c, recv, b); buf_puts(b, ";\n");
-    emit_indent(b, indent); buf_printf(b, "for (int _t%d = 0; _t%d < 4096; _t%d++) {\n", ti, ti, ti);
-    emit_indent(b, indent + 1); buf_printf(b, "int _t%d = sp_str_cmp_bytes(_t%d, _t%d);\n", tcmp, tc, te);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_STR(_t%d);\n", tc);
+    emit_indent(b, indent); buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(_t%d, ", ta, tc);
+    emit_expr(c, argv[0], b); buf_puts(b, ", 0);\n");
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+    emit_indent(b, indent); buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+    emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d->data[_t%d];\n", p0, ta, ti);
     emit_loop_body(c, body, b, indent + 1);
-    emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
-    emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
