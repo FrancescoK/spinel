@@ -59,7 +59,7 @@ void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv) {
 
 static const char *pa_kind_name(int k) {
   static const char *const nm[] = { "user", "proc-form", "reader", "native", "arity", "synth-enum",
-                                    "builtin", "trial" };
+                                    "struct-set", "builtin", "trial" };
   return k >= 0 && k < (int)(sizeof nm / sizeof nm[0]) ? nm[k] : "?";
 }
 
@@ -560,6 +560,26 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
   free(arms);
 }
 
+/* Reuse the typed Struct writer with the receiver and arguments already
+   evaluated by the dispatch. The arm's views leave the original call intact. */
+static void emit_poly_struct_set(Compiler *c, int id, const PolyUserArgs *U, int k, Buf *b) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int rv = view_push(c, recv, ty_object(k));
+  int rb = view_bind(recv, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, U->tv);
+  int av[2];
+  for (int i = 0; i < 2; i++) {
+    av[i] = view_push(c, U->argv[i], U->atmp_ty[i]);
+    view_bind(U->argv[i], "_t%d", U->atmp[i]);
+  }
+  buf_printf(b, " case %d: _t%d = ", k, U->tr);
+  emit_object_call(c, id, b);
+  buf_puts(b, "; break;");
+  view_unbind(rb);
+  for (int i = 1; i >= 0; i--) view_pop(c, av[i]);
+  view_pop(c, rv);
+  if (g_plan_check) pa_observe(PA_STRUCT_SET, k, -1, U->ret, PC_SAME);
+}
+
 /* Class k's arm in a poly dispatch with arguments, decided and written as
    the dispatch did before the plan took the arms over: what a dispatch the
    plan cannot serve writes, and, into a scratch buffer, what a class with
@@ -576,6 +596,10 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
   const TyKind *atmp_ty = U->atmp_ty;
   const PolyKw *kw = U->kw;
   (void)nt; (void)kwall_any;
+  if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) {
+    emit_poly_struct_set(c, id, U, k, b);
+    return 1;
+  }
   /* native (C-backed) class arm: a declared method of this arity takes
      the hoisted temps in its native representation, as the zero-arg
      dispatch's arm and the typed-receiver call do. The argument
@@ -893,6 +917,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   const PolyKw *kw = U->kw;
   (void)nt; (void)argc; (void)kwall; (void)kwall_any; (void)kw_pos; (void)has_splat_arg; (void)stk;
   int k = a->key;
+  if (a->kind == PA_STRUCT_SET) { emit_poly_struct_set(c, id, U, k, b); return; }
   if (c->classes[k].is_native_class) { poly_user_arm_n_replay(c, id, name, U, k, b); return; }
   int mi = a->mi;
   if (a->kind == PA_ARITY) {
@@ -1037,6 +1062,10 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
   memset(a, 0, sizeof *a);
   a->key = (short)k; a->mi = -1; a->def = -1; a->vty = TY_UNKNOWN; a->conv = PC_SAME;
   TyKind ret = U->ret;
+  if (!U->has_splat_arg && U->kwh < 0 && cplan_struct_aset(c, k, name, U->argc)) {
+    a->kind = PA_STRUCT_SET; a->vty = (unsigned char)ret;
+    return 1;
+  }
   if (c->classes[k].is_native_class) {
     TyKind mret = TY_UNKNOWN;
     if (U->kw_pos && U->has_splat_arg && U->argc == 1 && U->splat_a == 0 && U->kwh < 0 &&
@@ -2423,6 +2452,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   int kw_pos = kwh < 0 || kw_ds;
   int ncand = 0;
   for (int k = 0; k < c->nclasses; k++) {
+    if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) { ncand++; continue; }
     /* a native class's methods are its declared bindings (#4504) */
     if (c->classes[k].is_native_class) {
       if (kw_pos && !has_splat_arg && c->classes[k].instantiated) {
