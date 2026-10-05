@@ -8850,6 +8850,9 @@ TyKind infer_uncached(Compiler *c, int id) {
          the String join now absorbs nil (#4567), and a typed array or hash
          is not where a written nil belongs */
       if (et == TY_NIL) et = TY_POLY;
+      /* --share-strings: an element stored as the shared handle settles the
+         literal in its poly form, whose boxes hold the handle (#6765) */
+      if (et == TY_STRBUF && c->share_strings) et = TY_POLY;
       e = ty_unify(e, et);
     }
     /* ty_array_of holds an all-unknown element type at bottom while the
@@ -8954,6 +8957,9 @@ TyKind infer_uncached(Compiler *c, int id) {
           vt_elem = TY_POLY;
       }
       if (vt_elem == TY_NIL) vt_elem = TY_POLY;   /* a nil value keeps the hash poly-valued (see the array literal) */
+      /* --share-strings: a value stored as the shared handle settles the
+         hash in its poly form, whose boxes hold the handle (#6765) */
+      if (vt_elem == TY_STRBUF && c->share_strings) vt_elem = TY_POLY;
       vt = ty_unify(vt, vt_elem);
     }
     /* symbol keys -> SymPolyHash (boxed values), regardless of value type */

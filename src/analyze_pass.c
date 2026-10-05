@@ -1294,6 +1294,14 @@ void intern_block_params(Compiler *c) {
   }
 }
 
+/* --share-strings: is lv the shared handle a String of type t is held in?
+   A pass that types the slot as that String leaves it so; resetting it each
+   round, against share_default_apply setting it back, kept the fixpoint
+   from settling. */
+static int lv_is_handle_of(const Compiler *c, const LocalVar *lv, TyKind t) {
+  return c->share_strings && t == TY_STRING && lv->type == TY_STRBUF && lv->str_shared;
+}
+
 static int lv_widen(LocalVar *lv, TyKind t) {
   TyKind m = ty_unify(lv->type, t);
   if (m == lv->type) return 0;
@@ -3919,7 +3927,10 @@ int infer_write_types(Compiler *c) {
          temp whose type IS its receiver's); the per-iteration reset must not
          wipe it -- users of such a temp can precede its own (late, synthesized)
          write in node order and would re-derive from UNKNOWN forever (#2723) */
-      if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) { lv->gc_root = (int)lv->type; lv->type = TY_UNKNOWN; }
+      if (!lv->is_param && !lv->is_block_param && !lv->rbs_seeded) {
+        lv->gc_root = (int)lv->type;
+        lv->type = TY_UNKNOWN;
+      }
     }
   /* Because of that reset, a site below that types a non-param local must NOT
      report `changed` itself: it is comparing against UNKNOWN, so it answers
@@ -4132,7 +4143,7 @@ int infer_write_types(Compiler *c) {
         const char *pnm = nt_str(nt, reqs[0], "name");
         Scope *lsc = pnm ? comp_scope_of(c, conds[j]) : NULL;
         LocalVar *plv = lsc ? scope_local(lsc, pnm) : NULL;
-        if (plv && plv->type != cpt) { plv->type = cpt; changed = 1; }
+        if (plv && plv->type != cpt && !lv_is_handle_of(c, plv, cpt)) { plv->type = cpt; changed = 1; }
       }
     }
   }
@@ -4331,6 +4342,9 @@ int infer_write_types(Compiler *c) {
       LocalVar *lv = &c->scopes[s].locals[i];
       if ((lv->str_shared || lv->str_append) &&
           (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
+      /* --share-strings: a String Array the rule settled in its poly form
+         keeps it (share_default_apply) */
+      if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
     }
 
   /* Detect change vs the stashed old types -- over EXACTLY the slots the reset
@@ -8592,6 +8606,10 @@ int infer_catch_block_params(Compiler *c) {
     TyKind want = an == 1 ? infer_type(c, av[0]) : TY_STRING;
     if (want == TY_UNKNOWN) continue;
     if (an == 1 && lv->type != TY_UNKNOWN && lv->type != want) want = TY_POLY;
+    /* --share-strings: a String tag the rule made the shared handle is
+       that String already; resetting it each round kept the fixpoint from
+       settling */
+    if (lv_is_handle_of(c, lv, want)) continue;
     if (lv->type != want) { lv->type = want; changed = 1; }
   }
   return changed;
@@ -13706,7 +13724,7 @@ int infer_block_params(Compiler *c) {
         const char *nm = numbered_param_name(c, pn, k - 1);
         if (!nm) continue;
         LocalVar *lv = scope_local_intern(bs, nm); lv->is_block_param = 1;
-        if (!intern_only && lv->type != rt) { lv->type = rt; changed = 1; }
+        if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv->type = rt; changed = 1; }
       }
       continue;
     }
@@ -13717,7 +13735,7 @@ int infer_block_params(Compiler *c) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      if (!intern_only && lv->type != rt) { lv->type = rt; changed = 1; }
+      if (!intern_only && lv->type != rt && !lv_is_handle_of(c, lv, rt)) { lv->type = rt; changed = 1; }
     }
   }
 
@@ -13875,6 +13893,8 @@ int infer_block_params(Compiler *c) {
     /* then / yield_self: block param receives the receiver value */
     if ((is_then_alias(name)) && p0) {
       Scope *bs = comp_scope_of(c, block);
+      LocalVar *plv = scope_local(bs, p0);
+      if (plv && lv_is_handle_of(c, plv, rt)) continue;
       if (bp_widen(bs, p0, rt == TY_NIL ? TY_POLY : rt)) changed = 1;
       continue;
     }
