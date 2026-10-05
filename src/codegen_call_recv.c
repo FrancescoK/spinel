@@ -10728,10 +10728,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         else { buf_printf(b, "sp_range_eql(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
       else if (sp_streq(name, "overlap?")) {
-        int t2 = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
-        buf_printf(b, "; (_t%d.first <= _t%d.last - _t%d.excl && _t%d.first <= _t%d.last - _t%d.excl); })",
-                   t, t2, t2, t2, t, t);
+        /* CRuby's range_overlap at run time: an empty Range overlaps
+           nothing, and the argument may be a Float Range */
+        buf_printf(b, "sp_range_overlap_v(sp_box_range(_t%d), ", t); emit_boxed(c, argv[0], b);
+        buf_puts(b, ")");
       }
       else if (sp_streq(name, "minmax")) {
         /* a poly pair off the endpoints, max first: an empty (backwards)
@@ -12679,6 +12679,17 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
       return 1;
     }
+  }
+  /* Range#overlap? on a boxed receiver: an Integer or Float Range answers
+     at run time (sp_range_overlap_v), anything else raises NoMethodError */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+      sp_streq(name, "overlap?") && !user_defines_or_reads(c, name)) {
+    TyKind ot = comp_ntype(c, id);
+    if (ot == TY_POLY) buf_puts(b, "sp_box_bool(");
+    buf_puts(b, "sp_range_overlap_v("); emit_boxed(c, recv, b);
+    buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    if (ot == TY_POLY) buf_puts(b, ")");
+    return 1;
   }
   /* to_a / to_ary typed boxed where the answer is mutated
      (an_to_a_result_mutated): an Array answers itself, not the face's copy */
