@@ -927,6 +927,10 @@ typedef struct {
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
+  /* the route refusals the flag left to the rule (share_route_defer),
+     checked against the final facts at seal */
+  struct ShareRoute *share_route;
+  int nshare_route, cshare_route;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

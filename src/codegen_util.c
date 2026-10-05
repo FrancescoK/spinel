@@ -1,6 +1,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "builtin_ops.h"
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -2487,6 +2488,14 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   if (rt != TY_STRING && rt != TY_STRBUF) return 1;
   const char *nm = nt_str(nt, v, "name");
   return nm && (is_append_concat(nm) || str_self_call(nt, v));
+}
+/* A String bang method (bop_share_bang_self) called on a local that holds
+   the shared handle: its value is that local's String, or nil. */
+int strbuf_bang_self_local(const Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !bop_share_bang_self(nt_str(nt, v, "name"))) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
