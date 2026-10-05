@@ -92,7 +92,7 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
       (sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "eql?") ||
        sp_streq(name, "equal?")) &&
-      comp_ntype(c, argv[0]) != TY_REGEX && comp_ntype(c, argv[0]) != TY_POLY) {
+      comp_ntype(c, argv[0]) != TY_REGEX && repr_of(c, argv[0]).kind != RK_BOXED) {
     /* except nil against the slot's own nil, the NULL pattern */
     if (comp_ntype(c, argv[0]) == TY_NIL && !sp_streq(name, "equal?") && !sp_streq(name, "eql?")) {
       int tn = ++g_tmp;
@@ -135,8 +135,9 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   if (recv >= 0 && rt == TY_STRING && argc == 1 && (sp_streq(name, "gsub") || sp_streq(name, "gsub!")) &&
       nt_ref(nt, id, "block") < 0 && comp_ntype(c, id) == TY_ENUMERATOR) {
     int gre = re_lit_index(c, argv[0]);
-    TyKind pt = comp_ntype(c, argv[0]);
-    if (gre < 0 && pt != TY_REGEX && pt != TY_STRING && pt != TY_POLY) goto no_gsub_enum;
+    Repr pr = repr_of(c, argv[0]);
+    TyKind pt = pr.as_ty;
+    if (gre < 0 && pt != TY_REGEX && pt != TY_STRING && pr.kind != RK_BOXED) goto no_gsub_enum;
     int tsg = ++g_tmp, tpat = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsg);
     emit_expr(c, recv, b);
@@ -164,7 +165,7 @@ no_gsub_enum:
     if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
         (is_match_family(name))) {
       const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-      const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
+      const char *dv9 = default_value_from_compiler(c, repr_of(c, id).as_ty);
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                  name, tn9, dv9 ? dv9 : "sp_box_nil()");
@@ -381,7 +382,7 @@ no_gsub_enum:
           if ((rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) &&
               (is_match_family(name))) {
             const char *tn9 = rt == TY_FLOAT ? "Float" : "Integer";
-            const char *dv9 = default_value_from_compiler(c, comp_ntype(c, id));
+            const char *dv9 = default_value_from_compiler(c, repr_of(c, id).as_ty);
             buf_puts(b, "((void)("); emit_expr(c, recv, b);
             buf_printf(b, "), (sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for an instance of %s\"), %s))",
                        name, tn9, dv9 ? dv9 : "sp_box_nil()");
@@ -691,8 +692,9 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       (sp_streq(name, "escape") || sp_streq(name, "quote")) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    TyKind _re_at = comp_ntype(c, argv[0]);
-    if (_re_at == TY_POLY) { buf_puts(b, "sp_re_escape(sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+    Repr rar = repr_of(c, argv[0]);
+    TyKind _re_at = rar.as_ty;
+    if (rar.kind == RK_BOXED) { buf_puts(b, "sp_re_escape(sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
     else if (_re_at == TY_SYMBOL) {
       /* rb_reg_operand takes a Symbol by its name -- Regexp.escape(:"a.b")
          is "a\\.b" -- where the #to_str protocol of the String slot would
@@ -760,10 +762,11 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           emit_str_literal(&ab, resrc);
       }
       else {
-        TyKind at = comp_ntype(c, ops[i]);
-        if (at != TY_STRING && at != TY_POLY)
+        Repr ar = repr_of(c, ops[i]);
+        TyKind at = ar.as_ty;
+        if (at != TY_STRING && ar.kind != RK_BOXED)
           unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
-        if (at == TY_POLY) { buf_puts(&ab, "sp_re_escape(sp_poly_to_s("); emit_expr(c, ops[i], &ab); buf_puts(&ab, "))"); }
+        if (ar.kind == RK_BOXED) { buf_puts(&ab, "sp_re_escape(sp_poly_to_s("); emit_expr(c, ops[i], &ab); buf_puts(&ab, "))"); }
         else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
       }
       emit_indent(g_pre, g_indent);
@@ -858,7 +861,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       return 1;
     }
     if ((is_slice_alias(name)) && argc == 1 &&
-        (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
+        (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED)) {
       buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
