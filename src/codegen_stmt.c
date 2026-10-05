@@ -1231,6 +1231,7 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
+static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
 static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
@@ -1282,6 +1283,15 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       const char *vn = nt_str(nt, v, "name");
       LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
       return repr_of_slot(c, vl).handle;
+    }
+    /* a global holding the handle (--share-strings), read or written */
+    case NK_GlobalVariableReadNode: {
+      char gr[256];
+      return depth > 0 && strbuf_slot_ref(c, v, gr, sizeof gr);
+    }
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode: {
+      char gr[256];
+      return depth > 0 && strbuf_gvar_write_handle(c, v, gr, sizeof gr);
     }
     default:
       return 0;
@@ -1376,6 +1386,24 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
   }
 }
+/* Is v (through single-statement parentheses) a write (`=`, `||=`, `&&=`)
+   of a global holding the shared handle? Its slot's text to out. */
+static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c)) return 0;
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    v = n == 1 ? st[0] : -1;
+  }
+  if (v < 0 || (nt_kind(nt, v) != NK_GlobalVariableWriteNode && nt_kind(nt, v) != NK_GlobalVariableOrWriteNode &&
+                 nt_kind(nt, v) != NK_GlobalVariableAndWriteNode)) return 0;
+  LocalVar *gv = repr_handle_gvar(c, v);
+  if (!gv) return 0;
+  snprintf(out, cap, "gv_%s", gv->name);
+  return 1;
+}
+
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
 static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
@@ -1405,6 +1433,13 @@ static void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     buf_puts(b, "); ");
     emit_local_ref(c, v, nt_str(c->nt, v, "name"), b);
     buf_puts(b, "; })");
+  }
+  /* The same for a global holding the handle (--share-strings): `r = ($g =
+     s)` names $g's String */
+  else if (shared && strbuf_gvar_write_handle(c, v, srefV, sizeof srefV)) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, v, b);
+    buf_printf(b, "); %s; })", srefV);
   }
   /* A conditional whose arms include a local that is the handle (`h = c ? x
      : g`, paired by an_strbuf_alias_leaves): each arm hands over its own
@@ -11142,7 +11177,9 @@ else {
     int frcv = nt_ref(nt, id, "receiver");
     if (frcv >= 0 && fnm && sp_streq(fnm, "freeze") && comp_ntype(c, frcv) == TY_STRING) {
       const char *rty2 = nt_type(nt, frcv);
-      if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") || sp_streq(rty2, "InstanceVariableReadNode"))) {
+      char gfz[256];   /* a global holding the handle (--share-strings) */
+      int gvh = nt_kind(nt, frcv) == NK_GlobalVariableReadNode && strbuf_slot_ref(c, frcv, gfz, sizeof gfz);
+      if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") || sp_streq(rty2, "InstanceVariableReadNode") || gvh)) {
         int fargs = nt_ref(nt, id, "arguments");
         int fac = 0; if (fargs >= 0) nt_arr(nt, fargs, "arguments", &fac);
         if (fac == 0) {
@@ -12040,6 +12077,14 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     }
     emit_indent(b, indent);
     buf_printf(b, "%s_%s = ", pfx, key);
+    /* --share-strings: a global holding the shared handle takes an alias's
+       handle, or a fresh one (#6765) */
+    if (isg && repr_of_slot(c, lv).kind == RK_STRBUF) {
+      if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
+      else emit_strbuf_value(c, lv, v, b);
+      buf_puts(b, ";\n");
+      return 1;
+    }
     int vlit = empty_literal_node(c, v);
     /* `X = [].freeze`: the strip above found the literal so the slot's kind
        builds it; the freeze it stripped still has to happen (#3828). */
@@ -12266,6 +12311,11 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       buf_printf(b, "gv_%s = sp_str_concat(gv_%s, ", rn, rn);
       emit_str_expr(c, v, b); buf_puts(b, ");\n");
     }
+    /* a global holding the shared handle: `+=` makes a new String */
+    else if (repr_of_slot(c, lv).kind == RK_STRBUF && op && is_plus_op(op)) {
+      buf_printf(b, "gv_%s = sp_String_new_shared(sp_str_concat(sp_String_cstr(gv_%s), ", rn, rn);
+      emit_str_expr(c, v, b); buf_puts(b, "));\n");
+    }
     else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
     else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
     else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, b)) { }
@@ -12288,6 +12338,15 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
        once the slot started at the sentinel (#4248). This is also closer to
        Ruby than the zero test it replaces -- `$x = 0; $x ||= 5` leaves 0,
        where the C test fired. */
+    if (repr_of_slot(c, lv).kind == RK_STRBUF) {
+      /* a global holding the shared handle, as an ivar's slot (#6765) */
+      char gref[256];
+      snprintf(gref, sizeof gref, "gv_%s", rn);
+      emit_indent(b, indent);
+      emit_strbuf_orw_guard(c, gref, v, is_or, b);
+      buf_puts(b, "\n");
+      return 1;
+    }
     { char gref[256];
       snprintf(gref, sizeof gref, "gv_%s", rn);
       emit_indent(b, indent);
@@ -13353,12 +13412,17 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
     LocalVar *gv9 = grn ? comp_gvar(c, grn) : NULL;
     TyKind gt9 = gv9 ? gv9->type : TY_UNKNOWN;
+    /* a global holding the shared handle answers its String */
+    int sb9 = gv9 && repr_of_slot(c, gv9).kind == RK_STRBUF;
+    if (sb9) gt9 = TY_STRING;
     int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
     int slot_ok = gv9 && gt9 != TY_UNKNOWN && gt9 != TY_VOID &&
                   (want_poly9 || gt9 == (g_result_var ? g_result_ty : g_ret_type));
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
-    char gref9[256]; snprintf(gref9, sizeof gref9, "gv_%s", grn);
+    char gref9[256];
+    if (sb9) snprintf(gref9, sizeof gref9, "(gv_%s ? sp_str_concat(sp_String_cstr(gv_%s), (&(\"\\xff\")[1])) : NULL)", grn, grn);
+    else snprintf(gref9, sizeof gref9, "gv_%s", grn);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && gt9 != TY_POLY) {
       Buf bx9; memset(&bx9, 0, sizeof bx9);
@@ -14758,7 +14822,8 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
 
   /* The same shim over a READER call that hands out the handle
      (`obj.name[0] = "X"`), whose call node reads as the shadow. */
-  if ((rt == TY_STRING || rt == TY_STRBUF) && nt_kind(nt, recv) == NK_CallNode &&
+  if ((rt == TY_STRING || rt == TY_STRBUF) &&
+      (nt_kind(nt, recv) == NK_CallNode || nt_kind(nt, recv) == NK_GlobalVariableReadNode) &&
       (is_string_position_mutator(name))) {
     char srefR[1024];
     SbReaderSave svR;
