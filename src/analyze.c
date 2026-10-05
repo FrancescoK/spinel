@@ -2746,6 +2746,38 @@ int qc_read_chain(const NodeTable *nt, int node, char (*chain)[64], int *abs_anc
   return n;
 }
 
+/* A path read whose head is a constant HOLDING a module (`S = Web::Status`;
+   `S::EOFError`) names what the module's own path does: the head is spelled
+   out as the path the constant was written with, so the chain matches the
+   nested class the colliding-name rename gave a qualified name. Only an
+   unambiguous alias is followed -- one write, of a constant path or name,
+   and the head not itself a class or module. Answers the new length, or cl
+   unchanged. */
+static int qc_expand_alias_head(Compiler *c, char (*chain)[64], int cl) {
+  const NodeTable *nt = c->nt;
+  if (cl < 2 || comp_class_index(c, chain[0]) >= 0) return cl;
+  int val = -1, nw = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, chain[0])) continue;
+    nw++;
+    val = nt_ref(nt, w, "value");
+  }
+  if (nw != 1 || val < 0) return cl;
+  NodeKind vk = nt_kind(nt, val);
+  if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return cl;
+  char vchain[QC_MAXDEPTH + 1][64];
+  int vabs = 0;
+  int vl = qc_read_chain(nt, val, vchain, &vabs);
+  if (vl < 1 || vl + cl - 1 > QC_MAXDEPTH + 1) return cl;
+  char out[QC_MAXDEPTH + 1][64];
+  int n = 0;
+  for (int i = 0; i < vl; i++) snprintf(out[n++], 64, "%s", vchain[i]);
+  for (int i = 1; i < cl; i++) snprintf(out[n++], 64, "%s", chain[i]);
+  for (int i = 0; i < n; i++) snprintf(chain[i], 64, "%s", out[i]);
+  return n;
+}
+
 void qc_qualified_name(char *out, size_t cap, const QCWrite *w) {
   out[0] = 0;
   for (int i = 0; i < w->depth; i++) { strncat(out, w->path[i], cap - strlen(out) - 1); strncat(out, "__", cap - strlen(out) - 1); }
@@ -2981,6 +3013,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         /* does this name participate in a collision? */
         int involved = 0;
         for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, cname)) { involved = 1; break; }
+        if (involved) { cl = qc_expand_alias_head(c, chain, cl); cname = chain[cl - 1]; }
         if (involved) {
           /* try lexical prefixes innermost-first (relative), or only the root (::) */
           int max_pref = abs_anchor ? 0 : depth;
