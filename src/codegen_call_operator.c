@@ -1080,7 +1080,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* An assignment's value in Ruby is the RIGHT-HAND SIDE: `h.default_proc
        = p` answers the proc, not the hash, which would land a sp_XHash * in
        whatever slot the expression feeds -- a Proc * one here (#3833). */
-    TyKind vt2 = comp_ntype(c, id);
+    TyKind vt2 = repr_of(c, id).as_ty;
     int ans = (vt2 == TY_PROC || vt2 == TY_POLY || vt2 == TY_UNKNOWN) ? tp2 : th2;
     buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
                   " sp_gc_wb((void *)_t%d); _t%d; })",
@@ -1102,7 +1102,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        effects ran twice, and a value the store read through a boxed
        dispatch came back boxed where the call answers a String */
     int va = argv[argc - 1];
-    TyKind vt = comp_ntype(c, va), want = comp_ntype(c, id);
+    TyKind vt = repr_of(c, va).as_ty, want = repr_of(c, id).as_ty;
     if (vt == TY_STRING || vt == TY_POLY) {
       int tv = ++g_tmp;
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", tv);
@@ -1244,7 +1244,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   /* Numeric#fdiv on a boxed receiver: both operands as Floats, a Float out
      (#3767). Ahead of the poly arithmetic below, whose ops all answer boxed. */
   if (recv >= 0 && argc == 1 && rt == TY_POLY && sp_streq(name, "fdiv") &&
-      comp_ntype(c, id) == TY_FLOAT) {
+      repr_of(c, id).as_ty == TY_FLOAT) {
     buf_puts(b, "sp_poly_fdiv("); emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
@@ -1299,7 +1299,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          the one class that defines it (`(a % o).value` with `%` answering an
          Int64). The value is an sp_RbVal here, so unbox it to the type the
          reader on it expects (#3781). */
-      TyKind pres = comp_ntype(c, id);
+      TyKind pres = repr_of(c, id).as_ty;
       /* --plan-check: the boxed operator dispatches at run time to every
          class's own operator of the name: each is an arm, compared with the
          operator inference bound the call to (a call it bound none for is a
