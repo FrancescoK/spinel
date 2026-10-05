@@ -929,6 +929,7 @@ typedef struct {
      handle unless the analysis proves it local (repr_str_shares, #6765),
      and the share classes that rule reads (share.h), rebuilt as the
      analysis goes. Off, nothing builds them and the C is unchanged. */
+  int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
   int share_strings;
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
