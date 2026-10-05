@@ -11055,6 +11055,7 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (strcmp(cn, "Numeric") == 0) return is_int || is_flt || is_rat || is_cpx;
   if (strcmp(cn, "Integer") == 0) return is_int;
   if (strcmp(cn, "Float") == 0) return is_flt;
+  if (is_cpx && strcmp(cn, "Comparable") == 0) return TRUE;
   /* a String builder box is a String here too; one with no handle holds nil,
      which is not Comparable */
   if (strcmp(cn, "Comparable") == 0) return is_int || is_flt || is_rat ||

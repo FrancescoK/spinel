@@ -2061,7 +2061,8 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
-GC_MINOR_TESTS := test/reflect_ivar_nil_presence.rb \
+GC_MINOR_TESTS := test/kind_query_computed_nil.rb \
+                  test/reflect_ivar_nil_presence.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
                   test/zip_boxed_receiver_argument_order.rb \
