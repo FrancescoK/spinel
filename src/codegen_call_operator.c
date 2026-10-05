@@ -987,6 +987,20 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0) {
   /* String#concat with no arguments returns the receiver unchanged (#2309):
      a stage-1 builtin-op row (builtin_ops.c); the shared handle's arm stays */
+  /* --share-strings: concat / prepend with no arguments on a slot that is
+     the shared handle checks the handle's own frozen state (its read is a
+     copy, never frozen) and answers the receiver */
+  { char srefZ[1024];
+    if (repr_share_rule(c) && recv >= 0 && argc == 0 && is_string_append_or_prepend(name) &&
+        strbuf_slot_ref(c, recv, srefZ, sizeof srefZ)) {
+      int th = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data); ",
+                 th, srefZ, th, name, th, th);
+      if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", th);
+      else buf_printf(b, "(_sp_ret_strbuf = (void *)_t%d, _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL); })",
+                      th, th, th);
+      return 1;
+    } }
   if (recv >= 0 && rt == TY_STRING && emit_builtin_op_stage(c, id, recv, rt, name, 1, b)) return 1;
   if (recv >= 0 && rt == TY_STRBUF && sp_streq(name, "concat") && argc == 0) {
     /* zero-argument concat returns the receiver, but CRuby checks frozen
