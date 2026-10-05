@@ -303,4 +303,24 @@ void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv);
 void pa_end(Compiler *c, int frame, const PolyPlan *p);
 void pa_report(void);
 
+/* ---- CN_*: a call's nil target (#7444) ----
+   Whether call id's receiver may be nil where the call is emitted for a
+   builtin of its type, and what nil answers there. Decided from the
+   settled types, the representation (repr_of) and the nil fact
+   (analyze_nil.c) alone; pure. A receiver qualifies when it is a typed
+   pointer of a String, an Array, a Hash or an IO, and the fact says it may
+   be nil from a nil the program writes (NFW_NIL, NFW_NO_ELSE,
+   NFW_SAFE_NAV, NFW_UNSET). An ivar keeps ivar_nil_recv_guard's policy;
+   a local or a global qualifies when its slot holds the pointer or a
+   shared String's handle, where the test reads it. Inside the call's own
+   emission the receiver is seen as tested (Repr.nil_tested, a view), so
+   the call is armed once. */
+typedef enum {
+  CN_NONE,     /* not nil here, a `&.` call, or a method the program gives nil */
+  CN_RAISE,    /* nil has no such method: NoMethodError, after the operands */
+  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers. Not emitted
+                  yet: the call's type has to join NilClass's answer */
+} CplanNil;
+int cplan_nil(Compiler *c, int id);
+
 #endif

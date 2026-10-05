@@ -10838,6 +10838,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
     return 1;
   }
   if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0, TY_VOID); return 1; }
+  if (emit_nil_target_stmt(c, id, b, indent)) return 1;
   { int grecv = -1;
     if (id != g_ivar_nil_guarded_id && nil_recv_guard(c, id, &grecv) &&
         nt_kind(nt, unwrap_parens(c, grecv)) == NK_CallNode) {

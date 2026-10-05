@@ -190,6 +190,7 @@ Repr repr_of(const Compiler *c, int node) {
   r.demand = c->strbuf_handle_demand[node] != 0;
   r.read_raw = c->strbuf_read_raw ? c->strbuf_read_raw[node] != 0 : 0;
   r.poly_lift = c->poly_strbuf_lift ? c->poly_strbuf_lift[node] != 0 : 0;
+  r.nil_tested = c->nil_tested ? c->nil_tested[node] != 0 : 0;
   /* a node is boxed as the type it is stored as; a nil-guard narrowing is
      read where the value is used, not where it is boxed */
   TyKind kt = r.as_ty;
