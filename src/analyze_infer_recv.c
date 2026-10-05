@@ -1069,6 +1069,13 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[2]); return 1; }
     if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && rt == TY_POLY_ARRAY)
       { *out = TY_POLY_ARRAY; return 1; }  /* the matching sub-array, or nil (NULL ptr) */
+    /* an array of numbers, Strings, Symbols or booleans holds no Array to
+       match: the boxed nil emit_op_array_assoc answers */
+    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
+      TyKind et = ty_array_elem(rt);
+      if (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL)
+        { *out = TY_POLY; return 1; }
+    }
     if (sp_streq(name, "to_h") && argc == 0 && block < 0) {
       /* Infer hash type from the first pair element of an array literal */
       if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {

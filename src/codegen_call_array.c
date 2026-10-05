@@ -1001,6 +1001,17 @@ int emit_op_array_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   const char *k = array_kind(rt);
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
+  /* an array of numbers, Strings, Symbols or booleans holds no Array for
+     assoc or rassoc to match: nil, once the receiver and the key are
+     evaluated, as CRuby answers */
+  if (rt != TY_POLY_ARRAY && argc == 1 && (sp_streq(name, "assoc") || sp_streq(name, "rassoc"))) {
+    TyKind et = ty_array_elem(rt);
+    if (et == TY_INT || et == TY_FLOAT || et == TY_STRING || et == TY_SYMBOL || et == TY_BOOL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void)(");
+      emit_boxed(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+      return 1;
+    }
+  }
   if (rt != TY_POLY_ARRAY) return 0;
   if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
     buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ", ");
