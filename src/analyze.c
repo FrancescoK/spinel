@@ -26230,7 +26230,21 @@ static int du_param_binds(const NodeTable *nt, int n, const char *nm, int depth)
   }
   return 0;
 }
-static int du_read_maybe_unset(const NodeTable *nt, const int *par, int rd, const char *nm) {
+/* Where each statement sits in the list it belongs to (its parent in `par`),
+   filled one list at a time on first need: asked by a scan of the list for
+   every read, a long body read many times cost its length per read. -1 for
+   a node not in its parent's list. */
+typedef struct { int *pos; char *done; } DUPos;
+static int du_stmt_index(const NodeTable *nt, const int *par, DUPos *dp, int p, int cur) {
+  if (!dp->done[p]) {
+    int bn = 0; const int *b = nt_arr(nt, p, "body", &bn);
+    for (int i = 0; i < bn; i++)
+      if (b[i] >= 0 && b[i] < nt->count && par[b[i]] == p && dp->pos[b[i]] < 0) dp->pos[b[i]] = i;
+    dp->done[p] = 1;
+  }
+  return dp->pos[cur];
+}
+static int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm) {
   int cur = rd, below = -1;
   for (int guard = 0; guard < 4096; guard++) {
     int p = par[cur];
@@ -26256,10 +26270,11 @@ static int du_read_maybe_unset(const NodeTable *nt, const int *par, int rd, cons
           nt_ref(nt, pat, "predicate") == below) return 0;
     }
     if (pk == NK_StatementsNode) {
-      int bn = 0; const int *b = nt_arr(nt, p, "body", &bn);
+      int bn = 0; nt_arr(nt, p, "body", &bn);
       int first = du_first_write(nt, p, nm);
       /* the read inside or before that write's own statement is not covered */
-      for (int i = 0; i <= first && i < bn; i++) if (b[i] == cur) { first = -1; break; }
+      int at = du_stmt_index(nt, par, dp, p, cur);
+      if (at >= 0 && at <= first) first = -1;
       if (first >= 0 && first < bn) return 0;   /* a write ahead of the read's statement */
     }
     below = cur;
@@ -26310,6 +26325,7 @@ static void mark_nullable_int_locals(Compiler *c) {
      carries it (du_read_maybe_unset); the rounds below spread the mark */
   {
     int *par = NULL;
+    DUPos dp = { NULL, NULL };
     /* `x &&= v` and `x += v` read x before they write it: an unassigned x
        there is nil, which `&&=` keeps and `+=` raises on, where the zero
        start was truthy and counted */
@@ -26323,11 +26339,17 @@ static void mark_nullable_int_locals(Compiler *c) {
       LocalVar *lv = rs ? scope_local(rs, nm) : NULL;
       if (!lv || lv->is_param || lv->is_block_param || lv->maybe_unset ||
           (lv->type != TY_INT && lv->type != TY_FLOAT)) continue;
-      if (!par) par = du_parent_map(nt);
-      if (!par) break;
-      if (du_read_maybe_unset(nt, par, r, nm)) { lv->maybe_unset = 1; lv->nullable_int = 1; }
+      if (!par) {
+        par = du_parent_map(nt);
+        if (!par) break;
+        dp.pos = (int *)malloc(sizeof(int) * ((size_t)nt->count + 1));
+        dp.done = (char *)calloc((size_t)nt->count + 1, 1);
+        if (!dp.pos || !dp.done) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int k = 0; k < nt->count; k++) dp.pos[k] = -1;
+      }
+      if (du_read_maybe_unset(nt, par, &dp, r, nm)) { lv->maybe_unset = 1; lv->nullable_int = 1; }
     }
-    free(par);
+    free(par); free(dp.pos); free(dp.done);
     free(du_memo); du_memo = NULL; du_memo_cap = du_memo_n = 0;
   }
   /* An --rbs `Integer?` return is the seeded form of the same property the
