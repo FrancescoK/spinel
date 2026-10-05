@@ -317,7 +317,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          a number (or, as a Float, raised FloatDomainError on its NaN). */
       /* Under --int-overflow=promote the call answers a box (a Float past
          sp_int is a Bignum), and the guard boxes its answer the same way. */
-      TyKind rt9 = comp_ntype(c, id);
+      TyKind rt9 = repr_of(c, id).as_ty;
       if ((at == TY_INT || at == TY_FLOAT) && (rt9 == TY_INT || rt9 == TY_POLY) &&
           call_returns_nullable_int(c, av[0])) {
         char ref[24];
@@ -843,7 +843,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     return 1;
   }
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
-    TyKind at = comp_ntype(c, argv[0]);
+    TyKind at = repr_of(c, argv[0]).as_ty;
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_boxed(c, argv[0], b);
@@ -943,7 +943,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "loop") && argc == 0 && !bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      TyKind bt = comp_ntype(c, id);
+      TyKind bt = repr_of(c, id).as_ty;
       /* a value-less `break` (or none at all) makes the loop's value nil:
          ride the poly slot so the nil default is the result */
       if (bt == TY_UNKNOWN || bt == TY_NIL) bt = TY_POLY;
@@ -1019,7 +1019,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "catch") && argc <= 1 && !bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      TyKind bt = comp_ntype(c, id);
+      TyKind bt = repr_of(c, id).as_ty;
       /* NIL: a body whose tail is a break-less loop; ride the int slot (0). */
       if (bt == TY_UNKNOWN || bt == TY_VOID || bt == TY_NIL) bt = TY_INT;
       int ptr = proc_slot_is_ptr(bt);
@@ -1228,7 +1228,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (kcn) {
           buf_printf(b, "(sp_raise_cls(\"TypeError\","
                         " (&(\"\\xff\" \"no implicit conversion of %s into String\")[1])), %s)",
-                     kcn, default_value_from_compiler(c, comp_ntype(c, id)));
+                     kcn, default_value_from_compiler(c, repr_of(c, id).as_ty));
           return 1;
         }
       }
@@ -1240,7 +1240,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
-                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, repr_of(c, id).as_ty));
         buf_puts(b, ")");
         return 1;
       }
@@ -1250,7 +1250,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1..2)\")[1])), %s)",
-                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, repr_of(c, id).as_ty));
         buf_puts(b, ")");
         return 1;
       }
