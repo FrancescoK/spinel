@@ -11000,6 +11000,34 @@ static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
 }
 
 /* A .new call (and the default-hash form): user classes, Struct and Data, the builtin constructors (emit_class_new_call's arms, in their order) */
+/* Hash.new(&pr): the block argument is the default proc, a Proc held as
+   itself (emit_block_arg_proc), which the hash's default calls through
+   sp_dyn_hash_dproc as it calls a block Hash.new lowered to a proc. A nil
+   one (a method's `&b` given no block) is no default proc. The block-literal
+   arm splices a body, and a block argument has none: its default answered
+   nil. */
+static int emit_hash_new_block_arg(Compiler *c, int id, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (argc != 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) return 0;
+  /* an inlined method's `&b` forwards its caller's block, a literal the arm
+     below takes, or none */
+  int fwd = resolve_forwarded_block(c, blk);
+  if (fwd != blk) {
+    if (fwd >= 0) return 0;
+    buf_puts(b, "sp_PolyPolyHash_new()");
+    return 1;
+  }
+  int ex = nt_ref(nt, blk, "expression");
+  Buf pb; memset(&pb, 0, sizeof pb);
+  if (ex < 0 || !emit_block_arg_proc(c, ex, &pb)) { free(pb.p); return 0; }
+  int tp = ++g_tmp;
+  buf_printf(b, "({ sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, (void *)_t%d) : sp_PolyPolyHash_new(); })",
+             tp, pb.p, tp, tp, tp);
+  free(pb.p);
+  return 1;
+}
+
 static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int *out) {
   if (!(recv >= 0 && (is_hash_constructor(name)))) return 0;
   const char *rty = nt_type(nt, recv);
@@ -11513,7 +11541,8 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
     if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
-      int hblk = nt_ref(nt, id, "block");
+      if (emit_hash_new_block_arg(c, id, argc, b)) { *out = 1; return 1; }
+      int hblk = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
       int hbody = nt_ref(nt, hblk, "body");
       const char *hp = block_param_name(c, hblk, 0);
       const char *kp = block_param_name(c, hblk, 1);
@@ -11534,7 +11563,15 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_PolyPolyHash *_self_h, sp_RbVal _key, void *_dproc_self) {\n", dn);
       if (dp_self) buf_printf(pb, "  sp_%s *self = (sp_%s *)_dproc_self; (void)self;\n", dp_cls, dp_cls);
       else buf_puts(pb, "  (void)_dproc_self;\n");
-      if (hp) buf_printf(pb, "  sp_PolyPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+      if (hp) {
+        /* a caller's block an inlined method forwards (`Hash.new(&b)`) had
+           its parameters typed as that method's yield binds them: boxed */
+        Scope *hs = comp_scope_of(c, hblk);
+        LocalVar *hlv = hs ? scope_local(hs, hp) : NULL;
+        if (hlv && hlv->type == TY_POLY)
+          buf_printf(pb, "  sp_RbVal lv_%s = sp_box_obj(_self_h, SP_BUILTIN_POLY_POLY_HASH); (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+        else buf_printf(pb, "  sp_PolyPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+      }
       if (kp) buf_printf(pb, "  sp_RbVal lv_%s = _key; (void)lv_%s;\n", rename_local(kp), rename_local(kp));
       Buf *sv_pre = g_pre; int sv_ind = g_indent; const char *sv_self = g_self;
       g_pre = pb; g_indent = 1;
