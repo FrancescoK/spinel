@@ -1,0 +1,23 @@
+pread len TypeError: no implicit conversion of nil into Integer
+pread off TypeError: no implicit conversion from nil
+pread boxed len TypeError: no implicit conversion of nil into Integer
+pread boxed off TypeError: no implicit conversion from nil
+pread nil len TypeError: no implicit conversion of nil into Integer
+pread nil off TypeError: no implicit conversion from nil
+"el"
+pwrite off TypeError: no implicit conversion from nil
+pwrite boxed off TypeError: no implicit conversion from nil
+pwrite nil off TypeError: no implicit conversion from nil
+seek TypeError: no implicit conversion from nil
+seek boxed TypeError: no implicit conversion from nil
+seek nil TypeError: no implicit conversion from nil
+sysseek TypeError: no implicit conversion from nil
+sysseek boxed TypeError: no implicit conversion from nil
+pos= TypeError: no implicit conversion from nil
+pos= boxed TypeError: no implicit conversion from nil
+truncate TypeError: no implicit conversion from nil
+truncate nil TypeError: no implicit conversion from nil
+seek miss TypeError: no implicit conversion from nil
+pread miss TypeError: no implicit conversion from nil
+readpartial TypeError: no implicit conversion from nil to integer
+bytes TypeError: no implicit conversion of nil into Integer
