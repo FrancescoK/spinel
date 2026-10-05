@@ -1801,9 +1801,12 @@ static const BuiltinOp bop_rows[] = {
      row narrower than the inference row of its name answers what that row
      does; one with no inference row of its own answers what the rules
      after the lookup answered for it (all of these names are in Hash's
-     builtin table, so no Object reopen answers them). replace, default=
-     (typed from the operand ahead of the lookup) and to_a/entries with a
-     block carry none. */
+     builtin table, so no Object reopen answers them). replace and default=
+     (typed from the operand ahead of the lookup) carry none. A method
+     CRuby runs without its block (to_a, entries, first, take, drop, shift,
+     default_proc) answers the same with one, so its row takes any block
+     form; one with a block form of its own (count, sort, any?) keeps the
+     blockless row. */
 #define HASH_OR_ARRAY (BOP_K(TY_STR_INT_HASH) | BOP_K(TY_STR_STR_HASH) | BOP_K(TY_INT_INT_HASH) | \
                        BOP_K(TY_INT_STR_HASH) | BOP_K(TY_SYM_POLY_HASH) | BOP_K(TY_STR_POLY_HASH) | \
                        BOP_K(TY_POLY_POLY_HASH) | BOP_K(TY_INT_ARRAY) | BOP_K(TY_FLOAT_ARRAY) | \
@@ -1841,23 +1844,21 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "inspect",          0,   0, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_$HHash_inspect($r)" },
   { BOP_ANY_HASH, "to_s",             0,   0, BF_ANY,      TY_STRING,      BOPE_HASH_TO_S },
   { BOP_ANY_HASH, "to_proc",          0,   0, BF_ANY,      TY_PROC,        BOPE_HASH_TO_PROC },  /* a lambda over the hash */
-  { BOP_ANY_HASH, "default_proc",     0,   0, BF_NONE,     TY_PROC,        BOPE_HASH_DEFAULT_PROC },
+  { BOP_ANY_HASH, "default_proc",     0,   0, BF_ANY,      TY_PROC,        BOPE_HASH_DEFAULT_PROC },
   { BOP_ANY_HASH, "dup",              0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)", 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_HASH, "clone",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ sp_$HHash *_t$t = $r; sp_$HHash *_t$u = sp_$HHash_dup(_t$t); if (_t$t && sp_gc_is_frozen(_t$t)) sp_gc_freeze(_t$u); _t$u; })", 0, 0, BOPF_COPY_CLASS },  /* the frozen flag too (#3751) */
   { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)", 0, 0, BOPF_COPY_CLASS | BOPF_ARGS_BUILTIN },  /* a copy (#2340) */
   { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
   /* the mutators */
   { BOP_ANY_HASH, "delete",           1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
-  { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
+  { BOP_ANY_HASH, "shift",            0,   0, BF_ANY,      TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
   { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
   { BOP_ANY_HASH, "merge!",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },  /* #2431 */
   { BOP_ANY_HASH, "update",           2, 127, BF_NONE,     BOPR_SELF,      BOPE_HASH_MERGE_BANG_MANY, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   /* the conversions */
-  { BOP_ANY_HASH, "to_a",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },  /* the [key, value] pairs */
-  { BOP_ANY_HASH, "to_a",             0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
-  { BOP_ANY_HASH, "entries",          0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TO_A },
-  { BOP_ANY_HASH, "entries",          0,   0, BF_REQUIRED, TY_UNKNOWN,     BOPE_HASH_TO_A },
+  { BOP_ANY_HASH, "to_a",             0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_TO_A },  /* the [key, value] pairs */
+  { BOP_ANY_HASH, "entries",          0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_TO_A },
   { BOP_ANY_HASH, "sort",             0,   0, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_SORT },  /* by Array#<=> over the pairs */
   { BOP_ANY_HASH, "invert",           0,   0, BF_ANY,      BOPR_HASH_INVERT, BOPE_HASH_INVERT },
   { BOP_ANY_HASH, "each",            0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_NONE },  /* blockless: an external Enumerator over the pairs */
@@ -1890,10 +1891,10 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "compact!",         0,   0, BF_ANY,      TY_POLY,        BOPE_HASH_COMPACT_BANG, NULL, 0, 0, BOPF_SELF_OR_NIL },  /* self or nil */
   { BOP_ANY_HASH, "chunk",            0, 127, BF_REQUIRED, TY_ENUMERATOR,  BOPE_NONE },  /* of [key, [[k, v], ...]] pairs */
   { BOP_ANY_HASH, "to_proc",          0, 127, BF_ANY,      TY_PROC,        BOPE_NONE },
-  { BOP_ANY_HASH, "first",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_FIRST },  /* Enumerable's, over the [key, value] pairs */
-  { BOP_ANY_HASH, "first",            1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
-  { BOP_ANY_HASH, "take",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_TAKE },
-  { BOP_ANY_HASH, "drop",             1,   1, BF_NONE,     TY_POLY_ARRAY,  BOPE_HASH_DROP },
+  { BOP_ANY_HASH, "first",            0,   0, BF_ANY,      TY_POLY,        BOPE_HASH_FIRST },  /* Enumerable's, over the [key, value] pairs */
+  { BOP_ANY_HASH, "first",            1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_TAKE },
+  { BOP_ANY_HASH, "take",             1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_TAKE },
+  { BOP_ANY_HASH, "drop",             1,   1, BF_ANY,      TY_POLY_ARRAY,  BOPE_HASH_DROP },
   { BOP_ANY_HASH, "to_h",             0,   0, BF_NONE,     BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_SELF_EXACT },  /* identity */
   { BOP_ANY_HASH, "slice",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },  /* a copy, or a key subset */
   { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
@@ -2155,8 +2156,8 @@ static const BuiltinOp bop_rows[] = {
      with operands (the operand's kind), push/<</append (a literal
      receiver), assoc/rassoc (a typed receiver falls to the reopen rules)
      and the block forms of uniq!/compact!/flatten! carry none. */
-  { BOP_ANY_ARRAY, "length",                0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
-  { BOP_ANY_ARRAY, "size",                  0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
+  { BOP_ANY_ARRAY, "length",                0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },  /* a block is ignored; count's counts */
+  { BOP_ANY_ARRAY, "size",                  0,   0, BF_ANY,      TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
   { BOP_ANY_ARRAY, "count",                 0,   0, BF_NONE,     TY_INT,        BOPE_TEMPLATE, "sp_$AArray_length($r)" },
   { BOP_ANY_ARRAY, "empty?",                0,   0, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(sp_$AArray_length($r) == 0)" },
   { BOP_ANY_ARRAY, "first",                 0,   0, BF_ANY,      BOPR_ELEM,     BOPE_TEMPLATE, "sp_$AArray_get($r, 0)" },
