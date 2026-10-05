@@ -2539,6 +2539,21 @@ int strbuf_fresh_renders_string(Compiler *c, int v) {
   if (r.strbuf_src != RS_FRESH) return 0;
   return !(r.handle && nt_kind(c->nt, v) == NK_CallNode && strbuf_marked_yields_handle(c, v));
 }
+/* --share-strings: is `v` a call of a proc, a lambda or a Method (whose
+   answer comes back boxed through _sp_proc_poly_ret)? */
+int strbuf_proc_call_answer(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !is_proc_invoke(nt_str(nt, v, "name"))) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  /* a Method whose target is known is called directly
+     (emit_call_callable_arms), and answers in the target's own type */
+  if (rt == TY_METHOD && is_method_invoke(nt_str(nt, v, "name"))) {
+    int mn = method_recv_node(c, r);
+    if (mn >= 0 && method_obj_target_mi(c, mn) >= 0) return 0;
+  }
+  return rt == TY_PROC || rt == TY_METHOD || rt == TY_CURRY;
+}
 /* A String bang method (bop_share_bang_self) called on a slot that holds
    the shared handle (a local, an ivar, a global, a constant, a class
    variable): its value is that slot's String, or nil. */
