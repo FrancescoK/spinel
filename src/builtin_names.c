@@ -153,6 +153,10 @@ int is_hash_key_lookup(const char *n) {
   return sp_streq(n, "[]") || is_key_query(n) || sp_streq(n, "fetch") || sp_streq(n, "delete");
 }
 
+int is_truth_query(const char *n) {
+  return sp_streq(n, "nil?") || sp_streq(n, "!");
+}
+
 int is_symbol_conversion(const char *n) {
   return sp_streq(n, "to_sym") || sp_streq(n, "intern");
 }
