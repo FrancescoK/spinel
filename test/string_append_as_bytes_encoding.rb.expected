@@ -1,0 +1,42 @@
+#<Encoding:BINARY (ASCII-8BIT)>
+[226, 130, 172]
+#<Encoding:BINARY (ASCII-8BIT)>
+[97, 98, 99, 226, 130, 172]
+#<Encoding:BINARY (ASCII-8BIT)>
+[255, 226, 130, 172]
+#<Encoding:UTF-8>
+[255]
+false
+#<Encoding:UTF-8>
+[226, 130, 172, 255]
+false
+#<Encoding:BINARY (ASCII-8BIT)>
+[233]
+#<Encoding:UTF-8>
+[233]
+false
+#<Encoding:BINARY (ASCII-8BIT)>
+[97, 226, 130, 172, 0, 255]
+#<Encoding:UTF-8>
+[97, 255, 0, 226, 130, 172]
+false
+#<Encoding:BINARY (ASCII-8BIT)>
+[0, 226, 130, 172]
+#<Encoding:BINARY (ASCII-8BIT)>
+[226, 130, 172, 0, 255]
+#<Encoding:UTF-8>
+[226, 130, 172, 0, 255]
+false
+#<Encoding:BINARY (ASCII-8BIT)>
+305
+226
+#<Encoding:BINARY (ASCII-8BIT)>
+[226, 130, 172, 0]
+FrozenError
+#<Encoding:BINARY (ASCII-8BIT)>
+[]
+#<Encoding:UTF-8>
+#<Encoding:UTF-8>
+[226, 130, 172]
+#<Encoding:UTF-8>
+[226, 130, 172]

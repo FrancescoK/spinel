@@ -3583,14 +3583,14 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, "; _t%d; })", tn9);
     { *out = 1; return 1; }
   }
-  /* append_as_bytes: raw byte append == << for spinel's byte strings (#2397) */
+  /* append_as_bytes copies bytes without negotiating the receiver's encoding. */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
     { char srefAB[1024];
       if (strbuf_slot_ref(c, recv, srefAB, sizeof srefAB)) {
         int tm2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
         for (int a9 = 0; a9 < argc; a9++) {
-          buf_printf(b, " sp_String_append_bin(_t%d, ", tm2);
+          buf_printf(b, " sp_String_append_bytes(_t%d, ", tm2);
           if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
           else emit_str_expr(c, argv[a9], b);
           buf_puts(b, ");");
@@ -3604,13 +3604,13 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
        raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). A
        frozen receiver raises first, like every other in-place append (#3333). */
     buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
-    buf_printf(b, "const char *_t%d = sp_str_concat(", tn9);  /* reassigned per extra arg: keep non-const? const char* variable is reassignable (the POINTEE is const) */
+    buf_printf(b, "const char *_t%d = sp_str_append_bytes(", tn9);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     if (comp_ntype(c, argv[0]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
     else emit_str_expr(c, argv[0], b);
     buf_puts(b, ")");
     for (int a9 = 1; a9 < argc; a9++) {
-      buf_printf(b, "; _t%d = sp_str_concat(_t%d, ", tn9, tn9);
+      buf_printf(b, "; _t%d = sp_str_append_bytes(_t%d, ", tn9, tn9);
       if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
       else emit_str_expr(c, argv[a9], b);
       buf_puts(b, ")");
