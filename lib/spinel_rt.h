@@ -8347,6 +8347,15 @@ static sp_RbVal sp_MatchData_match_length_name(sp_MatchData *m, const char *name
   if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
   return sp_MatchData_match_length(m, g);
 }
+/* GC.stat(key): the one statistic, by a Symbol's or a String's name;
+   CRuby's ArgumentError for a key the collector does not keep. */
+static sp_int sp_gc_stat_key(sp_RbVal k) {
+  const char *kn = k.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)k.v.i) : k.tag == SP_TAG_STR ? k.v.s : NULL;
+  if (!kn) sp_raise_cls("TypeError", sp_sprintf("non-hash or symbol given"));
+  sp_StrIntHash *h = sp_gc_stat();
+  if (!sp_StrIntHash_has_key(h, kn)) sp_raise_cls("ArgumentError", sp_sprintf("unknown key: %s", kn));
+  return sp_StrIntHash_get(h, kn);
+}
 static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;/* the int hash's nil default (the sentinel) and a sentinel element are nil in the boxed hash, not the sentinel as an Integer: read as a number, a missing key answered SP_INT_NIL + 100 through `h[k] &&= h[k] + 100` */ r->default_v=sp_box_int_or_nil(h->default_v);for(sp_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_int_or_nil(sp_StrIntHash_get(h,k)));}if(sp_gc_is_frozen(h))sp_gc_freeze(r);return r;}
 
 /* SymPolyHash: symbol keys, sp_RbVal values -- same shape as SymStrHash but with poly values. */
