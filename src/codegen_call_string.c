@@ -969,7 +969,9 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
       if (p0) {
         if (p0_box_poly_ech) buf_printf(b, "lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
         else if (p0_handle_ech) buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)); ", p0, tl, ti);
-        else buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d); ", p0, tl, ti);
+        else { char _es[96]; snprintf(_es, sizeof _es, "sp_StrArray_get(_t%d, _t%d)", tl, ti);
+          emit_elem_param_bind(c, block, 0, NULL, p0, "Str", TY_UNKNOWN, _es, b);
+          buf_puts(b, "; "); }
       }
     }
     /* codepoints yields each character's codepoint, not each byte: the String
