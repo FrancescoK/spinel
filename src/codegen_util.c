@@ -2003,7 +2003,7 @@ static int ivs_reflect_only(Compiler *c, const char *ivn) {
     if (ac != 2) continue;
     const char *sn = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
                      nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
-    if (sp_streq(sn, ivn)) found = 1;
+    if (sn && sp_streq(sn, ivn)) found = 1;
   }
   return found;
 }
