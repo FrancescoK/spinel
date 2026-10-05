@@ -1593,8 +1593,13 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "swapcase",        0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "delete_prefix",   1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_delete_prefix($r, $s0)", 0 },
   { TY_STRING, "delete_suffix",   1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_delete_suffix($r, $s0)", 0 },
-  { TY_STRING, "lstrip",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_lstrip($r)", 0 },
-  { TY_STRING, "rstrip",          0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_rstrip($r)", 0 },
+  { TY_STRING, "lstrip",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_lstrip($r)", 0 },
+  { TY_STRING, "rstrip",          0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_rstrip($r)", 0 },
+  /* CRuby 4.0's selectors: the characters every set holds, each set read
+     as String#delete reads it */
+  { TY_STRING, "strip",           1, 127, BF_ANY,      TY_STRING,     BOPE_STR_SET_N, NULL, 0 },
+  { TY_STRING, "lstrip",          1, 127, BF_ANY,      TY_STRING,     BOPE_STR_SET_N, NULL, 0 },
+  { TY_STRING, "rstrip",          1, 127, BF_ANY,      TY_STRING,     BOPE_STR_SET_N, NULL, 0 },
   { TY_STRING, "chomp",           2, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_chomp($r)", 0 },
   { TY_STRING, "chomp",           0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "chr",             0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
