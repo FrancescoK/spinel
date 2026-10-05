@@ -13190,7 +13190,17 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && (rt == TY_POLY || (ty_is_hash(rt) && rt != TY_POLY_POLY_HASH)) &&
       sp_streq(name, "merge") && argc == 1 &&
       nt_ref(nt, id, "block") >= 0 && (rt != TY_POLY || !user_defines_or_reads(c, "merge"))) {
-    if (emit_merge_any_block_boxed(c, id, recv, argv[0], b)) return 1;
+    /* the merge is a general Hash; a call typed boxed -- a dispatch's
+       builtin arm, whose slot it shares with a program class's merge --
+       holds it boxed */
+    Buf mb; memset(&mb, 0, sizeof mb);
+    if (emit_merge_any_block_boxed(c, id, recv, argv[0], &mb)) {
+      if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_POLY_POLY_HASH, mb.p ? mb.p : "NULL", b);
+      else buf_puts(b, mb.p ? mb.p : "NULL");
+      free(mb.p);
+      return 1;
+    }
+    free(mb.p);
   }
   /* poly.ljust/rjust/center(width[, pad]): a String read from a container
      widened to poly. Pad via sp_poly_to_s and re-box (#3222). Outside the
