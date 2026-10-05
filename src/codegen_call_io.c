@@ -47,6 +47,35 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
              ts, tr, tr, tn, tn, tf, ts, tl, tl, tc, tr, tn, tr);
 }
 
+/* --share-strings: the buffer argument of an IO read that answers that
+   buffer (`f.read(n, buf)`, sysread, readpartial, read_nonblock), when the
+   buffer is the shared handle; -1 otherwise. The read's value is then that
+   handle, not a String of its own. */
+int io_outbuf_handle_arg(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  if (!nm || r < 0 || comp_ntype(c, r) != TY_IO) return -1;
+  if (!is_io_read_into(nm)) return -1;
+  int a = nt_ref(nt, v, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  char hr[1024];
+  return ac >= 2 && strbuf_slot_ref(c, av[1], hr, sizeof hr) ? av[1] : -1;
+}
+/* The frozen check a read into buffer `buf` makes first, as
+   `sp_str_check_mutable(<buf>); `: a buffer that is the shared handle
+   (--share-strings) is checked on the handle, whose read is a copy that is
+   never frozen. */
+static void emit_outbuf_check(Compiler *c, int buf, Buf *b) {
+  char hr[1024];
+  if (repr_share_rule(c) && strbuf_slot_ref(c, buf, hr, sizeof hr)) {
+    buf_printf(b, "if ((%s) && sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data); ", hr, hr, hr);
+    return;
+  }
+  buf_puts(b, "sp_str_check_mutable("); emit_expr(c, buf, b); buf_puts(b, "); ");
+}
+
 /* A line loop's block parameter `pn` of call `id`, declared in the loop and
    bound to the fresh line in _t<lt>: a parameter that is the shared handle
    (--share-strings) wraps it in a handle of its own. */
@@ -505,7 +534,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           sbp = nt_str(nt, argv[1], "name");
         int tsp = ++g_tmp;
         if (argc >= 2) {
-          buf_puts(b, "sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
+          emit_outbuf_check(c, argv[1], b);
           buf_printf(b, "const char *_t%d = ", tsp);
         }
         buf_printf(b, "sp_File_readpartial(_t%d, ", tio2);
@@ -759,7 +788,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         const char *bnm = nt_str(nt, argv[1], "name");
         int trd = ++g_tmp;
         /* CRuby raises FrozenError on the output buffer BEFORE reading (#3335) */
-        buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
+        buf_puts(b, "({ "); emit_outbuf_check(c, argv[1], b);
         buf_printf(b, "const char *_t%d = sp_File_read_n(%s, ", trd, r);
         emit_int_expr(c, argv[0], b);
         /* a buffer that is the shared handle takes the bytes into the
@@ -816,7 +845,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       int tpr = ++g_tmp;
       if (bufn) {
         /* the output buffer must be mutable, checked before the read (#3335) */
-        buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[2], b); buf_puts(b, "); ");
+        buf_puts(b, "({ "); emit_outbuf_check(c, argv[2], b);
         buf_printf(b, "const char *_t%d = ", tpr);
       }
       buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -860,7 +889,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         if (no_exc8) {
           int te = ++g_tmp;
           buf_puts(b, "({ ");
-          if (ob >= 0) { buf_puts(b, "sp_str_check_mutable("); emit_expr(c, ob, b); buf_puts(b, "); "); }
+          if (ob >= 0) emit_outbuf_check(c, ob, b);
           buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
           buf_printf(b, ", 0, 0, &_e%d); ", te);
@@ -870,8 +899,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                      tob, tob, te);
         }
         else if (ob >= 0) {
-          buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
-          buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
+          buf_puts(b, "({ "); emit_outbuf_check(c, ob, b);
+          buf_printf(b, "const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
           buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
         }
         else {
@@ -909,7 +938,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         sbn = nt_str(nt, argv[1], "name");
       int tsr = ++g_tmp;
       if (argc >= 2) {
-        buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
+        buf_puts(b, "({ "); emit_outbuf_check(c, argv[1], b);
         buf_printf(b, "const char *_t%d = ", tsr);
       }
       buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
