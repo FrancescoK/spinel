@@ -249,7 +249,10 @@ const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_b
 #define BOP_CALLABLE ((TyKind)-6)   /* a proc, a lambda or a Method */
 
 typedef enum {
-  BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed */
+  BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
+                     (a block a container's runs is handed its elements) */
+  BSH_FROZEN,     /* answers its receiver frozen (or a frozen copy): nothing
+                     can change that String in place any more */
   BSH_RECV,       /* answers its receiver */
   BSH_ELEM,       /* answers an element of the receiver (with a count: a SUB) */
   BSH_SUB,        /* answers a container of the receiver's elements */
@@ -258,11 +261,17 @@ typedef enum {
   BSH_STORE_TAIL, /* stores every argument but the first (insert, fill) */
   BSH_MERGE,      /* stores the elements of its container arguments; answers
                      the receiver or a container of both */
-  BSH_ARGS,       /* answers its arguments, or a container of them (p, Array) */
+  BSH_ARGS,       /* answers its one argument, or an Array of several (p) */
+  BSH_ARRAY_OF,   /* answers its Array argument, or an Array holding it (Array()) */
   BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
-  BSH_ITER,       /* block parameters bind elements; answers the receiver or a
-                     container of the elements and the block's values */
-  BSH_ITER_SUB,   /* block parameters bind containers of elements (each_slice) */
+  BSH_ITER,       /* block parameters bind elements; answers the receiver (each) */
+  BSH_ITER_SEL,   /* block parameters bind elements; answers a container of
+                     some of them (select, sort_by) */
+  BSH_ITER_MAP,   /* block parameters bind elements; answers a new container
+                     of the block's values (map) */
+  BSH_ITER_MAP_BANG, /* the same, keeping the values in the receiver (map!) */
+  BSH_ITER_SUB,   /* block parameters bind containers of elements (each_slice,
+                     group_by's groups); answers containers of them */
   BSH_ITER_FIND,  /* block parameters bind elements; answers one of them */
   BSH_ITER_FRESH, /* block parameters bind fresh values (each_char, each_line) */
   BSH_ITER_MEMO0, /* inject/reduce: parameter 0 the memo (argument 0), the

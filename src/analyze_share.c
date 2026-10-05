@@ -28,7 +28,8 @@ enum { SHE_WRITTEN = 1 };
 
 typedef struct ShareFacts {
   int n, cap;
-  int *parent, *elem, *nhold, *nmem, *hidx;
+  int *parent, *elem, *nhold, *nmem, *nelem, *hidx, *owner;
+  int *hcount;         /* per root, once built: holders storing a String */
   unsigned char *kind, *flags, *own;
   /* the holders, and their element */
   ShareHolder *h;
@@ -45,6 +46,8 @@ typedef struct ShareFacts {
   /* the method names a Method, `send` or define_method can reach */
   const char **dyn;
   int ndyn, cdyn, dyn_all, dyn_ivars;
+  const char **mconst;
+  int nmconst, cmconst;
   int unknown;
   int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
   int union_stack_cap;
@@ -73,7 +76,9 @@ static int sh_new(ShareFacts *F, int kind) {
     F->elem = realloc(F->elem, sizeof(int) * (size_t)nc);
     F->nhold = realloc(F->nhold, sizeof(int) * (size_t)nc);
     F->nmem = realloc(F->nmem, sizeof(int) * (size_t)nc);
+    F->nelem = realloc(F->nelem, sizeof(int) * (size_t)nc);
     F->hidx = realloc(F->hidx, sizeof(int) * (size_t)nc);
+    F->owner = realloc(F->owner, sizeof(int) * (size_t)nc);
     F->kind = realloc(F->kind, (size_t)nc);
     F->flags = realloc(F->flags, (size_t)nc);
     F->own = realloc(F->own, (size_t)nc);
@@ -84,7 +89,9 @@ static int sh_new(ShareFacts *F, int kind) {
   F->elem[e] = -1;
   F->nhold[e] = sh_storing_kind(kind);
   F->nmem[e] = 1;
+  F->nelem[e] = kind == SHK_ELEM;
   F->hidx[e] = -1;
+  F->owner[e] = -1;
   F->kind[e] = (unsigned char)kind;
   F->flags[e] = 0;
   F->own[e] = 0;
@@ -112,6 +119,7 @@ static void sh_union(ShareFacts *F, int a, int b) {
     F->flags[rx] |= F->flags[ry];
     F->nhold[rx] += F->nhold[ry];
     F->nmem[rx] += F->nmem[ry];
+    F->nelem[rx] += F->nelem[ry];
     int ex = F->elem[rx], ey = F->elem[ry];
     if (ex < 0) F->elem[rx] = ey;
     else if (ey >= 0) {
@@ -132,6 +140,7 @@ static int sh_elem(ShareFacts *F, int x) {
     int e = sh_new(F, SHK_ELEM);
     r = sh_find(F, x);
     F->elem[r] = e;
+    F->owner[e] = r;
   }
   return F->elem[r];
 }
@@ -283,6 +292,7 @@ static void sh_lend(ShareFacts *F, int arg, int par, int direct) {
 /* ---- node values ---- */
 
 static int sh_val(ShareFacts *F, Compiler *c, int n);
+static int sh_const_read(ShareFacts *F, Compiler *c, int n);
 
 static int sh_join(ShareFacts *F, int a, int b) {
   if (a < 0) return b;
@@ -563,7 +573,7 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
 
 /* The share-row semantics of builtin call n. Answers its value. */
-static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk) {
+static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int blk, int container) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, n, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -572,7 +582,11 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   int lit_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   int bv = lit_blk ? sh_block_val(F, c, blk) : -1;
   switch (share) {
-  case BSH_PURE: case BSH_ITER_FRESH:
+  case BSH_PURE:
+    /* a container's block is handed its elements, whatever it answers */
+    if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    return -1;
+  case BSH_ITER_FRESH: case BSH_FROZEN:
     return -1;
   case BSH_RECV:
     return rv;
@@ -608,8 +622,19 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
     return rv;
   case BSH_ARGS: {
+    /* one argument is the answer; several, an Array of them */
+    if (nv == 1) return vals[0];
     int r = sh_new(F, SHK_VALUE);
-    for (int i = 0; i < nv; i++) { sh_union(F, r, vals[i]); sh_union(F, sh_elem(F, r), vals[i]); }
+    for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
+    return r;
+  }
+  case BSH_ARRAY_OF: {
+    /* an Array is the answer itself; anything else, wrapped in one */
+    if (nv != 1) return -1;
+    TyKind at = c->ntype[argv[0]];
+    if (ty_is_array(at) || at == TY_POLY || at == TY_UNKNOWN) return sh_join(F, vals[0], -1);
+    int r = sh_new(F, SHK_VALUE);
+    sh_union(F, sh_elem(F, r), vals[0]);
     return r;
   }
   case BSH_FILL1:
@@ -619,12 +644,24 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       return b;
     }
     return -1;
-  case BSH_ITER: case BSH_ITER_FIND: {
+  case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
+    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
+  case BSH_ITER_MAP_BANG:
     if (lit_blk) {
       sh_block_params(F, c, blk, sh_elem(F, rv), 1);
       sh_union(F, sh_elem(F, rv), bv);
     }
-    return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
+    return rv;
+  case BSH_ITER_MAP: {
+    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (!lit_blk) return rv;   /* an Enumerator over the receiver */
+    /* a new container of the block's values; a flat_map's or to_h's value
+       is itself a container of them */
+    int r = sh_new(F, SHK_VALUE);
+    sh_union(F, sh_elem(F, r), bv);
+    sh_union(F, sh_elem(F, r), sh_elem(F, bv));
+    return r;
   }
   case BSH_ITER_SUB:
     /* the block takes runs of elements: a run's elements are the
@@ -848,7 +885,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-    return s ? sh_builtin(F, c, n, s, rv, blk) : sh_unknown_call(F, c, n, blk);
+    return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
     /* a proc or a Method in the box: called with what it is handed */
@@ -861,16 +898,16 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int s = bop_share_named(BOP_ANY_ARRAY, name);
     if (!s) s = bop_share_named(BOP_ANY_HASH, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
-    if (s) return sh_builtin(F, c, n, s, rv, blk);
+    if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
   }
   TyKind fam = sh_family(rt);
   int s = bop_share_named(fam, name);
+  /* the Strings' answers-self names the face table lists */
+  if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
   if (!s) s = bop_share_named(BOP_ANY_RECV, name);
   if (!s) s = bop_share(fam, name);
-  /* the Strings' answers-self names the face table lists */
-  if (fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
-  if (s) return sh_builtin(F, c, n, s, rv, blk);
+  if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH);
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk);
 }
@@ -954,7 +991,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     return l;
   }
   case NK_ConstantReadNode: case NK_ConstantPathNode:
-    return sh_may_hold(c->ntype[n]) ? sh_holder(F, SHK_CONST, 0, -1, nt_str(nt, n, "name"), n) : -1;
+    return sh_const_read(F, c, n);
   case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode: {
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
     if (v < 0) return -1;
@@ -1170,10 +1207,90 @@ static void sh_settle_lends(ShareFacts *F, Compiler *c) {
 
 /* ---- the build ---- */
 
+static int sh_root(const ShareFacts *F, int x) {
+  while (F->parent[x] != x) x = F->parent[x];
+  return x;
+}
+
+/* How many holders of each class store a String. A variable, an ivar, a
+   global, a class variable and a constant each count. An element slot
+   counts only while its container can be reached again -- a container a
+   holder keeps, or one UNKNOWN may keep: the elements of an Array literal
+   handed to `p` die with the call, and are no second name. A class that is
+   its own elements' class (a value that may be a container or one of its
+   elements, unified as one) counts no element slot of its own either. */
+static void sh_finalize(ShareFacts *F) {
+  int n = F->n;
+  unsigned char *anchored = calloc((size_t)(n > 0 ? n : 1), 1);
+  F->hcount = calloc((size_t)(n > 0 ? n : 1), sizeof(int));
+  for (int e = 0; e < n; e++)
+    if (F->parent[e] == e)
+      anchored[e] = F->nhold[e] - F->nelem[e] > 0 || (F->flags[e] & SHF_UNKNOWN);
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int e = 0; e < n; e++) {
+      if (F->kind[e] != SHK_ELEM || F->owner[e] < 0) continue;
+      int o = sh_root(F, F->owner[e]), r = sh_root(F, e);
+      if (anchored[o] && !anchored[r]) { anchored[r] = 1; changed = 1; }
+    }
+  }
+  for (int e = 0; e < n; e++)
+    if (F->parent[e] == e) F->hcount[e] = F->nhold[e] - F->nelem[e];
+  for (int e = 0; e < n; e++) {
+    if (F->kind[e] != SHK_ELEM || F->owner[e] < 0) continue;
+    int o = sh_root(F, F->owner[e]), r = sh_root(F, e);
+    if (anchored[o] && o != r) F->hcount[r]++;
+  }
+  free(anchored);
+}
+
+/* A value that is a frozen String (a literal, a freeze, a -@): nothing can
+   change it in place, so a name holding only such values needs no handle. */
+static int sh_frozen_value(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 1;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_StringNode) return 1;
+  if (k == NK_CallNode && bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_FROZEN) return 1;
+  return c->ntype[v] != TY_UNKNOWN && !sh_may_hold(c->ntype[v]);
+}
+
+/* The constants some write gives a value that is no frozen String. */
+static void sh_mutable_consts(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind kinds[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
+                                    NK_ConstantPathWriteNode };
+  for (unsigned i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+    for (int w = comp_kind_first(c, kinds[i]); w >= 0; w = comp_kind_next(c, w)) {
+      if (nt_kind(nt, w) != kinds[i] || sh_frozen_value(c, nt_ref(nt, w, "value"))) continue;
+      int t = kinds[i] == NK_ConstantPathWriteNode ? nt_ref(nt, w, "target") : w;
+      const char *nm = t >= 0 ? nt_str(nt, t, "name") : NULL;
+      if (!nm) continue;
+      if (F->nmconst >= F->cmconst) {
+        F->cmconst = F->cmconst ? F->cmconst * 2 : 16;
+        F->mconst = realloc(F->mconst, sizeof(char *) * (size_t)F->cmconst);
+      }
+      F->mconst[F->nmconst++] = nm;
+    }
+}
+
+/* A constant read's holder: one some write makes mutable, or a container
+   the program never writes (ARGV); a constant holding a frozen String is
+   none. */
+static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
+  const char *nm = nt_str(c->nt, n, "name");
+  TyKind t = c->ntype[n];
+  if (!nm || !sh_may_hold(t)) return -1;
+  for (int i = 0; i < F->nmconst; i++)
+    if (sp_streq(F->mconst[i], nm)) return sh_holder(F, SHK_CONST, 0, -1, nm, n);
+  return t == TY_STRING || t == TY_STRBUF ? -1 : sh_holder(F, SHK_CONST, 0, -1, nm, n);
+}
+
 static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
-  free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->hidx);
+  free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
+  free(F->owner); free(F->hcount); free(F->mconst);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
@@ -1191,6 +1308,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
+  sh_mutable_consts(F, c);
   for (int n = 0; n < F->nnodes; n++) sh_val(F, c, n);
   /* each method's value is its body's last, and its defaults bind its
      parameters */
@@ -1230,6 +1348,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
   }
   sh_settle_lends(F, c);
+  sh_finalize(F);
   return F;
 }
 
@@ -1271,6 +1390,11 @@ int share_ivar_holder(const Compiler *c, int cid, const char *name) {
   return name ? sh_lookup(c->share, SHK_IVAR, cid, -1, name) : -1;
 }
 
+/* The holders of root r's class that store a String (sh_finalize). */
+static int sh_class_holders(const ShareFacts *F, int r) {
+  return F->hcount ? F->hcount[r] : F->nhold[r];
+}
+
 static int sh_root_of_holder(const ShareFacts *F, int h) {
   int x = F->helem[h];
   while (F->parent[x] != x) x = F->parent[x];
@@ -1289,7 +1413,7 @@ unsigned share_class_flags(const Compiler *c, int h) {
 int share_class_holders(const Compiler *c, int h) {
   const ShareFacts *F = c->share;
   if (!F || h < 0 || h >= F->nh) return 0;
-  return F->nhold[sh_root_of_holder(F, h)];
+  return sh_class_holders(F, sh_root_of_holder(F, h));
 }
 /* the facts of an element (a container's elements), not a holder */
 unsigned share_elem_flags(const Compiler *c, int e) {
@@ -1302,7 +1426,7 @@ int share_elem_holders(const Compiler *c, int e) {
   const ShareFacts *F = c->share;
   if (!F || e < 0 || e >= F->n) return 0;
   while (F->parent[e] != e) e = F->parent[e];
-  return F->nhold[e];
+  return sh_class_holders(F, e);
 }
 int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(c, h); }
 
@@ -1316,5 +1440,5 @@ int share_closed_shares(const ShareFacts *F, const ShareHolder *h) {
   int x = F->helem[i];
   while (F->parent[x] != x) x = F->parent[x];
   unsigned f = F->flags[x];
-  return (f & SHF_MUT) && (F->nhold[x] >= 2 || (f & SHF_INDIRECT));
+  return (f & SHF_MUT) && (sh_class_holders(F, x) >= 2 || (f & SHF_INDIRECT));
 }
