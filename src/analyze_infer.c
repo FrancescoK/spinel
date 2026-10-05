@@ -8260,6 +8260,35 @@ static TyKind infer_builtin_self(Compiler *c, int self_cls) {
   return ty_object(self_cls);
 }
 
+/* Is global `name` (resolved, without the `$`) assigned anywhere -- a write,
+   an op-write, a multiple-assignment target, an alias of it? */
+static int gvar_has_write(Compiler *c, const char *name) {
+  static const NodeTable *cnt = NULL; static int ccount = -1;
+  static char **names = NULL; static int nnames = 0;
+  const NodeTable *nt = c->nt;
+  if (!name) return 1;
+  if (cnt != nt || ccount != nt->count) {
+    for (int i = 0; i < nnames; i++) free(names[i]);
+    free(names); names = NULL; nnames = 0;
+    int cap = 0;
+    static const NodeKind WK[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+                                   NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+                                   NK_GlobalVariableTargetNode };
+    for (int q = 0; q < 5; q++)
+      NT_FOREACH_KIND(nt, WK[q], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn || wn[0] != '$') continue;
+        const char *rn = comp_resolve_gvar(c, wn + 1);
+        if (!rn) continue;
+        if (nnames == cap) { cap = cap ? cap * 2 : 16; names = realloc(names, sizeof(char *) * (size_t)cap); }
+        names[nnames++] = strdup(rn);
+      }
+    cnt = nt; ccount = nt->count;
+  }
+  for (int i = 0; i < nnames; i++) if (sp_streq(names[i], name)) return 1;
+  return 0;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -8524,6 +8553,11 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    /* A global the program never assigns reads nil (the interpreter's own
+       flags, false) and is held boxed: it is that from the first round, so
+       an && / || or a condition around the read is not typed by its other
+       side alone (`backtrace && $DEBUG` cached Boolean, then read the box). */
+    if (lv && lv->type == TY_UNKNOWN && !gvar_has_write(c, rn)) return TY_POLY;
     return lv ? lv->type : TY_UNKNOWN;
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {
