@@ -566,9 +566,8 @@ int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b) {
 }
 
 /* delete(key): the deleted value (or nil on a miss), then the key is
-   removed. A block literal, whose value stands in for a missing key, and a
-   block with a key of a kind the table cannot hold are left to the arm
-   after the lookup. */
+   removed. The block form, whose value stands in for a missing key, has a
+   row of its own, left to the arm after the lookup. */
 int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
@@ -576,10 +575,6 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
-  int blk = nt_ref(nt, x->id, "block");
-  if (blk >= 0 && (hash_key_misses(c, argv[0], ty_hash_key(rt)) ||
-                   (nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))))
-    return 0;
   TyKind vt = ty_hash_val(rt);
   int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
   buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
