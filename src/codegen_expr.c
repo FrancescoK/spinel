@@ -1521,7 +1521,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     if (slv && slv->type == TY_STRBUF) {
       /* A container-store / equal?-arg read of a shared-mutable string yields
          the live HANDLE, not a copy (#3227 phase 3). */
-      if (c->strbuf_box[id]) {
+      if (repr_of(c, id).handle) {
         emit_local_ref(c, id, lrn, b);
         return 1;
       }
@@ -1554,7 +1554,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     /* A POLY variable handed to a parameter the callee appends to in place:
        a plain String it holds becomes the shared handle and is stored back
        first, so the callee appends to the variable's own String (#6179). */
-    if (c->poly_strbuf_lift[id] && slv && slv->type == TY_POLY) {
+    if (slv && slv->type == TY_POLY && repr_of(c, id).poly_lift) {
       Buf rl; memset(&rl, 0, sizeof rl);
       emit_local_ref(c, id, lrn, &rl);
       emit_poly_lift_ref(rl.p ? rl.p : "", b);
@@ -1744,7 +1744,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
-    else if (ivt2 == TY_STRBUF && comp_ntype(c, v) != TY_STRBUF && comp_ntype(c, v) != TY_POLY) {
+    else if (ivt2 == TY_STRBUF && repr_of(c, v).as_ty != TY_STRBUF && comp_ntype(c, v) != TY_POLY) {
       /* a shared-handle slot takes an alias RHS by handle and wraps anything
          else in a fresh handle, exactly as the statement form does; the raw
          const char * went into the sp_String * slot here (a value-position
@@ -1911,11 +1911,12 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     Scope *cs = comp_scope_of(c, id);
+    Repr rp = repr_of(c, id);
     /* A POLY ivar handed to a parameter the callee appends to in place: a
        plain String it holds becomes the shared handle and is stored back
        first, as a POLY local's marked read is (poly_strbuf_lift); an
        instance's field store takes its write barrier from gc_wb_insert. */
-    if (c->poly_strbuf_lift[id] && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
+    if (rp.poly_lift && !g_ie_nil_ivars && comp_ntype(c, id) == TY_POLY) {
       int vl = view_push_repr(c, id, VR_POLY_LIFT, 0);
       Buf rl; memset(&rl, 0, sizeof rl);
       emit_expr_node(c, id, &rl);
@@ -1940,7 +1941,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     /* a shared-mutable string slot: a marked read yields the live HANDLE, an
        ordinary read a GC copy of the current contents (NULL stays nil) (#3227) */
     { char srefI[1024];
-      int svm = c->strbuf_box[id];
+      int svm = rp.handle;
       int vsm = view_push_repr(c, id, VR_STRBUF_BOX, 1);   /* let slot_ref resolve regardless of mark */
       int is_sb = strbuf_slot_ref(c, id, srefI, sizeof srefI);
       view_pop(c, vsm);
