@@ -177,4 +177,8 @@ int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_
 
 int is_string_append_or_prepend(const char *n); /* << concat prepend */
 
+int is_string_append(const char *n); /* << concat: appends answering the receiver */
+
+int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+
 #endif
