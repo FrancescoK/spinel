@@ -5593,6 +5593,8 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
       char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
       buf_printf(b, "; sp_frange_cover_poly(_t%d, ", tr); emit_boxed_text(c, pt, sref, b); buf_puts(b, "); })");
     }
+    /* an Integer against the Float bounds exactly (#7505) */
+    else if (pt == TY_INT) buf_printf(b, "; sp_frange_cover_i(_t%d, _t%d); })", tr, t);
     else buf_printf(b, "; sp_frange_cover(_t%d, (sp_float)_t%d); })", tr, t);
   }
   else if (comp_ntype(c, cond) == TY_CLASS) {
