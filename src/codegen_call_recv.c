@@ -7071,6 +7071,22 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
    reads, and its division family: divmod, div, gcd / lcm, modulo,
    remainder, gcdlcm (emit_scalar_recv_arms's Integer chain; answers 1 when
    a branch was taken) */
+/* Integer#div / #modulo given an operand with no number in it (a String,
+   a Symbol, nil, a boolean, an Array, a Hash): CRuby's coerce failure, as
+   the operators raise it (emit_int_operand_fail), over the receiver's text
+   `r`. The arms handed such an operand to sp_idiv's or sp_imod's sp_int
+   slot, which did not build. */
+static int int_divisor_coerce_fail(Compiler *c, const char *r, int arg, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (!(at == TY_STRING || at == TY_NIL || at == TY_SYMBOL || at == TY_BOOL ||
+        ty_is_array(at) || ty_is_hash(at))) return 0;
+  int ta = ++g_tmp;
+  buf_printf(b, "({ (void)(%s); sp_RbVal _t%d = ", r, ta); emit_boxed(c, arg, b);
+  buf_printf(b, "; sp_raise_cls(\"TypeError\", sp_sprintf(\"%%s can't be coerced into Integer\", "
+                "sp_cmperr_desc(_t%d))); (sp_int)0; })", ta);
+  return 1;
+}
+
 static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, const char *r) {
   /* `round(half: mode)`, with or without a digit count. Only #round takes
      a tie-break mode; the other three reject the hash outright, and with
@@ -7223,6 +7239,8 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   else if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
     buf_printf(b, "sp_int_div_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
+  else if ((sp_streq(name, "div") || sp_streq(name, "modulo")) && argc == 1 &&
+           int_divisor_coerce_fail(c, r, argv[0], b)) {}
   else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
   else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
            (comp_ntype(c, argv[0]) == TY_FLOAT ||
