@@ -567,7 +567,7 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   TyKind et = comp_ntype(c, arg);
   /* an epsilon that is no number: CRuby asks it for its #abs, which
      it does not answer -- NoMethodError, not a conversion's TypeError */
-  if (et != TY_RATIONAL && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&
+  if (et != TY_RATIONAL && et != TY_COMPLEX && et != TY_INT && et != TY_FLOAT && et != TY_BIGINT && et != TY_POLY &&
       et != TY_UNKNOWN) {
     buf_printf(b, "({ (void)(%s); sp_raise_nomethod(sp_nomethod_msg(\"abs\", ", r);
     emit_boxed(c, arg, b);
@@ -576,6 +576,12 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
   else {
     buf_printf(b, "sp_float_rationalize(%s, ", r);
     if (et == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+    else if (et == TY_COMPLEX) { buf_puts(b, "sp_complex_abs("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+    else if (et == TY_POLY || et == TY_UNKNOWN) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, arg, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_to_f_with_rational(sp_poly_abs(_t%d)); })", t, t);
+    }
     else emit_float_expr(c, arg, b);
     buf_puts(b, ")");
   }
