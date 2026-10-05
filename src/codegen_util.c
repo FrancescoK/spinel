@@ -2489,6 +2489,19 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   int r = nt_ref(nt, v, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  /* an object's call is a reader or a user method (which hands out or wraps
+     the handle); a call the runtime serves for a library class
+     (`StringIO#readline`) answers a String of its own */
+  if (repr_share_rule(c) && ty_is_object(rt) && !comp_ty_value_obj(c, rt)) {
+    const char *nm0 = nt_str(nt, v, "name");
+    int cid = ty_object_class(rt), found = 0;
+    for (int k = cid; nm0 && k >= 0 && !found; k = c->classes[k].parent) {
+      if (comp_method_in_chain(c, k, nm0, NULL) >= 0) found = 1;
+      for (int i = 0; i < c->classes[k].nreaders && !found; i++)
+        found = c->classes[k].readers[i] && sp_streq(c->classes[k].readers[i], nm0);
+    }
+    return found;
+  }
   if (rt != TY_STRING && rt != TY_STRBUF) return 1;
   const char *nm = nt_str(nt, v, "name");
   return nm && (is_append_concat(nm) || str_self_call(nt, v));

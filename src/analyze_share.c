@@ -672,6 +672,8 @@ static int sh_has_targets(Compiler *c, int call) {
   return p->mi >= 0 && p->dispatch != CP_REFUSE;
 }
 
+int share_call_targets(Compiler *c, int call, int *out, int cap) { return sh_targets(c, call, out, cap); }
+
 /* the receiver family a builtin's share row is keyed by */
 static TyKind sh_family(TyKind rt) {
   if (rt == TY_STRING || rt == TY_STRBUF) return TY_STRING;
