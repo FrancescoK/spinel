@@ -14796,6 +14796,14 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_puts(b, " } }\n");
       return 1;
     }
+    /* A splat, or more than one argument: the value form spreads the splat
+       and reads the receiver once. Appended here one argument at a time, a
+       splat went in as one Array and the receiver ran once per argument. */
+    if (!has_user && (splat || argc > 1)) {
+      emit_indent(b, indent);
+      buf_puts(b, "(void)("); emit_call(c, id, b); buf_puts(b, ");\n");
+      return 1;
+    }
     if (!has_user) {
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
