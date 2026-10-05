@@ -2522,6 +2522,14 @@ int emit_strbuf_call_handle(Compiler *c, int v, Buf *b) {
   view_pop(c, sv);
   return 1;
 }
+/* A boxed operand read for its String (a needle, a key): under
+   --share-strings a shared handle's box reads as its live value, which the
+   SP_TAG_STR tests that follow take; without the flag, emit_boxed. */
+void emit_boxed_str_operand(Compiler *c, int node, Buf *b) {
+  if (repr_share_rule(c)) buf_puts(b, "sp_poly_strbuf_deref(");
+  emit_boxed(c, node, b);
+  if (repr_share_rule(c)) buf_puts(b, ")");
+}
 /* --share-strings: is `v`, typed as the handle, one a store wraps in a
    fresh handle (RS_FRESH) while it renders as a String of its own
    (`+"x"`)? An append chain or a call answering its receiver renders the
@@ -2548,6 +2556,59 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
     return strbuf_slot_ref((Compiler *)c, r, sref, sizeof sref);
   }
   return 0;
+}
+/* A String a builtin's block binds (a line, a character, a scan match, an
+   element of a String Array), its parameter declared where the loop binds
+   it: `const char *lv_<cname> = <src>;`. A parameter the rule made the
+   shared handle (--share-strings) takes a handle of its own around the
+   String. `node` names a node in the parameter's scope (its block), `raw`
+   the parameter's own name; with `root`, the slot is rooted. */
+void emit_str_param_decl(Compiler *c, int node, const char *raw, const char *cname, const char *src, int root,
+                         Buf *b) {
+  /* (a rooted slot, the line loop's, asks without the flag too, as master's
+     loop did; the others only under it) */
+  int ask = (root || repr_share_rule(c)) && node >= 0 && raw;
+  Scope *s = ask ? comp_scope_of(c, node) : NULL;
+  LocalVar *lv = s ? scope_local(s, raw) : NULL;
+  if (lv && repr_of_slot(c, lv).kind == RK_STRBUF) {
+    buf_printf(b, "sp_String *lv_%s = sp_String_new_shared(%s);", cname, src);
+    if (root) buf_printf(b, " SP_GC_ROOT(lv_%s);", cname);
+  }
+  else {
+    buf_printf(b, "const char *lv_%s = %s;", cname, src);
+    if (root) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", cname);
+  }
+}
+/* Does a block parameter `lv` need a C shadow of the element type `et` a
+   loop binds into it? Not when its slot is the shared handle and the
+   element a String (--share-strings): the slot takes a handle of its own
+   around the element (emit_elem_param_bind, emit_str_param_decl). */
+int iter_param_needs_shadow(const Compiler *c, const LocalVar *lv, TyKind et) {
+  if (!lv || lv->type == et || et == TY_UNKNOWN) return 0;
+  return !(repr_share_rule(c) && et == TY_STRING && repr_of_slot(c, lv).kind == RK_STRBUF);
+}
+/* An Array element (`src`, of an Array of kind `kind`) bound to block
+   parameter `raw` (or, NULL, block blk's parameter pidx), as `lv_<cname> = <src>`, declared first as
+   decl_ty unless that is TY_UNKNOWN. A String element bound to a parameter
+   the rule made the shared handle (--share-strings) takes a handle of its
+   own: a typed String Array holds copies, since one whose elements the
+   rule shares settles in its poly form. */
+void emit_elem_param_bind(Compiler *c, int blk, int pidx, const char *raw, const char *cname,
+                          const char *kind, TyKind decl_ty, const char *src, Buf *b) {
+  int h = 0;
+  if (repr_share_rule(c) && blk >= 0 && kind && sp_streq(kind, "Str")) {
+    Scope *s = comp_scope_of(c, blk);
+    const char *pn = raw ? raw : block_param_name(c, blk, pidx);
+    LocalVar *lv = s && pn ? scope_local(s, pn) : NULL;
+    h = repr_of_slot(c, lv).kind == RK_STRBUF;
+  }
+  if (decl_ty != TY_UNKNOWN) {
+    if (h) buf_puts(b, "sp_String *");
+    else emit_ctype(c, decl_ty, b);
+    buf_puts(b, " ");
+  }
+  if (h) buf_printf(b, "lv_%s = sp_String_new_shared(%s)", cname, src);
+  else buf_printf(b, "lv_%s = %s", cname, src);
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   const char *rn = strbuf_local_name(c, recv);
@@ -3912,6 +3973,17 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   if (kt == TY_POLY && !kboxed) {
     /* PolyPolyHash key: box the typed value into sp_RbVal */
     emit_boxed(c, key, b);
+    return;
+  }
+  /* a key read as the shared handle: its live bytes, which a lookup only
+     reads and a store copies (sp_hash_key_str), as CRuby dups and freezes
+     a String key */
+  Repr kr = repr_share_rule(c) && kt == TY_STRING ? repr_of(c, key) : (Repr){0};
+  if (kr.kind == RK_STRBUF && (kr.handle || kr.demand) && !kr.read_raw) {
+    int th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    emit_expr(c, key, b);
+    buf_printf(b, "; _t%d ? sp_String_cstr(_t%d) : NULL; })", th, th);
     return;
   }
   emit_expr(c, key, b);

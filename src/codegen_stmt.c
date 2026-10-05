@@ -2437,6 +2437,17 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     buf_puts(b, ");\n");
     return;
   }
+  /* a local holding the shared handle (--share-strings): `+=` makes a new
+     String, the old one read first in case the operand rebinds the local */
+  if (repr_share_rule(c) && repr_of_slot(c, lv).kind == RK_STRBUF && sp_streq(op, "+")) {
+    int ta = ++g_tmp;
+    buf_printf(b, "{ const char *_t%d = %s ? sp_String_cstr(%s) : NULL; %s = sp_String_new_shared(sp_str_concat(_t%d, ",
+               ta, lval, lval, lval, ta);
+    if (repr_of(c, v).kind == RK_BOXED) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
+    else emit_str_expr(c, v, b);
+    buf_puts(b, ")); }\n");
+    return;
+  }
   /* a loop-bounded counter's `+= k` is a plain C add (see above) */
   if (t == TY_INT && int_arith_fn(op) && (is_add_sub(op)) &&
       local_is_bounded_counter(c, id, nm, lv)) {
