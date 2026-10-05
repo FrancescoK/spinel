@@ -1951,7 +1951,8 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   /* `if block_given? ... yield ... else ... end`: the call with a block
      answers from the block arm, typed per call site like a yield tail */
-  { int tl = block_given_tail_then_last(c, last); if (tl >= 0) last = tl; }
+  int tl = block_given_tail_then_last(c, last);
+  if (tl >= 0) last = tl;
   int is_yield = last >= 0 && nt_type(c->nt, last) && sp_streq(nt_type(c->nt, last), "YieldNode");
   /* A force-lowered Enumerable #each returns self (its ret is pinned to the
      defining class), not the block's value -- the per-call-site block typing
@@ -1989,7 +1990,8 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
       int emi = encl ? (int)(encl - c->scopes) : -1;
       if (emi >= 0 && emi != mi) {
         TyKind ft = yvt_forwarded_value(c, emi);
-        if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;
+        TyKind nb = tl >= 0 && method_block_presence(c, emi) != 1 ? c->scopes[mi].ret_noblock : TY_UNKNOWN;
+        if (ft != TY_UNKNOWN && ft != TY_VOID) return nb == TY_UNKNOWN ? ft : ty_unify(ft, nb);
       }
     }
     if (blk >= 0) {
