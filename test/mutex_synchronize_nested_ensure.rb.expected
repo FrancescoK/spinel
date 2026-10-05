@@ -1,0 +1,17 @@
+body
+inner ensure
+false
+cleanup
+Tagged: boom tag=42
+false
+plain tag=7
+false
+[1, -1, -2, 3, -3, -4]
+false
+deep ensure
+helper ensure
+:early
+false
+innermost
+between false
+nested tag=3 false false

@@ -319,6 +319,12 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_printf(b, "; sp_Mutex_lock(_t%d); ", mtmp);
       buf_printf(b, "int _retf%d = 0; int _excf%d = 0; const char *_excmsg%d = NULL, *_exccls%d = NULL; ",
                  eid, eid, eid, eid);
+      /* the fields a begin..ensure nested in the block hands its deferred
+         `next`, `break` and exception object to, as an ordinary ensure frame
+         declares them (codegen_stmt.c): without them the nested ensure's
+         epilogue named fields this frame did not have (#7342) */
+      buf_printf(b, "int _nxtf%d = 0; (void)_nxtf%d; void *_excobj%d = NULL; ", eid, eid, eid);
+      if (g_c_loop_depth > 0) buf_printf(b, "int _brkf%d = 0; (void)_brkf%d; ", eid, eid);
       if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value_from_compiler(c, g_ret_type)); }
       g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type };
       buf_puts(b, "sp_exc_check_depth(); sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; ");
@@ -360,10 +366,30 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (is_mx) {
       g_ensure_depth--;
       g_exc_frame_depth--;
-      buf_printf(b, "sp_exc_top--; }\nelse { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; } } ",
-                 eid, eid, eid);
+      buf_printf(b, "sp_exc_top--; }\nelse { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_obj[sp_exc_top]; } } ",
+                 eid, eid, eid, eid);
       buf_printf(b, "_ensure%d: ; sp_Mutex_unlock(_t%d); ", eid, mtmp);
       buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume(); ");
+      /* a deferred `next` or `break` a nested ensure handed up, passed on the
+         way an ordinary ensure frame passes its own (codegen_stmt.c) */
+      if (g_ensure_depth > g_loop_ensure_base) {
+        EnsureCtx *o2 = &g_ensure_stack[g_ensure_depth - 1];
+        buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, o2->lid, o2->lid);
+      }
+      else if (g_c_loop_depth > 0) buf_printf(b, "if (_nxtf%d) continue; ", eid);
+      if (g_c_loop_depth > 0 && g_ensure_depth > g_loop_ensure_base) {
+        EnsureCtx *o3 = &g_ensure_stack[g_ensure_depth - 1];
+        int fp3 = g_exc_frame_depth - o3->exc_base;
+        buf_printf(b, "if (_brkf%d) { _brkf%d = _brkf%d; ", eid, o3->lid, eid);
+        if (fp3 > 0) buf_printf(b, "sp_exc_top -= %d; ", fp3);
+        buf_printf(b, "goto _ensure%d; } ", o3->lid);
+      }
+      else if (g_c_loop_depth > 0) {
+        int fpl = g_exc_frame_depth - g_loop_exc_base;
+        buf_printf(b, "if (_brkf%d) { ", eid);
+        if (fpl > 0) buf_printf(b, "sp_exc_top -= %d; ", fpl);
+        buf_printf(b, "sp_rescue_sp -= _brkf%d - 1; break; } ", eid);
+      }
       if (g_ensure_depth > 0) {
         /* nested inside another begin..ensure / synchronize: hand the deferred
            return and unhandled exception to the enclosing ensure. */
@@ -373,8 +399,8 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                      eid, outer->lid, eid, outer->lid, outer->lid);
         else
           buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, outer->lid, outer->lid);
-        buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; sp_exc_top--; goto _ensure%d; } ",
-                   eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
+        buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
+                   eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
       }
       else {
         /* the deferred return leaves through every enclosing live begin
@@ -401,7 +427,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a proc body returns sp_int: see the sibling in codegen_iter.c */
         else if (g_in_proc_body) buf_printf(b, "if (_retf%d) return 0; ", eid);
         else buf_printf(b, "if (_retf%d) return; ", eid);
-        buf_printf(b, "if (_excf%d) sp_raise_cls(_exccls%d, _excmsg%d); ", eid, eid, eid);
+        buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); } ", eid, eid, eid, eid);
       }
     }
     if (scalar) buf_printf(b, "_t%d; })", rv);
