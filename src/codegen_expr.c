@@ -128,38 +128,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
          so `"#{x}" + "#{x = "b"}"` read x after the assignment (#5574) */
       for (int si = 0; si + 1 < bn; si++) emit_stmt(c, body[si], &decls, 0);
       const char *ety = expr >= 0 ? nt_type(nt, expr) : NULL;
+      /* a part of a class the program reopened with its own to_s is already
+         `<part>.to_s` (desugar_interp_reopened_to_s) */
       TyKind t = comp_ntype(c, expr);
-      /* Interpolation is `to_s`, so a program that REOPENED the part's class
-         with its own to_s owns the conversion: `class Integer; def to_s(base
-         = 10); "INT"; end` makes "x#{5}y" read "xINTy" in CRuby, where the
-         table below would write the digits. Hand such a part to the ordinary
-         call path -- the reopen dispatch there answers it -- by rendering
-         `<part>.to_s` rather than converting in place. */
-      {
-        /* A String part is NOT one of them: CRuby's interpolation uses a
-           String value as it stands (objtostring's own fast path) and never
-           calls to_s on it, so a reopened String#to_s does not change
-           `"t=#{"ab"}"`. It does change an explicit `"ab".to_s`, which the
-           call path above already answers. */
-        const char *rcn = t == TY_INT ? "Integer" : t == TY_FLOAT ? "Float"
-                        : t == TY_SYMBOL ? "Symbol" : NULL;
-        if (rcn && expr >= 0) {
-          int rci = comp_class_index(c, rcn);
-          if (rci >= 0 && comp_method_in_chain(c, rci, "to_s", NULL) >= 0) {
-            int tsc = nt_new_node((NodeTable *)nt, "CallNode");
-            if (tsc >= 0) {
-              nt_node_set_str((NodeTable *)nt, tsc, "name", "to_s");
-              nt_node_set_ref((NodeTable *)nt, tsc, "receiver", expr);
-              nt_node_set_ref((NodeTable *)nt, tsc, "arguments", -1);
-              nt_node_set_ref((NodeTable *)nt, tsc, "block", -1);
-              comp_grow_node_arrays(c);
-              c->nscope[tsc] = c->nscope[expr];
-              expr = tsc;
-              t = TY_STRING;
-            }
-          }
-        }
-      }
       /* A bare implicit-self call inside an included-module method is analyzed
          generically (self type unknown -> TY_UNKNOWN), but codegen emits the
          method for a concrete class. Re-resolve the call against the class
