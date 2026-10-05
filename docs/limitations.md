@@ -707,6 +707,8 @@ Not yet shared:
 - through an Array's chained index into an appending block;
 
 - through a retained `scrub!` result that is appended to; `scrub!` with a block is also refused because the block would be ignored;
+- through a container element, a String a boxed local holds (`s = [+"xy", 1][k]`) stored into an Array, a Hash, an instance variable's or a global's Array and mutated in place through an element read or an iterator's block parameter (`[s][0].prepend(x)`, `[s].each { |e| e << x }`);
+- through a literal's element, a local bound from an element read of an Array or Hash literal holding a String variable (`t = [s][0]`, `t = [s].first`), when the local is mutated in place and the variable is read again;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
 

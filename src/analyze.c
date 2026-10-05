@@ -14975,6 +14975,57 @@ static int strbuf_demand_value_leaves(Compiler *c, int node, int depth);
    fresh-handle wrap at the store site. */
 static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs,
                                           int depth, int mode, int leaf);
+/* Does value `v` show it can be a String: a String-typed expression, a
+   branch of a conditional that is one, or an element read of an Array or
+   Hash literal holding one? Unlike poly_var_may_hold_string, a value it
+   cannot see answers no: what asks is a refusal. */
+static int poly_value_shows_string(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || depth > 8) return 0;
+  TyKind vt = infer_type(c, v);
+  if (vt == TY_STRING || vt == TY_STRBUF) return 1;
+  switch (nt_kind(nt, v)) {
+    case NK_IfNode: case NK_UnlessNode:
+      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1) ||
+             poly_value_shows_string(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
+                                      depth + 1);
+    case NK_ElseNode:
+      return poly_value_shows_string(c, nt_ref(nt, v, "statements"), depth + 1);
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
+      return n > 0 && poly_value_shows_string(c, b[n - 1], depth + 1);
+    }
+    case NK_OrNode: case NK_AndNode:
+      return poly_value_shows_string(c, nt_ref(nt, v, "left"), depth + 1) ||
+             poly_value_shows_string(c, nt_ref(nt, v, "right"), depth + 1);
+    case NK_CallNode: {
+      int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+      if (r < 0 || !container_elem_read_p(nt, v)) return 0;
+      int en = 0; const int *el = NULL;
+      if (nt_kind(nt, r) == NK_ArrayNode) el = nt_arr(nt, r, "elements", &en);
+      for (int e = 0; e < en; e++) if (poly_value_shows_string(c, el[e], depth + 1)) return 1;
+      if (nt_kind(nt, r) == NK_HashNode) {
+        el = nt_arr(nt, r, "elements", &en);
+        for (int e = 0; e < en; e++)
+          if (nt_kind(nt, el[e]) == NK_AssocNode && poly_value_shows_string(c, nt_ref(nt, el[e], "value"), depth + 1))
+            return 1;
+      }
+      return 0;
+    }
+    default:
+      return 0;
+  }
+}
+/* Can boxed local (vn, vs) hold a String, by what one of its writes shows? */
+static int poly_local_shows_string(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (nt_kind(nt, w) == NK_LocalVariableWriteNode && comp_scope_of(c, w) == vs &&
+        sp_streq(nt_str(nt, w, "name"), vn) && poly_value_shows_string(c, nt_ref(nt, w, "value"), 0))
+      return 1;
+  return 0;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -15008,6 +15059,16 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       snv->poly_lift |= POLY_LIFT_APPENDED;
       return 1;
     }
+    /* A boxed local (`s = [+"xy", 1][k]`) has no handle route here: the
+       element the container keeps is a copy of the String it holds, and a
+       mutation through the element (`[s][0].prepend(x)`, `[s].each { |e|
+       e << x }`) is lost or finds no method. Refused (#6765) rather than
+       compiled with the change lost; a container flowing in is left out,
+       its own mutations reach it. */
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns))
+      unsupported_feature(c, sn, "a String a boxed local holds is stored into a container and mutated in "
+                          "place through it (a String is not yet shared by reference through a boxed "
+                          "local's container element). Mutate the String through the local itself.");
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -29759,6 +29820,64 @@ static void refuse_hash_pair_string_mutations(Compiler *c) {
   free(binds); free(pmw);
 }
 
+/* `t = [s][0]; t << x`: a local bound from an element read of an Array or
+   Hash literal is the String variable the literal holds, in CRuby. The
+   container-read alias rule binds a local container's element only, so t
+   holds a copy and s never sees the change. Refused (#6765) when t is
+   mutated in place and s, a String local (or a boxed one that shows it can
+   hold one) that may not be frozen, is read again. */
+/* May local (vn, vs) hold a frozen String: a write of a literal (frozen) or
+   of a `.freeze`, or a `freeze` called on it? A mutation through any name
+   then raises FrozenError, as in CRuby. */
+static int local_may_be_frozen(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    int v = nt_kind(nt, w) == NK_LocalVariableWriteNode && comp_scope_of(c, w) == vs &&
+            sp_streq(nt_str(nt, w, "name"), vn) ? an_unparen(nt, nt_ref(nt, w, "value")) : -1;
+    if (v >= 0 && (nt_kind(nt, v) == NK_StringNode ||
+                   (nt_kind(nt, v) == NK_CallNode && sp_streq(nt_str(nt, v, "name"), "freeze"))))
+      return 1;
+  }
+  for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    if (nt_kind(nt, u) == NK_CallNode && nt_str(nt, u, "name") && sp_streq(nt_str(nt, u, "name"), "freeze") &&
+        r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && comp_scope_of(c, r) == vs &&
+        sp_streq(nt_str(nt, r, "name"), vn))
+      return 1;
+  }
+  return 0;
+}
+static void refuse_literal_element_aliases(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || v < 0 || nt_kind(nt, v) != NK_CallNode || !container_elem_read_p(nt, v) ||
+        nt_ref(nt, v, "block") >= 0 || c->strbuf_box[v] || !strbuf_any_str_mut(c, wn, comp_scope_of(c, w)))
+      continue;
+    int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+    int en = 0;
+    const int *el = r >= 0 && (nt_kind(nt, r) == NK_ArrayNode || nt_kind(nt, r) == NK_HashNode)
+                    ? nt_arr(nt, r, "elements", &en) : NULL;
+    for (int e = 0; e < en; e++) {
+      int x = nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "value") : el[e];
+      x = an_unparen(nt, x);
+      const char *xn = x >= 0 && nt_kind(nt, x) == NK_LocalVariableReadNode ? nt_str(nt, x, "name") : NULL;
+      Scope *xs = xn ? comp_scope_of(c, x) : NULL;
+      LocalVar *xv = xs ? scope_local(xs, xn) : NULL;
+      if (!xv || !(xv->type == TY_STRING || xv->type == TY_STRBUF ||
+                   (xv->type == TY_POLY && poly_local_shows_string(c, xn, xs))) ||
+          local_may_be_frozen(c, xn, xs))
+        continue;
+      NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, o)
+        if (o != x && comp_scope_of(c, o) == xs && sp_streq(nt_str(nt, o, "name"), xn))
+          unsupported_feature(c, w, "a local bound from an element read of an Array or Hash literal holding "
+                              "a String variable is mutated in place (a String is not yet shared by "
+                              "reference through a literal's element). Mutate the String variable itself.");
+    }
+  }
+}
+
 /* A bare `@ivar` argument whose ivar is written from a local, handed to a
    parameter the callee appends to: the callee would append to a copy, so
    the program is refused (#6998). Runs once sharing analysis settles. */
@@ -34417,6 +34536,7 @@ static void an_phase_reconcile_check(Compiler *c) {
      analysis settles (#6998). */
   refuse_lent_ivar_copies(c);
   refuse_hash_pair_string_mutations(c);
+  refuse_literal_element_aliases(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
