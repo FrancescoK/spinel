@@ -229,6 +229,10 @@ int is_str_string_yield(const char *n) {
          sp_streq(n, "chars") || sp_streq(n, "lines") || sp_streq(n, "split") || sp_streq(n, "scrub");
 }
 
+int is_unpack_name(const char *n) {
+  return sp_streq(n, "unpack");
+}
+
 int is_diverging_call(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail") || sp_streq(n, "throw") ||
          sp_streq(n, "exit") || sp_streq(n, "exit!") || sp_streq(n, "abort");
