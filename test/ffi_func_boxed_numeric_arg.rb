@@ -67,6 +67,10 @@ xs[2, 4].each do |v|
   try { p B.sp_probe_dbl(v) }
   try { p B.sp_probe_long(v) }
 end
+# a String the program appends to is boxed as a shared handle
+s = +"4"
+s << "2"
+try { p B.sp_probe_dbl([s, 1][0]) }
 
 # NUM2DBL converts any other value by its #to_f
 [Time.at(5), Complex(1, 0), 1].each { |v| p B.sp_probe_dbl(v) }

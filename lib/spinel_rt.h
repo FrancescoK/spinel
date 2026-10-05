@@ -3449,11 +3449,11 @@ static sp_float sp_poly_to_f_or_nil(sp_RbVal v) { return v.tag == SP_TAG_NIL ? s
 /* An FFI argument or callback return that C takes as an integer or a
    double: nil is no number there, and the ffi gem's NUM2INT / NUM2DBL raise
    TypeError for it. A boxed nil, an Integer slot's SP_INT_NIL and a Float
-   slot's nil NaN all are that nil. NUM2LONG converts any other boxed value
-   through sp_poly_arg_int_chk. NUM2DBL raises its own message for a String
-   or a boolean, and converts any other value by its #to_f, as sp_poly_Float
-   does (a user class's own #to_f only where the program has Kernel#Float's
-   conversion bridge). */
+   slot's nil NaN all are that nil. NUM2DBL also refuses a String, which
+   sp_poly_Float would parse, and a boolean, each with its own message; any
+   other value converts by its #to_f, as sp_poly_Float does. A user class's
+   own #to_f is reached only where the program has Kernel#Float's
+   conversion bridge. */
 static SP_NOINLINE SP_COLD void sp_ffi_nil_int_raise(void) { sp_raise_cls("TypeError", "no implicit conversion from nil to integer"); }
 static SP_NOINLINE SP_COLD void sp_ffi_nil_dbl_raise(void) { sp_raise_cls("TypeError", "no implicit conversion to float from nil"); }
 /* A boxed value read as an Integer ARGUMENT (an index, a count, a length, a
