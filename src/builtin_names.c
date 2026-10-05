@@ -656,6 +656,10 @@ int is_ivar_set(const char *n) {
   return sp_streq(n, "instance_variable_set");
 }
 
+int is_plus_op(const char *n) {
+  return sp_streq(n, "+");
+}
+
 int is_string_append_or_prepend(const char *n) {
   return is_append_concat(n) || sp_streq(n, "prepend");
 }
