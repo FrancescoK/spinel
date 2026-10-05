@@ -4438,6 +4438,36 @@ void emit_recv_rooted(Compiler *c, int recv, int t, const char *rootm, Buf *b) {
   else buf_printf(b, "; %s(_t%d); ", rootm, t);
 }
 
+/* A compound literal is not a GC root. Evaluate and root each operand
+   before the next one's setup or value can allocate; only the held values
+   go into the array passed to the builtin. The caller owns the scope. */
+int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
+                         const char *ctype, const char *root,
+                         void (*emit)(Compiler *, int, Buf *), Buf *b) {
+  int first = g_tmp + 1;
+  g_tmp += argc;
+  for (int i = 0; i < argc; i++) {
+    Buf pre = {0}, val = {0};
+    emit_split_pre(c, argv[i], emit, &pre, &val);
+    if (pre.len) buf_puts(b, pre.p);
+    buf_printf(b, "%s _t%d = %s; %s(_t%d); ", ctype, first + i, val.p, root, first + i);
+    free(pre.p); free(val.p);
+  }
+  return first;
+}
+
+/* Boxed key-list builtins also hold the receiver before their keys. */
+void emit_rooted_key_call(Compiler *c, const char *fn, const char *recv,
+                          const int *argv, int argc, Buf *b) {
+  int tr = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", tr, recv, tr);
+  int first = emit_rooted_arg_list(c, argv, argc, "sp_RbVal", "SP_GC_ROOT_RBVAL", emit_boxed, b);
+  buf_printf(b, "%s(_t%d, %d, (sp_RbVal[]){", fn, tr, argc);
+  for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", first + i);
+  if (!argc) buf_puts(b, "sp_box_nil()");
+  buf_puts(b, "}); })");
+}
+
 void emit_main_exit(Buf *b) {
   if (g_uses_threads) buf_puts(b, "sp_sched_drain(); ");
   buf_puts(b, "_sp_main_rc = sp_at_exit_run(0); return; }\n");
