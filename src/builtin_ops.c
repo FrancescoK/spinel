@@ -2325,6 +2325,11 @@ static const BuiltinOp bop_rows[] = {
   { BOP_IVAR_LESS, "instance_variable_defined?", 1, 1, BF_NONE, TY_BOOL,       BOPE_IVAR_REFLECTION, "defined" },
   { BOP_IVAR_LESS, "instance_variables",         0, 0, BF_NONE, TY_POLY_ARRAY, BOPE_IVAR_REFLECTION, "list" },
   { BOP_IVAR_LESS, "instance_variable_set",      2, 2, BF_NONE, TY_UNKNOWN,    BOPE_IVAR_REFLECTION, "set" },
+  /* an ivar of a builtin class's self (desugar_builtin_ivars), on any receiver
+     kind: the runtime's map (sp_bivar_*) */
+  { BOP_IVAR_LESS, "__bivar_get",                1, 1, BF_NONE, TY_POLY,       BOPE_IVAR_REFLECTION, "bg" },
+  { BOP_IVAR_LESS, "__bivar_set",                2, 2, BF_NONE, TY_POLY,       BOPE_IVAR_REFLECTION, "bs" },
+  { BOP_IVAR_LESS, "__bivar_defined",            1, 1, BF_NONE, TY_BOOL,       BOPE_IVAR_REFLECTION, "bd" },
 
 };
 #define BOP_NROWS ((int)(sizeof bop_rows / sizeof bop_rows[0]))

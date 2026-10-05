@@ -5057,9 +5057,14 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       nt_ref(nt, id, "block") < 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
-  /* The row supplies the answer, except a set which answers its value. */
-  if (recv >= 0 && ty_builtin_ivar_less(rt)) {
+  /* The row supplies the answer, except a set which answers its value. A
+     builtin class's own ivar access answers the row's whatever the receiver
+     kind, and a read of a value whose ivars the runtime's map can hold is
+     whatever was stored, once the program can store one. */
+  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name))) {
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
+      { *out = TY_POLY; return 1; }
     if (op) { *out = op->result == TY_UNKNOWN ? infer_type(c, argv[1]) : bop_result(op, rt); return 1; }
   }
 

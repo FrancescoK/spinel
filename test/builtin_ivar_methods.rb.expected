@@ -1,0 +1,32 @@
+:t
+"instance-variable"
+nil
+3
+1
+8
+2
+"first"
+nil
+[:@tag, :@n, :@label]
+[:@n]
+8
+true
+false
+42
+nil
+true
+false
+[1, 2]
+"[1, 2]"
+[:a, :b]
+nil
+[:@seen]
+nil
+[3, 4]
+[3, 4]
+[3, 4]
+nil
+:grown
+4
+nil
+[]

@@ -2149,7 +2149,10 @@ GC_MINOR_TESTS := test/reflect_ivar_nil_presence.rb \
                   test/string_handle_yield_paths.rb \
                   test/string_handle_keyword_dyn_sites.rb \
                   test/gc_minor_never_young_store.rb \
-                  test/builtin_value_ivar_reflection.rb
+                  test/builtin_value_ivar_reflection.rb \
+                  test/builtin_ivar_gc.rb \
+                  test/builtin_ivar_frozen_copy.rb \
+                  test/builtin_ivar_boxed_reflection.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

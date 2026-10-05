@@ -15508,6 +15508,39 @@ int bam_binop_wrapper(const Scope *tm) {
          tm->pnames[1] && sp_streq(tm->pnames[1], "__bam_a");
 }
 
+/* Object#dup and #clone copy the receiver's instance variables. An Array's,
+   a Hash's or a Random's live in the runtime's map (sp_bivar_*), which the
+   copy the arms below make knows nothing of: once the program can write one
+   (Compiler.bivar_table), the receiver is held, the call made on it as
+   always, and the original's ivars copied onto the result (sp_bivar_copy,
+   which leaves a value without any alone). clone's frozen state is the
+   arms' own. */
+static int emit_bivar_copy_wrap(Compiler *c, int id, Buf *b) {
+  static int in_copy = -1;
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!c->bivar_table || in_copy == id || recv < 0 || !nm || nt_ref(nt, id, "block") >= 0 ||
+      !(sp_streq(nm, "dup") || sp_streq(nm, "clone")))
+    return 0;
+  TyKind rt = comp_ntype(c, recv), ret = repr_of(c, id).as_ty;
+  if (!(ty_bivar_keyed(rt) || rt == TY_POLY) || !(ty_bivar_keyed(ret) || ret == TY_POLY)) return 0;
+  int t = ++g_tmp;
+  char rn[24], dn[24];
+  snprintf(rn, sizeof rn, "_t%d", t); snprintf(dn, sizeof dn, "_d%d", t);
+  buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " %s = ", rn); emit_expr(c, recv, b);
+  buf_printf(b, rt == TY_POLY ? "; SP_GC_ROOT_RBVAL(%s); " : "; SP_GC_ROOT(%s); ", rn);
+  int slot = view_bind(recv, "%s", rn);
+  int sv = in_copy; in_copy = id;
+  emit_ctype(c, ret, b); buf_printf(b, " %s = ", dn); emit_call(c, id, b);
+  in_copy = sv;
+  view_unbind(slot);
+  buf_printf(b, ret == TY_POLY ? "; SP_GC_ROOT_RBVAL(%s); sp_bivar_copy(" : "; SP_GC_ROOT(%s); sp_bivar_copy(", dn);
+  emit_boxed_text(c, rt, rn, b); buf_puts(b, ", "); emit_boxed_text(c, ret, dn, b);
+  buf_printf(b, "); %s; })", dn);
+  return 1;
+}
+
 /* `Hash.new(capacity: e)` whose `e` has something to run: desugar_hash_new_capacity
    took the keyword off the call and left `e` as its `hash_capacity`. The call
    is emitted as without it, then `e` runs (after the default, as in CRuby)
@@ -20230,6 +20263,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
+  /* dup / clone of a value whose ivars live in the runtime's map */
+  if (emit_bivar_copy_wrap(c, id, b)) return;
   { const char *pn = nt_str(c->nt, id, "name");
     int pr = nt_ref(c->nt, id, "receiver");
     if (pn && pr >= 0 && sp_streq(pn, "__poly_enum_for")) {

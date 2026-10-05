@@ -314,6 +314,11 @@ int is_visibility_or_module_function(const char *n) {
   return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public") || sp_streq(n, "module_function");
 }
 
+/* desugar_builtin_ivars' access to an ivar of a builtin class's self */
+int is_bivar_access(const char *n) {
+  return sp_streq(n, "__bivar_get") || sp_streq(n, "__bivar_set") || sp_streq(n, "__bivar_defined");
+}
+
 int is_attr_reader_family(const char *n) {
   return sp_streq(n, "attr_accessor") || sp_streq(n, "attr_reader");
 }

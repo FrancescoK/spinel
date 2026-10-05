@@ -919,6 +919,10 @@ typedef struct {
      nil, is reachable only from such a program in practice, so the check on
      a store into one (int_slot_store_needs_ck) is emitted only for it. */
   int big_int_src;
+  /* an ivar of a builtin value can be written (desugar_builtin_ivars): a
+     reflective read, list or copy of an Array, a Hash or a Random asks the
+     runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
+  int bivar_table;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);
