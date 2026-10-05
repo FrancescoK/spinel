@@ -10162,6 +10162,13 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_FLOAT_RANGE) {
     int a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
     int tr = ++g_tmp;
+    /* a blockless step over an endless one: an Enumerator walks it */
+    if (argc == 1 && sp_streq(name, "step") && nt_ref(nt, id, "block") < 0 && range_lit_endless(c, recv)) {
+      buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_range_endless_step(sp_box_float(_t%d.first), ", tr);
+      emit_boxed(c, argv[0], b); buf_puts(b, "); })");
+      return 1;
+    }
     /* overlap?: CRuby's range_overlap at run time, as for an Integer Range */
     if (argc == 1 && sp_streq(name, "overlap?")) {
       buf_puts(b, "sp_range_overlap_v(sp_box_frange("); emit_expr(c, recv, b);
@@ -10474,6 +10481,14 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (sp_streq(name, "step") && argc == 1 && block < 0) {
+      /* an endless range cannot materialize: an Enumerator walks it */
+      if (range_lit_endless(c, recv)) {
+        int te = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", te); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_range_endless_step(sp_box_int(_t%d.first), ", te);
+        emit_boxed(c, argv[0], b); buf_puts(b, "); })");
+        return 1;
+      }
       emit_range_step_array(c, id, b);
       return 1;
     }
