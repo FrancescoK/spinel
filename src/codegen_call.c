@@ -15382,7 +15382,10 @@ static int emit_poly_arity_guard(Compiler *c, int id, Buf *b) {
    refuses it (NotImplementedError) on text where that answer differs from
    CRuby's (non-ASCII, or an i or I under :turkic). A receiver that is not a
    plain read is evaluated into a temp first, as CRuby evaluates it before
-   the method checks its options. */
+   the method checks its options. A block that breaks is wrapped first
+   (emit_brk_wrapped_call) and the check runs inside the wrapper: the
+   wrapper hoists the call it re-enters into g_pre, ahead of the temp this
+   check would declare around it. */
 static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) {
   const char *a[2] = { NULL, NULL };
   if (argc > 2) return 0;
@@ -15398,7 +15401,7 @@ static int case_opts_valid_lits(Compiler *c, const int *av, int argc, int down) 
 static int g_case_opts_node = -1;
 static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (g_case_opts_node == id) return 0;
+  if (g_case_opts_node == id || (id != g_brk_skip_id && call_breaks(c, id))) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
