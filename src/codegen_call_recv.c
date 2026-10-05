@@ -712,6 +712,16 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
     char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
     buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_boxed_text(c, kt, ktn, b); buf_puts(b, "; ");
   }
+  /* a parameter that is the shared handle (--share-strings) takes the key
+     argument's handle, the String it was asked for, or a handle of its own
+     around a key that is a String of its own */
+  else if (flv && repr_of_slot(c, flv).kind == RK_STRBUF && kt == TY_STRING) {
+    int fac = 0; const int *fav = call_args(c->nt, id, &fac);
+    char kref[1024];
+    if (fac >= 1 && strbuf_slot_ref(c, fav[0], kref, sizeof kref))
+      buf_printf(b, "lv_%s = %s; ", rename_local(fp0), kref);
+    else buf_printf(b, "lv_%s = sp_String_new_shared(_t%d); ", rename_local(fp0), tk);
+  }
   else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
 }
 
