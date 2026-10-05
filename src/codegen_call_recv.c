@@ -8797,7 +8797,9 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "({ sp_%s *_t%d = ", sc->c_name, t);
       if (argc == 1) { emit_expr(c, recv, b); buf_puts(b, "; "); }
       else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
-      if (argc == 1) buf_puts(b, fld);
+      /* a member that is the shared handle reads as its reader does */
+      if (argc == 1 && mt == TY_STRBUF) emit_strbuf_slot_read_node(c, id, fld, b);
+      else if (argc == 1) buf_puts(b, fld);
       else if (ty_is_hash(mt) && argc == 2) {
         const char *hn = ty_hash_cname(mt);
         buf_printf(b, "sp_%sHash_%s(%s, ", hn, ty_hash_val(mt) == TY_INT ? "get_opt" : "get", fld);
@@ -8891,6 +8893,10 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
                  tk, sc->ivars[i] + 1, tw, iv_c(sc->ivars[i] + 1));
       char vtxt[32]; snprintf(vtxt, sizeof vtxt, "_t%d", tv);
       if (sc->ivar_types[i] == TY_POLY) buf_puts(b, vtxt);
+      /* --share-strings: a member that is the shared handle holds nil as
+         NULL, not as a handle of an empty String */
+      else if (repr_share_rule(c) && sc->ivar_types[i] == TY_STRBUF)
+        buf_printf(b, "sp_poly_nil_p(%s) ? NULL : sp_poly_as_strbuf(%s)", vtxt, vtxt);
       else emit_unbox_text(c, sc->ivar_types[i], vtxt, b);
       buf_puts(b, ";}\nelse");
     }
@@ -8929,7 +8935,13 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
-      buf_printf(b, "_t%d->iv_%s; })", t, iv_c(sc->ivars[mi] + 1));
+      /* a member that is the shared handle reads as its reader does */
+      if (sc->ivar_types[mi] == TY_STRBUF) {
+        char sref[300]; snprintf(sref, sizeof sref, "_t%d->iv_%s", t, iv_c(sc->ivars[mi] + 1));
+        emit_strbuf_slot_read_node(c, id, sref, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_t%d->iv_%s; })", t, iv_c(sc->ivars[mi] + 1));
       { *out = 1; return 1; }
     }
     /* general: generate chain of comparisons. Each arm has to ASSIGN into a
@@ -9761,6 +9773,20 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; _t%d->iv_%s; })", tM, iv_c(ivnM + 1));
         return 1;
       }
+    }
+    /* any other method under the handle mark (a String it builds, stored
+       where a handle is wanted): its answer wrapped as a fresh handle, so a
+       marked object call is a handle (strbuf_marked_yields_handle); handed
+       over bare, the C did not build */
+    if (repr_share_rule(c) && mi >= 0 && repr_of(c, id).handle && comp_ntype(c, id) == TY_STRBUF) {
+      int vh = view_push_repr(c, id, VR_STRBUF_BOX, 0);
+      int vt = view_push(c, id, TY_STRING);
+      buf_puts(b, "sp_String_new_shared(");
+      emit_expr(c, id, b);
+      buf_puts(b, ")");
+      view_pop(c, vt);
+      view_pop(c, vh);
+      return 1;
     }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
