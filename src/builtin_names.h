@@ -206,4 +206,6 @@ int is_nil_method(const char *n); /* NilClass's public methods, its own and Obje
 enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
 int array_unseen_add_kind(const char *n);
 
+int is_scan_name(const char *n); /* scan: a String's match iterator */
+
 #endif
