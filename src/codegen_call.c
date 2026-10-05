@@ -1,6 +1,7 @@
 #include "codegen_internal.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
+#include "repr.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 /* the `&.` proc call currently being emitted inside its own nil guard */
@@ -2010,7 +2011,7 @@ unsigned g_yield_live_mask = 0;
    inference left without an element type emits as the empty Integer Array
    it starts as, so it is published as that, not as a nil in an sp_int. */
 static TyKind proc_arg_ty(Compiler *c, int a) {
-  TyKind t = comp_ntype(c, a);
+  TyKind t = repr_of(c, a).as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
   return t;
@@ -6708,7 +6709,7 @@ static int poly_name_takes_handle(Compiler *c, const char *name) {
     if (!s->name || !sp_streq(s->name, name)) continue;
     for (int j = 0; j < s->nparams; j++) {
       LocalVar *q = s->pnames[j] ? scope_local(s, s->pnames[j]) : NULL;
-      if (q && q->is_param && q->type == TY_STRBUF && q->str_shared) return 1;
+      if (q && q->is_param && repr_of_slot(c, q).handle) return 1;
       /* a POLY parameter appended to in place takes a handle argument boxed
          as the handle (emit_poly_boxed_shared_arg) */
       if (q && q->is_param && q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) return 1;
@@ -6763,7 +6764,7 @@ static int emit_poly_boxed_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf
   const char *vn = nt_str(c->nt, an, "name");
   Scope *vs = vn ? comp_scope_of(c, an) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  if (!lv || lv->type != TY_STRBUF || !lv->str_shared) return 0;
+  if (!repr_of_slot(c, lv).handle) return 0;
   if (poly_other_arg_runs(c, A->argv, A->pos_argc, A->kw ? A->kw->kwh : -1, k)) return 0;
   char sref[192];
   if (!strbuf_slot_ref(c, an, sref, sizeof sref)) return 0;
@@ -6792,8 +6793,7 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
     /* the argument past the positionals is the keyword hash, where it binds
        as a rest's last post (rest_bind_argc) */
     if (L->arg[a] < A->pos_argc) {
-      if (pt == TY_STRBUF && pv && pv->str_shared &&
-          emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
+      if (repr_of_slot(c, pv).handle && emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
       if (pt == TY_POLY && pv && (pv->poly_lift & POLY_LIFT_APPENDED) &&
           emit_poly_boxed_shared_arg(c, A, L->arg[a], pa)) return;
       emit_poly_temp_as(c, pt, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], pa);
@@ -11299,7 +11299,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         /* a tail marked for the shared handle boxes through emit_boxed,
            which wraps the plain string it evaluates to in a fresh handle */
-        int tail_strbuf = sp_streq(k, "Poly") && comp_ntype(c, bb[bn - 1]) == TY_STRBUF;
+        int tail_strbuf = sp_streq(k, "Poly") && repr_of(c, bb[bn - 1]).as_ty == TY_STRBUF;
         if (tail_strbuf) emit_boxed(c, bb[bn - 1], &vb);
         else emit_expr(c, bb[bn - 1], &vb);
         if (an_next) {
@@ -17618,9 +17618,9 @@ int call_is_field_read(Compiler *c, int id, int *allocates) {
   char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nm));
   ClassInfo *owner = &c->classes[rdc >= 0 ? rdc : cid];
   int iv = comp_ivar_index(owner, ivn);
-  if (iv >= 0 && owner->ivar_types[iv] == TY_STRBUF &&
-      !c->strbuf_box[id] && !c->strbuf_handle_demand[id] &&
-      !(c->strbuf_read_raw[id] && decide_node(c->nt, id, "strbuf-raw", NULL)))
+  Repr rp = repr_of(c, id);
+  if (iv >= 0 && owner->ivar_types[iv] == TY_STRBUF && !rp.handle && !rp.demand &&
+      !(rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)))
     *allocates = 1;
   return 1;
 }
@@ -18583,7 +18583,7 @@ static const char *strvar_arg(Compiler *c, int a, int *shared) {
     Scope *vs = vn ? comp_scope_of(c, a) : NULL;
     LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
     if (!lv) return NULL;
-    *shared = at == TY_STRBUF && lv->type == TY_STRBUF && lv->str_shared;
+    *shared = at == TY_STRBUF && repr_of_slot(c, lv).handle;
     if (lv->is_block_param) return "a block's parameter";
     if (lv->is_cell) return "a variable a block or a proc captures";
     return lv->is_param ? "a parameter" : "a local variable";
@@ -18635,7 +18635,7 @@ static int refuse_param_copies(Compiler *c, int mi, int j, int arg) {
   Scope *m = &c->scopes[mi];
   LocalVar *q = j < m->nparams && m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
   if (!q || q->byref_out) return 0;
-  if (q->type == TY_STRBUF && q->str_shared) return 0;
+  if (repr_of_slot(c, q).handle) return 0;
   if (q->type == TY_POLY) {
     int shared;
     const char *k = strvar_arg(c, arg, &shared);
@@ -18945,8 +18945,8 @@ static int ctor_arg_shared(Compiler *c, int a, int boxed) {
     LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
     /* a block's parameter is bound from what the block is handed (an
        Array's element): the handle it holds is not that String */
-    return lv && !lv->is_cell && !lv->is_block_param && lv->type == TY_STRBUF && lv->str_shared &&
-           (!boxed || c->strbuf_box[a]);
+    return lv && !lv->is_cell && !lv->is_block_param && repr_of_slot(c, lv).handle &&
+           (!boxed || repr_of(c, a).handle);
   }
   if (k != NK_InstanceVariableReadNode || boxed) return 0;
   const char *nm = nt_str(nt, a, "name");
@@ -19007,7 +19007,7 @@ static int refuse_ctor_copies(Compiler *c, int id, const char *name, int recv) {
          the handle once the element's read is marked (ctor_pull_args), or
          boxes it for a boxed parameter */
       int spl = kind && ctor_arg_in_splat(c, id, arg) >= 0;
-      if (!kind || (ctor_arg_shared(c, arg, boxed) && (!spl || c->strbuf_box[arg] || q->type == TY_POLY)))
+      if (!kind || (ctor_arg_shared(c, arg, boxed) && (!spl || repr_of(c, arg).handle || q->type == TY_POLY)))
         continue;
       char why[96]; snprintf(why, sizeof why, "from %s", kind);
       if (spl) snprintf(why, sizeof why, "through a splat");
@@ -19051,7 +19051,7 @@ static int block_param_is_handle(Compiler *c, int blk, int k, int n) {
   const char *bp = block_param_at(c, blk, k, n);
   Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
   LocalVar *t = bs ? scope_local(bs, bp) : NULL;
-  return t && t->type == TY_STRBUF && t->str_shared;
+  return repr_of_slot(c, t).handle;
 }
 /* Is `a` a String variable a splice can alias: a local or a parameter, or
    one lent to this method (a cell that is the caller's slot), not a
@@ -19097,13 +19097,13 @@ void refuse_yield_handle_args(Compiler *c, int id) {
         const char *vn = nt_str(nt, a, "name");
         Scope *vs = vn ? comp_scope_of(c, a) : NULL;
         LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-        if (c->strbuf_box[a] || local_is_handle(c, a) || (lv && lv->type == TY_POLY)) continue;
+        if (repr_of(c, a).handle || local_is_handle(c, a) || (lv && lv->type == TY_POLY)) continue;
       }
       char mt[96]; snprintf(mt, sizeof mt, "`%s`", name);
       char why[96]; snprintf(why, sizeof why, "from %s", kind);
       refuse_string_copy(c, a, mt, ym->pnames[j], "a yield into a block argument", why);
     }
-    if (!q || q->type != TY_STRBUF || !q->str_shared) continue;
+    if (!repr_of_slot(c, q).handle) continue;
     if (ym->is_lowered_yield && !dyn_yield_param_appends(c, ymi, j)) continue;
     int a = arg_layout_param_node(c, ym, id, j, NULL);
     int shared;
@@ -19126,14 +19126,14 @@ static int strvar_is_handle(Compiler *c, int a) {
   const char *vn = nt_str(nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  return lv && lv->type == TY_STRBUF && lv->str_shared && !lv->is_cell && !lv->is_block_param;
+  return lv && repr_of_slot(c, lv).handle && !lv->is_cell && !lv->is_block_param;
 }
 /* A define_method body's parameter a String variable that is not the
    handle reaches as a copy: a value parameter, and a handle parameter the
    binder wraps a fresh handle around. */
 static int refuse_param_copies_dm(Compiler *c, int mi, int j, int arg) {
   LocalVar *q = j < c->scopes[mi].nparams && c->scopes[mi].pnames[j] ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[j]) : NULL;
-  if (q && q->type == TY_STRBUF && q->str_shared) return 1;
+  if (repr_of_slot(c, q).handle) return 1;
   return refuse_param_copies(c, mi, j, arg);
 }
 
@@ -19170,7 +19170,7 @@ static void splat_appended_param(Compiler *c, int id, const char *name, int recv
     Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
     for (int j = p < 0 ? 0 : p; m && j < m->nparams && j < 16 && !pname; j++) {
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
-      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || dyn_method_appends(c, mi, j))) {
+      if (q && (q->byref_out || repr_of_slot(c, q).handle || dyn_method_appends(c, mi, j))) {
         pname = m->pnames[j]; mname = m->name;
       }
     }
@@ -19196,7 +19196,7 @@ static int splat_nonlocal_string(Compiler *c, const int *av, int ac, int fs, int
       int shared;
       const char *kind = k >= fs ? strvar_arg(c, av[k], &shared) : NULL;
       if (kind && ak != NK_LocalVariableReadNode &&
-          (ak != NK_InstanceVariableReadNode || !c->strbuf_box[av[k]])) return av[k];
+          (ak != NK_InstanceVariableReadNode || !repr_of(c, av[k]).handle)) return av[k];
       continue;
     }
     int x = nt_ref(nt, av[k], "expression"), lits[16], nl = 0;
@@ -19302,13 +19302,13 @@ int splat_string_var(Compiler *c, const int *av, int ac, int *fs) {
         for (int e = 0; e < en; e++) {
           int shared;
           /* a read marked as the handle rides the Array as one */
-          if (strvar_arg(c, ev[e], &shared) && !c->strbuf_box[ev[e]]) return ev[e];
+          if (strvar_arg(c, ev[e], &shared) && !repr_of(c, ev[e]).handle) return ev[e];
         }
       }
       continue;
     }
     int shared;
-    if (*fs >= 0 && strvar_arg(c, av[k], &shared) && !c->strbuf_box[av[k]]) return av[k];
+    if (*fs >= 0 && strvar_arg(c, av[k], &shared) && !repr_of(c, av[k]).handle) return av[k];
   }
   return -1;
 }
@@ -19538,7 +19538,7 @@ static void refuse_unplaced_lead(Compiler *c, int id, const char *name, int recv
           callee_param_is_declared_kwarg(c, m, m->pnames[j])) continue;
       LocalVar *q = scope_local(m, m->pnames[j]);
       if (!q) continue;
-      int handle = q->type == TY_STRBUF && q->str_shared;
+      int handle = repr_of_slot(c, q).handle;
       if (!(q->byref_out || handle || dyn_method_appends(c, mi, j) ||
             (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)))) continue;
       if (shared && (handle || q->type == TY_POLY)) continue;
@@ -19601,7 +19601,7 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
     for (int j = 0; j < m->nparams && j < 16; j++) {
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (!q || q->byref_out) continue;
-      if (!(q->type == TY_STRBUF && q->str_shared) && q->type != TY_POLY) continue;
+      if (!repr_of_slot(c, q).handle && q->type != TY_POLY) continue;
       int kj = -1;
       if (!dyn_method_appends(c, tg[t], j) && !(q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) &&
           !(dyn_method_kw_appends(c, tg[t], m->pnames[j], &kj) && kj == j))
@@ -19692,7 +19692,7 @@ static void refuse_string_copies(Compiler *c, int id) {
     for (int e = 1; e < en; e++) {
       int value, shared;
       const char *key = dyn_kw_elem_key(c, el[e], &value);
-      if (!key || !strvar_arg(c, value, &shared) || c->strbuf_box[value]) continue;
+      if (!key || !strvar_arg(c, value, &shared) || repr_of(c, value).handle) continue;
       int repeated = 0;
       for (int h = 0; h < e && !repeated; h++) {
         int earlier;
@@ -19854,7 +19854,7 @@ static void refuse_string_copies(Compiler *c, int id) {
       if (nt_kind(nt, args[k]) == NK_SplatNode || nt_kind(nt, args[k]) == NK_KeywordHashNode) break;
       int shared;
       if (!strvar_arg(c, args[k], &shared) || !dyn_block_appends(c, blk, k) ||
-          c->strbuf_box[args[k]] || local_is_handle(c, args[k])) continue;
+          repr_of(c, args[k]).handle || local_is_handle(c, args[k])) continue;
       /* A plain local read only here cannot observe the copy; a parameter
          can still belong to the caller. */
       if (nt_kind(nt, args[k]) == NK_LocalVariableReadNode) {
@@ -19902,7 +19902,7 @@ static void refuse_string_copies(Compiler *c, int id) {
       int shared;
       const char *kind = strvar_arg(c, av[k], &shared);
       if (!kind) continue;
-      if (gathered && c->strbuf_box[av[k]] && !sp_streq(kind, "a block's parameter")) continue;
+      if (gathered && repr_of(c, av[k]).handle && !sp_streq(kind, "a block's parameter")) continue;
       if (spliced && ie_arg_aliases(c, av[k]) && block_param_wants_alias(c, blk, k, call_plain_argc(c, id))) continue;
       /* a parameter that is the shared handle takes the caller's, pulled in
          (yield_splice_handles) */
@@ -20419,8 +20419,8 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     int ivi = comp_ivar_index(&c->classes[dispatch_cid], ivn);
     Buf rb; memset(&rb, 0, sizeof rb);
     TyKind rty = ivi >= 0 ? c->classes[dispatch_cid].ivar_types[ivi] : TY_UNKNOWN;
-    if (rty == TY_STRBUF &&
-        !(id < c->node_cap && (c->strbuf_box[id] || c->strbuf_handle_demand[id]))) {
+    Repr rp = repr_of(c, id);
+    if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
       buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
                  tv, g_self, g_self_deref, iv_c(rn), tv, tv);
