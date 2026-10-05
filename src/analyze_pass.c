@@ -7507,6 +7507,24 @@ static int bind_zsuper_params(Compiler *c, int id, Scope *s, Scope *pm) {
   return changed;
 }
 
+/* A conditional attribute write is not a CallNode, but its RHS still
+   reaches a defined writer's parameter, beside the ordinary assignments. */
+static int infer_conditional_writer_param(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), val = nt_ref(nt, id, "value");
+  const char *name = nt_str(nt, id, "name");
+  if (recv < 0 || val < 0 || !name) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (!ty_is_object(rt)) return 0;
+  int mi = -1;
+  if (comp_resolve_member(c, ty_object_class(rt), name, 1, NULL, &mi) != SP_MEMBER_METHOD || mi < 0)
+    return 0;
+  Scope *ws = &c->scopes[mi];
+  LocalVar *pv = ws->nparams > 0 && ws->pnames[0] ? scope_local(ws, ws->pnames[0]) : NULL;
+  if (!pv || pv->rbs_seeded) return 0;
+  return slot_take(c, pv, infer_type(c, val), val);
+}
+
 int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -7596,6 +7614,10 @@ int infer_param_types(Compiler *c) {
       if (!pp || pp->rbs_seeded) continue;
       TyKind at2 = infer_type(c, val);
       changed |= slot_take(c, pp, at2, val);
+      continue;
+    }
+    if (nt_kind(nt, id) == NK_CallOrWriteNode || nt_kind(nt, id) == NK_CallAndWriteNode) {
+      changed |= infer_conditional_writer_param(c, id);
       continue;
     }
     if (!sp_streq(ty, "CallNode")) continue;

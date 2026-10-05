@@ -1269,9 +1269,7 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
       LocalVar *pv = (ws->nparams > 0 && ws->pnames[0]) ? scope_local(ws, ws->pnames[0]) : NULL;
       TyKind pt = pv ? pv->type : vt;
       char sw[32]; snprintf(sw, sizeof sw, "_t%d", tw);
-      if (pt == vt || pt == TY_UNKNOWN) buf_puts(b, sw);
-      else if (pt == TY_POLY) emit_boxed_text(c, vt, sw, b);
-      else emit_unbox_text(c, pt, sw, b);
+      emit_coerce_text(c, v, vt, pt, CO_HOLD, sw, "a conditional attribute writer's argument", b);
     }
     buf_puts(b, ")");
   }
