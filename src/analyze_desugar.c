@@ -2421,8 +2421,14 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
+    /* a read of the name the proc is held in, which the block re-reads
+       per comparison: a constant's and a global's as well as a local's or
+       an ivar's, which left out ran `sort(&CMP)` as a plain sort */
     int simple = exty && (sp_streq(exty, "LocalVariableReadNode") ||
                           sp_streq(exty, "InstanceVariableReadNode") ||
+                          sp_streq(exty, "ConstantReadNode") ||
+                          sp_streq(exty, "ConstantPathNode") ||
+                          sp_streq(exty, "GlobalVariableReadNode") ||
                           sp_streq(exty, "LambdaNode"));
     if (!simple || infer_type(c, ex) != TY_PROC) continue;
     /* the method's own `&b` handed on is nil when its caller gave no block,

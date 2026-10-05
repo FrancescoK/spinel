@@ -13495,11 +13495,14 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
   return changed;
 }
 
-/* A Proc expression `recv` invoked at `site` with these arguments
+/* A Proc expression `recv` invoked with these arguments
    (pr.call(a), pr === a, `case a when pr`): type the parameters of the proc
-   literal it is -- the literal itself, or the one a local, constant or ivar
-   of that name was assigned. Answers whether a parameter type changed. */
-static int cs_type_proc_site(Compiler *c, int site, int recv, const int *argv, int argc) {
+   literal it is -- the literal itself, or the one a local, constant, ivar
+   or global of that name was assigned, or the one the name a write copies
+   (`q = pr`, the `__fwdc = $pr` an `&$pr` forward reads) was assigned in
+   turn, `depth` such copies deep. Answers whether a parameter type
+   changed. */
+static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   const char *rty = nt_type(nt, recv);
@@ -13512,24 +13515,28 @@ static int cs_type_proc_site(Compiler *c, int site, int recv, const int *argv, i
   /* A proc reached through a name: type the literal that name was assigned.
      A LOCAL was the only name looked at, so the identical lambda written to a
      constant or an instance variable kept the no-evidence int default and
-     answered Integer for whatever it was really called with (#3942). A
-     constant is program-wide, so its write is matched by name alone; a local
-     and an ivar are matched within their scope and class. */
+     answered Integer for whatever it was really called with (#3942), and a
+     global still did. A constant and a global are program-wide, so their
+     writes are matched by name alone; a local and an ivar are matched within
+     their scope and class. */
   const char *varname = nt_str(nt, recv, "name");
-  if (!varname) return 0;
+  if (!varname || depth > 4) return 0;
   int want_kind;
   if (sp_streq(rty, "LocalVariableReadNode")) want_kind = 0;
   else if (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")) want_kind = 1;
   else if (sp_streq(rty, "InstanceVariableReadNode")) want_kind = 2;
+  else if (sp_streq(rty, "GlobalVariableReadNode")) want_kind = 3;
   else return 0;
-  Scope *call_scope = comp_scope_of(c, site);
+  Scope *call_scope = comp_scope_of(c, recv);
   int call_cls = call_scope ? call_scope->class_id : -1;
   /* the writes of that name, through the kind index (every match is
      taken, so the kinds' order does not matter) */
   static const NodeKind wk_local[] = { NK_LocalVariableWriteNode };
   static const NodeKind wk_const[] = { NK_ConstantWriteNode, NK_ConstantPathWriteNode };
   static const NodeKind wk_ivar[] = { NK_InstanceVariableWriteNode };
-  const NodeKind *wks = want_kind == 0 ? wk_local : want_kind == 1 ? wk_const : wk_ivar;
+  static const NodeKind wk_gvar[] = { NK_GlobalVariableWriteNode };
+  const NodeKind *wks = want_kind == 0 ? wk_local : want_kind == 1 ? wk_const :
+                        want_kind == 2 ? wk_ivar : wk_gvar;
   int nwk = want_kind == 1 ? 2 : 1;
   for (int wki = 0; wki < nwk; wki++)
   NT_FOREACH_KIND(nt, wks[wki], w) {
@@ -13543,8 +13550,14 @@ static int cs_type_proc_site(Compiler *c, int site, int recv, const int *argv, i
     const char *wname = nt_str(nt, w, "name");
     if (!wname || !sp_streq(wname, varname)) continue;
     int val = nt_ref(nt, w, "value");
-    if (val < 0 || !is_proc_create(c, val)) continue;
-    if (cs_type_params_site(c, val, argv, argc)) changed = 1;
+    if (val < 0) continue;
+    if (is_proc_create(c, val)) {
+      if (cs_type_params_site(c, val, argv, argc)) changed = 1;
+    }
+    /* a write that copies another name's proc: the literal is that name's */
+    else if (val != recv && infer_type(c, val) == TY_PROC &&
+             cs_type_proc_name(c, val, argv, argc, depth + 1))
+      changed = 1;
   }
   return changed;
 }
@@ -13806,7 +13819,7 @@ int infer_block_params(Compiler *c) {
     int argc = 0; const int *argv = NULL;
     if (call_args >= 0) argv = nt_arr(nt, call_args, "arguments", &argc);
     if (argc == 0) continue;
-    if (cs_type_proc_site(c, id, recv, argv, argc)) changed = 1;
+    if (cs_type_proc_name(c, recv, argv, argc, 0)) changed = 1;
   }
   /* `case v when pr` is `pr === v`: a Proc condition's parameter takes the
      case subject's type. Left out, `case "seven" when ->(s) { s.length }`
@@ -13818,7 +13831,7 @@ int infer_block_params(Compiler *c) {
     for (int k = 0; k < nw; k++) {
       int wc = 0; const int *wconds = nt_arr(nt, whens[k], "conditions", &wc);
       for (int j = 0; j < wc; j++)
-        if (infer_type(c, wconds[j]) == TY_PROC && cs_type_proc_site(c, wconds[j], wconds[j], &pred, 1))
+        if (infer_type(c, wconds[j]) == TY_PROC && cs_type_proc_name(c, wconds[j], &pred, 1, 0))
           changed = 1;
     }
   }
