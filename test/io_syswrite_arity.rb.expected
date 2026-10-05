@@ -1,0 +1,8 @@
+"wrong number of arguments (given 2, expected 1)"
+"wrong number of arguments (given 0, expected 1)"
+"wrong number of arguments (given 2, expected 1)"
+NoMethodError
+2
+1
+"ab1"
+[1, 2]

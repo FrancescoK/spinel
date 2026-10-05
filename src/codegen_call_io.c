@@ -528,6 +528,22 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   return 0;
 }
 
+/* syswrite takes exactly one argument, where write takes any number: a
+   longer list was written as write's, and its statement text did not
+   build. CRuby evaluates the arguments, raises NoMethodError for a nil
+   handle, then ArgumentError. A splat's count is the run time's (declined). */
+static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, int argc, Buf *b) {
+  if (argc == 1) return 0;
+  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) return 0;
+  int tf = ++g_tmp;
+  char msg[96]; arity_message(msg, sizeof msg, argc, 1, 1, NULL);
+  buf_printf(b, "({ sp_File *_t%d = %s; ", tf, r);
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+  buf_printf(b, "if (!_t%d) sp_nil_recv(\"syswrite\"); sp_raise_cls(\"ArgumentError\", \"%s\"); (sp_int)0; })",
+             tf, msg);
+  return 1;
+}
+
 /* the instance methods of an IO / File handle (TY_IO) */
 int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
@@ -983,6 +999,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          sp_File_syswrite (which writes straight to the descriptor) rather
          than through the stdio-backed write entries. */
       int is_sw = sp_streq(name, "syswrite");
+      if (is_sw && emit_io_syswrite_count(c, r, argv, argc, b)) { free(rb.p); return 1; }
       /* write(*parts): a splat contributes its elements, each converted and
          written in turn, as the boxed receiver's arm does. The arms below
          read a splat as one operand and wrote the Array's inspect (#7313). */
