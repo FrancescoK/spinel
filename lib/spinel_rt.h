@@ -2006,8 +2006,8 @@ static sp_int sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: K
 static sp_float sp_poly_Float_ex(sp_RbVal v, int raise);
 static inline int sp_poly_is_hash_kind(int cls_id);
 static inline const char *sp_poly_inspect(sp_RbVal v);
-static const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* fwd: Array#to_s == inspect */
-static const char *sp_PtrArray_inspect_k(sp_PtrArray *a);   /* fwd: a pointer array by what it holds (#4486) */
+const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* Array#to_s == inspect (lib/sp_inspect.c) */
+const char *sp_PtrArray_inspect_k(sp_PtrArray *a);   /* a pointer array by what it holds (#4486; lib/sp_inspect.c) */
 /* Runtime class table: set of cls_ids that are user exception subclasses.
    Populated by the codegen (src/codegen.c) for every class that
    `class_is_exc_subclass` returns true. Used by sp_raise_poly and the
@@ -5939,11 +5939,6 @@ static sp_StrArray *sp_StrArray_from_elems(sp_RbVal v) {
   for (sp_int i = 0; i < p->len; i++) sp_StrArray_push(r, sp_poly_elem_s(p->data[i]));
   return r;
 }
-static const char *sp_PtrArray_inspect_k(sp_PtrArray *a) {
-  if (!a) return SPL("nil");
-  if (a->elem_kind == SP_PTR_ELEM_UNKNOWN) return sp_PtrArray_inspect(a);   /* opaque, as the erased id always was */
-  return sp_PolyArray_inspect(sp_PtrArray_to_poly(a));
-}
 static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
   /* Proc#<< composes the other way round: `f << g` calls g then f (#2880) */
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROC &&
@@ -8199,11 +8194,6 @@ static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a-
 else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[sp_krand_below(a->len)]; }
 
-/* Forward decl: sp_poly_inspect dispatches into sp_PolyArray_inspect
-   for nested poly arrays (under promote, an `each_cons` chain's outer
-   accumulator boxes each inner poly_array element), but the
-   sp_PolyArray_inspect body lives a few lines below. */
-static const char *sp_PolyArray_inspect(sp_PolyArray *a);
 /* An array of one user class narrowed to a pointer array (#4444): each
    element boxes with the class the compiler knew (cls), or with the id it
    carries when cls is negative (a class with subclasses), and renders through
@@ -8330,15 +8320,6 @@ static SP_NOINLINE SP_COLD void sp_raise_frozen_obj(sp_RbVal v, const char *what
 SP_NORETURN static void sp_raise_key_not_found(sp_RbVal key) {
   sp_exc_stage_key(key);
   sp_raise_cls("KeyError", sp_sprintf("key not found: %s", sp_poly_inspect(key)));
-}
-/* Array#inspect for heterogeneous poly arrays. Each element dispatches
-   through sp_poly_inspect, so a mixed `[1, "x", :y]` renders
-   `[1, "x", :y]` byte-for-byte identical to CRuby. NULL renders
-   "nil" so callers that store a nil-returning slot (assoc/rassoc
-   miss, etc.) round-trip cleanly through `.inspect`. */
-static const char *sp_PolyArray_inspect(sp_PolyArray *a) {
-  if (!a) { char *r = sp_str_alloc(3); r[0] = 'n'; r[1] = 'i'; r[2] = 'l'; r[3] = 0; sp_str_set_len(r, 3); return r; }
-  return sp_inspect_container(sp_box_poly_array(a));
 }
 /* Array#join for a mixed-element (poly) array: to_s each element via
    sp_poly_to_s and concatenate with sep. Mirrors sp_StrArray_join for
