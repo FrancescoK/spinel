@@ -2007,8 +2007,8 @@ int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
                     rt == TY_BIGINT || rt == TY_RANGE;
   if (is_set && !frozen_kind && (rt == TY_STRING || rt == TY_STRBUF))
     unsupported_feature(c, id, "an instance variable set on a String (`@x = v` in a String method, or "
-                               "instance_variable_set): Spinel copies a String between its representations "
-                               "and keeps no identity for the variable to live on; see docs/limitations.md");
+                               "instance_variable_set): a String is copied, not shared, so it keeps no identity "
+                               "for the variable yet (waits on #6765); see docs/limitations.md");
   if (is_set && !frozen_kind)
     unsupported_feature(c, id, "instance_variable_set on a String, an Array or a Hash: Spinel lays out no "
                                "instance variables for a builtin value, so the variable has no slot to live in");
