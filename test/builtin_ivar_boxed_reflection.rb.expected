@@ -10,3 +10,17 @@
 [true, true, [:@mark]]
 5
 5
+[5, true, [:@mark]]
+nil
+[7, true, [:@mark, :@x]]
+6
+[:o, [:@mark, :@other, :@x]]
+[2, [:@other]]
+3
+3
+4
+["s", true, [:@mark]]
+[1, true, [:@mark]]
+[:v, true, [:@mark]]
+[1, true, [:@mark]]
+1

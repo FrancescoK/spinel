@@ -1296,8 +1296,10 @@ void sp_ivtbl_put(const void *obj, void *tbl) {
 
 /* Whether this cycle keeps obj: the finalizer registry's test. A value with
    one of the markers sp_gc_mark passes over (a static or a non-heap object)
-   is never freed, so it always lives. */
+   is never freed, so it always lives, and so does an unaligned key, which
+   names a class rather than an object. */
 static int sp_ivt_key_live(const void *obj, int full) {
+  if ((uintptr_t)obj & 7) return 1;   /* a class's key (sp_bivar_key): no object behind it */
   unsigned char pm = ((const unsigned char *)obj)[-1];
   if (pm == 0xfc || pm == 0xff || pm == 0xfd || pm == 0xf1 || pm == 0xfb || pm == 0xf8) return 1;
   const sp_gc_hdr *h = (const sp_gc_hdr *)obj - 1;
