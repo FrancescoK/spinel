@@ -1472,6 +1472,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        reported it against generated code (#4004). Mirrors the typed-receiver
        rule in analyze_infer.c. */
     if (argc == 1 && (is_casecmp_family(name))) {
+      /* a boxed Symbol compares too, so the answer is boxed (sp_poly_casecmp) */
+      if (rt == TY_POLY && !an_user_defines_or_reads(c, name)) { *out = TY_POLY; return 1; }
       TyKind at0 = argv ? infer_type(c, argv[0]) : TY_UNKNOWN;
       if (at0 == TY_POLY) { *out = TY_POLY; return 1; }
       /* an operand that answers #to_str converts and compares, and answers

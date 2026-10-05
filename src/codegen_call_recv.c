@@ -12686,6 +12686,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* casecmp / casecmp?: a Symbol and a String each compare with their own
+     kind, decided at run time (sp_poly_casecmp), where the String face below
+     raised NoMethodError for a Symbol */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
+      is_casecmp_family(name) && !user_defines_or_reads(c, name)) {
+    buf_puts(b, "sp_poly_casecmp("); emit_boxed(c, recv, b);
+    buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %d)", sp_streq(name, "casecmp?"));
+    return 1;
+  }
   /* The face table (types.h): unbox the receiver to the kind that owns the
      name, retype the receiver node and re-enter the same call, so the typed
      emitter IS the implementation and the inference, which answered under
