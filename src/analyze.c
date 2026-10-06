@@ -14730,7 +14730,7 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
       g = k > 0 ? st[k - 1] : -1;
     }
-    if (g >= 0 && repr_of(c, g).share) return 1; }
+    if (g >= 0 && repr_static_share(c, g)) return 1; }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
@@ -19645,7 +19645,7 @@ static int convert_byref_handle_params(Compiler *c,
         /* a global holding the handle (--share-strings) hands it over as an
            ivar's read does */
         else if (repr_static_read_kind(nt_kind(nt, an2)) &&
-                 repr_of(c, an2).share &&
+                 repr_static_share(c, an2) &&
                  (pp->type == TY_POLY || repr_of_slot(c, pp).share) && !c->strbuf_box[an2]) {
           c->strbuf_box[an2] = 1;
           comp_sn_retype(c, an2, TY_STRBUF);
@@ -22752,7 +22752,7 @@ static int promote_dyncall_string_args(Compiler *c) {
         const char *bp = block_param_name(c, blk, k);
         LocalVar *pv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
         if (!pv || (!repr_of_slot(c, pv).handle && pv->type != TY_POLY) || c->strbuf_box[av[k]]) continue;
-        int handle = repr_of(c, av[k]).share;
+        int handle = repr_static_share(c, av[k]);
         if (!handle && nt_kind(nt, av[k]) == NK_InstanceVariableReadNode) {
           const char *ivn = nt_str(nt, av[k], "name");
           int cid = ivn ? an_ivar_owner(c, av[k]) : -1;
