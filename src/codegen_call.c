@@ -19384,6 +19384,15 @@ static int ret_nilable_value(Compiler *c, int mi, int v, int depth) {
   return 0;
 }
 
+/* An element of an Array the program stores nil into or leaves a gap in
+   (the nil fact's NFW_ELEM_NIL): a block parameter an iteration over it
+   binds, an element read out of it, a value either flows into. No write of
+   the receiver's own slot shows that nil, so the slot tests below miss it,
+   and an Array that cannot hold one leaves its hot loops untested. */
+static int elem_nil_recv(Compiler *c, int recv) {
+  return nil_fact_why(c, recv) == NFW_ELEM_NIL;
+}
+
 int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -19422,8 +19431,10 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
     if (comp_method_in_chain(c, rcid, nm, NULL) < 0 && !comp_reader_in_chain(c, rcid, nm, NULL) &&
         !nil_guard_writer(c, rcid, nm))
       return 0;
-    const CallPlan *rp = cplan_user(c, unwrap_parens(c, recv));
-    if (!rp || rp->mi < 0 || !method_ret_nilable(c, rp->mi, 0)) return 0;
+    if (!elem_nil_recv(c, unwrap_parens(c, recv))) {
+      const CallPlan *rp = cplan_user(c, unwrap_parens(c, recv));
+      if (!rp || rp->mi < 0 || !method_ret_nilable(c, rp->mi, 0)) return 0;
+    }
     *recv_out = recv;
     return 1;
   }
@@ -19432,7 +19443,8 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const char *ln = nt_str(nt, recv, "name");
   LocalVar *lv = sc && ln ? scope_local(sc, ln) : NULL;
   if (!lv || !ty_is_object(rt) || rr.kind == RK_VOBJ) return 0;
-  if (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)) return 0;
+  if (!elem_nil_recv(c, recv) && (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)))
+    return 0;
   int cid = ty_object_class(rt);
   if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL) &&
       !nil_guard_writer(c, cid, nm))

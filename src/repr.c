@@ -66,9 +66,12 @@ static void repr_slot_storage(Repr *r, const LocalVar *lv) {
   r->arr_or_nil = lv->arr_or_nil == 1 && lv->type == TY_POLY;
 }
 
-/* An Integer or Float Array the analysis saw a nil stored into. */
-static int repr_elem_nil(TyKind elem, int marked) {
-  return (elem == TY_INT || elem == TY_FLOAT) && marked;
+/* An Array the analysis saw a nil stored into: an Integer or Float one's
+   mark (`marked`, nullable_int_elem), a pointer one's the nil fact's
+   (`pmarked`, obj_elem_may_nil: a nil stored, or a gap left). */
+static int repr_elem_nil(TyKind elem, int marked, int pmarked) {
+  if (elem == TY_INT || elem == TY_FLOAT) return marked != 0;
+  return nil_fact_tracked(elem) && pmarked;
 }
 
 int repr_hash_is(Repr r, TyKind key, TyKind val) {
@@ -316,9 +319,10 @@ Repr repr_of(const Compiler *c, int node) {
      asks the node's source, as a pure read) */
   if (r.elem == TY_INT || r.elem == TY_FLOAT) {
     an_pure_read_begin();
-    r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, nullable_int_elem_array((Compiler *)c, node));
+    r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, nullable_int_elem_array((Compiler *)c, node), 0);
     an_pure_read_end();
   }
+  else r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, 0, nil_elem_fact_node(c, node));
   /* a local read says what its slot does about where the value lives */
   if (nt_kind(c->nt, node) == NK_LocalVariableReadNode) {
     const char *ln = nt_str(c->nt, node, "name");
@@ -542,7 +546,7 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   /* under the rule, that handle is the one it assigned */
   r.share = r.handle && c->share_strings;
   r.elems_handle = lv->elems_shared && lv->type == TY_POLY_ARRAY;
-  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem);
+  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, lv->nullable_int_elem, lv->obj_elem_may_nil);
   repr_slot_storage(&r, lv);
   r.kind = (unsigned char)k;
   r.dyn_cls = repr_dyn_cls(c, lv->type);
@@ -834,7 +838,9 @@ Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
     if (k < 0) break;
     ec = p; ek = k;
   }
-  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek]);
+  r.elem_nil_marked = (unsigned)repr_elem_nil(r.elem, c->classes[ec].ivar_nullable_int_elem[ek],
+                                               iv < ci->n_ivar_obj_may_nil && ci->ivar_elem_may_nil &&
+                                               ci->ivar_elem_may_nil[iv]);
   r.dyn_cls = repr_dyn_cls(c, r.ty);
   return r;
 }
