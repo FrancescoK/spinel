@@ -5176,7 +5176,7 @@ static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
    follow, so the returns come from the scope's own chain (comp_sret_first,
    in node order as the scan was) once scope shape is fixed, instead of a
    scan of every ReturnNode of the program per question. */
-static int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
+int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
   Scope *m = &c->scopes[mi];
   int n = m->body >= 0 ? value_leaves(c, m->body, out, 0, cap) : -1;
   if (comp_scope_index_is_frozen()) {
