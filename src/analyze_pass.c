@@ -2650,6 +2650,7 @@ static TyKind index_op_write_value_type(Compiler *c, int id, int recv, TyKind vt
   return et == TY_FLOAT ? TY_FLOAT : vt;
 }
 
+static int value_leaves(Compiler *c, int n, int *out, int nout, int cap);
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0;
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
@@ -2963,6 +2964,14 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       continue;
     }
     if (recv < 0) continue;
+    /* a parenthesized sequence stores into its value, the last statement's
+       (`(log << :d; a).push(x)` fills a as `a.push(x)` does); a single
+       parenthesized expression keeps the readings below */
+    int recv0 = recv;  /* as written, for widen_nested_literals */
+    if (nt_kind(nt, unwrap_parens(c, recv)) == NK_ParenthesesNode) {
+      int leaf = -1;
+      if (value_leaves(c, recv, &leaf, 0, 1) == 1) recv = leaf;
+    }
     if (elem_splat_index && nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rty = nt_type(nt, recv);
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,
@@ -2995,9 +3004,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       /* each pushed value is its own evidence (`a[0].push(2, "x")`) */
       if (elem_argv && elem_an - elem_from > 1)
         for (int ai = elem_from; ai < elem_an; ai++)
-          changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, push_elem_ty(c, elem_argv[ai]));
+          changed |= widen_nested_literals(c, recv0, is_push, is_splice, (TyKind)kt, push_elem_ty(c, elem_argv[ai]));
       else
-        changed |= widen_nested_literals(c, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt);
+        changed |= widen_nested_literals(c, recv0, is_push, is_splice, (TyKind)kt, (TyKind)vt);
     }
     /* fold into a local's type or an ivar's type (an empty `@buf=[]` filled by
        `@buf << x` infers its element type the same way a local does) */
@@ -3017,8 +3026,18 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          decided at run time is exempt, as it is for a typed parameter
          (#4481): the boxed store checks it, and raises for a foreign one. */
       if (lv && (!lv->is_param || lv->is_block_param) && lv->type == TY_POLY && (is_push || (is_idx_write && (is_splice || kt == TY_INT))) &&
-          vt != TY_UNKNOWN && vt != TY_POLY && !concat_scalar && (!is_splice || is_fill || splice_arr))
-        changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
+          !concat_scalar && (!is_splice || is_fill || splice_arr)) {
+        /* each pushed value is its own evidence (`z.push(1, [2])`): their
+           join is poly, which says nothing about the arrays z holds */
+        if (elem_argv && elem_an - elem_from > 1) {
+          for (int ai = elem_from; ai < elem_an; ai++) {
+            TyKind et = push_elem_ty(c, elem_argv[ai]);
+            if (et != TY_UNKNOWN && et != TY_POLY) changed |= widen_boxed_array_sources(c, recv, et, 0);
+          }
+        }
+        else if (vt != TY_UNKNOWN && vt != TY_POLY)
+          changed |= widen_boxed_array_sources(c, recv, (TyKind)vt, 0);
+      }
       /* A proc or lambda literal's boxed parameter written as a Hash
          (`proc { |t| t[:k] = 2 }`): the Hashes its calls hand it take the
          key and value, as a method's boxed parameter's callers do */
@@ -5061,14 +5080,21 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
 }
 
 /* An element write or push whose receiver is an element read (`y[k][j] = v`,
-   `a[0] << v`) stores into a container literal nested in another: widens
+   `a[0] << v`), or a parenthesized sequence ending in a literal, stores
+   into a container literal (nested in another): widens
    each such literal the evidence does not fit, as a store through a
    variable holding it would. A boxed value is exempt, as it is there.
    Returns 1 on a change. */
 static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt) {
   const NodeTable *nt = c->nt;
-  int r = unwrap_parens(c, recv);
-  if (r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
+  int r = unwrap_parens(c, recv), seq = 0;
+  /* `(log << :d; [9]).push([2])`: the sequence's value, its last statement,
+     is the literal stored into (a bare literal receiver is its own call's) */
+  if (r >= 0 && nt_kind(nt, r) == NK_ParenthesesNode) {
+    int leaf = -1;
+    if (value_leaves(c, r, &leaf, 0, 1) == 1) { r = leaf; seq = 1; }
+  }
+  if (r < 0 || !(nt_kind(nt, r) == NK_CallNode || (seq && nt_kind(nt, r) == NK_ArrayNode))) return 0;
   int lits[32];
   int nl = container_literals(c, r, lits, 0, 32, 0);
   int changed = 0;
