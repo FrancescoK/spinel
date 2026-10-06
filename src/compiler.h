@@ -1219,6 +1219,10 @@ int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int
 int        comp_ary_root(Compiler *c, int cid);
 int        comp_ty_ary_root(Compiler *c, TyKind t);
 TyKind     comp_ary_kind(Compiler *c, int cid);
+/* Whether Array answers a call named n on an instance of Array subclass
+   cid: no method, reader or writer of the class chain takes the name, it
+   asks nothing about the object itself, and Array has it. */
+int        comp_arysub_name_is_array(Compiler *c, int cid, const char *n);
 /* Call `id` on rt (an Array subclass instance) is Array's, answered as the
    embedded Array's kind *kind; what Array answers, as the builtin-op rows
    say (bop_answers_self: BOPF_SELF, BOPF_SELF_OR_NIL, BOPF_SELF_EXACT...);
