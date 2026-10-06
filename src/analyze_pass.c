@@ -8438,7 +8438,8 @@ int infer_param_types(Compiler *c) {
     /* A builtin receiver's own reopening takes this call's arguments too,
        including non-Symbol keys that widen its keyword-rest hash. */
     else if (rt != TY_UNKNOWN && rt != TY_VOID && name) {
-      const char *bc = rt == TY_RANDOM ? "Random" : builtin_class_of_type(rt);
+      const char *bc = rt == TY_RANDOM ? "Random" :
+                       rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
       int bci = bc ? comp_class_index(c, bc) : -1;
       int bmi = bci >= 0 && !nt_int(nt, id, "builtin_only", 0)
                 ? comp_method_in_chain(c, bci, name, NULL) : -1;
