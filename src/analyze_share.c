@@ -35,7 +35,7 @@ enum { SHF_OUT = 8 };
    -1 for a Method of every method named mname (in class mcid's chain and
    below it, or anywhere when mcid < 0). escaped: its class met UNKNOWN, so
    its parameters and value have. */
-struct ShCallable { int v, node, mcid; const char *mname; unsigned char escaped; };
+struct ShCallable { int v, node, mcid; const char *mname; unsigned char escaped; int vals; };
 /* A call of a callable value: the receiver's value rv, the arguments'
    values, the answer av. unk: the receiver's class met UNKNOWN (or holds no
    callable the walk made), so the arguments and answer have. bound: per
@@ -656,7 +656,16 @@ static int sh_callable_new(ShareFacts *F, Compiler *c, int node, const char *mna
     F->cbl = realloc(F->cbl, sizeof *F->cbl * (size_t)F->ccbl);
   }
   int v = sh_new(F, SHK_VALUE);
-  F->cbl[F->ncbl++] = (struct ShCallable){ v, node, mcid, mname, 0 };
+  F->cbl[F->ncbl++] = (struct ShCallable){ v, node, mcid, mname, 0, -1 };
+  return v;
+}
+
+/* A Hash's to_proc: a callable whose call answers one of the Hash's
+   values (`vals`, the Hash's element class), its argument a key the lookup
+   only compares */
+static int sh_callable_values(ShareFacts *F, int vals) {
+  int v = sh_callable_new(F, NULL, -1, NULL, -1);
+  F->cbl[F->ncbl - 1].vals = vals;
   return v;
 }
 
@@ -689,6 +698,10 @@ static int sh_callable_method(Compiler *c, const struct ShCallable *k, int mi) {
 
 /* bind callable k to arguments joined in a (-1 none) and answer av */
 static void sh_callable_bind(ShareFacts *F, Compiler *c, const struct ShCallable *k, int a, int av) {
+  if (k->vals >= 0) {
+    if (av >= 0) sh_union(F, av, k->vals);
+    return;
+  }
   if (k->node >= 0) {
     if (a >= 0) sh_block_params(F, c, k->node, a, 1);
     if (av >= 0) sh_union(F, sh_block_val(F, c, k->node), av);
@@ -1558,6 +1571,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       (ty_is_object(rt) && c->classes[ty_object_class(rt)].is_native_class))
     return sh_builtin(F, c, n, bop_share(BOP_LIB, name), rv, blk, 0);
   TyKind fam = sh_family(rt);
+  /* a Hash's to_proc answers its values through the proc's calls */
+  if (fam == BOP_ANY_HASH && is_proc_conversion(name) && argc == 0 && blk < 0 && rv >= 0)
+    return sh_callable_values(F, sh_elem(F, rv));
   int s = bop_share_named(fam, name);
   /* the Strings' answers-self names the face table lists */
   if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;

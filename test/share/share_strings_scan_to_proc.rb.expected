@@ -1,0 +1,6 @@
+["hello!", true]
+"abc?"
+[true, true]
+{"a" => "e0!", "b" => "e1"}
+["e1?", true]
+nil
