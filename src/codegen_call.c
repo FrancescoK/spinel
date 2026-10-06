@@ -13397,8 +13397,8 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
          Float-array loop over 2x against `a[i] += x`. */
       Buf lnf; memset(&lnf, 0, sizeof lnf);
       Buf rnf; memset(&rnf, 0, sizeof rnf);
-      if (lfn && emit_nilfree_operand(c, recv, name, 1, &lnf)) lfn = 0;
-      if (rfn && emit_nilfree_operand(c, argv[0], name, 0, &rnf)) rfn = 0;
+      if (lfn && emit_nilfree_operand(c, recv, name, 1, NULL, &lnf)) lfn = 0;
+      if (rfn && emit_nilfree_operand(c, argv[0], name, 0, NULL, &rnf)) rfn = 0;
       int fguard = lfn || rfn;
       int tfg = fguard ? ++g_tmp : 0;
       if (fguard) buf_printf(b, "({ sp_float _t%d = ", tfg);
