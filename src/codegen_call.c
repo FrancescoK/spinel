@@ -11979,6 +11979,43 @@ static int eq_class_has_own_eq(Compiler *c, int cid) {
          comp_resolve_member(c, cid, "<=>", 0, NULL, NULL) != SP_MEMBER_NONE ||
          (c->classes[cid].is_native_class && comp_native_method_find(c, cid, "==", 1, 0) >= 0);
 }
+/* Comparable#== on a class with a `<=>` and no `==`: `(a <=> b) == 0`, but
+   the receiver itself is equal without the call, as CRuby's cmp_equal
+   answers before it calls `<=>`, which may have side effects. Both operands
+   are read once: each is in place (a local, an ivar, self) or a rooted
+   temp, and the dispatch reads the argument through its binding. An
+   operand that cannot be the same object (a scalar, a value object) is
+   compared as before. */
+static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid, int eq, Buf *b) {
+  TyKind rt = comp_ntype(c, recv), at = comp_ntype(c, arg);
+  int args = nt_ref(c->nt, id, "arguments");
+  int same_ok = !comp_ty_value_obj(c, rt) &&
+                ((ty_is_object(at) && !comp_ty_value_obj(c, at)) || at == TY_POLY);
+  Buf selfb = emit_cmp_self(c, recv, rt);
+  if (!same_ok) {
+    buf_puts(b, "(");
+    emit_dispatch(c, ecid, "<=>", selfb.p, args, -1, b);
+    buf_printf(b, " %s 0)", eq ? "==" : "!=");
+    free(selfb.p);
+    return;
+  }
+  /* emit_cmp_self reads a local, an ivar or self in place; anything else it
+     evaluates into a fresh `_tN`, which the dispatch then reads */
+  int t0 = g_tmp, tn = -1;
+  Buf argb = emit_cmp_self(c, arg, at);
+  int mark = sscanf(argb.p, "_t%d", &tn) == 1 && tn > t0 ? view_bind(arg, "_t%d", tn) : -1;
+  buf_puts(b, eq ? "(" : "(!(");
+  if (at == TY_POLY)
+    buf_printf(b, "((%s).tag == SP_TAG_OBJ && (void *)(%s).v.p == (void *)(%s))", argb.p, argb.p, selfb.p);
+  else
+    buf_printf(b, "((void *)(%s) == (void *)(%s))", argb.p, selfb.p);
+  buf_puts(b, " || ");
+  emit_dispatch(c, ecid, "<=>", selfb.p, args, -1, b);
+  buf_puts(b, eq ? " == 0)" : " == 0))");
+  if (mark >= 0) view_unbind(mark);
+  free(argb.p);
+  free(selfb.p);
+}
 static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12484,11 +12521,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "(%ssp_poly_cmp_eq(_t%d, _t%d))", eq ? "" : "!", ta, tb2);
           return 1;
         }
-        Buf selfb = emit_cmp_self(c, recv, rt);
-        buf_puts(b, "(");
-        emit_dispatch(c, ecid, "<=>", selfb.p, nt_ref(nt, id, "arguments"), -1, b);
-        buf_printf(b, " %s 0)", eq ? "==" : "!=");
-        free(selfb.p);
+        emit_cmp_derived_eq(c, id, recv, argv[0], ecid, eq, b);
         return 1;
       }
       /* obj.!= synthesized from obj.== when != is not explicitly defined */
