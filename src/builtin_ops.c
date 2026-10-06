@@ -1546,7 +1546,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "prev_float",  0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "nextafter($r, -INFINITY)" },
   { TY_FLOAT, "abs",         0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
   { TY_FLOAT, "magnitude",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "fabs($r)" },
-  { TY_FLOAT, "modulo",      1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fmod($r, $e0)" },
+  { TY_FLOAT, "modulo",      1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fmod($r, $F0)" },
   { TY_FLOAT, "modulo",      0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
   { TY_FLOAT, "remainder",   1,   1, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "sp_fremainder($r, $f0)" },
   { TY_FLOAT, "remainder",   0, 127, BF_ANY,      TY_FLOAT,       BOPE_NONE },
