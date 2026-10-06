@@ -353,7 +353,13 @@ jobs:
             # as before; a program's base C comes from the cache where
             # cbase.py finds it still stands.
             b="$RUNNER_TEMP/base"; C="$RUNNER_TEMP/cbase"
-            ls test/*.rb test/infer/*.rb benchmark/*.rb > "$out/programs.txt"
+            # optcarrot (packed as `make optcarrot` packs it) and the packages' tests too, so a PR's
+            # "optcarrot and the packages emit the same C" is what this leg checked
+            repo=$(sed -n 's/^OPTCARROT_REPO *:*= *//p' Makefile); br=$(sed -n 's/^OPTCARROT_BRANCH *:*= *//p' Makefile)
+            if [ -n "$repo" ] && git clone -q --depth=1 ${br:+--branch=$br} "$repo" build/optcarrot 2>/dev/null; then
+              ruby build/optcarrot/tools/pack-for-spinel.rb > build/optcarrot-single.rb || rm -f build/optcarrot-single.rb
+            fi
+            ls test/*.rb test/infer/*.rb benchmark/*.rb packages/*/test/*.rb build/optcarrot-single.rb 2>/dev/null > "$out/programs.txt"
             mkdir -p "$out/diffs" "$C/c"
             python3 "$GITHUB_WORKSPACE/cbase.py" plan "$h" "$out/programs.txt" "$C" "$RUNNER_TEMP/recompute.txt" > "$out/cbase.txt"
             xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cbase1.sh" "$b/spinel" "$C" < "$RUNNER_TEMP/recompute.txt" || true
