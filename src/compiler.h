@@ -932,6 +932,10 @@ typedef struct {
   int share_strings;
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
+  /* an ivar of a builtin value can be written (desugar_builtin_ivars): a
+     reflective read, list or copy of an Array, a Hash or a Random asks the
+     runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
+  int bivar_table;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

@@ -1,0 +1,15 @@
+nil
+7
+8
+[1, []]
+[7, []]
+[7, [], :blk]
+["s1", [2, 3], :blk]
+"ArgumentError: no keywords accepted"
+nil
+:m
+0
+[1, 2, :m, :m, 3, :blk]
+[:m, :m, {z: 3, y: 2}]
+nil
+"h"

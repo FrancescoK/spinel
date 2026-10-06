@@ -470,6 +470,8 @@ const char *sp_poly_inspect(sp_RbVal v)
         case SP_BUILTIN_FIBER:  return sp_Fiber_inspect((sp_Fiber *)v.v.p);
         case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
         case SP_BUILTIN_ARGF:   return SPL("ARGF");
+        /* the typed form's rendering, which lists the ivars a program set */
+        case SP_BUILTIN_RANDOM: if (v.v.p) return sp_Random_inspect((sp_Random *)v.v.p); return SPL("#<Object>");
         default:
           /* a user object: the generated per-class ivar walk renders
              #<Name:0x... @a=..., ...> like CRuby's default inspect */

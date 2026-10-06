@@ -10303,6 +10303,97 @@ static inline sp_bool sp_poly_frozen(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) return sp_gc_is_frozen(v.v.p) || (v.v.p && sp_poly_array_frozen(v));
   return TRUE;
 }
+/* The instance variables of a builtin value (lib/sp_gc.c's map, which does
+   not keep the value alive): an Array, a Hash, a Random, a Proc or an
+   exception keeps them in a symbol table of its own, made on its first
+   write, the table an Object.new instance keeps. A Class value is keyed by
+   its class (a class lives as long as the program), for the ivars it holds
+   besides the class-level slots the program declares (emit_poly_ivar_call
+   writes those). A frozen value (every immediate, a Range, anything frozen)
+   raises FrozenError on a write, as in CRuby. A String is copied rather
+   than shared (until #6765), and a Time is copied by value, so neither
+   keeps an identity to key on and a write to one is refused when it runs.
+   The answer is the key, or NULL. */
+static const void *sp_bivar_key(sp_RbVal o) {
+  if (o.tag == SP_TAG_OBJ && o.v.p &&
+      (sp_poly_is_array_kind(o.cls_id) || sp_poly_is_hash_kind(o.cls_id) || o.cls_id == SP_BUILTIN_RANDOM ||
+       o.cls_id == SP_BUILTIN_PROC || o.cls_id == SP_BUILTIN_EXCEPTION))
+    return o.v.p;
+  /* a class: no address, so a key no object has (lib/sp_gc.c: an
+     unaligned key is never freed) */
+  if (o.tag == SP_TAG_CLASS && o.cls_id != SP_CLASS_BY_NAME)
+    return (const void *)(((uintptr_t)(uint32_t)o.cls_id << 4) | 2);
+  if (o.tag == SP_TAG_CLASS && o.v.s)
+    return (const void *)(((uintptr_t)sp_sym_intern(o.v.s) << 4) | 10);
+  return NULL;
+}
+static int sp_bivar_keyed(sp_RbVal o) { return sp_bivar_key(o) != NULL; }
+static sp_RbVal sp_bivar_get(sp_RbVal o, sp_sym k) {
+  const void *key = sp_bivar_key(o);
+  sp_SymPolyHash *t = key ? (sp_SymPolyHash *)sp_ivtbl_get(key) : NULL;
+  if (!t || !sp_SymPolyHash_has_key(t, k)) return sp_box_nil();
+  return sp_SymPolyHash_get(t, k);
+}
+static sp_bool sp_bivar_defined(sp_RbVal o, sp_sym k) {
+  const void *key = sp_bivar_key(o);
+  sp_SymPolyHash *t = key ? (sp_SymPolyHash *)sp_ivtbl_get(key) : NULL;
+  return t && sp_SymPolyHash_has_key(t, k);
+}
+static sp_PolyArray *sp_bivar_list(sp_RbVal o) {
+  const void *key = sp_bivar_key(o);
+  sp_SymPolyHash *t = key ? (sp_SymPolyHash *)sp_ivtbl_get(key) : NULL;
+  SP_GC_ROOT(t);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  for (sp_int i = 0; t && i < t->len; i++) sp_PolyArray_push(a, sp_box_sym(t->order[i]));
+  return a;
+}
+/* Random#inspect's ivars (sp_Random_inspect, lib/sp_random.c) */
+static const char *sp_bivar_tbl_inspect(void *tp) {
+  sp_SymPolyHash *t = (sp_SymPolyHash *)tp;
+  SP_GC_ROOT(t);
+  sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
+  for (sp_int i = 0; t && i < t->len; i++) {
+    sp_String_append(s, i ? ", " : " ");
+    sp_String_append(s, sp_sym_to_s(t->order[i]));
+    sp_String_append(s, "=");
+    sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(t, t->order[i])));
+  }
+  return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
+}
+static sp_RbVal sp_bivar_set(sp_RbVal o, sp_sym k, sp_RbVal v) {
+  if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
+    /* rooted: the receiver's inspect allocates before the message is built */
+    SP_GC_ROOT_RBVAL(o);
+    const char *what = sp_str_concat((&("\xff" "can't modify frozen ")[1]), sp_poly_class_name(o));
+    SP_GC_ROOT_STR(what);
+    sp_raise_frozen_obj(o, what);
+  }
+  const void *key = sp_bivar_key(o);
+  if (!key)
+    sp_raise_cls("NotImplementedError",
+                 sp_sprintf("instance_variable_set on a %s is not supported: Spinel copies the value and keeps "
+                            "no identity for the variable to live on%s", sp_poly_class_name(o),
+                            o.tag == SP_TAG_STR ? " (waits on #6765)" : ""));
+  SP_GC_ROOT_RBVAL(o); SP_GC_ROOT_RBVAL(v);
+  sp_SymPolyHash *t = (sp_SymPolyHash *)sp_ivtbl_get(key);
+  if (!t) {
+    t = sp_SymPolyHash_new();
+    sp_ivtbl_put(key, t);
+    sp_ivtbl_inspect_fn = sp_bivar_tbl_inspect;
+  }
+  sp_SymPolyHash_set(t, k, v);
+  return v;
+}
+/* Object#dup / #clone: the copy takes the original's ivars */
+static void sp_bivar_copy(sp_RbVal from, sp_RbVal to) {
+  /* objects only: a class's dup is no value Spinel makes */
+  sp_SymPolyHash *t = from.tag == SP_TAG_OBJ && sp_bivar_keyed(from) ? (sp_SymPolyHash *)sp_ivtbl_get(from.v.p) : NULL;
+  if (!t || to.tag != SP_TAG_OBJ || !sp_bivar_keyed(to) || from.v.p == to.v.p) return;
+  SP_GC_ROOT_RBVAL(to); SP_GC_ROOT(t);
+  sp_SymPolyHash *d = sp_SymPolyHash_new(); SP_GC_ROOT(d);
+  for (sp_int i = 0; i < t->len; i++) sp_SymPolyHash_set(d, t->order[i], sp_SymPolyHash_get(t, t->order[i]));
+  sp_ivtbl_put(to.v.p, d);
+}
 /* eql? for a poly value: like == but without cross-kind numeric coercion, so
    1.eql?(1.0) is false while 1 == 1.0 is true. Every other type answers as ==.
    Backs the universal `x.should.eql?(y)` matcher on a poly receiver. */

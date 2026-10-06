@@ -44,11 +44,17 @@ spinel: 1 refusal, nothing written
 == test/reject/bind_call_class_value_block_target.rb [promote] rc=1
 spinel: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
 spinel: 1 refusal, nothing written
+== test/reject/builtin_ivar_string_write.rb [default] rc=1
+spinel: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_ivar_string_write.rb [promote] rc=1
+spinel: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [default] rc=1
-spinel: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
+spinel: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [promote] rc=1
-spinel: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
+spinel: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/class_body_block_next.rb [default] rc=1
 spinel: next in a block that is a class body (the block of Class.new, Module.new, Struct.new or Data.define): the definitions after it would be made or not at run time
