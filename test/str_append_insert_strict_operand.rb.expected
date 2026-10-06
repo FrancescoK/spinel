@@ -1,0 +1,66 @@
+0 TypeError: no implicit conversion of nil into String
+1 TypeError: no implicit conversion of nil into String
+2 TypeError: no implicit conversion of nil into String
+3 TypeError: no implicit conversion of nil into String
+4 TypeError: no implicit conversion of nil into String
+5 TypeError: no implicit conversion of nil into String
+6 TypeError: no implicit conversion of nil into String
+7 TypeError: no implicit conversion of nil into String
+8 TypeError: no implicit conversion of nil into String
+9 TypeError: no implicit conversion of nil into String
+10 TypeError: no implicit conversion of nil into String
+0 "HeA"
+1 "HeaA"
+2 "HeA"
+3 "HeA"
+4 "HeaA"
+5 TypeError: no implicit conversion of Integer into String
+6 TypeError: no implicit conversion of Integer into String
+7 TypeError: no implicit conversion of Integer into String
+8 TypeError: no implicit conversion of Integer into String
+9 TypeError: no implicit conversion of Integer into String
+10 3
+0 TypeError: no implicit conversion of Float into String
+1 TypeError: no implicit conversion of Float into String
+2 TypeError: no implicit conversion of Float into String
+3 TypeError: no implicit conversion of Float into String
+4 TypeError: no implicit conversion of Float into String
+5 TypeError: no implicit conversion of Float into String
+6 TypeError: no implicit conversion of Float into String
+7 TypeError: no implicit conversion of Float into String
+8 TypeError: no implicit conversion of Float into String
+9 TypeError: no implicit conversion of Float into String
+10 TypeError: no implicit conversion of Float into String
+0 TypeError: no implicit conversion of Symbol into String
+1 TypeError: no implicit conversion of Symbol into String
+2 TypeError: no implicit conversion of Symbol into String
+3 TypeError: no implicit conversion of Symbol into String
+4 TypeError: no implicit conversion of Symbol into String
+5 TypeError: no implicit conversion of Symbol into String
+6 TypeError: no implicit conversion of Symbol into String
+7 TypeError: no implicit conversion of Symbol into String
+8 TypeError: no implicit conversion of Symbol into String
+9 TypeError: no implicit conversion of Symbol into String
+10 TypeError: no implicit conversion of Symbol into String
+0 TypeError: no implicit conversion of Array into String
+1 TypeError: no implicit conversion of Array into String
+2 TypeError: no implicit conversion of Array into String
+3 TypeError: no implicit conversion of Array into String
+4 TypeError: no implicit conversion of Array into String
+5 TypeError: no implicit conversion of Array into String
+6 TypeError: no implicit conversion of Array into String
+7 TypeError: no implicit conversion of Array into String
+8 TypeError: no implicit conversion of Array into String
+9 TypeError: no implicit conversion of Array into String
+10 TypeError: no implicit conversion of Array into String
+0 "Hez"
+1 "Heaz"
+2 "Hez"
+3 "Hez"
+4 "Heaz"
+5 "zHe"
+6 "Hze"
+7 "Hze"
+8 "Hze"
+9 "Hez"
+10 3
