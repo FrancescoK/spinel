@@ -16199,6 +16199,9 @@ char *codegen_program(const NodeTable *nt) {
     g_c_ret_void = sv_main_cv;
     buf_puts(body, "int main(int argc,char**argv){\n"
                    "  _sp_main_argc = argc; _sp_main_argv = argv;\n");
+    /* --share-strings: the runtime names a shared String handle's box a
+       String where a message names a value's class */
+    if (repr_share_rule(c)) buf_puts(body, "  sp_obj_share_strings = 1;\n");
     /* an unoptimised build's frames are several times an -O2 one's, so the
        same Ruby depth costs several times the bytes; SPINEL_MAIN_STACK in the
        environment still wins over this */
