@@ -20,3 +20,5 @@
 [10, {"forwarded" => 12}]
 [11, {"forwarded" => 13}]
 {"s" => [3, 4], sym: 5, 6 => :integer_key}
+[{"arg" => 1}, {"kw" => 1}]
+"c012"
