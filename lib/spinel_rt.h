@@ -321,6 +321,25 @@ static inline double sp_fmod(double a, double b) {
   if (r != 0.0 && ((r < 0.0) != (b < 0.0))) r += b;
   return r;
 }
+/* Float#divmod's quotient and modulus, as CRuby's flodivmod computes them: a
+   NaN divisor makes both NaN before the zero test (so NaN.divmod(0.0) is a
+   ZeroDivisionError, and 1.0.divmod(NaN) the FloatDomainError of its NaN
+   quotient); a zero dividend, or a finite one over an infinite divisor, is
+   its own modulus, keeping -0.0's sign; the quotient is the rounded
+   (x - mod) / y, which agrees with the modulus where floor(x / y) does not
+   (1.0.divmod(0.1) is [9, 0.09999999999999995]); and a modulus whose sign
+   differs from the divisor's moves one divisor over. */
+static inline void sp_flodivmod(double x, double y, double *divp, double *modp) {
+  double div, mod;
+  if (isnan(y)) { *divp = *modp = y; return; }
+  if (y == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  if (x == 0.0 || (isinf(y) && !isinf(x))) mod = x;
+  else mod = fmod(x, y);
+  if (isinf(x) && !isinf(y)) div = x;
+  else div = round((x - mod) / y);
+  if (y * mod < 0) { mod += y; div -= 1.0; }
+  *divp = div; *modp = mod;
+}
 /* Float#remainder: plain C fmod, but a zero divisor raises the way every other
    Float division-derived operation does (#3649). */
 static inline double sp_fremainder(double a, double b) {
@@ -5210,6 +5229,22 @@ static sp_float sp_poly_fdiv(sp_RbVal a, sp_RbVal b) {
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rat_kind(a)) sp_raise_poly_nomethod("fdiv", a);
   return sp_poly_to_f_with_rational(a) / sp_poly_to_f_with_rational(b);
 }
+/* Float#divmod (and an Integer's divmod by a Float): sp_flodivmod's pair
+   as [Integer, Float]. A NaN or infinite quotient raises FloatDomainError
+   (sp_box_f_to_int). With `widen` a quotient past sp_int is the Bignum
+   CRuby's dbl2ival makes, as a boxed receiver and promote mode answer it;
+   without, it raises the RangeError a typed Float's floor raises in raise
+   and wrap mode (float_to_int_out_of_range). */
+static sp_PolyArray *sp_float_divmod(double x, double y, int widen) {
+  double d, m;
+  sp_flodivmod(x, y, &d, &m);
+  sp_RbVal q = widen || !isfinite(d) ? sp_box_f_to_int(d) : sp_box_int(sp_float_fit_i(d));
+  SP_GC_ROOT_RBVAL(q);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, q);
+  sp_PolyArray_push(a, sp_box_float(m));
+  return a;
+}
 static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
   SP_POLY_COERCE_NUM("divmod");
   /* the sibling helpers (div_m, remainder, fdiv) all refuse a non-numeric
@@ -5235,16 +5270,10 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
     sp_PolyArray_push(out, sp_box_rational(rem));
     return sp_box_poly_array(out);
   }
-  if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) {
-    sp_float fa = sp_poly_to_f(a), fb = sp_poly_to_f(b);
-    if (fb == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    sp_float q = floor(fa / fb);
-    /* CRuby answers the quotient as an Integer (7.0.divmod(3) => [2, 1.0]);
-       only one that no Integer can hold stays a Float. */
-    sp_PolyArray_push(out, (q >= -9.2e18 && q <= 9.2e18) ? sp_box_int((sp_int)q) : sp_box_float(q));
-    sp_PolyArray_push(out, sp_box_float(sp_fmod(fa, fb)));
-    return sp_box_poly_array(out);
-  }
+  /* CRuby answers the quotient as an Integer (7.0.divmod(3) => [2, 1.0]),
+     a Bignum where no sp_int holds it, as sp_poly_floor does */
+  if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT)
+    return sp_box_poly_array(sp_float_divmod(sp_poly_to_f(a), sp_poly_to_f(b), 1));
   /* a Bignum pair: sp_poly_to_i below truncates it to 64 bits and answered a
      quotient seven orders of magnitude out, with a remainder of 0. */
   if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) {

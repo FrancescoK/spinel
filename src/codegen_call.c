@@ -4342,13 +4342,15 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* Rational: builtin-op rows (builtin_ops.c) */
     if (crt == TY_RATIONAL && emit_builtin_op(c, id, recv, crt, name, b)) return 1;
-    /* Float % Rational: floor modulo in doubles (1.5 % (1/2r) is 0.0) */
+    /* Float % Rational: Float % Float on the Rational's value (1.5 % (1/2r)
+       is 0.0), through sp_fmod as `%` is, for -0.0's sign and a zero
+       divisor's ZeroDivisionError */
     if (crt == TY_FLOAT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL &&
         (is_modulo_alias(name))) {
       int tx = ++g_tmp, ty2 = ++g_tmp;
       buf_printf(b, "({ double _t%d = ", tx); emit_expr(c, recv, b);
       buf_printf(b, "; double _t%d = sp_rational_to_f(", ty2); emit_expr(c, argv[0], b);
-      buf_printf(b, "); _t%d - _t%d * floor(_t%d / _t%d); })", tx, ty2, tx, ty2);
+      buf_printf(b, "); sp_fmod(_t%d, _t%d); })", tx, ty2);
       return 1;
     }
     /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */

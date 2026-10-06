@@ -296,27 +296,10 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                       " sp_box_f_to_int(_t%d / _t%d); })", ty, tx, ty);
       }
       else if (sp_streq(name, "divmod")) {
-        int tx = ++g_tmp, ty = ++g_tmp, td = ++g_tmp, tm = ++g_tmp, tq = ++g_tmp, tp = ++g_tmp;
+        int tx = ++g_tmp, ty = ++g_tmp;
         buf_printf(b, "({ sp_float _t%d = sp_bigint_to_double(%s); sp_float _t%d = ", tx, r, ty);
         emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_float _t%d, _t%d;"
-                      " if (isnan(_t%d)) _t%d = _t%d = _t%d;"
-                      " else { if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                      " _t%d = (_t%d == 0.0 || (isinf(_t%d) && !isinf(_t%d))) ? _t%d : fmod(_t%d, _t%d);"
-                      " _t%d = (isinf(_t%d) && !isinf(_t%d)) ? _t%d : round((_t%d - _t%d) / _t%d);"
-                      " if (_t%d * _t%d < 0) { _t%d += _t%d; _t%d -= 1.0; } }"
-                      " sp_RbVal _t%d = sp_box_f_to_int(_t%d); SP_GC_ROOT_RBVAL(_t%d);"
-                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                      " sp_PolyArray_push(_t%d, _t%d); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); _t%d; })",
-                   td, tm,
-                   ty, td, tm, ty,
-                   ty,
-                   tm, tx, ty, tx, tx, tx, ty,
-                   td, tx, ty, tx, tx, tm, ty,
-                   ty, tm, tm, ty, td,
-                   tq, td, tq,
-                   tp, tp,
-                   tp, tq, tp, tm, tp);
+        buf_printf(b, "; sp_float_divmod(_t%d, _t%d, 1); })", tx, ty);
       }
       else {
         buf_printf(b, "%s(sp_bigint_to_double(%s), ", name[0] == 'r' ? "sp_fremainder" : "sp_fmod", r);
