@@ -30077,6 +30077,7 @@ static void an_phase_class_structure(Compiler *c) {
   refuse_super_init_value(c);
   inherit_members(c);
   reject_dynamic_mixin_args(c);
+  desugar_module_prepends(c);
   register_includes(c);
   register_include_attrs(c);
   register_extends(c);
