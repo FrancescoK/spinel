@@ -2265,6 +2265,13 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	for f in "Chain#inner" "Chain#mid" "Chain#outer" "Chain#top"; do \
 	  grep -q "$$f" "$$tmp/pt.out" || { echo "backtrace-test: FAIL (#5084: frame $$f cut by a rescue that did not match)"; cat "$$tmp/pt.out"; ok=0; }; \
 	done; \
+	$(SPINEL) --debug --no-inline-hot test/backtrace/required_main.rb -o "$$tmp/rq" >/dev/null 2>&1 || \
+	  { echo "backtrace-test: FAIL (compile required_main)"; ok=0; }; \
+	"$$tmp/rq" > "$$tmp/rq.out" 2>&1; \
+	for f in "required_lib.rb:in .Lib#inner'" "required_lib.rb:in .Lib#boom'" "required_lib.rb:in .Lib.go'" "required_main.rb:in .Top#run'"; do \
+	  grep -q "$$f" "$$tmp/rq.out" || { echo "backtrace-test: FAIL (#7658: no frame $$f)"; cat "$$tmp/rq.out"; ok=0; }; \
+	done; \
+	grep -q "required_main.rb:in .Lib" "$$tmp/rq.out" && { echo "backtrace-test: FAIL (#7658: a Lib frame names the entry script)"; cat "$$tmp/rq.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "backtrace-test: pass"; else exit 1; fi
 
