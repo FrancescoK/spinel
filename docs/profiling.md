@@ -205,3 +205,24 @@ A phase nested in another is counted in both, so the lines do not add up to the
 total. A phase that did not run (a `-c` build has no `cc_*`) or failed prints
 nothing, so a failed build is not a sample. Record the compiler, the input,
 the flags, the host and the cache state beside the lines; they are not in them.
+
+## Source positions of a generated .rb
+
+A Ruby file that a tool generated (a template compiler, a transpiler) can say
+where its lines came from. A whole line
+
+```ruby
+#<SPINEL_SOURCE>greeting.html.erb:12
+```
+
+makes the lines after it report as `greeting.html.erb`, line 12, in `#line`
+directives, `-g` / `--debug` stepping, `perf` / `addr2line`, `--warn-widen` and
+`--check-stores`. The position is held (every following line reports line 12,
+not 13, 14, ...) until the next marker or the end of the file it is in. The
+text after `>` splits at its last colon, so the path may hold one; a line with
+no `:<positive number>` is an ordinary comment. CRuby treats the marker as a
+comment too.
+
+Only the reported position moves. `__FILE__`, `__dir__`, `__LINE__` and
+`require_relative` still answer from the `.rb` the code is in, and a syntax
+error is reported at the generated file.
