@@ -725,7 +725,12 @@ Not yet shared:
   curried proc, a method `define_method` defines, `new` or `raise`, a
   String held by a block parameter, by a variable a block or proc captures,
   or by a global or class variable, and through a proc, a `Method` or a
-  class value's `new`, one held by an instance variable.
+  class value's `new`, one held by an instance variable;
+- through a `Method` bound to one of the String's own in-place mutators
+  (`s.method(:<<)`, `s.method(:concat)`, `s.method(:upcase!)`, their
+  `to_proc` and `&s.method(:<<)`): the Method is bound to the String's
+  value, so `.method` itself is refused, naming the line. Call the
+  mutator on the String, or wrap it in a block (`->(x) { s << x }`).
 
 A String is shared as well through a rest a method forwards (`def w(*a) =
 m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
