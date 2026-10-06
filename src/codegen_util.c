@@ -2963,7 +2963,14 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
     RCCT(CF_FIT);
     return;
   case CF_BOX:
-    emit_boxed_text(c, from, text, b); RCCT(CF_BOX); return;
+    /* (a String into a boxed slot the rule shares: emit_boxed's lift) */
+    if (repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && from == TY_STRING) {
+      buf_puts(b, "sp_poly_strbuf_lift(");
+      emit_boxed_text(c, from, text, b);
+      buf_puts(b, ")");
+    }
+    else emit_boxed_text(c, from, text, b);
+    RCCT(CF_BOX); return;
   case CF_NIL_SENT:
     /* A value with no C type of its own -- a call that answers nothing, a
        raise -- is evaluated for its effect, and the slot takes its nil */
