@@ -751,6 +751,20 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   free(tmp.p);
 }
 
+/* An Array index ahead of a cached bounds compare (`i < len ? data[i] :
+   ...`). A nil index, the -2^63 sentinel, fails the unsigned compare, so an
+   index that may be nil is read raw and its nil test (SP_INT_NIL_ARG_CK)
+   runs where the compare sends it, off the in-range read. Answers 1 when
+   the caller owes that test there. */
+int emit_int_index_raw(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_INT && nullable_int_value(c, node)) {
+    emit_scalar_operand(c, node, "0", b);
+    return 1;
+  }
+  emit_int_expr(c, node, b);
+  return 0;
+}
+
 void emit_int_expr(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_int_expr, node); return; }
   emit_int_expr_ex(c, node, 1, b);

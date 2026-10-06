@@ -2081,15 +2081,13 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const cha
       !hc_array_nilfree(c, vr, -1, hd, hn, sizeof hd))
     return 0;
   int nilr = cplan_nil(c, v) == CN_RAISE;
-  int ck = nilr && nullable_int_value(c, vav[0]);
   int tk = ++g_tmp;
   buf_printf(b, "({ sp_int _t%d = ", tk);
-  if (ck) emit_scalar_operand(c, vav[0], "0", b);
-  else emit_int_expr(c, vav[0], b);
+  int ck = emit_int_index_raw(c, vav[0], b);
   buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ", tk, hn, hd, tk);
-  if (nilr) {
+  if (nilr || ck) {
     buf_puts(b, "({ ");
-    emit_nil_cold_test(c, v, vr, b);
+    if (nilr) emit_nil_cold_test(c, v, vr, b);
     if (ck) buf_printf(b, " SP_INT_NIL_ARG_CK(_t%d);", tk);
     buf_puts(b, " ");
   }
@@ -2105,7 +2103,7 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const cha
     emit_expr(c, vr, b);
     buf_printf(b, ", _t%d, \"%s\")", tk, op);
   }
-  buf_printf(b, "%s; })", nilr ? "; })" : "");
+  buf_printf(b, "%s; })", nilr || ck ? "; })" : "");
   return 1;
 }
 
@@ -15038,7 +15036,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt == et && comp_ntype(c, argv[0]) == TY_INT &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
-      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "{ sp_int _t%d = ", tk);
+      int ck = emit_int_index_raw(c, argv[0], b);
       buf_printf(b, "; %s _t%d = ", c_type_name(et), tv); emit_expr(c, argv[1], b);
       buf_printf(b, "; if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) ", hw, tk, hl);
       if (*nsfx) {
@@ -15050,9 +15049,11 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         buf_puts(b, "); }");
       }
       else buf_printf(b, "%s[_t%d] = _t%d;", hd, tk, tv);
-      buf_printf(b, " else sp_%sArray_set%s(", k, nsfx);
+      buf_puts(b, " else ");
+      if (ck) buf_printf(b, "{ SP_INT_NIL_ARG_CK(_t%d); ", tk);
+      buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      buf_printf(b, ", _t%d, _t%d)%s;%s }\n", tk, tv, hc_mark(), ck ? " }" : "");
       return 1;
     }
     buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
