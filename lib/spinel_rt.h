@@ -8973,6 +8973,30 @@ static void sp_PolyPolyHash_update(sp_PolyPolyHash *a, sp_PolyPolyHash *b) {
   }
 }
 static void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
+/* Marshal's read of a boxed Hash's default value, nil for none, with
+   *has_proc set where a default proc stands in for it (CRuby refuses to
+   dump one), and the loader's write of the one a `}` record carries. */
+static SP_UNUSED sp_RbVal sp_marv_hash_default(sp_RbVal h, int *has_proc) {
+  *has_proc = 0;
+  if (h.tag != SP_TAG_OBJ || !h.v.p) return sp_box_nil();
+  switch (h.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: return sp_box_int_or_nil(((sp_StrIntHash *)h.v.p)->default_v);
+    case SP_BUILTIN_STR_STR_HASH: return sp_box_nullable_str(((sp_StrStrHash *)h.v.p)->default_v);
+    case SP_BUILTIN_INT_STR_HASH: return sp_box_nullable_str(((sp_IntStrHash *)h.v.p)->default_v);
+    case SP_BUILTIN_INT_INT_HASH: return sp_box_int_or_nil(((sp_IntIntHash *)h.v.p)->default_v);
+    case SP_BUILTIN_STR_POLY_HASH:
+      *has_proc = ((sp_StrPolyHash *)h.v.p)->dproc != NULL; return ((sp_StrPolyHash *)h.v.p)->default_v;
+    case SP_BUILTIN_SYM_POLY_HASH:
+      *has_proc = ((sp_SymPolyHash *)h.v.p)->dproc != NULL; return ((sp_SymPolyHash *)h.v.p)->default_v;
+    case SP_BUILTIN_POLY_POLY_HASH:
+      *has_proc = ((sp_PolyPolyHash *)h.v.p)->dproc != NULL; return ((sp_PolyPolyHash *)h.v.p)->default_v;
+    default: return sp_box_nil();
+  }
+}
+static SP_UNUSED void sp_marv_hash_set_default(sp_RbVal h, sp_RbVal d) {
+  sp_gc_wb(h.v.p);
+  ((sp_PolyPolyHash *)h.v.p)->default_v = d;
+}
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
@@ -14716,15 +14740,40 @@ static sp_RbVal sp_poly_hash_replace(sp_RbVal recv, sp_RbVal src, int keep_defau
   return recv;
 }
 static sp_RbVal sp_poly_replace_any(sp_RbVal recv, sp_RbVal src) {
+  /* Only a String, an Array and a Hash have replace: anything else (an
+     Integer, nil, a Range, an object whose class does not define it) is
+     CRuby's NoMethodError, where the fallback below answered the receiver
+     unchanged. A String's or an Array's source of another kind is the
+     TypeError of its implicit conversion; the Array fallback ignored it. */
+  int r_str = recv.tag == SP_TAG_STR || sp_poly_is_strbuf(recv);
+  int r_arr = recv.tag == SP_TAG_OBJ && recv.v.p && sp_poly_is_array_kind(recv.cls_id);
+  if (!r_str && !r_arr && !(recv.tag == SP_TAG_OBJ && recv.v.p && sp_poly_is_hash_kind(recv.cls_id))) {
+    sp_raise_nomethod(sp_nomethod_msg_args("replace", recv, 1, &src));
+    return recv;
+  }
+  /* the receiver is checked before its source is converted, as CRuby's
+     replace checks it (str_modifiable, rb_ary_modify_check) before
+     StringValue / to_ary run */
+  if ((r_str || r_arr) && sp_poly_frozen(recv))
+    sp_raise_frozen_obj(recv, r_str ? "can't modify frozen String" : "can't modify frozen Array");
+  /* a String's source converts through #to_str (StringValue) */
+  if (r_str && src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src)) {
+    const char *cs = sp_poly_check_str(src);
+    if (!cs)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_convert_src_name(src)));
+    src = sp_box_str(cs);
+  }
+  if (r_arr) {
+    src = sp_poly_ary_operand(src);
+    if (!(src.tag == SP_TAG_OBJ && src.v.p && sp_poly_is_array_kind(src.cls_id)))
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Array", sp_convert_src_name(src)));
+  }
   if (recv.tag == SP_TAG_OBJ && recv.v.p && sp_poly_is_hash_kind(recv.cls_id)) return sp_poly_hash_replace(recv, src, 0);
   /* String#replace on a plain string box: a fresh mutable copy of the
      source, which the receiver takes back (the typed replace builds the
-     same, sp_str_from_bytes). A frozen receiver raises first; a source that
-     is no String is CRuby's TypeError. It answered the box untouched. */
+     same, sp_str_from_bytes); the receiver and the source were checked
+     above. It answered the box untouched. */
   if (recv.tag == SP_TAG_STR) {
-    sp_str_check_mutable(recv.v.s);
-    if (src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src))
-      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(src)));
     const char *s2 = src.tag == SP_TAG_STR ? (src.v.s ? src.v.s : sp_str_empty) : sp_String_cstr((sp_String *)src.v.p);
     return sp_box_str(sp_str_from_bytes(s2, sp_str_byte_len(s2)));
   }

@@ -78,8 +78,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        to a Bignum first (#2863). */
     if (rt == TY_BIGINT) {
       int tv = ++g_tmp;
+      /* the receiver is held across the bounds' evaluation, which can
+         allocate (#4049) */
       buf_printf(b, "({ sp_Bigint *_t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bigint_cmp(_t%d, ", tv);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bigint_cmp(_t%d, ", tv, tv);
       if (repr_of(c, argv[0]).big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
@@ -1007,14 +1009,29 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
         TyKind ictp = icp ? icp->type : TY_UNKNOWN;
         int to = ++g_tmp, td = ++g_tmp;
+        /* A receiver that may be nil is NULL then, and nil's dup and clone
+           answer nil itself: the struct copy read through NULL (SIGSEGV).
+           clone(freeze: false) is CRuby's ArgumentError for nil, which
+           cannot be unfrozen. The copy and its hook run only for an
+           object. */
+        int nil_arm = drr.may_nil && !drr.nil_tested;
         buf_printf(b, "({ sp_%s *_t%d = ", cn, to);
         if (dup_desingleton) buf_printf(b, "(sp_%s *)", cn);
         emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s);"
-                      " *_t%d = *_t%d; SP_GC_ROOT(_t%d); ",
-                   to, cn, td, cn,
-                   class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
-                   class_needs_scan(dci) ? "__gc_scan" : "", td, to, td);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", to);
+        if (nil_arm) {
+          buf_printf(b, "sp_%s *_t%d = NULL; SP_GC_ROOT(_t%d); ", cn, td, td);
+          if (freeze_mode == 0)
+            buf_printf(b, "if (SP_UNLIKELY(_t%d == NULL)) sp_raise_cls(\"ArgumentError\", \"can't unfreeze NilClass\"); ", to);
+          buf_printf(b, "if (SP_LIKELY(_t%d != NULL)) { _t%d = SP_POOL_NEW(%s, %s%s%s); *_t%d = *_t%d; ", to,
+                     td, cn, class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
+                     class_needs_scan(dci) ? "__gc_scan" : "", td, to);
+        }
+        else
+          buf_printf(b, "sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s); *_t%d = *_t%d; SP_GC_ROOT(_t%d); ",
+                     cn, td, cn,
+                     class_needs_scan(dci) ? "sp_" : "", class_needs_scan(dci) ? cn : "NULL",
+                     class_needs_scan(dci) ? "__gc_scan" : "", td, to, td);
         /* The struct copy carries the ORIGINAL's cls_id, which for a singleton
            receiver is the synthesized subclass: the copy then answered that
            class's methods at run time, while `respond_to?` -- reading the
@@ -1047,6 +1064,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           if (freeze_mode == 1) buf_printf(b, "sp_gc_freeze(_t%d); ", td);
           else if (freeze_mode < 0) buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_gc_freeze(_t%d); ", to, td);
         }
+        if (nil_arm) buf_puts(b, "} ");
         buf_printf(b, "_t%d; })", td);
         return 1;
       }

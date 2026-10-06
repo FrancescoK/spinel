@@ -12040,6 +12040,7 @@ static int eq_class_has_own_eq(Compiler *c, int cid) {
    temp, and the dispatch reads the argument through its binding. An
    operand that cannot be the same object (a scalar, a value object) is
    compared as before. */
+static int operand_local_rebound_by(Compiler *c, int x, int after);
 static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid, int eq, Buf *b) {
   TyKind rt = comp_ntype(c, recv), at = comp_ntype(c, arg);
   int args = nt_ref(c->nt, id, "arguments");
@@ -12052,6 +12053,25 @@ static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid
     buf_printf(b, " %s 0)", eq ? "==" : "!=");
     free(selfb.p);
     return;
+  }
+  /* The argument is evaluated below, ahead of the comparison, so one that
+     can reassign a receiver read in place (`@a == (@a = b)`) handed the
+     identity test and `<=>` the new object. Ruby compares the object the
+     receiver held before its argument ran: such a receiver is read into a
+     rooted temp first. */
+  NodeKind rk = nt_kind(c->nt, recv);
+  int rt0 = -1;
+  if (((rk == NK_InstanceVariableReadNode && subtree_may_reassign_state(c, arg)) ||
+       (rk == NK_LocalVariableReadNode && operand_local_rebound_by(c, recv, arg))) &&
+      sscanf(selfb.p, "_t%d", &rt0) != 1) {
+    int ts = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", ts, selfb.p);
+    emit_pre_root(c, rt, ts);
+    free(selfb.p);
+    memset(&selfb, 0, sizeof selfb);
+    buf_printf(&selfb, "_t%d", ts);
   }
   /* emit_cmp_self reads a local, an ivar or self in place; anything else it
      evaluates into a fresh `_tN`, which the dispatch then reads */
@@ -20819,6 +20839,18 @@ void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
 void emit_call(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);
+  /* A builtin_only call on a boxed receiver (a prepended Array method's
+     `super`, self boxed): the builtin's arm alone, as a poly dispatch's
+     builtin arm re-enters the call -- the program's method of that name
+     would take it back to the caller. */
+  { int br = nt_ref(c->nt, id, "receiver");
+    if (br >= 0 && nt_int(c->nt, id, "builtin_only", 0) && !g_poly_builtin_arm &&
+        comp_ntype(c, br) == TY_POLY) {
+      int va = view_push_arm(id, g_prbd_skip, 1);
+      emit_call(c, id, b);
+      view_pop(c, va);
+      return;
+    } }
   /* A call on a receiver that never hands back a value (a method whose
      every path raises): Ruby evaluates the receiver first, it raises, and
      neither the arguments nor the method run. Evaluate it for effect and

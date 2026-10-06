@@ -2050,7 +2050,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     buf_printf(b, "(cvar_%s_%s = ", c->classes[cid].name, nm + 2);
     /* --share-strings: a class variable holding the shared handle; the
        value is its read */
-    if (idx >= 0 && ct == TY_STRBUF && c->classes[cid].cvar_str_shared[idx]) {
+    if (idx >= 0 && repr_of_cvar(c, cid, idx).share) {
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
       slot.type = TY_STRBUF;

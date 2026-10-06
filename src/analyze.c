@@ -14730,7 +14730,7 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
       g = k > 0 ? st[k - 1] : -1;
     }
-    if (g >= 0 && repr_handle_static(c, g)) return 1; }
+    if (g >= 0 && repr_static_share(c, g)) return 1; }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
@@ -16366,7 +16366,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       }
       if (!repr_str_shares(c, h)) continue;
       if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;   /* a box holds the handle */
-      if (lv->type == TY_STRBUF && lv->str_shared && !lv->byref_out) continue;
+      if (repr_of_slot(c, lv).share && !lv->byref_out) continue;
       if (lv->is_param && !lv->is_block_param) {
         if (lv->rbs_seeded) continue;
         if (lv->byref_out) { lv->byref_out = 0; lv->is_cell = 0; }
@@ -16401,7 +16401,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         ClassInfo *ci = &c->classes[k];
         int i = sh->name ? comp_cvar_index(ci, sh->name) : -1;
         if (i < 0 || (ci->cvar_types[i] != TY_STRING && ci->cvar_types[i] != TY_STRBUF)) continue;
-        if (ci->cvar_types[i] == TY_STRBUF && ci->cvar_str_shared[i]) continue;
+        if (repr_of_cvar(c, k, i).share) continue;
         ci->cvar_types[i] = TY_STRBUF;
         ci->cvar_str_shared[i] = 1;
         changed = 1;
@@ -16413,7 +16413,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
                                            : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
       if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;   /* a box holds the handle */
-      if (gv->type == TY_STRBUF && gv->str_shared) continue;
+      if (repr_of_slot(c, gv).share) continue;
       gv->type = TY_STRBUF;
       gv->str_shared = 1;
       changed = 1;
@@ -19645,8 +19645,8 @@ static int convert_byref_handle_params(Compiler *c,
         /* a global holding the handle (--share-strings) hands it over as an
            ivar's read does */
         else if (repr_static_read_kind(nt_kind(nt, an2)) &&
-                 repr_handle_static(c, an2) &&
-                 (pp->type == TY_POLY || (pp->type == TY_STRBUF && pp->str_shared)) && !c->strbuf_box[an2]) {
+                 repr_static_share(c, an2) &&
+                 (pp->type == TY_POLY || repr_of_slot(c, pp).share) && !c->strbuf_box[an2]) {
           c->strbuf_box[an2] = 1;
           comp_sn_retype(c, an2, TY_STRBUF);
           changed = 1;
@@ -21391,7 +21391,7 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
   int changed = 0;
   /* --share-strings: a block's parameter the rule made the handle hands it
      over as a handle local does: only the read is left to mark */
-  if (c->share_strings && lv->is_block_param && lv->type == TY_STRBUF && lv->str_shared) {
+  if (lv->is_block_param && repr_of_slot(c, lv).share) {
     if (!mark_read || c->strbuf_box[a]) return 0;
     c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF);
     return 1;
@@ -22752,12 +22752,12 @@ static int promote_dyncall_string_args(Compiler *c) {
         const char *bp = block_param_name(c, blk, k);
         LocalVar *pv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
         if (!pv || (!repr_of_slot(c, pv).handle && pv->type != TY_POLY) || c->strbuf_box[av[k]]) continue;
-        int handle = repr_handle_static(c, av[k]);
+        int handle = repr_static_share(c, av[k]);
         if (!handle && nt_kind(nt, av[k]) == NK_InstanceVariableReadNode) {
           const char *ivn = nt_str(nt, av[k], "name");
           int cid = ivn ? an_ivar_owner(c, av[k]) : -1;
           int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], ivn) : -1;
-          handle = iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+          handle = iv >= 0 && repr_of_ivar(c, cid, iv).share;
         }
         if (!handle) continue;
         c->strbuf_box[av[k]] = 1;
@@ -24720,16 +24720,26 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
   return 0;
 }
 
+/* A method's own answer can be the sentinel in an Integer or Float slot: its
+   value is nil (`def m = nil`), or its scalar return can be the sentinel. */
+static int method_answers_nil(const Scope *m) {
+  return m->ret == TY_NIL || m->ret_nullable_int;
+}
+
 /* A scalar slot on a class the fixpoint could not pin to a receiver still
    dispatches at runtime: codegen emits a cls_id switch over every class that
    defines the name. Ask whether ANY of those targets can answer the sentinel.
    Over-marking here only costs the boxing branch; missing one is the
    silent-wrong hash key of #3505, so the conservative direction is `yes`. */
-static int poly_dispatch_nullable(Compiler *c, const char *cn) {
+static int poly_dispatch_nullable(Compiler *c, int v, const char *cn) {
   if (!cn) return 0;
+  /* a target whose value is nil rides in the call's scalar slot as the
+     sentinel too, when the call is typed Integer or Float (or nil) */
+  TyKind vt = infer_type(c, v);
+  int nil_rides = vt == TY_INT || vt == TY_FLOAT || vt == TY_NIL;
   for (int si = 1; si < c->nscopes; si++)
     if (c->scopes[si].name && sp_streq(c->scopes[si].name, cn) &&
-        c->scopes[si].ret_nullable_int) return 1;
+        (nil_rides ? method_answers_nil(&c->scopes[si]) : c->scopes[si].ret_nullable_int)) return 1;
   /* an attr_reader over a scalar ivar: those slots are sentinel-defaulted
      (ivar_scalar_nil_init), so the read carries the sentinel like a `return
      nil` would -- the resolved-receiver twin of this lives in codegen's
@@ -24741,6 +24751,27 @@ static int poly_dispatch_nullable(Compiler *c, const char *cn) {
     int iv = comp_ivar_index(&c->classes[ci], ivb);
     if (iv >= 0 && (c->classes[ci].ivar_types[iv] == TY_INT ||
                     c->classes[ci].ivar_types[iv] == TY_FLOAT)) return 1;
+  }
+  return 0;
+}
+
+/* A call on class `cid` dispatches over the method `name` resolves to there
+   and every descendant's override, which is how inference typed it
+   (dispatch_ret_over): a nil-answering target among them rides in the call's
+   scalar slot as the sentinel. Only the method the name resolved to was
+   asked, and only for a scalar return, so a nil method beside an Integer one
+   (`def nop = nil` in C, `def nop = 7` in D, or `c ? z : 1` over `def z =
+   nil`) left the value unmarked, and nil's own methods (`to_a`, `to_h`,
+   `=~`) raised Integer's NoMethodError. */
+static int dispatch_answers_nil(Compiler *c, int cid, const char *name, int cmeth) {
+  if (cid < 0 || !name) return 0;
+  int mi = cmeth ? comp_cmethod_in_chain(c, cid, name, NULL) : comp_method_in_chain(c, cid, name, NULL);
+  if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int kmi = cmeth ? comp_cmethod_in_chain(c, ds[i], name, NULL) : comp_method_in_chain(c, ds[i], name, NULL);
+    if (kmi >= 0 && kmi != mi && method_answers_nil(&c->scopes[kmi])) return 1;
   }
   return 0;
 }
@@ -26891,10 +26922,26 @@ int nullable_int_value(Compiler *c, int v) {
         }
         /* the receiver stayed poly, so no single callee resolves -- fall back
            to the runtime dispatch set */
-        else if (rt == TY_POLY) return poly_dispatch_nullable(c, cn);
+        else if (rt == TY_POLY) return poly_dispatch_nullable(c, v, cn);
       }
     }
-    return mi >= 0 && c->scopes[mi].ret_nullable_int;
+    if (mi >= 0 && c->scopes[mi].ret_nullable_int) return 1;
+    /* the methods the call dispatches over, by the receiver's class: self's
+       for a receiverless call, an object's, or a class constant's class
+       methods */
+    TyKind vt = infer_type(c, v);
+    if (vt != TY_INT && vt != TY_FLOAT && vt != TY_NIL) return 0;
+    if (rcv < 0) {
+      if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
+      Scope *ss = comp_scope_of(c, v);
+      return ss && ss->class_id >= 0 &&
+             dispatch_answers_nil(c, ss->class_id, cn, ss->is_cmethod && mi >= 0 && c->scopes[mi].is_cmethod);
+    }
+    TyKind rt = infer_type(c, rcv);
+    if (ty_is_object(rt)) return dispatch_answers_nil(c, ty_object_class(rt), cn, 0);
+    if (nt_kind(nt, rcv) == NK_ConstantReadNode)
+      return dispatch_answers_nil(c, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
+    return 0;
   }
   if (nt_kind(nt, v) == NK_LocalVariableReadNode) {
     const char *rn = nt_str(nt, v, "name");
@@ -29910,6 +29957,85 @@ static int super_reach(Compiler *c, Scope *s) {
                        : comp_method_in_chain(c, p, s->name, NULL);
 }
 
+/* `super` from a method a module prepended into a builtin class put in front
+   of the builtin's own (`class Range; prepend RangeWithFormat; end`, whose
+   to_s calls super): with no program method above it, it is the builtin's
+   method on self. Spelled as that call -- self as the receiver, the
+   method's own name, marked builtin_only so the prepended copy does not
+   take it again -- the way rewrite_builtin_alias_self_calls spells an
+   alias of a builtin. A bare `super` passes the method's parameters on;
+   one with keyword parameters is left alone. Only a prepend's copy: a
+   reopening's own def replaces the builtin's, and its super goes past it. */
+static int rpbs_param_args(Compiler *c, Scope *s, int sup) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int *ids = (int *)malloc(sizeof(int) * (size_t)(s->nparams > 0 ? s->nparams : 1));
+  if (!ids) return -1;
+  int n = 0;
+  for (int j = 0; j < s->nparams; j++) {
+    if (j == s->kwrest_idx || !s->pnames || !s->pnames[j]) { free(ids); return -1; }
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    if (rd < 0) { free(ids); return -1; }
+    nt_node_set_str(nt, rd, "name", s->pnames[j]);
+    int arg = rd;
+    if (j == s->rest_idx) {
+      arg = nt_new_node(nt, "SplatNode");
+      if (arg < 0) { free(ids); return -1; }
+      nt_node_set_ref(nt, arg, "expression", rd);
+    }
+    ids[n++] = arg;
+  }
+  int an = nt_new_node(nt, "ArgumentsNode");
+  if (an >= 0) nt_node_set_arr(nt, an, "arguments", ids, n);
+  free(ids);
+  comp_grow_node_arrays(c);
+  (void)sup;
+  return an;
+}
+static void rewrite_prepended_builtin_supers(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_SuperNode && k != NK_ForwardingSuperNode) continue;
+    int si = c->nscope[id];
+    if (si < 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    if (!s->is_prepend_copy || s->is_cmethod || !s->name || s->class_id < 0) continue;
+    const char *cn = c->classes[s->class_id].name;
+    if (!cn || !is_builtin_reopen_name(cn) || sp_streq(cn, "Object") || sp_streq(cn, "Toplevel")) continue;
+    if (super_reach(c, s) >= 0) continue;
+    int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
+    if (k == NK_ForwardingSuperNode) {
+      int kw = 0;
+      for (int j = 0; j < s->nparams && !kw; j++)
+        kw = s->pnames && s->pnames[j] && callee_param_is_declared_kwarg(c, s, s->pnames[j]);
+      if (kw) continue;
+      args = rpbs_param_args(c, s, id);
+      if (args < 0) continue;
+    }
+    char *mname = strdup(s->name);
+    int self = nt_new_node(nt, "SelfNode");
+    comp_grow_node_arrays(c);
+    c->nscope[self] = si;
+    if (args >= 0) {
+      /* the parameter reads are this scope's */
+      int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+      for (int q = 0; q < an; q++) {
+        c->nscope[av[q]] = si;
+        int ex = nt_kind(nt, av[q]) == NK_SplatNode ? nt_ref(nt, av[q], "expression") : -1;
+        if (ex >= 0) c->nscope[ex] = si;
+      }
+      c->nscope[args] = si;
+    }
+    nt_node_set_type(nt, id, "CallNode");
+    nt_node_set_ref(nt, id, "receiver", self);
+    nt_node_set_ref(nt, id, "arguments", args);
+    nt_node_set_str(nt, id, "name", mname);
+    nt_node_set_int(nt, id, "builtin_only", 1);
+    free(mname);
+  }
+}
+
 /* A receiverless call, in a reopened primitive, of an alias that captured
    the builtin method (`def plus_with(o) = plus_without(o)` after
    `alias_method :plus_without, :+`): it is the builtin's call on self.
@@ -30686,6 +30812,7 @@ static void an_phase_class_structure(Compiler *c) {
   register_include_attrs(c);
   register_extends(c);
   register_prepends(c);
+  rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
@@ -31472,7 +31599,10 @@ static void an_phase_infer_fixpoint(Compiler *c) {
        (needs the receiver kind, so it runs inside the fixpoint). */
     if (desugar_enumerable_via_to_a(c)) ch |= infer_write_types(c);
     narrow_locals_from_arrays(c);
-    ch |= infer_param_types(c);
+    /* the binding settles a forwarding chain within the round
+       (infer_param_types_settle); the re-runs after the fixpoint, which
+       reset slots on purpose, bind once as before */
+    ch |= infer_param_types_settle(c);
     reassert_rbs_param_seeds(c);   /* a seed outranks a narrowing derived from one call site */
     ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
     ch |= infer_param_hash_value(c);

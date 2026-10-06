@@ -10226,24 +10226,31 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
-    int tracked = 0;
-    for (int j = 0; j < ci->nivars; j++) tracked += ivar_set_kind(c, i, ci->ivars[j]) == 3;
-    if (tracked) {
-      buf_printf(b, "      sp_mar_long(b, %d", ci->nivars - tracked);
-      for (int j = 0; j < ci->nivars; j++)
-        if (ivar_set_kind(c, i, ci->ivars[j]) == 3)
-          buf_printf(b, " + !!o->_sp_set_%s", iv_c(ci->ivars[j] + 1));
-      buf_puts(b, ");\n");
-    }
-    else buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
+    /* an ivar nothing has set yet is not written, as CRuby leaves it out
+       (ivar_set_test, the presence inspect and instance_variables read) */
+    /* ivar_set_test only formats the test, so each pass asks it again:
+       no table bounded by the class's ivar count */
+    char tb[256];
+    int fixed = 0;
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
-      if (present) buf_printf(b, "      if (o->_sp_set_%s) {\n", iv_c(ci->ivars[j] + 1));
+      if (!ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb)) fixed++;
+    }
+    buf_printf(b, "      sp_mar_long(b, %d", fixed);
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      if (set) buf_printf(b, " + !!%s", set);
+    }
+    buf_puts(b, ");\n");
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      if (set) buf_printf(b, "      if %s {\n", set);
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
-      if (present) buf_puts(b, "      }\n");
+      if (set) buf_puts(b, "      }\n");
     }
     buf_puts(b, "      return 1;\n    }\n");
   }
@@ -12401,6 +12408,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
       "  sp_marshal_v.arr_push = sp_marv_arr_push;\n"
       "  sp_marshal_v.hash_new = sp_marv_hash_new;\n"
       "  sp_marshal_v.hash_set = sp_marv_hash_set;\n"
+      "  sp_marshal_v.hash_default = sp_marv_hash_default;\n"
+      "  sp_marshal_v.hash_set_default = sp_marv_hash_set_default;\n"
       "  sp_marshal_v.box_complex = sp_marv_box_complex;\n"
       "  sp_marshal_v.box_rational = sp_marv_box_rational;\n"
       "  sp_marshal_v.obj_dump = sp_marshal_obj_dump;\n"

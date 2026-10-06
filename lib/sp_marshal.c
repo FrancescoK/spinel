@@ -10,6 +10,7 @@
 #include "sp_alloc.h"     /* sp_str_alloc_raw, sp_str_set_len, sp_str_byte_len, sp_float_to_s */
 #include "sp_dtoa.h"      /* sp_format_float / sp_read_float (locale-independent) */
 #include <string.h>
+#include <setjmp.h>
 #include <math.h>
 
 /* Bignum codec lives in lib/sp_bigint.c. */
@@ -94,14 +95,22 @@ static int sp_mar_seen(sp_mar_buf *b, void *ptr) {
   }
   return 0;
 }
+/* A Hash: `{` and its pairs, or, with a default value, `}`, the pairs and
+   the default after them, as CRuby writes it; a default proc cannot be
+   written (CRuby's TypeError). */
 static void sp_mar_w_hash(sp_mar_buf *b, sp_RbVal v) {
-  sp_mar_b(b, '{');
+  int has_proc = 0;
+  sp_RbVal d = sp_marshal_v.hash_default ? sp_marshal_v.hash_default(v, &has_proc) : mk_nil();
+  if (has_proc) mar_raise("TypeError", "can't dump hash with default proc");
+  SP_GC_ROOT_RBVAL(d);
+  sp_mar_b(b, d.tag == SP_TAG_NIL ? '{' : '}');
   sp_int n = sp_json_len_fn(v);
   sp_mar_long(b, n);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, val; sp_json_hpair_fn(v, i, &k, &val);
     sp_mar_w(b, k); sp_mar_w(b, val);
   }
+  if (d.tag != SP_TAG_NIL) sp_mar_w(b, d);
 }
 void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
   switch (v.tag) {
@@ -344,30 +353,63 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
       for (long i = 0; i < n; i++) sp_marshal_v.arr_push(box, sp_mar_r(r));
       return box;
     }
-    case '{': {
+    case '{': case '}': {   /* `}`: the pairs, then the default value */
       int id = sp_mar_reg(r);
       long n = sp_mar_rlong(r);
       sp_RbVal box = sp_marshal_v.hash_new(); SP_GC_ROOT_RBVAL(box);
       r->objs[id] = box;
       for (long i = 0; i < n; i++) { sp_RbVal k = sp_mar_r(r); sp_RbVal val = sp_mar_r(r); sp_marshal_v.hash_set(box, k, val); }
+      if (t == '}') {
+        sp_RbVal d = sp_mar_r(r);
+        if (sp_marshal_v.hash_set_default) sp_marshal_v.hash_set_default(box, d);
+      }
       return box;
     }
     default: mar_raise("ArgumentError", "unsupported type in Marshal.load"); return mk_nil();
   }
 }
+/* The exception hooks the generated unit defines (lib/spinel_rt.h). */
+void sp_exc_arm(jmp_buf b);
+void sp_exc_disarm(void);
+const char *sp_exc_cur_cls(void);
+const char *sp_exc_cur_msg(void);
+void *sp_exc_cur_obj(void);
+void sp_fiber_reraise(const char *cls, const char *msg, void *obj);
+/* A reader leaves the active chain and frees its tables. */
+static void sp_mar_rd_done(sp_mar_rd *r) {
+  sp_mar_active = r->prev;
+  for (int i = 0; i < r->nsym; i++) free(r->syms[i]);
+  free(r->syms); free(r->objs); free(r);
+}
 sp_RbVal sp_marshal_load(const char *s, sp_int len) {
   /* The whole parse reads out of this buffer, and every object it builds
      allocates -- so the source string has to stay rooted for the duration.
-     r.s is a plain field, not a root slot; the collector walks registered
+     r->s is a plain field, not a root slot; the collector walks registered
      slots, so the parameter is what has to be registered. */
   SP_GC_ROOT_STR(s);
-  sp_mar_rd r; memset(&r, 0, sizeof r);
-  r.s = s ? s : ""; r.len = s ? (size_t)len : 0;
-  r.prev = sp_mar_active; sp_mar_active = &r;
-  if (r.len >= 2) r.pos = 2;  /* skip the 4.8 version header */
-  sp_RbVal v = sp_mar_r(&r);
-  sp_mar_active = r.prev;
-  for (int i = 0; i < r.nsym; i++) free(r.syms[i]);
-  free(r.syms); free(r.objs);
-  return v;
+  sp_mar_rd *r = (sp_mar_rd *)calloc(1, sizeof *r);
+  r->s = s ? s : ""; r->len = s ? (size_t)len : 0;
+  r->prev = sp_mar_active; sp_mar_active = r;
+  if (r->len >= 2) r->pos = 2;  /* skip the 4.8 version header */
+  /* A raise inside the parse (an unknown class, a format error, a value a
+     loader cannot convert) longjmps past the return below, and the reader
+     stayed on the active chain: the next collection walked its freed
+     frame. It is caught here, the reader taken off the chain, and raised
+     on to the program's own handler. */
+  int nroots = sp_gc_nroots;
+  jmp_buf jb;
+  if (setjmp(jb) == 0) {
+    sp_exc_arm(jb);
+    sp_RbVal v = sp_mar_r(r);
+    sp_exc_disarm();
+    sp_mar_rd_done(r);
+    return v;
+  }
+  const char *cls = sp_exc_cur_cls(), *msg = sp_exc_cur_msg();
+  void *obj = sp_exc_cur_obj();
+  sp_exc_disarm();
+  sp_gc_nroots = nroots;   /* the parse's own roots unwound with it */
+  sp_mar_rd_done(r);
+  sp_fiber_reraise(cls, msg, obj);
+  return mk_nil();
 }

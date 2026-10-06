@@ -8954,6 +8954,16 @@ void emit_synth_line_marker(Buf *b) {
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (g_repr_check) repr_check_ask(c, id);
   emit_line_directive(c, id, b);
+  /* A constant's visibility is not enforced (constants are resolved at
+     compile time), so the class body skips these declarations -- also where
+     one stands inside a conditional or a block of the body, which reaches
+     here rather than the body's own skip (tzinfo's string_deduper.rb) */
+  if (g_class_body_id >= 0 && nt_kind(c->nt, id) == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0) {
+    const char *dn = nt_str(c->nt, id, "name");
+    if (dn && (sp_streq(dn, "private_constant") || sp_streq(dn, "public_constant") ||
+               sp_streq(dn, "deprecate_constant")))
+      return;
+  }
   /* saved and restored like the other re-entry markers: a block body inlined
      at two sites shares its node ids, so a setter that is a statement at one
      site must still yield its value at a value-position site */
@@ -11589,7 +11599,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
     /* --share-strings: a class variable holding the shared handle takes an
        alias's handle or a fresh one, as a handle local's write does */
-    if (idx >= 0 && ct == TY_STRBUF && c->classes[sc].cvar_str_shared[idx]) {
+    if (idx >= 0 && repr_of_cvar(c, sc, idx).share) {
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
       slot.type = TY_STRBUF;
@@ -11659,7 +11669,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     emit_indent(b, indent);
     /* --share-strings: a class variable holding the shared handle, as a
        global's slot (#6765) */
-    if (ot == TY_STRBUF && c->classes[sc].cvar_str_shared[oidx]) {
+    if (oidx >= 0 && repr_of_cvar(c, sc, oidx).share) {
       emit_strbuf_orw_guard(c, ref, v, is_or, b);
       buf_puts(b, " ");
       emit_cvar_set_flag(c, sc, nm, 0, b);

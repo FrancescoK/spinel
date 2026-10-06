@@ -92,6 +92,7 @@ int is_bounded_int_step(const char *n); /* downto upto */
 int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
 int is_match_p_name(const char *n);   /* match? */
+int is_record_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define */
 int is_string_index(const char *n); /* index rindex */
 int is_modulo_alias(const char *n); /* % modulo */
 int is_append_concat(const char *n); /* << concat */
@@ -126,6 +127,8 @@ int is_succ_alias(const char *n); /* next succ */
 int is_path_reader(const char *n); /* path to_path */
 int is_io_position(const char *n); /* pos tell */
 int is_sort_family(const char *n); /* sort sort! */
+int is_hash_transform(const char *n); /* transform_values transform_keys */
+int is_fallback_block_call(const char *n); /* fetch delete fetch_values: the block is the fallback */
 int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */
 int is_match_operator(const char *n); /* !~ =~ */

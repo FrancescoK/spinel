@@ -287,6 +287,9 @@ typedef struct {
   int is_include_copy;        /* this scope IS such a copy: a later include of a
                                  module defining the same name replaces it, and
                                  the replacement's super chains to it (#3731) */
+  int is_prepend_copy;        /* the instance method a `prepend` copied in, in
+                                 front of the class's own (its super reaches
+                                 that one -- the builtin's, for a builtin) */
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
