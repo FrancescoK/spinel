@@ -472,6 +472,26 @@ static int cplan_argc(const NodeTable *nt, int id) {
    receiver chain is the one to report (diagnose_unsupported_call), and 1
    when the node itself settles it. The message may be a static buffer the
    next call reuses. #2652 / #2667 / #2668 */
+/* `s.method(:<<)`, `s.method(:upcase!)`: a Method bound to a String's in-place
+   mutator. The synthesized wrapper (`def __bam_N(__bam_r, ...) =
+   __bam_r << ...`) appends to its receiver parameter, which is the shared
+   handle, while the Method is bound to the String's plain value: a call
+   read the value as the handle and crashed, and with the handle it would
+   change a copy. The mutators are an_str_mutator_name's: the builtin rows'
+   (bop_name_mutates) and the bang methods. */
+static int cplan_str_method_mutator(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !is_method_obj_call(c, id)) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  /* the `__bam_` wrapper a `.method(:sym)` was retargeted at names its builtin */
+  int mi = method_obj_target_mi(c, id);
+  int dn = mi >= 0 ? c->scopes[mi].def_node : -1;
+  const char *sym = dn >= 0 ? nt_str(nt, dn, "bam_sym") : NULL;
+  return sym && an_str_mutator_name(sym);
+}
+
 const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   *stop = 1;
   const NodeTable *nt = c->nt;
@@ -556,6 +576,12 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
   const char *why = hit >= 0 ? tbl[hit].why : NULL;
+  if (!why && cplan_str_method_mutator(c, id))
+    why = "String#method is not supported for a method that changes the String in place "
+          "(`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's "
+          "value, not to the String, so calling it could not change the String it came "
+          "from. Call the method on the String directly, or wrap it in a block "
+          "(`->(x) { s << x }`) (see docs/limitations.md)";
 
   if (!why && rcn && comp_class_index(c, rcn) < 0) {
     /* Namespaces that exist only in an interpreter. Keyed on the receiver, so
