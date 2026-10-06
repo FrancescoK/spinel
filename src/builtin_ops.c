@@ -637,7 +637,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_RATIONAL, "fdiv",        1,   1, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "(sp_rational_to_f($r) / sp_rational_to_f($e0))", BOP_K(TY_RATIONAL) },
   { TY_RATIONAL, "fdiv",        1,   1, BF_ANY, TY_FLOAT,      BOPE_TEMPLATE, "(sp_rational_to_f($r) / $f0)", BOP_K(TY_INT) | BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "fdiv",        0, 127, BF_ANY, TY_FLOAT,      BOPE_NONE },
-  { TY_RATIONAL, "div",         1,   1, BF_ANY, TY_INT,        BOPE_TEMPLATE, "((sp_int)floor(sp_rational_to_f($r) / ($e0)))", BOP_K(TY_FLOAT) },
+  { TY_RATIONAL, "div",         1,   1, BF_ANY, TY_INT,        BOPE_TEMPLATE, "sp_float_div_i(sp_rational_to_f($r), $e0)", BOP_K(TY_FLOAT) },
   { TY_RATIONAL, "div",         1,   1, BF_ANY, TY_INT,        BOPE_TEMPLATE, "sp_rational_idiv($r, $q0)", RAT_IR },
   { TY_RATIONAL, "div",         0, 127, BF_ANY, TY_INT,        BOPE_NONE },
   /* comparisons: against a Float by float value (coercing the Float to a
@@ -1551,7 +1551,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_FLOAT, "integer?",    0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), FALSE)" },
   { TY_FLOAT, "real?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_TEMPLATE, "((void)($r), TRUE)" },
   { TY_FLOAT, "nonzero?",    0, 127, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "(($r) != 0.0 ? sp_box_float($r) : sp_box_nil())" },  /* self or nil */
-  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "({ sp_float _t$t = ($r); sp_float _t$u = $f0; if (_t$u == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\"); if (isinf(_t$t)) sp_raise_cls(\"FloatDomainError\", _t$t > 0 ? \"Infinity\" : \"-Infinity\"); if (isnan(_t$t)) sp_raise_cls(\"FloatDomainError\", \"NaN\"); sp_float_fit_i(floor(_t$t / _t$u)); })" },
+  { TY_FLOAT, "div",         1,   1, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "sp_float_div_i($r, $f0)" },
   { TY_FLOAT, "abs2",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "(($r) * ($r))" },
   { TY_FLOAT, "real",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },
   { TY_FLOAT, "conj",        0, 127, BF_ANY,      TY_FLOAT,       BOPE_TEMPLATE, "($r)" },

@@ -143,6 +143,7 @@ int is_match_operator(const char *n); /* !~ =~ */
 int is_object_receiver_handoff(const char *n); /* to_enum enum_for instance_eval instance_exec method public_method */
 int is_div_or_mod(const char *n); /* % / */
 int is_div_or_modulo(const char *n); /* div modulo: the named floored quotient and remainder */
+int is_div_name(const char *n); /* div: the named floored quotient */
 int is_add_or_mul(const char *n); /* * + */
 int is_push_operator(const char *n); /* << push */
 int is_eq_or_eql(const char *n); /* == eql? */
