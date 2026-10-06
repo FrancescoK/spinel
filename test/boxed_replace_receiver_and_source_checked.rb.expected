@@ -38,3 +38,7 @@ NoMethodError: undefined method 'replace' for an instance of Plain [nil]
 TypeError: no implicit conversion of nil into Array
 TypeError: no implicit conversion of nil into Hash
 TypeError: no implicit conversion of nil into String
+FrozenError: can't modify frozen String: "ab"
+FrozenError: can't modify frozen String: "ab"
+FrozenError: can't modify frozen Array: [1, 2]
+"zz"
