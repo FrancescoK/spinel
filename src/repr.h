@@ -33,6 +33,12 @@ typedef struct {
                              the handle under a strbuf mark or demand) */
   TyKind narrowed;        /* a read narrowed past a nil guard: its non-nil
                              type, or TY_UNKNOWN */
+  TyKind elem;            /* an Array: the type its C container holds each
+                             element as (an IntArray's Integer, a PolyArray's
+                             box, an object array's class); else TY_UNKNOWN */
+  TyKind key, val;        /* a Hash: the types its C table holds the keys
+                             and the values as (a StrPolyHash's String and
+                             box); else TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
   unsigned may_nil:1;     /* the value can be nil in this representation;
                              for a user object, the nil fact (analyze_nil.c,
@@ -47,6 +53,7 @@ typedef struct {
                              sentinel */
   unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
                              nil (VR_NIL_TESTED, a view around the call) */
+  unsigned big:1;         /* an Integer held as an sp_Bigint * */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
@@ -67,6 +74,8 @@ typedef enum {
 Repr repr_of(const Compiler *c, int node);
 /* The representation of a local variable's slot. */
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv);
+/* Is r a Hash that holds its keys as `key` and its values as `val`? */
+int repr_hash_is(Repr r, TyKind key, TyKind val);
 /* Called once the analysis is final (the end of analyze_program): from here
    on the flags repr_of reads no longer change. */
 void repr_seal(Compiler *c);
