@@ -51,6 +51,13 @@ Dir.mktmpdir("poly-cold") do |dir|
   # 2. writable statics reachable from the exported functions
   o = File.join(dir, "a.o")
   run(env, *cc, "-O0", "-w", "-c", "-ffunction-sections", "-fdata-sections", *inc, src, "-o", o)
+  # The walk reads ELF relocation sections (readelf -rW, .rela.text.<function>). A Mach-O
+  # object (macOS) has neither: its functions are atoms of one __text section. Check 2 is
+  # skipped there and says so; Linux (CI and the gate on Linux) runs it.
+  unless File.binread(o, 4) == "\x7fELF".b
+    puts "poly-cold-test: check 1 passed; check 2 (writable statics) needs an ELF object and was skipped (#{File.binread(o, 4).unpack1('H*')})" if ok
+    exit(ok ? 0 : 1)
+  end
   roots = run(env, "nm", "--defined-only", o).lines.map(&:split).select { |f| f.size == 3 && f[1] == "T" }.map(&:last)
   graph = Hash.new { |h, k| h[k] = [] }
   cur = nil
