@@ -5447,6 +5447,8 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   if (wcid < 0 || comp_ty_value_obj(c, wpt)) return 0;
   int wdef = -1;
   int weq = comp_method_in_chain(c, wcid, "===", &wdef);
+  /* Object#=== is rb_equal: the arm itself matches before its == runs */
+  int via_eq = weq < 0;
   if (weq < 0) weq = comp_method_in_chain(c, wcid, "==", &wdef);
   if (weq < 0) return 0;
   Scope *ws = &c->scopes[weq];
@@ -5461,8 +5463,9 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   buf_printf(b, "); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", ta, ts);
   { char sref[24]; snprintf(sref, sizeof sref, "_t%d", t);
     emit_boxed_text(c, pt, sref, b); }
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d ? %s", ts, ta,
-              ws->ret == TY_POLY ? "sp_poly_truthy(" : "(");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d ? ", ts, ta);
+  if (via_eq) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void *)_t%d) || ", ts, ts, ta);
+  buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : "(");
   emit_method_cname(c, ws, b);
   buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
   return 1;
@@ -5480,19 +5483,32 @@ static void emit_case_obj_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
        heap one (#3820). */
     int ecid = ty_object_class(pt);
     int emi = comp_method_in_chain(c, ecid, "===", NULL);
+    /* Object#=== is rb_equal: the same heap object matches before its ==
+       runs (a value-type object has no identity to compare) */
+    int ident = emi < 0 && !comp_ty_value_obj(c, pt);
     if (emi < 0) emi = comp_method_in_chain(c, ecid, "==", NULL);
     Scope *ems = &c->scopes[emi];
     LocalVar *eplv = ems->nparams > 0 ? scope_local(ems, ems->pnames[0]) : NULL;
     TyKind pty = eplv ? eplv->type : TY_POLY;
+    int tc = ident ? ++g_tmp : 0;
+    if (ident) {
+      buf_puts(b, "({ ");
+      emit_ctype(c, pt, b);
+      buf_printf(b, " _t%d = ", tc);
+      emit_expr(c, cond, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d == _t%d || ", tc, tc, t);
+    }
     buf_puts(b, "(");
     emit_method_cname(c, ems, b);
     buf_puts(b, "(");
-    emit_expr(c, cond, b);
+    if (ident) buf_printf(b, "_t%d", tc);
+    else emit_expr(c, cond, b);
     buf_puts(b, ", ");
     { char sref[32]; snprintf(sref, sizeof sref, "_t%d", t);
       if (pty != pt && pt != TY_UNKNOWN) emit_boxed_text(c, pt, sref, b);
       else buf_puts(b, sref); }
     buf_puts(b, "))");
+    if (ident) buf_puts(b, "; })");
   }
   else {
     char sref2[32]; snprintf(sref2, sizeof sref2, "_t%d", t);

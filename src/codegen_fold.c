@@ -2153,7 +2153,7 @@ static int emit_hash_chunk_first_class(Compiler *c, int pr, TyKind prt, int bloc
   buf_printf(g_pre, "if (_t%d.tag == SP_TAG_SYM && _t%d.v.i == (sp_sym)%d) { _t%d = 1; _t%d = 0; }\n",
              tkey, tkey, alone_id, tnew, thas);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "else if (!_t%d || !sp_poly_eq(_t%d, _t%d)) { _t%d = 1; _t%d = 1; _t%d = _t%d; }\n",
+  buf_printf(g_pre, "else if (!_t%d || !sp_poly_rb_equal(_t%d, _t%d)) { _t%d = 1; _t%d = 1; _t%d = _t%d; }\n",
              thas, tkey, tpk, tnew, thas, tpk, tkey);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "else _t%d = 0;\n", tnew);
@@ -2544,7 +2544,7 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tk, kb.p ? kb.p : "sp_box_nil()", tk); free(kb.p);
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "if (!_t%d || !sp_poly_eq(_t%d, _t%d)) {\n", thas, tk, tpk);
+    buf_printf(g_pre, "if (!_t%d || !sp_poly_rb_equal(_t%d, _t%d)) {\n", thas, tk, tpk);
     emit_indent(g_pre, g_indent + 2);
     buf_printf(g_pre, "if (_t%d) {\n", thas);
     emit_indent(g_pre, g_indent + 3);
@@ -5485,7 +5485,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "_t%d = sp_Enumerator_next(_t%d);\n", tv, te);
   if (inc) {
     emit_indent(g_pre, din);
-    buf_printf(g_pre, "if (sp_poly_eq(_t%d, _t%d)) { _t%d = TRUE; break; }\n", tv, tneedle, tres);
+    buf_printf(g_pre, "if (sp_poly_rb_equal(_t%d, _t%d)) { _t%d = TRUE; break; }\n", tv, tneedle, tres);
   }
   /* bind block params: two params autosplat an array element; one binds it,
      or for take_while the first of the values a step yielded */
