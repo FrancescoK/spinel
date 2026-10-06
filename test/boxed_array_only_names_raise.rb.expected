@@ -1,0 +1,24 @@
+undefined method 'product' for an instance of Hash
+undefined method 'combination' for an instance of Hash
+undefined method 'permutation' for an instance of Hash
+undefined method 'map!' for an instance of Hash
+undefined method 'collect!' for an instance of Hash
+undefined method 'each_index' for an instance of Hash
+undefined method 'product' for an instance of Range
+undefined method 'combination' for an instance of Range
+undefined method 'permutation' for an instance of Range
+undefined method 'map!' for an instance of Range
+undefined method 'collect!' for an instance of Range
+undefined method 'each_index' for an instance of Range
+undefined method 'product' for an instance of String
+undefined method 'combination' for an instance of String
+undefined method 'permutation' for an instance of String
+undefined method 'map!' for an instance of String
+undefined method 'collect!' for an instance of String
+undefined method 'each_index' for an instance of String
+[[1, 1], [2, 1]]
+[[1], [2]]
+[[1], [2]]
+[1, 2]
+[1, 2]
+[1, 2]
