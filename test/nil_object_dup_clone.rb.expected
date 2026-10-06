@@ -1,0 +1,19 @@
+nil
+nil
+nil
+ArgumentError
+"can't unfreeze NilClass"
+nil
+nil
+[:copied]
+[:copied]
+nil
+nil
+2
+5
+true
+false
+[nil, 1, 2]
+true
+false
+false
