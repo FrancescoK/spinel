@@ -3338,6 +3338,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         buf_puts(b, "(");
         emit_expr(c, recv, b);
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
+        emit_trailing_blk_arg(c, &c->scopes[mi], id, -1, b);
         buf_puts(b, ")");
         return 1;
       }
