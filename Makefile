@@ -1255,12 +1255,17 @@ cli-opts-test: $(SPINEL)
 	  echo "cli-opts-test: FAIL (a program without String#crypt links libcrypt)"; ok=0; fi; \
 	if [ "$$(uname)" = Linux ] && ! $(SPINEL) "$$tmp/crypt.rb" --print-build 2>&1 | grep -q -- "-lcrypt"; then \
 	  echo "cli-opts-test: FAIL (String#crypt does not link libcrypt)"; ok=0; fi; \
-	for v in 0 ""; do \
-	  if SPINEL_SHARE_STRINGS="$$v" SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" 2>&1 | grep -q '^share-stats:'; then \
+	for v in 0 "" 1; do \
+	  if ! SPINEL_SHARE_STRINGS="$$v" SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" >"$$tmp/sh.out" 2>&1; then \
+	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS='$$v' did not compile)"; sed -n 1,3p "$$tmp/sh.out"; ok=0; continue; fi; \
+	  grep -q '^share-stats:' "$$tmp/sh.out"; st=$$?; \
+	  if [ $$st -gt 1 ]; then \
+	    echo "cli-opts-test: FAIL (could not read the SPINEL_SHARE_STRINGS='$$v' output)"; ok=0; \
+	  elif [ "$$v" = 1 ] && [ $$st -ne 0 ]; then \
+	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS=1 left --share-strings off)"; ok=0; \
+	  elif [ "$$v" != 1 ] && [ $$st -eq 0 ]; then \
 	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS='$$v' turned --share-strings on)"; ok=0; fi; \
 	done; \
-	SPINEL_SHARE_STRINGS=1 SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" 2>&1 | grep -q '^share-stats:' || \
-	  { echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS=1 left --share-strings off)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
