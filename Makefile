@@ -2063,6 +2063,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/reflect_ivar_nil_presence.rb \
+                  test/ctor_ivar_default_keywords.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
                   test/zip_boxed_receiver_argument_order.rb \
