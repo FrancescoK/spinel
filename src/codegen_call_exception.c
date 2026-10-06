@@ -81,7 +81,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
        mutating the copy's ivars leaves the original alone (#2772) */
     if ((is_copy_alias(name)) && argc == 0 &&
         comp_method_in_chain(c, ty_object_class(comp_ntype(c, recv)), name, NULL) < 0) {
-      int xc2 = ty_object_class(comp_ntype(c, recv));
+      int xc2 = ty_object_class(repr_of(c, recv).as_ty);
       buf_printf(b, "((sp_%s *)sp_exc_dup((sp_Exception *)(", c->classes[xc2].c_name);
       emit_expr(c, recv, b);
       buf_puts(b, ")))");
@@ -265,7 +265,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       /* the runtime stores a String Array: an Array whose kind only the
          run time knows (a `callstack.map(&:to_s)` of an untyped
          parameter) is converted from its box */
-      if (comp_ntype(c, argv[0]) == TY_STR_ARRAY) emit_expr(c, argv[0], b);
+      if (repr_of(c, argv[0]).elem == TY_STRING) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_poly_as_str_array("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       buf_puts(b, "); })");
       return 1;
@@ -298,7 +298,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         emit_expr(c, recv, b);
         buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION"
                    " || sp_is_exc_subclass_cls(_t%d.cls_id))) ? ", t, t, t, t);
-        int boxed = comp_ntype(c, id) == TY_POLY;
+        int boxed = repr_of(c, id).kind == RK_BOXED;
         const char *arm = exc_has_nonstring_msg_override(c)
           ? (boxed ? "sp_user_exc_message_v(%s)" : "sp_poly_to_s(sp_user_exc_message_v(%s))")
           : (boxed ? "sp_box_str(sp_user_exc_message(%s))" : "sp_user_exc_message(%s)");
@@ -329,7 +329,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       }
       /* message and the two renderings infer TY_STRING: unwrap the boxed
          accessor result */
-      int unwrap = comp_ntype(c, id) == TY_STRING;
+      int unwrap = repr_of(c, id).as_ty == TY_STRING;
       if (unwrap) buf_puts(b, "sp_poly_to_s(");
       buf_printf(b, "sp_poly_exc_acc(");
       emit_expr(c, recv, b);
@@ -371,7 +371,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         emit_boxed_text(c, TY_EXCEPTION, xv, b);
         buf_puts(b, ")); ");
         /* definers that answer different types meet as a boxed value */
-        int xpoly = comp_ntype(c, id) == TY_POLY;
+        int xpoly = repr_of(c, id).kind == RK_BOXED;
         for (int q = 0; q < xn; q++) {
           int mi = comp_method_in_chain(c, xr[q], name, NULL);
           if (g_plan_check) ucall_observe(c, id, mi, xr[q], 1);   /* one definer's arm */
@@ -462,7 +462,7 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       /* An override answering something other than a String cannot ride the
          const char * dispatcher; the boxed pair carries it, and the call types
          poly to match (#3868). */
-      if (exc_has_nonstring_msg_override(c) && comp_ntype(c, id) == TY_POLY) {
+      if (exc_has_nonstring_msg_override(c) && repr_of(c, id).kind == RK_BOXED) {
         buf_printf(b, "(_t%d ? %s(_t%d) : sp_box_str(sp_str_empty))", t,
                    sp_streq(name, "message") ? "sp_user_exc_message_v" : "sp_user_exc_to_s_v", t);
         return 1;
@@ -680,7 +680,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
       if (cause_is_nil || !cause_exc) buf_puts(b, "0");
       /* a boxed cause is the exception it holds, nil no cause, and
          anything else CRuby's TypeError */
-      else if (comp_ntype(c, cause_node) == TY_POLY) {
+      else if (repr_of(c, cause_node).kind == RK_BOXED) {
         int tc = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tc); emit_expr(c, cause_node, b);
         buf_printf(b, "; if (_t%d.tag != SP_TAG_NIL && _t%d.tag != SP_TAG_OBJ)"
