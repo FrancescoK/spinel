@@ -395,6 +395,7 @@ int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
 int an_class_includes_enumerable(Compiler *c, int ci);
 int desugar_block_destructure_params(Compiler *c);
+int desugar_block_lone_rest(Compiler *c);
 int desugar_for_nonlocal_index(Compiler *c);
 int desugar_block_implicit_rest(Compiler *c);
 int desugar_multi_value_jump(Compiler *c);
