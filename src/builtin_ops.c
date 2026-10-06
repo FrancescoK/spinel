@@ -1,1 +1,1 @@
-FILE_CONTENT_FROM_/home/ubuntu/git/spinel/src/builtin_ops.c
+agent-tools://954c0f69-0051-461e-a8f1-79041f491876.txt#$.content
