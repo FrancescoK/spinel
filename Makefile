@@ -1055,6 +1055,7 @@ ext-test: $(SPINEL) $(SP_RT_LIB)
 # the fallback-shaped require. Skips cleanly without ruby dev headers.
 ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 	@if ! command -v ruby >/dev/null 2>&1; then echo "ext-cruby-test: skipped (no ruby)"; exit 0; fi; \
+	if ! ruby -e 'exit(RUBY_VERSION.to_f >= 4.0 ? 0 : 1)' 2>/dev/null; then echo "ext-cruby-test: skipped (needs Ruby 4.0, the reference; the concurrent-calls driver has hung under 3.2)"; exit 0; fi; \
 	RH=$$(ruby -e 'puts RbConfig::CONFIG["rubyhdrdir"]' 2>/dev/null); \
 	RA=$$(ruby -e 'puts RbConfig::CONFIG["rubyarchhdrdir"]' 2>/dev/null); \
 	DLEXT=$$(ruby -e 'puts RbConfig::CONFIG["DLEXT"]' 2>/dev/null); \
