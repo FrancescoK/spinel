@@ -812,12 +812,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     if (rt == TY_POLY) emit_expr(c, recv, b); else emit_boxed(c, recv, b);
     buf_printf(b, "; ");
+    if (builtin_rt) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", t);
     /* a class read out of a boxed slot is checked: CRuby's TypeError */
     buf_printf(b, "sp_Class _t%d = ", k);
     if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_isa_class_arg("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else emit_expr(c, argv[0], b);
     buf_printf(b, "; ");
-    if (sp_streq(name, "instance_of?"))
+    if (builtin_rt)
+      buf_printf(b, "sp_poly_is_a_dyn(_t%d, sp_box_class(_t%d), %d); })",
+                 t, k, sp_streq(name, "instance_of?"));
+    else if (sp_streq(name, "instance_of?"))
       buf_printf(b, "sp_poly_get_class(_t%d).cls_id == _t%d.cls_id; })", t, k);
     else
       buf_printf(b, "sp_poly_is_a(_t%d, _t%d); })", t, k);
