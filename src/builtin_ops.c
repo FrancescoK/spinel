@@ -1,1 +1,0 @@
-{{FILE:/tmp/spinel-push/CONTENT_builtin_ops.c}}
