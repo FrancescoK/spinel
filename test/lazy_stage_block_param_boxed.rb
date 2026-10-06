@@ -11,3 +11,9 @@ h = [{k: 1}]
 p h.lazy.map { |x| x.merge!(j: 2) }.first(1)
 p ["a", "b"].lazy.map { |x| x + "!" }.to_a
 p ["a", "b"].lazy.reject { |x| x == "a" }.map { |x| x.upcase }.first
+# a nested block's own `|x|` is another variable: changing it is no change
+# to the stage's element
+s = +"outer"
+p [s].lazy.map { |x| [+"inner"].each { |x| x << "!" }; x }.first, s
+# with_index keeps the element; a stage after it that does not change it
+p [s].each.lazy.with_index(1).map { |x, i| x + i.to_s }.first
