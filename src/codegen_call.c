@@ -18670,18 +18670,22 @@ static int nil_target_operand(Compiler *c, int v, int a, int boxed, int *node, T
    receiver unless it is a local's or a global's read or one the loop
    caches (or, for a boxed receiver, an ivar's or a class variable's: a
    mutator's arm writes back into the slot), then each argument that runs
-   code, in Ruby's order (nil_target_operand). Answers the count. */
+   code, in Ruby's order (nil_target_operand). A read an argument reassigns
+   (`s.split((s = "q,r"; ","))`) is bound too: CRuby reads the receiver
+   before the arguments, so the test and the call read the value it had
+   then, not the one the argument left in the slot. Answers the count. */
 static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind *ty, int max) {
   const NodeTable *nt = c->nt;
   int n = 0;
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, r);
-  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
-      !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) {
-    node[n] = r; ty[n] = comp_ntype(c, r); n++;
-  }
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if ((rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
+       !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) ||
+      nil_target_read_rebound(c, r, a)) {
+    node[n] = r; ty[n] = comp_ntype(c, r); n++;
+  }
   for (int i = 0; i < an; i++)
     if (!nil_target_operand(c, av[i], a, boxed, node, ty, &n, max)) break;
   return n;

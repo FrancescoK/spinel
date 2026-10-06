@@ -1,0 +1,22 @@
+split NoMethodError: undefined method 'split' for nil
+after "q,r"
+push NoMethodError: undefined method 'push' for nil
+after [9]
+fetch NoMethodError: undefined method 'fetch' for nil
+proc NoMethodError: undefined method 'center' for nil
+after "long"
+split ["a", "b"]
+after "q,r"
+push [1, 2, 3]
+after [9]
+fetch 2
+proc "  x  "
+after "long"
+append NoMethodError: undefined method '<<' for nil
+after ["x", nil]
+append "aby"
+after ["x", "aby"]
+global NoMethodError: undefined method 'split' for nil
+after "q,r"
+global ["a", "b"]
+after "q,r"
