@@ -1044,6 +1044,56 @@ int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b) {
   return 1;
 }
 
+/* String#scrub { |bytes| ... }: the receiver's valid runs copied through,
+   and each invalid sequence (sp_str_scrub_bad) handed to the block, whose
+   answer replaces it: a String, converted as CRuby's implicit conversion
+   does, and valid UTF-8 (sp_str_scrub_repl). A replacement argument besides
+   the block is CRuby's ArgumentError unless it is nil. */
+int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, x->id, "block");
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
+  int argc;
+  const int *argv = call_args(nt, x->id, &argc);
+  int ts = ++g_tmp, tl = ++g_tmp, tp = ++g_tmp, tout = ++g_tmp, tb = ++g_tmp, tn = ++g_tmp;
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", ts, x->rtext, ts);
+  if (argc == 1 && nt_kind(nt, argv[0]) != NK_NilNode) {
+    Buf ab; memset(&ab, 0, sizeof ab); emit_boxed(c, argv[0], &ab);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (!sp_poly_nil_p(%s)) sp_raise_cls(\"ArgumentError\", \"both of block and replacement given\");\n",
+               ab.p ? ab.p : "sp_box_nil()");
+    free(ab.p);
+  }
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d), _t%d = 0;\n", tl, ts, tp);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d < _t%d) {\n", tp, tl);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_int _t%d, _t%d = sp_str_scrub_bad(_t%d, _t%d, _t%d, &_t%d);\n", tn, tb, ts, tl, tp, tn);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_substr(_t%d + _t%d, 0, _t%d - _t%d));\n", tout, ts, tp, tb, tp);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d >= _t%d) break;\n", tb, tl);
+  const char *p0 = block_param_name(c, block, 0);
+  if (p0) {
+    Scope *ps = comp_scope_of(c, block);
+    LocalVar *plv = ps ? scope_local(ps, p0) : NULL;
+    int box = plv && plv->type == TY_POLY;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d + _t%d, 0, _t%d)%s;\n",
+               rename_local(p0), box ? "sp_box_str(" : "", ts, tb, tn, box ? ")" : "");
+  }
+  int save = g_indent; g_indent++;
+  IterStep st; emit_iter_step_open(c, block, 1, g_indent, &st);
+  Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb);
+  g_indent = save;
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_String_append_bin(_t%d, sp_str_scrub_repl(sp_poly_arg_str_chk(%s)));\n", tout, vb.p ? vb.p : "sp_box_nil()");
+  free(vb.p);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = _t%d + _t%d;\n", tp, tb, tn);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d->data", tout);
+  return 1;
+}
+
 /* An append chain over an existing handle must hand that handle to the
    next link. Mark its receiver links before operand ordering can bind a
    String read into a const char * temp, and restore their emission types
