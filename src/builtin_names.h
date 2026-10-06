@@ -88,6 +88,7 @@ int is_union_alias(const char *n); /* union | */
 int is_eq_or_ne(const char *n); /* != == */
 int is_size_or_count(const char *n); /* count size */
 int is_bounded_int_step(const char *n); /* downto upto */
+int is_upto_name(const char *n);      /* upto */
 
 int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
