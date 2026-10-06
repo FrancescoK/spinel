@@ -16069,7 +16069,10 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       if (sp_streq(rn2, "eql?")) {
         if (comp_ntype(c, rv2[0]) == TY_FLOAT_RANGE || comp_ntype(c, rv2[0]) == TY_STR_RANGE)
           float_range_arg = 1;
-        if (nt_kind(nt, rv2[0]) == NK_RangeNode) {
+        /* an Integer Range written with a Float end is still a Range here
+           (sp_range_new_fend), and sp_range_eql compares that end's kind at
+           run time: (0..1.0).eql?(0..1.0) is true */
+        if (nt_kind(nt, rv2[0]) == NK_RangeNode && comp_ntype(c, rv2[0]) != TY_RANGE) {
           for (int e = 0; e < 2; e++) {
             int b2 = nt_ref(nt, rv2[0], e ? "right" : "left");
             if (b2 >= 0 && nt_kind(nt, b2) == NK_FloatNode) float_range_arg = 1;
