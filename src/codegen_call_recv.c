@@ -3890,7 +3890,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* Array#slice(i) / #slice(range) are exactly #[](...) -- reuse that arm
-     through a rename re-entry (the two-argument slice already works). */
+     through a rename re-entry (the two-argument slice already works). A
+     literal block is ignored, as CRuby ignores it. */
   {
     const NodeTable *nt0 = c->nt;
     const char *nm0 = nt_str(nt0, id, "name");
@@ -3900,7 +3901,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       int an0 = 0;
       if (args0 >= 0) nt_arr(nt0, args0, "arguments", &an0);
       if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0)) &&
-          nt_ref(nt0, id, "block") < 0) {
+          nt_kind(nt0, nt_ref(nt0, id, "block")) != NK_BlockArgumentNode) {
         nt_node_set_str((NodeTable *)nt0, id, "name", "[]");
         int h = emit_array_call(c, id, b);
         nt_node_set_str((NodeTable *)nt0, id, "name", "slice");

@@ -7656,13 +7656,14 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     }
     return 1;
   }
-  /* Hash#store(k, v) is exactly []= (whose value form already works) */
+  /* Hash#store(k, v) is exactly []= (whose value form already works), with
+     or without a literal block, which CRuby ignores */
   if (nm && sp_streq(nm, "store")) {
     int hrc = nt_ref(nt, id, "receiver");
     int ha = nt_ref(nt, id, "arguments");
     int hac = 0;
     if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
-    if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
+    if (hrc >= 0 && hac == 2 && nt_kind(nt, nt_ref(nt, id, "block")) != NK_BlockArgumentNode &&
         ty_is_hash(infer_type(c, hrc))) {
       nt_node_set_str(nt, id, "name", "[]=");
       *changed = 1;
@@ -34406,7 +34407,7 @@ static void an_phase_reconcile_check(Compiler *c) {
      the name, and a typed hash has no other `store` arm. */
   NT_FOREACH_KIND(c->nt, NK_CallNode, sid) {
     const char *snm = nt_str(c->nt, sid, "name");
-    if (!snm || !sp_streq(snm, "store") || nt_ref(c->nt, sid, "block") >= 0) continue;
+    if (!snm || !sp_streq(snm, "store") || nt_kind(c->nt, nt_ref(c->nt, sid, "block")) == NK_BlockArgumentNode) continue;
     int src = nt_ref(c->nt, sid, "receiver"), sa = nt_ref(c->nt, sid, "arguments"), sac = 0;
     if (sa >= 0) nt_arr(c->nt, sa, "arguments", &sac);
     if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)))
