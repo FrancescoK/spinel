@@ -1945,6 +1945,16 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
   TyKind t = infer_call_inner(c, id);
+  /* --share-strings: a map (or a Hash's transform_values) whose collected
+     Strings the rule shares settles in its poly form, whose boxes hold the
+     handles (#6765), as a literal's does: typed, it held copies */
+  if (t == TY_STR_ARRAY && c->share_strings && nt_ref(c->nt, id, "block") >= 0 &&
+      is_map_alias(nt_str(c->nt, id, "name")) && share_node_elems_share(c, id))
+    return TY_POLY_ARRAY;
+  if (ty_is_hash(t) && ty_hash_val(t) == TY_STRING && c->share_strings && nt_ref(c->nt, id, "block") >= 0 &&
+      is_value_transform(nt_str(c->nt, id, "name")) && share_node_elems_share(c, id) &&
+      ty_hash_of(ty_hash_key(t), TY_POLY) != TY_UNKNOWN)
+    return ty_hash_of(ty_hash_key(t), TY_POLY);
   if (t == TY_UNKNOWN && boxed_struct_aref_may_construct(c, id)) return TY_POLY;
   if (t == TY_UNKNOWN && builtin_arity_violation(c, id)) return TY_NIL;
   return t;

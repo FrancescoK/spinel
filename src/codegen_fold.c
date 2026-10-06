@@ -800,7 +800,15 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   else {
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
     int save = g_indent; g_indent++;
-    emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+    /* --share-strings: a value the rule shares goes into the poly value
+       slot as the handle its box holds (emit_boxed), not a copy of it */
+    if (!keys && ty_hash_val(dt) == TY_POLY && repr_share_rule(c) && bret != TY_POLY &&
+        (strbuf_poly_self_conv(c, bb[bn - 1]) || strbuf_conv_of_handle_call(c, bb[bn - 1]))) {
+      emit_boxed(c, bb[bn - 1], &vb);
+      bret = TY_POLY;
+    }
+    else emit_expr(c, bb[bn - 1], &vb);
+    g_indent = save;
   }
   TyKind dkt = ty_hash_key(dt);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sHash_set(_t%d, ", dhn, td);
@@ -4485,7 +4493,10 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
       Buf vb; memset(&vb, 0, sizeof vb);
       /* a typed-array tail into the poly-array slot a `next` arm widened */
       const char *apf = (g_ie_next_ty == TY_POLY_ARRAY && tt != TY_POLY_ARRAY) ? array_to_poly_fn(tt) : NULL;
-      if (want_poly && tt != TY_POLY) emit_boxed(c, tail, &vb);
+      /* (a boxed String's to_s / to_str, which emit_boxed answers as the box
+         holding the handle, --share-strings) */
+      if (want_poly && (tt != TY_POLY || (repr_share_rule(c) && strbuf_poly_self_conv(c, tail))))
+        emit_boxed(c, tail, &vb);
       else if (apf) { buf_printf(&vb, "%s(", apf); emit_expr(c, tail, &vb); buf_puts(&vb, ")"); }
       else emit_expr(c, tail, &vb);
       emit_indent(g_pre, bi);

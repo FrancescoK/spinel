@@ -1231,8 +1231,9 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
 /* --share-strings: a call on a String that the type rows say answers its
-   receiver itself (`s.concat(a, b)`, `s.each_char { }`, `s.bytesplice(..)`;
-   bop_answers_self's BOPF_SELF), whose value is therefore the receiver. */
+   receiver itself (`s.concat(a, b)`, `s.each_char { }`, `s.bytesplice(..)`,
+   `s.to_s`; bop_answers_self's BOPF_SELF and BOPF_SELF_EXACT), whose value
+   is therefore the receiver. */
 static int str_answers_receiver(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
@@ -1249,7 +1250,9 @@ static int str_answers_receiver(Compiler *c, int id) {
   }
   int blk = nt_ref(nt, id, "block");
   if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) return 0;
-  if (bop_answers_self(rt, nm, ac, blk >= 0) & BOPF_SELF) return 1;
+  /* a String-typed receiver is a String itself, never a subclass
+     instance: to_s and to_str (BOPF_SELF_EXACT) answer it too */
+  if (bop_answers_self(rt, nm, ac, blk >= 0) & (BOPF_SELF | BOPF_SELF_EXACT)) return 1;
   /* `tap` with a literal block: the receiver (its share row) */
   return blk >= 0 && ac == 0 && bop_share_named(BOP_ANY_RECV, nm) == BSH_ITER_SELF;
 }
@@ -1464,6 +1467,18 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
   return repr_handle_static_ref(c, v, out, cap);
 }
 
+/* --share-strings: is `v` a String conversion that answers its receiver
+   (to_s, to_str: BOPF_SELF_EXACT) over a member read that answers the
+   handle (a reader of a shared member, a Struct's member by key)? */
+int strbuf_conv_of_handle_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || !str_self_call(nt, v)) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  if (comp_ntype(c, r) != TY_STRING && comp_ntype(c, r) != TY_STRBUF) return 0;
+  if (!(bop_answers_self(TY_STRING, nt_str(nt, v, "name"), 0, 0) & BOPF_SELF_EXACT)) return 0;
+  return strbuf_object_reader_handle(c, r) || strbuf_struct_member_handle(c, r);
+}
+
 /* --share-strings: the argument a setter written as an assignment (`o.a =
    v`, `o[k] = v`) answers, whatever the writer returns, when it is a slot
    holding the handle; -1 for any other value. */
@@ -1544,6 +1559,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     buf_puts(b, "({ (void)(");
     emit_expr(c, v, b);
     buf_printf(b, "); %s; })", srefV);
+  }
+  /* --share-strings: `o.a.to_s` / `.to_str` over a reader answering the
+     handle answers that handle (a String's conversion is itself) */
+  else if (shared && strbuf_conv_of_handle_call(c, v) &&
+           emit_strbuf_call_handle(c, nt_ref(c->nt, v, "receiver"), b)) {
   }
   /* --share-strings: a setter's value is its argument (`t = (o.a = s)`):
      run the write, then name the argument's String */

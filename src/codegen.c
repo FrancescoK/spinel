@@ -1881,6 +1881,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* a pointer kind with no box: evaluate for side-effects, yield nil */
   buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); RC(RF_NIL_EFFECT, RW_NONE);
 }
+/* --share-strings: is `node` a String conversion that answers a String
+   receiver itself (to_s, to_str: BOPF_SELF_EXACT) on a boxed local or ivar,
+   read again without effect? */
+int strbuf_poly_self_conv(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) != NK_CallNode || !str_self_call(nt, node)) return 0;
+  int r = nt_ref(nt, node, "receiver");
+  NodeKind rk = nt_kind(nt, r);
+  if ((rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) || comp_ntype(c, r) != TY_POLY) return 0;
+  return (bop_answers_self(TY_STRING, nt_str(nt, node, "name"), 0, 0) & BOPF_SELF_EXACT) != 0;
+}
 /* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
@@ -1899,17 +1910,33 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     return;
   }
   /* --share-strings: a reader of a member that holds the handle (an attr
-     reader, a Struct's member read by a literal key) is boxed as that
-     handle: the box and the member are one String */
-  if (repr_share_rule(c) && comp_ntype(c, node) == TY_STRING &&
-      (strbuf_object_reader_handle(c, node) || strbuf_struct_member_handle(c, node))) {
+     reader, a Struct's member read by a literal key, either through to_s)
+     is boxed as that handle: the box and the member are one String */
+  if (repr_share_rule(c) && (comp_ntype(c, node) == TY_STRING || comp_ntype(c, node) == TY_STRBUF) &&
+      (strbuf_object_reader_handle(c, node) || strbuf_struct_member_handle(c, node) ||
+       strbuf_conv_of_handle_call(c, node))) {
     Buf hb; memset(&hb, 0, sizeof hb);
-    if (emit_strbuf_call_handle(c, node, &hb)) {
+    int hn = strbuf_conv_of_handle_call(c, node) ? nt_ref(c->nt, node, "receiver") : node;
+    if (emit_strbuf_call_handle(c, hn, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p ? hb.p : "NULL");
       free(hb.p);
       return;
     }
     free(hb.p);
+  }
+  /* --share-strings: `x.to_s` / `x.to_str` on a box (a local or an ivar)
+     answers the box itself when it holds the handle, as CRuby answers a
+     String itself (BOPF_SELF_EXACT) */
+  if (repr_share_rule(c) && strbuf_poly_self_conv(c, node)) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+    emit_expr(c, nt_ref(c->nt, node, "receiver"), b);
+    buf_printf(b, "; sp_poly_is_strbuf(_t%d) ? _t%d : ", tv, tv);
+    rc_depth++;
+    emit_boxed_impl(c, node, b);
+    rc_depth--;
+    buf_puts(b, "; })");
+    return;
   }
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
