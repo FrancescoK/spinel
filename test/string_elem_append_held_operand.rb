@@ -57,7 +57,7 @@ p @h
 class Log
   def initialize = (@lines = [])
 
-  def add(s) = (@lines << +s)
+  def add(s) = (@lines << s.dup)
 
   def stamp(i) = (@lines[i] << " ok")
 
