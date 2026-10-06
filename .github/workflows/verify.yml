@@ -224,16 +224,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # sccache for the suite's per-test compiles, one store per slice
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Set up sccache (suite legs only)
+        uses: mozilla-actions/sccache-action@v0.0.10
         if: matrix.leg == 'suite'
-      - name: Restore the sccache store
+      - name: Restore the sccache store (suite legs only)
         if: matrix.leg == 'suite'
         uses: actions/cache@v6
         with:
           path: .sccache
           key: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-
-      - if: matrix.leg == 'suite'
+      - name: Start sccache (suite legs only)
+        if: matrix.leg == 'suite'
         run: sccache --start-server
       - uses: ruby/setup-ruby@v1
         with:
@@ -253,14 +255,14 @@ jobs:
                      sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
           of=$BASE; [ "$NAME" != base ] && [ "$LEG" != cdiff ] && of=$SHA
           echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of-$env_id" >> "$GITHUB_OUTPUT"
-      - name: Restore the base result
+      - name: Restore the base result (base side of a probe or rubyspec only)
         id: based
         if: matrix.name == 'base'
         uses: actions/cache/restore@v6
         with:
           path: out
           key: ${{ steps.key.outputs.key }}
-      - name: Restore the base's C
+      - name: Restore the base's C (cdiff only)
         id: cbase
         if: matrix.leg == 'cdiff'
         uses: actions/cache/restore@v6
@@ -463,19 +465,19 @@ jobs:
           esac
         shell: bash
       # the base's result, or a head's probe result kept for a later base
-      - name: Save the base result
+      - name: Save the base result (probes and rubyspec, when computed this run)
         if: matrix.leg != 'cdiff' && steps.run.outputs.save == 'true'
         uses: actions/cache/save@v6
         with:
           path: out
           key: ${{ steps.key.outputs.key }}
-      - name: Save the base's C
+      - name: Save the base's C (cdiff, when computed this run)
         if: matrix.leg == 'cdiff' && steps.run.outputs.save == 'true'
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/cbase
           key: ${{ steps.key.outputs.key }}
-      - name: sccache stats
+      - name: sccache stats (suite legs only)
         if: always() && matrix.leg == 'suite'
         run: mkdir -p out && sccache --show-stats | tee out/sccache.txt
       - uses: actions/upload-artifact@v7
