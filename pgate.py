@@ -33,7 +33,7 @@
 # variables read nowhere else), so a Makefile change that would let a part
 # drop a target stops pgate instead. `finish` checks the parts covered the
 # corpus and the suites, each once.
-import os, re, subprocess, sys, tarfile
+import os, re, shutil, subprocess, sys, tarfile
 
 # The rules the split depends on, as master has them (5cd50e094): each
 # target's rule lines, prerequisites and recipe, in order.
@@ -265,6 +265,12 @@ def finish(a):
                            cwd=co, env=env, capture_output=True, text=True)
         stamp = (r.stdout + r.stderr).rstrip("\n")
         log.append(stamp)
+        # the stamp itself, for the Gate: trailer of a head gated alone
+        # (gate.rb trailer's line; verify checks it against master + head)
+        gd = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=co, capture_output=True, text=True).stdout.strip()
+        sp = os.path.join(gd, "gate-stamp") if gd else ""
+        if os.path.isfile(sp):
+            shutil.copy(sp, os.path.join(a["--out"], "gate-stamp.txt"))
         lines += [l for l in stamp.splitlines() if SUMMARY.search(l)]
     lines.append("gate: ALL GREEN")
     log.append("gate: ALL GREEN")
