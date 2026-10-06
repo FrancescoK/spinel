@@ -63,6 +63,7 @@ int is_reduce_alias(const char *n); /* inject reduce: Enumerable reduction alias
 int is_minmax_query(const char *n); /* min max: extrema queries */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
 int is_map_alias(const char *n); /* map collect: Enumerable transformation aliases */
+int is_row_binding_iter(const char *n); /* each map collect: bind a one-parameter block's element unboxed */
 int is_instance_eval_family(const char *n); /* instance_eval instance_exec */
 int is_find_alias(const char *n); /* find detect: Enumerable search aliases */
 
@@ -228,5 +229,7 @@ enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
 int array_unseen_add_kind(const char *n);
 
 int is_scan_name(const char *n); /* scan: a String's match iterator */
+int is_insert_name(const char *n); /* insert */
+int is_concat_name(const char *n); /* concat */
 
 #endif

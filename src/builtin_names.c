@@ -265,6 +265,13 @@ int is_map_alias(const char *n) {
   return sp_streq(n, "map") || sp_streq(n, "collect");
 }
 
+/* The block iterations whose array emitters bind a one-parameter block's
+   element unboxed into a typed parameter: each, map and collect. The rest
+   of the each family (reverse_each, each_entry) binds it boxed. */
+int is_row_binding_iter(const char *n) {
+  return sp_streq(n, "each") || is_map_alias(n);
+}
+
 int is_instance_eval_family(const char *n) {
   return sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
 }
@@ -914,3 +921,7 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+
+int is_insert_name(const char *n) { return sp_streq(n, "insert"); }
+
+int is_concat_name(const char *n) { return sp_streq(n, "concat"); }
