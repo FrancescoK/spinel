@@ -16436,11 +16436,14 @@ char *codegen_program(const NodeTable *nt) {
   {
     static const char *const uops[] = {
       "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", "==", "[]", NULL };
-    /* A class that defines a #coerce needs the table for its COMPARISONS too:
+    /* A class that defines a #coerce needs the table for its `<=>` too:
        the protocol routes `5 < obj` to the boxed entry, which reaches the
        class through this hook. Only for such a class, though -- an ordinary
        Comparable defines <=> and no coerce, is never reached this way, and
-       would only gain a dispatch table it has no use for. */
+       would only gain a dispatch table it has no use for. A class's own <,
+       >, <= or >= is another matter: a boxed `x < y` reaches it only through
+       the table, and without it sp_poly_cmp raised "comparison of Money with
+       Money failed" for a class that orders itself. */
     static const char *const cops[] = { "<", ">", "<=", ">=", "<=>", NULL };
     for (int k = 0; k < c->nclasses && !g_has_user_binop; k++) {
       /* a reopened Time or Range is instantiated by the runtime itself, and
@@ -16450,6 +16453,8 @@ char *codegen_program(const NodeTable *nt) {
       if (!c->classes[k].instantiated && !breopen) continue;
       for (int u = 0; uops[u]; u++)
         if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
+      for (int u = 0; cops[u] && !g_has_user_binop; u++)
+        if (is_cmp_op(cops[u]) && comp_method_in_chain(c, k, cops[u], NULL) >= 0) g_has_user_binop = 1;
       /* a `<=>` with no `==` is Comparable's equality, which the table
          derives: a boxed `m == n` (a block parameter, a hash value, a
          `when FIVE`) reaches it only through the table */
