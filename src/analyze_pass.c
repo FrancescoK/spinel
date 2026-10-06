@@ -14455,6 +14455,365 @@ int backprop_hash_return_types(Compiler *c) {
   return changed;
 }
 
+/* infer_return_types' per-pass tables, which irt_scope reads */
+typedef struct {
+  TyKind *ret_acc; char *has_ret; char *ret_empty;
+  int *ret_head, *ret_next;
+  TyKind *ret_narrow;
+  char *moved;            /* per scope: the pass changed its value */
+} IrtCtx;
+static int irt_settle_callers(Compiler *c, IrtCtx *x);
+
+/* infer_return_types' derivation of scope s's value from its body and its
+   explicit returns (x's tables); 1 when anything it sets changed */
+static int irt_scope(Compiler *c, int s, IrtCtx *x) {
+  const NodeTable *nt = c->nt;
+  TyKind *ret_acc = x->ret_acc; char *has_ret = x->has_ret; char *ret_empty = x->ret_empty;
+  int *ret_head = x->ret_head, *ret_next = x->ret_next;
+  (void)ret_empty; (void)ret_next;
+  int ch = 0;
+  Scope *sc = &c->scopes[s];
+  /* Specialized inherited-cls-new copies keep their fixed subclass return
+     type (the shared body's bare `new` would otherwise infer the base). */
+  if (sc->ret_specialized) return ch;
+  /* An --rbs-seeded return is pinned, with one exception: a scalar-valued
+     str-keyed hash return (Hash[String,String] / Hash[String,Integer]) whose
+     body actually builds a poly-valued StrPolyHash (mixed / non-scalar
+     values -- the RBS value type is too narrow for what the code returns).
+     Emitting the StrPolyHash body through a StrStrHash* signature is a layout
+     mismatch that corrupts every read, so let the body widen the return to
+     its poly-valued sibling. Every other rbs-seeded return stays pinned. */
+  if (sc->ret_rbs_seeded) {
+    if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
+      TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+      if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
+      if (br == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; ch = 1; }
+    }
+    /* Same shape, and the same reason. RBS `Integer` covers both machine
+       ints and bignums, so a body that grew a bignum is a valid inhabitant
+       of the declared type -- but the seed had already pinned the signature
+       to sp_int, and returning an sp_Bigint* through it truncates the
+       pointer and answers garbage. Declaring the type correctly made the
+       program worse than not declaring it at all (#3518). */
+    else if (sc->ret == TY_INT) {
+      TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+      if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
+      if (br == TY_BIGINT) { sc->ret = TY_BIGINT; ch = 1; }
+    }
+    return ch;
+  }
+  /* A return narrowed to a pointer array is pinned the same way. The body
+     still reads the poly array, and those two array KINDS unify to the plain
+     poly SCALAR -- so re-deriving would make the slot strictly worse, and
+     reporting that as a change every round runs the fixpoint to its cap. */
+  if (sc->ret_oa_pin != TY_UNKNOWN) return ch;
+  /* synthesized compiler_state methods carry a fixed return type (no AST). */
+  if (sc->cs_synth) return ch;
+  /* A lowered self-recursive yield method returns its block's value through
+     a raw sp_int carrier pinned when the lowering rewrites the scope
+     (post-fixpoint); re-deriving from the body would break that ABI. */
+  if (sc->is_lowered_yield) return ch;
+  /* An empty method body returns nil; if its value is used at all it must
+     be poly (a void C function yields nothing to read). */
+  int empty_body = sc->body < 0;
+  if (sc->body >= 0 && nt_kind(nt, sc->body) == NK_StatementsNode) {
+    int bn = 0; nt_arr(nt, sc->body, "body", &bn); if (bn == 0) empty_body = 1;
+  }
+  /* A trailing infinite loop (`while true` / `until false`) with no
+     top-level break can't fall through, so its nil value is unreachable:
+     when explicit returns exist, they alone type the method instead of
+     nil-widening it to poly. A breaking or finite loop still contributes
+     its nil fall-through, as CRuby does. */
+  int tail_unreachable = 0;
+  if (!empty_body && has_ret && has_ret[s] &&
+      nt_kind(nt, sc->body) == NK_StatementsNode) {
+    int bn2 = 0; const int *bb2 = nt_arr(nt, sc->body, "body", &bn2);
+    if (bn2 > 0) {
+      int last = bb2[bn2 - 1];
+      NodeKind lk = nt_kind(nt, last);
+      if (lk == NK_WhileNode || lk == NK_UntilNode) {
+        int pred = nt_ref(nt, last, "predicate");
+        const char *cty = pred >= 0 ? nt_type(nt, pred) : NULL;
+        int infinite = cty && ((lk == NK_WhileNode && sp_streq(cty, "TrueNode")) ||
+                               (lk == NK_UntilNode && sp_streq(cty, "FalseNode")));
+        int lbody = nt_ref(nt, last, "statements");
+        if (infinite && (lbody < 0 || !block_has_top_break(c, lbody)))
+          tail_unreachable = 1;
+      }
+      /* A trailing `raise` is unreachable-fall-through for the same reason:
+         the method never returns through it, so its (void) value must not
+         be unified with the explicit returns. Unifying void with Integer
+         has no rule and lands on poly, which then boxes the return of a
+         `return x if cond; raise` guard method and everything downstream
+         of its callers. Same rule the branch arms got for raise. */
+      else if (lk == NK_CallNode && nt_ref(nt, last, "receiver") < 0) {
+        const char *lnm = nt_str(nt, last, "name");
+        if (lnm && is_diverging_call(lnm))
+          tail_unreachable = 1;
+      }
+    }
+  }
+  TyKind r = empty_body ? TY_POLY
+           : tail_unreachable ? ret_acc[s]
+           : infer_type(c, sc->body);
+  /* a bare `Array.new` tail returns the poly array a marked `[]` tail
+     does (mark_empty_literal_tails) */
+  if (r == TY_UNKNOWN && !empty_body && !(has_ret && has_ret[s]) &&
+      an_empty_container_kind(c, sc->body) == 1)
+    r = TY_POLY_ARRAY;
+  /* A yielding method whose body ends in `if block_given? ... else ... end`
+     has two values, one per call form, and the inliner keeps only the arm a
+     call site takes: the block arm types the call with a block, the else
+     arm the call without one (Scope.ret_noblock, read by method_call_ret).
+     Unified, the Enumerator of the one arm and the memo of the other made
+     the method poly for both (builtins/enumerable.rb). */
+  if (!empty_body && !tail_unreachable && sc->yields && nt_kind(nt, sc->body) == NK_StatementsNode) {
+    int bn3 = 0; const int *bb3 = nt_arr(nt, sc->body, "body", &bn3);
+    int last = bn3 > 0 ? bb3[bn3 - 1] : -1;
+    int pred = last >= 0 && nt_kind(nt, last) == NK_IfNode ? nt_ref(nt, last, "predicate") : -1;
+    int sub = last >= 0 ? nt_ref(nt, last, "subsequent") : -1;
+    if (pred >= 0 && nt_kind(nt, pred) == NK_CallNode && nt_ref(nt, pred, "receiver") < 0 &&
+        nt_str(nt, pred, "name") && sp_streq(nt_str(nt, pred, "name"), "block_given?") &&
+        sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) {
+      int ts = nt_ref(nt, last, "statements"), es = nt_ref(nt, sub, "statements");
+      int tn3 = 0; const int *tb3 = ts >= 0 ? nt_arr(nt, ts, "body", &tn3) : NULL;
+      int en3 = 0; const int *eb3 = es >= 0 ? nt_arr(nt, es, "body", &en3) : NULL;
+      TyKind et = en3 > 0 ? infer_type(c, eb3[en3 - 1]) : TY_NIL;
+      if (et != TY_UNKNOWN && sc->ret_noblock != et) sc->ret_noblock = et;
+      /* a block arm ending in `yield` is typed per call site by
+         method_call_ret, as a yield-tailed body is; any other block arm
+         types the method alone, even while it is still unknown: letting
+         the unified body type stand in would hand a call with a block the
+         else arm's Enumerator on the round before the memo settles, and a
+         local only widens from there */
+      if (!(tn3 > 0 && nt_kind(nt, tb3[tn3 - 1]) == NK_YieldNode)) {
+        TyKind bt = tn3 > 0 ? infer_type(c, tb3[tn3 - 1]) : TY_NIL;
+        r = bt != TY_UNKNOWN && has_ret && has_ret[s] ? ty_unify(bt, ret_acc[s]) : bt;
+        goto ret_decided;
+      }
+    }
+  }
+  /* explicit returns within this scope (collected above) */
+  if (!tail_unreachable && has_ret && has_ret[s]) {
+    /* An empty `[]` / `{}` value is still untyped, and the unify took the
+       other values' type for it: `return 1 if b; {}` returned the hash
+       pointer through an sp_int. Beside a value of another kind it is a
+       container all the same, so the method boxes (the if/else rule). */
+    int tk = empty_body ? 0 : an_empty_container_kind(c, sc->body);
+    if (r == TY_UNKNOWN && an_empty_container_disagrees(tk, ret_acc[s])) r = TY_POLY;
+    r = ty_unify(r, ret_acc[s]);
+  }
+  if (has_ret && has_ret[s] && ret_empty && ret_empty[s] &&
+      (an_empty_container_disagrees(ret_empty[s] & 1, r) ||
+       an_empty_container_disagrees(ret_empty[s] & 2, r)))
+    r = TY_POLY;
+  ret_decided:
+  /* A value a caller's parameter stores elements of another kind into is
+     the general Array (widen_array_sources); its values re-derive their
+     typed kinds, which unify to the poly scalar when they differ. One that
+     stops being an array at all loses the pin. */
+  if (sc->ret_poly_array_pin) {
+    if (r == TY_UNKNOWN || r == TY_POLY || (ty_is_array(r) && !ty_is_ptr_array(r))) r = TY_POLY_ARRAY;
+    else sc->ret_poly_array_pin = 0;
+  }
+  /* Post-backstop re-runs fill returns whose body only settled after the
+     main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there
+     is a net loss: the late-settling chains that matter are scalar, while a
+     previously-UNKNOWN return deriving poly is typically a store-style
+     method whose value no caller reads -- boxing it puts an sp_RbVal
+     return in optcarrot's hottest poke path for ~4% fps. Keep those at
+     their pre-pass type; the main fixpoint still widens to poly freely. */
+  if (g_ret_no_new_poly == 1 && r == TY_POLY && sc->ret != TY_POLY) return ch;
+  /* At 2 (the late ivar-widening re-run) a return follows its body only
+     where the ivar the body answers widened after the return was derived:
+     a concrete type to poly (a String reading over a poly value does not
+     build, #4451), and an Integer to a Bignum (`def get = @v` returned a
+     promoted loop local's Bignum through an sp_int). Everything else is
+     left where the earlier, gated re-runs settled it. */
+  if (g_ret_no_new_poly == 2 &&
+      !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
+      !(r == TY_BIGINT && sc->ret == TY_INT)) return ch;
+  /* An element-less-hash body (`{}` / Hash.new) infers TY_UNKNOWN every pass
+     (no witnessed element). Once a caller has pinned it to a concrete hash
+     (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
+     would re-emit a void C signature the caller can't assign (#1680). */
+  if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_empty_hash(c, s) >= 0) return ch;
+  /* A void body-recompute must not downgrade an established return: an
+     abstract/raising body infers TY_VOID every pass, while the slot's real
+     type comes from descendant-override dispatch unification (or a caller
+     backprop). Re-deriving VOID here would flip the slot every iteration
+     and the fixpoint never converges. */
+  if (r == TY_VOID && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID) return ch;
+  /* A tail that nothing resolves derives UNKNOWN every round. The arm at the
+     end of this pass owns that case -- it gives such a method POLY when a
+     caller reads its value -- and its own guard then skips the method. Undo
+     that here and the two take turns to the fixpoint's cap (#4116). Narrow
+     on purpose: only an established POLY, and only for the shape that arm
+     claims, so a return that re-derives UNKNOWN for any other reason still
+     corrects downward. */
+  if (r == TY_UNKNOWN && sc->ret == TY_POLY && scope_tail_unresolved_call(c, s)) return ch;
+  if (r != sc->ret) {
+    if (ty_degraded(r) && !ty_degraded(sc->ret)) {
+      /* the value that degraded the return: the body's tail if its type
+         did, else the first explicit return whose value did, else (two
+         concrete kinds that disagree) the tail, with the first return as
+         the other side */
+      int node = -1, other = -1; TyKind then = TY_UNKNOWN;
+      int tail = (!empty_body && !tail_unreachable && sc->body >= 0) ? sc->body : -1;
+      if (tail >= 0 && tail < c->node_cap && ty_degraded(c->ntype[tail])) { node = tail; then = c->ntype[tail]; }
+      else if (ret_head && ret_next) {
+        for (int rid = ret_head[s]; rid >= 0; rid = ret_next[rid]) {
+          TyKind rt = return_node_type(c, rid);
+          if (ty_degraded(rt)) { node = return_value_node(c, rid); then = rt; break; }
+        }
+      }
+      if (node < 0) {
+        /* two concrete kinds met. One side is the tail when it has a type
+           at this point, else the first typed `return`; the other is the
+           first `return` of a different kind (the list's head can be one
+           of the same kind, which said "String, where a `return` gives
+           String"; String and its mutable refinement are one kind). */
+        TyKind tt = (tail >= 0 && tail < c->node_cap) ? c->ntype[tail] : TY_UNKNOWN;
+        if (tt != TY_UNKNOWN) { node = tail; then = tt; }
+        if (ret_head)
+          for (int rid = ret_head[s]; rid >= 0; rid = ret_next[rid]) {
+            TyKind rt = return_node_type(c, rid);
+            if (rt == TY_UNKNOWN) continue;
+            if (node < 0) { node = return_value_node(c, rid); then = rt; continue; }
+            int same = rt == then || ((rt == TY_STRING || rt == TY_STRBUF) && (then == TY_STRING || then == TY_STRBUF));
+            if (!same) { other = return_value_node(c, rid); break; }
+          }
+        if (node < 0) { node = tail; then = r; }
+      }
+      sc->ret_why.node = node; sc->ret_why.other = other; sc->ret_why.prev = sc->ret;
+      sc->ret_why.then = then; sc->ret_why.round = g_infer_round;
+    }
+    else if (!ty_degraded(r)) why_reset(&sc->ret_why);
+    sc->ret = r; ch = 1;
+  }
+  /* For a method with a &block param, record the value type its block yields
+     (unified across all call sites). Blocks passed to it are emitted returning
+     this common type so the sp_proc_call ABI is consistent. */
+  if (sc->blk_param && sc->blk_param[0] && !sc->yields && !sc->is_lowered_yield) {
+    TyKind bvt = yield_value_type(c, (int)(sc - c->scopes));
+    if (bvt != TY_UNKNOWN && sc->blk_ret != (int)bvt) { sc->blk_ret = (int)bvt; ch = 1; }
+  }
+  /* When the method returns a proc, record the proc's body return type so a
+     caller's `m.call(...)` resolves its result type (factory pattern). */
+  if (r == TY_PROC) {
+    TyKind pr = TY_UNKNOWN;
+    if (sc->body >= 0) {
+      int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
+      if (bn > 0) pr = proc_ret_of(c, bb[bn - 1]);
+    }
+    if (ret_head && ret_next) {
+      for (int id = ret_head[s]; id >= 0; id = ret_next[id]) {
+        int a = nt_ref(nt, id, "arguments"); int an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
+      }
+    }
+    else for (int id = 0; id < nt->count; id++) {
+      const char *ty = nt_type(nt, id);
+      if (ty && sp_streq(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
+        int a = nt_ref(nt, id, "arguments"); int an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
+      }
+    }
+    if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { sc->ret_proc_ret = (int)pr; ch = 1; }
+  }
+  return ch;
+}
+
+/* Scope s's explicit returns typed again (the pass collected them before
+   any method's value moved): ret_acc and has_ret from its own return list */
+static void irt_explicit_returns(Compiler *c, int s, IrtCtx *x) {
+  if (!x->ret_head || !x->ret_next) return;
+  x->has_ret[s] = 0;
+  for (int id = x->ret_head[s]; id >= 0; id = x->ret_next[id]) {
+    TyKind rt = (x->ret_narrow && x->ret_narrow[id]) ? x->ret_narrow[id] : return_node_type(c, id);
+    x->ret_acc[s] = x->has_ret[s] ? ty_unify(x->ret_acc[s], rt) : rt;
+    x->has_ret[s] = 1;
+    if (rt == TY_UNKNOWN && x->ret_empty)
+      x->ret_empty[s] |= (char)an_empty_container_kind(c, return_value_node(c, id));
+  }
+}
+
+/* The value of a method that ends in a call is its callee's, and the pass
+   above derives every method once, in definition order. A chain whose
+   callees come later in the file (`def m0(s) = m1(s)` ... `def mN(s) =
+   s.size`) then settled one link per round of the fixpoint, and each round
+   re-walks the whole program: a 1,200-method chain took 1,203 rounds and
+   6 s. Here a method whose value changed has its callers derived again
+   at once, from a worklist, so the chain settles in the pass. The callers
+   are found by name (the calls in a method, its blocks included, whose
+   name is the changed method's), which over-approximates a dispatch; a
+   caller derived again only reaches the answer a later round would have.
+   Bounded so an oscillation is left to the fixpoint. */
+static int irt_settle_callers(Compiler *c, IrtCtx *x) {
+  const NodeTable *nt = c->nt;
+  int ns = c->nscopes, changed = 0;
+  if (ns < 2) return 0;
+  /* nothing moved (a settled round): no caller to derive again */
+  int any = 0;
+  for (int s = 1; s < ns && !any; s++) any = x->moved[s];
+  if (!any) return 0;
+  /* the named scopes by name (a hash of chains), and every call's caller
+     scope: the edges callee -> caller */
+  int *bhead = malloc(sizeof(int) * (size_t)ns), *bnext = malloc(sizeof(int) * (size_t)ns);
+  int *ehead = malloc(sizeof(int) * (size_t)ns);
+  if (!bhead || !bnext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < ns; b++) bhead[b] = -1;
+  for (int s = ns - 1; s >= 1; s--) {
+    if (!c->scopes[s].name) continue;
+    unsigned b = sp_strhash(c->scopes[s].name) % (unsigned)ns;
+    bnext[s] = bhead[b]; bhead[b] = s;
+  }
+  int ecap = 64, en = 0;
+  int *eto = malloc(sizeof(int) * (size_t)ecap), *enext = malloc(sizeof(int) * (size_t)ecap);
+  if (!ehead || !eto || !enext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0; s < ns; s++) ehead[s] = -1;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int caller = c->nscope[id];
+    if (caller < 1 || caller >= ns) continue;
+    for (int callee = bhead[sp_strhash(nm) % (unsigned)ns]; callee >= 0; callee = bnext[callee]) {
+      if (!sp_streq(c->scopes[callee].name, nm)) continue;
+      if (en == ecap) {
+        ecap *= 2;
+        eto = realloc(eto, sizeof(int) * (size_t)ecap); enext = realloc(enext, sizeof(int) * (size_t)ecap);
+        if (!eto || !enext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      eto[en] = caller; enext[en] = ehead[callee]; ehead[callee] = en++;
+    }
+  }
+  /* the worklist starts from every method this pass gave a value; a method
+     derived again whose value moves queues its callers */
+  int *wl = malloc(sizeof(int) * (size_t)ns);
+  char *queued = calloc((size_t)ns, 1);
+  if (!wl || !queued) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int wn = 0;
+  for (int s = 1; s < ns; s++)
+    if (x->moved[s])
+      for (int e = ehead[s]; e >= 0; e = enext[e])
+        if (!queued[eto[e]]) { queued[eto[e]] = 1; wl[wn++] = eto[e]; }
+  long budget = 4L * ns + 64;
+  while (wn > 0 && budget-- > 0) {
+    int s = wl[--wn];
+    queued[s] = 0;
+    irt_explicit_returns(c, s, x);
+    TyKind before = c->scopes[s].ret;
+    changed |= irt_scope(c, s, x);
+    if (c->scopes[s].ret == before) continue;
+    for (int e = ehead[s]; e >= 0; e = enext[e])
+      if (!queued[eto[e]]) { queued[eto[e]] = 1; wl[wn++] = eto[e]; }
+  }
+  free(bhead); free(bnext); free(ehead); free(eto); free(enext); free(wl); free(queued);
+  return changed;
+}
+
 int infer_return_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -14570,259 +14929,16 @@ int infer_return_types(Compiler *c) {
     free(noblk);
   }
   /* implicit return: the body's value */
+  char *moved = calloc((size_t)(ns > 0 ? ns : 1), 1);
+  if (!moved) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  IrtCtx x = { ret_acc, has_ret, ret_empty, ret_head, ret_next, ret_narrow, moved };
   for (int s = 1; s < c->nscopes; s++) {
-    Scope *sc = &c->scopes[s];
-    /* Specialized inherited-cls-new copies keep their fixed subclass return
-       type (the shared body's bare `new` would otherwise infer the base). */
-    if (sc->ret_specialized) continue;
-    /* An --rbs-seeded return is pinned, with one exception: a scalar-valued
-       str-keyed hash return (Hash[String,String] / Hash[String,Integer]) whose
-       body actually builds a poly-valued StrPolyHash (mixed / non-scalar
-       values -- the RBS value type is too narrow for what the code returns).
-       Emitting the StrPolyHash body through a StrStrHash* signature is a layout
-       mismatch that corrupts every read, so let the body widen the return to
-       its poly-valued sibling. Every other rbs-seeded return stays pinned. */
-    if (sc->ret_rbs_seeded) {
-      if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
-        TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
-        if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
-        if (br == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; changed = 1; }
-      }
-      /* Same shape, and the same reason. RBS `Integer` covers both machine
-         ints and bignums, so a body that grew a bignum is a valid inhabitant
-         of the declared type -- but the seed had already pinned the signature
-         to sp_int, and returning an sp_Bigint* through it truncates the
-         pointer and answers garbage. Declaring the type correctly made the
-         program worse than not declaring it at all (#3518). */
-      else if (sc->ret == TY_INT) {
-        TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
-        if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
-        if (br == TY_BIGINT) { sc->ret = TY_BIGINT; changed = 1; }
-      }
-      continue;
-    }
-    /* A return narrowed to a pointer array is pinned the same way. The body
-       still reads the poly array, and those two array KINDS unify to the plain
-       poly SCALAR -- so re-deriving would make the slot strictly worse, and
-       reporting that as a change every round runs the fixpoint to its cap. */
-    if (sc->ret_oa_pin != TY_UNKNOWN) continue;
-    /* synthesized compiler_state methods carry a fixed return type (no AST). */
-    if (sc->cs_synth) continue;
-    /* A lowered self-recursive yield method returns its block's value through
-       a raw sp_int carrier pinned when the lowering rewrites the scope
-       (post-fixpoint); re-deriving from the body would break that ABI. */
-    if (sc->is_lowered_yield) continue;
-    /* An empty method body returns nil; if its value is used at all it must
-       be poly (a void C function yields nothing to read). */
-    int empty_body = sc->body < 0;
-    if (sc->body >= 0 && nt_kind(nt, sc->body) == NK_StatementsNode) {
-      int bn = 0; nt_arr(nt, sc->body, "body", &bn); if (bn == 0) empty_body = 1;
-    }
-    /* A trailing infinite loop (`while true` / `until false`) with no
-       top-level break can't fall through, so its nil value is unreachable:
-       when explicit returns exist, they alone type the method instead of
-       nil-widening it to poly. A breaking or finite loop still contributes
-       its nil fall-through, as CRuby does. */
-    int tail_unreachable = 0;
-    if (!empty_body && has_ret && has_ret[s] &&
-        nt_kind(nt, sc->body) == NK_StatementsNode) {
-      int bn2 = 0; const int *bb2 = nt_arr(nt, sc->body, "body", &bn2);
-      if (bn2 > 0) {
-        int last = bb2[bn2 - 1];
-        NodeKind lk = nt_kind(nt, last);
-        if (lk == NK_WhileNode || lk == NK_UntilNode) {
-          int pred = nt_ref(nt, last, "predicate");
-          const char *cty = pred >= 0 ? nt_type(nt, pred) : NULL;
-          int infinite = cty && ((lk == NK_WhileNode && sp_streq(cty, "TrueNode")) ||
-                                 (lk == NK_UntilNode && sp_streq(cty, "FalseNode")));
-          int lbody = nt_ref(nt, last, "statements");
-          if (infinite && (lbody < 0 || !block_has_top_break(c, lbody)))
-            tail_unreachable = 1;
-        }
-        /* A trailing `raise` is unreachable-fall-through for the same reason:
-           the method never returns through it, so its (void) value must not
-           be unified with the explicit returns. Unifying void with Integer
-           has no rule and lands on poly, which then boxes the return of a
-           `return x if cond; raise` guard method and everything downstream
-           of its callers. Same rule the branch arms got for raise. */
-        else if (lk == NK_CallNode && nt_ref(nt, last, "receiver") < 0) {
-          const char *lnm = nt_str(nt, last, "name");
-          if (lnm && is_diverging_call(lnm))
-            tail_unreachable = 1;
-        }
-      }
-    }
-    TyKind r = empty_body ? TY_POLY
-             : tail_unreachable ? ret_acc[s]
-             : infer_type(c, sc->body);
-    /* a bare `Array.new` tail returns the poly array a marked `[]` tail
-       does (mark_empty_literal_tails) */
-    if (r == TY_UNKNOWN && !empty_body && !(has_ret && has_ret[s]) &&
-        an_empty_container_kind(c, sc->body) == 1)
-      r = TY_POLY_ARRAY;
-    /* A yielding method whose body ends in `if block_given? ... else ... end`
-       has two values, one per call form, and the inliner keeps only the arm a
-       call site takes: the block arm types the call with a block, the else
-       arm the call without one (Scope.ret_noblock, read by method_call_ret).
-       Unified, the Enumerator of the one arm and the memo of the other made
-       the method poly for both (builtins/enumerable.rb). */
-    if (!empty_body && !tail_unreachable && sc->yields && nt_kind(nt, sc->body) == NK_StatementsNode) {
-      int bn3 = 0; const int *bb3 = nt_arr(nt, sc->body, "body", &bn3);
-      int last = bn3 > 0 ? bb3[bn3 - 1] : -1;
-      int pred = last >= 0 && nt_kind(nt, last) == NK_IfNode ? nt_ref(nt, last, "predicate") : -1;
-      int sub = last >= 0 ? nt_ref(nt, last, "subsequent") : -1;
-      if (pred >= 0 && nt_kind(nt, pred) == NK_CallNode && nt_ref(nt, pred, "receiver") < 0 &&
-          nt_str(nt, pred, "name") && sp_streq(nt_str(nt, pred, "name"), "block_given?") &&
-          sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) {
-        int ts = nt_ref(nt, last, "statements"), es = nt_ref(nt, sub, "statements");
-        int tn3 = 0; const int *tb3 = ts >= 0 ? nt_arr(nt, ts, "body", &tn3) : NULL;
-        int en3 = 0; const int *eb3 = es >= 0 ? nt_arr(nt, es, "body", &en3) : NULL;
-        TyKind et = en3 > 0 ? infer_type(c, eb3[en3 - 1]) : TY_NIL;
-        if (et != TY_UNKNOWN && sc->ret_noblock != et) sc->ret_noblock = et;
-        /* a block arm ending in `yield` is typed per call site by
-           method_call_ret, as a yield-tailed body is; any other block arm
-           types the method alone, even while it is still unknown: letting
-           the unified body type stand in would hand a call with a block the
-           else arm's Enumerator on the round before the memo settles, and a
-           local only widens from there */
-        if (!(tn3 > 0 && nt_kind(nt, tb3[tn3 - 1]) == NK_YieldNode)) {
-          TyKind bt = tn3 > 0 ? infer_type(c, tb3[tn3 - 1]) : TY_NIL;
-          r = bt != TY_UNKNOWN && has_ret && has_ret[s] ? ty_unify(bt, ret_acc[s]) : bt;
-          goto ret_decided;
-        }
-      }
-    }
-    /* explicit returns within this scope (collected above) */
-    if (!tail_unreachable && has_ret && has_ret[s]) {
-      /* An empty `[]` / `{}` value is still untyped, and the unify took the
-         other values' type for it: `return 1 if b; {}` returned the hash
-         pointer through an sp_int. Beside a value of another kind it is a
-         container all the same, so the method boxes (the if/else rule). */
-      int tk = empty_body ? 0 : an_empty_container_kind(c, sc->body);
-      if (r == TY_UNKNOWN && an_empty_container_disagrees(tk, ret_acc[s])) r = TY_POLY;
-      r = ty_unify(r, ret_acc[s]);
-    }
-    if (has_ret && has_ret[s] && ret_empty && ret_empty[s] &&
-        (an_empty_container_disagrees(ret_empty[s] & 1, r) ||
-         an_empty_container_disagrees(ret_empty[s] & 2, r)))
-      r = TY_POLY;
-    ret_decided:
-    /* A value a caller's parameter stores elements of another kind into is
-       the general Array (widen_array_sources); its values re-derive their
-       typed kinds, which unify to the poly scalar when they differ. One that
-       stops being an array at all loses the pin. */
-    if (sc->ret_poly_array_pin) {
-      if (r == TY_UNKNOWN || r == TY_POLY || (ty_is_array(r) && !ty_is_ptr_array(r))) r = TY_POLY_ARRAY;
-      else sc->ret_poly_array_pin = 0;
-    }
-    /* Post-backstop re-runs fill returns whose body only settled after the
-       main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there
-       is a net loss: the late-settling chains that matter are scalar, while a
-       previously-UNKNOWN return deriving poly is typically a store-style
-       method whose value no caller reads -- boxing it puts an sp_RbVal
-       return in optcarrot's hottest poke path for ~4% fps. Keep those at
-       their pre-pass type; the main fixpoint still widens to poly freely. */
-    if (g_ret_no_new_poly == 1 && r == TY_POLY && sc->ret != TY_POLY) continue;
-    /* At 2 (the late ivar-widening re-run) a return follows its body only
-       where the ivar the body answers widened after the return was derived:
-       a concrete type to poly (a String reading over a poly value does not
-       build, #4451), and an Integer to a Bignum (`def get = @v` returned a
-       promoted loop local's Bignum through an sp_int). Everything else is
-       left where the earlier, gated re-runs settled it. */
-    if (g_ret_no_new_poly == 2 &&
-        !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
-        !(r == TY_BIGINT && sc->ret == TY_INT)) continue;
-    /* An element-less-hash body (`{}` / Hash.new) infers TY_UNKNOWN every pass
-       (no witnessed element). Once a caller has pinned it to a concrete hash
-       (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
-       would re-emit a void C signature the caller can't assign (#1680). */
-    if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_empty_hash(c, s) >= 0) continue;
-    /* A void body-recompute must not downgrade an established return: an
-       abstract/raising body infers TY_VOID every pass, while the slot's real
-       type comes from descendant-override dispatch unification (or a caller
-       backprop). Re-deriving VOID here would flip the slot every iteration
-       and the fixpoint never converges. */
-    if (r == TY_VOID && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID) continue;
-    /* A tail that nothing resolves derives UNKNOWN every round. The arm at the
-       end of this pass owns that case -- it gives such a method POLY when a
-       caller reads its value -- and its own guard then skips the method. Undo
-       that here and the two take turns to the fixpoint's cap (#4116). Narrow
-       on purpose: only an established POLY, and only for the shape that arm
-       claims, so a return that re-derives UNKNOWN for any other reason still
-       corrects downward. */
-    if (r == TY_UNKNOWN && sc->ret == TY_POLY && scope_tail_unresolved_call(c, s)) continue;
-    if (r != sc->ret) {
-      if (ty_degraded(r) && !ty_degraded(sc->ret)) {
-        /* the value that degraded the return: the body's tail if its type
-           did, else the first explicit return whose value did, else (two
-           concrete kinds that disagree) the tail, with the first return as
-           the other side */
-        int node = -1, other = -1; TyKind then = TY_UNKNOWN;
-        int tail = (!empty_body && !tail_unreachable && sc->body >= 0) ? sc->body : -1;
-        if (tail >= 0 && tail < c->node_cap && ty_degraded(c->ntype[tail])) { node = tail; then = c->ntype[tail]; }
-        else if (ret_head && ret_next) {
-          for (int rid = ret_head[s]; rid >= 0; rid = ret_next[rid]) {
-            TyKind rt = return_node_type(c, rid);
-            if (ty_degraded(rt)) { node = return_value_node(c, rid); then = rt; break; }
-          }
-        }
-        if (node < 0) {
-          /* two concrete kinds met. One side is the tail when it has a type
-             at this point, else the first typed `return`; the other is the
-             first `return` of a different kind (the list's head can be one
-             of the same kind, which said "String, where a `return` gives
-             String"; String and its mutable refinement are one kind). */
-          TyKind tt = (tail >= 0 && tail < c->node_cap) ? c->ntype[tail] : TY_UNKNOWN;
-          if (tt != TY_UNKNOWN) { node = tail; then = tt; }
-          if (ret_head)
-            for (int rid = ret_head[s]; rid >= 0; rid = ret_next[rid]) {
-              TyKind rt = return_node_type(c, rid);
-              if (rt == TY_UNKNOWN) continue;
-              if (node < 0) { node = return_value_node(c, rid); then = rt; continue; }
-              int same = rt == then || ((rt == TY_STRING || rt == TY_STRBUF) && (then == TY_STRING || then == TY_STRBUF));
-              if (!same) { other = return_value_node(c, rid); break; }
-            }
-          if (node < 0) { node = tail; then = r; }
-        }
-        sc->ret_why.node = node; sc->ret_why.other = other; sc->ret_why.prev = sc->ret;
-        sc->ret_why.then = then; sc->ret_why.round = g_infer_round;
-      }
-      else if (!ty_degraded(r)) why_reset(&sc->ret_why);
-      sc->ret = r; changed = 1;
-    }
-    /* For a method with a &block param, record the value type its block yields
-       (unified across all call sites). Blocks passed to it are emitted returning
-       this common type so the sp_proc_call ABI is consistent. */
-    if (sc->blk_param && sc->blk_param[0] && !sc->yields && !sc->is_lowered_yield) {
-      TyKind bvt = yield_value_type(c, (int)(sc - c->scopes));
-      if (bvt != TY_UNKNOWN && sc->blk_ret != (int)bvt) { sc->blk_ret = (int)bvt; changed = 1; }
-    }
-    /* When the method returns a proc, record the proc's body return type so a
-       caller's `m.call(...)` resolves its result type (factory pattern). */
-    if (r == TY_PROC) {
-      TyKind pr = TY_UNKNOWN;
-      if (sc->body >= 0) {
-        int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
-        if (bn > 0) pr = proc_ret_of(c, bb[bn - 1]);
-      }
-      if (ret_head && ret_next) {
-        for (int id = ret_head[s]; id >= 0; id = ret_next[id]) {
-          int a = nt_ref(nt, id, "arguments"); int an = 0;
-          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-          if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
-        }
-      }
-      else for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (ty && sp_streq(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
-          int a = nt_ref(nt, id, "arguments"); int an = 0;
-          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-          if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
-        }
-      }
-      if (pr != TY_UNKNOWN && sc->ret_proc_ret != (int)pr) { sc->ret_proc_ret = (int)pr; changed = 1; }
-    }
+    TyKind before = c->scopes[s].ret;
+    changed |= irt_scope(c, s, &x);
+    if (c->scopes[s].ret != before) moved[s] = 1;
   }
+  if (ret_acc && has_ret) changed |= irt_settle_callers(c, &x);
+  free(moved);
 
   /* An abstract base method (`def self.table_name; raise; end`) infers a void
      return, but a subclass overrides it with a value-returning version. A call
