@@ -9,6 +9,8 @@ rescue NoMethodError => e
   puts "NoMethodError: #{e.message} #{e.args.inspect}"
 rescue TypeError => e
   puts "TypeError: #{e.message}"
+rescue FrozenError => e
+  puts "FrozenError: #{e.message}"
 end
 
 class Plain
@@ -20,3 +22,17 @@ vals.each { |v| try(v, "r") }
 vals.each { |v| try(v, [9]) }
 vals.each { |v| try(v, {b: 2}) }
 vals.each { |v| try(v, nil) }
+
+# A frozen receiver raises FrozenError before its source is converted (no
+# TypeError for the source, no #to_ary call), and a String's source converts
+# through #to_str.
+class Str; def to_str = "zz"; end
+class Ary; def to_ary; puts "to_ary called"; [9]; end; end
+k = ARGV.size
+fs = [+"ab", 0][k].freeze
+fa = [[1, 2], 0][k].freeze
+try(fs, 1)
+try(fs, Str.new)
+try(fa, Ary.new)
+u = [+"ab", 0][k]
+try(u, Str.new)
