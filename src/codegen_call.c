@@ -723,7 +723,7 @@ TyKind ie_splice_value_ty(Compiler *c, int node) {
   if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an > 0) return comp_ntype(c, av[0]);
+    if (an > 0) return repr_of(c, av[0]).as_ty;
     return sp_streq(ty, "NextNode") ? TY_NIL : TY_UNKNOWN;   /* keep in step with ie_block_break_next_ty */
   }
   if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
@@ -765,7 +765,7 @@ void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
 
 int emit_ie_proc(Compiler *c, int id, int recv, int self_cls, int blk, int tramp, Buf *b) {
   const NodeTable *nt = c->nt;
-  TyKind rt = self_cls >= 0 ? ty_object(self_cls) : comp_ntype(c, recv), t = comp_ntype(c, id);
+  TyKind rt = self_cls >= 0 ? ty_object(self_cls) : comp_ntype(c, recv), t = repr_of(c, id).as_ty;
   int fe = nt_ref(nt, blk, "expression"), rb = resolve_forwarded_block(c, blk);
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -865,7 +865,7 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
      or a typed array on its own path; and it is what a_block_is_lifted read
      when the analysis's last capture pass decided the capture cells, so a
      call routed here has them celled. */
-  if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!poly_enum_op_for(name)) return 0;
   /* A block whose body yields can only be SPLICED: routing it to the dispatch
@@ -898,7 +898,7 @@ int sn_guard_pending(Compiler *c, int id) {
   const char *op = nt_str(nt, id, "call_operator");
   if (!op || !sp_streq(op, "&.")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  return recv >= 0 && comp_ntype(c, recv) == TY_POLY;
+  return recv >= 0 && repr_of(c, recv).kind == RK_BOXED;
 }
 
 
@@ -1041,7 +1041,7 @@ static char *emit_io_builtin_call(Compiler *c, int id, int recv, int tv) {
   int sv_skip = g_io_skip_reopen, sv_skip_node = g_io_skip_node;
   g_io_skip_reopen = 1; g_io_skip_node = id;
   TyKind bt = an_builtin_answer(c, id);
-  TyKind ct = comp_ntype(c, id);
+  TyKind ct = repr_of(c, id).as_ty;
   if (bt == TY_UNKNOWN || (bt != ct && ct != TY_POLY)) {
     g_io_skip_reopen = sv_skip; g_io_skip_node = sv_skip_node;
     return NULL;
@@ -1109,7 +1109,7 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
     buf_puts(b, ")");
     return;
   }
-  int boxed = comp_ntype(c, id) == TY_POLY;
+  int boxed = repr_of(c, id).kind == RK_BOXED;
   /* the receiver first, then the arguments, each evaluated once: every
      arm, and the builtin's, reads them from temps */
   int trv = ++g_tmp;
@@ -2209,7 +2209,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
    not an Integer -- nil above all -- has no such method (NoMethodError), where
    the argument conversion raised TypeError for it. */
 void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
-  if (comp_ntype(c, recv) == TY_POLY) {
+  if (repr_of(c, recv).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_int_recv("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name);
     return;
   }
@@ -2218,7 +2218,7 @@ void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
 /* Kernel#Rational's argument: as emit_rat_coerce, but a boxed nil is the
    TypeError Rational(nil) raises rather than the integer 0. */
 static void emit_rat_kernel_arg(Compiler *c, int node, Buf *b) {
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_kernel_rational_arg("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2234,7 +2234,7 @@ void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   /* A boxed operand decides at runtime: a Rational stays exact, a Float
      converts exactly, anything else reads as an integer. Reading it as an
      integer unconditionally turned Rational(<3/4>, 2) into (0/1). */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_kernel_rational("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2248,7 +2248,7 @@ void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
   /* a poly operand (e.g. a Complex read out of a poly array) unboxes at
      runtime -- a boxed Complex keeps its components, a real number is re+0i */
-  if (comp_ntype(c, node) == TY_POLY) {
+  if (repr_of(c, node).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_as_complex("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -2380,7 +2380,7 @@ int poly_shl_root_slot(Compiler *c, int recv) {
   }
   int kind = nt_kind(nt, slot);
   if (kind != NK_LocalVariableReadNode && kind != NK_InstanceVariableReadNode) return -1;
-  return comp_ntype(c, slot) == TY_POLY ? slot : -1;
+  return repr_of(c, slot).kind == RK_BOXED ? slot : -1;
 }
 
 int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr);
@@ -3199,7 +3199,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   g_dsend_active[g_dsend_depth++] = id;
   int sym = argv[0], mo = sp_streq(nt_str(nt, id, "name"), "method");
   int t = ++g_tmp, recv = nt_ref(nt, id, "receiver"), sv_nargov = g_n_argov;
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
   buf_puts(b, "({ ");
   if (rt != TY_UNKNOWN && rt != TY_VOID && subtree_has_side_effect(c, recv) && g_n_argov < MAX_ARG_OVERRIDE) {
     int tr = ++g_tmp;
@@ -3212,7 +3212,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
-    TyKind at = comp_ntype(c, arm);
+    TyKind at = repr_of(c, arm).as_ty;
     const char *nm = nt_str(nt, arm, "dyn_name");
     if (!nm) continue;
     if (at == TY_UNKNOWN || at == TY_VOID) {
@@ -3302,7 +3302,7 @@ static int emit_dynamic_respond_to(Compiler *c, int id, Buf *b) {
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
-    TyKind at = comp_ntype(c, arm);
+    TyKind at = repr_of(c, arm).as_ty;
     if (at == TY_UNKNOWN || at == TY_VOID) continue;
     int aargs = nt_ref(nt, arm, "arguments");
     int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
@@ -3378,7 +3378,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
   Buf *sv_pre = g_pre;
   for (int k = 0; k < narm; k++) {
     int arm = arms[k];
-    TyKind at = comp_ntype(c, arm);
+    TyKind at = repr_of(c, arm).as_ty;
     if (at == TY_UNKNOWN || at == TY_VOID) continue;
     int aargs = nt_ref(nt, arm, "arguments");
     int aac = 0; const int *aav = aargs >= 0 ? nt_arr(nt, aargs, "arguments", &aac) : NULL;
@@ -3441,7 +3441,7 @@ static int emit_dynamic_const_get(Compiler *c, int id, Buf *b) {
 static void emit_fiber_pass_value(Compiler *c, int argc, const int *argv, Buf *b) {
   if (argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
   if (argc == 1) {
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_expr(c, argv[0], b);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) emit_expr(c, argv[0], b);
     else emit_boxed(c, argv[0], b);
     return;
   }
@@ -3641,7 +3641,7 @@ void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b) {
 static int emit_nullable_numeric_convert(Compiler *c, int id, const int *argv, int exc,
                                          const char *klass, Buf *b) {
   TyKind at = comp_ntype(c, argv[0]);
-  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || comp_ntype(c, id) != TY_POLY ||
+  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode || repr_of(c, id).kind != RK_BOXED ||
       !(at == TY_NIL || at == TY_POLY ||
         ((at == TY_INT || at == TY_FLOAT) && nullable_int_value(c, argv[0]))))
     return 0;
@@ -3798,8 +3798,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
        sp_RbVal is not a conversion, it is a C error, and a parameter with
        no evidence is poly (a Method captured with method(:Complex) has
        exactly that shape) */
-    int re_poly = comp_ntype(c, argv[0]) == TY_POLY;
-    int im_poly = argc >= 2 && comp_ntype(c, argv[1]) == TY_POLY;
+    int re_poly = repr_of(c, argv[0]).kind == RK_BOXED;
+    int im_poly = argc >= 2 && repr_of(c, argv[1]).kind == RK_BOXED;
     if (re_poly || im_poly) {
       /* A boxed component carries its class at RUN time, and the flag says
          which components render as Float. Read off the static type it is
@@ -3814,8 +3814,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          its exceptions) ahead of the real one's wherever the surrounding
          order rewrite could not bind them. */
       int tre = ++g_tmp, tim = ++g_tmp;
-      TyKind ret0 = comp_ntype(c, argv[0]);
-      TyKind imt0 = argc >= 2 ? comp_ntype(c, argv[1]) : TY_INT;
+      TyKind ret0 = repr_of(c, argv[0]).as_ty;
+      TyKind imt0 = argc >= 2 ? repr_of(c, argv[1]).as_ty : TY_INT;
       buf_puts(b, "({ ");
       if (re_poly) buf_puts(b, "sp_RbVal ");
       else emit_ctype(c, ret0, b), buf_puts(b, " ");
@@ -3967,7 +3967,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b);
       return 1;
     }
-    if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+    if (argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
       emit_rat_kernel_arg(c, argv[0], b);
       return 1;
     }
@@ -4011,10 +4011,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          which cannot be C-cast to an integer -- unbox it with sp_poly_to_i
          (#3184). */
       Buf nb; memset(&nb, 0, sizeof nb);
-      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(&nb, "sp_poly_arg_i_msg("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ", \"can't convert nil into Rational\")"); free(t0.p); }
+      if (repr_of(c, argv[0]).kind == RK_BOXED) { buf_puts(&nb, "sp_poly_arg_i_msg("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "sp_box_nil()"); buf_puts(&nb, ", \"can't convert nil into Rational\")"); free(t0.p); }
       else { buf_puts(&nb, "(sp_int)("); Buf t0 = expr_buf(c, argv[0]); buf_puts(&nb, t0.p ? t0.p : "0"); buf_puts(&nb, ")"); free(t0.p); }
       Buf db; memset(&db, 0, sizeof db);
-      if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(&db, "sp_poly_arg_i_msg("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ", \"can't convert nil into Rational\")"); free(t1.p); }
+      if (repr_of(c, argv[1]).kind == RK_BOXED) { buf_puts(&db, "sp_poly_arg_i_msg("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "sp_box_nil()"); buf_puts(&db, ", \"can't convert nil into Rational\")"); free(t1.p); }
       else { buf_puts(&db, "(sp_int)("); Buf t1 = expr_buf(c, argv[1]); buf_puts(&db, t1.p ? t1.p : "0"); buf_puts(&db, ")"); free(t1.p); }
       buf_printf(b, "({ sp_int _t%d = %s; sp_int _t%d = %s;"
                     " if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
@@ -4086,7 +4086,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         (argc == 0 ||
          (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT ||
                         comp_ntype(c, argv[0]) == TY_NIL ||
-                        comp_ntype(c, argv[0]) == TY_POLY ||
+                        repr_of(c, argv[0]).kind == RK_BOXED ||
                         nt_kind(nt, argv[0]) == NK_NilNode)))) {
       if (argc == 1 && nt_kind(nt, argv[0]) != NK_NilNode) {
         /* the receiver is usually built right here; root it while the count
@@ -4637,7 +4637,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || comp_ntype(c, recv) != TY_POLY || !name) return 0;
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !name) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int argc; const int *argv = call_args(nt, id, &argc);
   if (user_defines_or_reads(c, name)) return 0;   /* a user class owns the name */
@@ -4716,7 +4716,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        answers for everything else. */
     if ((sp_streq(name, "utime") || sp_streq(name, "stime") ||
          sp_streq(name, "cutime") || sp_streq(name, "cstime")) &&
-        (comp_ntype(c, id) == TY_FLOAT || g_poly_builtin_arm) &&
+        (repr_of(c, id).as_ty == TY_FLOAT || g_poly_builtin_arm) &&
         !reopened_owns(c, "Object", name) && !reopened_owns(c, "Kernel", name)) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
@@ -4857,7 +4857,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        call is typed a String (or in the dispatch's default arm), and not
        where a reopened Object or Kernel has an asctime, which answers for
        every receiver the table does not */
-    else if (sp_streq(name, "asctime") && (comp_ntype(c, id) == TY_STRING || g_poly_builtin_arm) &&
+    else if (sp_streq(name, "asctime") && (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm) &&
              !(comp_class_index(c, "Object") >= 0 &&
                comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
              !(comp_class_index(c, "Kernel") >= 0 &&
@@ -5146,17 +5146,17 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     Buf qv; memset(&qv, 0, sizeof qv);
     buf_puts(&qv, "sp_poly_queue_pop_flag("); emit_expr(c, recv, &qv);
     buf_printf(&qv, ", \"%s\", ", name); emit_expr(c, argv[0], &qv); buf_puts(&qv, ")");
-    TyKind want = comp_ntype(c, id);
+    TyKind want = repr_of(c, id).as_ty;
     if (want == TY_POLY) buf_puts(b, qv.p); else emit_unbox_text(c, want, qv.p, b);
     free(qv.p);
     return 1;
   }
   if ((is_pop_shift(name)) && argc == 1 &&
-      comp_ntype(c, argv[0]) == TY_POLY) {
+      repr_of(c, argv[0]).kind == RK_BOXED) {
     Buf qv; memset(&qv, 0, sizeof qv);
     buf_puts(&qv, "sp_poly_pop_any("); emit_expr(c, recv, &qv); buf_puts(&qv, ", ");
     emit_expr(c, argv[0], &qv); buf_printf(&qv, ", %d)", sp_streq(name, "shift") ? 1 : 0);
-    TyKind want = comp_ntype(c, id);
+    TyKind want = repr_of(c, id).as_ty;
     if (want == TY_POLY) buf_puts(b, qv.p); else emit_unbox_text(c, want, qv.p, b);
     free(qv.p);
     return 1;
@@ -5169,7 +5169,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if ((is_pop_shift(name)) && argc == 0) {
-    TyKind want = comp_ntype(c, id);
+    TyKind want = repr_of(c, id).as_ty;
     int tv = 0;
     if (want == TY_STRING || want == TY_INT) {
       tv = ++g_tmp;
@@ -5230,7 +5230,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* Array#delete_at on a poly value (#3298): in-place removal through the
      runtime kind dispatch. */
   if (sp_streq(name, "delete_at") && argc == 1) {
-    TyKind want = comp_ntype(c, id);
+    TyKind want = repr_of(c, id).as_ty;
     int tv = 0;
     if (want == TY_STRING || want == TY_INT) {
       tv = ++g_tmp;
@@ -5698,7 +5698,7 @@ int call_arg_sig(Compiler *c, const int *argv, int argc, char *out, size_t cap) 
   if (argc > 62) return 0;   /* no room in the signature */
   if ((size_t)(argc * 8 + 1) > cap) return 0;
   for (int k = 0; k < argc; k++) {
-    TyKind at = comp_ntype(c, argv[k]);
+    TyKind at = repr_of(c, argv[k]).as_ty;
     if (at == TY_POLY || at == TY_FLOAT || proc_slot_via_poly(c, at)) return 0;
     abi_sig_token(at, out + 8 * k);
   }
@@ -6001,7 +6001,7 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
      fallback a nil/void/unresolved argument takes, whose temp is an sp_RbVal
      the node's type does not describe. Decline those. */
   for (int a = 0; a < argc; a++)
-    if (subtree_has_side_effect(c, argv[a]) && comp_ntype(c, argv[a]) != atmp_ty[a])
+    if (subtree_has_side_effect(c, argv[a]) && repr_of(c, argv[a]).as_ty != atmp_ty[a])
       return 0;
   /* The emitters read the node's own type to pick their shape, and this node
      was widened to poly to hold both answers. Restore the builtin-only type
@@ -6129,7 +6129,7 @@ int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
     int is_splat = nt_kind(nt, argv[a]) == NK_SplatNode;
     if (is_splat && !splat_ok) return 0;
     if (subtree_has_side_effect(c, argv[a]) &&
-        (is_splat || comp_ntype(c, argv[a]) != atmp_ty[a]))
+        (is_splat || repr_of(c, argv[a]).as_ty != atmp_ty[a]))
       return 0;
   }
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
@@ -7352,11 +7352,11 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  int rt_boxed = repr_of(c, recv).kind == RK_BOXED;
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
-  if (recv >= 0 && rt == TY_POLY && argc == 0) {
+  if (recv >= 0 && rt_boxed && argc == 0) {
     PolySpecials0 ps;
     poly_specials0(c, id, name, &ps);
     int is_lengthlike = ps.lengthlike;
@@ -7398,7 +7398,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        it had. */
     int name_taken = user_defines_or_reads(c, name);
     if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h) {
-      TyKind ret = comp_ntype(c, id);
+      TyKind ret = repr_of(c, id).as_ty;
       /* an OpenStruct member is a boxed value; but when analyze typed the
          call concretely (a user method OR reader/alias resolves the name --
          e.g. alias required? -> attr_reader :required, which
@@ -7496,7 +7496,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* poly method dispatch with arguments: switch on the boxed object's cls_id
      and call the matching user method (or a builtin array `[]`), passing the
      arguments evaluated once into temps. */
-  if (recv >= 0 && rt == TY_POLY && argc > 0) {
+  if (recv >= 0 && rt_boxed && argc > 0) {
     PolySpecialsN ps;
     poly_specials_n(c, id, name, argc, argv, &ps);
     int is_index = ps.index;
@@ -7557,7 +7557,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       is_intersect = ps.intersect; is_arr_index = ps.arr_index; is_strdel = ps.strdel;
       is_strpart = ps.strpart; is_strsplit = ps.strsplit; is_pred = ps.pred; is_strftime = ps.strftime;
       is_cover = ps.cover; is_gcdlcm = ps.gcdlcm; is_pfirstn = ps.pfirstn;
-      TyKind ret = comp_ntype(c, id);
+      TyKind ret = repr_of(c, id).as_ty;
       int tv = ++g_tmp, tr = ++g_tmp;
       /* `x = v` through a writer: the value is v as written, so the arms call
          the writer for effect and the argument's temp is the result (the
@@ -7592,7 +7592,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
           continue;
         }
-        TyKind at = comp_ntype(c, argv[a]);
+        TyKind at = repr_of(c, argv[a]).as_ty;
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
@@ -7674,7 +7674,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         for (int e = 0; e < kwn; e++) {
           int val = nt_ref(nt, kwels[e], "value");
           kwtmp[e] = ++g_tmp;
-          TyKind at = val >= 0 ? comp_ntype(c, val) : TY_NIL;
+          TyKind at = val >= 0 ? repr_of(c, val).as_ty : TY_NIL;
           if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
             kwty[e] = TY_POLY;
             if (val >= 0) emit_poly_arg_temp(c, val, TY_POLY, 1, kwtmp[e], ran, b);
@@ -7733,7 +7733,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_printf(b, " _t%d = ", tr);
         if (is_fetch && argc == 2) {
           char dn[40]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
-          if (ret == TY_POLY) emit_boxed_text(c, comp_ntype(c, argv[1]), dn, b);
+          if (ret == TY_POLY) emit_boxed_text(c, repr_of(c, argv[1]).as_ty, dn, b);
           else buf_puts(b, dn);
         }
         else buf_puts(b, is_scalar_ret(ret) ? default_value_from_compiler(c, ret) : "0");
@@ -8116,7 +8116,7 @@ else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
   }
   if (argc == 7) {
     buf_puts(b, is_new ? ", " : "), ");
-    if (comp_ntype(c, argv[6]) == TY_POLY) {
+    if (repr_of(c, argv[6]).kind == RK_BOXED) {
       buf_puts(b, "sp_poly_to_f_with_rational("); emit_expr(c, argv[6], b); buf_puts(b, ")");
     }
     else if (comp_ntype(c, argv[6]) == TY_RATIONAL) {
@@ -8579,7 +8579,7 @@ void emit_one_arg(Compiler *c, int arg, int boxed, Buf *b) {
   buf_printf(b, "({ sp_PolyArray *_t%d = ", t);
   emit_splat_operand_array(c, so >= 0 ? so : arg, b);
   buf_printf(b, "; sp_arity_check(_t%d->len, 1, 1, NULL); ", t);
-  if (boxed) buf_puts(b, el); else emit_unbox_text(c, comp_ntype(c, arg), el, b);
+  if (boxed) buf_puts(b, el); else emit_unbox_text(c, repr_of(c, arg).as_ty, el, b);
   buf_puts(b, "; })");
 }
 
@@ -9929,7 +9929,7 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     if (mk) buf_printf(mv, "sp_%sArray_new()", mk);
     else emit_expr(c, vnode, mv);
   }
-  else if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, mv);
+  else if (cls->ivar_types[a] == TY_POLY && repr_of(c, vnode).kind != RK_BOXED) emit_boxed(c, vnode, mv);
   /* The reverse of that box: a POLY value into a CONCRETE member
      slot. A member name a second class also defines makes the read
      a poly dispatch, whose value is an sp_RbVal, while the
@@ -9937,7 +9937,7 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
      -- so the call did not compile, naming a line in
      <spinel-synthesized> (#4348). */
   else if (cls->ivar_types[a] != TY_POLY && cls->ivar_types[a] != TY_UNKNOWN &&
-           comp_ntype(c, vnode) == TY_POLY) {
+           repr_of(c, vnode).kind == RK_BOXED) {
     Buf pv; memset(&pv, 0, sizeof pv);
     emit_expr(c, vnode, &pv);
     emit_unbox_text(c, cls->ivar_types[a], pv.p ? pv.p : "sp_box_nil()", mv);
