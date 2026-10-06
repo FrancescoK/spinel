@@ -208,6 +208,15 @@ no_gsub_enum:
                  tv, are, tv, tv, are, tv, tv, tv);
       return 1;
     }
+    /* `!~` is Object's, and asks the receiver's =~: an Array or a Hash has
+       none (Object#=~ was removed), so it raises NoMethodError for =~, not
+       a match of the container's pointer as text (which did not compile) */
+    if (are >= 0 && sp_streq(name, "!~") && rt != TY_STRING && rt != TY_STRBUF) {
+      buf_puts(b, "(sp_raise_nomethod(sp_nomethod_msg(\"=~\", ");
+      emit_boxed(c, recv, b);
+      buf_puts(b, ")), (sp_bool)0)");
+      return 1;
+    }
     if (are >= 0 && sp_streq(name, "!~")) {
       buf_printf(b, "(sp_re_match(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ") < 0)");
       return 1;

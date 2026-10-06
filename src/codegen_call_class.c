@@ -89,7 +89,8 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* the runtime answers: a Range value's builtin surface (the probe has
          no reading for it, #3619), an IO (the handle knows its kind), and a
          poly receiver */
-      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO)) {
+      if (recv >= 0 && (rt == TY_RANGE || rt == TY_FLOAT_RANGE || rt == TY_STR_RANGE || rt == TY_IO ||
+                        (rt == TY_NIL && face_of(recv) == TY_NIL))) {
         int tv = ++g_tmp;
         if (repr_of(c, id).kind == RK_BOXED) buf_puts(b, "sp_box_bool(");
         buf_printf(b, "({ sp_RbVal _t%d = ", tv);

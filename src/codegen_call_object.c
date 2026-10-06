@@ -225,8 +225,18 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 4)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? 20 : 0)"); }
-    /* a boxed value: its identity is the boxed payload (heap pointer / int) */
-    else if (rt == TY_POLY) { buf_puts(b, "((sp_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
+    /* a boxed value: an immediate's id is the one its own type answers
+       above (nil 4, false 0, true 20, an Integer 2n+1, a Symbol its id
+       doubled, a Float its value hash); anything else is identified by its
+       heap pointer. The payload bits alone gave nil 0 and true 1. */
+    else if (rt == TY_POLY) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? 4 : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.b ? 20 : 0)"
+                    " : _t%d.tag == SP_TAG_INT ? 2*_t%d.v.i+1 : _t%d.tag == SP_TAG_SYM ? (sp_int)_t%d.v.i*2"
+                    " : _t%d.tag == SP_TAG_FLT ? sp_rbval_hash_key(_t%d) : (sp_int)(uintptr_t)_t%d.v.p; })",
+                 t, t, t, t, t, t, t, t, t, t);
+    }
     /* a mutable String held as its shared sp_String: that handle is the
        identity, and the one a box of it carries; its text is a fresh copy
        on every read */

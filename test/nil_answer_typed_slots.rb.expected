@@ -1,0 +1,29 @@
+0
+nil
+nil
+nil
+0
+nil
+nil
+true
+[]
+{nil => 1}
+true
+:none
+[]
+0
+{}
+true
+[3]
+[true, 4]
+[true, 20]
+[true, 0]
+[true, 7]
+[true, -3]
+[true, nil]
+[true, nil]
+[true, nil]
+[true, nil]
+[true, 15]
+"undefined method '=~' for an instance of Array"
+"undefined method '=~' for an instance of Hash"
