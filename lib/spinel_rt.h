@@ -9771,6 +9771,9 @@ static SP_NOINLINE sp_RbVal sp_poly_arr_get_hash_cold(sp_RbVal a, sp_int i) {
      is a non-mutating read, and without this it fell past the arm below and
      returned nil exactly as that comment describes (#4279). */
   if (sp_poly_is_strbuf(a)) return sp_poly_arr_get_hash_cold(sp_poly_strbuf_deref(a), i);
+  /* Symbol#[int] is its name's: a boxed Symbol answered nil */
+  if (a.tag == SP_TAG_SYM && sp_sym_name_fn)
+    return sp_poly_arr_get_hash_cold(sp_box_str(sp_sym_name_fn((sp_sym)a.v.i)), i);
   /* String#[int]: return the single character at i (a 1-char string), or nil
      when out of range. A String that widened to poly (e.g. a method with
      multiple return paths) reaches this generic index path; without this arm

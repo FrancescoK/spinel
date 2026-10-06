@@ -1,0 +1,28 @@
+20
+[20, 30]
+[10, 20]
+"e"
+"el"
+"he"
+"y"
+"ym"
+"sy"
+{a: 1}
+{a: 1, b: 2}
+undefined method 'slice' for nil [1]
+undefined method 'slice' for nil [1, 2]
+undefined method 'slice' for nil [0..1]
+undefined method 'slice' for an instance of Integer [1]
+undefined method 'slice' for an instance of Integer [1, 2]
+undefined method 'slice' for an instance of Integer [0..1]
+undefined method 'slice' for an instance of Float [1]
+undefined method 'slice' for an instance of Float [1, 2]
+undefined method 'slice' for an instance of Float [0..1]
+"ll"
+"ell"
+undefined method 'slice' for nil [0, 1]
+[:r, :a0, :a1]
+[2, 3]
+[:r, :a0, :a1]
+"y"
+"o"
