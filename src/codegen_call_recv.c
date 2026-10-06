@@ -12195,10 +12195,15 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        "61".chr == "6", corrupting percent-encoding digits (#3328) */
     int tvC = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tvC); emit_boxed(c, recv, b);
-    /* nil has no chr (NoMethodError); read as a String it answered "" */
+    /* a String (or its shared handle) takes String#chr; nil and every
+       other value have no chr (NoMethodError, args []), where read as a
+       String nil answered "" and a Symbol or a Float its first character;
+       a Bignum is past any character */
     buf_printf(b, "; _t%d.tag == SP_TAG_INT ? sp_box_str(sp_int_chr(_t%d.v.i))"
-                  " : _t%d.tag == SP_TAG_NIL ? sp_poly_nil_no_method(\"chr\", _t%d)"
-                  " : sp_box_str(sp_str_chr(sp_poly_to_s(_t%d))); })", tvC, tvC, tvC, tvC, tvC);
+                  " : (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? sp_box_str(sp_str_chr(sp_poly_to_s(_t%d)))"
+                  " : (_t%d.tag == SP_TAG_BIGINT ? sp_raise_cls(\"RangeError\", \"bignum out of char range\")"
+                  " : sp_raise_nomethod(sp_nomethod_msg_args(\"chr\", _t%d, 0, NULL)), sp_box_nil()); })",
+               tvC, tvC, tvC, tvC, tvC, tvC, tvC);
     { *out = 1; return 1; }
   }
   /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
@@ -13844,9 +13849,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     TyKind u1t = repr_of(c, id).as_ty;
     if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(");
     else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(");
-    buf_puts(b, "sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(");
-    emit_expr(c, recv, b); buf_puts(b, "), ");
-    emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+    /* the receiver and the format are held first: a value that is no
+       String has no unpack1 (NoMethodError, the format as its args),
+       where it was read as its #to_s */
+    int tu = ++g_tmp, tf = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tu); emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tu, tf); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (SP_UNLIKELY(!(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))))"
+                  " sp_raise_nomethod(sp_nomethod_msg_args(\"unpack1\", _t%d, 1, &_t%d));"
+                  " sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(_t%d), sp_poly_arg_str_chk(_t%d)), 0); })",
+               tf, tu, tu, tu, tf, tu, tf);
     if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
     return 1;
   }
