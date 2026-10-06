@@ -13258,14 +13258,15 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
 
 /* pow(n) on a boxed receiver. pow is Integer's alone: sp_poly_pow is `**`,
    which a Float, a Rational or a Complex answers too, so a boxed one
-   answered pow where CRuby raises NoMethodError. */
+   answered pow where CRuby raises NoMethodError. The exponent is evaluated
+   before the call, as CRuby evaluates arguments, and sp_poly_int_pow
+   raises with it as the error's args. */
 static void emit_poly_int_pow(Compiler *c, int recv, int arg, Buf *b) {
-  int tv = ++g_tmp;
+  int tv = ++g_tmp, te = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_BIGINT) ? sp_poly_pow(_t%d, ",
-             tv, tv, tv, tv);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, te);
   emit_boxed(c, arg, b);
-  buf_printf(b, ") : (sp_raise_nomethod(sp_nomethod_msg(\"pow\", _t%d)), sp_box_nil()); })", tv);
+  buf_printf(b, "; sp_poly_int_pow(_t%d, _t%d); })", tv, te);
 }
 
 int emit_poly_call(Compiler *c, int id, Buf *b) {
@@ -13421,7 +13422,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (!has_user) {
       if (sp_streq(name, "pow") && argc == 1) emit_poly_int_pow(c, recv, argv[0], b);
       else if (sp_streq(name, "pow")) {
-        buf_puts(b, "sp_poly_int_powmod("); emit_boxed(c, recv, b);
+        buf_puts(b, "sp_poly_int_powmod_recv("); emit_boxed(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       else if (is_bits_query(name)) {

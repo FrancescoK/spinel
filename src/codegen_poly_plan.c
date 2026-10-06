@@ -3725,7 +3725,7 @@ static const struct {
   {"lcm",       1, 1, "sp_poly_int_lcm",     NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
   {"ceildiv",   1, 1, "sp_poly_int_ceildiv", NULL,                  NPA_BOXED,     0, -1, TY_UNKNOWN},
   {"gcdlcm",    1, 1, "sp_poly_int_gcdlcm",  NULL,                  NPA_PAIR,      0, -1, TY_POLY_ARRAY},
-  {"pow",       1, 2, "sp_poly_pow",         "sp_poly_int_powmod",  NPA_BOXED,     0, -1, TY_UNKNOWN},
+  {"pow",       1, 2, "sp_poly_int_pow",     "sp_poly_int_powmod_recv", NPA_BOXED,     0, -1, TY_UNKNOWN},
   {"digits",    1, 1, "sp_poly_int_digits",  NULL,                  NPA_INT_ARRAY, 1, -1, TY_INT_ARRAY},
   {"allbits?",  1, 1, "sp_poly_int_bits_test", NULL,                NPA_BOOL,      0,  0, TY_UNKNOWN},
   {"anybits?",  1, 1, "sp_poly_int_bits_test", NULL,                NPA_BOOL,      0,  1, TY_UNKNOWN},
