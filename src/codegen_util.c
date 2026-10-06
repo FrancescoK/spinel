@@ -2494,11 +2494,13 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   const char *nm = nt_str(nt, v, "name");
   return nm && (is_append_concat(nm) || str_self_call(nt, v));
 }
-/* A String bang method (bop_share_bang_self) called on a local that holds
+/* A String method answering its receiver or nil (bop_share_self_answer:
+   a bang method, an iterator given a block) called on a local that holds
    the shared handle: its value is that local's String, or nil. */
 int strbuf_bang_self_local(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !bop_share_bang_self(nt_str(nt, v, "name"))) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode ||
+      !bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0)) return 0;
   int r = nt_ref(nt, v, "receiver");
   return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
 }

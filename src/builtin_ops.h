@@ -362,9 +362,10 @@ typedef enum {
 int bop_share(TyKind fam, const char *name);
 /* the name's own row only, without the family's default */
 int bop_share_named(TyKind fam, const char *name);
-/* a String bang method answering its receiver, or nil when it changed
-   nothing (`strip!`, `gsub!`, `scrub!`) */
-int bop_share_bang_self(const char *name);
+/* A String method whose value is its receiver, or nil: a bang method that
+   answers it, or nil when it changed nothing (`strip!`, `gsub!`), and,
+   given a block, an iterator that answers it (`each_char`, `scan`, `tap`). */
+int bop_share_self_answer(const char *name, int has_block);
 
 /* ---- What a builtin iterator yields to its block, and answers (#6765) ----
    One row per receiver family, name and run of argument counts: where each
@@ -440,9 +441,9 @@ TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt);
    [key, value] pair. */
 int iter_shape_count(TyKind rt, const char *nm, int argc, TyKind *elem, int *hash_pair);
 /* --plan-check: the rows are well formed, no two rows of a family and name
-   take the same argument count, and no hand share row with an iterator's
-   answer repeats the answer its iterator row derives. Prints a
-   "plan-check: iter-row-error" line per fault. */
+   take the same argument count, and every hand share row with an
+   iterator's answer overrides a row the share analysis reads with another
+   answer. Prints a "plan-check: iter-row-error" line per fault. */
 void iter_rows_check(void);
 
 #endif

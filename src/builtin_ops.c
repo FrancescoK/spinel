@@ -2822,25 +2822,10 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_CALLABLE, "yield",       BSH_CALL },
   { BOP_CALLABLE, "===",         BSH_CALL },
 
-  /* Hand rows that win over the iterator rows' answers (iter_rows below):
-     what the analysis reads today where the row says otherwise. CRuby's
-     each_char, each_line, each_byte, each_grapheme_cluster, scan, upto,
-     each_index and each_key answer their receiver, sort!, uniq! and
-     sort_by! answer theirs, cycle answers nil and catch its block's value;
-     tally takes no block. To be dropped with tests (#6765). */
-  { TY_STRING, "each_char",  BSH_ITER_FRESH },
-  { TY_STRING, "each_line",  BSH_ITER_FRESH },
-  { TY_STRING, "each_byte",  BSH_ITER_FRESH },
-  { TY_STRING, "each_grapheme_cluster", BSH_ITER_FRESH },
-  { TY_STRING, "scan",       BSH_ITER_FRESH },
-  { TY_STRING, "upto",       BSH_ITER_FRESH },
-  { BOP_ANY_ARRAY, "sort!",     BSH_ITER_SEL },
-  { BOP_ANY_ARRAY, "uniq!",     BSH_ITER_SEL },
-  { BOP_ANY_ARRAY, "sort_by!",  BSH_ITER_SEL },
-  { BOP_ANY_ARRAY, "cycle",     BSH_ITER },
-  { BOP_ANY_ARRAY, "each_index", BSH_ITER_FRESH },
-  { BOP_ANY_ARRAY, "tally",     BSH_ITER_SUB },
-  { BOP_ANY_HASH, "each_key",   BSH_ITER_FRESH },
+  /* A hand row that wins over its iterator row: catch's block is handed
+     its tag and the call answers the block's value (or a throw's), a
+     shape no BSH_ITER_* answer has, so the row derives none. Read as
+     fresh, the analysis never names the tag or the answer (#6765). */
   { BOP_KERNEL, "catch",    BSH_ITER_FRESH },
 };
 #define BOP_NSHARE ((int)(sizeof bop_share_rows / sizeof bop_share_rows[0]))
@@ -3203,11 +3188,15 @@ int bop_share_named(TyKind fam, const char *name) {
   return name ? bop_share_find(fam, name) : 0;
 }
 
-int bop_share_bang_self(const char *name) {
+int bop_share_self_answer(const char *name, int has_block) {
   size_t n = name ? strlen(name) : 0;
-  if (n < 2 || name[n - 1] != '!') return 0;
+  if (n == 0) return 0;
   int s = bop_share_find(TY_STRING, name);
-  return s == BSH_RECV || s == BSH_ITER_FRESH_RECV;
+  if (n >= 2 && name[n - 1] == '!') return s == BSH_RECV || s == BSH_ITER_FRESH_RECV;
+  if (!has_block) return 0;
+  /* the analysis reads the any-receiver row after the String one (tap) */
+  if (!s) s = bop_share_find(BOP_ANY_RECV, name);
+  return s == BSH_ITER_FRESH_RECV || s == BSH_ITER_SELF;
 }
 
 int bop_share(TyKind fam, const char *name) {
@@ -3299,12 +3288,16 @@ void iter_rows_check(void) {
     if (why) fprintf(stderr, "plan-check: iter-row-error: %s (family %d, %d..%d): %s\n",
                      r->name, (int)r->fam, r->argc_min, r->argc_max, why);
   }
-  /* a hand row with an iterator's answer overrides its row's: one that
-     repeats the derived answer is stale */
+  /* a hand row with an iterator's answer overrides its row's: one with no
+     row to override is no iterator, and one that repeats the derived
+     answer is stale */
   for (int i = 0; i < BOP_NSHARE; i++) {
     const BopShareRow *h = &bop_share_rows[i];
-    if (h->share >= BSH_ITER && h->share <= BSH_ITER_THEN && h->share == iter_share(h->fam, h->name))
-      fprintf(stderr, "plan-check: iter-row-error: %s (family %d): its hand share row repeats "
-              "the answer its iterator row derives\n", h->name, (int)h->fam);
+    if (h->share < BSH_ITER || h->share > BSH_ITER_THEN) continue;
+    const char *why = !iter_row(h->fam, h->name, -1, IRF_GAP_SHARE) ? "names no iterator row"
+                    : h->share == iter_share(h->fam, h->name) ? "repeats the answer its iterator row derives"
+                    : NULL;
+    if (why) fprintf(stderr, "plan-check: iter-row-error: %s (family %d): its hand share row %s\n",
+                     h->name, (int)h->fam, why);
   }
 }
