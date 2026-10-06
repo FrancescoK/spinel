@@ -16459,7 +16459,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc <= sp_streq(name, "find") && nt_ref(nt, id, "block") < 0 &&
       (ty_is_array(comp_ntype(c, recv)) ||
        /* a bare [] literal types UNKNOWN until pushes promote it */
-       (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
+       (repr_of(c, recv).untyped && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
        sp_streq(name, "map") || sp_streq(name, "collect") ||
@@ -16603,7 +16603,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       (ty_is_array(comp_ntype(c, recv)) ||
        comp_ntype(c, recv) == TY_RANGE ||
-       (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
+       (repr_of(c, recv).untyped && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (is_each_window(name))) {
     /* the receiver is held across the count, which may allocate */
@@ -17123,7 +17123,7 @@ static int unresolved_name_chain(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   for (int depth = 0; depth < 64; depth++) {
     node = unwrap_parens(c, node);
-    if (node < 0 || nt_kind(nt, node) != NK_CallNode || comp_ntype(c, node) != TY_UNKNOWN) return 0;
+    if (node < 0 || nt_kind(nt, node) != NK_CallNode || !repr_of(c, node).untyped) return 0;
     int r = nt_ref(nt, node, "receiver");
     if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
       int n = 0; call_args(nt, node, &n);
@@ -18424,7 +18424,8 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
    sp_String * for the String. A receiver is read by its own call, as the
    handle it renders (`s << a << b`). */
 static int operand_fresh_str(Compiler *c, int node) {
-  return comp_ntype(c, node) == TY_STRBUF && repr_of(c, node).strbuf_src == RS_FRESH;
+  Repr r = repr_of(c, node);
+  return r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
 }
 /* One operand of emit_operands_in_order rendered into `out`, with the
    statements its emission hoists caught in `pre` rather than the enclosing
@@ -18955,9 +18956,10 @@ static int nil_target_operand(Compiler *c, int v, int *node, TyKind *ty, int *n,
            nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
   if (k == NK_AssocSplatNode) return nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
   if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), node, ty, n, max);
-  TyKind t = comp_ntype(c, v);
+  Repr tr = repr_of(c, v);
+  TyKind t = tr.as_ty;
   if (*n >= max ||
-      !nil_target_bindable(k) || t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
+      !nil_target_bindable(k) || tr.untyped || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
     return 0;
   node[*n] = v; ty[*n] = t; (*n)++;
   return 1;
@@ -18974,7 +18976,7 @@ static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int m
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, r);
   if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r)) {
-    node[n] = r; ty[n] = comp_ntype(c, r); n++;
+    node[n] = r; ty[n] = repr_of(c, r).as_ty; n++;
   }
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
@@ -21719,9 +21721,9 @@ static int emit_numeric_coerce_call(Compiler *c, int id, Buf *b) {
    form of such a call. A temporary object is rooted across the base's
    evaluation. */
 void emit_kconv_call(Compiler *c, int id, const int *av, int ac, int raise, Buf *b) {
-  TyKind kt = comp_ntype(c, id);
-  const char *fn = kt == TY_BIGINT ? "sp_poly_Integer_big"
-                 : kt == TY_POLY   ? "sp_kernel_Integer_val" : "sp_poly_Integer_ex";
+  Repr ktr = repr_of(c, id);
+  const char *fn = ktr.big ? "sp_poly_Integer_big"
+                 : ktr.kind == RK_BOXED   ? "sp_kernel_Integer_val" : "sp_poly_Integer_ex";
   if (ac < 2) {
     buf_printf(b, "%s(", fn); emit_boxed(c, av[0], b);
     buf_printf(b, ", 0, %d)", raise);
@@ -24222,8 +24224,8 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         (ty_is_object(hwant) || ty_is_obj_array(hwant)) &&
         (sp_streq(hn, "[]") || sp_streq(hn, "fetch") || sp_streq(hn, "delete") ||
          sp_streq(hn, "values"))) {
-      TyKind hrt = comp_ntype(c, hrecv);
-      if ((hrt == TY_STR_POLY_HASH || hrt == TY_SYM_POLY_HASH || hrt == TY_POLY_POLY_HASH) &&
+      Repr hrr = repr_of(c, hrecv);
+      if ((repr_hash_is(hrr, TY_STRING, TY_POLY) || repr_hash_is(hrr, TY_SYMBOL, TY_POLY) || repr_hash_is(hrr, TY_POLY, TY_POLY)) &&
           hv_value_class(c, hrecv) >= 0) {
         int is_values = sp_streq(hn, "values");
         int sv_node = g_hv_read_node; g_hv_read_node = id;
@@ -24458,7 +24460,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     int urecv = nt_ref(nt, id, "receiver");
     if (unm && urecv >= 0 && (is_prepend_alias(unm)) &&
         nt_type(nt, urecv) && sp_streq(nt_type(nt, urecv), "ArrayNode")) {
-      TyKind urt = comp_ntype(c, urecv);
+      Repr urr = repr_of(c, urecv);
       int uargc = 0; const int *uargv = call_args(nt, id, &uargc);
       int has_nil = 0, spread = call_has_splat_arg(nt, uargv, uargc) && nt_ref(nt, id, "block") < 0;
       for (int a = 0; a < uargc; a++) {
@@ -24466,7 +24468,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         const char *anty = nt_type(nt, uargv[a]);
         if (at == TY_NIL || (anty && sp_streq(anty, "NilNode"))) { has_nil = 1; break; }
       }
-      if (has_nil && (urt == TY_INT_ARRAY || urt == TY_FLOAT_ARRAY) && !spread) {
+      if (has_nil && (urr.elem == TY_INT || urr.elem == TY_FLOAT) && !spread) {
         int en = 0; const int *elems = nt_arr(nt, urecv, "elements", &en);
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
@@ -24686,7 +24688,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
   /* `@nested[i]` inferred as an int array (poly array of int arrays): unbox
      the poly element to sp_IntArray* so the surrounding code stays typed. */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 1 &&
-      comp_ntype(c, recv) == TY_POLY_ARRAY && comp_ntype(c, id) == TY_INT_ARRAY) {
+      repr_of(c, recv).elem == TY_POLY && repr_of(c, id).elem == TY_INT) {
     buf_puts(b, "((sp_IntArray *)((sp_PolyArray_get(");
     emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
     buf_puts(b, ")).v.p))");
