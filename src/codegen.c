@@ -10105,24 +10105,26 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
-    int tracked = 0;
-    for (int j = 0; j < ci->nivars; j++) tracked += ivar_set_kind(c, i, ci->ivars[j]) == 3;
-    if (tracked) {
-      buf_printf(b, "      sp_mar_long(b, %d", ci->nivars - tracked);
-      for (int j = 0; j < ci->nivars; j++)
-        if (ivar_set_kind(c, i, ci->ivars[j]) == 3)
-          buf_printf(b, " + !!o->_sp_set_%s", iv_c(ci->ivars[j] + 1));
-      buf_puts(b, ");\n");
-    }
-    else buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
+    /* an ivar nothing has set yet is not written, as CRuby leaves it out
+       (ivar_set_test, the presence inspect and instance_variables read) */
+    char tests[64][256];
+    const char *set[64];
+    int fixed = 0;
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
-      if (present) buf_printf(b, "      if (o->_sp_set_%s) {\n", iv_c(ci->ivars[j] + 1));
+      set[j] = j < 64 ? ivar_set_test(c, i, ci->ivars[j], expr, tests[j], sizeof tests[j]) : NULL;
+      if (!set[j]) fixed++;
+    }
+    buf_printf(b, "      sp_mar_long(b, %d", fixed);
+    for (int j = 0; j < ci->nivars; j++) if (set[j]) buf_printf(b, " + !!%s", set[j]);
+    buf_puts(b, ");\n");
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+      if (set[j]) buf_printf(b, "      if %s {\n", set[j]);
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
-      if (present) buf_puts(b, "      }\n");
+      if (set[j]) buf_puts(b, "      }\n");
     }
     buf_puts(b, "      return 1;\n    }\n");
   }
