@@ -6822,7 +6822,7 @@ static int fwd_fixed_call_arity(const NodeTable *nt, const char *name) {
     av += skip; ac -= skip;
     for (int k = 0; k < ac; k++)
       if (fwd_node_is(nt, av[k], "SplatNode") || fwd_node_is(nt, av[k], "KeywordHashNode") ||
-          fwd_node_is(nt, av[k], "ForwardingArgumentsNode")) return -1;
+          nt_kind(nt, av[k]) == NK_ForwardingArgumentsNode) return -1;
     if (n != -2 && ac != n) return -1;
     n = ac;
   }
@@ -7621,7 +7621,7 @@ static int fwd_waits_on_forwarder(const NodeTable *nt, int def, int hi) {
     if (!fwd_node_is(nt, id, "CallNode")) continue;
     int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac);
     const char *cn = nt_str(nt, id, "name");
-    if (ac < 1 || !av || !cn || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode")) continue;
+    if (ac < 1 || !av || !cn || nt_kind(nt, av[ac - 1]) != NK_ForwardingArgumentsNode) continue;
     if (fwd_def_still_forwards(nt, sp_streq(cn, "new") ? "initialize" : cn, def)) return 1;
   }
   return 0;
@@ -7652,12 +7652,12 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
     for (int id = def + 1; id < hi && id < n0; id++) {
       /* a bare `super` forwards everything, as `super(...)` does */
       int is_zsuper = fwd_node_is(nt, id, "ForwardingSuperNode");
-      if (is_zsuper || fwd_node_is(nt, id, "ForwardingArgumentsNode")) nfwd_args++;
+      if (is_zsuper || nt_kind(nt, id) == NK_ForwardingArgumentsNode) nfwd_args++;
       int is_super = is_zsuper || fwd_node_is(nt, id, "SuperNode");
       if (!is_super && !fwd_node_is(nt, id, "CallNode")) continue;
       int args = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-      if (!is_zsuper && (ac < 1 || !av || !fwd_node_is(nt, av[ac - 1], "ForwardingArgumentsNode"))) continue;
+      if (!is_zsuper && (ac < 1 || !av || nt_kind(nt, av[ac - 1]) != NK_ForwardingArgumentsNode)) continue;
       /* `super(...)` reaches the parent's method of this name, and `new(...)`
          the constructed class's initialize */
       const char *cn = is_super ? dname : nt_str(nt, id, "name");
@@ -9538,7 +9538,7 @@ static int rd_subtree_calls(const NodeTable *nt, int id, const RdDefault *from,
   if (ty) {
     if (sp_streq(ty, "YieldNode") || sp_streq(ty, "SuperNode") ||
         sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "DefNode") ||
-        sp_streq(ty, "ForwardingArgumentsNode")) *bad = 1;
+        nt_kind(nt, id) == NK_ForwardingArgumentsNode) *bad = 1;
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm && (sp_streq(nm, "block_given?") || sp_streq(nm, "__method__") ||
@@ -10545,9 +10545,8 @@ static int block_values_in(const NodeTable *nt, int node, const char *bpn, int n
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     for (int j = 0; j < an; j++) {
       NodeKind ak = nt_kind(nt, av[j]);
-      const char *aty = nt_type(nt, av[j]);
       if (ak == NK_SplatNode || ak == NK_BlockArgumentNode ||
-          (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return -2;
+          nt_kind(nt, av[j]) == NK_ForwardingArgumentsNode) return -2;
     }
     if (n >= 0 && n != an) return -2;
     n = an;
