@@ -4010,9 +4010,11 @@ sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cp
   if (cpos < 0) cpos += cl;
   if (cpos < 0 || cpos > cl) return FALSE;
   size_t boff = sp_utf8_byte_offset(str, cpos);
-  int64_t slen = (int64_t)strlen(str);
+  /* the subject's own length and mode, as sp_re_match_p reads them: strlen
+     stopped at an embedded NUL, and a binary subject matched as UTF-8 */
+  int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[2];
-  return re_exec(pat, str, slen, (sp_int)boff, caps, 2, 0) > 0;
+  return re_exec(pat, str, slen, (sp_int)boff, caps, 2, sp_str_is_binary(str)) > 0;
 }
 /* Issue #910: sub(string, hash) -- literal-substring pattern
    with a hash replacement. Replaces only the first match. */
