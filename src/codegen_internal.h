@@ -136,6 +136,7 @@ int strbuf_bang_self_local(const Compiler *c, int v);
 int emit_strbuf_call_handle(Compiler *c, int v, Buf *b);
 int strbuf_conv_of_handle_call(Compiler *c, int v);
 int strbuf_poly_self_conv(Compiler *c, int node);
+int strbuf_yield_value_call(Compiler *c, int v);
 int method_returns_handle(Compiler *c, int mi);
 int method_hr_target(Compiler *c, int id);
 void emit_hr_call(Compiler *c, int id, Buf *b);
