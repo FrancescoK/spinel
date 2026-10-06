@@ -6196,6 +6196,14 @@ static sp_int sp_poly_int_recv(sp_RbVal v, const char *m) {
   sp_raise_nomethod(sp_nomethod_msg(m, v));
   return 0;  /* unreachable: sp_raise_nomethod does not return */
 }
+/* upto's receiver where the limit is a number of class lim_cls: a String
+   has upto too, and a numeric limit is its TypeError, where the Integer
+   coercion denied the method */
+static SP_UNUSED sp_int sp_poly_upto_recv(sp_RbVal v, const char *lim_cls) {
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v))
+    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", lim_cls));
+  return sp_poly_int_recv(v, "upto");
+}
 /* A mutated element that the typed original has no representation for: a
    String written into an Array of Integers through a boxed receiver. CRuby's
    Array holds anything; the typed original cannot, and it cannot be re-laid

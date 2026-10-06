@@ -11150,6 +11150,14 @@ static int face_str_var_recv(const NodeTable *nt, int recv) {
    arm's value text in `val` and its type under the pin -- the node's settled
    type is the union over the inference passes and the owners, and may be
    poly where the arm answers a pointer. */
+/* The class of upto's limit when it is a number by its type ("Integer",
+   "Float"), else NULL */
+static const char *face_upto_lim_cls(Compiler *c, int id) {
+  int argc;
+  const int *argv = call_args(c->nt, id, &argc);
+  TyKind lt = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  return lt == TY_INT ? "Integer" : lt == TY_FLOAT ? "Float" : NULL;
+}
 static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box, Buf *val) {
   const NodeTable *nt = c->nt;
   /* The re-entered emitter may rename the node for its own re-entry (a
@@ -11191,7 +11199,10 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       /* The block iterators check: `"x".times { }` is a NoMethodError in
          CRuby, and coercing would silently run the loop zero times. The
          blockless names keep the plain coercion they have always used. */
-      if (has_blk) buf_printf(g_pre, "sp_int _t%d = sp_poly_int_recv(%s, \"%s\");\n", t, rs, name);
+      /* upto: a String receiver's own raises TypeError for the numeric limit */
+      if (has_blk && is_upto_name(name) && face_upto_lim_cls(c, id))
+        buf_printf(g_pre, "sp_int _t%d = sp_poly_upto_recv(%s, \"%s\");\n", t, rs, face_upto_lim_cls(c, id));
+      else if (has_blk) buf_printf(g_pre, "sp_int _t%d = sp_poly_int_recv(%s, \"%s\");\n", t, rs, name);
       else buf_printf(g_pre, "sp_int _t%d = sp_poly_recv_i(\"%s\", %s);\n", t, name, rs);
       break;
     case PF_RANDOM:
@@ -11402,6 +11413,117 @@ static int face_probe_arm(Compiler *c, int id, unsigned kind, unsigned flags, in
 /* One owner: exactly the re-entry, with the box kept only when a mutator
    has to write back through it. Answers 0 when the typed emitter declined
    the call, and the call goes on to the arms after this one. */
+/* `poly.upto(lim [, exclusive])` that a String receiver may take
+   (an_poly_str_upto): the receiver's tag picks String#upto, over the
+   members sp_StrArray_from_string_range lists, or Integer#upto, counting
+   (a Bignum boxed); any other value is NoMethodError. With a block one
+   walk binds each member boxed to the parameter and the call answers the
+   receiver; without one it answers the String's or the Bignum's members
+   as an Enumerator, or the Integer's Range, boxed. The receiver and the
+   arguments are held first, in order. */
+static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  /* a block that breaks reaches here inside its break wrapper
+     (emit_brk_wrapped_call), which delivers the break's value */
+  if (!an_poly_str_upto(c, id) || (call_breaks(c, id) && id != g_brk_skip_id)) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  int block = nt_ref(nt, id, "block");
+  int tr = ++g_tmp, tl = ++g_tmp, tx = ++g_tmp, ts = ++g_tmp, th = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tr, rb.p ? rb.p : "sp_box_nil()", tr);
+  free(rb.p);
+  Buf lb; memset(&lb, 0, sizeof lb); emit_boxed(c, argv[0], &lb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d[2]; _t%d[0] = %s; SP_GC_ROOT_RBVAL(_t%d[0]);", tl, tl, lb.p ? lb.p : "sp_box_nil()", tl);
+  free(lb.p);
+  if (argc == 2) {
+    Buf xb; memset(&xb, 0, sizeof xb); emit_boxed(c, argv[1], &xb);
+    buf_printf(g_pre, " _t%d[1] = %s; SP_GC_ROOT_RBVAL(_t%d[1]);", tl, xb.p ? xb.p : "sp_box_nil()", tl);
+    free(xb.p);
+  }
+  buf_puts(g_pre, "\n");
+  /* the kind: 1 a String (its members in _t<ts>), 2 an Integer (counting
+     to _t<th>), 3 a Bignum (counting boxed in _t<tc>); anything else
+     raises */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "int _t%d = 0; sp_StrArray *_t%d = NULL; SP_GC_ROOT(_t%d); sp_int _t%d = 0;\n", tx, ts, ts, th);
+  char ex[48];
+  if (argc == 2) snprintf(ex, sizeof ex, "sp_poly_truthy(_t%d[1])", tl);
+  else snprintf(ex, sizeof ex, "0");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { _t%d = 1;"
+                    " _t%d = sp_StrArray_from_string_range(sp_poly_recv_s(_t%d, \"upto\"), sp_poly_arg_str_chk(_t%d[0]), %s); }\n",
+             tr, tr, tx, ts, tr, tl, ex);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_INT) { _t%d = 2;", tr, tx);
+  if (argc == 2) buf_puts(g_pre, " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 2, expected 1)\");");
+  buf_printf(g_pre, " if (_t%d[0].tag == SP_TAG_BIGINT) _t%d = 3;", tl, tx);
+  buf_printf(g_pre, " else if (_t%d[0].tag == SP_TAG_INT) _t%d = _t%d[0].v.i;"
+                    " else if (_t%d[0].tag == SP_TAG_FLT) _t%d = (sp_int)floor(_t%d[0].v.f);"
+                    " else sp_raise_cls(\"ArgumentError\", sp_sprintf(\"comparison of Integer with %%s failed\", sp_poly_cmp_err_repr(_t%d[0]))); }\n",
+             tl, th, tl, tl, th, tl, tl);
+  /* a Bignum counts boxed, compared by value (a limit that is no number
+     is the comparison's ArgumentError) */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_BIGINT) { _t%d = 3;%s"
+                    " if (!(_t%d[0].tag == SP_TAG_INT || _t%d[0].tag == SP_TAG_BIGINT || _t%d[0].tag == SP_TAG_FLT))"
+                    " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"comparison of Integer with %%s failed\", sp_poly_cmp_err_repr(_t%d[0]))); }\n",
+             tr, tx, argc == 2 ? " sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 2, expected 1)\");" : "",
+             tl, tl, tl, tl);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "else sp_raise_nomethod(sp_nomethod_msg_args(\"upto\", _t%d, %d, _t%d));\n", tr, argc, tl);
+  int tc = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = _t%d; SP_GC_ROOT_RBVAL(_t%d);\n", tc, tr, tc);
+  if (block < 0) {
+    /* the String's members as its Enumerator, the Integer's Range, a
+       Bignum's members as theirs */
+    int tb = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tb, tb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d == 3) { _t%d = sp_PolyArray_new(); while (sp_poly_cmp_ck(_t%d, _t%d[0]) <= 0)"
+                      " { sp_PolyArray_push(_t%d, _t%d); _t%d = sp_poly_add(_t%d, sp_box_int(1)); } }\n",
+               tx, tb, tc, tl, tb, tc, tc, tc);
+    buf_printf(b, "(_t%d == 1 ? sp_box_nullable_obj((void *)sp_Enumerator_new_from(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STR_ARRAY)), SP_BUILTIN_ENUMERATOR)"
+                  " : _t%d == 3 ? sp_box_nullable_obj((void *)sp_Enumerator_new_from(sp_box_poly_array(_t%d)), SP_BUILTIN_ENUMERATOR) : ",
+               tx, ts, tx, tb);
+    char rg[128];
+    snprintf(rg, sizeof rg, "(sp_Range){ .first = _t%d.v.i, .last = _t%d, .excl = 0 }", tr, th);
+    emit_boxed_text(c, TY_RANGE, rg, b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  const char *p0o = block_param_name(c, block, 0);
+  const char *p0 = p0o ? rename_local(p0o) : NULL;
+  int body = nt_ref(nt, block, "body");
+  int ti = ++g_tmp, te = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (sp_int _t%d = 0; ; _t%d++) {\n", ti, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_RbVal _t%d;\n", te);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d == 1) { if (_t%d >= _t%d->len) break; _t%d = sp_box_str(_t%d->data[_t%d]); }\n",
+             tx, ti, ts, te, ts, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "else if (_t%d == 2) { if (_t%d.v.i + _t%d > _t%d) break; _t%d = sp_box_int(_t%d.v.i + _t%d); }\n",
+             tx, tr, ti, th, te, tr, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "else { if (sp_poly_cmp_ck(_t%d, _t%d[0]) > 0) break; _t%d = _t%d; _t%d = sp_poly_add(_t%d, sp_box_int(1)); }\n",
+             tc, tl, te, tc, tc, tc);
+  if (p0) {
+    char es[24]; snprintf(es, sizeof es, "_t%d", te);
+    emit_iter_param_assign(c, block, p0o, p0, TY_POLY, es, g_pre, g_indent + 1);
+  }
+  if (body >= 0) emit_loop_body(c, body, g_pre, g_indent + 1);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
 static int emit_face_reentry(Compiler *c, int id, unsigned kind, unsigned flags, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -13158,6 +13280,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, ", %d)", sp_streq(name, "casecmp?"));
     return 1;
   }
+  if (recv >= 0 && rt == TY_POLY && emit_poly_str_upto(c, id, b)) return 1;
   /* The face table (types.h): unbox the receiver to the kind that owns the
      name, retype the receiver node and re-enter the same call, so the typed
      emitter IS the implementation and the inference, which answered under
