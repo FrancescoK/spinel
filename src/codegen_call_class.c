@@ -679,7 +679,19 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (!c->classes[ty_object_class(pat)].is_native_class)
             unsupported(c, argv[ai], "ffi pointer argument (a Ruby object has no C address; pass an IO::Buffer, a String or a :ptr value)");
         }
-        int use_temps = blocking || iob_temps;
+        /* Two String arguments each read a shared handle as `(_sp_ret_strbuf = h,
+           copy(h))`; side by side in one C call those are unsequenced writes of
+           the same variable (clang -Wunsequenced, an error under -Werror), so
+           with two or more they go out to ordered temps like the buffers do. */
+        int nstr_args = 0;
+        for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
+          if (!sp_streq(c->ffi_funcs[fi].args[ai], "str")) continue;
+          char sref[1024];   /* the same test the read of a shared-mutable slot makes */
+          int vsm = view_push_repr(c, argv[ai], VR_STRBUF_BOX, 1);
+          if (strbuf_slot_ref(c, argv[ai], sref, sizeof sref)) nstr_args++;
+          view_pop(c, vsm);
+        }
+        int use_temps = blocking || iob_temps || nstr_args >= 2;
         Buf pre_buf; memset(&pre_buf, 0, sizeof pre_buf);
         Buf base_buf; memset(&base_buf, 0, sizeof base_buf);
         /* blocking: the buffers are locked across the call (hold after every
