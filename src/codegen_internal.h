@@ -227,8 +227,10 @@ int hc_index_in_range(Compiler *c, int recv, int idx);
 extern int g_loop_polls_in_cond;   /* the next emit_loop_body leaves its polls to the loop's condition */
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
 /* hc_array for a Float array whose in-range elements the reader needs to
-   be no nil: *n names a length that is 0 while the array may hold one. */
-int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap);
+   be no nil: *n names a length that is 0 while the array may hold one, or
+   while `guard` (a Float local the loop does not assign; -1 for none) is
+   nil. Answers 2 when it took the guard. */
+int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t cap);
 const char *hc_mark(void);
 /* recv is read in the loop being emitted the way hc_array caches it: no
    code runs between two of its reads in one pass, so they agree */
@@ -1249,7 +1251,7 @@ void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
 int declare_default_locals(Compiler *c, Scope *m, int dnode);
 int arg_wants_root(Compiler *c, TyKind pt, int provided);
-int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b);
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b);
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
 int arg_read_converts(Compiler *c, TyKind pt, int provided);
 void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out);

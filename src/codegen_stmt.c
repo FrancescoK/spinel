@@ -2063,9 +2063,12 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
    is not one. A receiver that may be nil (cplan_nil) is tested in that
    branch too, where a nil one's cached length of 0 sends it, ahead of the
    index's own nil test: the read is not the call its nil target arms, and
-   a nil array's read raised the operand's error, not NoMethodError. Answers
-   1 when it emitted the read. */
-int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
+   a nil array's read raised the operand's error, not NoMethodError. `lhs`,
+   for a right operand whose left one may be nil (an element op-assign's
+   slot), is read there before a nil element raises, so a nil on the left
+   raises first, as CRuby's operator does; NULL when the left cannot be nil.
+   Answers 1 when it emitted the read. */
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -2075,7 +2078,7 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
   if (!vn || (!sp_streq(vn, "[]") && !sp_streq(vn, "at")) || vr < 0 || vc != 1 ||
       nt_ref(nt, v, "block") >= 0 || comp_ntype(c, vr) != TY_FLOAT_ARRAY ||
       comp_ntype(c, vav[0]) != TY_INT || nullable_int_elem_array(c, vr) ||
-      !hc_array_nilfree(c, vr, hd, hn, sizeof hd))
+      !hc_array_nilfree(c, vr, -1, hd, hn, sizeof hd))
     return 0;
   int nilr = cplan_nil(c, v) == CN_RAISE;
   int ck = nilr && nullable_int_value(c, vav[0]);
@@ -2090,9 +2093,19 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
     if (ck) buf_printf(b, " SP_INT_NIL_ARG_CK(_t%d);", tk);
     buf_puts(b, " ");
   }
-  buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : "operand");
-  emit_expr(c, vr, b);
-  buf_printf(b, ", _t%d, \"%s\")%s; })", tk, op, nilr ? "; })" : "");
+  if (lhs) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ sp_float _t%d = sp_FloatArray_get(", te);
+    emit_expr(c, vr, b);
+    buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_float_op(sp_float_is_nil(%s), \"%s\"); _t%d; })",
+               tk, te, lhs, op, te);
+  }
+  else {
+    buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : "operand");
+    emit_expr(c, vr, b);
+    buf_printf(b, ", _t%d, \"%s\")", tk, op);
+  }
+  buf_printf(b, "%s; })", nilr ? "; })" : "");
   return 1;
 }
 
@@ -2154,7 +2167,7 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
   size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
   int nfread = 0;
-  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, &rb)) nfread = 1;
+  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, NULL, &rb)) nfread = 1;
   else if (t == TY_INT && fn && (is_div_or_mod(op))) emit_int_divisor(c, v, &rb);
   /* a boxed rhs of a Float op is kept boxed for the nil test below */
   else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
@@ -6446,7 +6459,8 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar. */
 enum { HC_INT, HC_FLOAT, HC_STR };
-typedef struct { char recv[200]; int kind; int nf; } HcEntry;   /* nf: hc_array_nilfree asked */
+typedef struct { char recv[200]; int kind; int nf; char guard[128]; } HcEntry;   /* nf: hc_array_nilfree asked;
+                                                       guard: Float locals whose nil zeroes _hcn */
 typedef struct { int id; int n; HcEntry e[16]; NameSet wl, wi; char mark[32];
                  char bi[64], ba[64]; } HcRegion;  /* bi/ba: see hc_bounded_index */
 static HcRegion *g_hc = NULL;
@@ -6621,6 +6635,7 @@ static int hc_entry(Compiler *c, int recv, int kind) {
   snprintf(g_hc->e[g_hc->n].recv, sizeof g_hc->e[0].recv, "%s", t);
   g_hc->e[g_hc->n].kind = kind;
   g_hc->e[g_hc->n].nf = 0;
+  g_hc->e[g_hc->n].guard[0] = 0;
   return g_hc->n++;
 }
 
@@ -6634,14 +6649,43 @@ int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, siz
 }
 
 /* The same cache, with a length that is 0 when the array may hold nil
-   (_hcn): an index below it reads an element that is no nil. */
-int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap) {
+   (_hcn): an index below it reads an element that is no nil. `guard`, when
+   it is a Float local the loop does not assign, zeroes that length while
+   the local is nil too: an element op-assign's right-hand side, which an
+   index below it then needs no test for (emit_index_op_write). A guard
+   only shortens the length, so the array's other nil-free reads stay
+   right: while the local is nil they take their out-of-range branch. -1
+   for none. Answers 2 when it took the guard, 1 without, 0 when not
+   cached. */
+int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t cap) {
+  char gt[64] = "";
+  const char *gn = guard >= 0 && g_hc && nt_kind(c->nt, guard) == NK_LocalVariableReadNode &&
+                   comp_ntype(c, guard) == TY_FLOAT ? nt_str(c->nt, guard, "name") : NULL;
+  if (gn && !nameset_has(&g_hc->wl, gn)) {
+    Buf gb; memset(&gb, 0, sizeof gb);
+    int sv_tmp = g_tmp;
+    emit_expr(c, guard, &gb);
+    g_tmp = sv_tmp;
+    int ok = gb.p && strlen(gb.p) < sizeof gt && !strstr(gb.p, "({");
+    for (const char *q = gb.p ? strstr(gb.p, "_t") : NULL; ok && q; q = strstr(q + 2, "_t"))
+      if (q[2] >= '0' && q[2] <= '9') ok = 0;
+    if (ok) snprintf(gt, sizeof gt, "%s", gb.p);
+    free(gb.p);
+  }
   int e = hc_entry(c, recv, HC_FLOAT);
   if (e < 0) return 0;
   g_hc->e[e].nf = 1;
   snprintf(d, cap, "_hcd%d_%d", g_hc->id, e);
   snprintf(n, cap, "_hcn%d_%d", g_hc->id, e);
-  return 1;
+  if (!gt[0]) return 1;
+  char cond[160];
+  /* a nil is a NaN: one compare for every number, the bits only for a NaN */
+  snprintf(cond, sizeof cond, " && (%s == %s || !sp_float_is_nil(%s))", gt, gt, gt);
+  char *gd = g_hc->e[e].guard;
+  if (strstr(gd, cond)) return 2;
+  if (strlen(gd) + strlen(cond) >= sizeof g_hc->e[0].guard) return 1;
+  strcat(gd, cond);
+  return 2;
 }
 
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap) {
@@ -6780,7 +6824,8 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
         buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; ",
                    r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,
                    r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i);
-        if (r->e[i].nf) buf_printf(b, "_hcn%d_%d = _a && !SP_MAY_NIL(_a) ? _a->len : 0; ", r->id, i);
+        if (r->e[i].nf)
+          buf_printf(b, "_hcn%d_%d = _a && !SP_MAY_NIL(_a)%s ? _a->len : 0; ", r->id, i, r->e[i].guard);
         buf_puts(b, "} ");
       }
     }
@@ -15336,6 +15381,25 @@ static void iow_nil_recv_ck(const char *elem, const char *op, Buf *b) {
   buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(%s))) sp_raise_nil_float_op(1, \"%s\"); ", elem, op);
 }
 
+/* ... and of its right-hand side, a Float or an Integer that may be nil
+   (the marks, as emit_scalar_op_assign reads them): nil can't be coerced
+   into Float, where the C operator stored the nil's NaN payload or the
+   Integer sentinel as a number. Emitted after the element's own test. */
+static void iow_nil_rhs_ck(const char *rhs, TyKind vt, const char *op, Buf *b) {
+  if (vt == TY_INT) buf_printf(b, "if (SP_UNLIKELY(%s == SP_INT_NIL)) ", rhs);
+  else buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(%s))) ", rhs);
+  buf_printf(b, "sp_raise_nil_float_op(0, \"%s\"); ", op);
+}
+
+/* `elem OP rhs` for a Float rhs that may be nil under + - * /: a nil
+   operand makes the result NaN, so the result is tested first and the
+   operand only then (SP_FLOAT_NIL_CK_NAN_R), one test on the hot path */
+static void iow_nan_fold(const char *elem, const char *op, const char *rhs, Buf *b) {
+  int tr = ++g_tmp;
+  buf_printf(b, "({ sp_float _t%d = %s %s (%s); SP_FLOAT_NIL_CK_NAN_R(_t%d, %s, \"%s\"); _t%d; })",
+             tr, elem, op, rhs, tr, rhs, op, tr);
+}
+
 static void iow_capture_slot(Compiler *c, TyKind t, char *slot, size_t n, Buf *b) {
   int ts = ++g_tmp;
   buf_printf(b, "%s _t%d = %s; ", c_type_name(t), ts, slot);
@@ -15488,7 +15552,19 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     int fseq = fnil && !fuse;
     if (eff || fseq) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
     int mode = rt == TY_STR_ARRAY ? IOW_RHS_INT : (rt == TY_POLY_ARRAY || vt == TY_POLY) ? IOW_RHS_BOXED : IOW_RHS_EXPR;
-    char *rhs = iow_rhs(c, v, mode, eff ? b : NULL);
+    /* A right-hand side that may be nil raises, after a nil element: an
+       element of an array the loop caches through its nil-free read, whose
+       out-of-range branch tests both (emit_nilfree_operand), so an in-range
+       one pays nothing; any other the marks call nilable, tested in each arm
+       below (iow_nil_rhs_ck). */
+    Buf nfb; memset(&nfb, 0, sizeof nfb);
+    char *rhs = fnil && fuse && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, slot, &nfb)
+              ? nfb.p : iow_rhs(c, v, mode, eff ? b : NULL);
+    int rnil = fnil && !nfb.p && (vt == TY_FLOAT || vt == TY_INT) && nullable_int_value(c, v);
+    /* a Float under + - * / is tested through the result, as
+       emit_scalar_op_assign does: its NaN first, the operand only then */
+    int rnan = rnil && vt == TY_FLOAT && is_basic_arith(op);
+    int rfast = rnil;   /* the fold's fast arm tests it too */
     if (fseq) {
       int tr = ++g_tmp;
       buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tr, rhs);
@@ -15498,6 +15574,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(&rn, "_t%d", tr);
       rhs = rn.p;
       iow_nil_recv_ck(slot, op, b);
+      if (rnil) iow_nil_rhs_ck(rhs, vt, op, b);
     }
     /* An Integer or Float slot in range of a mutable array is folded where it
        is: one bounds check instead of the get's and then the set's. Anything
@@ -15520,26 +15597,34 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       if (hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
         /* a Float element is folded only below the nil-free length (_hcn),
            which is the array's length while it holds no nil and 0 otherwise */
-        if (fnil) hc_array_nilfree(c, recv, hd, hn, sizeof hd);
+        /* a right-hand side that is a Float local the loop does not
+           assign zeroes the nil-free length while it is nil: the fold
+           below it then needs no test of its own */
+        if (fnil && hc_array_nilfree(c, recv, rnil ? v : -1, hd, hn, sizeof hd) == 2) rfast = 0;
         buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, fnil ? hn : hl);
+        if (rfast && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
         buf_printf(b, "%s *_t%d = &%s[_t%d]; *_t%d = ", c_type_name(et), tp, hd, tb, tp);
       }
       else {
         buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && %s(unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
                    ta, ta, fnil ? may_nil_ck : "", tb, ta);
+        if (rnil && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
         buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
         if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
         buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
       }
-      if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
+      if (rnan && rfast) iow_nan_fold(fslot, op, rv, b);
+      else if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
       buf_printf(b, "; } else ");
       if (fnil) {
         buf_puts(b, "{ ");
         iow_capture_slot(c, TY_FLOAT, slot, sizeof slot, b);
         iow_nil_recv_ck(slot, op, b);
+        if (rnil && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
       }
       buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
-      if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
+      if (rnan) iow_nan_fold(slot, op, rv, b);
+      else if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
       free(rhs);
       buf_printf(b, ")%s;%s }\n", hc_mark(), fnil ? " }" : "");
       return;
