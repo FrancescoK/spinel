@@ -78,8 +78,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        to a Bignum first (#2863). */
     if (rt == TY_BIGINT) {
       int tv = ++g_tmp;
+      /* the receiver is held across the bounds' evaluation, which can
+         allocate (#4049) */
       buf_printf(b, "({ sp_Bigint *_t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_bigint_cmp(_t%d, ", tv);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bigint_cmp(_t%d, ", tv, tv);
       if (repr_of(c, argv[0]).big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
