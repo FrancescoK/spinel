@@ -968,6 +968,14 @@ spinel: 1 refusal, nothing written
 == test/reject/string_rest_splat_yield.rb [promote] rc=1
 spinel: test/reject/string_rest_splat_yield.rb:6: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_returned_arg_second.rb [default] rc=1
+spinel: test/reject/string_returned_arg_second.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_second.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_second.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_second_append.rb [default] rc=1
+spinel: test/reject/string_returned_arg_second_append.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_second_append.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_second_append.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_splat_changed_array.rb [default] rc=1
 spinel: test/reject/string_splat_changed_array.rb:10: a String is passed to a proc's parameter `y` through a splat of an Array the program changes, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat of an Array that holds a copy). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written

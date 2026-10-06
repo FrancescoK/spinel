@@ -30536,16 +30536,18 @@ static int sa_bang_receiver(Compiler *c, int call) {
     return -1;
   return r;
 }
-/* The argument a call's method answers as it is (`def id(x) = x`, also
-   through `x.itself` or `x.strip!`), or -1: a parameter the method never
-   reassigns, read as one of its values. A call the deep-return rule hands
-   the shared handle (strbuf_box) answers -1. */
-static int sa_returned_arg(Compiler *c, int call) {
+/* The String arguments a call's method answers as they are (`def id(x) =
+   x`, also through `x.itself` or `x.strip!`, and each arm of `f ? x : y`):
+   parameters the method never reassigns, read as one of its values. Up to
+   `cap` into out; the count. A call the deep-return rule hands the shared
+   handle (strbuf_box) answers none. */
+static int sa_returned_args(Compiler *c, int call, int *out, int cap) {
   const NodeTable *nt = c->nt;
+  int got = 0;
   call = an_unparen(nt, call);
-  if (call < 0 || nt_kind(nt, call) != NK_CallNode || c->strbuf_box[call]) return -1;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || c->strbuf_box[call]) return 0;
   int mi = an_call_target_mi(c, call);
-  if (mi <= 0) return -1;
+  if (mi <= 0) return 0;
   Scope *m = &c->scopes[mi];
   int lv[16];
   /* a path answering nil (`if flag; s; end`) hands s over on the other */
@@ -30568,10 +30570,10 @@ static int sa_returned_arg(Compiler *c, int call) {
       if (!m->pnames[j] || !sp_streq(m->pnames[j], pn)) continue;
       int a = arg_layout_param_node(c, m, call, j, NULL);
       TyKind at = a >= 0 ? comp_ntype(c, a) : TY_UNKNOWN;
-      if (at == TY_STRING || at == TY_STRBUF) return a;
+      if ((at == TY_STRING || at == TY_STRBUF) && got < cap) out[got++] = a;
     }
   }
-  return -1;
+  return got;
 }
 /* The refusal's message for each route: 0 a global, 1 a method returning
    its parameter, 2 a bang method's result, 3 an Array element. */
@@ -30798,12 +30800,13 @@ static void refuse_string_alias_copies(Compiler *c) {
         while (nt_kind(nt, q.carry) == NK_LocalVariableWriteNode) q.carry = an_unparen(nt, nt_ref(nt, q.carry, "value"));
         if (!share_route_defer(c, &q, sa_msg(0))) sa_refuse(c, w, 0);
       }
-      /* `t = id(s)` */
-      int a = sa_returned_arg(c, v);
-      if (a >= 0 && sa_name(c, a, &from) &&
-          ((sa_mutated(c, &to) && sa_read_elsewhere(c, &from, a)) ||
-           (sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1))))
-        sa_refuse(c, w, 1);
+      /* `t = id(s)`, `t = choose(+"x", s, flag)`: each argument it may answer */
+      int ra[16], nra = sa_returned_args(c, v, ra, 16);
+      for (int i = 0; i < nra; i++)
+        if (sa_name(c, ra[i], &from) &&
+            ((sa_mutated(c, &to) && sa_read_elsewhere(c, &from, ra[i])) ||
+             (sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1))))
+          sa_refuse(c, w, 1);
       /* `r = s.strip!; r << x`, `r = s.strip! || s`; of the bangs the alias
          walk follows (str_self_call), one whose two names it made the one
          handle is left out. The receiver's own later mutation is not asked
@@ -30836,8 +30839,9 @@ static void refuse_string_alias_copies(Compiler *c) {
     /* `id(s) << x`. A mutator straight on a bang's result (`s.strip! << x`)
        reaches the receiver: the bang chain writes back to the String it
        starts from. */
-    int a = sa_returned_arg(c, r);
-    if (a >= 0 && sa_name(c, a, &from) && sa_read_elsewhere(c, &from, a)) sa_refuse(c, u, 1);
+    int ra[16], nra = sa_returned_args(c, r, ra, 16);
+    for (int i = 0; i < nra; i++)
+      if (sa_name(c, ra[i], &from) && sa_read_elsewhere(c, &from, ra[i])) sa_refuse(c, u, 1);
     /* `e.to_s << (e = y)`: desugar_mutator_recv_rebind snapshots the
        receiver only through appends, so the `to_s` answers a copy of the
        String the variable held, and the handle the call's value hands on
