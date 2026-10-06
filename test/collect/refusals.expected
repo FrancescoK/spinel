@@ -990,12 +990,6 @@ spinel: 1 refusal, nothing written
 spinel: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
 == test/reject/subclass_array_class_new_call.rb [promote] rc=1
 spinel: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
-== test/reject/subclass_array_marshal.rb [default] rc=1
-spinel: Marshal.dump of an Array subclass instance is not supported yet (it would load back as a plain Array)
-spinel: 1 refusal, nothing written
-== test/reject/subclass_array_marshal.rb [promote] rc=1
-spinel: Marshal.dump of an Array subclass instance is not supported yet (it would load back as a plain Array)
-spinel: 1 refusal, nothing written
 == test/reject/subclass_array_reopened.rb [default] rc=1
 spinel: class Stack < Array: subclassing Array in a program that also reopens Array is not supported yet
 == test/reject/subclass_array_reopened.rb [promote] rc=1
