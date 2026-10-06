@@ -5340,15 +5340,21 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
 
   /* array set operations: &, intersection, |, union, -, difference. The named
      forms are variadic (fold over each argument); the operators are binary. */
-  if (recv >= 0 && argc >= 1 &&
+  if (recv >= 0 && argc >= 1 && ty_is_array(rt) &&
       is_set_op(name)) {
-    if (ty_is_array(rt) && a0 == rt) { *out = rt; return 1; }
-    /* empty array [] arg (TY_UNKNOWN): result is same kind as receiver */
-    if (ty_is_array(rt) && a0 == TY_UNKNOWN) { *out = rt; return 1; }
-    /* any array receiver with a different-kind (or poly) array argument: the
-       codegen boxes both operands to poly and runs the poly set op, so the
-       result is a poly array. */
-    if (ty_is_array(rt) && ty_is_array(a0) && a0 != rt) { *out = TY_POLY_ARRAY; return 1; }
+    /* every operand of the receiver's kind, or an empty [] (TY_UNKNOWN):
+       the result is that kind. Any array of another kind, or a boxed
+       operand of a variadic form: the codegen boxes the operands to poly
+       and runs the poly set op, so the result is a poly array. */
+    int same = 1, poly = 1;
+    for (int j = 0; j < argc; j++) {
+      TyKind aj = j == 0 ? a0 : infer_type(c, argv[j]);
+      if (aj == rt || aj == TY_UNKNOWN) continue;
+      same = 0;
+      if (!ty_is_array(aj) && !(aj == TY_POLY && argc > 1)) poly = 0;
+    }
+    if (same) { *out = rt; return 1; }
+    if (poly) { *out = TY_POLY_ARRAY; return 1; }
   }
   /* The variadic set operations with NO argument answer a copy of the
      receiver, and fetch_values with none answers an empty Array; only the
