@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|nn|brow|dc|lit|op|ord|cdiff|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|nn|brow|dc|lit|op|ord|cdiff|cident|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -215,7 +215,7 @@ names = sorted({n for (_, n, _) in jobs if n != "base"})
 print("# verify\n")
 # what this run checks: a batch gate runs only pgate, a staged PR only its
 # legs, so the other mode's jobs show as skipped on the run page
-LEG_NAMES = {"pgate": "parallel gate", "gate": "gate", "cdiff": "corpus C diff", "suite": "suite",
+LEG_NAMES = {"pgate": "parallel gate", "gate": "gate", "cdiff": "corpus C diff", "cident": "cident", "suite": "suite",
              "rubyspec": "rubyspec-gate", "scale": "scale-test", "extra": "new tests"}
 ran = sorted({l for (l, _, _) in jobs}, key=lambda l: list(LEG_NAMES).index(l) if l in LEG_NAMES else 99)
 if not ran:
@@ -336,6 +336,16 @@ for n in names:
             if len(lines) > 1:
                 print("  ```text\n" + "\n".join("  " + l for l in lines[1:61]) +
                       ("\n  ..." if len(lines) > 61 else "") + "\n  ```")
+    if ("cident", n, 0) in jobs:
+        # cident-leg.sh: the two pasteable lines, then each flavour's
+        # cident.sh line and the programs it reported
+        d = jobs[("cident", n, 0)]
+        lines = read(os.path.join(d, "cident.txt")).rstrip().splitlines()
+        if not lines:
+            print(f"- cident: {read(os.path.join(d, 'cident-missing.txt')).strip() or 'no result (see cident-*.log)'}")
+        else:
+            print("- cident:\n  ```text\n" + "\n".join("  " + l for l in lines[:62]) +
+                  ("\n  ..." if len(lines) > 62 else "") + "\n  ```")
     if ("scale", n, 0) in jobs:
         d = jobs[("scale", n, 0)]
         spin = read(os.path.join(d, "spin.txt")).strip()

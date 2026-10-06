@@ -11,6 +11,10 @@ name: verify
 # inference order) in shards of the corpus. A probe watch on master is all
 # eight: LEGS="cb vf nn brow dc lit op ord".
 #
+# cident is `make cident` (matz/spinel#7721): the head's own tools/cident.sh
+# against BASE, plain and with CIDENT_FLAGS=--share-strings; its cident.txt
+# opens with the two lines a restructuring PR pastes (cident-leg.sh).
+#
 # Each sha is built once, by the build job, and the legs unpack its tree.
 # Every make-driven compile goes through sccache, as upstream CI's do: the
 # build and each suite slice carry sccache's disk store between runs as one
@@ -83,7 +87,7 @@ jobs:
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
-              for leg in ("cb", "vf", "nn", "cdiff", "extra", "scale"):
+              for leg in ("cb", "vf", "nn", "cdiff", "cident", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
               jobs += [dict(j, name=name, sha=sha) for j in rs + sp]
@@ -202,8 +206,9 @@ jobs:
     # a head whose build failed fails its own jobs, not the others'
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has_run == 'true' }}
     runs-on: ubuntu-latest
-    # a corpus or builtin-row shard is given longer: its time is a guess
-    timeout-minutes: ${{ contains(fromJSON('["brow", "dc", "lit", "op", "ord"]'), matrix.leg) && 240 || 120 }}
+    # a corpus or builtin-row shard is given longer: its time is a guess;
+    # cident compiles the corpus four times and builds the base twice
+    timeout-minutes: ${{ contains(fromJSON('["brow", "dc", "lit", "op", "ord", "cident"]'), matrix.leg) && 240 || 120 }}
     strategy:
       fail-fast: false
       # The account runs 20 jobs at once. A run keeps 8 of them free, so a
@@ -309,6 +314,14 @@ jobs:
           echo "$LEG $NAME $SHARD $(git -C "$h" log -1 --format='%h %s')" > "$out/rev.txt"
           echo "run ${{ github.run_id }} attempt ${{ github.run_attempt }}, $(date -u '+%Y-%m-%d %H:%M UTC')" > "$out/computed.txt"
           cd "$h"
+          # optcarrot, packed as `make optcarrot` packs it, so the corpus legs
+          # compare it too
+          pack_optcarrot() {
+            repo=$(sed -n 's/^OPTCARROT_REPO *:*= *//p' Makefile); br=$(sed -n 's/^OPTCARROT_BRANCH *:*= *//p' Makefile)
+            if [ -n "$repo" ] && git clone -q --depth=1 ${br:+--branch=$br} "$repo" build/optcarrot 2>/dev/null; then
+              ruby build/optcarrot/tools/pack-for-spinel.rb > build/optcarrot-single.rb || rm -f build/optcarrot-single.rb
+            fi
+          }
           case "$LEG" in
           suite)
             tgt="test-corpus"; [ "$SHARD" = 1 ] && tgt="test"
@@ -356,12 +369,9 @@ jobs:
             # as before; a program's base C comes from the cache where
             # cbase.py finds it still stands.
             b="$RUNNER_TEMP/base"; C="$RUNNER_TEMP/cbase"
-            # optcarrot (packed as `make optcarrot` packs it) and the packages' tests too, so a PR's
-            # "optcarrot and the packages emit the same C" is what this leg checked
-            repo=$(sed -n 's/^OPTCARROT_REPO *:*= *//p' Makefile); br=$(sed -n 's/^OPTCARROT_BRANCH *:*= *//p' Makefile)
-            if [ -n "$repo" ] && git clone -q --depth=1 ${br:+--branch=$br} "$repo" build/optcarrot 2>/dev/null; then
-              ruby build/optcarrot/tools/pack-for-spinel.rb > build/optcarrot-single.rb || rm -f build/optcarrot-single.rb
-            fi
+            # optcarrot and the packages' tests too, so a PR's "optcarrot and
+            # the packages emit the same C" is what this leg checked
+            pack_optcarrot
             ls test/*.rb test/infer/*.rb benchmark/*.rb packages/*/test/*.rb build/optcarrot-single.rb 2>/dev/null > "$out/programs.txt"
             mkdir -p "$out/diffs" "$C/c"
             python3 "$GITHUB_WORKSPACE/cbase.py" plan "$h" "$out/programs.txt" "$C" "$RUNNER_TEMP/recompute.txt" > "$out/cbase.txt"
@@ -402,6 +412,15 @@ jobs:
                 echo "  (computed, not cached: $miss programs without C; other files differ from the base: $(echo "$aux" | tr '\n' ' ' | cut -c1-200))" >> "$out/cbase.txt"
               fi
             fi
+            ;;
+          cident)
+            # `make cident` (matz/spinel#7721) with the head's own tool, plain
+            # and --share-strings, against BASE, the base cdiff compares with.
+            # cident.sh builds BASE itself in a worktree of this clone (a
+            # full-history blobless clone: the base's blobs are fetched on
+            # checkout); a head without the tool says so and writes no result.
+            [ -f tools/cident.sh ] && pack_optcarrot
+            CIDENT_JOBS=$(nproc) "$GITHUB_WORKSPACE/cident-leg.sh" "$h" "$out" "$BASE"
             ;;
           rubyspec)
             # `make gate`'s rubyspec leg, which `make test` does not run, in
