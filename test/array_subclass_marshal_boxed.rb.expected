@@ -1,0 +1,3 @@
+TypeError: Marshal.dump of an Array subclass instance is not supported yet (it would load back as a plain Array)
+TypeError: Marshal.dump of an Array subclass instance is not supported yet (it would load back as a plain Array)
+[1, 2]
