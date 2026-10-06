@@ -123,9 +123,9 @@ extern int g_repr_check;
 void repr_check_ask(const Compiler *c, int node);
 /* --dump-repr is on (#7501) */
 extern int g_dump_repr;
-/* --dump-repr: print each slot's representation, one sorted line per
-   slot, once the analysis is final */
-void repr_dump(const Compiler *c);
+/* --dump-repr: each slot's representation, one sorted line per slot, as
+   the final analysis gives it (malloc'd text) */
+char *repr_dump(const Compiler *c);
 
 /* ---- Stores (R6) ----
    The C value class of a kind, what C allows between two of them: a store

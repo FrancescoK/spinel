@@ -586,8 +586,9 @@ static void repr_share_seal(Compiler *c) {
    time without changing any output (#7482), and this is where it shows.
    Locals, parameters, globals and constants are LocalVars and read through
    repr_of_slot. An ivar and a method's value are not: they read their own
-   flags by the same rules. The dump only reads, and the compile stops after
-   it. */
+   flags by the same rules. The dump only reads. It is taken once the
+   analysis is final and printed once the compile has passed, so a program
+   codegen refuses fails as a compile does; no C is written. */
 int g_dump_repr = 0;
 
 static const char *repr_kind_name(int k) {
@@ -670,7 +671,7 @@ static void repr_scope_label(const Compiler *c, const Scope *sc, char *out, size
            sc->is_include_copy ? "(include)" : "", sc->is_extend_copy ? "(extend)" : "");
 }
 
-void repr_dump(const Compiler *c) {
+char *repr_dump(const Compiler *c) {
   ReprLines ls = {0};
   char where[1024], label[512];
   for (int si = 0; si < c->nscopes; si++) {
@@ -703,6 +704,17 @@ void repr_dump(const Compiler *c) {
     repr_dump_line(c, &ls, where, repr_of_slot(c, &c->consts[k]));
   }
   qsort(ls.v, (size_t)ls.n, sizeof *ls.v, repr_line_cmp);
-  for (int k = 0; k < ls.n; k++) { puts(ls.v[k]); free(ls.v[k]); }
+  size_t len = 1;
+  for (int k = 0; k < ls.n; k++) len += strlen(ls.v[k]) + 1;
+  char *out = malloc(len), *o = out;
+  for (int k = 0; k < ls.n; k++) {
+    size_t n = strlen(ls.v[k]);
+    memcpy(o, ls.v[k], n);
+    o[n] = '\n';
+    o += n + 1;
+    free(ls.v[k]);
+  }
+  *o = 0;
   free(ls.v);
+  return out;
 }
