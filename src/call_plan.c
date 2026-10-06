@@ -1126,6 +1126,7 @@ static void cpoly_prearms_n(Compiler *c, int id, const char *name, int argc, con
        : kwh >= 0 && !ps.has_splat_arg ? argc <= SP_PROC_ARG_SLOTS
        : splat_last))
     cpoly_family(p, cap, PB_CALLABLE);
+  if (ps.kw_pos && ps.straset) cpoly_family(p, cap, PB_STR_ASET);
   if (ps.kw_pos && !ps.has_splat_arg && cpoly_str_trial(c, id, name, argc, argv, atmp_ty, ret, p))
     cpoly_trial(p, cap, PT_STR);
   cpoly_cases_n(c, id, name, argc, argv, ret, atmp_ty, &ps, splat_a, p, cap);

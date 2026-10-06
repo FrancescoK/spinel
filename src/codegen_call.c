@@ -7764,6 +7764,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         form = poly_form_check(id, name, "poly-form-n", fserved, form, oform);
       }
       /* a genuine String in a slot whose name a user class owns (#4816) */
+      if (kw_pos) emit_poly_str_aset_prearm(c, recv, &ps, &ptemps, b);
       if (kw_pos && !has_splat_arg)
         emit_poly_str_prearm(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, b);
       buf_puts(b, "switch (");
@@ -7818,8 +7819,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         pd_done = pd_hoist(c, id, name, b, pd_from, tr, is_scalar_ret(ret) ? ret : TY_INT, pid, pty, n);
         free(pid); free(pty);
       }
-      if (pd_done) buf_printf(b, " _t%d; })", tr);
-      else buf_printf(b, " } _t%d; })", is_setter_val ? atmp[0] : tr);
+      if (!pd_done) buf_puts(b, " }");
+      if (kw_pos) emit_poly_str_aset_writeback(c, recv, &ps, &ptemps, b);
+      buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
       free(atmp);
       free(atmp_ty);
       free(htmp);
