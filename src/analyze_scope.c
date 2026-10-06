@@ -6444,6 +6444,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             dst->class_id = ci;
             dst->is_cmethod = 0;
             dst->is_include_copy = 1;
+            dst->is_prepend_copy = 1;
             dst->origin_module_ci = mod_id + 1;   /* #owner names the module */
             dst->reachable = sc->reachable;
             dst->yields = sc->yields;
