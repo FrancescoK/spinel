@@ -178,7 +178,8 @@ const char *repr_coerce_form_name(int form);
    handle unless the analysis proves it local. Proven local: no in-place
    mutation reaches its class, or the class has this one holder and every
    mutation goes through it, so the new pointer can be written back into
-   that slot. */
+   that slot. The analysis applies the answer to the flags repr_of reads
+   (share_default_apply); codegen follows repr_of. */
 int repr_str_shares(const Compiler *c, int holder);
 /* the same rule for the elements of holder h's containers */
 int repr_str_elems_share(const Compiler *c, int holder);

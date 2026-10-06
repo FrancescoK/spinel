@@ -547,13 +547,14 @@ static const char *repr_share_kind_name(int kind) {
   }
 }
 
-/* The analysis is final: build the facts over its answers. Nothing reads
-   them for the C yet. SPINEL_SHARE_STATS=1 reports what the rule decides
-   (=2 also each holder with its class's facts, =3 the mutations that reach
-   what the walk does not follow). */
+/* The analysis is final: every holder the rule shares has to hold the
+   handle now. One whose kind cannot carry it yet is refused, naming it,
+   rather than compiled holding a copy. SPINEL_SHARE_STATS=1 reports what
+   the rule decided. */
 static void repr_share_seal(Compiler *c) {
   share_facts_build(c);
   int nh = share_holder_count(c);
+  int bad = -1, bad_elems = 0;
   int n_str = 0, n_shared = 0, n_kind[SHK_UNKNOWN + 1] = {0}, n_param = 0, n_elems = 0;
   int n_route_only = 0, n_unknown = 0;
   const char *stats = getenv("SPINEL_SHARE_STATS");
@@ -561,7 +562,10 @@ static void repr_share_seal(Compiler *c) {
   for (int h = 0; h < nh; h++) {
     const ShareHolder *sh = share_holder(c, h);
     int ec = repr_share_elems_carried(c, sh);
-    if (ec >= 0 && repr_str_elems_share(c, h)) n_elems++;
+    if (ec >= 0 && repr_str_elems_share(c, h)) {
+      n_elems++;
+      if (!ec && bad < 0) { bad = h; bad_elems = 1; }
+    }
     int carried = repr_share_carried(c, sh);
     if (carried < 0) continue;
     n_str++;
@@ -579,6 +583,7 @@ static void repr_share_seal(Compiler *c) {
     n_kind[sh->kind]++;
     if (sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].is_param) n_param++;
     if (closed && !share_closed_shares(closed, sh)) n_unknown++;
+    if (!carried && bad < 0) bad = h;
   }
   if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
   if (stats && stats[0] == '2')
@@ -594,10 +599,28 @@ static void repr_share_seal(Compiler *c) {
     }
   if (stats) {
     fprintf(stderr, "share-stats: string-holders=%d shared=%d local=%d (param=%d) ivar=%d gvar=%d "
-            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d\n",
+            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d refused=%d\n",
             n_str, n_shared, n_kind[SHK_LOCAL], n_param, n_kind[SHK_IVAR], n_kind[SHK_GVAR],
-            n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only);
+            n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only, bad >= 0);
     share_facts_drop(closed);
+  }
+  if (bad >= 0) {
+    const ShareHolder *sh = share_holder(c, bad);
+    char nm[160];
+    if (sh->kind == SHK_LOCAL) snprintf(nm, sizeof nm, "`%s`", c->scopes[sh->scope].locals[sh->local].name);
+    else snprintf(nm, sizeof nm, "`%s`", sh->name ? sh->name : "?");
+    const char *kind = sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].is_block_param
+                       ? "block parameter" : repr_share_kind_name(sh->kind);
+    char msg[512];
+    if (bad_elems)
+      snprintf(msg, sizeof msg, "under --share-strings, the Strings %s %s holds are shared with another "
+               "name and changed in place, and a typed String container cannot hold the shared handle "
+               "yet (#6765)", kind, nm);
+    else
+      snprintf(msg, sizeof msg, "under --share-strings, the String %s %s holds is shared with another "
+               "name and changed in place, and a %s cannot hold the shared handle yet (#6765)",
+               kind, nm, kind);
+    unsupported_feature(c, sh->node, msg);
   }
 }
 
