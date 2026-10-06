@@ -225,7 +225,18 @@ def finish(a):
     lines.append(f"Tests: {tp} pass, {tf} fail, {te} error")
     # coverage: every corpus program once, every rubyspec suite once
     want = int(meta.get("ntests", "-1") or -1)
-    if not fails and (nok != want or dup or tp + tf + te != want):
+    # coverage fails on a target that has no result, or one run twice; a result that is no target (an
+    # extra .ok) is only reported
+    tfile = os.path.join(a.get("--prep", ""), "targets.txt")
+    if os.path.exists(tfile):
+        tg = {os.path.basename(l.strip()) for l in open(tfile) if l.strip()}
+        got = {os.path.basename(n_) for n_ in seen}
+        missing = sorted(t_ for t_ in tg if t_ not in got)
+        extra = sorted(g_ for g_ in got if g_ not in tg)
+        if extra: notes.append(f"[pgate] results that are no target (not counted): {' '.join(extra[:10])}")
+        if not fails and (missing or dup):
+            notes.append(f"[pgate] the corpus slices missed {len(missing)} programs ({' '.join(missing[:10])}) and ran {len(dup)} twice")
+    elif not fails and (nok != want or dup or tp + tf + te != want):
         notes.append(f"[pgate] the corpus slices ran {nok} programs ({len(dup)} twice, {tp + tf + te} counted); the tree has {want}")
     suites = meta.get("rubyspec_suites", "").split()
     ran = [s for p in parts for s in re.findall(r"^rubyspec-gate\[([^\]]+)\]:", parts[p][2], re.M)]

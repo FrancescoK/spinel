@@ -77,6 +77,8 @@ prep)
     fi
     setmeta start "$(cat "$(git rev-parse --git-dir)/gate-start" 2>/dev/null || true)"
     setmeta ntests "$(mkvar TEST_TARGETS PKG_TEST_TARGETS | wc -w | tr -d ' ')"
+    # the target names too, so finish can tell a missing program from an extra .ok
+    mkvar TEST_TARGETS PKG_TEST_TARGETS | tr ' ' '\n' | sed '/^$/d' > "$out/targets.txt"
     setmeta rubyspec_suites "$(mkvar RUBYSPEC_SUITES | tr '\n' ' ')"
     setmeta cc "$(mkvar CC)"
     # The PCH's inputs: every header (the fingerprint's own set), the flags
