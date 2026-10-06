@@ -1,0 +1,48 @@
+f1
+f2
+undefined method 'merge' for nil [{k1: 1}, {k2: 2}]
+undefined method 'merge' for nil [{b: 2}, {c: 3}, {d: 4}]
+undefined method 'merge!' for nil [{e: 3}, {f: 4}]
+f7
+f8
+undefined method 'merge' for nil [{k7: 7}, {k8: 8}]
+f9
+undefined method 'merge' for nil [{k9: 9}]
+f10
+undefined method 'merge' for nil [{k10: 10}]
+f11
+undefined method 'merge' for nil [{k11: 11}]
+f12
+undefined method 'merge' for nil [{k12: 12}]
+f1
+f2
+undefined method 'merge' for an instance of Integer [{k1: 1}, {k2: 2}]
+undefined method 'merge' for an instance of Integer [{b: 2}, {c: 3}, {d: 4}]
+undefined method 'merge!' for an instance of Integer [{e: 3}, {f: 4}]
+f7
+f8
+undefined method 'merge' for an instance of Integer [{k7: 7}, {k8: 8}]
+f9
+undefined method 'merge' for an instance of Integer [{k9: 9}]
+f10
+undefined method 'merge' for an instance of Integer [{k10: 10}]
+f11
+undefined method 'merge' for an instance of Integer [{k11: 11}]
+f12
+undefined method 'merge' for an instance of Integer [{k12: 12}]
+f1
+f2
+{a: 1, k1: 1, k2: 2}
+{a: 1, b: 2, c: 3, d: 4}
+{a: 1, e: 3, f: 4}
+f7
+f8
+{a: 1, e: 3, f: 4, k7: 7, k8: 8}
+f9
+{a: 1, e: 3, f: 4, k9: 9}
+f10
+{a: 1, e: 3, f: 4, k10: 10}
+f11
+{a: 1, e: 3, f: 4, k11: 11}
+f12
+{a: 1, e: 3, f: 4, k12: 12}
