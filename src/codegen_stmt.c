@@ -14088,6 +14088,15 @@ const char *hash_box_cls(TyKind t) {
   return tr ? tr->hash_id : NULL;
 }
 
+/* The runtime's default-proc trampoline for a Hash of boxed values, the one
+   that drives the Proc in dproc_self (sp_dyn_hash_dproc and its String- and
+   Symbol-keyed twins), or NULL for a kind with none. */
+const char *hash_proc_dproc_fn(TyKind t) {
+  return t == TY_POLY_POLY_HASH ? "sp_dyn_hash_dproc"
+       : t == TY_STR_POLY_HASH ? "sp_dyn_strpoly_hash_dproc"
+       : t == TY_SYM_POLY_HASH ? "sp_dyn_sympoly_hash_dproc" : NULL;
+}
+
 /* The key and the value at position `_t<ti>` of the iteration order of the
    hash `_t<tr>`, as C text: a typed variant keeps the key itself in order[],
    the general hash a slot index into its keys[] and vals[]. Four rotating

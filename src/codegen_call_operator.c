@@ -1082,16 +1082,9 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       comp_ntype(c, argv[0]) == TY_PROC) {
     TyKind hrt = comp_ntype(c, recv);
     const char *hn2 = ty_hash_cname(hrt);
-    const char *keyct = hrt == TY_SYM_POLY_HASH ? "sp_sym"
-                      : hrt == TY_STR_POLY_HASH ? "const char *" : "sp_RbVal";
-    const char *kbox = hrt == TY_SYM_POLY_HASH ? "sp_box_sym(_key)"
-                     : hrt == TY_STR_POLY_HASH ? "sp_box_str(_key)" : "_key";
-    int dn2 = ++g_proc_counter;
-    buf_printf(&g_procs,
-      "static sp_RbVal _sp_hash_dproc_%d(sp_%sHash *_self_h, %s _key, void *_dproc_self) {\n"
-      "  return sp_penum_call2((sp_Proc *)_dproc_self,"
-      " sp_box_nullable_obj((void *)_self_h, %s), %s);\n}\n",
-      dn2, hn2, keyct, hash_box_cls(hrt), kbox);
+    /* the runtime's trampoline for the hash's kind: Hash#default_proc
+       recognizes it and answers the Proc it drives */
+    const char *tramp = hash_proc_dproc_fn(hrt);
     int th2 = ++g_tmp, tp2 = ++g_tmp;
     buf_printf(b, "({ sp_%sHash *_t%d = ", hn2, th2); emit_expr(c, recv, b);
     buf_printf(b, "; sp_Proc *_t%d = ", tp2); emit_expr(c, argv[0], b);
@@ -1102,9 +1095,9 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        whatever slot the expression feeds -- a Proc * one here (#3833). */
     TyKind vt2 = repr_of(c, id).as_ty;
     int ans = (vt2 == TY_PROC || vt2 == TY_POLY || vt2 == TY_UNKNOWN) ? tp2 : th2;
-    buf_printf(b, " _t%d->dproc = _sp_hash_dproc_%d; _t%d->dproc_self = (void *)_t%d;"
+    buf_printf(b, " _t%d->dproc = %s; _t%d->dproc_self = (void *)_t%d;"
                   " sp_gc_wb((void *)_t%d); _t%d; })",
-               th2, dn2, th2, tp2, th2, ans);
+               th2, tramp, th2, tp2, th2, ans);
     return 1;
   }
   /* value-position String#[]= (s[i] = v / s[i, n] = v / s[range] = v / s["sub"]
