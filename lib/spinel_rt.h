@@ -858,7 +858,10 @@ static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
    kept in a Symbol-keyed table made on the first one (no class lays them
    out). Each call returns a fresh GC-managed allocation, so two
    `Object.new` results compare as `!=` via their pointer addresses. */
-typedef struct sp_Object_s { struct sp_SymPolyHash *ivars; } sp_Object;
+typedef struct sp_Object_s {
+  struct sp_SymPolyHash *ivars;
+  sp_RbVal (*singleton_to_a)(sp_RbVal);
+} sp_Object;
 static void sp_Object_scan(void *p){ sp_Object *o=(sp_Object*)p; if(o->ivars) sp_gc_mark(o->ivars); }
 static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Object),NULL,sp_Object_scan);}
 
@@ -6086,6 +6089,22 @@ static sp_RbVal sp_splat_to_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
                               (v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)))
     return sp_box_poly_array(sp_enum_items_from(v));
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_OBJECT || v.cls_id == SP_BUILTIN_BASIC_OBJECT)) {
+    sp_Object *obj = (sp_Object *)v.v.p;
+    if (obj->singleton_to_a) {
+      SP_GC_ROOT_RBVAL(v);
+      sp_RbVal a = obj->singleton_to_a(v);
+      if (a.tag == SP_TAG_NIL) {
+        sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+        sp_PolyArray_push(r, v); return sp_box_poly_array(r);
+      }
+      if (a.tag == SP_TAG_OBJ && sp_poly_is_array_kind(a.cls_id)) return a;
+      const char *cn = v.cls_id == SP_BUILTIN_BASIC_OBJECT ? "BasicObject" : "Object";
+      sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Array (%s#to_a gives %s)",
+        cn, cn, sp_poly_class_name(a)));
+    }
+  }
   { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); sp_PolyArray_push(r, v); return sp_box_poly_array(r); }
 }
 static sp_RbVal sp_poly_arr_get(sp_RbVal a, sp_int i) {

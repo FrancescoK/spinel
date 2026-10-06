@@ -9201,6 +9201,19 @@ int sg_activates_ci(Compiler *c, int node) {
 
 void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent) {
   if (recv < 0) return;
+  const char *basic_to_a = nt_str(c->nt, node, "sg_basic_to_a");
+  if (basic_to_a) {
+    int si = atoi(basic_to_a);
+    int tmp = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_RbVal _sgv%d = ", tmp);
+    emit_boxed(c, recv, b);
+    buf_printf(b, "; if (_sgv%d.tag == SP_TAG_OBJ && _sgv%d.v.p &&\n"
+                   "    (_sgv%d.cls_id == SP_BUILTIN_OBJECT || _sgv%d.cls_id == SP_BUILTIN_BASIC_OBJECT))\n"
+                   "  ((sp_Object *)_sgv%d.v.p)->singleton_to_a = sp_sg_basic_to_a_%d; }\n",
+               tmp, tmp, tmp, tmp, tmp, si);
+    return;
+  }
   int ci = sg_activates_ci(c, node);
   if (ci < 0) return;
   if (!c->classes[ci].is_singleton_of || c->classes[ci].is_value_type) return;

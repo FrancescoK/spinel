@@ -2007,14 +2007,16 @@ static int sg_new_class_ci(Compiler *c, int val) {
   if (recv < 0) return -1;
   /* `K.new`, or `k.new` with a local holding one class (an anonymous
      `k = Class.new { }` is such a local, of the class it became) */
-  int ci = nt_kind(nt, recv) == NK_ConstantReadNode ? comp_class_index(c, nt_str(nt, recv, "name"))
+  const char *cn = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+  if (cn && sp_streq(cn, "Object")) return -2;
+  if (cn && sp_streq(cn, "BasicObject")) return -3;
+  int ci = nt_kind(nt, recv) == NK_ConstantReadNode ? comp_class_index(c, cn)
          : nt_kind(nt, recv) == NK_LocalVariableReadNode ? class_var_static_ci(c, recv) : -1;
   if (ci < 0) return -1;
-  /* Only a plain user class can be subclassed here: Object/BasicObject use an
-     opaque base struct with no cls_id field, and native/exception/struct
-     classes have special layouts a synthesized subclass cannot carry. */
-  const char *cn = c->classes[ci].name;
-  if (cn && (is_object_base_name(cn))) return -1;
+  /* Other object-base names and native/exception/struct classes do not have
+     layouts a synthesized subclass can carry. */
+  const char *cname = c->classes[ci].name;
+  if (cname && is_object_base_name(cname)) return -1;
   if (c->classes[ci].is_native_class || c->classes[ci].is_struct ||
       c->classes[ci].is_data || class_is_exc_subclass(c, ci)) return -1;
   return ci;
@@ -2067,7 +2069,7 @@ static int sg_single_new_write(Compiler *c, const char *name, int bk,
   if (bk == SG_CVAR && nt_kind(nt, write) != NK_ClassVariableWriteNode) return -1;
   if (bk == SG_GVAR && nt_kind(nt, write) != NK_GlobalVariableWriteNode) return -1;
   ci = sg_new_class_ci(c, nt_ref(nt, write, "value"));
-  if (ci < 0) return -1;
+  if (ci == -1) return -1;
   *out_ci = ci;
   return write;
 }
@@ -2341,6 +2343,29 @@ void register_singleton_defs(Compiler *c) {
     if (sg_binding(c, id, recv, &bk, &rn, &owner) < 0) continue;
     int parent_ci = -1;
     int wnode = sg_single_new_write(c, rn, bk, owner, &parent_ci);
+    if (parent_ci == -2 || parent_ci == -3) {
+      const char *mn = idk == NK_DefNode ? nt_str(nt, id, "name") : NULL;
+      if (idk == NK_DefNode && mn && sp_streq(mn, "to_a")) {
+        int si = -1;
+        for (int ds = 1; ds < c->nscopes; ds++)
+          if (c->scopes[ds].def_node == id) { si = ds; break; }
+        if (si < 0 || c->scopes[si].nparams != 0 || c->scopes[si].blk_param ||
+            c->scopes[si].yields || sg_def_needs_self(c, id)) {
+          unsupported_feature(c, id, "BasicObject singleton to_a with arguments, a block, or self");
+          continue;
+        }
+        char scope_id[16]; snprintf(scope_id, sizeof scope_id, "%d", si);
+        nt_node_set_str(nt, id, "sg_basic_to_a", scope_id);
+        char symbol[64]; snprintf(symbol, sizeof symbol, "sg_basic_to_a_%d_body", si);
+        c->scopes[si].c_name = strdup(symbol);
+        continue;
+      }
+      /* Object.new and BasicObject.new have no synthesized subclass to
+         receive arbitrary singleton methods. Let the usual untraceable
+         receiver path reject methods that need a real self. */
+      parent_ci = -1;
+      wnode = -1;
+    }
     if (wnode < 0) {
       /* Not traceable to one `new` of a user class, so there is no subclass to
          synthesize. A `def <recv>.m` then fell through to the ordinary def

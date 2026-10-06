@@ -2424,7 +2424,9 @@ const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b)
 /* The mangled C name: sp_<name> for free functions, sp_<Class>_<name>
    for instance methods. */
 void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
-  if (s->class_id >= 0 && s->is_cmethod)
+  if (s->c_name)
+    buf_printf(b, "sp_%s", s->c_name);
+  else if (s->class_id >= 0 && s->is_cmethod)
     buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
   else if (s->class_id >= 0)
     buf_printf(b, "sp_%s_%s", mc_reopen_cls(c, s->class_id, s->name), mc(s->name));
@@ -9592,32 +9594,54 @@ static int obj_to_a_any(Compiler *c) {
   }
   return 0;
 }
-static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
-  if (!obj_to_a_any(c)) return;
-  buf_puts(b, "static sp_RbVal sp_obj_to_a(sp_RbVal v) {\n");
-  buf_puts(b, "  switch (v.cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    ClassInfo *ci = &c->classes[i];
-    if (ci->is_native_class || !ci->instantiated || comp_class_is_module(c, ci)) continue;   /* a module has no instances (#4654) */
-    int defc = -1;
-    int mi = obj_to_a_method(c, i, &defc);
-    if (mi < 0) continue;
-    TyKind mret = (TyKind)c->scopes[mi].ret;
-    buf_printf(b, "    case %d: {\n", i);
-    char callx[256];
-    /* a value-type class is passed by value, not behind a pointer */
-    int vobj = comp_ty_value_obj(c, ty_object(defc));
-    char tail[64] = "";
-    obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail);   /* qualified in obj_to_a_method: rest/block only */
-    snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)v.v.p%s)" : "sp_%s_%s((sp_%s *)v.v.p%s)",
-             c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, tail);
-    buf_puts(b, "      return ");
-    if (mret == TY_POLY) buf_puts(b, callx);
-    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
-           buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
-    buf_puts(b, ";\n    }\n");
+static void emit_basicobject_singleton_to_a_wrappers(Compiler *c, Buf *b) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *sid = nt_str(nt, id, "sg_basic_to_a");
+    if (!sid) continue;
+    int si = atoi(sid);
+    if (si <= 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    buf_printf(b, "static sp_RbVal sp_sg_basic_to_a_%d(sp_RbVal self) {\n", si);
+    buf_puts(b, "  (void)self;\n  return ");
+    Buf call; memset(&call, 0, sizeof call);
+    emit_method_cname(c, s, &call);
+    buf_puts(&call, "()");
+    Buf boxed; memset(&boxed, 0, sizeof boxed);
+    emit_boxed_text(c, (TyKind)s->ret, call.p ? call.p : "sp_box_nil()", &boxed);
+    buf_puts(b, boxed.p ? boxed.p : "sp_box_nil()");
+    buf_puts(b, ";\n}\n");
+    free(call.p); free(boxed.p);
   }
-  buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
+}
+static void emit_obj_to_a_dispatch(Compiler *c, Buf *b) {
+  if (obj_to_a_any(c)) {
+    buf_puts(b, "static sp_RbVal sp_obj_to_a(sp_RbVal v) {\n");
+    buf_puts(b, "  switch (v.cls_id) {\n");
+    for (int i = 0; i < c->nclasses; i++) {
+      ClassInfo *ci = &c->classes[i];
+      if (ci->is_native_class || !ci->instantiated || comp_class_is_module(c, ci)) continue;   /* a module has no instances (#4654) */
+      int defc = -1;
+      int mi = obj_to_a_method(c, i, &defc);
+      if (mi < 0) continue;
+      TyKind mret = (TyKind)c->scopes[mi].ret;
+      buf_printf(b, "    case %d: {\n", i);
+      char callx[256];
+      /* a value-type class is passed by value, not behind a pointer */
+      int vobj = comp_ty_value_obj(c, ty_object(defc));
+      char tail[64] = "";
+      obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail);   /* qualified in obj_to_a_method: rest/block only */
+      snprintf(callx, sizeof callx, vobj ? "sp_%s_%s(*(sp_%s *)v.v.p%s)" : "sp_%s_%s((sp_%s *)v.v.p%s)",
+               c->classes[defc].c_name, mc(c->scopes[mi].name), c->classes[defc].c_name, tail);
+      buf_puts(b, "      return ");
+      if (mret == TY_POLY) buf_puts(b, callx);
+      else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, mret, callx, &bx);
+             buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+      buf_puts(b, ";\n    }\n");
+    }
+    buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
+  }
+  emit_basicobject_singleton_to_a_wrappers(c, b);
 }
 
 /* User-object #to_ary, installed as sp_obj_to_ary_fn: the CONVERSION protocol
