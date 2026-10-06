@@ -2735,6 +2735,7 @@ void sp_Enumerator_scan(void *p) {
   if (e->fib) sp_gc_mark(e->fib);
   if (e->gen_cap) sp_gc_mark(e->gen_cap);
   if (e->peeked) sp_mark_rbval(e->peek_val);
+  if (e->is_bsearch) sp_mark_rbval(e->bsearch_result);
   sp_mark_rbval(e->size);
   if (e->has_feed) sp_mark_rbval(e->feed);
   sp_mark_rbval(e->gen_result);
@@ -3024,7 +3025,40 @@ sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {SP_GC_ROOT(e); sp_gc_wb((void*)e);
   if (!sp_Fiber_alive(e->fib)) { e->gen_result = v; sp_gc_wb((void*)e); sp_raise_stop_iteration(v); }
   return v;
 }
+static void sp_enum_bsearch_advance(sp_Enumerator *e) {
+  if (!e->bsearch_waiting) return;
+  sp_RbVal v = e->has_feed ? e->feed : sp_box_nil();
+  e->has_feed = FALSE; e->feed = sp_box_nil();
+  if (v.tag == SP_TAG_INT) {
+    if (v.v.i == 0) { e->bsearch_result = e->items->data[e->bsearch_mid]; e->bsearch_hi = e->bsearch_mid - 1; }
+    else if (v.v.i < 0) e->bsearch_hi = e->bsearch_mid - 1;
+    else e->bsearch_lo = e->bsearch_mid + 1;
+  }
+  else if (v.tag == SP_TAG_FLT) {
+    if (v.v.f == 0.0) { e->bsearch_result = e->items->data[e->bsearch_mid]; e->bsearch_hi = e->bsearch_mid - 1; }
+    else if (v.v.f < 0.0) e->bsearch_hi = e->bsearch_mid - 1;
+    else e->bsearch_lo = e->bsearch_mid + 1;
+  }
+  else if (v.tag != SP_TAG_NIL && !(v.tag == SP_TAG_BOOL && !v.v.b)) {
+    e->bsearch_result = e->items->data[e->bsearch_mid];
+    e->bsearch_hi = e->bsearch_mid - 1;
+  }
+  else e->bsearch_lo = e->bsearch_mid + 1;
+  e->bsearch_waiting = FALSE;
+}
+static sp_RbVal sp_enum_bsearch_next(sp_Enumerator *e) {
+  SP_GC_ROOT(e);
+  sp_enum_bsearch_advance(e);
+  if (e->bsearch_lo > e->bsearch_hi) sp_raise_stop_iteration(e->bsearch_result);
+  e->bsearch_mid = e->bsearch_lo + (e->bsearch_hi - e->bsearch_lo + 1) / 2;
+  e->bsearch_waiting = TRUE;
+  return e->items->data[e->bsearch_mid];
+}
 sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {SP_GC_ROOT(e);
+  if (e->is_bsearch) {
+    if (e->peeked) { e->peeked = FALSE; e->bsearch_waiting = TRUE; return e->peek_val; }
+    return sp_enum_bsearch_next(e);
+  }
   if (e->gen) {
     if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
     return sp_enum_gen_pull(e);
@@ -3034,6 +3068,15 @@ sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {SP_GC_ROOT(e);
   return e->items->data[e->cursor++];
 }
 sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {SP_GC_ROOT(e); sp_gc_wb((void*)e);
+  if (e->is_bsearch) {
+    if (!e->peeked) {
+      sp_enum_bsearch_advance(e);
+      if (e->bsearch_lo > e->bsearch_hi) sp_raise_stop_iteration(e->bsearch_result);
+      e->bsearch_mid = e->bsearch_lo + (e->bsearch_hi - e->bsearch_lo + 1) / 2;
+      e->peek_val = e->items->data[e->bsearch_mid]; e->peeked = TRUE;
+    }
+    return e->peek_val;
+  }
   if (e->gen) {
     if (!e->peeked) { e->peek_val = sp_enum_gen_pull(e); sp_gc_wb((void*)e); e->peeked = TRUE; }
     return e->peek_val;
@@ -3054,6 +3097,7 @@ sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) { sp_gc_wb((void*)e);
   if (!e) return NULL;
   if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
   else e->cursor = 0;
+  if (e->is_bsearch) { e->bsearch_lo = 0; e->bsearch_hi = e->items ? e->items->len - 1 : -1; e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil(); e->peeked = FALSE; }
   e->feed = sp_box_nil(); e->has_feed = FALSE;
   return e;
 }
@@ -3173,9 +3217,10 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
   if (e->gen_label) return sp_box_nil();
   /* an argless cycle is endless unless there is nothing to repeat */
   if (e->endless) return (e->items && e->items->len > 0) ? sp_box_float(1.0 / 0.0) : sp_box_int(0);
-  /* the index searches stop at their first hit, so CRuby gives their
-     Enumerator no size; nor gsub's or gsub!'s */
-  if (e->meth && (strcmp(e->meth, "index") == 0 || strcmp(e->meth, "rindex") == 0 ||
+  /* These searches can stop at their first hit, so CRuby gives their
+     Enumerator no size; neither gsub's nor gsub!'s Enumerator has one. */
+  if (e->meth && (strcmp(e->meth, "bsearch") == 0 ||
+                  strcmp(e->meth, "index") == 0 || strcmp(e->meth, "rindex") == 0 ||
                   strcmp(e->meth, "find_index") == 0 ||
                   strncmp(e->meth, "gsub(", 5) == 0 || strncmp(e->meth, "gsub!(", 6) == 0))
     return sp_box_nil();

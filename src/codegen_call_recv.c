@@ -3250,6 +3250,15 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
     { *out = 1; return 1; }
   {
     int block = nt_ref(nt, id, "block");
+    /* The blockless form is enum_for(:bsearch), not a search with an
+       implicitly missing callback. Keep the original Array as its source. */
+    if (sp_streq(name, "bsearch") && block < 0 && argc == 0 && ty_is_array(rt)) {
+      buf_puts(b, "sp_poly_bsearch_enum(");
+      emit_boxed(c, recv, b);
+      buf_puts(b, ")");
+      *out = 1;
+      return 1;
+    }
     /* bsearch { |x| cond } - find-minimum mode. Every array kind including
        the poly one, whose elements are already boxed (#2892). */
     if (sp_streq(name, "bsearch") && block >= 0) {
@@ -3295,7 +3304,13 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         /* An Integer-valued block selects find-ANY mode (CRuby dispatches on
            the block value's kind): 0 means found, negative searches left,
            positive right. A boolean block is find-minimum, as before. */
-        if (bvt == TY_INT) {
+        if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_BOOL && bvt != TY_NIL &&
+            bvt != TY_POLY && bvt != TY_UNKNOWN) {
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "(void)(%s); sp_raise_cls(\"TypeError\", \"wrong argument type for Array#bsearch block\");\n",
+                     cb.p ? cb.p : "sp_box_nil()");
+        }
+        else if (bvt == TY_INT) {
           int tcmp = ++g_tmp;
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "sp_int _t%d = %s;\n", tcmp, cb.p ? cb.p : "0");
@@ -3309,6 +3324,20 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "else if (_t%d < 0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+        }
+        else if (bvt == TY_FLOAT) {
+          int tcmp = ++g_tmp;
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "sp_float _t%d = %s;\n", tcmp, cb.p ? cb.p : "0.0");
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (_t%d == 0.0) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n", tcmp, tres, k, trecv, tmid);
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "else if (_t%d < 0.0) { _t%d = _t%d - 1; }\n", tcmp, thi, tmid);
+          emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+        }
+        else if (bvt == TY_NIL) {
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "_t%d = _t%d + 1;\n", tlo, tmid);
         }
         else if (bvt == TY_POLY) {
           /* mixed block: Integer is find-any (0 found, positive right,
@@ -3327,9 +3356,20 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
           emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; }\n",
-                     tv, tres, k, trecv, tmid, thi, tmid);
-          emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+          buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_FLT) {\n", tv);
+          emit_indent(g_pre, g_indent + 2);
+          buf_printf(g_pre, "if (_t%d.v.f == 0.0) { _t%d = sp_%sArray_get(_t%d, _t%d); break; }\n", tv, tres, k, trecv, tmid);
+          emit_indent(g_pre, g_indent + 2);
+          buf_printf(g_pre, "else if (_t%d.v.f < 0.0) { _t%d = _t%d - 1; }\n", tv, thi, tmid);
+          emit_indent(g_pre, g_indent + 2); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "else if (_t%d.tag == SP_TAG_BOOL || _t%d.tag == SP_TAG_NIL) {\n", tv, tv);
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) { _t%d = sp_%sArray_get(_t%d, _t%d); _t%d = _t%d - 1; } else { _t%d = _t%d + 1; }\n", tv, tres, k, trecv, tmid, thi, tmid, tlo, tmid);
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "else { sp_raise_cls(\"TypeError\", \"wrong argument type for Array#bsearch block\"); }\n");
         }
         else {
           emit_indent(g_pre, g_indent + 1);

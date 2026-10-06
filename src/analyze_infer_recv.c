@@ -634,6 +634,12 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   (void)a0;
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");
+    /* Array#bsearch without a block is enum_for(:bsearch), whose size is
+       unknown until the caller supplies a predicate. */
+    if (sp_streq(name, "bsearch") && block < 0 && argc == 0) {
+      *out = TY_ENUMERATOR;
+      return 1;
+    }
     /* builtin-op rows (builtin_ops.c) */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
