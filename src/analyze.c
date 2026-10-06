@@ -30669,9 +30669,79 @@ static int sa_array_observed(Compiler *c, SaArrayReads *ix, int u) {
     if (!ix->dropped[x] && sa_reads(c, x, &arr)) return 1;
   return 0;
 }
+/* A String in-place mutation the refusals count (sa_mutated: a mutator
+   called on a receiver). */
+static int sa_mutation_site(const NodeTable *nt, int u) {
+  const char *un = nt_str(nt, u, "name");
+  return un && nt_ref(nt, u, "receiver") >= 0 && sp_str_mutator(un, SP_MUT_LOCAL);
+}
+/* refuse_string_alias_copies' order facts, built on the first question:
+   the top-level statements that run once, after every String mutation the
+   program has (a node-indexed mark), or none. */
+typedef struct { unsigned char *after_all; int built; } SaOrder;
+/* The mutation sites under `n` that run while `n` runs and never again: not
+   inside a block, a lambda, a method or an END block, which may run later. */
+static int sa_mutations_run_once(const NodeTable *nt, int n) {
+  int cap = 64, sp = 0, got = 0;
+  int *st = malloc(sizeof *st * (size_t)cap);
+  if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  st[sp++] = n;
+  while (sp > 0) {
+    int x = st[--sp];
+    if (x < 0) continue;
+    NodeKind k = nt_kind(nt, x);
+    if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_PostExecutionNode) continue;
+    if (k == NK_CallNode && sa_mutation_site(nt, x)) got++;
+    const SpNode *nd = &nt->nodes[x];
+    int need = sp + nd->nr;
+    for (int i = 0; i < nd->na; i++) need += nd->a[i].n;
+    if (need > cap) {
+      while (cap < need) cap *= 2;
+      int *g = realloc(st, sizeof *st * (size_t)cap);
+      if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      st = g;
+    }
+    for (int i = 0; i < nd->nr; i++) st[sp++] = nd->r[i].ref;
+    for (int i = 0; i < nd->na; i++)
+      for (int j = 0; j < nd->a[i].n; j++) st[sp++] = nd->a[i].ids[j];
+  }
+  free(st);
+  return got;
+}
+/* Does write `w` run once, after every String mutation the program has? It
+   is then a statement of the program's top level that follows the
+   statements holding every mutation site, each of which runs there and not
+   again later. A copy it makes then has no later mutation to miss: the
+   refusals are flow-insensitive, and a String changed before it is
+   copied (`s << "b"; $g = (t = s)`) answers the same through both names. */
+static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
+  const NodeTable *nt = c->nt;
+  if (!o->built) {
+    o->built = 1;
+    int total = 0;
+    NT_FOREACH_KIND(nt, NK_CallNode, u) total += sa_mutation_site(nt, u);
+    int root = -1;
+    for (int id = 0; id < nt->count && root < 0; id++)
+      if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode")) root = id;
+    int ps = root >= 0 ? nt_ref(nt, root, "statements") : -1;
+    int bn = 0; const int *bb = ps >= 0 ? nt_arr(nt, ps, "body", &bn) : NULL;
+    int seen = 0, i = 0;
+    for (; i < bn && seen < total; i++) seen += sa_mutations_run_once(nt, bb[i]);
+    if (seen == total && i < bn) {
+      o->after_all = calloc((size_t)nt->count, 1);
+      if (!o->after_all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      for (; i < bn; i++) {
+        int x = an_unparen(nt, bb[i]);
+        if (x >= 0 && x < nt->count) o->after_all[x] = 1;
+      }
+    }
+  }
+  return o->after_all && w >= 0 && w < nt->count && o->after_all[w];
+}
 static void refuse_string_alias_copies(Compiler *c) {
   const NodeTable *nt = c->nt;
   SaArrayReads arr_ix = { NULL };
+  SaOrder order = { NULL, 0 };
   for (int k = 0; k < 3; k++)
     NT_FOREACH_KIND(nt, k == 0 ? NK_LocalVariableWriteNode : k == 1 ? NK_InstanceVariableWriteNode
                                : NK_GlobalVariableWriteNode, w) {
@@ -30690,6 +30760,7 @@ static void refuse_string_alias_copies(Compiler *c) {
       if (sa_name(c, g, &from) &&
           (to.kind == NK_GlobalVariableReadNode || from.kind == NK_GlobalVariableReadNode) &&
           !(to.kind == from.kind && sp_streq(to.name, from.name)) &&
+          !sa_after_all_mutations(c, &order, w) &&
           ((sa_mutated(c, &to) && sa_read_elsewhere(c, &from, g)) ||
            (sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1)))) {
         /* --share-strings: a global the rule shares holds the handle */
@@ -30768,6 +30839,7 @@ static void refuse_string_alias_copies(Compiler *c) {
                           "read it into another local first.");
   }
   free(arr_ix.dropped);
+  free(order.after_all);
 }
 
 /* A bare `@ivar` argument whose ivar is written from a local, handed to a
