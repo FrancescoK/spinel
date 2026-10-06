@@ -14017,9 +14017,11 @@ static void ext_generate_cruby_shim(Compiler *c) {
     "   Layer-1 library: conversions under the GVL, the kernel off it, one\n"
     "   call at a time; a kernel raise re-raises here by class name. */\n"
     "#include <ruby.h>\n#include <ruby/encoding.h>\n#include <ruby/thread.h>\n"
-    "#include <pthread.h>\n#include \"%s.h\"\n\n"
-    "static pthread_mutex_t spx_lock = PTHREAD_MUTEX_INITIALIZER;\n"
+    "#include \"%s.h\"\n\n"
+    "static VALUE spx_lock;\n"
     "static const char *spx_exc_cls, *spx_exc_msg;   /* written under spx_lock */\n"
+    "static VALUE spx_restore_roots(VALUE saved) {\n"
+    "  sp_gc_nroots = (int)saved;\n  return Qnil;\n}\n"
     "static void spx_reraise(const char *cls, const char *msg) {\n"
     "  VALUE k = rb_eRuntimeError;\n"
     "  if (cls && *cls) {\n"
@@ -14133,12 +14135,13 @@ static void ext_generate_cruby_shim(Compiler *c) {
     for (int p9 = 0; p9 < sc->nparams; p9++)
       buf_printf(&sb, "%sc->a%d", p9 ? ", " : "", p9);
     buf_puts(&sb, "); }\n");
-    /* the GVL-holding wrapper */
+    /* the off-GVL kernel wrapper */
     buf_printf(&sb, "static void *spx_run_%d(void *p) { return (void *)(intptr_t)"
                "%s_try(spx_body_%d, p, &spx_exc_cls, &spx_exc_msg); }\n",
                s9, g_ext_init_name, s9);
-    /* The argument conversions, run under rb_protect. Each converted argument
-       is rooted for the whole call: the root a spx_in_*_array helper pushes
+    /* The argument conversions, run under the entry's root-restoring ensure.
+       Each converted argument is rooted for the whole call: the root a
+       spx_in_*_array helper pushes
        pops as the helper returns, and the next argument's conversion
        allocates. A conversion that raises longjmps past C cleanup
        attributes, so these roots are pushed by hand and the wrapper puts the
@@ -14159,38 +14162,35 @@ static void ext_generate_cruby_shim(Compiler *c) {
       buf_puts(&sb, "\n");
     }
     buf_puts(&sb, "  return Qnil;\n}\n");
-    /* The kernel call, also under rb_protect: CRuby checks interrupts as
-       rb_thread_call_without_gvl takes the GVL back, so a Thread#raise, a
-       kill or a signal can raise out of it -- past the unlock and the root
-       restore below, if nothing catches it here. */
+    /* The Ruby mutex serializes conversions, the off-GVL kernel and return
+       copying: the single-threaded Spinel runtime shares its heap and roots.
+       Waiting for a pthread mutex under the GVL deadlocks a second caller
+       against the first caller's GVL reacquisition. The nested ensures restore
+       roots before releasing the gate, including conversion/interrupt raises. */
     buf_printf(&sb, "static VALUE spx_call_%d(VALUE p) { return (VALUE)(intptr_t)"
                     "rb_thread_call_without_gvl(spx_run_%d, (void *)p, RUBY_UBF_IO, NULL); }\n",
+               s9, s9);
+    buf_printf(&sb, "static VALUE spx_locked_%d(VALUE p) {\n"
+                    "  spx_a_%d *a__ = (spx_a_%d *)p;\n"
+                    "  spx_c_%d *c__ = a__->c;\n"
+                    "  spx_conv_%d(p);\n"
+                    "  if ((int)(intptr_t)spx_call_%d((VALUE)c__))\n"
+                    "    spx_reraise(spx_exc_cls, spx_exc_msg);\n",
+               s9, s9, s9, s9, s9, s9);
+    buf_puts(&sb, "  return ");
+    { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__->ret");
+      if (sc->ret == TY_VOID || sc->ret == TY_NIL) buf_puts(&sb, "Qnil");
+      else ext_rb_out(sc->ret, rexpr, &sb); }
+    buf_puts(&sb, ";\n}\n\n");
+    buf_printf(&sb, "static VALUE spx_entry_%d(VALUE p) {\n"
+                    "  return rb_ensure(spx_locked_%d, p, spx_restore_roots, (VALUE)sp_gc_nroots);\n}\n",
                s9, s9);
     buf_printf(&sb, "static VALUE spx_m_%d(VALUE self", s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", VALUE v%d", p9);
     buf_printf(&sb, ") {\n  spx_c_%d c__; memset(&c__, 0, sizeof c__);\n", s9);
-    buf_puts(&sb, "  SP_GC_SAVE();\n");
-    buf_printf(&sb, "  { spx_a_%d a__ = { &c__", s9);
+    buf_printf(&sb, "  spx_a_%d a__ = { &c__", s9);
     for (int p9 = 0; p9 < sc->nparams; p9++) buf_printf(&sb, ", v%d", p9);
-    buf_printf(&sb, " }; int state = 0;\n"
-                    "    rb_protect(spx_conv_%d, (VALUE)&a__, &state);\n"
-                    "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); } }\n", s9);
-    buf_puts(&sb, "  { int raised, state = 0; const char *ec = 0, *em = 0;\n"
-                  "    pthread_mutex_lock(&spx_lock);\n");
-    buf_printf(&sb, "    raised = (int)(intptr_t)rb_protect(spx_call_%d, (VALUE)&c__, &state);\n", s9);
-    buf_puts(&sb, "    if (state) raised = 0;\n"
-                  "    if (raised) { ec = spx_exc_cls; em = spx_exc_msg; }\n"
-                  "    pthread_mutex_unlock(&spx_lock);\n"
-                  "    if (state) { sp_gc_nroots = _gc_saved; rb_jump_tag(state); }\n"
-                  "    if (raised) { sp_gc_nroots = _gc_saved; spx_reraise(ec, em); }\n  }\n");
-    /* The arguments are done with; the return conversion allocates only on
-       the Ruby heap, and can raise (NoMemoryError) past the cleanup. */
-    buf_puts(&sb, "  sp_gc_nroots = _gc_saved;\n");
-    buf_puts(&sb, "  return ");
-    { char rexpr[32]; snprintf(rexpr, sizeof rexpr, "c__.ret"); 
-      if (sc->ret == TY_VOID || sc->ret == TY_NIL) buf_puts(&sb, "Qnil");
-      else ext_rb_out(sc->ret, rexpr, &sb); }
-    buf_puts(&sb, ";\n}\n\n");
+    buf_printf(&sb, " };\n  return rb_mutex_synchronize(spx_lock, spx_entry_%d, (VALUE)&a__);\n}\n\n", s9);
     emitted++;
   }
   (void)emitted;
@@ -14199,7 +14199,9 @@ static void ext_generate_cruby_shim(Compiler *c) {
     for (const char *p = feat; *p && fi < sizeof featfn - 1; p++)
       featfn[fi++] = (*p == '-' || *p == '.') ? '_' : *p;
     featfn[fi] = 0;
-    buf_printf(&sb, "void Init_%s(void) {\n  %s();\n", featfn, g_ext_init_name);
+    buf_printf(&sb, "void Init_%s(void) {\n  %s();\n"
+                    "  spx_lock = rb_mutex_new();\n  rb_global_variable(&spx_lock);\n",
+               featfn, g_ext_init_name);
     for (int s9 = 1; s9 < c->nscopes; s9++) {
       Scope *sc = &c->scopes[s9];
       if (!sc->is_ext_entry || sc->class_id < 0) continue;
