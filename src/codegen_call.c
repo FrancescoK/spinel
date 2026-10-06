@@ -18580,8 +18580,11 @@ int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
    whole emission, so it comes first. The arguments that run code are bound
    into temps ahead of it (view_bind, as emit_operands_in_order binds them),
    and the call reads the temps. A receiver that is a local's or a global's
-   read is tested in its slot (a mutator writes back into it); any other is
-   read once into a rooted temp, as nil_recv_guard's call result is. The
+   read is tested in its slot (a mutator writes back into it), and one the
+   loop being emitted caches (hc_recv_cached) where it is read: a temp would
+   take its array out of the cache, and nothing between the test and the
+   call can change it. Any other is read once into a rooted temp, as
+   nil_recv_guard's call result is. The
    call's own emission runs with its receiver viewed as tested
    (VR_NIL_TESTED), so a re-entry of the same call is not armed twice. */
 
@@ -18635,7 +18638,8 @@ static int nil_target_operand(Compiler *c, int v, int *node, TyKind *ty, int *n,
 }
 
 /* The operands the nil arm runs ahead of its test, into node[]/ty[]: the
-   receiver unless it is a local's or a global's read, then each argument
+   receiver unless it is a local's or a global's read or one the loop
+   caches, then each argument
    that runs code, in Ruby's order (nil_target_operand). Answers the
    count. */
 static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int max) {
@@ -18643,7 +18647,7 @@ static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int m
   int n = 0;
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, r);
-  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode) {
+  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r)) {
     node[n] = r; ty[n] = comp_ntype(c, r); n++;
   }
   int a = nt_ref(nt, id, "arguments"), an = 0;
@@ -18681,7 +18685,15 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
   }
   buf_puts(b, lead);
-  buf_puts(b, "if (SP_UNLIKELY((");
+  /* an array the loop being emitted caches (hc_array) has a cached length
+     of 0 while it is nil: that register spares the receiver's read on every
+     other pass */
+  char hd[48], hl[48], hw[48];
+  TyKind rt = comp_ntype(c, r);
+  if (!rtext[0] && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
+      hc_array(c, r, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd))
+    buf_printf(b, "if (SP_UNLIKELY(%s == 0 && (", hl);
+  else buf_puts(b, "if (SP_UNLIKELY((");
   /* a slot read is its slot: a shared String's handle, not the copy its
      value form makes */
   char sref[192];
@@ -18711,10 +18723,57 @@ static int whole_call_text(const char *p) {
   return 0;
 }
 
+/* The nil test of call id's receiver r that a cached array read writes in
+   its out-of-range branch (emit_nil_target_cold): CRuby's NoMethodError,
+   under the name the call is reported by (enum_walk_name). */
+void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
+  buf_puts(b, "if (SP_UNLIKELY((");
+  emit_expr(c, r, b);
+  buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+             enum_walk_name(c, id, r, nt_str(c->nt, id, "name")));
+}
+
+/* A read of an array the loop being emitted caches (hc_array) takes its
+   nil test in the read's out-of-range branch: a nil array's cached length
+   is 0, so it always gets there, and an in-range read pays nothing. The
+   receiver is seen as tested there (VR_NIL_TESTED 2, Repr.nil_cold) for
+   the read's emission, and emit_kind_array_call writes the test. A read
+   that took another form has none: its text is dropped and the head goes
+   ahead as for any call. */
+static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  TyKind rt = comp_ntype(c, r);
+  if (!nm || !is_element_at_alias(nm) || an != 1 || nt_ref(nt, id, "block") >= 0 ||
+      (rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) || comp_ntype(c, av[0]) != TY_INT ||
+      !hc_recv_cached(c, r))
+    return 0;
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  int sv_tmp = g_tmp;
+  int vt = view_push_repr(c, r, VR_NIL_TESTED, 2);
+  Buf tb; memset(&tb, 0, sizeof tb);
+  emit_nil_cold_test(c, id, r, &tb);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  emit_call_held(c, id, &cb);
+  view_pop(c, vt);
+  int ok = cb.p && tb.p && strstr(cb.p, tb.p) && !(g_pre && g_pre->len != pre0);
+  if (ok) buf_puts(b, cb.p);
+  else {
+    if (g_pre) { g_pre->len = pre0; if (g_pre->p) g_pre->p[pre0] = 0; }
+    g_tmp = sv_tmp;
+  }
+  free(tb.p); free(cb.p);
+  return ok;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   if (cplan_nil(c, id) != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
+  if (emit_nil_target_cold(c, id, b)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark;
   emit_nil_target_head(c, id, &hb, "", &mark);

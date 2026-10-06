@@ -53,6 +53,9 @@ typedef struct {
                              sentinel */
   unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
                              nil (VR_NIL_TESTED, a view around the call) */
+  unsigned nil_cold:1;    /* ... in the out-of-range branch of a cached
+                             array read, which writes the test
+                             (VR_NIL_TESTED 2) */
   unsigned big:1;         /* an Integer held as an sp_Bigint * */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */

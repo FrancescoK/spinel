@@ -1,0 +1,11 @@
+field nil NoMethodError: undefined method '[]' for nil
+field nil, no pass [0.0, 0.0]
+field [3.25, 2.5]
+field count 0
+field empty 4
+field nil count NoMethodError: undefined method '[]' for nil
+field nil size NoMethodError: undefined method 'size' for nil
+field empty size 0
+field nil, nil index NoMethodError: undefined method '[]' for nil
+field, nil index TypeError: no implicit conversion from nil to integer
+field, index 0
