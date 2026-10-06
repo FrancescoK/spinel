@@ -5974,7 +5974,7 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
        ((sp_streq(name, "slice_before") || sp_streq(name, "slice_after")) &&
         nt_ref(nt, id, "arguments") < 0))) {
     TyKind crt = infer_type(c, recv);
-    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY ||
+    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_FLOAT_ARRAY || crt == TY_STR_ARRAY ||
         (crt == TY_RANGE && range_enum_redispatch(c, id))) {
       if (!an_chunk_family_to_a(c, id)) { *out = TY_ENUMERATOR; return 1; }
     }
