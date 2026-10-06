@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "repr.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
@@ -1299,7 +1300,7 @@ void intern_block_params(Compiler *c) {
    round, against share_default_apply setting it back, kept the fixpoint
    from settling. */
 static int lv_is_handle_of(const Compiler *c, const LocalVar *lv, TyKind t) {
-  return c->share_strings && t == TY_STRING && lv->type == TY_STRBUF && lv->str_shared;
+  return t == TY_STRING && repr_of_slot(c, lv).share;
 }
 
 static int lv_widen(LocalVar *lv, TyKind t) {

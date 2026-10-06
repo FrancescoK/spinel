@@ -1,6 +1,7 @@
 #include "analyze_internal.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "repr.h"
 #include <stdint.h>
 #include <limits.h>
 
@@ -8571,7 +8572,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (lv && lv->type == TY_UNKNOWN && !gvar_has_write(c, rn)) return TY_POLY;
     /* a global holding the shared handle (--share-strings) reads as a
        String, as a local's or an ivar's does */
-    return lv ? (lv->type == TY_STRBUF ? TY_STRING : lv->type) : TY_UNKNOWN;
+    return lv ? (repr_of_slot(c, lv).share ? TY_STRING : lv->type) : TY_UNKNOWN;
   }
   if (nk == NK_GlobalVariableOperatorWriteNode) {
     /* `$g += v` evaluates to the updated value (the local/ivar op-write forms
@@ -8581,7 +8582,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     TyKind ct = lv ? lv->type : TY_UNKNOWN;
     TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
-    if (ct == TY_STRING || ct == TY_STRBUF) return TY_STRING;   /* STRBUF: --share-strings' handle */
+    if (ct == TY_STRING || (lv && repr_of_slot(c, lv).share)) return TY_STRING;   /* --share-strings' handle */
     if (ty_is_numeric(ct) && ty_is_numeric(vt))
       return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct != TY_UNKNOWN ? ct : vt;
@@ -8594,7 +8595,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     TyKind ct = lv ? lv->type : TY_UNKNOWN;
-    if (ct == TY_STRBUF) return TY_STRING;   /* --share-strings' handle reads as a String */
+    if (lv && repr_of_slot(c, lv).share) return TY_STRING;   /* --share-strings' handle reads as a String */
     return ct != TY_UNKNOWN ? ct : infer_type(c, nt_ref(nt, id, "value"));
   }
   if (nk == NK_ConstantReadNode) {
@@ -8604,7 +8605,7 @@ TyKind infer_uncached(Compiler *c, int id) {
        Struct class assignment) must not shadow the class-table fallbacks
        below -- Pt = Struct.new(:x) reads as the class value, not unknown */
     /* a constant holding the shared handle (--share-strings) reads as a String */
-    if (lv && lv->type == TY_STRBUF) return TY_STRING;
+    if (lv && repr_of_slot(c, lv).share) return TY_STRING;
     if (lv && lv->type != TY_UNKNOWN) return lv->type;
     /* `include Math` exposes bare PI/E as Float constants (#2600) */
     if (c->has_include_math && !lv && nm && (sp_streq(nm, "PI") || sp_streq(nm, "E")))
@@ -8701,7 +8702,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     cid = comp_cvar_owner(c, cid, nm);
     int idx = nm ? comp_cvar_index(&c->classes[cid], nm) : -1;
     /* --share-strings' handle reads as a String */
-    if (idx >= 0 && c->classes[cid].cvar_types[idx] == TY_STRBUF) return TY_STRING;
+    if (idx >= 0 && repr_of_cvar(c, cid, idx).share) return TY_STRING;
     return idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_UNKNOWN;
   }
   if (nk == NK_ClassVariableOperatorWriteNode || nk == NK_ClassVariableWriteNode ||
@@ -8718,7 +8719,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (cid < 0) cid = comp_class_index(c, "Toplevel");
     cid = comp_cvar_owner(c, cid, nm);
     int idx = (cid >= 0 && nm) ? comp_cvar_index(&c->classes[cid], nm) : -1;
-    if (idx >= 0 && c->classes[cid].cvar_types[idx] == TY_STRBUF) return TY_STRING;
+    if (idx >= 0 && repr_of_cvar(c, cid, idx).share) return TY_STRING;
     if (idx >= 0) return c->classes[cid].cvar_types[idx];
     return infer_type(c, nt_ref(nt, id, "value"));
   }

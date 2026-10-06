@@ -9856,7 +9856,7 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
      object nothing else holds until the callee roots it, and the call's
      other arguments allocate first: it is made ahead of the call, in a
      temp rooted for the statement */
-  int hoist = repr_share_rule(c) && pt == TY_STRBUF && g_pre;
+  int hoist = repr_of_slot(c, sp).share && g_pre;
   Buf *vo = out, hb;
   memset(&hb, 0, sizeof hb);
   if (hoist) vo = &hb;
