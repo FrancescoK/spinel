@@ -112,6 +112,7 @@ int reader_reads_shared_ivar(Compiler *c, int cls, const char *name);
 int strbuf_call_publishes(Compiler *c, int id);
 int strbuf_call_answers_handle(Compiler *c, int id);
 int strbuf_object_reader_handle(Compiler *c, int v);
+int strbuf_struct_member_handle(Compiler *c, int v);
 int strbuf_poly_reader_handle(Compiler *c, int v);
 
 /* R1 (--repr-check): the form a boxer gave a value, recorded at each of

@@ -1021,7 +1021,7 @@ int strbuf_call_answers_handle(Compiler *c, int id) {
   else if (strbuf_poly_reader_handle(c, id)) return 1;
   /* a reader of a shared ivar on an object (an attr_reader, a Struct
      member): its slot is the handle */
-  else if (strbuf_object_reader_handle(c, id)) return 1;
+  else if (strbuf_object_reader_handle(c, id) || strbuf_struct_member_handle(c, id)) return 1;
   /* a boxed receiver's dispatch can also reach a library method, whose
      String is its own and which leaves the side channel as the call found
      it: taken only where nothing before the dispatch publishes a handle (a
@@ -1048,6 +1048,37 @@ int strbuf_object_reader_handle(Compiler *c, int v) {
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
   return reader_reads_shared_ivar(c, ty_object_class(rt), nt_str(nt, v, "name"));
+}
+/* --share-strings: is `v` a Struct's `[]` or `dig` with one literal key (a
+   Symbol, a String, an Integer offset) naming a member that holds the
+   shared handle? Its value is that slot, read as the member's reader reads
+   it (emit_strbuf_slot_read_node), and reading it again has no effect. */
+int strbuf_struct_member_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!nm || !is_member_key_read(nm) || !ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+  ClassInfo *sc = &c->classes[ty_object_class(rt)];
+  if (!sc->is_struct || sc->is_data) return 0;
+  int a = nt_ref(nt, v, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac != 1) return 0;
+  int mi = -1;
+  NodeKind kk = nt_kind(nt, av[0]);
+  if (kk == NK_SymbolNode || kk == NK_StringNode) {
+    const char *kv = nt_str(nt, av[0], kk == NK_SymbolNode ? "value" : "content");
+    char ivn[256];
+    if (kv) { snprintf(ivn, sizeof ivn, "@%s", kv); mi = comp_member_index(sc, ivn); }
+  }
+  else if (kk == NK_IntegerNode) {
+    long long k = (long long)nt_int(nt, av[0], "value", 0);
+    /* dig resolves a non-negative offset only; [] counts back from the end */
+    if (k < 0 && is_slice_alias(nm)) k += sc->nmembers;
+    if (k >= 0 && k < sc->nmembers) mi = (int)k;
+  }
+  return mi >= 0 && sc->ivar_types[mi] == TY_STRBUF && sc->ivar_str_shared[mi];
 }
 /* --share-strings: is `v` a reader called on a boxed receiver, such that
    every class with a method or reader of the name answers a shared ivar's

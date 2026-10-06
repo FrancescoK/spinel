@@ -198,6 +198,7 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 int is_unary_plus(const char *n);    /* +@ */
+int is_member_key_read(const char *n); /* [] dig: a Struct member by its key */
 int is_plus_op(const char *n);       /* +: the operator `+=` writes through */
 int is_ivar_set(const char *n);      /* instance_variable_set */
 

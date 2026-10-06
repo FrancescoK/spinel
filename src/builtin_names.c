@@ -754,6 +754,10 @@ int is_unary_plus(const char *n) {
   return sp_streq(n, "+@");
 }
 
+int is_member_key_read(const char *n) {
+  return sp_streq(n, "[]") || sp_streq(n, "dig");
+}
+
 int is_plus_op(const char *n) {
   return sp_streq(n, "+");
 }
