@@ -23967,6 +23967,22 @@ static int seed_ptr_kind(TyKind t) {
   return 0;
 }
 
+/* The value a call's keyword hash gives the keyword `name`, when exactly one
+   element names it by a literal symbol; -1 otherwise. */
+static int seed_kwarg_value(const NodeTable *nt, int kwh, const char *name) {
+  int en = 0;
+  const int *elems = nt_arr(nt, kwh, "elements", &en);
+  int found = -1, hits = 0;
+  for (int e = 0; elems && e < en; e++) {
+    int key = nt_ref(nt, elems[e], "key");
+    int val = nt_ref(nt, elems[e], "value");
+    if (key < 0 || val < 0 || nt_kind(nt, key) != NK_SymbolNode) continue;
+    const char *kn = nt_str(nt, key, "value");
+    if (kn && sp_streq(kn, name)) { found = val; hits++; }
+  }
+  return hits == 1 ? found : -1;
+}
+
 /* 1 iff a value of type `val` placed in a slot the seed pinned to `slot` would
    be REINTERPRETED rather than converted -- the whole point of the rule. `ret`
    selects the wider judgement a return slot allows (see seed_ret_family). */
@@ -24268,6 +24284,10 @@ static void check_seed_contradictions(Compiler *c) {
     call_layout(c, m, argv, argc, &L);
     for (int i = 0; i < m->nparams; i++) {
       int a = layout_plain_arg(c, m, argv, &L, i);
+      /* a keyword the call names by a literal symbol: the value its hash holds */
+      if (a < 0 && L.from[i] == ARG_BY_NAME && L.kw.role == KWH_KEYWORDS && L.kw.kwh >= 0 &&
+          !L.kw.spread && m->pnames[i] && callee_param_is_declared_kwarg(c, m, m->pnames[i]))
+        a = seed_kwarg_value(nt, L.kw.kwh, m->pnames[i]);
       if (a < 0 || nt_kind(nt, a) == NK_BlockArgumentNode) continue;
       LocalVar *lv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
       if (!lv || !lv->rbs_seeded) continue;
