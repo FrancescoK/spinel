@@ -137,8 +137,8 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         nt_ref(nt, id, "block") < 0) {
       int up = sp_streq(name, "upto");
       buf_printf(b, "sp_bigint_range_array(%s, ", r);
-      TyKind at = comp_ntype(c, argv[0]);
-      if (at == TY_BIGINT) emit_expr(c, argv[0], b);
+      Repr ar = repr_of(c, argv[0]);
+      if (ar.big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ", %d)", up);
       free(rs.p); return 1;
@@ -283,9 +283,10 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       free(rs.p); return 1;
     }
     if (sp_streq(name, "fdiv") && argc == 1) {
-      TyKind at = comp_ntype(c, argv[0]);
+      Repr ar = repr_of(c, argv[0]);
+      TyKind at = ar.as_ty;
       buf_printf(b, "(sp_bigint_to_double(%s) / ", r);
-      if (at == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (ar.big) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "(double)("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_puts(b, ")"); free(rs.p); return 1;
@@ -365,7 +366,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                  tb2, to2, to2, to2, td, tb2, to2, td, tb2, to2);
       free(rs.p); return 1;
     }
-    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+    if (sp_streq(name, "[]") && argc == 1 && repr_of(c, argv[0]).range == TY_INT) {
       /* Bignum bit-slice n[lo..hi]: shift down by lo, mask hi-lo+1 bits (or
          keep everything above lo for an endless range). Mirrors the int-
          receiver Range arm but over bigint ops (#3156). The slice may not fit
@@ -546,7 +547,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      with the argument conversion, which is what the block forms do. */
   if (recv >= 0 && nt_ref(nt, id, "block") < 0 &&
       (comp_ntype(c, recv) == TY_INT || comp_ntype(c, recv) == TY_POLY) &&
-      comp_ntype(c, id) == TY_RANGE) {
+      repr_of(c, id).range == TY_INT) {
     if (sp_streq(name, "times")) {
       buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_int_recv_named(c, recv, name, b); buf_puts(b, ", .excl = 1 }");
       return 1;
