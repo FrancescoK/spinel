@@ -3317,6 +3317,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_handle_bound(sp_String \* lv_s) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (a bound Method lost its shared String handle ABI)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_one_class_each_value.rb -c --no-line-map -o "$$tmp/hoc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_one_class_each_value: -c)"; ok=0; }; \
 	grep -q 'sp_Item \* lv_it' "$$tmp/hoc.c" && grep -q 'sp_Item_describe((sp_Item \*)lv_it)' "$$tmp/hoc.c" || { echo "infer-test: FAIL (#4846 a one-class hash's each_value is not typed)"; ok=0; }; \
+	$(SPINEL) test/class_ancestor_tests_dynamic.rb -c --no-line-map -o "$$tmp/cat.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_ancestor_tests_dynamic: -c)"; ok=0; }; \
+	awk '/^static int sp_class_le_mod\(/,/^}/' "$$tmp/cat.c" > "$$tmp/cat_le.c"; \
+	grep -q 'sp_class_anc_walk(a,b,NULL)' "$$tmp/cat_le.c" && ! grep -q 'sp_class_ancestors(' "$$tmp/cat_le.c" || { echo "infer-test: FAIL (a module-aware class test builds the ancestors array)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_or_write_index_setter.rb -c --no-line-map -o "$$tmp/hos.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_or_write_index_setter: -c)"; ok=0; }; \
 	grep -q 'sp_PolyPolyHash \* iv_traps;' "$$tmp/hos.c" && grep -q 'sp_PolyPolyHash \* iv_hooks;' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 an index write into (@h ||= {}) left @h boxed)"; ok=0; }; \
 	grep -q 'sp_OrwMem_poke(sp_OrwMem \*self, sp_int lv_addr, sp_int lv_value)' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 a Hash index write widened an unrelated user []=)"; ok=0; }; \
