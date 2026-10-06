@@ -119,9 +119,11 @@ static const pm_parser_t *g_parser;
 static int sym_proc_block_starts_at(size_t off);
 static const char *g_source_file = "";
 static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set once at init */
-/* Debug builds: when SPINEL_DEBUG=1, flatten() emits a per-node
-   `node_line` field so codegen can place C `#line` directives. Off by
-   default so the AST text format (and golden tests) are unchanged. */
+/* When SPINEL_DEBUG, SPINEL_LINE_MAP or SPINEL_POSITIONS is 1, flatten()
+   emits a per-node `node_line` field, which codegen places C `#line`
+   directives by and the analysis reads. The compiler driver sets
+   SPINEL_POSITIONS for every compile; off otherwise, so the AST text format
+   (and golden tests) are unchanged. */
 static int g_emit_line = 0;
 /* The buffer-line -> (file, line) map is built for every program, not only
    under g_emit_line: `__FILE__` and `__dir__` in a required file answer
@@ -4993,8 +4995,10 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   {
     const char *dbg = getenv("SPINEL_DEBUG");
     const char *lm = getenv("SPINEL_LINE_MAP");
+    const char *ps = getenv("SPINEL_POSITIONS");
     int on = (dbg != NULL && dbg[0] == '1' && dbg[1] == '\0')
-          || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0');
+          || (lm  != NULL && lm[0]  == '1' && lm[1]  == '\0')
+          || (ps  != NULL && ps[0]  == '1' && ps[1]  == '\0');
     g_emit_line = on ? 1 : 0;
     const char *et = getenv("SPINEL_EMIT_TYPES");
     const char *ww = getenv("SPINEL_WARN_WIDEN");
