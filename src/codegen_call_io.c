@@ -164,7 +164,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        Enumerator read back out of a container raised NoMethodError. */
     if (!iocand && sp_streq(name, "rewind") && argc == 0) {
       int tv = ++g_tmp;
-      int boxed = comp_ntype(c, id) == TY_POLY;
+      int boxed = repr_of(c, id).kind == RK_BOXED;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
       emit_boxed(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ",
@@ -302,7 +302,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       if (sp_streq(name, "write") && argc >= 1) {
         /* Same String/non-String split as the TY_IO arm: a String knows its own
            byte count, a stringified value may be an unmarked static name. */
-        int sk2 = comp_ntype(c, argv[0]) == TY_STRING;
+        int sk2 = repr_of(c, argv[0]).as_ty == TY_STRING;
         buf_printf(b, "%s(_t%d, ", sk2 ? "sp_File_write_bin" : "sp_File_write", tio2);
         emit_to_s_expr(c, argv[0], b);
         buf_puts(b, "); })");
@@ -405,7 +405,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_RbVal _t%d = ", ts3);
         emit_boxed(c, argv[0], b);
         buf_printf(b, "; sp_File_set_sync(_t%d, sp_poly_truthy(_t%d)); ", tio2, ts3);
-        emit_unbox_or_keep(c, comp_ntype(c, id), ts3, b);
+        emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts3, b);
         buf_puts(b, "; })");
       }
       /* read_nonblock / write_nonblock, the same answers the typed-receiver
@@ -436,7 +436,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else {
           /* a String operand keeps its byte length (an embedded NUL is a byte
              of the message); anything else goes through to_s */
-          int skw9 = comp_ntype(c, argv[0]) == TY_STRING;
+          int skw9 = repr_of(c, argv[0]).as_ty == TY_STRING;
           const char *wfn9 = skw9 ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
           int tw9 = ++g_tmp;
           buf_printf(b, "sp_int _t%d = %s(_t%d, ", tw9, wfn9, tio2);
@@ -473,7 +473,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_puts(b, "); })");
       }
       else if (sp_streq(name, "pwrite") && argc >= 1) {
-        buf_printf(b, "%s(_t%d, ", comp_ntype(c, argv[0]) == TY_STRING
+        buf_printf(b, "%s(_t%d, ", repr_of(c, argv[0]).as_ty == TY_STRING
                                    ? "sp_File_pwrite_bin" : "sp_File_pwrite", tio2);
         emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
         if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
@@ -825,7 +825,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_streq(name, "pwrite") && argc >= 1) {
       /* the same String/non-String split the write arm makes: a String knows
          its own byte count, so an embedded NUL reaches the descriptor (#4623) */
-      buf_printf(b, "%s(%s, ", comp_ntype(c, argv[0]) == TY_STRING
+      buf_printf(b, "%s(%s, ", repr_of(c, argv[0]).as_ty == TY_STRING
                                ? "sp_File_pwrite_bin" : "sp_File_pwrite", r);
       emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
@@ -880,7 +880,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* String operand -> the _bin entry (header length, so an embedded NUL
            is written); anything else reaches sp_poly_to_s, whose static
            class/symbol names carry no marker byte. See sp_File_write above. */
-        int skw = comp_ntype(c, argv[0]) == TY_STRING;
+        int skw = repr_of(c, argv[0]).as_ty == TY_STRING;
         const char *wfn = skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
         if (no_exc8) {
           int tw = ++g_tmp;
@@ -1066,7 +1066,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_puts(b, ")");
         }
         else {
-          int sk = comp_ntype(c, argv[0]) == TY_STRING;
+          int sk = repr_of(c, argv[0]).as_ty == TY_STRING;
           const char *wfn = sk ? "sp_File_write_bin" : "sp_File_write";
           if (is_sw) {
             /* syswrite needs the byte length alongside the pointer:
@@ -1113,7 +1113,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
             buf_puts(b, ");");
             continue;
           }
-          int sk = comp_ntype(c, argv[k]) == TY_STRING;
+          int sk = repr_of(c, argv[k]).as_ty == TY_STRING;
           ConvHold hk; memset(&hk, 0, sizeof hk);
           ConvHold *outer = g_conv_hold; g_conv_hold = &hk;
           Buf conv; memset(&conv, 0, sizeof conv);
@@ -1145,7 +1145,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       /* IO#<< writes the (stringified) operand and returns self, so it chains
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
-      int sk = comp_ntype(c, argv[0]) == TY_STRING;
+      int sk = repr_of(c, argv[0]).as_ty == TY_STRING;
       int pk = comp_ntype(c, argv[0]) == TY_POLY;
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  pk ? "sp_File_write_poly" : sk ? "sp_File_write_bin" : "sp_File_write", t);
@@ -1240,7 +1240,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_puts(b, "({ sp_RbVal ");
       buf_printf(b, "_t%d = ", ts2); emit_boxed(c, argv[0], b);
       buf_printf(b, "; sp_File_set_sync(%s, sp_poly_truthy(_t%d)); ", r, ts2);
-      emit_unbox_or_keep(c, comp_ntype(c, id), ts2, b);
+      emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts2, b);
       buf_puts(b, "; })");
       free(rb.p); return 1;
     }
