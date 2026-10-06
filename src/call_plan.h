@@ -189,6 +189,8 @@ typedef enum {
   /* the tag pre-arms of a dispatch with arguments (emit_poly_prearms_n) */
   PB_COVER, PB_TRY_CONVERT, PB_GCDLCM, PB_UNPACK1, PB_INCLUDE, PB_STR_DELETE, PB_STR_PARTITION,
   PB_STR_SETOP, PB_STORE, PB_STR_ENCODE, PB_STR_SPLIT_N, PB_INT_BITREF,
+  /* a String's element store, ahead of the switch (emit_poly_str_aset_prearm) */
+  PB_STR_ASET,
   /* its builtin cases after the class arms (emit_poly_cases_n) */
   PB_INDEX_CASES, PB_IO_READ_NB, PB_IO_READPARTIAL, PB_IO_WRITE, PB_IO_SYSWRITE, PB_IO_PRINT, PB_IO_PUTC, PB_IO_SEEK_READ,
   PB_UNSHIFT, PB_PUSH, PB_PACK, PB_JOIN_N, PB_INCLUDE_CASES, PB_ARR_INDEX, PB_INTERSECT, PB_STRFTIME,
