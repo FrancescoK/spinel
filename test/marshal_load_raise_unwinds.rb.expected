@@ -1,0 +1,9 @@
+ArgumentError
+200
+ArgumentError
+200
+ArgumentError
+200
+[1, "two", {three: 3}]
+true
+ArgumentError
