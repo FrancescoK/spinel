@@ -124,7 +124,6 @@ jobs:
   build:
     needs: plan
     if: needs.plan.outputs.has_build == 'true'
-    name: build ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -202,7 +201,6 @@ jobs:
     needs: [plan, build]
     # a head whose build failed fails its own jobs, not the others'
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.has_run == 'true' }}
-    name: ${{ matrix.leg }} ${{ matrix.name }}${{ matrix.shard > 0 && format(' {0}', matrix.shard) || '' }}
     runs-on: ubuntu-latest
     # a corpus or builtin-row shard is given longer: its time is a guess
     timeout-minutes: ${{ contains(fromJSON('["brow", "dc", "lit", "op", "ord"]'), matrix.leg) && 240 || 120 }}
@@ -490,7 +488,6 @@ jobs:
   gate:
     needs: plan
     if: needs.plan.outputs.has_gate == 'true'
-    name: gate ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
@@ -558,7 +555,6 @@ jobs:
   pgate-prep:
     needs: plan
     if: needs.plan.outputs.has_pgate == 'true'
-    name: pgate prep ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -664,7 +660,6 @@ jobs:
   pgate-part:
     needs: [plan, pgate-prep]
     if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
-    name: pgate ${{ matrix.name }} ${{ matrix.part }}${{ matrix.of > 0 && format(' {0}/{1}', matrix.k, matrix.of) || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -715,7 +710,6 @@ jobs:
   pgate:
     needs: [plan, pgate-prep, pgate-part]
     if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
-    name: pgate ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
