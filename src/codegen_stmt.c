@@ -5809,6 +5809,20 @@ static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b)
   else if (reidx >= 0 && pt == TY_SYMBOL) {
     buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t);
   }
+  /* a Regexp value that is no literal (built by interpolation, held in a
+     constant or a variable) matches as the literal does, through its pattern:
+     the family check below took it for a non-String and answered false */
+  else if (reidx < 0 && comp_ntype(c, cond) == TY_REGEX &&
+           (pt == TY_STRING || pt == TY_POLY || pt == TY_SYMBOL)) {
+    if (pt == TY_STRING) {
+      buf_puts(b, "(sp_re_match("); emit_expr(c, cond, b); buf_printf(b, ", _t%d) >= 0)", t);
+    }
+    else {
+      buf_puts(b, "sp_re_case_eq("); emit_expr(c, cond, b);
+      if (pt == TY_POLY) buf_printf(b, ", _t%d)", t);
+      else buf_printf(b, ", sp_box_sym(_t%d))", t);
+    }
+  }
   else if (pt == TY_STRING && emit_when_string_range(c, cond, t, b)) {
     /* emitted the lexicographic cover check */
   }
