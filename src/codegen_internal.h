@@ -1039,6 +1039,7 @@ const char *nil_store_sfx(Compiler *c, const char *k, int node);
 int enum_builtin_node(Compiler *c, int node);
 const char *nomethod_head(const char *name);
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
+void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int t, int indent, Buf *b);
 int typed_array_lit_flag_free(Compiler *c, int node);
 void emit_may_nil_text(Compiler *c, int node, TyKind t, const char *arr, Buf *b);
 const char *raise_tail_value(TyKind t);
@@ -1673,6 +1674,9 @@ int poly_name_user_claimed(Compiler *c, const char *name, int argc);
 /* Does CRuby take argc arguments to cls#name, by the instance arity table
    (sp_builtin_arity_spec_tbl)? 1 for a name the table has no row for. */
 int builtin_arity_admits(const char *cls, const char *name, int argc);
+/* ...and the count it expects when it does not (NULL when it admits it) */
+const char *builtin_arity_expected(const char *cls, const char *name, int with_block, int argc,
+                                   char *exp, size_t n);
 void emit_complex_coerce(Compiler *c, int node, Buf *b);
 int emit_complex_real_args(Compiler *c, const int *argv, int argc, int polar, Buf *b);
 void emit_brk_wrapped_call(Compiler *c, int id, Buf *b);

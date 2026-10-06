@@ -3292,6 +3292,57 @@ int enum_builtin_node(Compiler *c, int node) {
    the walk of its own receiver is that method's: CRuby says
    "undefined method 'minmax' for an instance of Integer", where the walk
    named `each`. Anything else keeps its own name. */
+/* The walk of a builtin Enumerable definition's receiver (call `id` in a
+   per-site copy, reporting `name`'s walk name), held in _t<t>: a String,
+   Symbol, Integer or Float whose class defines that method at another
+   count (String#partition takes one argument, Enumerable's none) is
+   CRuby's ArgumentError for the count the call the copy serves passed,
+   read off the instance arity table, where the walk raised NoMethodError.
+   Tested only for a receiver that is no object, which the walk would
+   reject anyway. */
+void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int t, int indent, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *wn = enum_walk_name(c, id, recv, name);
+  if (wn == name) return;
+  Scope *s = comp_scope_of(c, id);
+  int site = s && s->def_node >= 0 ? (int)nt_int(nt, s->def_node, "enum_site", -1) : -1;
+  if (site < 0 || nt_kind(nt, site) != NK_CallNode) return;
+  int a = nt_ref(nt, site, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  /* the call rewritten onto the copy passes its receiver first */
+  const char *sn = nt_str(nt, site, "name");
+  if (sn && strncmp(sn, "__enum_", 7) == 0 && nt_ref(nt, site, "receiver") < 0) {
+    if (an < 1) return;
+    av++; an--;
+  }
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return;
+  }
+  int has_blk = nt_ref(nt, site, "block") >= 0;
+  const struct { const char *cls, *test; } kinds[] = {
+    { "String", "_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)" },
+    { "Symbol", "_t%d.tag == SP_TAG_SYM" },
+    { "Integer", "_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_BIGINT" },
+    { "Float", "_t%d.tag == SP_TAG_FLT" },
+  };
+  Buf g; memset(&g, 0, sizeof g);
+  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+    char exp[64];
+    if (!builtin_arity_expected(kinds[i].cls, wn, has_blk, an, exp, sizeof exp)) continue;
+    char test[160];
+    snprintf(test, sizeof test, kinds[i].test, t, t);   /* a test names the temp once or twice */
+    buf_printf(&g, " if (%s) sp_raise_cls(\"ArgumentError\", "
+                   "\"wrong number of arguments (given %d, expected %s)\");", test, an, exp);
+  }
+  /* inside the walk's failure test only: a receiver that walks (an object
+     other than a String's handle) reads nothing more */
+  if (g.p) {
+    emit_indent(b, indent);
+    buf_printf(b, "if (SP_UNLIKELY(_t%d.tag != SP_TAG_OBJ || sp_poly_is_strbuf(_t%d))) {%s }\n", t, t, g.p);
+  }
+  free(g.p);
+}
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name) {
   Scope *s = id >= 0 ? comp_scope_of(c, id) : NULL;
   if (!s || !s->name || strncmp(s->name, "__enum_", 7) != 0) return name;
