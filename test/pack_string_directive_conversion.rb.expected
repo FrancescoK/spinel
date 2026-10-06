@@ -1,0 +1,144 @@
+ints.pack(a*): TypeError: no implicit conversion of Integer into String
+flts.pack(a*): TypeError: no implicit conversion of Float into String
+objs.pack(a*): TypeError: no implicit conversion of K into String
+syms.pack(a*): TypeError: no implicit conversion of Symbol into String
+poly.pack(a*): TypeError: no implicit conversion of Integer into String
+arrs.pack(a*): TypeError: no implicit conversion of Array into String
+nils.pack(a*): ""
+strs.pack(a*): "ab"
+ints.pack(A*): TypeError: no implicit conversion of Integer into String
+flts.pack(A*): TypeError: no implicit conversion of Float into String
+objs.pack(A*): TypeError: no implicit conversion of K into String
+syms.pack(A*): TypeError: no implicit conversion of Symbol into String
+poly.pack(A*): TypeError: no implicit conversion of Integer into String
+arrs.pack(A*): TypeError: no implicit conversion of Array into String
+nils.pack(A*): ""
+strs.pack(A*): "ab"
+ints.pack(Z*): TypeError: no implicit conversion of Integer into String
+flts.pack(Z*): TypeError: no implicit conversion of Float into String
+objs.pack(Z*): TypeError: no implicit conversion of K into String
+syms.pack(Z*): TypeError: no implicit conversion of Symbol into String
+poly.pack(Z*): TypeError: no implicit conversion of Integer into String
+arrs.pack(Z*): TypeError: no implicit conversion of Array into String
+nils.pack(Z*): "\x00"
+strs.pack(Z*): "ab\x00"
+ints.pack(a): TypeError: no implicit conversion of Integer into String
+flts.pack(a): TypeError: no implicit conversion of Float into String
+objs.pack(a): TypeError: no implicit conversion of K into String
+syms.pack(a): TypeError: no implicit conversion of Symbol into String
+poly.pack(a): TypeError: no implicit conversion of Integer into String
+arrs.pack(a): TypeError: no implicit conversion of Array into String
+nils.pack(a): "\x00"
+strs.pack(a): "a"
+ints.pack(A): TypeError: no implicit conversion of Integer into String
+flts.pack(A): TypeError: no implicit conversion of Float into String
+objs.pack(A): TypeError: no implicit conversion of K into String
+syms.pack(A): TypeError: no implicit conversion of Symbol into String
+poly.pack(A): TypeError: no implicit conversion of Integer into String
+arrs.pack(A): TypeError: no implicit conversion of Array into String
+nils.pack(A): " "
+strs.pack(A): "a"
+ints.pack(Z): TypeError: no implicit conversion of Integer into String
+flts.pack(Z): TypeError: no implicit conversion of Float into String
+objs.pack(Z): TypeError: no implicit conversion of K into String
+syms.pack(Z): TypeError: no implicit conversion of Symbol into String
+poly.pack(Z): TypeError: no implicit conversion of Integer into String
+arrs.pack(Z): TypeError: no implicit conversion of Array into String
+nils.pack(Z): "\x00"
+strs.pack(Z): "a"
+ints.pack(a3): TypeError: no implicit conversion of Integer into String
+flts.pack(a3): TypeError: no implicit conversion of Float into String
+objs.pack(a3): TypeError: no implicit conversion of K into String
+syms.pack(a3): TypeError: no implicit conversion of Symbol into String
+poly.pack(a3): TypeError: no implicit conversion of Integer into String
+arrs.pack(a3): TypeError: no implicit conversion of Array into String
+nils.pack(a3): "\x00\x00\x00"
+strs.pack(a3): "ab\x00"
+ints.pack(B): TypeError: no implicit conversion of Integer into String
+flts.pack(B): TypeError: no implicit conversion of Float into String
+objs.pack(B): TypeError: no implicit conversion of K into String
+syms.pack(B): TypeError: no implicit conversion of Symbol into String
+poly.pack(B): TypeError: no implicit conversion of Integer into String
+arrs.pack(B): TypeError: no implicit conversion of Array into String
+nils.pack(B): "\x00"
+strs.pack(B): "\x80"
+ints.pack(b): TypeError: no implicit conversion of Integer into String
+flts.pack(b): TypeError: no implicit conversion of Float into String
+objs.pack(b): TypeError: no implicit conversion of K into String
+syms.pack(b): TypeError: no implicit conversion of Symbol into String
+poly.pack(b): TypeError: no implicit conversion of Integer into String
+arrs.pack(b): TypeError: no implicit conversion of Array into String
+nils.pack(b): "\x00"
+strs.pack(b): "\x01"
+ints.pack(H): TypeError: no implicit conversion of Integer into String
+flts.pack(H): TypeError: no implicit conversion of Float into String
+objs.pack(H): TypeError: no implicit conversion of K into String
+syms.pack(H): TypeError: no implicit conversion of Symbol into String
+poly.pack(H): TypeError: no implicit conversion of Integer into String
+arrs.pack(H): TypeError: no implicit conversion of Array into String
+nils.pack(H): "\x00"
+strs.pack(H): "\xA0"
+ints.pack(h): TypeError: no implicit conversion of Integer into String
+flts.pack(h): TypeError: no implicit conversion of Float into String
+objs.pack(h): TypeError: no implicit conversion of K into String
+syms.pack(h): TypeError: no implicit conversion of Symbol into String
+poly.pack(h): TypeError: no implicit conversion of Integer into String
+arrs.pack(h): TypeError: no implicit conversion of Array into String
+nils.pack(h): "\x00"
+strs.pack(h): "\n"
+ints.pack(m): TypeError: no implicit conversion of Integer into String
+flts.pack(m): TypeError: no implicit conversion of Float into String
+objs.pack(m): TypeError: no implicit conversion of K into String
+syms.pack(m): TypeError: no implicit conversion of Symbol into String
+poly.pack(m): TypeError: no implicit conversion of Integer into String
+arrs.pack(m): TypeError: no implicit conversion of Array into String
+nils.pack(m): TypeError: no implicit conversion of nil into String
+strs.pack(m): "YWI=\n"
+ints.pack(m0): TypeError: no implicit conversion of Integer into String
+flts.pack(m0): TypeError: no implicit conversion of Float into String
+objs.pack(m0): TypeError: no implicit conversion of K into String
+syms.pack(m0): TypeError: no implicit conversion of Symbol into String
+poly.pack(m0): TypeError: no implicit conversion of Integer into String
+arrs.pack(m0): TypeError: no implicit conversion of Array into String
+nils.pack(m0): TypeError: no implicit conversion of nil into String
+strs.pack(m0): "YWI="
+ints.pack(u): TypeError: no implicit conversion of Integer into String
+flts.pack(u): TypeError: no implicit conversion of Float into String
+objs.pack(u): TypeError: no implicit conversion of K into String
+syms.pack(u): TypeError: no implicit conversion of Symbol into String
+poly.pack(u): TypeError: no implicit conversion of Integer into String
+arrs.pack(u): TypeError: no implicit conversion of Array into String
+nils.pack(u): TypeError: no implicit conversion of nil into String
+strs.pack(u): "\"86(`\n"
+M ints: "1=\n"
+M flts: "1.5=\n"
+M syms: "s=\n"
+M poly: "1=\na=\n"
+M arrs: "[1]=\n"
+M nils: ""
+M to_s: "tt=\n"
+to_str a*: "zz"
+to_str m: "eno=\n"
+to_s a: TypeError: no implicit conversion of T into String
+true a: TypeError: no implicit conversion of true into String
+int nil a2: "\x00\x00\x02"
+int nil m: TypeError: no implicit conversion of nil into String
+flt nil A2: "  "
+flt nil u: TypeError: no implicit conversion of nil into String
+str nil Z*: "\x00cd"
+str nil m: TypeError: no implicit conversion of nil into String
+C a: TypeError: no implicit conversion of Integer into String
+a C: "x\x02"
+a a: TypeError: no implicit conversion of Integer into String
+N a*: TypeError: no implicit conversion of Integer into String
+a* N: "ab\x00\x00\x00\x03"
+H* C: "J\x05"
+"abcd\x01"
+"abc"
+"YWJjZA==\n"
+"abcd=\n"
+"\xAB\xCD"
+boxed [1, 2]: TypeError: no implicit conversion of Integer into String
+boxed [1.5]: TypeError: no implicit conversion of Float into String
+boxed ["ab"]: "ab"
+boxed [:s, 1]: TypeError: no implicit conversion of Symbol into String
