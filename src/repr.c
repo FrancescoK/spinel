@@ -447,7 +447,7 @@ int repr_sealed(void) { return repr_sealed_flag; }
 
 int repr_str_class_shares(unsigned flags, int holders) {
   if (!(flags & SHF_MUT)) return 0;
-  return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT)) != 0;
+  return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT | SHF_MULTI)) != 0;
 }
 
 int repr_str_shares(const Compiler *c, int holder) {
@@ -729,3 +729,5 @@ void repr_dump(const Compiler *c) {
   for (int k = 0; k < ls.n; k++) { puts(ls.v[k]); free(ls.v[k]); }
   free(ls.v);
 }
+
+int repr_share_rule(const Compiler *c) { return c->share_strings; }

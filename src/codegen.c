@@ -1837,9 +1837,15 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  /* --share-strings: a String stored into a boxed slot the rule shares (an
+     ivar that also holds nil) is boxed as its handle, which a later `<<`
+     on the slot's box appends to in place (share_lift_poly_ivar_stores) */
+  int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
+  if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);
   rc_depth--;
+  if (lift) buf_puts(b, ")");
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp
