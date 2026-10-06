@@ -24,6 +24,24 @@ please rebase onto the current `master`, run `make gate` again and push.
 Many pull requests touch the same functions, so keep a branch small and
 rebase it early rather than late.
 
+## Issues and pull requests
+
+**A pull request needs no issue.** A bug fix with its reproducer as a test,
+and the `spinel diff` report if the answer differs from CRuby's, goes in as
+one self-contained pull request. Do not open an issue first and then a pull
+request for it a few minutes later: it costs the same review twice.
+
+**An open issue means "I will not work on this", or "let us talk".** If you
+mean to fix something, open a draft pull request straight away; that is also
+how others see it is taken. If you only want to report it, or will not get to
+it, open an issue and someone else may pick it up. Issues are also the place
+for discussion: a direction to decide, a proposal, a question.
+
+**Describe the why, not the history.** A pull request that fixes a bug needs
+a few lines: what was wrong, and the reproducer. Write more when the change is
+a design decision (what you chose and what you rejected); do not retell how
+the implementation got there or link every related issue.
+
 ## The gate in the commit
 
 Run `make hooks` once: it points git at the hooks in `tools/hooks`. When
