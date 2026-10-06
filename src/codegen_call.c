@@ -11513,6 +11513,20 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       { *out = 1; return 1; }
     }
     if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
+      /* Hash.new(&pr): the Proc itself is the default, driven by the same
+         trampoline, so the hash's default_proc answers it (an `&nil` gives a
+         hash with no default proc). The lowering below reads a literal
+         block's body and parameters, which a block argument has none of: it
+         built a default answering nil. */
+      if (nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) {
+        int tp = ++g_tmp;
+        Buf pb; memset(&pb, 0, sizeof pb);
+        emit_forwarded_proc_arg(c, nt_ref(nt, id, "block"), &pb);
+        buf_printf(b, "({ sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, (void *)_t%d) : sp_PolyPolyHash_new(); })",
+                   tp, pb.p ? pb.p : "NULL", tp, tp, tp);
+        free(pb.p);
+        { *out = 1; return 1; }
+      }
       int hblk = nt_ref(nt, id, "block");
       int hbody = nt_ref(nt, hblk, "body");
       const char *hp = block_param_name(c, hblk, 0);
