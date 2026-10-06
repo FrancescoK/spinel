@@ -1180,7 +1180,12 @@ static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int p
     return;
   }
   int kt = ++g_tmp;
-  buf_printf(b, "({ int _ak%d = sp_bsub_cls_of(_t%d); _ak%d >= 0 ? _ak%d : ", kt, tv, kt, kt);
+  buf_printf(b, "({ int _ak%d = sp_bsub_cls_of(_t%d); _ak%d >= 0", kt, tv, kt);
+  /* a class that leaves the name to Array keys by its Array's kind, to
+     the builtin arms (comp_arysub_name_is_array) */
+  for (int k = 0; pick_name && k < c->nclasses; k++)
+    if (comp_arysub_name_is_array(c, k, pick_name)) buf_printf(b, " && _ak%d != %d", kt, k);
+  buf_printf(b, " ? _ak%d : ", kt);
   emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
   buf_puts(b, "; })");
 }
