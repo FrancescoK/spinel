@@ -129,6 +129,7 @@ int is_open_constructor(const char *n); /* new open */
 int is_succ_alias(const char *n); /* next succ */
 int is_path_reader(const char *n); /* path to_path */
 int is_io_position(const char *n); /* pos tell */
+int is_rewind_name(const char *n); /* rewind: an Enumerator's restart, or a stream's seek to its start */
 int is_sort_family(const char *n); /* sort sort! */
 int is_hash_transform(const char *n); /* transform_values transform_keys */
 int is_fallback_block_call(const char *n); /* fetch delete fetch_values: the block is the fallback */
