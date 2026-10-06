@@ -1,0 +1,27 @@
+map: undefined method 'v' for nil
+each_with_index: undefined method 'v' for nil
+select: undefined method 'v' for nil
+find: undefined method 'v' for nil
+inject: undefined method 'v' for nil
+sort: undefined method 'v' for nil
+index read: undefined method 'v' for nil
+first: undefined method 'v' for nil
+local: undefined method 'v' for nil
+[0, 0, 0, 5]
+[5]
+computed index: undefined method 'v' for nil
+insert: undefined method 'v' for nil
+fill: undefined method 'v' for nil
+push nil: undefined method 'v' for nil
+plus: undefined method 'v' for nil
+param: undefined method 'v' for nil
+array param: undefined method 'v' for nil
+method value: undefined method 'v' for nil
+ivar: undefined method 'v' for nil
+strings: undefined method 'upcase' for nil
+string read: undefined method 'length' for nil
+each_char: undefined method 'each_char' for nil
+each_byte: undefined method 'each_byte' for nil
+each_line: undefined method 'each_line' for nil
+arrays: undefined method 'size' for nil
+[1, 2]
