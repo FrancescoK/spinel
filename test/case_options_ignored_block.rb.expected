@@ -1,0 +1,11 @@
+:AB
+ArgumentError: too many options
+ArgumentError: too many options
+ArgumentError: invalid second option
+"AB"
+ArgumentError: too many options
+:CD
+ArgumentError: too many options
+ArgumentError: too many options
+"AB"
+[]
