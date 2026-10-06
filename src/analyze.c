@@ -28573,6 +28573,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   for (int si = 0; idx && si < c->nscopes; si++)
     if (c->scopes[si].name && sp_streq(c->scopes[si].name, cnm)) idx = 0;
   int fixed = argc - 1;
+  for (int k = 0; k < argc; k++) if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) fixed--;
   int base = nt->count;
   int encl = c->nscope[id];
   int pre[32];
@@ -28618,6 +28619,13 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     fargs[k] = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, fargs[k], "name", tn);
     nt_node_set_int(nt, fargs[k], "depth", 0);
+  }
+  for (int k = 0; k < argc; k++) {
+    if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
+    int as = nt_new_node(nt, "AssocSplatNode");
+    nt_node_set_ref(nt, as, "value", fargs[k]);
+    fargs[k] = nt_new_node(nt, "KeywordHashNode");
+    nt_node_set_arr(nt, fargs[k], "elements", &as, 1);
   }
   /* the else arm: a count outside the range */
   char msg[160];
