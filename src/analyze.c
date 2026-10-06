@@ -16219,6 +16219,49 @@ static unsigned share_types_digest(Compiler *c) {
    each of its stores. A holder whose kind has no handle yet is left as it
    is; repr_seal refuses it. The route rules after this only carry the
    handles it made, and add none it did not (#6765's stats count them). */
+/* --share-strings: ivar `name` of class cid is a box (it also holds nil,
+   or another kind) whose class the rule shares: each String written into it
+   (an ivar write, an attribute writer, instance_variable_set) is boxed as
+   its handle (emit_boxed's lift), so a `<<` through the box appends to the
+   String every name holds rather than replacing the slot's own copy. */
+/* (a read of a holder is not lifted: the rule makes that holder the
+   handle, whose box is the handle already) */
+static int share_lift_value(Compiler *c, int v) {
+  NodeKind k = nt_kind(c->nt, v);
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+      k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
+    return 0;
+  if (infer_type(c, v) != TY_STRING || c->poly_strbuf_lift[v]) return 0;
+  c->poly_strbuf_lift[v] = 1;
+  return 1;
+}
+static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    int v = nt_ref(nt, w, "value");
+    if (!wn || !sp_streq(wn, name) || v < 0 || an_ivar_owner(c, w) != cid) continue;
+    changed |= share_lift_value(c, v);
+  }
+  size_t ln = strlen(name);
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    const char *cn = nt_str(nt, w, "name");
+    int a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!cn || nt_ref(nt, w, "receiver") < 0) continue;
+    int v = -1;
+    /* `o.name = v` (the attribute writer of the ivar) */
+    if (an == 1 && strlen(cn) == ln && cn[ln - 1] == '=' && strncmp(cn, name + 1, ln - 1) == 0) v = av[0];
+    /* `o.instance_variable_set(:@name, v)` */
+    else if (an == 2 && is_ivar_set(cn) && nt_kind(nt, av[0]) == NK_SymbolNode &&
+             nt_str(nt, av[0], "value") && sp_streq(nt_str(nt, av[0], "value"), name))
+      v = av[1];
+    if (v >= 0) changed |= share_lift_value(c, v);
+  }
+  return changed;
+}
+
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -16262,6 +16305,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
+      if (it == TY_POLY && repr_str_shares(c, h)) changed |= share_lift_poly_ivar_stores(c, sh->cid, sh->name);
     }
   }
   return changed;
