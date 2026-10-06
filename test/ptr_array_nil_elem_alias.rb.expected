@@ -1,0 +1,14 @@
+local copy: undefined method 'v' for nil
+param gap: undefined method 'v' for nil
+param push: undefined method 'v' for nil
+reader: undefined method 'v' for nil
+method value: undefined method 'v' for nil
+yield: undefined method 'v' for nil
+kept param: undefined method 'v' for nil
+kept param, stored there: undefined method 'v' for nil
+module: undefined method 'v' for nil
+identity: undefined method 'v' for nil
+mutator value: undefined method 'v' for nil
+Array.new block: undefined method 'v' for nil
+Array.new ternary: undefined method 'v' for nil
+[1, 2]
