@@ -60,5 +60,11 @@ def t(k)
   end
   f.close
   File.delete(path)
+  # a safe-navigation call on a nil receiver runs no operand
+  [nil, +"ab"].each do |v|
+    sn = [v, 1][k]
+    log = []
+    show("safe-nav #{v.inspect}", log) { p (log << :r; sn)&.center((log << :a0; 5)) }
+  end
 end
 t(ARGV.size)
