@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "share.h"
+#include "builtin_names.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -299,6 +300,7 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);
+  free(c->ary_viewed);
   for (int i = 0; i < c->n_ffi_sources; i++) {
     free(c->ffi_sources[i].mod);
     free(c->ffi_sources[i].val);
@@ -842,6 +844,106 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
     if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
   }
   return -1;
+}
+
+int comp_ary_root(Compiler *c, int cid) {
+  return cid >= 0 && cid < c->nclasses ? c->classes[cid].ary_root - 1 : -1;
+}
+int comp_ty_ary_root(Compiler *c, TyKind t) {
+  return ty_is_object(t) ? comp_ary_root(c, ty_object_class(t)) : -1;
+}
+/* An Array subclass nothing is ever put into holds boxed values, as an empty
+   `[]` that never settles does. While the inference is still optimistic an
+   unsettled kind stays unknown, so a later push can still narrow it. */
+TyKind comp_ary_kind(Compiler *c, int cid) {
+  int r = comp_ary_root(c, cid);
+  if (r < 0) return TY_UNKNOWN;
+  TyKind k = c->classes[r].ary_kind;
+  return k == TY_UNKNOWN && !g_infer_optimistic ? TY_POLY_ARRAY : k;
+}
+
+int builtin_instance_method_known(const char *cls, const char *m);
+/* A name an Array answers: its own methods and Enumerable's, and the
+   Object methods it answers as the Array (#7449). */
+int comp_array_method_name(const char *n) {
+  return builtin_instance_method_known("Array", n) || is_arysub_kernel_name(n);
+}
+/* Whether a call named n on an instance of Array subclass cid is Array's:
+   no method, reader or writer of the class chain takes the name, it asks
+   nothing about the object itself, and Array (or Enumerable, which Array
+   includes) has it. */
+int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
+  if (comp_ary_root(c, cid) < 0 || !n) return 0;
+  if (comp_method_in_chain(c, cid, n, NULL) >= 0 || comp_reader_in_chain(c, cid, n, NULL)) return 0;
+  size_t l = strlen(n);
+  if (l > 1 && n[l - 1] == '=' && n[l - 2] != '=' && n[l - 2] != '!' && n[l - 2] != '<' &&
+      n[l - 2] != '>' && n[l - 2] != '[') {
+    char base[256];
+    snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
+    if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
+  }
+  return !is_arysub_object_name(n) && comp_array_method_name(n);
+}
+/* Whether call `id` on a receiver of type rt, an Array subclass instance, is
+   Array's (comp_arysub_name_is_array), or a `super` into Array was rewritten
+   into it (builtin_only). *kind is the embedded Array's kind to answer it as. */
+int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
+  int cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
+  if (comp_ary_root(c, cid) < 0 || nt_kind(c->nt, id) != NK_CallNode) return 0;
+  const char *n = nt_str(c->nt, id, "name");
+  if (!n) return 0;
+  if (!nt_int(c->nt, id, "builtin_only", 0) && !comp_arysub_name_is_array(c, cid, n)) return 0;
+  *kind = comp_ary_kind(c, cid);
+  return 1;
+}
+/* The builtin-op row flags of call `id` on an Array (#7449): what it answers
+   (bop_answers_self) or, with args_builtin, whether it reads an Array
+   argument as an Array (bop_args_as_builtin). Every Array kind reads the
+   same family rows. */
+static int arysub_call_flags(Compiler *c, int id, int args_builtin) {
+  const char *n = nt_str(c->nt, id, "name");
+  int args = nt_ref(c->nt, id, "arguments"), argc = 0;
+  if (!n) return 0;
+  if (args >= 0) nt_arr(c->nt, args, "arguments", &argc);
+  int blk = nt_ref(c->nt, id, "block") >= 0;
+  return args_builtin ? bop_args_as_builtin(TY_POLY_ARRAY, n, argc, blk)
+                      : bop_answers_self(TY_POLY_ARRAY, n, argc, blk);
+}
+int comp_arysub_answer(Compiler *c, int id) { return arysub_call_flags(c, id, 0); }
+/* Array's answer to call `id` is its receiver -- always (BOPF_SELF) or when
+   it changed it (BOPF_SELF_OR_NIL) -- so on an Array subclass instance it
+   is the instance (#7449). */
+int comp_arysub_self_result(Compiler *c, int id) {
+  return (comp_arysub_answer(c, id) & (BOPF_SELF | BOPF_SELF_OR_NIL)) != 0;
+}
+
+/* Whether the arguments of call `id`, on a receiver of type rt (-1: none),
+   are read as Arrays, so an Array subclass instance among them is its Array
+   (#7449): the methods of an Array receiver that compare, combine or copy
+   another Array (BOPF_ARGS_BUILTIN) -- not the stores, which keep the
+   instance itself as an element -- and Kernel#puts, which prints an Array's
+   elements. */
+int comp_arysub_args_viewed(Compiler *c, int id, TyKind rt) {
+  const NodeTable *nt = c->nt;
+  const char *n = nt_str(nt, id, "name");
+  if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
+  if (nt_ref(nt, id, "receiver") < 0)
+    return sp_streq(n, "puts") && comp_method_index(c, n) < 0;
+  return array_new_copies(rt) && arysub_call_flags(c, id, 1);
+}
+
+/* `Array(x)`: of an Array subclass instance x it is x itself (Kernel#Array
+   takes an Array as it is, #7449). x's node, else -1; the caller asks x's
+   type. */
+int comp_arysub_kernel_array(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *n = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  if (!n || !sp_streq(n, "Array") || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0 ||
+      comp_method_index(c, n) >= 0) return -1;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
+  return av[0];
 }
 
 /* The method a program's reopen of a builtin kind's own class defines under

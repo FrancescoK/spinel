@@ -9239,6 +9239,10 @@ static void oa_uf_union(OAS *sl, int a, int b) {
    sentinel, or -1 if neither a lone object nor a lone scalar array. */
 static int oa_obj_class_of(Compiler *c, int node) {
   TyKind t = infer_type(c, node);
+  /* an Array subclass instance is no pointer array's element: its box is
+     its Array's, and the pointer array boxes by the class id it reads first
+     in the object (#7449) */
+  if (comp_ty_ary_root(c, t) >= 0) return -2;
   if (ty_is_object(t)) return ty_object_class(t);
   if (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY) {
     /* A literal whose elements are not all settled reads as a scalar array
@@ -14034,6 +14038,9 @@ static int scope_calls_itself(Compiler *c, int mi) {
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *nm = nt_str(c->nt, id, "name");
     if (!nm || !sp_streq(nm, m->name)) continue;
+    /* a `super` into Array, spelled as self's call to Array's method
+       (rewrite_array_subclass_super), is no call of the method itself */
+    if (nt_int(c->nt, id, "builtin_only", 0)) continue;
     int recv = nt_ref(c->nt, id, "receiver");
     const char *rty = recv >= 0 ? nt_type(c->nt, recv) : NULL;
     if (recv < 0 || (rty && sp_streq(rty, "SelfNode"))) return 1;
@@ -30090,6 +30097,284 @@ static void rewrite_builtin_alias_self_calls(Compiler *c) {
     free(target);
   }
 }
+/* ---- Array subclasses (#7449) ----
+   An instance of a class below Array IS an Array (ClassInfo.ary_root), and
+   these rewrites spell the parts of its protocol that have no call of their
+   own as ordinary calls on it, so every later pass sees Array's methods
+   called on an Array subclass instance and nothing else. */
+
+/* A node for a rewrite of node `at`: its scope, class body, line and file. */
+static int arysub_node(Compiler *c, const char *type, int at) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n = nt_new_node(nt, type);
+  if (n < 0) return -1;
+  comp_grow_node_arrays(c);
+  c->nscope[n] = c->nscope[at];
+  c->node_cbody[n] = c->node_cbody[at];
+  long long ln = nt_int(nt, at, "node_line", 0), fl = nt_int(nt, at, "node_file", 0);
+  if (ln) nt_node_set_int(nt, n, "node_line", ln);
+  if (fl) nt_node_set_int(nt, n, "node_file", fl);
+  return n;
+}
+/* Make node `id` (reset in place, so its parent still holds it) the call
+   recv.name(args) { blk }; args is an ArgumentsNode or -1. */
+static void arysub_set_call(Compiler *c, int id, int recv, const char *name, int args, int blk) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+  char *nm = strdup(name);
+  nt_node_reset(nt, id, "CallNode");
+  if (ln) nt_node_set_int(nt, id, "node_line", ln);
+  if (fl) nt_node_set_int(nt, id, "node_file", fl);
+  nt_node_set_ref(nt, id, "receiver", recv);
+  nt_node_set_str(nt, id, "name", nm);
+  nt_node_set_ref(nt, id, "arguments", args);
+  nt_node_set_ref(nt, id, "block", blk);
+  free(nm);
+}
+static int arysub_new_call(Compiler *c, int at, int recv, const char *name, int args, int blk) {
+  int n = arysub_node(c, "CallNode", at);
+  if (n < 0) return -1;
+  arysub_set_call(c, n, recv, name, args, blk);
+  return n;
+}
+static int arysub_args(Compiler *c, int at, const int *ids, int n) {
+  int a = arysub_node(c, "ArgumentsNode", at);
+  if (a >= 0) nt_node_set_arr((NodeTable *)c->nt, a, "arguments", ids, n);
+  return a;
+}
+/* `Array.new(args) { blk }` for node `at`, or -1 */
+static int arysub_array_new(Compiler *c, int at, int args, int blk) {
+  int k = arysub_node(c, "ConstantReadNode", at);
+  if (k < 0) return -1;
+  nt_node_set_str((NodeTable *)c->nt, k, "name", "Array");
+  return arysub_new_call(c, at, k, "new", args, blk);
+}
+
+/* The arguments a bare `super` in the method of scope s passes on: its
+   parameters, read by name. -1 for a parameter list this spelling does not
+   reproduce (keywords, a post-rest or destructured parameter). */
+static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
+  const NodeTable *nt = c->nt;
+  int pn = s->def_node >= 0 ? nt_ref(nt, s->def_node, "parameters") : -1;
+  int rn = 0, on = 0, qn = 0, kn = 0;
+  const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+  const int *op = pn >= 0 ? nt_arr(nt, pn, "optionals", &on) : NULL;
+  if (pn >= 0) { nt_arr(nt, pn, "posts", &qn); nt_arr(nt, pn, "keywords", &kn); }
+  int rest = pn >= 0 ? nt_ref(nt, pn, "rest") : -1;
+  if (qn || kn || (pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0)) return -1;
+  int ids[64], n = 0;
+  for (int i = 0; i < rn + on + (rest >= 0); i++) {
+    int p = i < rn ? rq[i] : i < rn + on ? op[i - rn] : rest;
+    const char *pnm = nt_str(nt, p, "name");
+    if (!pnm || n >= 63 || nt_kind(nt, p) == NK_MultiTargetNode) return -1;
+    int rd = arysub_node(c, "LocalVariableReadNode", at);
+    if (rd < 0) return -1;
+    nt_node_set_str((NodeTable *)c->nt, rd, "name", pnm);
+    if (p == rest) {
+      int sp = arysub_node(c, "SplatNode", at);
+      if (sp < 0) return -1;
+      nt_node_set_ref((NodeTable *)c->nt, sp, "expression", rd);
+      rd = sp;
+    }
+    ids[n++] = rd;
+  }
+  return arysub_args(c, at, ids, n);
+}
+
+/* Node `n` (reset in place) as the call a `super` at `at` makes into Array:
+   Array's method `mname` on self, marked builtin_only so the class's own
+   override does not take it, or in initialize `self.clear` for no arguments
+   and no block, else `self.replace(Array.new(args) { blk })`. */
+static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
+  int an = 0;
+  if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
+  int self = arysub_node(c, "SelfNode", at);
+  if (self < 0) return;
+  char *mn = strdup(mname);
+  if (!init) {
+    arysub_set_call(c, n, self, mn, args, blk);
+    nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
+  }
+  else if (an == 0 && blk < 0) arysub_set_call(c, n, self, "clear", -1, -1);
+  else {
+    int an_call = arysub_array_new(c, at, an ? args : -1, blk);
+    if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
+  }
+  free(mn);
+}
+
+/* `super` in an Array subclass's method that reaches Array. In initialize it
+   is Array#initialize, which makes the receiver what Array.new would build
+   from the same arguments: `self.replace(Array.new(args) { blk })`, and
+   `super()` the empty Array, `self.clear`. Anywhere else it is Array's
+   method of the same name on self, marked builtin_only so the class's own
+   override does not take it. */
+static void rewrite_array_subclass_super(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, id);
+  if (!s || !s->name || s->is_cmethod || comp_ary_root(c, s->class_id) < 0 || comp_super_shadow(c, s)) return;
+  const char *mname = comp_prep_user_name(s->name);
+  int p = c->classes[s->class_id].parent;
+  if (p >= 0 && comp_method_in_chain(c, p, mname, NULL) >= 0) return;
+  int init = sp_streq(mname, "initialize");
+  /* Array#initialize_copy is a replace, which the copy dup and clone make
+     of an Array subclass instance has done already: super into it is the
+     receiver */
+  if (sp_streq(mname, "initialize_copy")) {
+    int self = arysub_node(c, "SelfNode", id);
+    if (self >= 0) { arysub_set_call(c, id, self, "itself", -1, -1); }
+    return;
+  }
+  if (!init && !comp_array_method_name(mname)) return;
+  int args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
+  if (nt_kind(nt, id) == NK_ForwardingSuperNode) {
+    args = arysub_zsuper_args(c, id, s);
+    if (args < 0) {
+      unsupported_feature(c, id, "a bare `super` into Array from a method with keyword, "
+                                 "post-rest or destructured parameters is not supported yet; "
+                                 "pass the arguments explicitly");
+      return;
+    }
+  }
+  /* `super(&nil)` passes no block */
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_ref(nt, blk, "expression") >= 0 &&
+      nt_kind(nt, nt_ref(nt, blk, "expression")) == NK_NilNode) {
+    arysub_super_into(c, id, id, mname, init, args, -1);
+    return;
+  }
+  if (blk >= 0) { arysub_super_into(c, id, id, mname, init, args, blk); return; }
+  /* A super with no block of its own passes the method's: `&blk` names it,
+     and an anonymous `&` (or none, in a method that yields) is the block
+     the method was given (resolve_forwarded_block). Forwarded, an
+     absent block reached Array's method as a block argument, which it does
+     not take for none: the call with no block is the other arm of
+     `block_given?`. A method that names no block takes a synthetic `&blk`
+     to hold it, as a bare super into a parent's `&blk` does
+     (an_phase_class_structure). */
+  if (!s->blk_param && !scope_has_yield_node(c, s)) {
+    s->blk_param = strdup("__sblk__");
+    LocalVar *sblk = scope_local_intern(s, s->blk_param);
+    if (sblk) { sblk->type = TY_PROC; sblk->is_param = 1; }
+  }
+  NodeTable *wnt = (NodeTable *)nt;
+  int fwd = arysub_node(c, "BlockArgumentNode", id);
+  if (fwd < 0) return;
+  if (s->blk_param && s->blk_param[0]) {
+    int rd = arysub_node(c, "LocalVariableReadNode", id);
+    if (rd < 0) return;
+    nt_node_set_str(wnt, rd, "name", s->blk_param);
+    nt_node_set_ref(wnt, fwd, "expression", rd);
+  }
+  int with = arysub_node(c, "CallNode", id), without = arysub_node(c, "CallNode", id);
+  int bg = arysub_node(c, "CallNode", id), els = arysub_node(c, "ElseNode", id);
+  int sw = arysub_node(c, "StatementsNode", id), so = arysub_node(c, "StatementsNode", id);
+  if (with < 0 || without < 0 || bg < 0 || els < 0 || sw < 0 || so < 0) return;
+  arysub_super_into(c, id, with, mname, init, args, fwd);
+  arysub_super_into(c, id, without, mname, init, args, -1);
+  arysub_set_call(c, bg, -1, "block_given?", -1, -1);
+  nt_node_set_arr(wnt, sw, "body", &with, 1);
+  nt_node_set_arr(wnt, so, "body", &without, 1);
+  nt_node_set_ref(wnt, els, "statements", so);
+  long long ln = nt_int(wnt, id, "node_line", 0), fl = nt_int(wnt, id, "node_file", 0);
+  nt_node_reset(wnt, id, "IfNode");
+  if (ln) nt_node_set_int(wnt, id, "node_line", ln);
+  if (fl) nt_node_set_int(wnt, id, "node_file", fl);
+  nt_node_set_ref(wnt, id, "predicate", bg);
+  nt_node_set_ref(wnt, id, "statements", sw);
+  nt_node_set_ref(wnt, id, "subsequent", els);
+}
+
+/* A receiverless call in an Array subclass's instance method of a name its
+   class chain does not define but Array does (`size`, `each { }`, `first`):
+   Array's method on self, spelled with self as the receiver, as
+   rewrite_builtin_alias_self_calls spells a reopened primitive's. */
+static void rewrite_array_subclass_self_call(Compiler *c, int id) {
+  int si = c->nscope[id];
+  Scope *s = si >= 0 ? &c->scopes[si] : NULL;
+  const char *nm = nt_str(c->nt, id, "name");
+  if (!s || !s->name || s->is_cmethod || !nm || comp_ary_root(c, s->class_id) < 0) return;
+  int k = s->class_id;
+  if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return;
+  if (!comp_array_method_name(nm)) return;
+  int self = arysub_node(c, "SelfNode", id);
+  if (self >= 0) nt_node_set_ref((NodeTable *)c->nt, id, "receiver", self);
+}
+
+/* `X.new(args) { blk }` for an Array subclass none of whose classes defines
+   initialize or self.new is Array.new's construction on an instance of X:
+   `X.allocate.replace(Array.new(args) { blk })`, and `X.new` is
+   `X.allocate`. `X[a, b]` never runs an initialize:
+   `X.allocate.replace([a, b])`. A bare `new` in X's own class method is the
+   same with self as the receiver. */
+static void rewrite_array_subclass_new(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "[]"))) return;
+  int k = -1;
+  if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
+    k = comp_class_index(c, nt_str(nt, recv, "name"));
+  else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->is_cmethod) k = s->class_id;
+  }
+  if (k < 0 || comp_ary_root(c, k) < 0 || comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return;
+  int brackets = sp_streq(nm, "[]");
+  if (!brackets && comp_method_in_chain(c, k, "initialize", NULL) >= 0) return;
+  int args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
+  int an = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &an);
+  if (recv < 0) recv = arysub_node(c, "SelfNode", id);
+  if (recv < 0) return;
+  if (!brackets && an == 0 && blk < 0) { arysub_set_call(c, id, recv, "allocate", -1, -1); return; }
+  int alloc = arysub_new_call(c, id, recv, "allocate", -1, -1);
+  int src = -1;
+  if (brackets) {
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    src = arysub_node(c, "ArrayNode", id);
+    if (src >= 0) nt_node_set_arr((NodeTable *)nt, src, "elements", av, an);
+  }
+  else src = arysub_array_new(c, id, args, blk);
+  if (alloc < 0 || src < 0) return;
+  arysub_set_call(c, id, alloc, "replace", arysub_args(c, id, &src, 1), -1);
+}
+
+static void rewrite_array_subclass_calls(Compiler *c) {
+  if (!c->has_arysub) return;
+  const NodeTable *nt = c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    /* where an Array is wanted, an Array subclass instance is read as its
+       Array (infer_type, emit_expr): a splat's operand, a destructured value,
+       the collection a `for` walks */
+    int opnd = k == NK_SplatNode ? nt_ref(nt, id, "expression")
+             : k == NK_MultiWriteNode ? nt_ref(nt, id, "value")
+             : k == NK_ForNode ? nt_ref(nt, id, "collection") : -1;
+    /* ... and the source of a lazy pipeline, which is read off the chain's
+       outermost call rather than dispatched */
+    if (k == NK_CallNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "lazy") &&
+        nt_ref(nt, id, "block") < 0)
+      opnd = nt_ref(nt, id, "receiver");
+    if (opnd >= 0 && nt_kind(nt, opnd) != NK_ArrayNode)
+      nt_node_set_int((NodeTable *)nt, opnd, "ary_operand", 1);
+    /* ... and the receiver of an element write that is no call -- `a[i] += v`,
+       `a[i] ||= v`, `a[i], b = ...` -- unless the class reads and writes its
+       elements itself (2: infer_type asks) */
+    if (k == NK_IndexOperatorWriteNode || k == NK_IndexOrWriteNode || k == NK_IndexAndWriteNode ||
+        k == NK_IndexTargetNode) {
+      int ir = nt_ref(nt, id, "receiver");
+      if (ir >= 0) nt_node_set_int((NodeTable *)nt, ir, "ary_operand", 2);
+    }
+    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) rewrite_array_subclass_super(c, id);
+    else if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
+      rewrite_array_subclass_new(c, id);
+      if (nt_ref(nt, id, "receiver") < 0) rewrite_array_subclass_self_call(c, id);
+    }
+    else if (k == NK_CallNode) rewrite_array_subclass_new(c, id);
+  }
+}
+
 /* A String a Hash holds, read back out through the [key, value] pairs a
    builtin builds (`h.to_a`, `h.first`, `h.min_by { }`, `h.sort_by { }`,
    `k, v = h.first`), is a copy: the pairs are new Arrays, and nothing makes
@@ -30847,6 +31132,9 @@ static void an_phase_class_structure(Compiler *c) {
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
+  /* super into Array, X.new / X[], implicit self, in the class's methods and
+     the copies its modules put in (#7449) */
+  rewrite_array_subclass_calls(c);
   rewrite_attr_supers(c);
   specialize_inherited_cls_new(c);
 

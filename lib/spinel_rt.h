@@ -2164,6 +2164,10 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   if (sp_str_in_list(m, uni)) return 1;
   cn = sp_poly_class_name(v);
   if (!cn) return 0;
+  /* an Array subclass instance boxed as its Array answers Array's names
+     (#7449); its class's own are the caller's */
+  if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
+    cn = "Array";
   if (strcmp(cn, "Array") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
   if (strcmp(cn, "Hash") == 0)
@@ -2265,6 +2269,8 @@ static sp_Class sp_poly_class_val(sp_RbVal v) {
      the switch fell through and the call returned nil (#4020). The name still
      leads for display; sp_class_to_s reads it first. */
   r.cls_id = (v.tag == SP_TAG_OBJ && v.cls_id >= 0) ? (int)v.cls_id : -1;
+  /* an Array subclass instance boxed as its Array (#7449) */
+  if (sp_bsub_cls_fn && r.cls_id < 0) { int k = sp_bsub_cls_fn(v); if (k >= 0) r.cls_id = k; }
   r.name = sp_poly_class_name(v);
   return r;
 }
@@ -9015,6 +9021,8 @@ static SP_UNUSED void sp_marv_hash_set_default(sp_RbVal h, sp_RbVal d) {
   sp_gc_wb(h.v.p);
   ((sp_PolyPolyHash *)h.v.p)->default_v = d;
 }
+/* Marshal.load's element into an Array subclass instance's Array, of its kind (#7449) */
+static SP_UNUSED void sp_marv_any_push(sp_RbVal a, sp_RbVal v) { (void)sp_poly_shl(a, v); }
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
@@ -10362,6 +10370,18 @@ extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
 #else
 static void (*sp_user_init_copy_hook)(sp_RbVal, sp_RbVal) = NULL;
 extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+#endif
+/* dup / clone (keep_frozen) of a builtin subclass instance boxed as its
+   builtin (#7449): the program's own copy of its class, with the class's
+   initialize_copy; *handled stays FALSE for anything else. NULL in a
+   program with no such class. sp_poly_dup (lib/sp_poly_cold.c) reads
+   sp_bsub_dup_hook_lib, which SP_INSTALL_HOOK sets beside the static. */
+#ifdef SPINEL_EXT_HOST
+extern sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
+#define sp_bsub_dup_hook sp_bsub_dup_hook_lib
+#else
+static sp_RbVal (*sp_bsub_dup_hook)(sp_RbVal, int, sp_bool *) = NULL;
+extern sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 #endif
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen);
 /* clone(freeze: ...) on a boxed value. An immutable immediate (nil/bool/int/

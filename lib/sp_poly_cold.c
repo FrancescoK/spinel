@@ -28,6 +28,7 @@ sp_obj_eq_fn sp_obj_eq_hook_lib;
 sp_obj_hash_fn sp_obj_hash_hook_lib;
 sp_obj_eql_fn sp_obj_eql_hook_lib;
 void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 /* the symbol interner is generated per program too; a keyword name that is not
    a known symbol reaches it through the hook the generated unit installs */
 sp_sym sp_poly_cold_sym_intern(const char *s) { return sp_json_sym_intern_fn ? sp_json_sym_intern_fn(s) : (sp_sym)0; }
@@ -224,6 +225,11 @@ const char *sp_poly_class_name(sp_RbVal v)
     }
     case SP_TAG_BIGINT: return SPL("Integer");
     case SP_TAG_OBJ:
+      /* an Array subclass instance boxed as its Array (#7449) */
+      if (sp_bsub_cls_fn && sp_obj_cls_name_fn) {
+        int k = sp_bsub_cls_fn(v);
+        if (k >= 0) return sp_obj_cls_name_fn(k);
+      }
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
         case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
@@ -645,6 +651,11 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
 {
+  if (sp_bsub_dup_hook && v.tag == SP_TAG_OBJ && v.v.p) {
+    sp_bool handled = FALSE;
+    sp_RbVal r = sp_bsub_dup_hook(v, keep_frozen, &handled);
+    if (handled) return r;
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
     return sp_range_dup(v, keep_frozen);

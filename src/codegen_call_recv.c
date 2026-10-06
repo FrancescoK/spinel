@@ -12846,6 +12846,15 @@ static void emit_class_ivar_list_arm(Compiler *c, int tv, Buf *b) {
 }
 
 /* Instance-variable and field access on a boxed receiver: an ivar write, a field read dispatched over every class that has it, instance_variable_get and _set, instance_variables (emit_poly_call's arms, in their order) */
+
+/* The class a boxed receiver's ivars are read by: its cls_id, or for an
+   Array subclass instance, boxed as its Array, the class its scan names
+   (sp_bsub_cls_of, #7449), whose struct holds them. */
+static void emit_ivar_switch_key(Compiler *c, int tv, Buf *b) {
+  if (!program_has_arysub(c)) { buf_printf(b, "_t%d.cls_id", tv); return; }
+  buf_printf(b, "({ int _ik%d = sp_bsub_cls_of(_t%d); _ik%d >= 0 ? _ik%d : _t%d.cls_id; })", tv, tv, tv, tv, tv);
+}
+
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
      write twin of the dispatch below. The value is evaluated once, then
@@ -12875,7 +12884,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _ivs%d = ", tv, tv);
       emit_boxed(c, argv[1], b);
-      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv);
+      buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (", tv);
+      emit_ivar_switch_key(c, tv, b);
+      buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         /* a Data instance is frozen: the write raises, as in CRuby */
         if (c->classes[k].instantiated && c->classes[k].is_data) {
@@ -12947,8 +12958,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
       emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
-                 tv, tv, tv);
+      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);
+      emit_ivar_switch_key(c, tv, b);
+      buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;
         int iv = comp_ivar_index(&c->classes[k], sym);
@@ -12994,7 +13006,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
       emit_expr(c, recv, b);
-      buf_printf(b, "; sp_bool _ivd%d = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {", tv, tv, tv);
+      buf_printf(b, "; sp_bool _ivd%d = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);
+      emit_ivar_switch_key(c, tv, b);
+      buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;
         int iv = comp_ivar_index(&c->classes[k], sym);
@@ -13022,8 +13036,10 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv);
     emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
-               tv, tv, tv, tv);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (",
+               tv, tv, tv);
+    emit_ivar_switch_key(c, tv, b);
+    buf_puts(b, ") {");
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *ivc = &c->classes[k];
       if (!ivc->instantiated) continue;

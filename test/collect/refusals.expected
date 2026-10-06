@@ -1074,14 +1074,18 @@ spinel: 1 refusal, nothing written
 == test/reject/struct_member_block_param_store.rb [promote] rc=1
 spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
 spinel: 1 refusal, nothing written
-== test/reject/subclass_array.rb [default] rc=1
-spinel: test/reject/subclass_array.rb:4: class Stack < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead
-== test/reject/subclass_array.rb [promote] rc=1
-spinel: test/reject/subclass_array.rb:4: class Stack < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead
-== test/reject/subclass_array_toplevel_path.rb [default] rc=1
-spinel: test/reject/subclass_array_toplevel_path.rb:3: class Points < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead
-== test/reject/subclass_array_toplevel_path.rb [promote] rc=1
-spinel: test/reject/subclass_array_toplevel_path.rb:3: class Points < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead
+== test/reject/subclass_array_class_new_call.rb [default] rc=1
+spinel: test/reject/subclass_array_class_new_call.rb:4: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
+== test/reject/subclass_array_class_new_call.rb [promote] rc=1
+spinel: test/reject/subclass_array_class_new_call.rb:4: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
+== test/reject/subclass_array_reopened.rb [default] rc=1
+spinel: test/reject/subclass_array_reopened.rb:8: class Stack < Array: subclassing Array in a program that also reopens Array is not supported yet
+== test/reject/subclass_array_reopened.rb [promote] rc=1
+spinel: test/reject/subclass_array_reopened.rb:8: class Stack < Array: subclassing Array in a program that also reopens Array is not supported yet
+== test/reject/subclass_array_zsuper_post.rb [default] rc=1
+spinel: test/reject/subclass_array_zsuper_post.rb:7: a bare `super` into Array from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
+== test/reject/subclass_array_zsuper_post.rb [promote] rc=1
+spinel: test/reject/subclass_array_zsuper_post.rb:7: a bare `super` into Array from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
 == test/reject/subclass_hash.rb [default] rc=1
 spinel: test/reject/subclass_hash.rb:2: class Registry < Hash: subclassing Hash is not supported yet (a subclass would answer differently from CRuby); wrap a Hash in an instance variable instead
 == test/reject/subclass_hash.rb [promote] rc=1

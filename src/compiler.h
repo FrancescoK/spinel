@@ -557,6 +557,14 @@ typedef struct {
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
   int is_native_class;
+  /* An Array subclass (#7449): its instances ARE Arrays -- the struct starts
+     with the Array by value, so a pointer to one is a pointer to its Array --
+     and Array's methods dispatch on them. ary_root is the class right below
+     Array in the chain, plus one (0: not an Array subclass); ary_kind, read
+     on that root (comp_ary_kind), is the kind of the Array every instance of
+     the chain embeds, folded from the elements the program puts in. */
+  int ary_root;
+  TyKind ary_kind;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
@@ -837,6 +845,11 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
+  int has_arysub;      /* some class is an Array subclass (ClassInfo.ary_root, #7449) */
+  /* the nodes infer_type answered as an Array subclass instance's Array
+     (ary_operand, an_ary_viewed_mark), indexed by node; NULL until one is */
+  unsigned char *ary_viewed;
+  int ary_viewed_cap;
 
   LocalVar *gvars;    /* global variables ($g), name without '$' */
   int ngvars, cgvars;
@@ -1203,6 +1216,29 @@ int        io_family_descends(Compiler *c, int k, int owner);
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* Array subclasses (#7449, ClassInfo.ary_root): the root of class cid's
+   Array chain or -1; the same for an object type (-1 for any other type);
+   the kind of the Array the chain's instances embed, TY_POLY_ARRAY once the
+   inference is past its optimistic stage with no element seen. */
+int        comp_ary_root(Compiler *c, int cid);
+int        comp_ty_ary_root(Compiler *c, TyKind t);
+TyKind     comp_ary_kind(Compiler *c, int cid);
+/* Whether Array answers a call named n on an instance of Array subclass
+   cid: no method, reader or writer of the class chain takes the name, it
+   asks nothing about the object itself, and Array has it. */
+int        comp_arysub_name_is_array(Compiler *c, int cid, const char *n);
+/* Call `id` on rt (an Array subclass instance) is Array's, answered as the
+   embedded Array's kind *kind; what Array answers, as the builtin-op rows
+   say (bop_answers_self: BOPF_SELF, BOPF_SELF_OR_NIL, BOPF_SELF_EXACT...);
+   whether that answer is the receiver itself (BOPF_SELF, or
+   BOPF_SELF_OR_NIL where it can be nil); and whether the call reads an
+   Array argument as an Array (BOPF_ARGS_BUILTIN). */
+int        comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind);
+int        comp_arysub_answer(Compiler *c, int id);
+int        comp_arysub_self_result(Compiler *c, int id);
+int        comp_arysub_args_viewed(Compiler *c, int id, TyKind rt);
+int        comp_arysub_kernel_array(Compiler *c, int id);
+int        comp_array_method_name(const char *n);
 int        comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name);
 int        comp_builtin_name_reopened(Compiler *c, const char *name);
 int        comp_yield_chain_reopened(Compiler *c, int call);

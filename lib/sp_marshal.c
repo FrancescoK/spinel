@@ -112,7 +112,24 @@ static void sp_mar_w_hash(sp_mar_buf *b, sp_RbVal v) {
   }
   if (d.tag != SP_TAG_NIL) sp_mar_w(b, d);
 }
+void sp_mar_w_body(sp_mar_buf *b, sp_RbVal v) {
+  if (sp_json_kind_fn(v) == 2) { sp_mar_w_hash(b, v); return; }
+  sp_mar_b(b, '['); sp_int n = sp_json_len_fn(v); sp_mar_long(b, n);
+  for (sp_int i = 0; i < n; i++) sp_mar_w(b, sp_json_aref_fn(v, i));
+}
 void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
+  /* an Array or Hash subclass instance, boxed as its builtin (#7449): its
+     class's own record, `C` with the class, the builtin's body and the ivars
+     (sp_marshal_v.obj_dump), so it loads back as an instance of the class */
+  if (v.tag == SP_TAG_OBJ && sp_bsub_cls_fn) {
+    int k = sp_bsub_cls_fn(v);
+    if (k >= 0) {
+      if (sp_mar_seen(b, v.v.p)) return;
+      if (!sp_marshal_v.obj_dump || !sp_marshal_v.obj_dump(b, k, v.v.p))
+        mar_raise("TypeError", "no marshal_dump is defined for this object");
+      return;
+    }
+  }
   switch (v.tag) {
     case SP_TAG_NIL:  sp_mar_b(b, '0'); break;
     case SP_TAG_BOOL: sp_mar_b(b, v.v.b ? 'T' : 'F'); break;
@@ -157,8 +174,7 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
         int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
         if (kind == 1) {  /* array */
           if (sp_mar_seen(b, v.v.p)) break;
-          sp_mar_b(b, '['); sp_int n = sp_json_len_fn(v); sp_mar_long(b, n);
-          for (sp_int i = 0; i < n; i++) sp_mar_w(b, sp_json_aref_fn(v, i));
+          sp_mar_w_body(b, v);
         }
         else if (kind == 2) {  /* hash */
           if (sp_mar_seen(b, v.v.p)) break;
@@ -261,6 +277,40 @@ static int sp_mar_reg(sp_mar_rd *r) {
   int id = r->nobj; r->objs[r->nobj++] = mk_nil(); return id;
 }
 static sp_sym mar_intern(const char *name) { return sp_marshal_v.sym_intern ? sp_marshal_v.sym_intern(name) : 0; }
+static sp_RbVal sp_mar_r(sp_mar_rd *r);
+/* `C`: an instance of a user subclass of Array or Hash (#7449), its class,
+   the builtin's record, and with `ivars` (an `I` around it) the ivars after
+   it. The class's generated loader (sp_marshal_v.obj_load, as for an `o`
+   object) makes the instance, which takes the record's link id before the
+   elements are read, so one that holds itself loads holding itself; the
+   elements go into its builtin through the kind's own push or store, and
+   the loader then sets the ivars by name. */
+static sp_RbVal sp_mar_r_bsub(sp_mar_rd *r, int ivars) {
+  sp_RbVal clssym = sp_mar_r(r);
+  const char *cn = (clssym.tag == SP_TAG_SYM && sp_sym_name_fn) ? sp_sym_name_fn((sp_sym)clssym.v.i) : "";
+  sp_RbVal iv = sp_marshal_v.arr_new(); SP_GC_ROOT_RBVAL(iv);
+  int ok = 0;
+  sp_RbVal v = sp_marshal_v.obj_load ? sp_marshal_v.obj_load(cn, mk_nil(), iv, &ok) : mk_nil();
+  if (!ok || !sp_bsub_cls_fn || sp_bsub_cls_fn(v) < 0) mar_raise("ArgumentError", "undefined class/module in Marshal.load");
+  SP_GC_ROOT_RBVAL(v);
+  int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
+  unsigned char t = sp_mar_rb(r);
+  if (!((t == '[' && kind == 1) || (t == '{' && kind == 2))) mar_raise("ArgumentError", "dump format error (user class)");
+  int id = sp_mar_reg(r);
+  r->objs[id] = v;
+  long len = sp_mar_rlong(r);
+  for (long i = 0; i < len; i++) {
+    if (kind == 1) sp_marshal_v.any_push(v, sp_mar_r(r));
+    else { sp_RbVal k = sp_mar_r(r); SP_GC_ROOT_RBVAL(k); sp_marshal_v.hash_set(v, k, sp_mar_r(r)); }
+  }
+  long n = ivars ? sp_mar_rlong(r) : 0;
+  for (long i = 0; i < n; i++) {
+    sp_marshal_v.arr_push(iv, sp_mar_r(r));   /* ivar symbol */
+    sp_marshal_v.arr_push(iv, sp_mar_r(r));   /* ivar value  */
+  }
+  if (n) sp_marshal_v.obj_load(cn, v, iv, &ok);
+  return v;
+}
 static sp_RbVal sp_mar_r(sp_mar_rd *r) {
   unsigned char t = sp_mar_rb(r);
   switch (t) {
@@ -297,11 +347,13 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
       r->objs[id] = v; return v;
     }
     case 'I': {
+      if (r->pos < r->len && r->s[r->pos] == 'C') { r->pos++; return sp_mar_r_bsub(r, 1); }
       sp_RbVal inner = sp_mar_r(r);
       long nivar = sp_mar_rlong(r);
       for (long i = 0; i < nivar; i++) { sp_mar_r(r); sp_mar_r(r); }  /* encoding ivar: ignored */
       return inner;
     }
+    case 'C': return sp_mar_r_bsub(r, 0);
     case '@': {
       long id = sp_mar_rlong(r);
       return (id >= 0 && id < r->nobj) ? r->objs[id] : mk_nil();
@@ -320,19 +372,24 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
       r->objs[id] = v; return v;
     }
     case 'o': {
+      /* the object is made and registered first, so an ivar that links back
+         to it loads as the object itself; then its ivars are set */
       int id = sp_mar_reg(r);
       sp_RbVal clssym = sp_mar_r(r);
       const char *cn = (clssym.tag == SP_TAG_SYM && sp_sym_name_fn) ? sp_sym_name_fn((sp_sym)clssym.v.i) : "";
-      long n = sp_mar_rlong(r);
       sp_RbVal iv = sp_marshal_v.arr_new(); SP_GC_ROOT_RBVAL(iv);
+      int ok = 0;
+      sp_RbVal v = sp_marshal_v.obj_load(cn, mk_nil(), iv, &ok);
+      if (!ok) mar_raise("ArgumentError", "undefined class/module in Marshal.load");
+      SP_GC_ROOT_RBVAL(v);
+      r->objs[id] = v;
+      long n = sp_mar_rlong(r);
       for (long i = 0; i < n; i++) {
         sp_marshal_v.arr_push(iv, sp_mar_r(r));   /* ivar symbol */
         sp_marshal_v.arr_push(iv, sp_mar_r(r));   /* ivar value  */
       }
-      int ok = 0;
-      sp_RbVal v = sp_marshal_v.obj_load(cn, iv, &ok);
-      if (!ok) mar_raise("ArgumentError", "undefined class/module in Marshal.load");
-      r->objs[id] = v; return v;
+      if (n) sp_marshal_v.obj_load(cn, v, iv, &ok);
+      return v;
     }
     case 'l': {
       int id = sp_mar_reg(r);
