@@ -548,7 +548,7 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   if (!hn) return 0;
   int body = nt_ref(nt, block, "body");
-  int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
 
   int trecv = ++g_tmp, ttmp = ++g_tmp, ti = ++g_tmp, tup = ++g_tmp, tpair = ++g_tmp;
@@ -564,6 +564,9 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tup);
   if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
+  /* a key that may be nil boxes as nil, as emit_sortby_expr's does */
+  else if (repr_of(c, bb[bn - 1]).nil_scalar && ty_box_nil_fn(bret))
+    buf_printf(g_pre, "%s(%s)", ty_box_nil_fn(bret), vb ? vb : "0");
   else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
          buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
   buf_puts(g_pre, ");\n");
@@ -576,7 +579,8 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", ttmp, tup);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_PolyArray_sort_by_first(_t%d)", ttmp);
+  /* keys that do not compare raise, as CRuby's sort_by_cmp does */
+  buf_printf(b, "sp_PolyArray_sort_by_first_ck(_t%d)", ttmp);
   return 1;
 }
 
@@ -4085,12 +4089,17 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   g_indent = save;
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tkeys);
   if (kt == TY_POLY) buf_puts(g_pre, kb.p ? kb.p : "sp_box_nil()");
+  /* an Integer or Float key that may be nil boxes as nil, which the key
+     order then refuses to compare with a number, as CRuby does */
+  else if (repr_of(c, bb[bn - 1]).nil_scalar && ty_box_nil_fn(kt))
+    buf_printf(g_pre, "%s(%s)", ty_box_nil_fn(kt), kb.p ? kb.p : "0");
   else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, kt, kb.p ? kb.p : "0", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
   buf_puts(g_pre, ");\n"); free(kb.p);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_IntArray_push(_t%d, _t%d);\n", tidx, ti);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_sort_idx_by_poly(_t%d->data + _t%d->start, _t%d->data, _t%d);\n", tidx, tidx, tkeys, tn);
+  /* keys that do not compare raise, as CRuby's sort_by_cmp does */
+  buf_printf(g_pre, "sp_sort_idx_by_keys(_t%d->data + _t%d->start, _t%d->data, _t%d);\n", tidx, tidx, tkeys, tn);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", tres, k, tres);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, tn, tg);

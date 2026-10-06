@@ -5155,6 +5155,44 @@ static void sp_sort_idx_by_poly(sp_int *idx, const sp_RbVal *keys, sp_int n) {
   if (src != idx) for (sp_int x = 0; x < n; x++) idx[x] = src[x];   /* odd #levels: result is in tmp */
   free(tmp);
 }
+/* sort_by's key order as CRuby's sort_by_cmp reads it: `<=>` through
+   rb_cmpint, so two keys that do not compare (nil and an Integer, a String
+   and an Integer, true and false) raise "comparison of A with b failed".
+   sp_sort_idx_by_poly keeps such a pair where it stands, and the sort
+   answered. Keys sp_poly_cmp orders take its path; the rest ask `<=>`
+   itself (sp_poly_spaceship: nil with nil, an object with itself, a user
+   <=>), and only its nil raises. */
+static sp_int sp_sort_key_cmp(sp_RbVal a, sp_RbVal b) {
+  sp_bool ok; sp_int c = sp_poly_cmp(a, b, &ok);
+  if (ok) return c;
+  c = sp_poly_spaceship(a, b);
+  if (c == SP_INT_NIL) sp_poly_cmp_fail(a, b);
+  return c;
+}
+/* sp_sort_idx_by_poly ordered by sp_sort_key_cmp: the same stable bottom-up
+   merge sort of idx[0..n) by keys[idx[k]], raising on an incomparable pair */
+static void sp_sort_idx_by_keys(sp_int *idx, const sp_RbVal *keys, sp_int n) {
+  if (n < 2) return;
+  sp_int *tmp = (sp_int *)malloc(sizeof(sp_int) * (size_t)n);
+  if (!tmp) sp_oom_die();
+  sp_int *src = idx, *dst = tmp;
+  for (sp_int width = 1; width < n; width *= 2) {
+    for (sp_int lo = 0; lo < n; lo += 2 * width) {
+      sp_int mid = lo + width < n ? lo + width : n;
+      sp_int hi = lo + 2 * width < n ? lo + 2 * width : n;
+      sp_int i = lo, j = mid, k = lo;
+      while (i < mid && j < hi) {
+        if (sp_sort_key_cmp(keys[src[i]], keys[src[j]]) <= 0) dst[k++] = src[i++];   /* left wins ties -> stable */
+        else dst[k++] = src[j++];
+      }
+      while (i < mid) dst[k++] = src[i++];
+      while (j < hi) dst[k++] = src[j++];
+    }
+    sp_int *t = src; src = dst; dst = t;
+  }
+  if (src != idx) for (sp_int x = 0; x < n; x++) idx[x] = src[x];
+  free(tmp);
+}
 /* Complex / a divisor whose kind is only known at run time. A REAL divisor
    divides each component, which is what the typed arms do and what MRI does:
    a Float 0.0 gives Infinity where the conjugate formula gives NaN, and an
@@ -7886,6 +7924,21 @@ static sp_PolyArray *sp_PolyArray_sort_by_first(sp_PolyArray *a) {
   SP_GC_ROOT(a);
   sp_PolyArray *b = sp_PolyArray_dup(a); SP_GC_ROOT(b);
   if (b && b->len > 1) _sp_poly_msort(b, _sp_poly_first_cmp);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  for (sp_int i = 0; b && i < b->len; i++) sp_PolyArray_push(r, sp_poly_arr_get(b->data[i], 1));
+  return r;
+}
+/* sp_PolyArray_sort_by_first ordered by sp_sort_key_cmp: Hash#sort_by's
+   keys that do not compare raise, as Array#sort_by's do */
+static int _sp_poly_first_cmp_ck(const void *pa, const void *pb) {
+  sp_int r = sp_sort_key_cmp(sp_poly_arr_get(*(const sp_RbVal *)pa, 0),
+                             sp_poly_arr_get(*(const sp_RbVal *)pb, 0));
+  return r < 0 ? -1 : (r > 0 ? 1 : 0);
+}
+static sp_PolyArray *sp_PolyArray_sort_by_first_ck(sp_PolyArray *a) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *b = sp_PolyArray_dup(a); SP_GC_ROOT(b);
+  if (b && b->len > 1) _sp_poly_msort(b, _sp_poly_first_cmp_ck);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   for (sp_int i = 0; b && i < b->len; i++) sp_PolyArray_push(r, sp_poly_arr_get(b->data[i], 1));
   return r;

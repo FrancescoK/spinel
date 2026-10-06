@@ -1,0 +1,69 @@
+poly sort: ArgumentError: comparison of Integer with String failed
+poly sort!: ArgumentError: comparison of Integer with String failed
+int nil: ArgumentError: comparison of Integer with 1 failed
+int sort! nil: ArgumentError: comparison of Integer with 1 failed
+str nil: ArgumentError: comparison of String with String failed
+flt nil: ArgumentError: comparison of Float with 0.5 failed
+nil arm: ArgumentError: comparison of Integer with 1 failed
+nan: ArgumentError: comparison of Float with 1.0 failed
+user: ArgumentError: comparison of V with 3 failed
+hash: ArgumentError: comparison of Array with Array failed
+enum: ArgumentError: comparison of Integer with 2 failed
+one: [1]
+sort_by nil: ArgumentError: comparison of Integer with nil failed
+sort_by! nil: ArgumentError: comparison of NilClass with 2 failed
+sort_by str: ArgumentError: comparison of Integer with String failed
+sort_by flt: ArgumentError: comparison of Float with nil failed
+sort_by strs: ArgumentError: comparison of String with nil failed
+sort_by poly: ArgumentError: comparison of Integer with nil failed
+sort_by bool: ArgumentError: comparison of FalseClass with true failed
+sort_by user: ArgumentError: comparison of V with 3 failed
+sort_by hash: ArgumentError: comparison of Integer with nil failed
+sort_by range: ArgumentError: comparison of Integer with nil failed
+sort_by enum: ArgumentError: comparison of Integer with nil failed
+sort_by all nil: [1, 2]
+sort_by same bool: [2, 1]
+sort_by mixed num: [1, 2]
+sort_by users: [V1, V2]
+sort_by arrays: [[1, 9], [2, 1]]
+sort_by keys: [3, 2, 1]
+min nil: ArgumentError: comparison of Integer with 3 failed
+max nil: ArgumentError: comparison of Integer with 3 failed
+poly min: ArgumentError: comparison of String with 3 failed
+poly max: ArgumentError: comparison of String with 3 failed
+min nil arm: ArgumentError: comparison of Integer with 2 failed
+max strs: ArgumentError: comparison of String with String failed
+max nan: ArgumentError: comparison of Float with 1.0 failed
+max(2) nil: ArgumentError: comparison of Integer with 1 failed
+enum min: ArgumentError: comparison of Integer with 1 failed
+minmax nil: ArgumentError: comparison of Integer with 1 failed
+minmax [1, 2, 3] 0: ArgumentError: comparison of Integer with 2 failed
+minmax_by [1, 2, 3] 0: ArgumentError: comparison of NilClass with 2 failed
+minmax [1, 2, 3] 1: ArgumentError: comparison of Integer with 2 failed
+minmax_by [1, 2, 3] 1: ArgumentError: comparison of Integer with nil failed
+minmax [1, 2, 3] 2: ArgumentError: comparison of Integer with 1 failed
+minmax_by [1, 2, 3] 2: ArgumentError: comparison of NilClass with 1 failed
+minmax [1, 2, 3, 4] 0: ArgumentError: comparison of Integer with 2 failed
+minmax_by [1, 2, 3, 4] 0: ArgumentError: comparison of NilClass with 2 failed
+minmax [1, 2, 3, 4] 1: ArgumentError: comparison of Integer with 2 failed
+minmax_by [1, 2, 3, 4] 1: ArgumentError: comparison of Integer with nil failed
+minmax [1, 2, 3, 4] 2: ArgumentError: comparison of Integer with 4 failed
+minmax_by [1, 2, 3, 4] 2: ArgumentError: comparison of NilClass with 4 failed
+minmax [1, 2, 3, 4] 3: ArgumentError: comparison of Integer with 4 failed
+minmax_by [1, 2, 3, 4] 3: ArgumentError: comparison of Integer with nil failed
+minmax [3, 1, 2, 5, 4] 0: ArgumentError: comparison of Integer with 1 failed
+minmax_by [3, 1, 2, 5, 4] 0: ArgumentError: comparison of NilClass with 1 failed
+minmax [3, 1, 2, 5, 4] 1: ArgumentError: comparison of Integer with 1 failed
+minmax_by [3, 1, 2, 5, 4] 1: ArgumentError: comparison of Integer with nil failed
+minmax [3, 1, 2, 5, 4] 2: ArgumentError: comparison of Integer with 5 failed
+minmax_by [3, 1, 2, 5, 4] 2: ArgumentError: comparison of NilClass with 5 failed
+minmax [3, 1, 2, 5, 4] 3: ArgumentError: comparison of Integer with 5 failed
+minmax_by [3, 1, 2, 5, 4] 3: ArgumentError: comparison of Integer with nil failed
+minmax [3, 1, 2, 5, 4] 4: ArgumentError: comparison of Integer with 1 failed
+minmax_by [3, 1, 2, 5, 4] 4: ArgumentError: comparison of NilClass with 1 failed
+minmax_by str: ArgumentError: comparison of String with 1 failed
+enum minmax: ArgumentError: comparison of Integer with 2 failed
+enum minmax_by: ArgumentError: comparison of Integer with nil failed
+[[1, 1], [2, 0]]
+[[0, 4], [2, 0]]
+[[:b, 1], [:a, 2]]
