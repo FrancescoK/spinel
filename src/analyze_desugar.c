@@ -2451,10 +2451,15 @@ int desugar_hash_iter_with_index(Compiler *c) {
 
 /* reduce(&pr) -> reduce { |a, b| pr.call(a, b) }, and so for the comparators
    sort, sort!, min, max and minmax, whose emitters read a block's body too
-   and ran a Proc block argument as if no block were given. transform_values
-   and transform_keys take one parameter (`{ |v| pr.call(v) }`); their emitter
-   read a Proc, lambda or Method block argument as an empty block, and every
-   value became nil. */
+   and ran a Proc block argument as if no block were given. An Array's and a
+   Hash's fetch, delete and fetch_values take their fallback block the same
+   way, with the one value they hand it: `h.fetch(k, &pr)` -> `h.fetch(k) {
+   |x| pr.call(x) }`, and a Hash's merge! and update their conflict block,
+   with the key and the two values. Their arms splice a block literal's
+   body, and a Proc argument answered nil for a missing key or a conflict,
+   or did not build. transform_values and transform_keys take one parameter
+   (`{ |v| pr.call(v) }`); their emitter read a Proc, lambda or Method block
+   argument as an empty block, and every value became nil. */
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2462,14 +2467,19 @@ int desugar_reduce_proc_arg(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && !sp_streq(nm, "sort") &&
-                !sp_streq(nm, "sort!") && !sp_streq(nm, "min") && !sp_streq(nm, "max") &&
-                !sp_streq(nm, "minmax") && !sp_streq(nm, "transform_values") &&
-                !sp_streq(nm, "transform_keys"))) continue;
-    int arity = sp_streq(nm, "transform_values") || sp_streq(nm, "transform_keys") ? 1 : 2;
+    int fallback = nm && is_fallback_block_call(nm);
+    int conflict = nm && is_hash_merge_bang(nm);
+    int xform = nm && is_hash_transform(nm);
+    if (!nm || (!fallback && !conflict && !xform && !is_reduce_alias(nm) && !is_sort_family(nm) &&
+                !is_extrema_family(nm))) continue;
+    int arity = fallback ? 1 : conflict ? 3 : xform ? 1 : 2;
     if (nt_ref(nt, id, "receiver") < 0) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    if (fallback || conflict) {
+      TyKind frt = infer_type(c, nt_ref(nt, id, "receiver"));
+      if (!ty_is_hash(frt) && (conflict || !ty_is_array(frt))) continue;
+    }
     /* This rewrite serves the C fold emitters, which read the block's body.
        A receiver whose inject/reduce is the PROGRAM's own method -- a user
        class that defines the name -- keeps its `&b`: the block would otherwise be
@@ -2480,13 +2490,14 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
-    int simple = exty && (sp_streq(exty, "LocalVariableReadNode") ||
-                          sp_streq(exty, "InstanceVariableReadNode") ||
-                          sp_streq(exty, "LambdaNode"));
+    /* an inline `&proc { }` is rebuilt per call, as a lambda literal is */
+    NodeKind exk = nt_kind(nt, ex);
+    int simple = exk == NK_LocalVariableReadNode || exk == NK_InstanceVariableReadNode ||
+                 exk == NK_LambdaNode || is_proc_create(c, ex);
     /* `&method(:m)` / `&Mod.method(:m)` written in place: building the
        Method has no effect, so calling it per element answers as the one
        CRuby builds once */
-    if (!simple && arity == 1 && nt_kind(nt, ex) == NK_CallNode && exty &&
+    if (!simple && xform && nt_kind(nt, ex) == NK_CallNode && exty &&
         sp_streq(nt_str(nt, ex, "name") ? nt_str(nt, ex, "name") : "", "method")) {
       int ea = nt_ref(nt, ex, "arguments"), en = 0;
       const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &en) : NULL;
@@ -2495,7 +2506,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
     TyKind ext = simple ? infer_type(c, ex) : TY_UNKNOWN;
     /* a Method (`&method(:m)`, held in a local) calls the same way, for the
        one-parameter transforms */
-    if (!(ext == TY_PROC || (arity == 1 && ext == TY_METHOD))) continue;
+    if (!(ext == TY_PROC || (xform && ext == TY_METHOD))) continue;
     /* the method's own `&b` handed on is nil when its caller gave no block,
        and a comparator then compares by <=>: the forward keeps it */
     if (!sp_streq(nm, "reduce") && !sp_streq(nm, "inject") && nt_kind(nt, ex) == NK_LocalVariableReadNode) {
@@ -2505,7 +2516,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
     }
 
     int base = nt->count;
-    char pn[2][64]; int reqs[2], reads[2];
+    char pn[3][64]; int reqs[3], reads[3];
     int ok = 1;
     for (int k = 0; k < arity && ok; k++) {
       snprintf(pn[k], sizeof pn[k], "__fold_%s_%d", comp_node_tag(c, id), k);
