@@ -1831,7 +1831,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
           sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
          sp_feature_enabled("time")))
       { *out = TY_STRING; return 1; }
-    if (sp_streq(name, "asctime")) { *out = TY_STRING; return 1; }
+    if (sp_streq(name, "asctime") || sp_streq(name, "ctime")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "subsec")) { *out = TY_POLY; return 1; }
   }
   /* iso8601(n) / xmlschema(n) on a boxed Time: the fraction-digits form the
