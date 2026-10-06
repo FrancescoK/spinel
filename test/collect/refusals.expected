@@ -1090,6 +1090,24 @@ spinel: 1 refusal, nothing written
 == test/reject/typed_array_kept_by_struct_into_mutated_param.rb [promote] rc=1
 spinel: test/reject/typed_array_kept_by_struct_into_mutated_param.rb:10: an Array[Integer] is passed to `add`'s parameter `out`, which the method mutates: the parameter is a general Array and the argument would be copied into it, so the mutation would not reach the caller's array. Give the parameter the argument's kind (an rbs seed, or callers that all pass Array[Integer]), or build the argument as a general Array.
 spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass.rb [default] rc=1
+spinel: test/reject/yield_method_only_in_subclass.rb:10: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass.rb [promote] rc=1
+spinel: test/reject/yield_method_only_in_subclass.rb:10: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass_statement.rb [default] rc=1
+spinel: test/reject/yield_method_only_in_subclass_statement.rb:5: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass_statement.rb [promote] rc=1
+spinel: test/reject/yield_method_only_in_subclass_statement.rb:5: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass_when.rb [default] rc=1
+spinel: test/reject/yield_method_only_in_subclass_when.rb:6: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
+== test/reject/yield_method_only_in_subclass_when.rb [promote] rc=1
+spinel: test/reject/yield_method_only_in_subclass_when.rb:6: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
+spinel: 1 refusal, nothing written
 == test/reject/yield_splat_elem_append.rb [default] rc=1
 spinel: test/reject/yield_splat_elem_append.rb:4: a String is passed through a splat into a yield to a block parameter the block appends to, from a value that is not a String variable: the block would append to a copy. Return the String from the block and assign it, or append to it in the caller
 spinel: 1 refusal, nothing written
