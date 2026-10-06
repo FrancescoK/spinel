@@ -14020,6 +14020,9 @@ static int scope_calls_itself(Compiler *c, int mi) {
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *nm = nt_str(c->nt, id, "name");
     if (!nm || !sp_streq(nm, m->name)) continue;
+    /* a `super` into Array, spelled as self's call to Array's method
+       (rewrite_array_subclass_super), is no call of the method itself */
+    if (nt_int(c->nt, id, "builtin_only", 0)) continue;
     int recv = nt_ref(c->nt, id, "receiver");
     const char *rty = recv >= 0 ? nt_type(c->nt, recv) : NULL;
     if (recv < 0 || (rty && sp_streq(rty, "SelfNode"))) return 1;
@@ -29735,6 +29738,28 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
   return arysub_args(c, at, ids, n);
 }
 
+/* Node `n` (reset in place) as the call a `super` at `at` makes into Array:
+   Array's method `mname` on self, marked builtin_only so the class's own
+   override does not take it, or in initialize `self.clear` for no arguments
+   and no block, else `self.replace(Array.new(args) { blk })`. */
+static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
+  int an = 0;
+  if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
+  int self = arysub_node(c, "SelfNode", at);
+  if (self < 0) return;
+  char *mn = strdup(mname);
+  if (!init) {
+    arysub_set_call(c, n, self, mn, args, blk);
+    nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
+  }
+  else if (an == 0 && blk < 0) arysub_set_call(c, n, self, "clear", -1, -1);
+  else {
+    int an_call = arysub_array_new(c, at, an ? args : -1, blk);
+    if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
+  }
+  free(mn);
+}
+
 /* `super` in an Array subclass's method that reaches Array. In initialize it
    is Array#initialize, which makes the receiver what Array.new would build
    from the same arguments: `self.replace(Array.new(args) { blk })`, and
@@ -29768,21 +29793,52 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
       return;
     }
   }
-  int an = 0;
-  if (args >= 0) nt_arr(nt, args, "arguments", &an);
-  int self = arysub_node(c, "SelfNode", id);
-  if (self < 0) return;
-  char *mn = strdup(mname);
-  if (!init) {
-    arysub_set_call(c, id, self, mn, args, blk);
-    nt_node_set_int((NodeTable *)nt, id, "builtin_only", 1);
+  /* `super(&nil)` passes no block */
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_ref(nt, blk, "expression") >= 0 &&
+      nt_kind(nt, nt_ref(nt, blk, "expression")) == NK_NilNode) {
+    arysub_super_into(c, id, id, mname, init, args, -1);
+    return;
   }
-  else if (an == 0 && blk < 0) arysub_set_call(c, id, self, "clear", -1, -1);
-  else {
-    int an_call = arysub_array_new(c, id, an ? args : -1, blk);
-    if (an_call >= 0) arysub_set_call(c, id, self, "replace", arysub_args(c, id, &an_call, 1), -1);
+  if (blk >= 0) { arysub_super_into(c, id, id, mname, init, args, blk); return; }
+  /* A super with no block of its own passes the method's: `&blk` names it,
+     and an anonymous `&` (or none, in a method that yields) is the block
+     the method was given (resolve_forwarded_block). Forwarded, an
+     absent block reached Array's method as a block argument, which it does
+     not take for none: the call with no block is the other arm of
+     `block_given?`. A method that names no block takes a synthetic `&blk`
+     to hold it, as a bare super into a parent's `&blk` does
+     (an_phase_class_structure). */
+  if (!s->blk_param && !scope_has_yield_node(c, s)) {
+    s->blk_param = strdup("__sblk__");
+    LocalVar *sblk = scope_local_intern(s, s->blk_param);
+    if (sblk) { sblk->type = TY_PROC; sblk->is_param = 1; }
   }
-  free(mn);
+  NodeTable *wnt = (NodeTable *)nt;
+  int fwd = arysub_node(c, "BlockArgumentNode", id);
+  if (fwd < 0) return;
+  if (s->blk_param && s->blk_param[0]) {
+    int rd = arysub_node(c, "LocalVariableReadNode", id);
+    if (rd < 0) return;
+    nt_node_set_str(wnt, rd, "name", s->blk_param);
+    nt_node_set_ref(wnt, fwd, "expression", rd);
+  }
+  int with = arysub_node(c, "CallNode", id), without = arysub_node(c, "CallNode", id);
+  int bg = arysub_node(c, "CallNode", id), els = arysub_node(c, "ElseNode", id);
+  int sw = arysub_node(c, "StatementsNode", id), so = arysub_node(c, "StatementsNode", id);
+  if (with < 0 || without < 0 || bg < 0 || els < 0 || sw < 0 || so < 0) return;
+  arysub_super_into(c, id, with, mname, init, args, fwd);
+  arysub_super_into(c, id, without, mname, init, args, -1);
+  arysub_set_call(c, bg, -1, "block_given?", -1, -1);
+  nt_node_set_arr(wnt, sw, "body", &with, 1);
+  nt_node_set_arr(wnt, so, "body", &without, 1);
+  nt_node_set_ref(wnt, els, "statements", so);
+  long long ln = nt_int(wnt, id, "node_line", 0), fl = nt_int(wnt, id, "node_file", 0);
+  nt_node_reset(wnt, id, "IfNode");
+  if (ln) nt_node_set_int(wnt, id, "node_line", ln);
+  if (fl) nt_node_set_int(wnt, id, "node_file", fl);
+  nt_node_set_ref(wnt, id, "predicate", bg);
+  nt_node_set_ref(wnt, id, "statements", sw);
+  nt_node_set_ref(wnt, id, "subsequent", els);
 }
 
 /* A receiverless call in an Array subclass's instance method of a name its
