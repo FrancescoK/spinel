@@ -362,7 +362,7 @@ static int coerce_const_raise(const char *txt, const char *zero, Buf *b) {
    literal block (the proc ABI) or the tail's own type does not describe the
    emitted value (a control-flow tail can diverge or carry a `next`). */
 TyKind yield_site_type(Compiler *c, int node) {
-  TyKind u = comp_ntype(c, node);
+  TyKind u = repr_of(c, node).as_ty;
   const NodeTable *nt = c->nt;
   if (node < 0 || nt_kind(nt, node) != NK_YieldNode || g_block_id < 0) return u;
   int body = nt_ref(nt, g_block_id, "body");
@@ -376,7 +376,7 @@ TyKind yield_site_type(Compiler *c, int node) {
       return u;
     default: break;
   }
-  TyKind t = comp_ntype(c, st[n - 1]);
+  TyKind t = repr_of(c, st[n - 1]).as_ty;
   return (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) ? u : t;
 }
 
@@ -786,8 +786,9 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
    absent bound `none` (INTPTR_MIN for a beginning, INTPTR_MAX for an end), as
    the written `nil..5` / `1..nil` are. Anything else is read as before. */
 void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
-  TyKind t = comp_ntype(c, node);
-  if (t == TY_POLY) {
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (tr.kind == RK_BOXED) {
     buf_puts(b, "sp_poly_range_bound("); emit_expr(c, node, b); buf_printf(b, ", (sp_int)(%s))", none);
     return;
   }
@@ -1088,8 +1089,9 @@ int str_cmp_conv_shape(Compiler *c, int node) {
    in a call ARGUMENT -- which every one of these operands is -- is
    disqualified from that layout (detect_value_types). */
 void emit_str_cmp_conv(Compiler *c, int node, int tmp, Buf *b) {
-  TyKind t = comp_ntype(c, node);
-  if (t == TY_POLY) { buf_printf(b, "sp_poly_check_str(_t%d)", tmp); return; }
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (tr.kind == RK_BOXED) { buf_printf(b, "sp_poly_check_str(_t%d)", tmp); return; }
   if (!str_cmp_conv_shape(c, node)) { buf_puts(b, "NULL"); return; }
   int def = -1;
   int poly = obj_conv_method_typed(c, t, "to_str", TY_STRING, &def) < 0;
@@ -2538,7 +2540,7 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
 /* The type the method's own yield nodes were compiled against. */
 static TyKind pf_yield_ty(Compiler *c, int id, int *found) {
   if (id < 0) return TY_UNKNOWN;
-  if (nt_kind(c->nt, id) == NK_YieldNode) { *found = 1; return comp_ntype(c, id); }
+  if (nt_kind(c->nt, id) == NK_YieldNode) { *found = 1; return repr_of(c, id).as_ty; }
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     TyKind t = pf_yield_ty(c, nt_ref_at(c->nt, id, i), found);
@@ -6298,7 +6300,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
     if (bn > 0) {
       int last = bb[bn - 1];
-      TyKind lty = comp_ntype(c, last);
+      Repr lr = repr_of(c, last);
+      TyKind lty = lr.as_ty;
       if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
         /* A generator ending in a bare `y << v` yields v, then terminates with
            the yielder as its result, which `<<` answers. */
@@ -6321,7 +6324,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
         g_pre = sv2; g_indent = sv2i;
         if (pre2.p) buf_puts(pb, pre2.p);
         buf_printf(pb, "    _fb->yielded_value = ");
-        if (lty == TY_POLY) {
+        if (lr.kind == RK_BOXED) {
           buf_puts(pb, vb.p ? vb.p : "sp_box_nil()");
         }
         else {
@@ -6523,7 +6526,7 @@ static TyKind lambda_nonlocal_return_ty(Compiler *c, int id) {
   if (sp_streq(ty, "ReturnNode")) {
     int a = nt_ref(c->nt, id, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &an) : NULL;
-    return (an == 1) ? comp_ntype(c, av[0]) : TY_NIL;
+    return (an == 1) ? repr_of(c, av[0]).as_ty : TY_NIL;
   }
   if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
@@ -7086,7 +7089,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
         int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
         if (ran == 1) tail_ret_arg = rav[0];
       }
-      ret = comp_ntype(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]);
+      ret = repr_of(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]).as_ty;
     }
   }
   /* A non-lambda proc whose body does `return` returns non-locally to the method
@@ -10688,7 +10691,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (explicit_block_arg) g_current_scope_is_lowered = 0;
   if (fwd_yield_proc || explicit_block_arg) {
     g_yield_proc_ref = fwd_yield_proc;
-    g_yield_slot_ty = as_expr ? comp_ntype(c, id) : TY_UNKNOWN;
+    g_yield_slot_ty = as_expr ? repr_of(c, id).as_ty : TY_UNKNOWN;
   }
 
   if (as_expr) buf_puts(b, "({\n");
@@ -10749,7 +10752,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int sv_prexc = g_method_pr_exc_depth, sv_prens = g_method_pr_ensure_depth;
   char inl_lbl[32]; snprintf(inl_lbl, sizeof inl_lbl, "_sret%d", tag);
   if (as_expr) {
-    TyKind rt = comp_ntype(c, id);
+    TyKind rt = repr_of(c, id).as_ty;
     /* A nil or non-returning block has no C value type. As for an ordinary
        yielding call, its result still needs a slot while the body runs. */
     if (rt == TY_NIL || rt == TY_VOID || rt == TY_UNKNOWN) rt = TY_POLY;
@@ -11067,7 +11070,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       const char *scn2 = class_ruby_name(c, s->class_id);
       if (!scn2) scn2 = c->classes[s->class_id].name;
       buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for %s\"), %s)",
-                 uname, scn2, raise_tail_value_c(c, comp_ntype(c, id)));
+                 uname, scn2, raise_tail_value_c(c, repr_of(c, id).as_ty));
       return;
     }
     if (g_plan_check) ucall_observe(c, id, cmi, cdef, 0);
@@ -11210,7 +11213,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!is_fwd && struct_super_spreads(c, args_id)) {
         Buf sb; memset(&sb, 0, sizeof sb);
         emit_struct_super_spread(c, cls, sargv, an, &sb);
-        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, comp_ntype(c, id)));
+        buf_printf(b, "((void)%s, %s)", sb.p, default_value_from_compiler(c, repr_of(c, id).as_ty));
         free(sb.p);
         return;
       }
@@ -11273,10 +11276,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
               buf_printf(b, "%s)", default_value_from_compiler(c, ivt));
           }
           else {
-            TyKind at = comp_ntype(c, vnode);
+            int at_boxed = repr_of(c, vnode).kind == RK_BOXED;
             if (ivt == TY_STRBUF && struct_super_handle_arg(c, vnode, b)) {}
-            else if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, vnode, b);
-            else if (ivt != TY_POLY && at == TY_POLY) {
+            else if (ivt == TY_POLY && !at_boxed) emit_boxed(c, vnode, b);
+            else if (ivt != TY_POLY && at_boxed) {
               Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, vnode, &ex);
               emit_unbox_nilable_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
             }
@@ -11284,10 +11287,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
           }
         }
         else {
-          TyKind at = comp_ntype(c, sargv[a]);
+          int at_boxed = repr_of(c, sargv[a]).kind == RK_BOXED;
           if (ivt == TY_STRBUF && struct_super_handle_arg(c, sargv[a], b)) {}
-          else if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
-          else if (ivt != TY_POLY && at == TY_POLY) {
+          else if (ivt == TY_POLY && !at_boxed) emit_boxed(c, sargv[a], b);
+          else if (ivt != TY_POLY && at_boxed) {
             /* poly arg (e.g. an initialize param that stayed poly) into a scalar
                member slot: unbox to the member's C type. */
             Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, sargv[a], &ex);
@@ -11297,7 +11300,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         }
         buf_puts(b, ", ");
       }
-      buf_printf(b, "%s)", default_value_from_compiler(c, comp_ntype(c, id)));
+      buf_printf(b, "%s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
       return;
     }
     /* `super()` from an initialize no ancestor defines reaches Object's, which
@@ -11310,7 +11313,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int sup_argc = 0;
       if (sup_args >= 0) nt_arr(c->nt, sup_args, "arguments", &sup_argc);
       if ((fwd_super && (s->nparams == 0 || emit_zsuper_gather(c, s, NULL) >= 0)) || (!fwd_super && sup_argc == 0)) {
-        buf_puts(b, default_value_from_compiler(c, comp_ntype(c, id)));
+        buf_puts(b, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return;
       }
     }
@@ -11341,7 +11344,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int pk = emit_exc_reopen_pick_head(c, xr, xn, from, b);
         /* none above it: #message / #to_s are Exception's own, the stored
            message; any other name has no superclass method */
-        if ((is_exception_message(uname)) && comp_ntype(c, id) == TY_STRING)
+        if ((is_exception_message(uname)) && repr_of(c, id).as_ty == TY_STRING)
           buf_printf(b, "_xi%d < 0 ? sp_exc_message((struct sp_Exception_s *)%s) : ", pk, g_self);
         else
           buf_printf(b, "if (_xi%d < 0) sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"); ",
@@ -11361,10 +11364,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
     }
     if ((class_is_exc_subclass(c, s->class_id) || class_is_exc_reopen(c, s->class_id)) && !s->is_cmethod &&
         (is_exception_message(uname))) {
-      TyKind rt = comp_ntype(c, id);
+      int rt_boxed = repr_of(c, id).kind == RK_BOXED;
       Buf mb; memset(&mb, 0, sizeof mb);
       buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
-      if (rt == TY_POLY) { buf_puts(b, "sp_box_str("); buf_puts(b, mb.p); buf_puts(b, ")"); }
+      if (rt_boxed) { buf_puts(b, "sp_box_str("); buf_puts(b, mb.p); buf_puts(b, ")"); }
       else buf_puts(b, mb.p);
       free(mb.p);
       return;
@@ -11398,7 +11401,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
           buf_printf(&rb, "(sp_bool)(sp_unbox_class(_t%d).cls_id == %s->cls_id); })", tk, g_self);
         else
           buf_printf(&rb, "(sp_bool)sp_class_le((sp_Class){%s->cls_id}, sp_unbox_class(_t%d)); })", g_self, tk);
-        if (comp_ntype(c, id) == TY_POLY) emit_boxed_text(c, TY_BOOL, rb.p, b);
+        if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, TY_BOOL, rb.p, b);
         else buf_puts(b, rb.p);
         free(kb.p); free(rb.p);
         return;
@@ -11415,7 +11418,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
        says what it answers -- has no concrete type, and default_value's "0"
        did not fit the sp_RbVal an interpolation reads (#4034). */
     buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"), %s)",
-               uname, scn, raise_tail_value_c(c, comp_ntype(c, id)));
+               uname, scn, raise_tail_value_c(c, repr_of(c, id).as_ty));
     return;
   }
   if (sp_streq(c->classes[defcls].name, "Object") || sp_streq(c->classes[defcls].name, "Array") ||
@@ -13469,7 +13472,7 @@ static void scan_prologue_features(Compiler *c) {
       if (!nty || !sp_streq(nty, "CallNode")) continue;
       const char *nm = nt_str(c->nt, id, "name");
       int rv = nt_ref(c->nt, id, "receiver");
-      if (nm && rv >= 0 && comp_ntype(c, rv) == TY_POLY &&
+      if (nm && rv >= 0 && repr_of(c, rv).kind == RK_BOXED &&
           (sp_streq(nm, "each") || sp_streq(nm, "each_pair") ||
            sp_streq(nm, "values") || sp_streq(nm, "values_at") ||
            sp_streq(nm, "entries") || sp_streq(nm, "size") || sp_streq(nm, "length"))) reached = 1;
@@ -13494,7 +13497,7 @@ static void scan_prologue_features(Compiler *c) {
     /* and #subclasses on a Class value no constant names */
     if (nrv >= 0 && comp_ntype(c, nrv) == TY_CLASS && nnm && sp_streq(nnm, "subclasses") &&
         nt_kind(c->nt, nrv) != NK_ConstantReadNode) { g_gen_cls_answers = 1; break; }
-    if (nrv < 0 || (comp_ntype(c, nrv) != TY_POLY && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
+    if (nrv < 0 || (repr_of(c, nrv).kind != RK_BOXED && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     if (nnm && (sp_streq(nnm, "subclasses") || sp_streq(nnm, "allocate") ||
                 sp_streq(nnm, "members") || sp_streq(nnm, "keyword_init?")))
       g_gen_cls_answers = 1;
@@ -15899,7 +15902,7 @@ char *codegen_program(const NodeTable *nt) {
   for (int id = 0, r, dc; id < c->nt->count && !g_has_user_init_copy; id++) {
     const char *dn = nt_kind(c->nt, id) == NK_CallNode ? nt_str(c->nt, id, "name") : NULL;
     if (dn && (is_copy_alias(dn)) &&
-        (r = nt_ref(c->nt, id, "receiver")) >= 0 && comp_ntype(c, r) == TY_POLY)
+        (r = nt_ref(c->nt, id, "receiver")) >= 0 && repr_of(c, r).kind == RK_BOXED)
       for (int k = 0; k < c->nclasses && !g_has_user_init_copy; k++)
         if (user_init_copy_scope(c, k, &dc) >= 0) g_has_user_init_copy = 1;
   }
