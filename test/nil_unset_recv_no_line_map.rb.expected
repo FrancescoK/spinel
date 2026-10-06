@@ -1,0 +1,8 @@
+array nil NoMethodError: undefined method 'size' for nil
+array 2
+string nil NoMethodError: undefined method 'upcase' for nil
+string "AB"
+hash nil NoMethodError: undefined method 'keys' for nil
+hash [:a]
+splat nil 0
+splat 2

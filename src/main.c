@@ -754,12 +754,16 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Source mapping: the parser stamps node positions and codegen emits #line
-     when SPINEL_DEBUG / SPINEL_LINE_MAP is set. --debug/-g use the fuller
-     debug path; otherwise line-map (on by default) just adds #line. The emit
-     modes that need positions force SPINEL_DEBUG below. */
+  /* Source mapping: codegen emits #line when SPINEL_DEBUG / SPINEL_LINE_MAP
+     is set. --debug/-g use the fuller debug path; otherwise line-map (on by
+     default) just adds #line. The parser stamps node positions in every
+     compile (SPINEL_POSITIONS): the analysis reads them, and a node a rewrite
+     made has none (cplan_nil's unset temp), so --no-line-map suppresses only
+     the #line directives and decides what the default compile decides. The
+     emit modes that need positions force SPINEL_DEBUG below. */
   if (debug) set_env("SPINEL_DEBUG", "1");
   else if (line_map) set_env("SPINEL_LINE_MAP", "1");
+  set_env("SPINEL_POSITIONS", "1");
   /* --warn-widen places each warning at its slot, which needs the parser's
      positions: forced past --no-line-map, as --emit-types forces them. */
   if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
