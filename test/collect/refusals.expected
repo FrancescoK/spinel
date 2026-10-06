@@ -18,6 +18,12 @@ spinel: 1 refusal, nothing written
 == test/reject/array_push_other_class_temporary.rb [promote] rc=1
 spinel: test/reject/array_push_other_class_temporary.rb:5: an Array push given a String, which no conversion keeps in its sp_int slot
 spinel: 1 refusal, nothing written
+== test/reject/attr_assign_value_shared_string.rb [default] rc=1
+spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
+spinel: 1 refusal, nothing written
+== test/reject/attr_assign_value_shared_string.rb [promote] rc=1
+spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
+spinel: 1 refusal, nothing written
 == test/reject/bare_const_compact_class_path.rb [default] rc=1
 spinel: test/reject/bare_const_compact_class_path.rb:7: uninitialized constant A::B::LIMIT (NameError): the program defines it only as A::LIMIT, which CRuby's lookup from A::B (its lexical scope, then its ancestors) does not reach
 == test/reject/bare_const_compact_class_path.rb [promote] rc=1
@@ -985,6 +991,12 @@ spinel: test/reject/string_yield_splat_captured.rb:9: a String is passed to a bl
 spinel: 1 refusal, nothing written
 == test/reject/string_yield_splat_captured.rb [promote] rc=1
 spinel: test/reject/string_yield_splat_captured.rb:9: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
+spinel: 1 refusal, nothing written
+== test/reject/struct_member_block_param_store.rb [default] rc=1
+spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
+spinel: 1 refusal, nothing written
+== test/reject/struct_member_block_param_store.rb [promote] rc=1
+spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
 spinel: 1 refusal, nothing written
 == test/reject/subclass_array.rb [default] rc=1
 spinel: test/reject/subclass_array.rb:4: class Stack < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead

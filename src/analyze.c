@@ -23792,6 +23792,74 @@ static int fwd_splat_lit_reads(Compiler *c, int splat, int p, int *out, int *at,
   return n;
 }
 
+/* The member `a` of class `ci` a generated Struct or Data constructor call
+   `u` stores: its positional argument, or the keyword naming it. -1 when
+   the call hands it no value of its own (a splat, a `**`, a keyword_init:
+   false Struct's keywords, which are one Hash). */
+static int struct_new_member_arg(Compiler *c, int u, int ci, int a) {
+  const NodeTable *nt = c->nt;
+  const ClassInfo *k = &c->classes[ci];
+  int al = nt_ref(nt, u, "arguments"), argc = 0;
+  const int *argv = al >= 0 ? nt_arr(nt, al, "arguments", &argc) : NULL;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_SplatNode) return -1;
+  if (argc == 1 && nt_kind(nt, argv[0]) == NK_KeywordHashNode) {
+    if (k->kw_init == -1) return -1;
+    int n = 0; const int *el = nt_arr(nt, argv[0], "elements", &n);
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, el[i]) != NK_AssocNode) return -1;
+      int key = nt_ref(nt, el[i], "key");
+      const char *kn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+      if (kn && sp_streq(kn, k->ivars[a] + 1)) return nt_ref(nt, el[i], "value");
+    }
+    return -1;
+  }
+  return a < argc && nt_kind(nt, argv[a]) != NK_KeywordHashNode ? argv[a] : -1;
+}
+/* The values stored into a String ivar that is the shared handle without
+   an `@iv = v` of the program's own: a generated Struct or Data
+   constructor's member arguments (`S.new(s)`), and an attribute writer's
+   (`o.name = s`). Each String variable handed over takes the handle
+   (dyn_pull_arg), as a handle parameter's callers do; left a plain String,
+   the slot held a copy, and the constructor's sp_String * parameter did not
+   build. Answers 1 when it changed anything. */
+static int promote_ivar_handle_stores(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *nm = nt_str(nt, u, "name");
+    int recv = nt_ref(nt, u, "receiver");
+    if (!nm || recv < 0 || nt_ref(nt, u, "block") >= 0) continue;
+    TyKind rt = infer_type(c, recv);
+    size_t nl = strlen(nm);
+    if (ty_is_object(rt) && nl > 1 && nm[nl - 1] == '=' && nm[0] != '=' && nm[0] != '!' && nm[0] != '[') {
+      int al = nt_ref(nt, u, "arguments"), argc = 0;
+      const int *argv = al >= 0 ? nt_arr(nt, al, "arguments", &argc) : NULL;
+      char base[256], ivn[258];
+      if (argc != 1 || nl >= sizeof base) continue;
+      memcpy(base, nm, nl - 1); base[nl - 1] = 0;
+      int defc = -1;
+      if (!comp_writer_in_chain(c, ty_object_class(rt), base, &defc) || defc < 0) continue;
+      snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, defc, base));
+      int iv = comp_ivar_index(&c->classes[defc], ivn);
+      if (iv >= 0 && c->classes[defc].ivar_types[iv] == TY_STRBUF && c->classes[defc].ivar_str_shared[iv])
+        changed |= dyn_pull_arg(c, argv[0], 1);
+      continue;
+    }
+    if (!is_struct_constructor(nm)) continue;
+    if (rt != TY_CLASS) continue;
+    TyKind ut = infer_type(c, u);
+    int ci = ty_is_object(ut) ? ty_object_class(ut) : -1;
+    if (ci < 0 || !(c->classes[ci].is_struct || c->classes[ci].is_data) ||
+        comp_method_in_chain(c, ci, "initialize", NULL) >= 0) continue;
+    for (int a = 0; a < c->classes[ci].nmembers; a++) {
+      if (c->classes[ci].ivar_types[a] != TY_STRBUF || !c->classes[ci].ivar_str_shared[a]) continue;
+      int v = struct_new_member_arg(c, u, ci, a);
+      if (v >= 0) changed |= dyn_pull_arg(c, v, 1);
+    }
+  }
+  return changed;
+}
 /* Pull the String variables a call gathers into a rest whose elements the
    method forwards to a parameter that appends. Answers 1 when it changed
    anything. */
@@ -33861,6 +33929,7 @@ static void an_phase_storage(Compiler *c) {
     if (promote_spread_string_args(c)) ch = 1;
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
+    if (promote_ivar_handle_stores(c)) ch = 1;
     if (!ch) break;
   }
   /* A read an is_a? or nil guard narrowed to String (`m(x) if

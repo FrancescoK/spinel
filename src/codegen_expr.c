@@ -1945,6 +1945,12 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
                   sref, sref, sref);
 }
 
+/* The same for a slot read at node `id` that is not a variable's (a Struct
+   member's `s[:a]`), as the node's own Repr asks. */
+void emit_strbuf_node_read(Compiler *c, int id, const char *sref, Buf *b) {
+  emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+}
+
 static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */

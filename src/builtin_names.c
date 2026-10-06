@@ -456,6 +456,11 @@ int is_hash_constructor(const char *n) {
   return sp_streq(n, "new") || sp_streq(n, "__hash_new_default");
 }
 
+/* A Struct or Data class's constructor calls: `S.new(...)` and `S[...]`. */
+int is_struct_constructor(const char *n) {
+  return sp_streq(n, "new") || sp_streq(n, "[]");
+}
+
 int is_exist_alias(const char *n) {
   return sp_streq(n, "exist?") || sp_streq(n, "exists?");
 }
