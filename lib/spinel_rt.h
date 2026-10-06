@@ -4452,8 +4452,17 @@ static sp_bool sp_poly_negative_p(sp_RbVal v) { if (v.tag == SP_TAG_INT) return 
    the typed arms answer them: a Complex its atan2(im, re) and its [re, im],
    a real number 0, or pi when negative, and [self, 0]. `m` is the name
    called, for the NoMethodError anything else raises. */
+/* Float#arg (angle, phase), as CRuby's float_arg answers it: a NaN is its
+   own angle, a set sign bit is pi (so -0.0 is pi, as -0.0 lies on the
+   negative axis), and every other Float is the Integer 0. A `< 0` test
+   answered 0 for both -0.0 and NaN. */
+static sp_RbVal sp_float_arg(sp_float x) {
+  if (isnan(x)) return sp_box_float(x);
+  return signbit(x) ? sp_box_float(3.141592653589793) : sp_box_int(0);
+}
 static sp_RbVal sp_poly_arg(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) { sp_Complex *c = (sp_Complex *)v.v.p; return sp_box_float(atan2(c->im, c->re)); }
+  if (v.tag == SP_TAG_FLT) return sp_float_arg(v.v.f);
   if (sp_poly_numeric_p(v) || sp_poly_is_rat_kind(v)) return sp_poly_negative_p(v) ? sp_box_float(3.141592653589793) : sp_box_int(0);
   sp_raise_poly_nomethod(m, v);
 }
