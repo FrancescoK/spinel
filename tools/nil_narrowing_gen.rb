@@ -1,7 +1,8 @@
 # Generated nil-narrowing probes (see tools/nil_narrowing_probe.rb).
 #
 #   ruby tools/nil_narrowing_gen.rb [--strength T | --random N] [--seed S]
-#                                   [--only F=L,..] [--id ID]
+#                                   [--strength3 F,F,F..] [--only F=L,..]
+#                                   [--id ID]
 #
 # Nil narrowing (#6481) proves single reads of an Integer or Float local
 # non-nil, and the C it generates for such a read drops the nil test: a
@@ -17,12 +18,15 @@
 # receiver) were each one such pair, so the probe crosses them.
 #
 # A case is one row of FACTORS: the fact, the breaker placed between the fact
-# and the read, the read, the local that carries the value (a local, a
-# method's parameter, a block's), the slot's type, and for an index read the
-# array's slot, a call that may answer the array itself, a way to hold that
-# answer elsewhere, and a write through it that leaves a nil or a gap. A
-# level a case has no place for (an alias for a guard, ivar_set for a local
-# array) realizes as the factor's first level.
+# and the read and the loop or block a redo or a helper local runs in, the
+# read, the local that carries the value (a local, a method's parameter, a
+# block's), the slot's type, and for an index read the array's slot, a call
+# that may answer the array itself and its block's parameters, a way to hold
+# that answer elsewhere, whether the call is made on the array or on what
+# is read back from there, and a write through it that leaves a nil or a
+# gap. A level a case has no place for (an alias for a guard, ivar_set for a
+# local array, a holder for a plain write) realizes as the factor's first
+# level. The rows are pairwise, and ALSO's factors 3-way on top of that.
 #
 # Every case is a method `t<id>(xv, z, k)` (`N<id>#run` for an ivar array),
 # run four times: the local's source `xv` present or nil, and the value `z`
@@ -57,14 +61,22 @@ module NilNarrowingGen
     # proc stored in a global that a method runs, a rescue that writes and retries, an
     # ensure, a redo, a loop (while, until, loop, each, times, begin..end
     # while), a case/when or case/in arm, a multiple assignment, `&&=`, `||=`
-    # through another local, and instance_variable_set of an ivar array.
+    # through another local, instance_variable_set of an ivar array, and a
+    # helper local the write goes through, written in the holder below: by
+    # `||=` and then an op-assign (a local whose only writes are not all
+    # `||=` started at 0, and a block's at nil, so the `||=` was lost), by
+    # `&&=`, or by a multiple assignment.
     # Not here: a method's local is out of reach of define_method from a
     # method body (docs/limitations.md: define_singleton_method,
     # singleton_class), of eval (refused) and of binding (no such method), so
     # each would only refuse its whole batch.
     [:breaker, %w[none direct proc lambda fiber yield_blk instance_exec send method_call stored rescue_retry
                   ensure redo while until loop each times post_while case_when case_in masgn and_asgn or_asgn
-                  ivar_set]],
+                  ivar_set helper_or_op helper_and helper_masgn]],
+    # The loop or block a redo, and a helper's writes, run in: a `while`
+    # (for a redo in the fact's own loop or block, that one), or a block of
+    # each, map, select or times. A redo in a map block ran as a `next`.
+    [:holder, %w[while each map select times]],
     # Where the nil the breaker writes comes from: z itself (an Integer
     # parameter that may be nil), or, when z is nil, a parameter whose
     # default nil is all it ever holds, or a local only nil is written to:
@@ -89,12 +101,25 @@ module NilNarrowingGen
                    prepend unshift insert lshift replace each_slice each_cons cycle product combination
                    permutation repeated_combination repeated_permutation zip_blk lazy to_enum each_enum map_enum
                    dup]],
+    # The parameters of alias_op's block: its own (one, or each_with_index's
+    # two), two where it yields one value (`|q, r|`, which takes an Array
+    # value apart), or a splat `|*qs|`. A block of two or a splat records
+    # what it was given, and each run prints that: a product block of two
+    # parameters filled only the first.
+    [:bparams, %w[one two splat]],
     # Where the answer is held before the write through it: nowhere (the
     # write goes to the array itself), a local, a method's answer, an ivar,
     # a Hash value, a Struct member, an attr_reader, instance_variable_get,
     # the value of a block a user `each` keeps, and the value of `super` in
     # a subclass's initialize (an ivar array only).
     [:alias_way, %w[direct assign method_ret ivar hash struct attr_reader ivar_get block_value super_init]],
+    # What alias_op is called on: the array, its answer then held as
+    # alias_way says, or the array read back from where alias_way held it
+    # (super_init's is always that). A Hash value and a user `each`'s kept
+    # block value are boxed, and some Array methods served only a typed
+    # receiver: repeated_permutation with a block raised NoMethodError and
+    # each_index with a block answered nil.
+    [:recv, %w[array held]],
     # The write through it, run when z is nil: past the end, insert past the
     # end, fill from past the end, a range past the end, a splice past the
     # end, concat and push of a nil.
@@ -111,9 +136,22 @@ module NilNarrowingGen
   # and z present, z nil, the source nil, both nil.
   ROLES = %w[keep break nil nil-break].freeze
   # Facts whose code already puts the breaker in a loop or a block body,
-  # where a redo lands; for the others a redo takes a `while true` of its
-  # own.
-  LOOPED = %w[while_x next_nil break_nil].freeze
+  # where a redo lands (a block parameter's carrier is an `each` block too):
+  # a redo whose holder is that loop's kind stays in it, and any other
+  # takes a holder of its own.
+  OWN = { "while_x" => "while", "next_nil" => "each", "break_nil" => "while" }.freeze
+  # The factors whose 3-way combinations a run adds by default
+  # (--strength3): an alias_op on a receiver held where it is boxed, of
+  # each element type (a Float array's methods are its own).
+  ALSO = %i[alias_op alias_way recv type].freeze
+  # The breakers that run in a holder.
+  HELD = %w[redo helper_or_op helper_and helper_masgn].freeze
+  # The alias_ops that take a block, by its own parameters.
+  BLOCK_PARAMS = %w[each reverse_each each_entry tap then map_bang collect_bang sort_by_bang select_bang filter_bang
+                    keep_if reject_bang delete_if each_slice each_cons combination permutation cycle
+                    repeated_combination repeated_permutation product zip_blk lazy to_enum each_enum map_enum]
+                 .to_h { |op| [op, %w[q]] }.merge("each_with_index" => %w[q j], "each_index" => %w[j],
+                                                   "fill_blk" => %w[j]).freeze
 
   # A case whose realized levels do not render back to it: a bug here, not in
   # the compiler under test.
@@ -189,7 +227,37 @@ module NilNarrowingGen
     when "and_asgn" then ["", "#{tgt} &&= #{val}#{guard}\n"]
     when "or_asgn" then ["", "og = nil\nog ||= #{val}\n#{tgt} = og#{guard}\n"]
     when "ivar_set" then ["", "instance_variable_set(:@a, @a + [nil]) if z.nil? && i == 0\n"]
+    # the helper's `||=` answers 3 and the op-assign 4 before the write
+    # takes it; a lost `||=` keeps the local, or raises
+    when "helper_or_op" then ["", "hb ||= 3\nhb += 1\n#{tgt} = hb == 4 ? #{val} : #{tgt}#{guard}\n"]
+    when "helper_and" then ["", "hb = #{tgt}\nhb &&= #{val}\n#{tgt} = hb#{guard}\n"]
+    when "helper_masgn" then ["", "hb, hm = #{val}, 0\n#{tgt} = hb#{guard}\n"]
     else raise GeneratorError, "no breaker #{b}"
+    end
+  end
+
+  # `code` in a holder of kind `h`, which runs it once.
+  def held_in(h, code)
+    case h
+    when "while" then "while true\n#{indent(code)}  break\nend\n"
+    when "each" then "[0].each do |_h|\n#{indent(code)}end\n"
+    when "map" then "[0].map do |_h|\n#{indent(code)}end\n"
+    when "select" then "[0].select do |_h|\n#{indent(code)}end\n"
+    when "times" then "1.times do\n#{indent(code)}end\n"
+    else raise GeneratorError, "no holder #{h}"
+    end
+  end
+
+  # The breaker's code `mid` and the read `r`, with the breaker's holder: a
+  # redo's around both, since it runs the read again, unless `own` (the
+  # loop or block the fact's code already puts them in) is of the holder's
+  # kind; a helper's around its writes.
+  def held_breaker(real, mid, r, own)
+    h = real[:holder]
+    case real[:breaker]
+    when "redo" then h == own ? mid + r : held_in(h, mid + r)
+    when "helper_or_op", "helper_and", "helper_masgn" then held_in(h, mid) + r
+    else mid + r
     end
   end
 
@@ -250,9 +318,7 @@ module NilNarrowingGen
     # would run again
     top = real[:breaker] == "redo" ? setup : ""
     setup = "" if real[:breaker] == "redo"
-    br = mid + r
-    looped = LOOPED.include?(f) || real[:carrier] == "block_param"
-    br = "while true\n#{indent(br)}  break\nend\n" if real[:breaker] == "redo" && !looped
+    br = held_breaker(real, mid, r, OWN[f] || (real[:carrier] == "block_param" ? "each" : nil))
     code = scalar_fact(f, br, setup, lit)
     code = "[0].each do |_q|\n#{indent(code)}end\n" if f == "next_nil" && real[:carrier] != "block_param"
     top = "nl = nil\n#{top}" if real[:nil_src] == "nil_local"
@@ -263,34 +329,53 @@ module NilNarrowingGen
           end
   end
 
-  # The call alias_op makes on `s`.
-  def alias_call(op, s, lit, int)
+  # The call alias_op makes on `s`, its block's parameters as `bp` says.
+  def alias_call(op, s, lit, int, bp = "one", n = 0)
+    ps = BLOCK_PARAMS[op]
+    b = ->(body) { block_of(ps, body, bp, n) }
     case op
     when "none" then s
-    when "each", "reverse_each", "each_entry", "tap", "then" then "#{s}.#{op} { |q| q }"
-    when "each_with_index" then "#{s}.each_with_index { |q, j| q }"
-    when "each_index" then "#{s}.each_index { |j| j }"
-    when "map_bang", "collect_bang", "sort_by_bang" then "#{s}.#{op.sub("_bang", "!")} { |q| q }"
-    when "select_bang", "filter_bang", "keep_if" then "#{s}.#{op.sub("_bang", "!")} { |q| q > 1 }"
-    when "reject_bang", "delete_if" then "#{s}.#{op.sub("_bang", "!")} { |q| q < 2 }"
+    # `then` answers its block's value; with two parameters |q, qr| takes the
+    # yielded Array apart, so the block answers the receiver (a plain read of
+    # the same Array) to keep the holder Array-valued
+    when "then" then "#{s}.then #{b.(bp == "two" ? s : "q")}"
+    when "each", "reverse_each", "each_entry", "tap" then "#{s}.#{op} #{b.("q")}"
+    when "each_with_index" then "#{s}.each_with_index #{b.("q")}"
+    when "each_index" then "#{s}.each_index #{b.("j")}"
+    when "map_bang", "collect_bang", "sort_by_bang" then "#{s}.#{op.sub("_bang", "!")} #{b.("q")}"
+    when "select_bang", "filter_bang", "keep_if" then "#{s}.#{op.sub("_bang", "!")} #{b.("q > 1")}"
+    when "reject_bang", "delete_if" then "#{s}.#{op.sub("_bang", "!")} #{b.("q < 2")}"
     when "sort_bang", "reverse_bang", "rotate_bang", "uniq_bang" then "#{s}.#{op.sub("_bang", "!")}"
     when "fill" then "#{s}.fill(#{lit})"
-    when "fill_blk" then "#{s}.fill { |j| j#{int ? "" : " + 0.5"} }"
+    when "fill_blk" then "#{s}.fill #{b.("j#{int ? "" : " + 0.5"}")}"
     when "itself", "freeze", "to_a", "to_ary", "deconstruct", "dup" then "#{s}.#{op}"
     when "concat" then "#{s}.concat([#{lit}])"
     when "push", "append", "prepend", "unshift" then "#{s}.#{op}(#{lit})"
     when "insert" then "#{s}.insert(1, #{lit})"
     when "lshift" then "(#{s} << #{lit})"
     when "replace" then "#{s}.replace([#{lit}, #{lit}])"
-    when "each_slice", "each_cons", "combination", "permutation" then "#{s}.#{op}(2) { |q| q }"
-    when "cycle", "repeated_combination", "repeated_permutation" then "#{s}.#{op}(1) { |q| q }"
-    when "product" then "#{s}.product([#{lit}]) { |q| q }"
-    when "zip_blk" then "#{s}.zip([#{lit}]) { |q| q }"
-    when "lazy" then "#{s}.lazy.each { |q| q }"
-    when "to_enum" then "#{s}.to_enum.each { |q| q }"
-    when "each_enum" then "#{s}.each.each { |q| q }"
-    when "map_enum" then "#{s}.map.each { |q| q }"
+    when "each_slice", "each_cons", "combination", "permutation" then "#{s}.#{op}(2) #{b.("q")}"
+    when "cycle", "repeated_combination", "repeated_permutation" then "#{s}.#{op}(1) #{b.("q")}"
+    when "product" then "#{s}.product([#{lit}]) #{b.("q")}"
+    when "zip_blk" then "#{s}.zip([#{lit}]) #{b.("q")}"
+    when "lazy" then "#{s}.lazy.each #{b.("q")}"
+    when "to_enum" then "#{s}.to_enum.each #{b.("q")}"
+    when "each_enum" then "#{s}.each.each #{b.("q")}"
+    when "map_enum" then "#{s}.map.each #{b.("q")}"
     else raise GeneratorError, "no alias_op #{op}"
+    end
+  end
+
+  # A block of parameters `ps` answering `body`: with them as they are,
+  # with a second where there is one (`two`), or as a splat that sets
+  # them; the last two add what the block was given to `$pb<n>`.
+  def block_of(ps, body, bp, n)
+    case bp
+    when "one" then "{ |#{ps.join(", ")}| #{body} }"
+    when "two" then "{ |#{ps[0]}, qr| $pb#{n} << [#{ps[0]}, qr].inspect; #{body} }"
+    when "splat"
+      "{ |*qs| $pb#{n} << qs.inspect; #{ps.each_with_index.map { |pn, i| "#{pn} = qs[#{i}]; " }.join}#{body} }"
+    else raise GeneratorError, "no bparams #{bp}"
     end
   end
 
@@ -326,7 +411,11 @@ module NilNarrowingGen
           elsif ivar && way == "ivar_get" then "instance_variable_get(:@a)"
           else s
           end
-    held = alias_call(op, acc, lit, int)
+    bp = real[:bparams]
+    # with recv=held, the array is held first and the call made on what is
+    # read back (super_init's own way)
+    on_held = real[:recv] == "held" && way != "super_init"
+    held = on_held ? acc : alias_call(op, acc, lit, int, bp, n)
     hold = case way
            when "direct" then op == "none" ? "" : "#{held}\n"
            when "assign" then "c = #{held}\n"
@@ -356,6 +445,12 @@ module NilNarrowingGen
            when "super_init" then ""
            else raise GeneratorError, "no alias_way #{way}"
            end
+    hold += "c = #{alias_call(op, "c", lit, int, bp, n)}\n" if on_held
+    # what a block of two or a splat was given, once alias_op has run
+    unless bp == "one"
+      defs << "$pb#{n} = +\"\"\n"
+      hold += "puts \"#{n} \#{k} \" + $pb#{n}.inspect\n$pb#{n}.clear\n"
+    end
     cls << "attr_reader :a\n" if ivar && way == "attr_reader"
     gap = gap_line(real[:gap], way == "direct" ? s : "c", gv)
     gap = "" if way == "super_init"
@@ -378,7 +473,8 @@ module NilNarrowingGen
     setup, mid = breaker(real[:breaker], "i = #{val}\n", "i", val, r, n)
     # i is assigned before the setup, so a closure there writes the
     # method's i, and again after it, since making the closure is a call
-    loop = "#{setup.empty? ? "" : "i = 0\n#{setup}"}i = 0\nwhile #{cond}\n#{indent(mid + r)}  i += 1\nend\n"
+    loop = "#{setup.empty? ? "" : "i = 0\n#{setup}"}i = 0\nwhile #{cond}\n" \
+           "#{indent(held_breaker(real, mid, r, "while"))}  i += 1\nend\n"
     [(ivar ? "" : "a = [3, 1, 2, 2]\n".gsub(/\d/) { |d| int ? d : "#{d}.5" }) + hold + gap + loop, held, gap_line(real[:gap], "c", gv)]
   end
 
@@ -398,6 +494,13 @@ module NilNarrowingGen
     ivar = real[:slot] == "ivar"
     real[:breaker] = "none" if real[:breaker] == "ivar_set" && !(ib && ivar)
     real[:alias_way] = "assign" if real[:alias_way] == "super_init" && !ivar
+    real[:holder] = "while" unless HELD.include?(real[:breaker])
+    ps = BLOCK_PARAMS[real[:alias_op]]
+    real[:bparams] = "one" unless ps && (real[:bparams] != "two" || ps.size == 1)
+    real[:recv] = if real[:alias_op] == "none" || real[:alias_way] == "direct" then "array"
+                  elsif real[:alias_way] == "super_init" then "held"
+                  else real[:recv]
+                  end
     # A write through an alias held elsewhere is no use of the slot, so
     # its kind does not matter: past the end. The kinds are for the array
     # itself (alias_way direct), where each is a use the slot must refuse.
@@ -489,11 +592,13 @@ if $PROGRAM_NAME == __FILE__
   seed = 1
   id = nil
   only = {}
+  also = NilNarrowingGen::ALSO
   args = ARGV.dup
   begin
     until args.empty?
       case args.shift
       when "--strength" then strength = Integer(args.shift)
+      when "--strength3" then also = NilNarrowingGen.factor_list(args.shift.to_s)
       when "--random" then random = Integer(args.shift)
       when "--seed" then seed = Integer(args.shift)
       when "--id" then id = Integer(args.shift)
@@ -501,17 +606,20 @@ if $PROGRAM_NAME == __FILE__
       else raise ArgumentError
       end
     end
-    raise ArgumentError unless (1..NilNarrowingGen::FACTORS.size).cover?(strength) && (random.nil? || random.positive?)
+    raise ArgumentError unless (1..NilNarrowingGen::FACTORS.size).cover?(strength) &&
+                               (random.nil? || random.positive?) && (also.empty? || also.size >= 3)
   rescue ArgumentError, TypeError => e
     warn e.message unless e.message == "ArgumentError"
-    abort "usage: ruby tools/nil_narrowing_gen.rb [--strength T | --random N] [--seed S] [--only F=L,..] [--id ID]"
+    abort "usage: ruby tools/nil_narrowing_gen.rb [--strength T | --random N] [--seed S] [--strength3 F,F,F..] " \
+          "[--only F=L,..] [--id ID]"
   end
   if random
     cs = NilNarrowingGen.pinned_cases(NilNarrowingGen.random_rows(random, seed), only)
     warn "#{cs.size} cases"
   else
-    cs, want, got = NilNarrowingGen.covering_cases(strength, seed, 100, only)
-    warn "#{cs.size} cases, taking #{got} of #{want} #{strength}-way combinations"
+    cs, want, got, want3, got3 = NilNarrowingGen.covering_cases(strength, seed, 100, only, also)
+    warn "#{cs.size} cases, taking #{got} of #{want} #{strength}-way combinations" +
+         (want3 ? " and #{got3} of #{want3} 3-way combinations of #{also.join(", ")}" : "")
   end
   cs = cs.select { |c| c.id == id } if id
   print NilNarrowingGen.program(cs, true)
