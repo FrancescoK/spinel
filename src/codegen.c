@@ -16618,6 +16618,10 @@ char *codegen_program(const NodeTable *nt) {
       if (!c->classes[k].instantiated && !breopen) continue;
       for (int u = 0; uops[u]; u++)
         if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) { g_has_user_binop = 1; break; }
+      /* A class's own <, >, <= or >= reaches a boxed receiver through the
+         table even without coerce; sp_poly_cmp cannot supply its ordering. */
+      for (int u = 0; cops[u] && !g_has_user_binop; u++)
+        if (is_cmp_op(cops[u]) && comp_method_in_chain(c, k, cops[u], NULL) >= 0) g_has_user_binop = 1;
       /* a `<=>` with no `==` is Comparable's equality, which the table
          derives: a boxed `m == n` (a block parameter, a hash value, a
          `when FIVE`) reaches it only through the table */
