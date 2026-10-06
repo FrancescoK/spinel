@@ -134,6 +134,8 @@ extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
 int strbuf_bang_self_local(const Compiler *c, int v);
 int emit_strbuf_call_handle(Compiler *c, int v, Buf *b);
+int strbuf_conv_of_handle_call(Compiler *c, int v);
+int strbuf_poly_self_conv(Compiler *c, int node);
 int method_returns_handle(Compiler *c, int mi);
 int method_hr_target(Compiler *c, int id);
 void emit_hr_call(Compiler *c, int id, Buf *b);
