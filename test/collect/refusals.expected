@@ -896,6 +896,12 @@ spinel: 1 refusal, nothing written
 == test/reject/string_method_object_mutator.rb [promote] rc=1
 spinel: test/reject/string_method_object_mutator.rb:6: String#method is not supported for a method that changes the String in place (`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's value, not to the String, so calling it could not change the String it came from. Call the method on the String directly, or wrap it in a block (`->(x) { s << x }`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/string_method_object_mutator_user_method.rb [default] rc=1
+spinel: test/reject/string_method_object_mutator_user_method.rb:11: String#method is not supported for a method that changes the String in place (`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's value, not to the String, so calling it could not change the String it came from. Call the method on the String directly, or wrap it in a block (`->(x) { s << x }`) (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/string_method_object_mutator_user_method.rb [promote] rc=1
+spinel: test/reject/string_method_object_mutator_user_method.rb:11: String#method is not supported for a method that changes the String in place (`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's value, not to the String, so calling it could not change the String it came from. Call the method on the String directly, or wrap it in a block (`->(x) { s << x }`) (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/string_mutator_jump_arm.rb [default] rc=1
 spinel: test/reject/string_mutator_jump_arm.rb:7: unsupported expression: node N (ReturnNode)
 spinel: 1 refusal, nothing written
