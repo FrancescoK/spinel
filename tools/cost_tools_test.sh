@@ -61,10 +61,24 @@ LIMIT = 3
 def find(a, x)
   a.index(x)
 end
+class Tally
+  @@made = 0
+  def self.add = (@@made += 1)
+end
+def pair_at(n)
+  a = nil
+  a ||= [n, n + 1]
+  a[1]
+end
 mixed = [1, "two"].first
 range = (1..LIMIT)
 buf = Buf.new(4)
+gaps = [1]
+gaps[3] = 5
+seen = 0
+bump = -> { seen += 1 }
 p buf.peek, mixed, range, $log.size, find([5, 6], 6), Pt.new(1, 2).x
+p gaps[1], bump.call, pair_at(4), Tally.add
 RUBY
   "$ROOT/bin/spinel" --dump-repr shapes.rb
   # the same compiler on both sides: nothing moves
