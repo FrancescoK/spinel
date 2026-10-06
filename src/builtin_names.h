@@ -136,6 +136,7 @@ int is_element_access(const char *n); /* [] []= */
 
 int is_current_method(const char *n); /* __callee__ __method__ */
 int is_hash_constructor(const char *n); /* __hash_new_default new */
+int is_struct_constructor(const char *n); /* new [] */
 int is_attr_reader_family(const char *n); /* attr_accessor attr_reader */
 int is_range_bound_reader(const char *n); /* begin end */
 int is_directory_entries(const char *n); /* children entries */
