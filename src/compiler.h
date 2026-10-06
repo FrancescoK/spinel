@@ -1129,6 +1129,7 @@ const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symb
 int sp_str_mutator(const char *nm, unsigned want);
 /* 1 iff call node `id` is a String method whose value is its receiver. */
 int str_self_call(const NodeTable *nt, int id);
+int str_prepend_many(const NodeTable *nt, int id);
 int fiber_storage_recv(const NodeTable *nt, int recv);
 int array_mutator_name(const char *nm);
 /* 1 iff `nm` is a stage that keeps a lazy chain lazy -- the set

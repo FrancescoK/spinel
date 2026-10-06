@@ -45,6 +45,7 @@ int is_class_eval_family(const char *n);  /* class_eval module_eval class_exec m
 int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec */
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
+int is_string_prepend(const char *n); /* prepend: answers its receiver with the arguments put first */
 int is_array_store_family(const char *n); /* << push append unshift insert concat: Array calls that store their arguments */
 int is_positional_insert(const char *n); /* insert: its first argument is the index */
 int is_proc_conversion(const char *n); /* to_proc: a proc's or a Method's proc, the same callable */

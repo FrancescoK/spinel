@@ -637,6 +637,9 @@ extern int (*sp_obj_conv_fn)(int cls_id, void *p, int which, sp_RbVal *out);
 /* Ruby class name for a user cls_id (the generated id->name table), so a
    runtime TU can word a TypeError the way CRuby does. */
 extern const char *(*sp_obj_cls_name_fn)(int cls_id);
+/* Set by a program built --share-strings (its main): the runtime then names
+   a shared String handle's box (SP_BUILTIN_STRBUF) a String in a message. */
+extern int sp_obj_share_strings;
 /* Is user class `sub` the class `super` or a descendant of it? The generated
    class bank installs it; NULL means only an exact id can be trusted. A
    pointer array of one class checks a stored object against it (#4486). */

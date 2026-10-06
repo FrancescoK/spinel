@@ -2739,7 +2739,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_HASH, "detect",     BSH_ITER_FIND },
   { BOP_ANY_HASH, "transform_values", BSH_ITER_MAP },
   { BOP_ANY_HASH, "transform_values!", BSH_ITER_MAP_BANG },
-  { BOP_ANY_HASH, "transform_keys", BSH_ITER_MAP },
+  /* a key is a frozen copy, and the keys the block answers are copied in */
+  { BOP_ANY_HASH, "transform_keys", BSH_ITER_FRESH },
+  { BOP_ANY_HASH, "transform_keys!", BSH_ITER_FRESH_RECV },
   { BOP_ANY_HASH, "each_key",   BSH_ITER_FRESH },
   { BOP_ANY_HASH, "inject",     BSH_ITER_MEMO0 },
   { BOP_ANY_HASH, "reduce",     BSH_ITER_MEMO0 },
