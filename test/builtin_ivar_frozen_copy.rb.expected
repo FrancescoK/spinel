@@ -1,0 +1,30 @@
+:x
+:x
+[:@tag]
+:x
+:changed
+true
+:x
+false
+:x
+"FrozenError: can't modify frozen Array: [1, 2]"
+"FrozenError: can't modify frozen Array: [1, 2]"
+:thawed
+:x
+"L"
+"L"
+"FrozenError: can't modify frozen Hash: {k: 1}"
+"L"
+9
+9
+[:@note]
+"FrozenError: can't modify frozen Random: #<Random:0x @note=9>"
+9
+nil
+"FrozenError: can't modify frozen Integer: 5"
+"FrozenError: can't modify frozen Integer: 5"
+"FrozenError: can't modify frozen Symbol: :sym"
+"FrozenError: can't modify frozen Range: 1..2"
+"FrozenError: can't modify frozen NilClass: nil"
+false
+nil

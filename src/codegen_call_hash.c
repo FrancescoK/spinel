@@ -38,7 +38,7 @@ int emit_op_hash_pattern(Compiler *c, const BopCtx *x, Buf *b) {
   else
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
                   " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
-                  " if (sp_poly_eq(_t%d, _t%d)) _t%d++; }",
+                  " if (sp_poly_rb_equal(_t%d, _t%d)) _t%d++; }",
                ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
   if (sp_streq(name, "any?"))       buf_printf(b, " _t%d > 0; })", tc2);
   else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc2);
@@ -68,7 +68,7 @@ int emit_op_hash_pattern_all(Compiler *c, const BopCtx *x, Buf *b) {
   if (comp_ntype(c, argv[0]) == TY_CLASS)
     buf_printf(b, " if (sp_poly_is_a(_t%d->data[_t%d], (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++;", tp, ti, tpat, tc);
   else
-    buf_printf(b, " if (sp_poly_eq(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
+    buf_printf(b, " if (sp_poly_rb_equal(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
   buf_printf(b, " _t%d == _t%d->len; })", tc, tp);
   return 1;
 }
@@ -245,7 +245,7 @@ int emit_op_hash_key(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; sp_RbVal _t%d = sp_box_nil();", tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, tp, ti);
   buf_printf(b, " sp_PolyArray *_pr = (sp_PolyArray *)_t%d->data[_t%d].v.p;", tp, ti);
-  buf_printf(b, " if (sp_poly_eq(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
+  buf_printf(b, " if (sp_poly_rb_equal(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
   buf_printf(b, " _t%d; })", tr);
   return 1;
 }
@@ -806,7 +806,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
     if (vt == TY_POLY) buf_printf(b, "%s;", vget);
     else if (vt == TY_INT) buf_printf(b, "sp_box_int(%s);", vget);
     else buf_printf(b, "sp_box_str(%s);", vget);
-    buf_printf(b, " if (sp_poly_eq(_rv%d, _t%d)) {", ti, ta);
+    buf_printf(b, " if (sp_poly_rb_equal(_rv%d, _t%d)) {", ti, ta);
   }
   /* build pair */
   buf_printf(b, " _t%d = sp_PolyArray_new();", tr);

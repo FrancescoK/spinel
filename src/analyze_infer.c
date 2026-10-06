@@ -5080,9 +5080,14 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       nt_ref(nt, id, "block") < 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
-  /* The row supplies the answer, except a set which answers its value. */
-  if (recv >= 0 && ty_builtin_ivar_less(rt)) {
+  /* The row supplies the answer, except a set which answers its value. A
+     builtin class's own ivar access answers the row's whatever the receiver
+     kind, and a read of a value whose ivars the runtime's map can hold is
+     whatever was stored, once the program can store one. */
+  if (recv >= 0 && (ty_builtin_ivar_less(rt) || is_bivar_access(name))) {
     const BuiltinOp *op = an_bop_find(c, id, BOP_IVAR_LESS, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && !is_bivar_access(name) && op->result == TY_NIL && c->bivar_table && ty_bivar_keyed(rt))
+      { *out = TY_POLY; return 1; }
     if (op) { *out = op->result == TY_UNKNOWN ? infer_type(c, argv[1]) : bop_result(op, rt); return 1; }
   }
 
@@ -6057,9 +6062,11 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
       if (bty && sp_streq(bty, "BlockArgumentNode")) {
         /* `instance_exec(args, &b)` forwards the enclosing method's block; the
            value it produces is that method's own forwarded-block value across
-           call sites (the method inlines per site, splicing the literal). */
+           call sites (the method inlines per site, splicing the literal). A
+           proc of the call's own (`&lp`) is not that block, and is typed
+           poly below. */
         Scope *encl = comp_scope_of(c, id);
-        int emi = encl ? (int)(encl - c->scopes) : -1;
+        int emi = encl && call_forwards_own_block(c, id) ? (int)(encl - c->scopes) : -1;
         if (emi >= 0) {
           TyKind ft = yield_value_type(c, emi);
           if (ft != TY_UNKNOWN && ft != TY_VOID) { *out = ft; return 1; }

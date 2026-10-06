@@ -2478,13 +2478,14 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
        (block_auto_splats). */
     else if (autosplat)
       inner = yargs[0];
-    TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+    Repr ar = repr_of(c, inner);
+    TyKind at = ar.as_ty;
     /* A BOXED yielded value can be an array too, and CRuby splats it just the
        same. Only a statically typed array was splatted, so a method yielding
        what it read out of a boxed container -- Set#each over its element array
        -- bound the whole element to the first parameter and nil to the rest
        (#3944). Decide it at run time. */
-    if (at == TY_POLY && inner >= 0) {
+    if (ar.kind == RK_BOXED && inner >= 0) {
       poly_splat_tmp = ++g_tmp;
       Buf pb2; memset(&pb2, 0, sizeof pb2); emit_expr(c, inner, &pb2);
       emit_indent(g_pre, g_indent);
@@ -2514,7 +2515,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
                    poly_splat_tmp, rename_local("__self"), rename_local("__self"), poly_splat_tmp);
       free(pb2.p);
     }
-    else if (ty_is_array(at) || at == TY_POLY_ARRAY) {
+    else if (ty_is_array(at) || ar.elem == TY_POLY) {
       splat_at = at;
       splat_tmp = ++g_tmp;
       Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, inner, &sb);
@@ -2528,13 +2529,13 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
          literal it was assigned (splat_local_sure_lit): the parameters those
          reach bind them without a length test, as the analysis bound them
          without a nil */
-      if (inner != yargs[0] && (at == TY_INT_ARRAY || at == TY_FLOAT_ARRAY || at == TY_STR_ARRAY)) {
+      if (inner != yargs[0] && (ar.elem == TY_INT || ar.elem == TY_FLOAT || ar.elem == TY_STRING)) {
         int lit = splat_local_sure_lit(c, inner);
         if (lit >= 0) nt_arr(nt, lit, "elements", &splat_sure);
       }
       /* the one value a splat leaves is auto-splatted, as a lone yielded
          Array is: `yield(*[[1, 2]])` into `|a, b|` binds 1 and 2 */
-      if (inner != yargs[0] && at == TY_POLY_ARRAY && autosplat) {
+      if (inner != yargs[0] && ar.elem == TY_POLY && autosplat) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "if (_t%d && _t%d->len == 1) { sp_RbVal _e = sp_PolyArray_get(_t%d, 0); "
                           "if (_e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_e.cls_id)) "
@@ -4099,8 +4100,9 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     /* The slot is the poly array a `next` arm of another kind widened the
        value to while the tail is still typed: say so, or the substrate keys
        the arms and the tail on the tail's kind (#4747). */
-    TyKind tailt = comp_ntype(c, bb[bn - 1]);
-    g_bv_dest_ty = (rett == TY_POLY_ARRAY && tailt != rett && array_to_poly_fn(tailt)) ? rett : TY_UNKNOWN;
+    Repr tailr = repr_of(c, bb[bn - 1]);
+    TyKind tailt = tailr.as_ty;
+    g_bv_dest_ty = (rett == TY_POLY_ARRAY && tailr.elem != TY_POLY && array_to_poly_fn(tailt)) ? rett : TY_UNKNOWN;
     emit_block_value_into(c, block, destbuf, rett == TY_POLY, din);
   }
   else {
@@ -4188,9 +4190,10 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
     return 0;
   int src = nt_ref(nt, recv, "receiver");
   if (src < 0) return 0;
-  TyKind srt = comp_ntype(c, src);
+  Repr sr = repr_of(c, src);
+  TyKind srt = sr.as_ty;
   if (!ty_is_array(srt)) return 0;
-  const char *k = (srt == TY_POLY_ARRAY) ? "Poly" : array_kind(srt);
+  const char *k = (sr.elem == TY_POLY) ? "Poly" : array_kind(srt);
   if (!k) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -4218,7 +4221,7 @@ int emit_takewhile_with_index(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, ta, ti);
   char es[64]; snprintf(es, sizeof es, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
-  TyKind et = ty_array_elem(srt);
+  TyKind et = sr.elem;
   if (p0lv) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = ", rename_local(p0));
@@ -6557,7 +6560,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   int body = nt_ref(nt, block, "body");
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
-  TyKind rt = comp_ntype(c, recv);
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
 
   /* A Range Enumerable the array emitters below serve (each_slice/each_cons
      block forms, ...): materialize once into an int array and re-enter with
@@ -6724,7 +6728,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* n.times { |i| ... } */
-  if (sp_streq(name, "times") && (rt == TY_INT || rt == TY_BIGINT)) {
+  if (sp_streq(name, "times") && (rt == TY_INT || rr.big)) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_int_expr(c, recv, &rb);
@@ -6757,7 +6761,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      a Rational operand rational), so the values stay exact (#2566). */
   /* a Bignum receiver walks the same boxed sequence: it does not fit the
      sp_int loop below, and it had no arm at all (#4779) */
-  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rt == TY_BIGINT)) {
+  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big)) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;

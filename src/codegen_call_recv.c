@@ -1045,7 +1045,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* #count is the exception: it counts elements EQUAL to its argument,
        where the predicates match a PATTERN with === (#3817) */
     if (sp_streq(name, "count"))
-      buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
+      buf_printf(b, " if (sp_poly_rb_equal(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
     else
       buf_printf(b, " if (sp_poly_case_eq(_t%d, sp_PolyArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
     if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_PolyArray_length(_t%d); })", tc, ta);
@@ -1554,7 +1554,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       if (cat == TY_NIL && elem_nil_sentinel(c, recv, rt) && !elem_nil_marked(c, recv, rt))
         buf_printf(b, " if (sp_%sArray_may_nil(_t%d))", k, ta);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", ti, ti, k, ta, ti);
-      buf_puts(b, " if (sp_poly_eq(");
+      buf_puts(b, " if (sp_poly_rb_equal(");
       emit_elem_boxed_text(c, recv, rt, arr, el, b);
       buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
     }
@@ -1731,11 +1731,9 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (repr_of(c, recv).nil_cold) {
         /* the receiver may be nil: tested where a nil one goes, ahead of
            the index's own nil test, which a nil index also reaches */
-        int ck = nullable_int_value(c, argv[0]);
         int tk = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = ", tk);
-        if (ck) emit_scalar_operand(c, argv[0], "0", b);
-        else emit_int_expr(c, argv[0], b);
+        int ck = emit_int_index_raw(c, argv[0], b);
         buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ({ ",
                    tk, hl, hd, tk);
         emit_nil_cold_test(c, id, recv, b);
@@ -1747,17 +1745,19 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         { *out = 1; return 1; }
       }
       int tk = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_%sArray_get(",
-                 tk, hl, hd, tk, k);
+      buf_printf(b, "({ sp_int _t%d = ", tk);
+      int ck = emit_int_index_raw(c, argv[0], b);
+      buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ", tk, hl, hd, tk);
+      if (ck) buf_printf(b, "({ SP_INT_NIL_ARG_CK(_t%d); ", tk);
+      buf_printf(b, "sp_%sArray_get(", k);
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d); })", tk);
+      buf_printf(b, ", _t%d)%s; })", tk, ck ? "; })" : "");
       { *out = 1; return 1; }
     }
     buf_printf(b, "sp_%sArray_get(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     /* a splat is its one element (emit_int_expr_ex), not a boxed index */
-    if (comp_ntype(c, argv[0]) == TY_POLY && nt_kind(nt, argv[0]) != NK_SplatNode) {
+    if (repr_of(c, argv[0]).kind == RK_BOXED && nt_kind(nt, argv[0]) != NK_SplatNode) {
       /* a checked conversion, not a raw `.v.i`: the union read assumed
          the box held an Integer, so a boxed user object indexed by its
          pointer bits and the read answered a wrong element in silence;
@@ -5330,7 +5330,7 @@ else {
           buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_bool _t%d = 0;", ta, tr);
           buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++) {"
                         " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
-                        " if (sp_poly_eq(_v, _t%d)) { _t%d = 1; break; } } _t%d; })",
+                        " if (sp_poly_rb_equal(_v, _t%d)) { _t%d = 1; break; } } _t%d; })",
                      ti, ti, th, ti, th, ti, ta, tr, tr);
           return 1;
         }
@@ -12523,6 +12523,97 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* The builtin arm of a boxed ivar access, once the program can write an ivar
+   on a builtin value (Compiler.bivar_table): a value of any builtin class
+   (a negative cls_id) takes `stmt`, which asks the runtime's map. Nothing
+   without the flag. */
+static void emit_bivar_arm(Compiler *c, int tv, const char *stmt, Buf *b) {
+  if (c->bivar_table) buf_printf(b, " default: if (_t%d.cls_id < 0) %s; break;", tv, stmt);
+}
+
+/* The slot a class value's ivar `sym` lives in, when the program declares
+   one: the class-level static (civ_<Class>_<x>) its class methods read, or
+   a `class << self` accessor's own (sg_<Class>_<x>). A builtin class's
+   reopening holds none. Answers 0 when the class has no slot of the name. */
+static int class_ivar_slot(Compiler *c, int k, const char *sym, char *out, size_t n, TyKind *t) {
+  ClassInfo *ci = &c->classes[k];
+  if (is_builtin_reopen(ci->name)) return 0;
+  const char *base = sym + 1;
+  if ((comp_is_sg_reader(ci, base) || comp_is_sg_writer(ci, base)) && !comp_is_sg_civ(ci, base)) {
+    snprintf(out, n, "sg_%s_%s", ci->name, base);
+    *t = TY_POLY;
+    return 1;
+  }
+  int iv = comp_ivar_index(ci, sym);
+  if (iv < 0) return 0;
+  *t = ci->ivar_types[iv] == TY_UNKNOWN ? TY_INT : ci->ivar_types[iv];
+  if (*t == TY_STRBUF) return 0;
+  snprintf(out, n, "civ_%s_%s", ci->name, iv_c(base));
+  return 1;
+}
+
+/* The class arm of a boxed ivar access, once the program can write an ivar
+   on a builtin value: a class value whose class declares the slot reads or
+   writes it, as the class's own methods do, and any other ivar of a class
+   lives in the runtime's map (`dflt`, the map's statement). `op`: 's' sets
+   from `_ivs<tv>`, 'g' reads into `_ivg<tv>`, 'd' asks into `_ivd<tv>`. A
+   set records the name in the map too, so 'd' and the listing see it; a
+   slot only a class method wrote counts when it holds a value. */
+static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, const char *dflt, Buf *b) {
+  if (!c->bivar_table) return;
+  buf_printf(b, "else if (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", tv, tv);
+  for (int k = 0; k < c->nclasses; k++) {
+    char slot[300]; TyKind t;
+    if (!class_ivar_slot(c, k, sym, slot, sizeof slot, &t)) continue;
+    buf_printf(b, " case %d: ", k);
+    if (op == 's') {
+      char val[24]; snprintf(val, sizeof val, "_ivs%d", tv);
+      buf_printf(b, "%s = ", slot);
+      if (t == TY_POLY) buf_puts(b, val);
+      else if (nil_value(t)) {
+        buf_printf(b, "(%s.tag == SP_TAG_NIL ? %s : ", val, nil_value(t));
+        emit_unbox_text(c, t, val, b);
+        buf_puts(b, ")");
+      }
+      else emit_unbox_text(c, t, val, b);
+      /* and the name in the map, holding nothing, for instance_variables'
+         order and defined? */
+      buf_printf(b, "; sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), sp_box_nil());", tv, sym);
+    }
+    else {
+      buf_printf(b, "%s%d = ", op == 'g' ? "_ivg" : "_ivd", tv);
+      if (op == 'g') emit_boxed_text(c, t, slot, b);
+      else { buf_puts(b, "("); emit_boxed_text(c, t, slot, b); buf_printf(b, ").tag != SP_TAG_NIL || %s", dflt); }
+      buf_puts(b, ";");
+    }
+    buf_puts(b, " break;");
+  }
+  if (op == 'd') buf_printf(b, " default: _ivd%d = %s; break; } ", tv, dflt);
+  else buf_printf(b, " default: %s; break; } ", dflt);
+}
+
+/* instance_variables of a class value: its map's names, then those of the
+   slots its class declares that hold a value (a slot holding nil, or set
+   by a class method, lists after the reflective sets) */
+static void emit_class_ivar_list_arm(Compiler *c, int tv, Buf *b) {
+  if (!c->bivar_table) return;
+  buf_printf(b, " if (_t%d.tag == SP_TAG_CLASS) { _ivl%d = sp_bivar_list(_t%d); switch (_t%d.cls_id) {", tv, tv, tv, tv);
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    int any = 0;
+    for (int j = 0; j < ci->nivars; j++) {
+      char slot[300]; TyKind t;
+      if (!class_ivar_slot(c, k, ci->ivars[j], slot, sizeof slot, &t)) continue;
+      if (!any) { buf_printf(b, " case %d:", k); any = 1; }
+      buf_puts(b, " if (("); emit_boxed_text(c, t, slot, b);
+      buf_printf(b, ").tag != SP_TAG_NIL && !sp_bivar_defined(_t%d, sp_sym_intern(\"%s\"))) "
+                    "sp_PolyArray_push(_ivl%d, sp_box_sym(sp_sym_intern(\"%s\")));", tv, ci->ivars[j], tv, ci->ivars[j]);
+    }
+    if (any) buf_puts(b, " break;");
+  }
+  buf_puts(b, " } }");
+}
+
 /* Instance-variable and field access on a boxed receiver: an ivar write, a field read dispatched over every class that has it, instance_variable_get and _set, instance_variables (emit_poly_call's arms, in their order) */
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
@@ -12588,7 +12679,14 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       /* a bare Object keeps its ivars in a table of its own */
       buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
                  tv, sym, tv);
+      /* a builtin value: the runtime's map, or FrozenError (emit_bivar_arm) */
+      char bst[320];
+      snprintf(bst, sizeof bst, "sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), _ivs%d)", tv, sym, tv);
+      emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
+      emit_class_ivar_arm(c, tv, sym, 's', bst, b);
+      /* an immediate, a String, a Time: FrozenError, or refused when it runs */
+      if (c->bivar_table) buf_printf(b, "else %s; ", bst);
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
         char ivn[24]; snprintf(ivn, sizeof ivn, "_ivs%d", tv);
         emit_unbox_text(c, res, ivn, b);
@@ -12634,7 +12732,11 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       buf_printf(b, " case SP_BUILTIN_OBJECT: _ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;",
                  tv, tv, sym);
+      char bst[320];
+      snprintf(bst, sizeof bst, "_ivg%d = sp_bivar_get(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
+      emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
+      emit_class_ivar_arm(c, tv, sym, 'g', bst, b);
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
         /* a receiver whose class lacks the slot answers nil: an Integer or
            Float answer takes its nil sentinel */
@@ -12672,7 +12774,15 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(b, " case %d: _ivd%d = %s; break;", k, tv, set ? set : "TRUE");
       }
       buf_printf(b, " case SP_BUILTIN_OBJECT: _ivd%d = sp_Object_ivar_defined((sp_Object *)_t%d.v.p, "
-                    "sp_sym_intern(\"%s\")); break; } _ivd%d; })", tv, tv, sym, tv);
+                    "sp_sym_intern(\"%s\")); break;", tv, tv, sym);
+      char bst[320];
+      snprintf(bst, sizeof bst, "_ivd%d = sp_bivar_defined(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
+      emit_bivar_arm(c, tv, bst, b);
+      buf_puts(b, " } ");
+      char dex[300];
+      snprintf(dex, sizeof dex, "sp_bivar_defined(_t%d, sp_sym_intern(\"%s\"))", tv, sym);
+      emit_class_ivar_arm(c, tv, sym, 'd', dex, b);
+      buf_printf(b, "_ivd%d; })", tv);
       { *out = 1; return 1; }
     }
   }
@@ -12697,8 +12807,13 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       buf_puts(b, " break;");
     }
-    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break; }"
-                  " if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv, tv, tv);
+    buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break;", tv, tv);
+    char bst[96];
+    snprintf(bst, sizeof bst, "_ivl%d = sp_bivar_list(_t%d)", tv, tv);
+    emit_bivar_arm(c, tv, bst, b);
+    buf_puts(b, " }");
+    emit_class_ivar_list_arm(c, tv, b);
+    buf_printf(b, " if (!_ivl%d) _ivl%d = sp_PolyArray_new(); _ivl%d; })", tv, tv, tv);
     { *out = 1; return 1; }
   }
   return 0;

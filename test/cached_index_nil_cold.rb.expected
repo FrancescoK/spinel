@@ -1,0 +1,10 @@
+read 60
+read nil TypeError: no implicit conversion from nil to integer
+read nil, no pass 0
+read past the end TypeError: nil can't be coerced into Integer
+write [0, 2, 0]
+write nil TypeError: no implicit conversion from nil to integer
+write past the end [0, 1]
+float 3.0
+float nil TypeError: no implicit conversion from nil to integer
+float past the end TypeError: nil can't be coerced into Float

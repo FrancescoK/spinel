@@ -896,6 +896,8 @@ void sp_gc_sweep_chunks(int wid,int full){
 }
 /* the form the stop-the-world parallel sweep (sp_sched.c) runs per slot */
 void sp_gc_sweep_chunks_slot(int wid){ sp_gc_sweep_chunks(wid,sp_gc_sweep_full_now); }
+static int sp_ivt_n;   /* the ivar tables of builtin values (sp_ivtbl_put, below) */
+static void sp_ivt_mark(int full, void (*drain)(void));
 static sp_gc_hdr **sp_gc_vg_cand; static size_t sp_gc_vg_n, sp_gc_vg_cap; static unsigned sp_gc_vg_gen;
 static void sp_gc_vg_cand_cb(void *hp,void *arg){
   (void)arg; sp_gc_hdr *h=(sp_gc_hdr*)hp;
@@ -956,6 +958,8 @@ static SP_NOINLINE void sp_gc_verify_gen_run(void) {
       if(ph->scan) ph->scan(sp_gc_pinned[pi]);
     }
     sp_gc_mark_drain();
+    /* the sweep keeps what this mark reached: the ivar tables too */
+    if (sp_ivt_n) sp_ivt_mark(0, sp_gc_mark_drain);
     size_t str_leaked = sp_str_verify_end();
     if(str_leaked){
       fprintf(stderr,"spinel: GC generational check: %zu young STRING(s) reachable only "
@@ -1220,6 +1224,112 @@ static void sp_fin_after_mark(int full) {
   sp_fin_n = keep;
 }
 
+/* ---- the ivar tables of builtin values ----
+ * CRuby keeps an ivar of an Array, a Hash or a Random in a table keyed by
+ * the object, which does not keep the object alive. This is that table: a
+ * dense array of (object, ivar table) entries and an open-addressing index
+ * into it, both malloc'd. An ivar table is an ordinary GC object, made and
+ * written by the TU (sp_bivar_set). After the mark, the tables of the
+ * objects the cycle keeps are marked, again until nothing new is reached
+ * (a table can hold another keyed object); then, with the marks final, the
+ * entries of objects the cycle frees are dropped, where the finalizer
+ * registry drops its own. The lock is the finalizer registry's rule: never
+ * held across an allocation, so no collection stops a mutator inside it. */
+typedef struct { const void *obj; void *tbl; } sp_ivt_ent;
+static sp_ivt_ent *sp_ivt; static int sp_ivt_cap;   /* and sp_ivt_n, declared above sp_gc_verify_gen_run */
+static int *sp_ivt_ix; static int sp_ivt_icap;   /* entry index + 1; 0 empty; icap a power of two */
+#ifdef SP_THREADS
+static pthread_mutex_t sp_ivt_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SP_IVT_LOCK() pthread_mutex_lock(&sp_ivt_lock)
+#define SP_IVT_UNLOCK() pthread_mutex_unlock(&sp_ivt_lock)
+#else
+#define SP_IVT_LOCK() ((void)0)
+#define SP_IVT_UNLOCK() ((void)0)
+#endif
+
+static size_t sp_ivt_hash(const void *p) {
+  uint64_t x = (uint64_t)(uintptr_t)p;
+  x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
+  return (size_t)x;
+}
+/* the index slot holding obj's entry, or the empty slot where it would go */
+static int sp_ivt_slot(const void *obj) {
+  size_t m = (size_t)sp_ivt_icap - 1, i = sp_ivt_hash(obj) & m;
+  while (sp_ivt_ix[i] && sp_ivt[sp_ivt_ix[i] - 1].obj != obj) i = (i + 1) & m;
+  return (int)i;
+}
+static void sp_ivt_reindex(int icap) {
+  free(sp_ivt_ix);
+  sp_ivt_ix = (int *)calloc((size_t)icap, sizeof(int));
+  if (!sp_ivt_ix) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  sp_ivt_icap = icap;
+  for (int e = 0; e < sp_ivt_n; e++) sp_ivt_ix[sp_ivt_slot(sp_ivt[e].obj)] = e + 1;
+}
+
+const char *(*sp_ivtbl_inspect_fn)(void *tbl) = NULL;
+
+void *sp_ivtbl_get(const void *obj) {
+  void *t = NULL;
+  SP_IVT_LOCK();
+  if (sp_ivt_n && obj) { int s = sp_ivt_slot(obj); if (sp_ivt_ix[s]) t = sp_ivt[sp_ivt_ix[s] - 1].tbl; }
+  SP_IVT_UNLOCK();
+  return t;
+}
+
+void sp_ivtbl_put(const void *obj, void *tbl) {
+  if (!obj) return;
+  SP_IVT_LOCK();
+  if (sp_ivt_icap && sp_ivt_n) {
+    int s = sp_ivt_slot(obj);
+    if (sp_ivt_ix[s]) { sp_ivt[sp_ivt_ix[s] - 1].tbl = tbl; SP_IVT_UNLOCK(); return; }
+  }
+  if (sp_ivt_n == sp_ivt_cap) {
+    sp_ivt_cap = sp_ivt_cap ? sp_ivt_cap * 2 : 16;
+    sp_ivt = (sp_ivt_ent *)realloc(sp_ivt, sizeof(sp_ivt_ent) * (size_t)sp_ivt_cap);
+    if (!sp_ivt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sp_ivt[sp_ivt_n].obj = obj; sp_ivt[sp_ivt_n].tbl = tbl; sp_ivt_n++;
+  if ((size_t)sp_ivt_n * 2 > (size_t)sp_ivt_icap) sp_ivt_reindex(sp_ivt_icap ? sp_ivt_icap * 2 : 32);
+  else sp_ivt_ix[sp_ivt_slot(obj)] = sp_ivt_n;
+  SP_IVT_UNLOCK();
+}
+
+/* Whether this cycle keeps obj: the finalizer registry's test. A value with
+   one of the markers sp_gc_mark passes over (a static or a non-heap object)
+   is never freed, so it always lives, and so does an unaligned key, which
+   names a class rather than an object. */
+static int sp_ivt_key_live(const void *obj, int full) {
+  if ((uintptr_t)obj & 7) return 1;   /* a class's key (sp_bivar_key): no object behind it */
+  unsigned char pm = ((const unsigned char *)obj)[-1];
+  if (pm == 0xfc || pm == 0xff || pm == 0xfd || pm == 0xf1 || pm == 0xfb || pm == 0xf8) return 1;
+  const sp_gc_hdr *h = (const sp_gc_hdr *)obj - 1;
+  return full ? h->marked == sp_gc_mark_gen : (h->old || h->marked == sp_gc_mark_gen);
+}
+
+/* After the mark's drain: the tables of the live objects, as ephemerons. */
+static void sp_ivt_mark(int full, void (*drain)(void)) {
+  if (!sp_ivt_n) return;
+  unsigned char *done = (unsigned char *)calloc((size_t)sp_ivt_n, 1);
+  if (!done) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int more = 1; more; ) {
+    more = 0;
+    for (int e = 0; e < sp_ivt_n; e++)
+      if (!done[e] && sp_ivt_key_live(sp_ivt[e].obj, full)) { done[e] = 1; more = 1; sp_gc_mark(sp_ivt[e].tbl); }
+    if (more) drain();
+  }
+  free(done);
+}
+
+/* With the marks final, before any sweep: the entries of the objects this
+   cycle frees go. */
+static void sp_ivt_after_mark(int full) {
+  int keep = 0;
+  for (int e = 0; e < sp_ivt_n; e++)
+    if (sp_ivt_key_live(sp_ivt[e].obj, full)) sp_ivt[keep++] = sp_ivt[e];
+  if (keep != sp_ivt_n) { sp_ivt_n = keep; sp_ivt_reindex(sp_ivt_icap); }
+}
+static void sp_ivt_drain(void) { sp_gc_mark_drain_all(); sp_gc_mkl_fold(); }
+
 void sp_gc_collect(void){
   /* The previous cycle's sweep may still be running beside the mutators:
      finish it before anything here walks a list or reads a live total. */
@@ -1324,6 +1434,8 @@ void sp_gc_collect(void){
     sp_gc_mkl_fold();
     if(sp_gc_verify){sp_gc_dbg_phase="?";sp_gc_dbg_ctx=NULL;}
   }
+  /* the ivar tables of the builtin values the cycle keeps (sp_ivt_mark) */
+  if (sp_ivt_n) sp_ivt_mark(full, sp_ivt_drain);
   sp_gc_minor = 0;
   sp_gc_conc_promote = 0;
   /* Verification: re-run the mark whole-heap and compare. Anything the full
@@ -1353,6 +1465,7 @@ void sp_gc_collect(void){
        compaction has made room the set is authoritative again. */
     if (sp_gc_pin_overflow && keep < SP_GC_PINNED_MAX) sp_gc_pin_overflow = 0; }
   if (sp_fin_n) sp_fin_after_mark(full);
+  if (sp_ivt_n) sp_ivt_after_mark(full);
   SP_GC_PH(sp_gc_ph_mark);
   sp_str_mark_settle(full);
   if(full){

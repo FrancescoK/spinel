@@ -44,11 +44,17 @@ spinel: 1 refusal, nothing written
 == test/reject/bind_call_class_value_block_target.rb [promote] rc=1
 spinel: test/reject/bind_call_class_value_block_target.rb:12: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
 spinel: 1 refusal, nothing written
+== test/reject/builtin_ivar_string_write.rb [default] rc=1
+spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_ivar_string_write.rb [promote] rc=1
+spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [default] rc=1
-spinel: test/reject/builtin_value_ivar_set.rb:5: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
+spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [promote] rc=1
-spinel: test/reject/builtin_value_ivar_set.rb:5: instance_variable_set on a String, an Array or a Hash: Spinel lays out no instance variables for a builtin value, so the variable has no slot to live in
+spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/class_body_block_next.rb [default] rc=1
 spinel: test/reject/class_body_block_next.rb:7: next in a block that is a class body (the block of Class.new, Module.new, Struct.new or Data.define): the definitions after it would be made or not at run time
@@ -662,6 +668,14 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/string_array_rebound_iterator_alias.rb:4: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
 == test/reject/string_array_rebound_iterator_alias.rb [promote] rc=1
 spinel: test/reject/string_array_rebound_iterator_alias.rb:4: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
+== test/reject/string_boxed_local_container_element.rb [default] rc=1
+spinel: test/reject/string_boxed_local_container_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
+== test/reject/string_boxed_local_container_element.rb [promote] rc=1
+spinel: test/reject/string_boxed_local_container_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
+== test/reject/string_boxed_local_iterator_element.rb [default] rc=1
+spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
+== test/reject/string_boxed_local_iterator_element.rb [promote] rc=1
+spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
 == test/reject/string_chained_index_append.rb [default] rc=1
 spinel: test/reject/string_chained_index_append.rb:2: a String is not yet shared by reference through an Array's chained index into an appending block
 == test/reject/string_chained_index_append.rb [promote] rc=1
@@ -866,6 +880,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_lent_ivar_rebound.rb [promote] rc=1
 spinel: test/reject/string_lent_ivar_rebound.rb:8: `@x` is passed to gri's parameter `v`, which appends to it, and `@x` is assigned at line 6, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
 spinel: 1 refusal, nothing written
+== test/reject/string_literal_element_alias.rb [default] rc=1
+spinel: test/reject/string_literal_element_alias.rb:6: a local bound from an element read of an Array or Hash literal holding a String variable is mutated in place (a String is not yet shared by reference through a literal's element). Mutate the String variable itself.
+== test/reject/string_literal_element_alias.rb [promote] rc=1
+spinel: test/reject/string_literal_element_alias.rb:6: a local bound from an element read of an Array or Hash literal holding a String variable is mutated in place (a String is not yet shared by reference through a literal's element). Mutate the String variable itself.
 == test/reject/string_method_object_mutator.rb [default] rc=1
 spinel: test/reject/string_method_object_mutator.rb:6: String#method is not supported for a method that changes the String in place (`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's value, not to the String, so calling it could not change the String it came from. Call the method on the String directly, or wrap it in a block (`->(x) { s << x }`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written

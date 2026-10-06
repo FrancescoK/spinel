@@ -1047,7 +1047,7 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 	tmp=$$(mktemp -d /tmp/spinel-extrb.XXXXXX); ok=1; \
 	$(SPINEL) test/ext/kernel.rb -c --no-line-map --ext cruby \
 	  --ext-init spx_init_extk \
-	  --ext-entry ExtKernel.triple,ExtKernel.shout,ExtKernel.total,ExtKernel.pair_sum,ExtKernel.must_pos \
+	  --ext-entry ExtKernel.triple,ExtKernel.shout,ExtKernel.total,ExtKernel.pair_sum,ExtKernel.must_pos,ExtKernel.pause_total \
 	  -o "$$tmp/extk.c" >/dev/null 2>&1 || { echo "ext-cruby-test: FAIL (emission)"; ok=0; }; \
 	if [ $$ok -eq 1 ]; then \
 	  if $(CC) $$SOFLAGS -fPIC -O1 -w -I"$$RH" -I"$$RA" -Ilib -Ilib/regexp -Ilib/regexp/shim -I"$$tmp" \
@@ -1406,8 +1406,13 @@ reject-test: $(SPINEL)
 	t=test/reject/builtin_value_ivar_set.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bvi.c" >"$$tmp/bvi.out" 2>&1; then \
 	  echo "reject-test: FAIL (instance_variable_set on a String compiled)"; ok=0; \
-	else grep -q "instance_variable_set on a String, an Array or a Hash" "$$tmp/bvi.out" || \
+	else grep -q "an instance variable set on a String" "$$tmp/bvi.out" || \
 	  { echo "reject-test: FAIL (instance_variable_set on a String rejected without saying why)"; sed -n 1,5p "$$tmp/bvi.out"; ok=0; }; fi; \
+	t=test/reject/builtin_ivar_string_write.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/biw.c" >"$$tmp/biw.out" 2>&1; then \
+	  echo "reject-test: FAIL (an ivar write in a String method compiled)"; ok=0; \
+	else grep -q "an instance variable set on a String" "$$tmp/biw.out" || \
+	  { echo "reject-test: FAIL (an ivar write in a String method rejected without saying why)"; sed -n 1,5p "$$tmp/biw.out"; ok=0; }; fi; \
 	t=test/reject/string_splat_changed_array.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sca.c" >"$$tmp/sca.out" 2>&1; then \
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
@@ -2088,6 +2093,7 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/random_reopen_block_parameter.rb \
                   test/kind_query_computed_nil.rb \
                   test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
+                  test/yield_proc_arg_in_blocked_method.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
                   test/zip_boxed_receiver_argument_order.rb \
@@ -2183,7 +2189,10 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/string_handle_yield_paths.rb \
                   test/string_handle_keyword_dyn_sites.rb \
                   test/gc_minor_never_young_store.rb \
-                  test/builtin_value_ivar_reflection.rb
+                  test/builtin_value_ivar_reflection.rb \
+                  test/builtin_ivar_gc.rb \
+                  test/builtin_ivar_frozen_copy.rb \
+                  test/builtin_ivar_boxed_reflection.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every

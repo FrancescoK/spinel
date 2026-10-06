@@ -328,6 +328,36 @@ int is_visibility_or_module_function(const char *n) {
   return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public") || sp_streq(n, "module_function");
 }
 
+/* Kernel#dup and #clone, which copy any object with its ivars */
+int is_object_copy(const char *n) {
+  return sp_streq(n, "dup") || sp_streq(n, "clone");
+}
+
+/* The reflective ivar write */
+int is_ivar_set_name(const char *n) {
+  return sp_streq(n, "instance_variable_set");
+}
+
+/* A builtin class whose values keep their ivars in the runtime's map
+   (desugar_builtin_ivars), and one whose values are all frozen: an ivar
+   of theirs reads nil and a write raises FrozenError */
+int is_bivar_keyed_class(const char *n) {
+  return sp_streq(n, "Array") || sp_streq(n, "Hash") || sp_streq(n, "Random");
+}
+int is_string_class_name(const char *n) {
+  return sp_streq(n, "String");
+}
+int is_frozen_value_class(const char *n) {
+  return sp_streq(n, "Integer") || sp_streq(n, "Float") || sp_streq(n, "Symbol") ||
+         sp_streq(n, "NilClass") || sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") ||
+         sp_streq(n, "Range");
+}
+
+/* desugar_builtin_ivars' access to an ivar of a builtin class's self */
+int is_bivar_access(const char *n) {
+  return sp_streq(n, "__bivar_get") || sp_streq(n, "__bivar_set") || sp_streq(n, "__bivar_defined");
+}
+
 int is_attr_reader_family(const char *n) {
   return sp_streq(n, "attr_accessor") || sp_streq(n, "attr_reader");
 }
