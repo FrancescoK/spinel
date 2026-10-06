@@ -2909,7 +2909,38 @@ static int alias_target_defined_before(Compiler *c, ClassInfo *cls, int cid, con
   return 0;
 }
 
+/* An alias binds for the whole program, because the method tables are static.
+   Class-body code that runs between a `def a` and a later `alias a b` meets the
+   def in CRuby and would meet the alias here, silently: a call of `a` made in the
+   class body before the alias is refused (#7690). */
+static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node) {
+  if (!nw || alias_node < 0 || !cls->name) return;
+  const NodeTable *nt = c->nt;
+  int cid = comp_class_index(c, cls->name);
+  if (cid < 0) return;
+  int defn = -1;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != cid || sc->is_cmethod || sc->is_proc_form || sc->def_node < 0 ||
+        nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, sc->def_node, "name");
+    if (dn && sp_streq(dn, nw) && sc->def_node < alias_node && sc->def_node > defn) defn = sc->def_node;
+  }
+  if (defn < 0) return;
+  for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_CallNode || n <= defn || n >= alias_node) continue;
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm || !sp_streq(nm, nw) || c->nscope[n] != c->nscope[alias_node]) continue;
+    char msg[300];
+    snprintf(msg, sizeof msg, "`%s` is called in the class body before an alias rebinds it: an alias binds for the "
+             "whole program here, so the call would run the aliased body, not the `def %s` Ruby runs at that point. "
+             "Call it after the alias, or give the alias another name", nw, nw);
+    unsupported_feature(c, n, msg);
+  }
+}
+
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s) {
+  alias_refuse_early_call(c, cls, nw, s);
   if (alias_capture_earlier_def(c, cls, nw, od, s)) return;
   comp_add_alias_from(cls, nw, od, s);
   /* In a reopened primitive, an alias of a name the program has not defined
