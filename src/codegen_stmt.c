@@ -1250,16 +1250,22 @@ static LocalVar *g_strbuf_case_lv;
    `v` can hand over (an_strbuf_alias_leaves' arms)? */
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
-  if (v < 0 || depth > 8) return 0;
+  /* depth counts the conditionals the walk is inside (a wrapper adds none);
+     emit_strbuf_cond_value reaches any depth (its arms past its own limit
+     start a walk of their own), so this one looks as deep as is sane */
+  if (v < 0 || depth > 64) return 0;
   switch (nt_kind(nt, v)) {
+    /* a wrapper adds no conditional level, but what it holds is no longer
+       the value itself (depth 0, which the read arms leave to the caller):
+       `(1; s)` hands over s's handle */
     case NK_ParenthesesNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "body"), depth + 1);
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "body"), depth ? depth : 1);
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-      return n > 0 && strbuf_cond_has_handle_leaf(c, bb[n - 1], depth + 1);
+      return n > 0 && strbuf_cond_has_handle_leaf(c, bb[n - 1], depth ? depth : 1);
     }
     case NK_ElseNode:
-      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth + 1);
+      return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth ? depth : 1);
     case NK_IfNode: case NK_UnlessNode:
       return strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, "statements"), depth + 1) ||
              strbuf_cond_has_handle_leaf(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"),
@@ -1296,8 +1302,10 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       char gr[256];
       return depth > 0 && strbuf_gvar_write_handle(c, v, gr, sizeof gr);
     }
+    /* any other write whose slot holds the rule's handle (an ivar's, a
+       class variable's, an `||=`): emit_strbuf_value hands it over */
     default:
-      return 0;
+      return depth > 0 && repr_write_share(c, v);
   }
 }
 /* Assign conditional `v`'s value to the handle temp `dst` as statements,
@@ -1318,20 +1326,30 @@ static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *d
 static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
   const NodeTable *nt = c->nt;
   NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
-  if (depth > 8) k = NK_NilNode;
+  /* depth counts the conditionals the walk is inside (a wrapper adds none).
+     A conditional past its limit is a value like any other, whose walk
+     starts again from it (emit_strbuf_value): read as nil, a deep arm's
+     String was lost and its effects skipped */
+  if (depth > 8 && (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode ||
+                    k == NK_CaseNode)) {
+    buf_printf(b, "%s = ", dst);
+    emit_strbuf_value(c, lv, v, b);
+    buf_puts(b, ";");
+    return;
+  }
   switch (k) {
     case NK_ParenthesesNode:
-      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "body"), dst, b, depth + 1);
+      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "body"), dst, b, depth);
       return;
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
       for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
-      if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth + 1);
+      if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth);
       else buf_printf(b, "%s = NULL;\n", dst);
       return;
     }
     case NK_ElseNode:
-      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "statements"), dst, b, depth + 1);
+      emit_strbuf_cond_value(c, lv, nt_ref(nt, v, "statements"), dst, b, depth);
       return;
     case NK_IfNode: case NK_UnlessNode: {
       int is_unless = k == NK_UnlessNode;
@@ -1490,6 +1508,9 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     emit_strbuf_cond_value(c, lv, v, dst, b, 0);
     buf_printf(b, " %s; })", dst);
   }
+  /* any other write whose slot holds the rule's handle (a local's `||=`,
+     an ivar's `&&=`, a class variable's): that handle */
+  else if (shared && emit_strbuf_write_handle(c, v, b)) { }
   /* a demand-marked read (a reader call, a container element) already
      yields the handle: alias it directly (#3227 P5). Any other marked call
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
@@ -10540,11 +10561,18 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       htl = scope_local(comp_scope_of(c, id), nt_str(nt, lefts[i], "name"));
     int hshared = repr_of_slot(c, htl).handle;
     int hup = hshared ? strbuf_uplus_operand(c, els[i]) : -1;
-    if (hshared && elt != TY_STRBUF &&
+    int hread = hshared && elt != TY_STRBUF &&
         ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
-         (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)))) {
+         (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)));
+    /* a write whose slot holds the rule's handle (--share-strings): that
+       handle, as a local's read hands over its own */
+    Buf hw; memset(&hw, 0, sizeof hw);
+    int hwrite = hshared && elt != TY_STRBUF && !hread && emit_strbuf_write_handle(c, els[i], &hw);
+    if (hread || hwrite) {
       /* `+s` is s itself unless s is frozen */
-      buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
+      if (hwrite) buf_printf(b, "sp_String * _t%d = %s;", tmps[i], hw.p ? hw.p : "NULL");
+      else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
+      free(hw.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
       int later_alloc_h = store_alloc;
       for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
@@ -11497,6 +11525,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
       else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      /* a write whose slot holds the rule's handle: that handle */
+      else if (emit_strbuf_write_handle(c, v, b)) { }
       else {
         buf_puts(b, "sp_String_new_shared(");
         emit_str_expr(c, v, b);
@@ -12774,6 +12804,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
          anything else in a fresh handle, as the plain write does */
       else if (ivt2 == TY_STRBUF) {
         if (strbuf_slot_ref(c, v, srefO2, sizeof srefO2)) buf_puts(&vval, srefO2);
+        else if (emit_strbuf_write_handle(c, v, &vval)) { }
         else { buf_puts(&vval, "sp_String_new_shared("); emit_str_expr(c, v, &vval); buf_puts(&vval, ")"); }
       }
       else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
