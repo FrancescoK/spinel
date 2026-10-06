@@ -3191,6 +3191,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  grep -q "typedef struct { sp_String \* \*c_s; } _$${cap}_cap_" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an owned $$cap capture became a borrowed volatile slot)"; ok=0; }; \
 	done; \
 	grep -q 'sp_handle_bound(sp_String \* lv_s) {' "$$tmp/bsv.c" || { echo "infer-test: FAIL (a bound Method lost its shared String handle ABI)"; ok=0; }; \
+	$(SPINEL) test/gc_root_fixed_param_arg.rb -c --no-line-map -o "$$tmp/rfp.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (gc_root_fixed_param_arg: -c)"; ok=0; }; \
+	awk '/ sp_Interp_visit\(sp_Interp \*self, .*\) \{/,/^}/' "$$tmp/rfp.c" > "$$tmp/rfp_v.c"; \
+	awk '/ sp_Interp_walk\(sp_Interp \*self, .*\) \{/,/^}/' "$$tmp/rfp.c" > "$$tmp/rfp_w.c"; \
+	grep -Eq '_t[0-9]+ = lv_env;' "$$tmp/rfp_v.c" && ! grep -A1 -E '_t[0-9]+ = lv_env;' "$$tmp/rfp_v.c" | grep -q 'SP_GC_ROOT' || { echo "infer-test: FAIL (a parameter the method never reassigns is copied into a rooted argument temp)"; ok=0; }; \
+	grep -A1 -E '_t[0-9]+ = lv_env;' "$$tmp/rfp_w.c" | grep -q 'SP_GC_ROOT(_t' || { echo "infer-test: FAIL (a reassigned parameter's argument temp lost its root)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_one_class_each_value.rb -c --no-line-map -o "$$tmp/hoc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_one_class_each_value: -c)"; ok=0; }; \
 	grep -q 'sp_Item \* lv_it' "$$tmp/hoc.c" && grep -q 'sp_Item_describe((sp_Item \*)lv_it)' "$$tmp/hoc.c" || { echo "infer-test: FAIL (#4846 a one-class hash's each_value is not typed)"; ok=0; }; \
 	$(SPINEL) test/infer/hash_or_write_index_setter.rb -c --no-line-map -o "$$tmp/hos.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_or_write_index_setter: -c)"; ok=0; }; \
