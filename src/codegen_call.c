@@ -13760,7 +13760,7 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
                      : sp_streq(name, "*") ? "sp_poly_mul"
                      : sp_streq(name, "/") ? "sp_poly_div"
                      : sp_streq(name, "%") ? "sp_poly_mod"
-                     : sp_streq(name, "**") ? "sp_poly_pow" : NULL;
+                     : sp_streq(name, "**") ? poly_pow_fn(rt) : NULL;
       if (pf) {
         int tp2 = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tp2); emit_boxed(c, recv, b);
@@ -21577,6 +21577,15 @@ static int coercing_object_arg(Compiler *c, int node) {
   TyKind t = comp_ntype(c, node);
   if (!ty_is_object(t)) return 0;
   return class_has_coerce_shape(c, ty_object_class(t));
+}
+
+/* The boxed `**` for a receiver of static type rt: a receiver typed a number
+   has `**`, and sp_poly_pow takes it as before; any other may hold a value
+   without one (nil, a String), which sp_poly_pow_recv answers with CRuby's
+   NoMethodError ahead of the arithmetic. */
+const char *poly_pow_fn(TyKind rt) {
+  return rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT || rt == TY_RATIONAL || rt == TY_COMPLEX
+         ? "sp_poly_pow" : "sp_poly_pow_recv";
 }
 
 /* The boxed runtime entry for each operation the coerce protocol routes, and

@@ -2407,7 +2407,7 @@ int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
   if (!op) return 0;
   static const char *const ops[][2] = {
     { "+", "sp_poly_add" }, { "-", "sp_poly_sub" }, { "*", "sp_poly_mul" },
-    { "/", "sp_poly_div" }, { "%", "sp_poly_mod" }, { "**", "sp_poly_pow" },
+    { "/", "sp_poly_div" }, { "%", "sp_poly_mod" }, { "**", "sp_poly_pow_recv" },
     { "<<", "sp_poly_shl" }, { ">>", "sp_poly_shr" },
     { "&", "sp_poly_bitop" }, { "|", "sp_poly_bitop" }, { "^", "sp_poly_bitop" },
   };
@@ -11884,7 +11884,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
                          : sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "|") ? "sp_poly_bor"
                          : sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "^") ? "sp_poly_bxor"
                          : sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr"
-                         : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
+                         : sp_streq(op, "**") ? "sp_poly_pow_recv" : NULL;
         if (pnum) buf_printf(b, "%s = ((%s).tag == SP_TAG_OBJ && (%s).cls_id == %d) ? ",
                              ref, ref, ref, poly_defcls);
         else buf_printf(b, "%s = ", ref);
@@ -11968,7 +11968,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
                     : op && sp_streq(op, "*") ? "sp_poly_mul"
                     : op && sp_streq(op, "/") ? "sp_poly_div"
                     : op && sp_streq(op, "%") ? "sp_poly_mod"
-                    : op && sp_streq(op, "**") ? "sp_poly_pow"
+                    : op && sp_streq(op, "**") ? "sp_poly_pow_recv"
                     : op && sp_streq(op, "<<") ? "sp_poly_shl"
                     : op && sp_streq(op, ">>") ? "sp_poly_shr" : NULL;
     int bitop = op && is_int_bit_op(op);
@@ -15747,7 +15747,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *pf = vt == TY_POLY ?
         (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow_recv" :
          sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
          sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
          sp_streq(op, "^") ? "sp_poly_bxor" : NULL) : NULL;
@@ -15777,7 +15777,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *pf =
         sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
         sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow_recv" :
         sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
         sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
         sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
@@ -15955,7 +15955,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *pf =
         sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
         sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow_recv" :
         sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
         sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
         sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
