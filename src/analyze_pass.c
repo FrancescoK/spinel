@@ -3900,6 +3900,36 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
   return changed;
 }
 
+/* A local's write is typed by its value as the pass reaches it, in node
+   order, and a read of another local answers what that local holds so far
+   this round. A read ahead of the write that widens it -- a later
+   statement of a loop body (`u = b[0]; b = "xy"`), or a multiple
+   assignment's target, which infer_write_multi_assign types after the
+   plain writes (`a, *b = t`) -- saw the narrower type, and the slot it
+   fills kept it: an Integer slot read a String's box as 0, a String
+   Array slot read a String's (a crash). Once every write of the round is
+   in, a write whose value is, or calls on, a local now held boxed is
+   typed again, and its slot widens when the value now is. Only those
+   writes: re-inferring every value would double the pass. The slot is
+   one the round resets, so no change is reported (the stash comparison
+   at the end of the pass is the detector). */
+static void infer_write_reads_widened(Compiler *c, const NodeTable *nt) {
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int v = nt_ref(nt, id, "value");
+    int r = v;
+    if (r >= 0 && nt_kind(nt, r) == NK_CallNode) r = nt_ref(nt, r, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name"), *wn = nt_str(nt, id, "name");
+    LocalVar *rl = rn ? scope_local(comp_scope_of(c, r), rn) : NULL;
+    if (!rl || !ty_degraded(rl->type)) continue;
+    LocalVar *lv = wn ? scope_local(comp_scope_of(c, id), wn) : NULL;
+    if (!lv || lv == rl || lv->is_param || lv->is_block_param || lv->rbs_seeded || ty_degraded(lv->type))
+      continue;
+    TyKind t = infer_type(c, v);
+    if (ty_degraded(t)) slot_take(c, lv, t, v);
+  }
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -4105,6 +4135,7 @@ int infer_write_types(Compiler *c) {
   }
 
   changed |= infer_write_multi_assign(c, nt);
+  infer_write_reads_widened(c, nt);
 
   changed |= infer_case_pattern_locals(c);
 
