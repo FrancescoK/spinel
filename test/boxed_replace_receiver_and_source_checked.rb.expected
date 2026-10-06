@@ -1,0 +1,44 @@
+NoMethodError: undefined method 'replace' for an instance of Integer ["r"]
+NoMethodError: undefined method 'replace' for nil ["r"]
+NoMethodError: undefined method 'replace' for an instance of Symbol ["r"]
+NoMethodError: undefined method 'replace' for an instance of Float ["r"]
+NoMethodError: undefined method 'replace' for true ["r"]
+NoMethodError: undefined method 'replace' for an instance of Range ["r"]
+NoMethodError: undefined method 'replace' for an instance of Plain ["r"]
+TypeError: no implicit conversion of String into Array
+TypeError: no implicit conversion of String into Hash
+"r"
+NoMethodError: undefined method 'replace' for an instance of Integer [[9]]
+NoMethodError: undefined method 'replace' for nil [[9]]
+NoMethodError: undefined method 'replace' for an instance of Symbol [[9]]
+NoMethodError: undefined method 'replace' for an instance of Float [[9]]
+NoMethodError: undefined method 'replace' for true [[9]]
+NoMethodError: undefined method 'replace' for an instance of Range [[9]]
+NoMethodError: undefined method 'replace' for an instance of Plain [[9]]
+[9]
+TypeError: no implicit conversion of Array into Hash
+TypeError: no implicit conversion of Array into String
+NoMethodError: undefined method 'replace' for an instance of Integer [{b: 2}]
+NoMethodError: undefined method 'replace' for nil [{b: 2}]
+NoMethodError: undefined method 'replace' for an instance of Symbol [{b: 2}]
+NoMethodError: undefined method 'replace' for an instance of Float [{b: 2}]
+NoMethodError: undefined method 'replace' for true [{b: 2}]
+NoMethodError: undefined method 'replace' for an instance of Range [{b: 2}]
+NoMethodError: undefined method 'replace' for an instance of Plain [{b: 2}]
+TypeError: no implicit conversion of Hash into Array
+{b: 2}
+TypeError: no implicit conversion of Hash into String
+NoMethodError: undefined method 'replace' for an instance of Integer [nil]
+NoMethodError: undefined method 'replace' for nil [nil]
+NoMethodError: undefined method 'replace' for an instance of Symbol [nil]
+NoMethodError: undefined method 'replace' for an instance of Float [nil]
+NoMethodError: undefined method 'replace' for true [nil]
+NoMethodError: undefined method 'replace' for an instance of Range [nil]
+NoMethodError: undefined method 'replace' for an instance of Plain [nil]
+TypeError: no implicit conversion of nil into Array
+TypeError: no implicit conversion of nil into Hash
+TypeError: no implicit conversion of nil into String
+FrozenError: can't modify frozen String: "ab"
+FrozenError: can't modify frozen String: "ab"
+FrozenError: can't modify frozen Array: [1, 2]
+"zz"
