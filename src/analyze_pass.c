@@ -1201,9 +1201,9 @@ static int infer_case_pattern_locals(Compiler *c) {
    the post-fixpoint write re-run (a callee's return widens last, once its
    parameter has seen a second class): the emitted assignment hands an sp_RbVal
    to an sp_Foo * and the C build fails. Widen the slot to poly -- the value
-   really can be either class. Object slots only: a scalar slot has a coercion
-   at the assignment, an object slot has none. (#3964) */
-int widen_object_locals_from_poly_writes(Compiler *c) {
+   really can be either class (#3964). A scalar without a nil representation must
+   widen too: coercing a boxed nil into a Bool or Symbol loses the value. */
+int widen_locals_from_poly_writes(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
@@ -1212,7 +1212,7 @@ int widen_object_locals_from_poly_writes(Compiler *c) {
     Scope *s = nm ? comp_scope_of(c, id) : NULL;
     LocalVar *lv = s ? scope_local(s, nm) : NULL;
     if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    if (!ty_is_object(lv->type)) continue;
+    if (!ty_is_object(lv->type) && an_ty_holds_nil(lv->type)) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0 || infer_type(c, v) != TY_POLY) continue;
     lv->type = TY_POLY;
@@ -2711,11 +2711,16 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            a container parameter reads this, through the call sites */
         elem_argv = argv; elem_an = an; elem_splat_index = 1;
       }
-      else if (name && sp_streq(name, "concat") && an == 1) {
-        /* concat(other): the other array's elements splice in */
+      else if (name && sp_streq(name, "concat") && an >= 1) {
+        /* concat(other, ...): each other array's elements splice in, so
+           every argument is evidence, as push's are; one that is no array
+           raises before anything is stored */
         is_push = 1; vt = splice_incoming_elem(c, argv[0]);
-        TyKind cat = infer_type(c, argv[0]);
-        concat_scalar = cat != TY_UNKNOWN && cat != TY_POLY && !ty_is_array(cat);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, splice_incoming_elem(c, argv[ai]));
+        for (int ai = 0; ai < an && !concat_scalar; ai++) {
+          TyKind cat = infer_type(c, argv[ai]);
+          concat_scalar = cat != TY_UNKNOWN && cat != TY_POLY && !ty_is_array(cat);
+        }
       }
       else if (name && sp_streq(name, "replace") && an == 1 && recv >= 0 &&
                ty_is_array(infer_type(c, argv[0])) &&
@@ -2797,6 +2802,17 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         knode = argv[0]; vnode = argv[1];
       }
+      else if (name && is_hash_default_setter(name) && an == 1 && recv >= 0 &&
+               ty_is_hash(infer_type(c, recv)) && nt_kind(nt, argv[0]) != NK_NilNode) {
+        /* the default is a value the Hash answers (`h[missing]`), so it is
+           value evidence as a store is, under the key the Hash has. A nil
+           literal is none: a missing key already answers nil, and a typed
+           Hash keeps a nil default in its values' slot
+           (emit_op_hash_set_default). A local that holds nil reaches the
+           setter boxed, so it still counts. */
+        is_idx_write = 1; kt = ty_hash_key(infer_type(c, recv)); vt = infer_type(c, argv[0]);
+        vnode = argv[0];
+      }
       else if (name && (is_hash_merge_bang(name)) && an >= 1) {
         /* merging hashes into an empty-{} local writes their keys/values:
            key+value evidence exactly like []= (#2434) */
@@ -2831,10 +2847,13 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         is_idx_write = 1; is_splice = 1; is_fill = 1; vt = infer_type(c, argv[0]);
         kt = TY_INT;  /* a positional span, never hash evidence */
       }
-      else if (name && sp_streq(name, "fill") && an <= 2 && nt_ref(nt, id, "block") >= 0 &&
-               nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode) {
+      else if (name && ((sp_streq(name, "fill") && an <= 2) || (is_map_bang_alias(name) && an == 0)) &&
+               nt_ref(nt, id, "block") >= 0 && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode) {
         /* the block form, fill([start[, len]]) { |i| v }: the block's value
-           is what goes into each slot of the span, the same evidence */
+           is what goes into each slot of the span, the same evidence. map!
+           { |x| v } writes every slot the same way, so a typed parameter or
+           ivar whose elements cannot hold v widens as for fill, where
+           widen_arrays_from_map_bang widens only a plain local. */
         int fblk = nt_ref(nt, id, "block");
         int fbody = nt_ref(nt, fblk, "body");
         int fbn = 0; const int *fbs = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
@@ -14095,6 +14114,16 @@ int infer_block_params(Compiler *c) {
     { int r = infer_block_params_enum_arms(c, nt, id, block, name, recv, rt, p0); changed |= r & 1; if (r & 2) continue; }
 
     { int r = infer_block_params_container_arms(c, nt, id, block, name, recv, rt, p0, pt); changed |= r & 1; if (r & 2) continue; }
+
+    /* A stage of a lazy chain (`[s].lazy.map { |x| }`) binds each element
+       boxed, as the pipeline reads it out of sp_enum_items_from. Left
+       untyped, the usage pass typed the parameter from its body instead:
+       `x << "!"` made it an Array, the String element was read as one, and
+       the program crashed. A stage with several parameters destructures
+       boxed elements already. */
+    if (pt == TY_UNKNOWN && rt == TY_UNKNOWN && recv >= 0 && p0 &&
+        !block_param_name(c, block, 1) && chain_is_lazy_valued(c, recv))
+      pt = TY_POLY;
 
     if (pt == TY_UNKNOWN) continue;
     Scope *s = comp_scope_of(c, block);

@@ -1,0 +1,20 @@
+prepend: "axyx" "axyx"
+insert: "xbyx" "xbyx"
+concat: "xyxc" "xyxc"
+replace: "zz" "zz"
+<<: "xyxd" "xyxd"
+upcase!: "XYX" "XYX"
+clear: "" ""
+sub!: "Zyx" "Zyx"
+[]=: "Q" "Qyx"
+delete_prefix!: "yx" "yx"
+squeeze!: nil "xyx"
+reverse!: "xyx" "xyx"
+slice!: "x" "yx"
+13
+"iwxyo"
+nil
+"vxy"
+[1, 5, 6]
+{1 => 2, 3 => 4}
+18

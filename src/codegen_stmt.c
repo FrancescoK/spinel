@@ -14261,13 +14261,17 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
        the single-index form's (#4060) -- the arm refused it (#4766) */
     if (assignable && sp_streq(name, "[]=") && argc == 3 &&
         (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED)) {
+      int ts = ++g_tmp, tl = ++g_tmp;
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent);
-      emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-      buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
-      buf_puts(b, ", 0);\n");
+      /* the start and the length are converted before the value, as CRuby
+         does: as arguments of one C call their order was the C compiler's,
+         and gcc raised the value's TypeError ahead of the index's */
+      buf_printf(b, "{ sp_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_int _t%d = ", tl); emit_int_expr(c, argv[1], b);
+      buf_puts(b, "; "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at("); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d, ", ts, tl); emit_str_expr(c, argv[2], b);
+      buf_puts(b, ", 0); }\n");
       return 1;
     }
     /* s["sub"] = v: replace the first occurrence; missing raises IndexError */

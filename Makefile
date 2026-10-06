@@ -1393,6 +1393,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
+	t=test/reject/string_method_object_mutator.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/smm.c" >"$$tmp/smm.out" 2>&1; then \
+	  echo "reject-test: FAIL (a Method bound to a String mutator compiled)"; ok=0; \
+	else grep -q "String#method is not supported for a method that changes the String in place" "$$tmp/smm.out" || \
+	  { echo "reject-test: FAIL (a Method bound to a String mutator rejected without saying why)"; sed -n 1,5p "$$tmp/smm.out"; ok=0; }; fi; \
 	t=test/reject/builtin_value_ivar_set.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bvi.c" >"$$tmp/bvi.out" 2>&1; then \
 	  echo "reject-test: FAIL (instance_variable_set on a String compiled)"; ok=0; \
@@ -1403,6 +1408,11 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
+	t=test/reject/lazy_stage_string_mutation.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lsm.c" >"$$tmp/lsm.out" 2>&1; then \
+	  echo "reject-test: FAIL (a lazy stage changing its String element compiled)"; ok=0; \
+	else grep -q "a lazy stage's block that changes its String element in place" "$$tmp/lsm.out" || \
+	  { echo "reject-test: FAIL (a lazy stage changing its String element rejected without saying why)"; sed -n 1,5p "$$tmp/lsm.out"; ok=0; }; fi; \
 	t=test/reject/string_mutator_jump_arm.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mja.c" >"$$tmp/mja.out" 2>&1; then \
 	  echo "reject-test: FAIL (a String mutator on a conditional with a returning arm compiled)"; ok=0; \
@@ -2072,6 +2082,7 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/ctor_ivar_default_keywords.rb \
                   test/random_reopen_block_parameter.rb \
                   test/kind_query_computed_nil.rb \
+                  test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
                   test/poly_struct_member_write.rb \
                   test/builtin_argument_array_roots.rb \
                   test/zip_boxed_receiver_argument_order.rb \

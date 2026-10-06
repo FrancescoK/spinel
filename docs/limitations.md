@@ -725,7 +725,12 @@ Not yet shared:
   curried proc, a method `define_method` defines, `new` or `raise`, a
   String held by a block parameter, by a variable a block or proc captures,
   or by a global or class variable, and through a proc, a `Method` or a
-  class value's `new`, one held by an instance variable.
+  class value's `new`, one held by an instance variable;
+- through a `Method` bound to one of the String's own in-place mutators
+  (`s.method(:<<)`, `s.method(:concat)`, `s.method(:upcase!)`, their
+  `to_proc` and `&s.method(:<<)`): the Method is bound to the String's
+  value, so `.method` itself is refused, naming the line. Call the
+  mutator on the String, or wrap it in a block (`->(x) { s << x }`).
 
 A String is shared as well through a rest a method forwards (`def w(*a) =
 m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
@@ -742,6 +747,12 @@ Each is lifted in turn, and this list shrinks with it. Until then, return
 the String from the method and assign it, or append to it in the caller. A
 literal or any other expression passed there is not refused: nothing else
 can see its growth.
+
+The block of a lazy stage (`[s].lazy.map { |x| x << "!" }`, and `select`,
+`take_while` and the other stages up to the first `map`) is handed a boxed
+copy of the element, so a block that changes its String element in place
+is refused as well, naming the line. Drop the `.lazy` (the eager form
+shares the String), or return a new String (`x + "!"`).
 
 #### A reassigned block parameter, and `yield` inside a proc literal
 
