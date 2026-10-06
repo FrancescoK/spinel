@@ -152,7 +152,65 @@ module URI
         i += 1
       end
     end
-    out
+    out.force_encoding("UTF-8")
+  end
+
+  # The www-form decoding of one key or value: "+" is a space and a "%" with two
+  # hex digits is that byte. Unlike decode_www_form_component, a "%" that is not
+  # followed by two hex digits is left as it is, not an error.
+  def self.decode_www_form_lenient(s)
+    out = String.new
+    i = 0
+    while i < s.length
+      ch = s[i]
+      if ch == "+"
+        out << " "
+        i += 1
+      elsif ch == "%" && hex_digit(s[i + 1]) && hex_digit(s[i + 2])
+        out << (hex_digit(s[i + 1]) * 16 + hex_digit(s[i + 2])).chr
+        i += 3
+      else
+        out << ch
+        i += 1
+      end
+    end
+    out.force_encoding("UTF-8").scrub
+  end
+
+  # `URI.decode_www_form("a=1&b=x+y")` -> [["a", "1"], ["b", "x y"]]. The
+  # encoding argument is taken and ignored (a String here is UTF-8 bytes), and
+  # `use__charset_` is not supported.
+  def self.decode_www_form(str, enc = nil, separator: "&", use__charset_: false, isindex: false)
+    raise ArgumentError, "the input of URI.decode_www_form must be ASCII only string" unless str.ascii_only?
+    raise NotImplementedError, "URI.decode_www_form: use__charset_ is not supported" if use__charset_
+    raise NotImplementedError, "URI.decode_www_form: an empty separator is not supported" if separator.empty?
+    ary = []
+    return ary if str.empty?
+    pos = 0
+    n = str.length
+    sl = separator.length
+    while pos < n
+      e = str.index(separator, pos)
+      if e
+        piece = str[pos, e - pos]
+        pos = e + sl
+      else
+        piece = str[pos, n - pos]
+        pos = n
+      end
+      eq = piece.index("=")
+      key = eq ? piece[0, eq] : piece
+      val = eq ? piece[eq + 1, piece.length - eq - 1] : ""
+      if isindex
+        if eq.nil?
+          val = key
+          key = ""
+        end
+        isindex = false
+      end
+      ary << [decode_www_form_lenient(key), decode_www_form_lenient(val)]
+    end
+    ary
   end
 
   # `URI.encode_www_form({"a" => 1, "b" => "x y"})` -> "a=1&b=x+y"
