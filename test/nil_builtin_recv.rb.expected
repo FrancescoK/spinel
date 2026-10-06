@@ -30,16 +30,56 @@ lines NoMethodError: undefined method 'lines' for nil
 split NoMethodError: undefined method 'split' for nil
 insert NoMethodError: undefined method 'insert' for nil
 push NoMethodError: undefined method 'push' for nil
-log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+nilarg NoMethodError: undefined method 'split' for nil
+interp NoMethodError: undefined method 'split' for nil
+or NoMethodError: undefined method 'ljust' for nil
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :d1, :e0, :e1]
 writes undefined method 'center' for nil
 written [6, "*"]
 lines ["a,b", "c"]
 split ["a", "b\nc"]
 insert [7, 8, 1, 2]
 push [[1], [2], [3], [4]]
-log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+nilarg ["a,b", "c"]
+interp ["a,b\nc"]
+or "a,b\nc****"
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :d1, :e0, :e1]
 writes "a,b\nc*"
 written [6, "*"]
+boxed NoMethodError: undefined method 'split' for nil
+boxed2 NoMethodError: undefined method 'start_with?' for nil
+boxed3 NoMethodError: undefined method 'split' for nil
+boxed-block NoMethodError: undefined method 'each_line' for nil
+safe-nav nil
+log [:p0, :p1, :p2, :p3, :p4, :p5]
+interp NoMethodError: undefined method 'split' for nil
+or NoMethodError: undefined method 'split' for nil
+and NoMethodError: undefined method 'split' for nil
+begin NoMethodError: undefined method 'split' for nil
+op NoMethodError: undefined method '+' for nil
+log [:r0, :a0, :a1, :r1, :a2, :r2, :a3, :r3, :a4, :a5]
+boxed NoMethodError: undefined method 'split' for an instance of Integer
+boxed2 NoMethodError: undefined method 'start_with?' for an instance of Integer
+boxed3 NoMethodError: undefined method 'split' for an instance of Integer
+boxed-block NoMethodError: undefined method 'each_line' for an instance of Integer
+safe-nav NoMethodError: undefined method 'split' for an instance of Integer
+log [:p0, :p1, :p2, :p3, :p4, :p5, :p6]
+interp NoMethodError: undefined method 'split' for an instance of Integer
+or NoMethodError: undefined method 'split' for an instance of Integer
+and NoMethodError: undefined method 'split' for an instance of Integer
+begin NoMethodError: undefined method 'split' for an instance of Integer
+op [6, 1]
+log [:r0, :a0, :a1, :r1, :a2, :r2, :a3, :r3, :a4, :a5, :a6]
+ivar-read NoMethodError: undefined method 'center' for nil
+proc-read NoMethodError: undefined method 'center' for nil
+boxed-read NoMethodError: undefined method 'center' for nil
+ivar-write "..xy"
+cmethod [3, 5]
+ivar-read "ab*"
+proc-read "-ab-"
+boxed-read "ab*"
+ivar-write "..xy"
+cmethod [3, 5]
 shared NoMethodError: undefined method '<<' for nil
 shared "abyz"
 puts NoMethodError: private method 'puts' called for nil
