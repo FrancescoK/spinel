@@ -233,8 +233,8 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (rt == TY_STRING && strbuf_object_ref(c, recv, b)) { }
     /* unboxed value structs have no identity: derive a stable Integer from
        the value hash (see the identity note in docs/limitations.md) */
-    else if (rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_RANGE ||
-             rt == TY_TIME || rt == TY_FLOAT) {
+    else if (rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
+             rt == TY_STR_RANGE || rt == TY_TIME || rt == TY_FLOAT) {
       buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
     }
     /* a value-type user object is a by-value struct with no pointer identity;

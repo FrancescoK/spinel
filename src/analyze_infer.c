@@ -6209,8 +6209,9 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
           was handed a hash where an array was declared (#3895). It is
           renamed to each before this point. reverse_each over an Enumerator
           or a Hash reaches the array machinery through the same marked hop,
-          and answers that receiver, not the array it walked (#4325). */
-       (argc == 0 && is_each_walk(name))) &&
+          and answers that receiver, not the array it walked (#4325).
+          each_with_index answers it the same way over a String range's hop. */
+       (argc == 0 && is_each_walk_or_with_index(name))) &&
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_recv")) {
     int orecv = nt_ref(nt, recv, "receiver");
     if (orecv >= 0) { *out = infer_type(c, orecv); return 1; }

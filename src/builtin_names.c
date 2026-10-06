@@ -304,6 +304,15 @@ int is_match_operator(const char *n) {
   return sp_streq(n, "=~") || sp_streq(n, "!~");
 }
 
+/* Object's methods that hand their receiver on to code over its members or
+   bind it into a wrapper: to_enum / enum_for walk each, instance_eval /
+   instance_exec run a block with it as self, method / public_method bind a
+   Method to it. */
+int is_object_receiver_handoff(const char *n) {
+  return sp_streq(n, "to_enum") || sp_streq(n, "enum_for") || is_instance_eval_family(n) ||
+         sp_streq(n, "method") || sp_streq(n, "public_method");
+}
+
 int is_eq_or_ne(const char *n) {
   return sp_streq(n, "==") || sp_streq(n, "!=");
 }
