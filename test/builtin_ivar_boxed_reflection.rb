@@ -81,3 +81,12 @@ p level([Bar, 1][0], 3), Bar.level, level({}, 4)
 p mark(String, "s"), mark(Comparable, 1)
 pr = proc { 1 }
 p mark(pr, :v), mark(lambda { 2 }, 1), pr.call
+
+# a name computed at run time is checked as #7522's reflection checks it
+names = ["@ok", "@x!", "x", :@sym]
+names.each do |n|
+  a = [1]
+  p((a.instance_variable_set(n, 1) rescue $!.class), (a.instance_variable_get(n) rescue $!.class),
+    (a.instance_variable_defined?(n) rescue $!.class), a.instance_variables)
+end
+p(([].instance_variable_get(42) rescue $!.class))
