@@ -33450,10 +33450,21 @@ static void an_phase_storage(Compiler *c) {
        into a writable sp_String would let `<<` mutate where CRuby raises
        FrozenError -- so a frozen contributing literal blocks the promotion
        and the value path's sp_str_check_mutable raises faithfully. */
-    int all_literal_writes = 1, saw_write = 0, frozen_literal_write = 0;
+    /* other_write: an op-, or-, and-write or a multiple-assignment target
+       also assigns the local, so it can hold that write's value (`s +=
+       "#{n}"` holds a fresh String): such a local does not "only ever hold
+       frozen literals", and the warning below would be wrong. The promotion
+       still declines it, as before. */
+    int all_literal_writes = 1, saw_write = 0, frozen_literal_write = 0, other_write = 0;
     for (int w = 0; w < c->nt->count; w++) {
-      const char *wty = nt_type(c->nt, w);
-      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+      NodeKind wk = nt_kind(c->nt, w);
+      if (wk == NK_LocalVariableOperatorWriteNode || wk == NK_LocalVariableOrWriteNode ||
+          wk == NK_LocalVariableAndWriteNode || wk == NK_LocalVariableTargetNode) {
+        const char *on = nt_str(c->nt, w, "name");
+        if (on && sp_streq(on, vn) && comp_scope_of(c, w) == s) other_write = 1;
+        continue;
+      }
+      if (wk != NK_LocalVariableWriteNode) continue;
       const char *wn = nt_str(c->nt, w, "name");
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != s) continue;
       saw_write = 1;
@@ -33471,7 +33482,7 @@ static void an_phase_storage(Compiler *c) {
          frozen-by-default literals (docs/limitations.md) are exactly the
          wall it walks into -- so say so at compile time, once per local,
          with the escape hatch named (#4207). */
-      int first_shl = 1;
+      int first_shl = !other_write;
       for (int p2 = 0; p2 < id && first_shl; p2++) {
         if (nt_kind(c->nt, p2) != NK_CallNode) continue;
         const char *pn2 = nt_str(c->nt, p2, "name");
