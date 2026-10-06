@@ -324,6 +324,8 @@ typedef enum {
   BSH_ARGS,       /* answers its one argument, or an Array of several (p) */
   BSH_ARRAY_OF,   /* answers its Array argument, or an Array holding it (Array()) */
   BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
+  /* the iterators' answers, BSH_ITER to BSH_ITER_THEN, stay together
+     (iter_rows_check reads the run) */
   BSH_ITER,       /* block parameters bind elements; answers the receiver (each) */
   BSH_ITER_SEL,   /* block parameters bind elements; answers a container of
                      some of them (select, sort_by) */
@@ -363,5 +365,84 @@ int bop_share_named(TyKind fam, const char *name);
 /* a String bang method answering its receiver, or nil when it changed
    nothing (`strip!`, `gsub!`, `scrub!`) */
 int bop_share_bang_self(const char *name);
+
+/* ---- What a builtin iterator yields to its block, and answers (#6765) ----
+   One row per receiver family, name and run of argument counts: where each
+   value a step hands the block comes from, and what the call answers.
+   Three readers take their facts from these rows: the share analysis
+   (bop_share's BSH_ITER_* answers), the block-shape desugar
+   (iter_shape_count) and ty_block_yield, which the forwarded-&callable
+   desugar and the boxed-element widening (analyze_pass.c
+   widen_boxed_elem_sources) ask.
+   The families are TY_STRING, BOP_ANY_ARRAY, BOP_ANY_HASH, TY_RANGE,
+   TY_FLOAT_RANGE, TY_INT, TY_FLOAT, BOP_KERNEL and BOP_ANY_RECV. */
+typedef enum {
+  YS_NONE,
+  YS_ELEM,      /* an element of the receiver */
+  YS_PAIR_KEY,  /* a Hash's key: the frozen copy it stored of a String */
+  YS_PAIR_VAL,  /* a Hash's value */
+  YS_PAIR,      /* a Hash's [key, value] pair, as one value */
+  YS_SUB,       /* a run of the receiver's elements (each_slice, combination) */
+  YS_TUPLE,     /* a tuple of an element and the arguments' (zip, product) */
+  YS_FRESH,     /* a new String each step (each_char, a gsub match) */
+  YS_NUM,       /* a number the step computes (times, step, each_byte) */
+  YS_INDEX,     /* an element's index */
+  YS_MEMO,      /* the accumulator (inject, each_with_object) */
+  YS_RECV,      /* the receiver itself (tap, then) */
+  YS_ARG0       /* the first argument (catch's tag) */
+} IterYield;
+typedef enum {
+  IA_RECV,              /* the receiver (or nil, for a bang that changed nothing) */
+  IA_SOME,              /* a new container of some of the elements (select, sort) */
+  IA_ONE,               /* one of the elements (find, min_by) */
+  IA_BLOCKVALS,         /* a new container of the block's values (map) */
+  IA_BLOCKVALS_INPLACE, /* the receiver, holding the block's values (map!) */
+  IA_BLOCKVAL,          /* the block's value (then) */
+  IA_MEMO,              /* the accumulator */
+  IA_GROUPS,            /* a Hash of containers of the elements (group_by) */
+  IA_PARTS,             /* containers of the elements (partition, minmax) */
+  IA_FRESH,             /* a new String (gsub) */
+  IA_OTHER              /* a value the call computes (count, any?) or nil */
+} IterAnswer;
+/* Legacy coverage, to be cleared: today's readers do not all read every row
+   (builtin_ops.c lists the gaps at the table). A PR that closes a gap clears
+   its bit, with a test for the C it changes. */
+#define IRF_GAP_SHARE     1   /* the share analysis does not read the row */
+#define IRF_GAP_SHAPE     2   /* the block-shape desugar does not read it */
+#define IRF_GAP_FWD       4   /* ty_block_yield does not: the forwarded-
+                                 &callable desugar, and the boxed-element
+                                 widening, which asks it whether an Array
+                                 iterator's first parameter is an element */
+#define IRF_GAP_RUN_BOXED 8   /* the block-shape desugar types the run a step
+                                 yields as a boxed Array, not the receiver's kind */
+#define IRF_SHAPE_BOXED  16   /* the block-shape desugar reads the row on a
+                                 boxed receiver too (of the Array and Hash
+                                 rows, only these) */
+typedef struct IterRow {
+  TyKind fam;
+  const char *name;
+  signed char argc_min, argc_max;
+  unsigned char nyield;     /* values per step */
+  unsigned char yield[3];   /* IterYield per position */
+  unsigned char answer;     /* IterAnswer */
+  unsigned char flags;      /* IRF_* */
+} IterRow;
+
+/* The first row of family fam for `name` that takes argc arguments (any
+   count when argc < 0) and carries none of the flags in `skip`, or NULL. */
+const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip);
+/* The kind the value at position k of a step has, on a receiver of kind rt
+   (TY_POLY: a boxed receiver, whose elements are boxed). */
+TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt);
+/* The block-shape desugar's reading (analyze_desugar.c): how many values the
+   builtin iterator `nm` yields its block per step (0: not one it handles),
+   the kind a single yielded value has, and whether that value is a Hash's
+   [key, value] pair. */
+int iter_shape_count(TyKind rt, const char *nm, int argc, TyKind *elem, int *hash_pair);
+/* --plan-check: the rows are well formed, no two rows of a family and name
+   take the same argument count, and no hand share row with an iterator's
+   answer repeats the answer its iterator row derives. Prints a
+   "plan-check: iter-row-error" line per fault. */
+void iter_rows_check(void);
 
 #endif
