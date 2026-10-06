@@ -12277,6 +12277,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
       "  sp_marshal_v.arr_push = sp_marv_arr_push;\n"
       "  sp_marshal_v.hash_new = sp_marv_hash_new;\n"
       "  sp_marshal_v.hash_set = sp_marv_hash_set;\n"
+      "  sp_marshal_v.hash_default = sp_marv_hash_default;\n"
+      "  sp_marshal_v.hash_set_default = sp_marv_hash_set_default;\n"
       "  sp_marshal_v.box_complex = sp_marv_box_complex;\n"
       "  sp_marshal_v.box_rational = sp_marv_box_rational;\n"
       "  sp_marshal_v.obj_dump = sp_marshal_obj_dump;\n"

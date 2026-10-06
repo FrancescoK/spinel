@@ -94,14 +94,22 @@ static int sp_mar_seen(sp_mar_buf *b, void *ptr) {
   }
   return 0;
 }
+/* A Hash: `{` and its pairs, or, with a default value, `}`, the pairs and
+   the default after them, as CRuby writes it; a default proc cannot be
+   written (CRuby's TypeError). */
 static void sp_mar_w_hash(sp_mar_buf *b, sp_RbVal v) {
-  sp_mar_b(b, '{');
+  int has_proc = 0;
+  sp_RbVal d = sp_marshal_v.hash_default ? sp_marshal_v.hash_default(v, &has_proc) : mk_nil();
+  if (has_proc) mar_raise("TypeError", "can't dump hash with default proc");
+  SP_GC_ROOT_RBVAL(d);
+  sp_mar_b(b, d.tag == SP_TAG_NIL ? '{' : '}');
   sp_int n = sp_json_len_fn(v);
   sp_mar_long(b, n);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, val; sp_json_hpair_fn(v, i, &k, &val);
     sp_mar_w(b, k); sp_mar_w(b, val);
   }
+  if (d.tag != SP_TAG_NIL) sp_mar_w(b, d);
 }
 void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
   switch (v.tag) {
@@ -344,12 +352,16 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
       for (long i = 0; i < n; i++) sp_marshal_v.arr_push(box, sp_mar_r(r));
       return box;
     }
-    case '{': {
+    case '{': case '}': {   /* `}`: the pairs, then the default value */
       int id = sp_mar_reg(r);
       long n = sp_mar_rlong(r);
       sp_RbVal box = sp_marshal_v.hash_new(); SP_GC_ROOT_RBVAL(box);
       r->objs[id] = box;
       for (long i = 0; i < n; i++) { sp_RbVal k = sp_mar_r(r); sp_RbVal val = sp_mar_r(r); sp_marshal_v.hash_set(box, k, val); }
+      if (t == '}') {
+        sp_RbVal d = sp_mar_r(r);
+        if (sp_marshal_v.hash_set_default) sp_marshal_v.hash_set_default(box, d);
+      }
       return box;
     }
     default: mar_raise("ArgumentError", "unsupported type in Marshal.load"); return mk_nil();
