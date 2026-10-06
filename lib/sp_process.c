@@ -284,7 +284,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   if (args_arr) {
     for (int i = 0; i < args_arr->len; i++) {
       if (args_arr->data[i].tag != SP_TAG_STR)
-        sp_process_spawn_fail(owned, "ArgumentError", "spawn args must be Strings");
+        sp_process_spawn_fail(owned, "TypeError", sp_errf_conv(args_arr->data[i]));
       argv[ai++] = (char *)args_arr->data[i].v.s;
     }
   }

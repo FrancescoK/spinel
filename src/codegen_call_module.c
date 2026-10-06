@@ -1165,6 +1165,24 @@ else {
 }
 
 /* the class methods of the builtin classes named by a constant (Thread, an exception class, ...), ahead of the Class.new dispatch */
+/* A spawn or exec argument, boxed: a shared String handle is read as its
+   String, which is what the runtime takes (a handle box was a TypeError) */
+static void emit_spawn_arg(Compiler *c, int node, Buf *b) {
+  TyKind t = comp_ntype(c, node);
+  if (t != TY_POLY && t != TY_STRBUF && t != TY_UNKNOWN) { emit_boxed(c, node, b); return; }
+  buf_puts(b, "sp_poly_strbuf_deref(");
+  emit_boxed(c, node, b);
+  buf_puts(b, ")");
+}
+/* No options: the 7 option slots spawn reads, unset (nils / -1 fds) */
+static void emit_spawn_default_opts(int topts, Buf *b) {
+  for (int i = 0; i < 3; i++)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(-1));", topts);
+  buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
+  buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
+  buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
+  buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
+}
 int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
      constant). Handled before the Class.new dispatch since they are not `new`. */
@@ -1446,13 +1464,17 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       /* Detect if the last positional arg is a Hash (opts). A splat is the
          argument list, not the options. */
       int last_is_opts = 0;
+      /* A boxed last argument is the options only when it holds a Hash at
+         run time, as CRuby reads it: taken as the options always, a boxed
+         String there was dropped (`spawn("echo", a[0])` ran echo bare). */
+      int opts_at_run = 0;
       if (extra >= 1 && nt_kind(nt, argv[argc - 1]) != NK_SplatNode) {
         TyKind ltk = comp_ntype(c, argv[argc - 1]);
         if (ltk == TY_SYM_POLY_HASH || ltk == TY_STR_POLY_HASH ||
-            ltk == TY_POLY_POLY_HASH || ltk == TY_UNKNOWN ||
-            ltk == TY_POLY) {
+            ltk == TY_POLY_POLY_HASH) {
           last_is_opts = 1;
         }
+        else if (ltk == TY_UNKNOWN || ltk == TY_POLY) opts_at_run = 1;
       }
       /* exec's options (chdir:, redirections) are not taken: refused, not
          dropped */
@@ -1461,7 +1483,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(b, "0");
         return 1;
       }
-      int n_args = extra - (last_is_opts ? 1 : 0);
+      int n_args = extra - (last_is_opts || opts_at_run ? 1 : 0);
       int has_splat = 0;
       for (int k = 0; k <= n_args; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
       if (has_splat) {
@@ -1475,12 +1497,12 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
             int ts = ++g_tmp;
             buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts);
             if (se >= 0) emit_boxed(c, se, b); else buf_puts(b, "sp_box_nil()");
-            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }",
+            buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, sp_poly_strbuf_deref(_t%d->data[_i])); }",
                        ts, tall, ts);
           }
           else {
             buf_printf(b, " sp_PolyArray_push(_t%d, ", tall);
-            emit_boxed(c, argv[k], b);
+            emit_spawn_arg(c, argv[k], b);
             buf_puts(b, ");");
           }
         }
@@ -1493,16 +1515,31 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       else {
         /* cmd = argv[0] (boxed, so it can be String or Array) */
         buf_printf(b, "({ sp_RbVal _t%d = ", tcmd);
-        emit_boxed(c, argv[0], b);
+        emit_spawn_arg(c, argv[0], b);
         buf_puts(b, ";");
         /* args: collect argv[1..argc-2] (or empty if argc==1) into a
            PolyArray. Skip the last arg if it's a Hash (the opts). */
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", targs, targs);
         for (int k = 1; k <= n_args; k++) {
           buf_printf(b, " sp_PolyArray_push(_t%d, ", targs);
-          emit_boxed(c, argv[k], b);
+          emit_spawn_arg(c, argv[k], b);
           buf_puts(b, ");");
         }
+      }
+      /* a boxed last argument: the options if it holds a Hash, else the
+         last argument. exec takes no options, so a Hash there raises what
+         the static refusal above says. */
+      int tth = -1, tho = -1;
+      if (opts_at_run) {
+        tth = ++g_tmp; tho = ++g_tmp;
+        buf_printf(b, " sp_RbVal _t%d = ", tth);
+        emit_boxed(c, argv[argc - 1], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); int _t%d = _t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id);"
+                      " if (!_t%d) sp_PolyArray_push(_t%d, sp_poly_strbuf_deref(_t%d));",
+                   tth, tho, tth, tth, tho, targs, tth);
+        if (is_exec)
+          buf_printf(b, "\nelse sp_raise_cls(\"NotImplementedError\", \"exec with an options Hash is not supported"
+                        " (Process.spawn takes chdir: and the redirections)\");");
       }
       /* a [program, argv0] pair of Strings arrives as a String array: the
          runtime reads it as a general one */
@@ -1515,13 +1552,16 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", topts, topts);
       int town = ++g_tmp;
       buf_printf(b, " int _t%d[3] = { -1, -1, -1 };", town);
-      if (last_is_opts) {
-        int tth = ++g_tmp;
+      if (last_is_opts || (opts_at_run && !is_exec)) {
+        if (opts_at_run) buf_printf(b, " if (_t%d) {", tho);
+        else tth = ++g_tmp;
         int tkv = ++g_tmp;
         int tfd = ++g_tmp;
-        buf_printf(b, " sp_RbVal _t%d = ", tth);
-        emit_boxed(c, argv[argc - 1], b);
-        buf_puts(b, ";");
+        if (!opts_at_run) {
+          buf_printf(b, " sp_RbVal _t%d = ", tth);
+          emit_boxed(c, argv[argc - 1], b);
+          buf_puts(b, ";");
+        }
         /* For the three fd slots (in/out/err): look up the value and
            resolve it. The C block is emitted three times with the
            key name changed -- a top-level static helper would be
@@ -1629,16 +1669,13 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           tkv, tfd, tkv, tth, tfd,
           tfd, tkv, topts, tkv,
           topts);
+        if (opts_at_run) {
+          buf_puts(b, " }\nelse {");
+          emit_spawn_default_opts(topts, b);
+          buf_puts(b, " }");
+        }
       }
-      else {
-        /* No opts: push defaults (nils / 0). */
-        for (int i = 0; i < 3; i++)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(-1));", topts);
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", topts);
-      }
+      else emit_spawn_default_opts(topts, b);
       /* Slot 7: which of in/out/err the runtime opened itself, a bit per
          slot, so it closes the parent's copies and never a caller's IO. */
       buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int((_t%d[0] >= 0) | ((_t%d[1] >= 0) << 1) | ((_t%d[2] >= 0) << 2)));",
