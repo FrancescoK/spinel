@@ -479,16 +479,17 @@ int bigint_cmp_operand_ok(TyKind t) {
    float into a bigint truncated it to int64 and saturated there, so
    `1.0 / 0 > 10 ** 100` answered false (and the conversion warned). */
 int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b) {
-  TyKind lt = comp_ntype(c, recv), rt2 = comp_ntype(c, arg);
-  if (!((lt == TY_FLOAT && rt2 == TY_BIGINT) || (lt == TY_BIGINT && rt2 == TY_FLOAT)))
+  Repr lr = repr_of(c, recv), rr2 = repr_of(c, arg);
+  TyKind lt = lr.as_ty, rt2 = rr2.as_ty;
+  if (!((lt == TY_FLOAT && rr2.big) || (lr.big && rt2 == TY_FLOAT)))
     return 0;
   /* equality is decided exactly: 1.0e100 and 10 ** 100 differ by an ulp, and
      as doubles they would compare equal */
   if (is_eq_or_ne(op)) {
     buf_printf(b, "(%ssp_bigint_eq_f(", sp_streq(op, "!=") ? "!" : "");
-    emit_expr(c, lt == TY_BIGINT ? recv : arg, b);
+    emit_expr(c, lr.big ? recv : arg, b);
     buf_puts(b, ", ");
-    emit_expr(c, lt == TY_BIGINT ? arg : recv, b);
+    emit_expr(c, lr.big ? arg : recv, b);
     buf_puts(b, "))");
     return 1;
   }
@@ -496,10 +497,10 @@ int emit_float_bigint_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b
      and turned round for a Float receiver); a NaN orders nothing */
   int tc = ++g_tmp;
   buf_printf(b, "({ int _t%d = sp_bigint_cmp_f(", tc);
-  emit_expr(c, lt == TY_BIGINT ? recv : arg, b);
+  emit_expr(c, lr.big ? recv : arg, b);
   buf_puts(b, ", ");
-  emit_expr(c, lt == TY_BIGINT ? arg : recv, b);
-  buf_printf(b, "); _t%d != 2 && %s_t%d %s 0; })", tc, lt == TY_BIGINT ? "" : "-", tc, op);
+  emit_expr(c, lr.big ? arg : recv, b);
+  buf_printf(b, "); _t%d != 2 && %s_t%d %s 0; })", tc, lr.big ? "" : "-", tc, op);
   return 1;
 }
 /* An Integer against a Float compares exactly, as CRuby does (#7505): C
@@ -550,8 +551,9 @@ int emit_int_float_cmp(Compiler *c, int recv, int arg, const char *op, Buf *b) {
   return 1;
 }
 void emit_bigint_operand(Compiler *c, int node, Buf *b) {
-  TyKind t = comp_ntype(c, node);
-  if (t == TY_BIGINT) { emit_expr(c, node, b); return; }
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (tr.big) { emit_expr(c, node, b); return; }
   if (t == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, node, b); buf_puts(b, ")"); return; }
   /* A nilable int carries nil as SP_INT_NIL, and sp_bigint_new_int made a
      Bignum of INT64_MIN out of it: `return (if false then 1 end)` from a
@@ -2843,8 +2845,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   }
   if (lazy_src < 0) return 0;
 
-  TyKind st = comp_ntype(c, lazy_src);
-  int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
+  Repr sr = repr_of(c, lazy_src);
+  TyKind st = sr.as_ty;
+  int src_is_range = (sr.range == TY_INT), src_is_intarr = (sr.elem == TY_INT);
   int src_is_enum = (st == TY_ENUMERATOR);
   /* a boxed source streams as an Enumerator over it (sp_poly_lazy_src) */
   int src_is_poly = (st == TY_POLY && !diag_user_defines(c, "lazy"));
@@ -2852,8 +2855,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   /* other array kinds iterate a boxed-element snapshot. An empty `[]` literal
      has no element type and so infers UNKNOWN, but it is still an array and
      the pipeline over it yields [] (#2996). */
-  int src_is_arr = (st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY ||
-                    (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
+  int src_is_arr = (sr.elem == TY_POLY || sr.elem == TY_STRING || sr.elem == TY_FLOAT ||
+                    (sr.untyped && nt_type(nt, lazy_src) &&
                      sp_streq(nt_type(nt, lazy_src), "ArrayNode")));
   if (!src_is_range && !src_is_intarr && !src_is_enum && !src_is_arr) return 0;
   /* A stage block that changes the source's String element in place
@@ -4082,13 +4085,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
        3) came out a different garbage value on every run. Build the big
        Rational instead; sp_box_brat normalizes the sign and reduces. */
     if ((argc == 1 || argc == 2) &&
-        (comp_ntype(c, argv[0]) == TY_BIGINT ||
-         (argc == 2 && comp_ntype(c, argv[1]) == TY_BIGINT))) {
+        (repr_of(c, argv[0]).big ||
+         (argc == 2 && repr_of(c, argv[1]).big))) {
       buf_puts(b, "sp_box_brat(");
       for (int k = 0; k < 2; k++) {
         if (k) buf_puts(b, ", ");
         if (k == 1 && argc == 1) { buf_puts(b, "sp_bigint_new_int(1)"); break; }
-        if (comp_ntype(c, argv[k]) == TY_BIGINT) emit_expr(c, argv[k], b);
+        if (repr_of(c, argv[k]).big) emit_expr(c, argv[k], b);
         else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[k], b); buf_puts(b, ")"); }
       }
       buf_puts(b, ")");
@@ -5072,7 +5075,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     int pcm = 0;
     for (int kk = 0; kk < c->nclasses && !pcm && pmode != -2; kk++)
       if (comp_cmethod_in_chain(c, kk, name, NULL) >= 0) pcm = 1;
-    if (pmode != -2 && !pcm && comp_ntype(c, id) == TY_POLY_ARRAY) {
+    if (pmode != -2 && !pcm && repr_of(c, id).elem == TY_POLY) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
@@ -7262,8 +7265,8 @@ int poly_kw_any_key(Compiler *c, int kwh) {
   for (int e = 0; e < en; e++) {
     int src = nt_kind(nt, els[e]) == NK_AssocSplatNode ? nt_ref(nt, els[e], "value") : -1;
     if (src < 0 || poly_kw_empty_literal(nt, src) || poly_kw_brings_none(c, src)) continue;
-    TyKind st = comp_ntype(c, src);
-    if (st == TY_POLY || ty_hash_key(st) != TY_SYMBOL) return 1;
+    Repr sr = repr_of(c, src);
+    if (sr.as_ty == TY_POLY || sr.key != TY_SYMBOL) return 1;
   }
   return 0;
 }
@@ -7356,7 +7359,7 @@ void emit_poly_kw_all(Compiler *c, int kwh, int th, int any, int ran, Buf *b) {
     }
     if (poly_kw_empty_literal(nt, src)) continue;
     Buf sb; memset(&sb, 0, sizeof sb);
-    int sym = comp_ntype(c, src) == TY_SYM_POLY_HASH;
+    int sym = repr_hash_is(repr_of(c, src), TY_SYMBOL, TY_POLY);
     poly_kw_held(c, src, !sym, ran, b, &sb);
     buf_printf(b, sym ? "sp_SymPolyHash_update(_t%d, %s); " : "sp_kwrest_merge_poly(_t%d, %s); ",
                th, sb.p ? sb.p : (sym ? "NULL" : "sp_box_nil()"));
@@ -8038,8 +8041,9 @@ void native_arg_check(Compiler *c, int id, const char *what, NativeMethod *m,
     if (!spec || sp_streq(spec, "any") || sp_streq(spec, "ptr") ||
         sp_streq(spec, "pointer") || sp_streq(spec, "regexp") || sp_streq(spec, "text")) continue;
     TyKind want = ffi_spec_to_ty(spec);
-    TyKind got = argv[ai] >= 0 ? comp_ntype(c, argv[ai]) : TY_UNKNOWN;
-    if (want == TY_UNKNOWN || got == TY_UNKNOWN || got == TY_POLY || got == TY_NIL) continue;
+    Repr gr = repr_of(c, argv[ai]);
+    TyKind got = gr.as_ty;
+    if (want == TY_UNKNOWN || gr.untyped || got == TY_POLY || got == TY_NIL) continue;
     /* a machine scalar needs a machine scalar, and a C string needs a string:
        everything else at this boundary is a pointer of some other shape */
     int want_scalar = (want == TY_INT || want == TY_FLOAT || want == TY_BOOL);
