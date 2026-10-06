@@ -5695,6 +5695,26 @@ const char *sp_bigint_to_s(sp_Bigint *b) {
   return result;
 }
 
+/* Integer#size of a value held as a Bignum: CRuby answers sizeof(long) for
+   a Fixnum and the byte count of a Bignum's MAGNITUDE (BIGSIZE), which is
+   never less. So it is the magnitude's bytes, at least an sp_int's
+   (intptr_t, lib/sp_types.h): a small value a Bignum slot holds (2**70 -
+   (2**70 - 7)) is 8, and -(2**64) is 9, where the two's-complement
+   bit_length (64) would make it 8. */
+intptr_t sp_bigint_int_size(sp_Bigint *b) {
+  intptr_t bytes = 0;
+  if (b) {
+    sp_bigint_init_ctx();
+    mpz_t *z = &b->mpz;
+    size_t n = z->sn == 0 ? 0 : digits(z);
+    if (n > 0) {
+      int topbits = 0;
+      for (mp_limb t = z->p[n - 1]; t; t >>= 1) topbits++;
+      bytes = (intptr_t)(((mrb_int)(n - 1) * (mrb_int)DIG_SIZE + topbits + 7) / 8);
+    }
+  }
+  return bytes < (intptr_t)sizeof(intptr_t) ? (intptr_t)sizeof(intptr_t) : bytes;
+}
 /* Integer#bit_length: the number of bits in the two's-complement representation
    excluding the sign bit -- i.e. the magnitude's bit count for a non-negative
    value, and (|self| - 1)'s bit count for a negative one (a magnitude that is an
