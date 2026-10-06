@@ -31404,7 +31404,10 @@ static void an_phase_infer_fixpoint(Compiler *c) {
        (needs the receiver kind, so it runs inside the fixpoint). */
     if (desugar_enumerable_via_to_a(c)) ch |= infer_write_types(c);
     narrow_locals_from_arrays(c);
-    ch |= infer_param_types(c);
+    /* the binding settles a forwarding chain within the round
+       (infer_param_types_settle); the re-runs after the fixpoint, which
+       reset slots on purpose, bind once as before */
+    ch |= infer_param_types_settle(c);
     reassert_rbs_param_seeds(c);   /* a seed outranks a narrowing derived from one call site */
     ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
     ch |= infer_param_hash_value(c);
