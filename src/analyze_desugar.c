@@ -13031,6 +13031,118 @@ static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_proc
   }
 }
 
+/* ---- `C.instance_variable_set(:@x, v)` / `C.instance_variable_get(:@x)` ---
+ *
+ * A literal ivar name on a receiver that names a program class or module
+ * reaches the class's own ivar -- the one its class methods (and a
+ * `class << self; attr_reader :x; end`) read. The access goes through the
+ * same pair of class-method accessors desugar_body_ivars gives a body ivar,
+ * added to the class's body, so it lands in the class's civ slot:
+ *
+ *   Ded.instance_variable_set(:@global, v)  ->  Ded.__spinel_civset_global(v)
+ *
+ * Only a receiver whose name one class or module body defines (by its
+ * plain name) and a name of the `@ident` shape. */
+static int civ_target_body(NodeTable *nt, const char *cn) {
+  int found = -1;
+  static const NodeKind HK[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++) {
+    NT_FOREACH_KIND(nt, HK[h], m) {
+      int cp = nt_ref(nt, m, "constant_path");
+      if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
+      const char *mn = nt_str(nt, cp, "name");
+      if (!mn || !sp_streq(mn, cn)) continue;
+      if (found < 0) found = m;
+    }
+  }
+  return found;
+}
+static int civ_name_ok(const char *iv) {
+  if (!iv || iv[0] != '@' || iv[1] == '@' || !iv[1]) return 0;
+  for (const char *q = iv + 1; *q; q++)
+    if (!(isalnum((unsigned char)*q) || *q == '_')) return 0;
+  return !isdigit((unsigned char)iv[1]);
+}
+/* the accessor `name` (getter when !setter) in class node m's body, added
+   once */
+static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int setter) {
+  char mname[256];
+  snprintf(mname, sizeof mname, setter ? "__spinel_civset_%s" : "__spinel_civget_%s", iv + 1);
+  int body = nt_ref(nt, m, "body");
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
+    body = fwd_new_node_like(nt, m, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", NULL, 0);
+    nt_node_set_ref(nt, m, "body", body);
+  }
+  int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+  for (int k = 0; k < bn; k++)
+    if (nt_kind(nt, bs[k]) == NK_DefNode && sp_streq(nt_str(nt, bs[k], "name"), mname)) return;
+  int d = fwd_new_node_like(nt, m, "DefNode");
+  int db = fwd_new_node_like(nt, m, "StatementsNode");
+  int e;
+  if (setter) {
+    e = fwd_new_node_like(nt, m, "InstanceVariableWriteNode");
+    int ps = fwd_new_node_like(nt, m, "ParametersNode");
+    int rq = fwd_new_node_like(nt, m, "RequiredParameterNode");
+    nt_node_set_str(nt, rq, "name", "spinel_civ_v__");
+    nt_node_set_arr(nt, ps, "requireds", &rq, 1);
+    nt_node_set_str(nt, e, "name", iv);
+    nt_node_set_ref(nt, e, "value", local_read_like(nt, m, "spinel_civ_v__"));
+    nt_node_set_ref(nt, d, "parameters", ps);
+  }
+  else {
+    e = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
+    nt_node_set_str(nt, e, "name", iv);
+  }
+  nt_node_set_arr(nt, db, "body", &e, 1);
+  nt_node_set_str(nt, d, "name", mname);
+  nt_node_set_ref(nt, d, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
+  nt_node_set_ref(nt, d, "body", db);
+  int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+  if (!nb) return;
+  nb[0] = d;
+  bs = nt_arr(nt, body, "body", &bn);
+  if (bn > 0) memcpy(nb + 1, bs, sizeof(int) * (size_t)bn);
+  nt_node_set_arr(nt, body, "body", nb, bn + 1);
+  free(nb);
+}
+int desugar_const_ivar_access(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int setter = nm && sp_streq(nm, "instance_variable_set");
+    if (!setter && !(nm && sp_streq(nm, "instance_variable_get"))) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, r, "name");
+    int args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an != (setter ? 2 : 1)) continue;
+    const char *iv0 = sym_or_str_literal(nt, av[0]);
+    if (!cn || !civ_name_ok(iv0)) continue;
+    int m = civ_target_body(nt, cn);
+    if (m < 0) continue;
+    char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
+    civ_ensure_accessor(nt, m, iv, setter);
+    char mname[256];
+    snprintf(mname, sizeof mname, setter ? "__spinel_civset_%s" : "__spinel_civget_%s", iv + 1);
+    nt_node_set_str(nt, id, "name", mname);
+    if (setter) {
+      int v = av[1];
+      int na = fwd_new_node_like(nt, id, "ArgumentsNode");
+      nt_node_set_arr(nt, na, "arguments", &v, 1);
+      nt_node_set_ref(nt, id, "arguments", na);
+    }
+    else nt_node_set_ref(nt, id, "arguments", -1);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_body_ivars(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
