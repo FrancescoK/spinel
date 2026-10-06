@@ -13527,6 +13527,11 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       int icls9 = tl9 >= 0 ? tl9 : ics9->class_id;
       int iidx9 = comp_ivar_index(&c->classes[icls9], inm9);
       TyKind it9 = iidx9 >= 0 ? c->classes[icls9].ivar_types[iidx9] : TY_UNKNOWN;
+      /* a slot that holds a shared String's handle answers its String,
+         read out with the handle published, as the value form's is: the
+         caller's deep-return pickup takes it (an_returns_shared_handles) */
+      int sb8 = it9 == TY_STRBUF;
+      if (sb8) it9 = TY_STRING;
       int want_poly8 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       int slot_ok8 = iidx9 >= 0 && it9 != TY_UNKNOWN && it9 != TY_VOID &&
                      (want_poly8 || it9 == (g_result_var ? g_result_ty : g_ret_type));
@@ -13537,6 +13542,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         if (cmeth9) snprintf(islot9, sizeof islot9, "civ_%s_%s", c->classes[ics9->class_id].name, iv_c(inm9 + 1));
         else if (tl9 >= 0) snprintf(islot9, sizeof islot9, "civ_Toplevel_%s", iv_c(inm9 + 1));
         else snprintf(islot9, sizeof islot9, "%s%siv_%s", g_self, g_self_deref, iv_c(inm9 + 1));
+        if (sb8) {
+          char h8[512];
+          snprintf(h8, sizeof h8, "%s", islot9);
+          snprintf(islot9, sizeof islot9,
+                   "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                   h8, h8, h8);
+        }
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);
           emit_boxed_text(c, it9, islot9, &bx8);
@@ -13596,7 +13608,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
     char gref9[256];
-    if (sb9) snprintf(gref9, sizeof gref9, "(gv_%s ? sp_str_concat(sp_String_cstr(gv_%s), (&(\"\\xff\")[1])) : NULL)", grn, grn);
+    /* read out with the handle published, as the value form's is: the
+       caller's deep-return pickup takes it */
+    if (sb9)
+      snprintf(gref9, sizeof gref9,
+               "(_sp_ret_strbuf = (void *)gv_%s, gv_%s ? sp_str_concat(sp_String_cstr(gv_%s), (&(\"\\xff\")[1])) : NULL)",
+               grn, grn, grn);
     else snprintf(gref9, sizeof gref9, "gv_%s", grn);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && gt9 != TY_POLY) {
