@@ -13103,7 +13103,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       if (comp_poly_arm_defines_n(c, kk, name, argc)) has_user = 1;
     if (!has_user) {
       if (sp_streq(name, "pow") && argc == 1) {
-        buf_puts(b, "sp_poly_pow("); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        buf_puts(b, "sp_poly_int_pow("); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "pow")) {
         buf_puts(b, "sp_poly_int_powmod("); emit_boxed(c, recv, b);
