@@ -234,6 +234,12 @@ static void sp_fsl_splice(unsigned char **buf, size_t *n, size_t at,
 static int *sp_line_file = NULL;  /* buffer line (1-based) -> file id */
 static int *sp_line_orig = NULL;  /* buffer line (1-based) -> original line */
 static int *sp_line_pop = NULL;
+/* The position a `#<SPINEL_SOURCE>file:line` marker pins for the lines after
+   it (0 = none). Kept apart from the physical map above: `__FILE__`,
+   `__dir__` and `require_relative` still answer from the file the code is in,
+   only the positions handed to `#line`, debug and the reports follow it. */
+static int *sp_disp_file = NULL;
+static int *sp_disp_line = NULL;
 static pm_node_t **g_stmt_next, **g_stmt_end;
 static const uint8_t *g_owner;
 static int sp_line_map_n = 0;
@@ -598,6 +604,7 @@ static int flatten_node(pm_node_t *node) {
     if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) {
       orig = sp_line_orig[bl];
       fid = sp_line_file[bl];
+      if (sp_disp_line[bl] > 0) { orig = sp_disp_line[bl]; fid = sp_disp_file[bl]; }
     }
     emit_int(id, "node_line", (long long)orig);
     emit_int(id, "node_file", (long long)fid);
@@ -612,7 +619,10 @@ static int flatten_node(pm_node_t *node) {
                                                         g_parser->start_line);
       int32_t el = le.line;
       int eorig = el;
-      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n && sp_line_orig[el] > 0) eorig = sp_line_orig[el];
+      if (sp_line_map_n > 0 && el >= 1 && el <= sp_line_map_n && sp_line_orig[el] > 0) {
+        eorig = sp_line_orig[el];
+        if (sp_disp_line[el] > 0) eorig = sp_disp_line[el];
+      }
       emit_int(id, "node_end_line", (long long)eorig);
       emit_int(id, "node_end_col", (long long)le.column);
     }
@@ -2259,6 +2269,10 @@ static void sp_includes_free(void) {
 #define SP_PUSH_PREFIX "#<SPINEL_PUSH>"
 #define SP_INSERT_PREFIX "#<SPINEL_INSERT>"
 #define SP_POP_PREFIX "#<SPINEL_POP>"
+/* A generated .rb names the source its lines came from (#7630):
+   `#<SPINEL_SOURCE>greeting.html.erb:12` pins file and line for the lines
+   after it, until the next marker or the end of the file it is in. */
+#define SP_SOURCE_PREFIX "#<SPINEL_SOURCE>"
 
 /* The byte ranges of the final buffer a builtins/ file was spliced into.
    A node inside one is stamped `node_bi`, so the names the compiler invents
@@ -2366,11 +2380,15 @@ static void sp_build_line_map(const char *src, const char *toplevel) {
   sp_line_file = (int *)calloc(nlines + 2, sizeof(int));
   sp_line_orig = (int *)calloc(nlines + 2, sizeof(int));
   sp_line_pop = (int *)calloc(nlines + 2, sizeof(int));
+  sp_disp_file = (int *)calloc(nlines + 2, sizeof(int));
+  sp_disp_line = (int *)calloc(nlines + 2, sizeof(int));
+  int *stk_dfile = (int *)calloc(nlines + 2, sizeof(int));  /* a frame's pinned file id, 0 = none */
+  int *stk_dline = (int *)calloc(nlines + 2, sizeof(int));
 
   int *stk_file = (int *)malloc(sizeof(int) * (nlines + 2));
   int *stk_next = (int *)malloc(sizeof(int) * (nlines + 2));
   int *stk_start = (int *)malloc(sizeof(int) * (nlines + 2));
-  if (!sp_line_file || !sp_line_orig || !sp_line_pop || !stk_file || !stk_next || !stk_start) {
+  if (!sp_line_file || !sp_line_orig || !sp_line_pop || !sp_disp_file || !sp_disp_line || !stk_dfile || !stk_dline || !stk_file || !stk_next || !stk_start) {
     fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
   }
   int sp = 0;
@@ -2401,6 +2419,7 @@ else if (strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) == 0) {
       stk_file[sp] = sp_intern_file(pathbuf);
       stk_next[sp] = 1;
       stk_start[sp] = bl;
+      stk_dfile[sp] = 0;
       /* marker line maps to nothing meaningful */
     }
 else if (strncmp(line, SP_POP_PREFIX, strlen(SP_POP_PREFIX)) == 0) {
@@ -2411,6 +2430,27 @@ else if (len < 12 || strncmp(line + len - 12, "SPINEL_COND>", 12) != 0) {
       sp_line_file[bl] = stk_file[sp];
       sp_line_orig[bl] = stk_next[sp];
       stk_next[sp] += 1;
+      if (strncmp(line, SP_SOURCE_PREFIX, strlen(SP_SOURCE_PREFIX)) == 0) {
+        /* file:line, split at the last colon; anything else is a comment */
+        char pathbuf[1024];
+        size_t plen = len - strlen(SP_SOURCE_PREFIX);
+        if (plen >= sizeof(pathbuf)) plen = sizeof(pathbuf) - 1;
+        memcpy(pathbuf, line + strlen(SP_SOURCE_PREFIX), plen);
+        pathbuf[plen] = '\0';
+        while (plen > 0 && (pathbuf[plen - 1] == '\r' || pathbuf[plen - 1] == ' ')) pathbuf[--plen] = '\0';
+        char *colon = strrchr(pathbuf, ':');
+        char *end = NULL;
+        long ln = colon ? strtol(colon + 1, &end, 10) : 0;
+        if (colon && colon > pathbuf && end && end != colon + 1 && *end == '\0' && ln > 0 && ln < 1000000000) {
+          *colon = '\0';
+          stk_dfile[sp] = sp_intern_file(pathbuf);
+          stk_dline[sp] = (int)ln;
+        }
+      }
+      else if (stk_dfile[sp]) {
+        sp_disp_file[bl] = stk_dfile[sp];
+        sp_disp_line[bl] = stk_dline[sp];
+      }
     }
     bl++;
     if (!eol) break;
@@ -2420,6 +2460,8 @@ else if (len < 12 || strncmp(line + len - 12, "SPINEL_COND>", 12) != 0) {
   free(stk_file);
   free(stk_next);
   free(stk_start);
+  free(stk_dfile);
+  free(stk_dline);
 }
 
 /* Lexically collapse "." and ".." path segments, like File.expand_path,
@@ -5036,6 +5078,7 @@ else {
     sp_build_line_map(la == lb ? premap : source, source_file);
     if (la != lb) {
       memset(sp_line_orig, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
+      memset(sp_disp_line, 0, sizeof(int) * ((size_t)sp_line_map_n + 2));
       /* Multi-file line attribution unavailable for this program; #line
          falls back to buffer lines. Only worth a word under an explicit
          --debug build (faithful stepping matters there); stay silent for
