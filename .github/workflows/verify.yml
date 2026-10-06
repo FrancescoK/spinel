@@ -18,6 +18,15 @@ name: verify
 # gate, the C the base emits for each corpus program) are cached by the base
 # sha, the leg, the runner (image, ruby, cc) and the files of this branch that
 # make them; the report says which came from the cache.
+#
+# pgate is the gate leg's verdict and lines from parallel jobs on one merged
+# tree (pgate.py says what runs where): a prep job merges master once, builds
+# and packs the tree; legs, PGATE_CORPUS_SHARDS corpus slices and
+# PGATE_RUBYSPEC_SHARDS ruby/spec groups run on it (10 jobs by default); a
+# finish job adds them up into the gate leg's files and runs gate.rb stamp.
+# The gate's own result cache (tools/result_cache.sh, GATE_CACHE=1 as
+# `make gate` runs) is carried between pgate runs: its entries are keyed by
+# the generated C and every input of the build and run, and hold passes only.
 on:
   push:
     branches: [verify]
@@ -34,6 +43,11 @@ jobs:
       has_build: ${{ steps.m.outputs.has_build }}
       label: ${{ steps.m.outputs.label }}
       shards: ${{ steps.m.outputs.shards }}
+      pgates: ${{ steps.m.outputs.pgates }}
+      pgate_parts: ${{ steps.m.outputs.pgate_parts }}
+      pgate_expect: ${{ steps.m.outputs.pgate_expect }}
+      has_pgate: ${{ steps.m.outputs.has_pgate }}
+      pgate_cache: ${{ steps.m.outputs.pgate_cache }}
     steps:
       - uses: actions/checkout@v7
       - id: m
@@ -76,10 +90,24 @@ jobs:
           builds = []
           if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec", *sharded)):
               builds.append({"name": "base", "sha": base, "dir": "base"})
-          if any(leg != "gate" for leg in legs):
+          if any(leg not in ("gate", "pgate") for leg in legs):
               builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
           print("gates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if "gate" in legs else []}))
           print("has_gate=" + str("gate" in legs).lower())
+          # pgate's parts, longest first: the ruby/spec groups (language
+          # alone is some 7 minutes), the corpus slices, the other legs
+          pg = "pgate" in legs
+          nc = int(os.environ.get("PGATE_CORPUS_SHARDS", "5"))
+          nr = int(os.environ.get("PGATE_RUBYSPEC_SHARDS", "4"))
+          parts = ([("rubyspec", k, nr) for k in range(1, nr + 1)] +
+                   [("corpus", k, nc) for k in range(1, nc + 1)] + [("legs", 0, 0)])
+          print("pgates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if pg else []}))
+          print("pgate_parts=" + json.dumps({"include": [{"name": name, "sha": sha, "part": p, "k": k, "of": of}
+                                                         for name, sha in heads for p, k, of in parts] if pg else []}))
+          print("pgate_expect=" + " ".join(f"{p}-{k}" for p, k, _ in parts))
+          print("has_pgate=" + str(pg).lower())
+          # PGATE_CACHE=0: start from no earlier run's result cache
+          print("pgate_cache=" + os.environ.get("PGATE_CACHE", "1"))
           print("has_run=" + str(bool(jobs)).lower())
           print("has_build=" + str(bool(builds)).lower())
           print("matrix=" + json.dumps({"include": jobs}))
@@ -525,8 +553,219 @@ jobs:
           path: out/
           retention-days: 14
 
+  # pgate, 1 of 3: merge current master once, build, pack the tree. The
+  # parts unpack it at this path, so every part runs the same tree.
+  pgate-prep:
+    needs: plan
+    if: needs.plan.outputs.has_pgate == 'true'
+    name: pgate prep ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.pgates) }}
+    env:
+      NAME: ${{ matrix.name }}
+      SHA: ${{ matrix.sha }}
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_CACHE_SIZE: 1G
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      # `make all` is the build job's work: its store, read only
+      - name: Restore the sccache store
+        uses: actions/cache/restore@v6
+        with:
+          path: .sccache
+          key: sccache-verify-build-${{ github.run_id }}-pgate-${{ matrix.name }}
+          restore-keys: sccache-verify-build-
+      - run: sccache --start-server
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Clone and merge current master
+        id: merge
+        run: |
+          d="$RUNNER_TEMP/pgate"
+          git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
+          cd "$d"
+          git remote add fork https://github.com/FrancescoK/spinel.git
+          git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch -q origin "$SHA" 2>/dev/null ||
+            git fetch -q fork "$SHA" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
+          git checkout -q "$SHA"
+          "$GITHUB_WORKSPACE/gate-leg.sh" "$d" "$GITHUB_WORKSPACE/prep" prepare
+          if grep -q '^status=CONFLICT$' "$GITHUB_WORKSPACE/prep/gate-meta.txt"; then
+            echo conflict=true >> "$GITHUB_OUTPUT"
+          else
+            v=$({ grep -E '^(PRISM|RBS)_VERSION' Makefile; sed -n '/^deps:/,/^DIST_RELEASE/p' Makefile; } | sha256sum | cut -c1-16)
+            echo "vendor=$v" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore the vendored parsers
+        if: steps.merge.outputs.conflict != 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/pgate/vendor
+          key: vendor-${{ steps.merge.outputs.vendor }}
+      - name: Build
+        id: build
+        if: steps.merge.outputs.conflict != 'true'
+        run: |
+          ./pgate.sh prep "$RUNNER_TEMP/pgate" "$GITHUB_WORKSPACE/prep"
+          cat "$GITHUB_WORKSPACE/prep/pch.txt" >> "$GITHUB_OUTPUT"
+      # The corpus PCH under the key of its inputs (pgate.sh prep): the
+      # result cache's fingerprint hashes the .gch, which gcc does not
+      # write the same twice.
+      - name: Restore the corpus PCH
+        id: pch
+        if: steps.build.outcome == 'success'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/pgate/${{ steps.build.outputs.dir }}
+          key: pgate-pch-${{ steps.build.outputs.key }}
+      - name: PCH
+        if: steps.build.outcome == 'success'
+        run: ./pgate.sh pch "$RUNNER_TEMP/pgate" "$GITHUB_WORKSPACE/prep" "${{ steps.pch.outputs.cache-hit }}"
+      - name: Save the corpus PCH
+        if: steps.build.outcome == 'success' && steps.pch.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/pgate/${{ steps.build.outputs.dir }}
+          key: pgate-pch-${{ steps.build.outputs.key }}
+      # the newest store of earlier runs' passes; finish saves this run's
+      - name: Restore the result cache
+        if: steps.build.outcome == 'success' && needs.plan.outputs.pgate_cache != '0'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/pgate/build/result-cache
+          key: pgate-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+          restore-keys: pgate-results-
+      - name: Pack
+        if: steps.build.outcome == 'success'
+        run: |
+          grep -q '^status=PREPARED$' prep/gate-meta.txt
+          echo "[pgate] result cache restored: $(find "$RUNNER_TEMP/pgate/build/result-cache" -type f 2>/dev/null | wc -l) entries" >> prep/gate.log
+          tar -C "$RUNNER_TEMP" -cf - pgate | zstd -q -T0 -3 -o prep/tree.tar.zst
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pgate-prep-${{ matrix.name }}
+          path: prep/
+          compression-level: 0
+          retention-days: 1
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  # pgate, 2 of 3: the parts. max-parallel keeps a run to 10 of the
+  # account's 20 jobs (see the run job).
+  pgate-part:
+    needs: [plan, pgate-prep]
+    if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
+    name: pgate ${{ matrix.name }} ${{ matrix.part }}${{ matrix.of > 0 && format(' {0}/{1}', matrix.k, matrix.of) || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJSON(needs.plan.outputs.pgate_parts) }}
+    env:
+      NAME: ${{ matrix.name }}
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_CACHE_SIZE: 1G
+    steps:
+      - uses: actions/checkout@v7
+      # the legs part builds build/spinel-work and the C-side legs' helpers;
+      # the corpus and ruby/spec parts compile without sccache, so their
+      # compile line (in the result cache's key) is the same in every run
+      - uses: mozilla-actions/sccache-action@v0.0.10
+        if: matrix.part == 'legs'
+      - name: Restore the sccache store
+        if: matrix.part == 'legs'
+        uses: actions/cache/restore@v6
+        with:
+          path: .sccache
+          key: sccache-verify-build-${{ github.run_id }}-pgate-legs-${{ matrix.name }}
+          restore-keys: sccache-verify-build-
+      - if: matrix.part == 'legs'
+        run: sccache --start-server
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pgate-prep-${{ matrix.name }}
+          path: ${{ runner.temp }}/prep
+      - name: Run
+        run: ./pgate.sh part "$RUNNER_TEMP/prep" "$GITHUB_WORKSPACE/out" "${{ matrix.part }}" "${{ matrix.k }}" "${{ matrix.of }}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pg-${{ matrix.part }}-${{ matrix.k }}--${{ matrix.name }}
+          path: out/
+          retention-days: 3
+
+  # pgate, 3 of 3: the parts added up into the gate leg's files (report.py
+  # reads them as a gate), the stamp, and the result cache's new store.
+  pgate:
+    needs: [plan, pgate-prep, pgate-part]
+    if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
+    name: pgate ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.pgates) }}
+    env:
+      NAME: ${{ matrix.name }}
+      EXPECT: ${{ needs.plan.outputs.pgate_expect }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pgate-prep-${{ matrix.name }}
+          path: ${{ runner.temp }}/prep
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: pg-*--${{ matrix.name }}
+          path: ${{ runner.temp }}/parts
+      - name: Finish
+        run: |
+          f="$RUNNER_TEMP/prep/tree.tar.zst"
+          if [ -f "$f" ]; then zstd -q -dc "$f" | tar -C "$RUNNER_TEMP" -xf -; fi
+          # every part's result cache, one store
+          mkdir -p "$RUNNER_TEMP/rc/result-cache"
+          for t in "$RUNNER_TEMP"/parts/*/result-cache.tar; do [ -f "$t" ] && tar -C "$RUNNER_TEMP/rc" -xf "$t"; done
+          echo "entries=$(find "$RUNNER_TEMP/rc/result-cache" -type f | wc -l)" >> "$GITHUB_OUTPUT"
+          python3 pgate.py finish --prep "$RUNNER_TEMP/prep" --parts "$RUNNER_TEMP/parts" --out out \
+            --name "$NAME" --expect "$EXPECT" --checkout "$RUNNER_TEMP/pgate"
+        id: finish
+      - name: Save the result cache
+        if: always() && steps.finish.outputs.entries > 0
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/rc/result-cache
+          key: pgate-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: r-pgate-${{ matrix.name }}-0
+          path: out/
+          retention-days: 14
+
   report:
-    needs: [plan, run, gate]
+    needs: [plan, run, gate, pgate]
     if: always()
     runs-on: ubuntu-latest
     steps:
