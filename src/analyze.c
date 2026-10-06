@@ -16861,9 +16861,25 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
    `@values[i]` itself would, so the element read it answers is demanded as
    an element read handed to an appender is. Answers whether anything
    changed. A result that is another such call is followed (bounded). */
+static int *uec_seen, uec_cap, uec_gen;
 static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
   const NodeTable *nt = c->nt;
   if (call < 0 || depth > 4 || nt_kind(nt, call) != NK_CallNode) return 0;
+  /* Each method is walked once per demand: a poly receiver follows every
+     class's method of the name, and each of their results again, so a name
+     many classes define (`[]`) fanned out to the power of the depth and a
+     program of a few hundred classes compiled for hours. A method's results
+     are the same however it was reached, and a demand only adds. */
+  if (depth == 0) {
+    if (uec_cap < c->nscopes) {
+      int nc = c->nscopes + 64;
+      int *ns = (int *)realloc(uec_seen, sizeof(int) * (size_t)nc);
+      if (!ns) return 0;
+      memset(ns + uec_cap, 0, sizeof(int) * (size_t)(nc - uec_cap));
+      uec_seen = ns; uec_cap = nc;
+    }
+    uec_gen++;
+  }
   const char *mn = nt_str(nt, call, "name");
   if (!mn) return 0;
   int recv = nt_ref(nt, call, "receiver");
@@ -16885,6 +16901,10 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
     Scope *m = &c->scopes[mi];
     if (cls >= 0) { if (mi != comp_method_in_chain(c, cls, mn, NULL)) continue; }
     else if (!m->name || !sp_streq(m->name, mn) || m->class_id < 0 || m->is_cmethod) continue;
+    if (mi < uec_cap) {
+      if (uec_seen[mi] == uec_gen) { if (cls >= 0) break; continue; }
+      uec_seen[mi] = uec_gen;
+    }
     int vals[64], nv = 0;
     int last = scope_body_last(c, mi);
       if (last >= 0) vals[nv++] = last;
