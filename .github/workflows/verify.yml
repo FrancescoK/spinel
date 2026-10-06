@@ -24,6 +24,10 @@ name: verify
 # and packs the tree; legs, PGATE_CORPUS_SHARDS corpus slices and
 # PGATE_RUBYSPEC_SHARDS ruby/spec groups run on it (10 jobs by default); a
 # finish job adds them up into the gate leg's files and runs gate.rb stamp.
+# LEGS="pgate cdiff" folds the corpus C diff into the same run: one more
+# part, beside the gate's and not one of them, compares the merged tree's C
+# with the C of the master it merged (pgate.sh cdiff) and uploads the cdiff
+# leg's files as r-cdiff-<head>-0; no build or run job starts.
 # The gate's own result cache (tools/result_cache.sh, GATE_CACHE=1 as
 # `make gate` runs) is carried between pgate runs: its entries are keyed by
 # the generated C and every input of the build and run, and hold passes only.
@@ -48,6 +52,7 @@ jobs:
       pgate_expect: ${{ steps.m.outputs.pgate_expect }}
       has_pgate: ${{ steps.m.outputs.has_pgate }}
       pgate_cache: ${{ steps.m.outputs.pgate_cache }}
+      pgate_max: ${{ steps.m.outputs.pgate_max }}
     steps:
       - uses: actions/checkout@v7
       - id: m
@@ -57,6 +62,11 @@ jobs:
           import json, os
           heads = [h.split("=", 1) for h in os.environ["HEADS"].split()]
           legs = os.environ["LEGS"].split()
+          # pgate with cdiff: the C diff is a part of the pgate run (on the
+          # merged tree, against the master it merged), not the cdiff leg
+          fold = "pgate" in legs and "cdiff" in legs
+          if fold:
+              legs.remove("cdiff")
           n = int(os.environ.get("SHARDS", "4"))
           base = os.environ["BASE"]
           # "base" names the base's tree and its jobs
@@ -99,12 +109,17 @@ jobs:
           pg = "pgate" in legs
           nc = int(os.environ.get("PGATE_CORPUS_SHARDS", "8"))
           nr = int(os.environ.get("PGATE_RUBYSPEC_SHARDS", "4"))
-          parts = ([("rubyspec", k, nr) for k in range(1, nr + 1)] +
-                   [("corpus", k, nc) for k in range(1, nc + 1)] + [("legs", 0, 0)])
+          gparts = ([("rubyspec", k, nr) for k in range(1, nr + 1)] +
+                    [("corpus", k, nc) for k in range(1, nc + 1)] + [("legs", 0, 0)])
+          # the C diff part (when folded) after the ruby/spec groups: some 5
+          # minutes, under a corpus slice's; one more job at once, so the
+          # gate's parts start as they would without it
+          parts = gparts[:nr] + ([("cdiff", 0, 0)] if fold else []) + gparts[nr:]
           print("pgates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if pg else []}))
           print("pgate_parts=" + json.dumps({"include": [{"name": name, "sha": sha, "part": p, "k": k, "of": of}
                                                          for name, sha in heads for p, k, of in parts] if pg else []}))
-          print("pgate_expect=" + " ".join(f"{p}-{k}" for p, k, _ in parts))
+          print("pgate_expect=" + " ".join(f"{p}-{k}" for p, k, _ in gparts))
+          print(f"pgate_max={10 + fold}")
           print("has_pgate=" + str(pg).lower())
           # PGATE_CACHE=0: start from no earlier run's result cache
           print("pgate_cache=" + os.environ.get("PGATE_CACHE", "1"))
@@ -252,7 +267,7 @@ jobs:
         run: |
           set -a; . ./verify.conf; set +a
           env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
-                     sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
+                     sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py cdiff-leg.sh; } | sha256sum | cut -c1-16)
           of=$BASE; [ "$NAME" != base ] && [ "$LEG" != cdiff ] && of=$SHA
           echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of-$env_id" >> "$GITHUB_OUTPUT"
       - name: Restore the base result (base side of a probe or rubyspec only)
@@ -351,54 +366,8 @@ jobs:
           cdiff)
             # The base compiles what the head's tree holds, at the head's path,
             # as before; a program's base C comes from the cache where
-            # cbase.py finds it still stands.
-            b="$RUNNER_TEMP/base"; C="$RUNNER_TEMP/cbase"
-            # optcarrot (packed as `make optcarrot` packs it) and the packages' tests too, so a PR's
-            # "optcarrot and the packages emit the same C" is what this leg checked
-            repo=$(sed -n 's/^OPTCARROT_REPO *:*= *//p' Makefile); br=$(sed -n 's/^OPTCARROT_BRANCH *:*= *//p' Makefile)
-            if [ -n "$repo" ] && git clone -q --depth=1 ${br:+--branch=$br} "$repo" build/optcarrot 2>/dev/null; then
-              ruby build/optcarrot/tools/pack-for-spinel.rb > build/optcarrot-single.rb || rm -f build/optcarrot-single.rb
-            fi
-            ls test/*.rb test/infer/*.rb benchmark/*.rb packages/*/test/*.rb build/optcarrot-single.rb 2>/dev/null > "$out/programs.txt"
-            mkdir -p "$out/diffs" "$C/c"
-            python3 "$GITHUB_WORKSPACE/cbase.py" plan "$h" "$out/programs.txt" "$C" "$RUNNER_TEMP/recompute.txt" > "$out/cbase.txt"
-            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cbase1.sh" "$b/spinel" "$C" < "$RUNNER_TEMP/recompute.txt" || true
-            xargs -P "$(nproc)" -n 1 "$GITHUB_WORKSPACE/cdiff1.sh" "$C" "$h/spinel" "$out" < "$out/programs.txt" || true
-            touch "$out/changed.txt"; sort -o "$out/changed.txt" "$out/changed.txt"
-            # The cost tools (#7501) over the programs whose C changed: which
-            # slots changed representation, which costly constructs the C
-            # gained or lost (in loops and out), and what the two builds
-            # allocate when run. The head's own copies when it has them,
-            # else this branch's: costguard/ holds tools/repr_diff.sh,
-            # c_costs.sh and alloc_diff.sh as of cost-guard ace7e8925, until
-            # matz/spinel has them. A report, never a failure.
-            ct="$h/tools"; [ -f "$ct/c_costs.sh" ] || ct="$GITHUB_WORKSPACE/costguard"
-            if [ -s "$out/changed.txt" ]; then
-              REPR_DIFF_JOBS=$(nproc) bash "$ct/repr_diff.sh" "$b/spinel" "$h/spinel" $(cat "$out/changed.txt") > "$out/repr_diff.txt" 2>&1 || true
-              C_COSTS_JOBS=$(nproc) bash "$ct/c_costs.sh" "$b/spinel" "$h/spinel" $(cat "$out/changed.txt") > "$out/c_costs.txt" 2>&1 || true
-              # each program is built and run on both sides: the first
-              # ALLOC_MAX changed programs, and the report says when cut
-              amax=${ALLOC_MAX:-400}; n=$(wc -l < "$out/changed.txt")
-              ALLOC_DIFF_JOBS=$(nproc) bash "$ct/alloc_diff.sh" "$b/spinel" "$h/spinel" $(head -n "$amax" "$out/changed.txt") > "$out/alloc_diff.txt" 2>&1 || true
-              if [ "$n" -gt "$amax" ]; then echo "  (the first $amax of $n changed programs)" >> "$out/alloc_diff.txt"; fi
-            fi
-            if [ "$CBASE_HIT" = true ]; then
-              echo "  (cache $BASE_KEY)" >> "$out/cbase.txt"
-            else
-              # kept only from a head whose test/ and benchmark/ differ from
-              # the base's in programs and .expected files alone, so the
-              # cache's tree is the base's but for a few programs
-              aux=$(git diff --name-only "$BASE" HEAD -- test benchmark |
-                    grep -v -E '^(test|test/infer|benchmark)/[^/]+\.rb$|\.expected$' || true)
-              miss=$(while read -r p; do [ -f "$C/c/$p.c" ] || echo "$p"; done < "$out/programs.txt" | wc -l)
-              if [ -z "$aux" ] && [ "$miss" -eq 0 ]; then
-                python3 "$GITHUB_WORKSPACE/cbase.py" manifest "$h" "$C"
-                echo save=true >> "$GITHUB_OUTPUT"
-                echo "  (computed, cached as $BASE_KEY)" >> "$out/cbase.txt"
-              else
-                echo "  (computed, not cached: $miss programs without C; other files differ from the base: $(echo "$aux" | tr '\n' ' ' | cut -c1-200))" >> "$out/cbase.txt"
-              fi
-            fi
+            # cbase.py finds it still stands (cdiff-leg.sh)
+            "$GITHUB_WORKSPACE/cdiff-leg.sh" "$h" "$RUNNER_TEMP/base" "$out" "$RUNNER_TEMP/cbase"
             ;;
           rubyspec)
             # `make gate`'s rubyspec leg, which `make test` does not run, in
@@ -581,12 +550,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: mozilla-actions/sccache-action@v0.0.10
-      # `make all` is the build job's work: its store, read only
+      # `make all`, as the build job makes it: the build lane's store, saved
+      # back (the key never matches), since with the C diff folded into
+      # pgate a staged item starts no build job; the cdiff part's master
+      # build restores it
       - name: Restore the sccache store
-        uses: actions/cache/restore@v6
+        uses: actions/cache@v6
         with:
           path: .sccache
-          key: sccache-verify-build-${{ github.run_id }}-pgate-${{ matrix.name }}
+          key: sccache-verify-build-${{ github.run_id }}-${{ github.run_attempt }}-pgate-${{ matrix.name }}
           restore-keys: sccache-verify-build-
       - run: sccache --start-server
       - uses: ruby/setup-ruby@v1
@@ -602,7 +574,10 @@ jobs:
           git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch -q origin "$SHA" 2>/dev/null ||
             git fetch -q fork "$SHA" 2>/dev/null || git fetch -q fork '+refs/heads/ci/*:refs/remotes/fork/ci/*'
           git checkout -q "$SHA"
-          "$GITHUB_WORKSPACE/gate-leg.sh" "$d" "$GITHUB_WORKSPACE/prep" prepare
+          # PGATE_MASTER in verify.conf: merge that master, not the current
+          # one (to compare with an earlier run; never for a filed gate)
+          PGATE_MASTER=$(sed -n 's/^PGATE_MASTER=//p' "$GITHUB_WORKSPACE/verify.conf") \
+            "$GITHUB_WORKSPACE/gate-leg.sh" "$d" "$GITHUB_WORKSPACE/prep" prepare
           if grep -q '^status=CONFLICT$' "$GITHUB_WORKSPACE/prep/gate-meta.txt"; then
             echo conflict=true >> "$GITHUB_OUTPUT"
           else
@@ -671,7 +646,7 @@ jobs:
         run: sccache --show-stats
 
   # pgate, 2 of 3: the parts. max-parallel keeps a run to 10 of the
-  # account's 20 jobs (see the run job).
+  # account's 20 jobs (see the run job), 11 with the C diff part.
   pgate-part:
     needs: [plan, pgate-prep]
     if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
@@ -679,7 +654,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: ${{ fromJSON(needs.plan.outputs.pgate_max) }}
       matrix: ${{ fromJSON(needs.plan.outputs.pgate_parts) }}
     env:
       NAME: ${{ matrix.name }}
@@ -689,21 +664,22 @@ jobs:
       SCCACHE_CACHE_SIZE: 1G
     steps:
       - uses: actions/checkout@v7
-      # the legs part builds build/spinel-work and the C-side legs' helpers;
-      # the corpus and ruby/spec parts compile without sccache, so their
-      # compile line (in the result cache's key) is the same in every run
-      - name: Set up sccache (legs part only)
+      # the legs part builds build/spinel-work and the C-side legs' helpers,
+      # the cdiff part the master; the corpus and ruby/spec parts compile
+      # without sccache, so their compile line (in the result cache's key)
+      # is the same in every run
+      - name: Set up sccache (legs and cdiff parts only)
         uses: mozilla-actions/sccache-action@v0.0.10
-        if: matrix.part == 'legs'
-      - name: Restore the sccache store (legs part only)
-        if: matrix.part == 'legs'
+        if: matrix.part == 'legs' || matrix.part == 'cdiff'
+      - name: Restore the sccache store (legs and cdiff parts only)
+        if: matrix.part == 'legs' || matrix.part == 'cdiff'
         uses: actions/cache/restore@v6
         with:
           path: .sccache
-          key: sccache-verify-build-${{ github.run_id }}-pgate-legs-${{ matrix.name }}
+          key: sccache-verify-build-${{ github.run_id }}-pgate-${{ matrix.part }}-${{ matrix.name }}
           restore-keys: sccache-verify-build-
-      - name: Start sccache (legs part only)
-        if: matrix.part == 'legs'
+      - name: Start sccache (legs and cdiff parts only)
+        if: matrix.part == 'legs' || matrix.part == 'cdiff'
         run: sccache --start-server
       - uses: ruby/setup-ruby@v1
         with:
@@ -713,14 +689,51 @@ jobs:
         with:
           name: pgate-prep-${{ matrix.name }}
           path: ${{ runner.temp }}/prep
+      # The master's C for each program, as the cdiff leg keeps it (cbase.py),
+      # by the master the prep merged, this runner (image, ruby, cc) and the
+      # files that make it; compiled in the merged tree's path, so its own key.
+      - name: Base C cache key (cdiff part only)
+        id: key
+        if: matrix.part == 'cdiff'
+        run: |
+          env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP pgate"
+                     sha256sum cdiff1.sh cbase1.sh cbase.py cdiff-leg.sh; } | sha256sum | cut -c1-16)
+          m=$(sed -n 's/^master=//p' "$RUNNER_TEMP/prep/gate-meta.txt" 2>/dev/null)
+          echo "key=verify-base-pcdiff-0-${m:-none}-$env_id" >> "$GITHUB_OUTPUT"
+      - name: Restore the base's C (cdiff part only)
+        id: cbase
+        if: matrix.part == 'cdiff'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/cbase
+          key: ${{ steps.key.outputs.key }}
       - name: Run
-        run: ./pgate.sh part "$RUNNER_TEMP/prep" "$GITHUB_WORKSPACE/out" "${{ matrix.part }}" "${{ matrix.k }}" "${{ matrix.of }}"
+        id: run
+        env:
+          CBASE_HIT: ${{ steps.cbase.outputs.cache-hit }}
+          BASE_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          if [ "${{ matrix.part }}" = cdiff ]; then
+            # verify.conf's extra lines reach the compiles, as in the cdiff leg
+            set -a; . ./verify.conf; set +a
+            ./pgate.sh cdiff "$RUNNER_TEMP/prep" "$GITHUB_WORKSPACE/out" "$RUNNER_TEMP/cbase"
+          else
+            ./pgate.sh part "$RUNNER_TEMP/prep" "$GITHUB_WORKSPACE/out" "${{ matrix.part }}" "${{ matrix.k }}" "${{ matrix.of }}"
+          fi
+      - name: Save the base's C (cdiff part, when computed this run)
+        if: matrix.part == 'cdiff' && steps.run.outputs.save == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/cbase
+          key: ${{ steps.key.outputs.key }}
+      # the C diff in the cdiff leg's artifact (report.py and the filing
+      # tools read r-cdiff-<head>-0); finish downloads pg-* only
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: pg-${{ matrix.part }}-${{ matrix.k }}--${{ matrix.name }}
+          name: ${{ matrix.part == 'cdiff' && format('r-cdiff-{0}-0', matrix.name) || format('pg-{0}-{1}--{2}', matrix.part, matrix.k, matrix.name) }}
           path: out/
-          retention-days: 3
+          retention-days: ${{ matrix.part == 'cdiff' && 14 || 3 }}
 
   # pgate, 3 of 3: the parts added up into the gate leg's files (report.py
   # reads them as a gate), the stamp, and the result cache's new store.

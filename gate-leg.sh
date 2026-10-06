@@ -31,6 +31,8 @@ if [ "$phase" != run ]; then
     echo "gate ${NAME:-local} 0 $(git log -1 --format='%h %s')" > "$out/rev.txt"
     git fetch https://github.com/matz/spinel.git master >> "$out/gate.log" 2>&1
     master=$(git rev-parse FETCH_HEAD)
+    # PGATE_MASTER: an earlier master instead (a comparison run, never a filed gate)
+    if [ -n "${PGATE_MASTER:-}" ]; then master=$(git rev-parse "$PGATE_MASTER^{commit}"); fi
     merge_base=$(git merge-base HEAD "$master")
     # Detached checkouts still need an identity to create the merge commit.
     git config user.name 'verify gate'

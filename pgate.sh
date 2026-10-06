@@ -19,6 +19,13 @@
 #   PART is legs, corpus (K of N) or rubyspec (K of N). OUT gets part.txt
 #   (rc, the tree after the run, the command, seconds, cache use),
 #   part.log, result-cache.tar and, for corpus, test-results.tar.
+# usage: pgate.sh cdiff PREP OUT CACHE
+#   the corpus C diff of the merged tree against the master it merged
+#   (gate-meta.txt's master=), in the verify workflow's cdiff leg's files:
+#   the tree unpacks as for a part, the master is checked out beside it
+#   ($PGATE_ROOT/base, a worktree of the tree's clone) and built, and
+#   cdiff-leg.sh compares the two, the base's C from CACHE where it stands.
+#   Not a part of the gate: finish neither waits on it nor reads it.
 # GATE_JOBS overrides the job count (default nproc), as in gate-leg.sh.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -184,8 +191,41 @@ part)
         "$part" "$k" "$n" "$rc" "$(tree)" "$cmds" "$secs" "$cache" > "$out/part.txt"
     exit "$rc"
     ;;
+cdiff)
+    prep=$(cd "$2" && pwd)
+    mkdir -p "$3"
+    out=$(cd "$3" && pwd)
+    status=$(sed -n 's/^status=//p' "$prep/gate-meta.txt" 2>/dev/null || true)
+    sed 's/^gate /cdiff /' "$prep/rev.txt" > "$out/rev.txt" 2>/dev/null || true
+    echo "run ${GITHUB_RUN_ID:-local} attempt ${GITHUB_RUN_ATTEMPT:-1}, $(date -u '+%Y-%m-%d %H:%M UTC')" > "$out/computed.txt"
+    if [ "$status" != PREPARED ] || [ ! -f "$prep/tree.tar.zst" ]; then
+        # a conflict, or a prep that failed: the gate reports it; no C diff
+        echo "base C: none (no merged tree; prep status: ${status:-missing})" | tee "$out/cbase.txt"
+        exit 0
+    fi
+    root=${PGATE_ROOT:-$RUNNER_TEMP}
+    zstd -q -dc "$prep/tree.tar.zst" | tar -C "$root" -xf -
+    h=$root/pgate b=$root/base
+    master=$(sed -n 's/^master=//p' "$prep/gate-meta.txt")
+    printf 'base=%s\nmerged=%s\n' "$master" "$(sed -n 's/^merged=//p' "$prep/gate-meta.txt")" > "$out/base.txt"
+    t0=$(date +%s)
+    git -C "$h" worktree add -q --detach "$b" "$master"
+    echo "[pgate] base $master checked out in $(( $(date +%s) - t0 ))s" > "$out/base-build.log"
+    # the vendored parsers: the merged tree's when the master's Makefile
+    # asks for the same ones (the build job's cache key), else fetched
+    vkey() { { grep -E '^(PRISM|RBS)_VERSION' "$1/Makefile"; sed -n '/^deps:/,/^DIST_RELEASE/p' "$1/Makefile"; } | sha256sum | cut -c1-16; }
+    if [ -d "$h/vendor" ] && [ "$(vkey "$h")" = "$(vkey "$b")" ]; then cp -R "$h/vendor" "$b/"; fi
+    if ! (cd "$b" && { make deps || { sleep 30; make deps; }; } && make -j"$jobs" all) >> "$out/base-build.log" 2>&1; then
+        echo "[pgate] the base $master did not build (base-build.log)" | tee -a "$out/cbase.txt"
+        exit 1
+    fi
+    echo "[pgate] base $master built in $(( $(date +%s) - t0 ))s" >> "$out/base-build.log"
+    t0=$(date +%s)
+    BASE=$master "$here/cdiff-leg.sh" "$h" "$b" "$out" "$4"
+    echo "[pgate] C diff in $(( $(date +%s) - t0 ))s" >> "$out/base-build.log"
+    ;;
 *)
-    echo "usage: pgate.sh prep CHECKOUT OUT | pch CHECKOUT OUT HIT | part PREP OUT PART K N" >&2
+    echo "usage: pgate.sh prep CHECKOUT OUT | pch CHECKOUT OUT HIT | part PREP OUT PART K N | cdiff PREP OUT CACHE" >&2
     exit 2
     ;;
 esac
