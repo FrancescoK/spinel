@@ -6,6 +6,7 @@ int is_fresh_array(Compiler *c, int v);
 static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_splice, TyKind kt, TyKind vt);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -15123,27 +15124,231 @@ static void bi_scan_loop_body(Compiler *c, int body) {
 }
 
 
+/* The loop body node `id` is, when it is a loop the scan reads: a `while`,
+   and in promote mode a block an iterating method runs. -1 otherwise.
+   Promote mode additionally treats block-iteration loops as growth sites:
+   `n.times { f = f * x }`, `(a..b).each { ... }`, etc. The block body is a
+   BlockNode -> statements; reuse the same self-referential-multiply scan.
+   Only in promote mode: the wrap-pinned optcarrot must not pay a
+   block-loop bigint widening, which is why the default path stays
+   `while`-only. */
+static int bi_loop_body(const NodeTable *nt, int id) {
+  const char *ty = nt_type(nt, id);
+  if (!ty) return -1;
+  if (sp_streq(ty, "WhileNode")) return nt_ref(nt, id, "statements");
+  if (g_promote_mode && sp_streq(ty, "CallNode")) {
+    const char *mname = nt_str(nt, id, "name");
+    int block = nt_ref(nt, id, "block");
+    if (mname && is_block_loop_method(mname) && block >= 0 &&
+        nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode"))
+      return nt_ref(nt, block, "body");
+  }
+  return -1;
+}
+
+/* The scan per loop body walks a body again for every loop it sits in, so a
+   round costs the sum of the bodies' sizes: the program's size times its
+   loop nesting, which in machine-generated code runs hundreds deep.
+   bi_round gets the same answers from one walk of the program per round.
+
+   The walk numbers the nodes in the order the scan visits them, so a loop's
+   body is the run of numbers from the body's own to its end. At each node
+   it records what the scan would: the `dst = src` pairs bi_collect_assigns
+   collects and the writes bi_scan_loop_node asks about, each with the
+   number of the nearest node above it where the scan stops (a definition,
+   or a node without a type). A loop's pairs are then the first
+   BI_MAX_PAIRS of its run that no such stop cuts off, the list
+   bi_collect_assigns builds, and a write is asked against them as before.
+   bi_promote only ever widens one local to Bignum, the same whichever
+   write and loop ask, so a write that has promoted is not asked again by
+   the loops around it. A node the walk reaches twice (a subtree two
+   parents share) makes the numbering ambiguous, and the round falls back
+   to the scan per loop; a body the walk never numbered is scanned on its
+   own. */
+enum { BI_OPW, BI_MUL, BI_ADD };
+static struct {
+  int cap, n;                     /* nodes numbered */
+  int *pos, *end;                 /* [node] its number (-1: none), one past its subtree's last */
+  unsigned char *ref, *open;      /* [node] some node refers to it; it is being walked */
+  int limit;                      /* the most numbers a round hands out */
+  int npe, cpe;                   /* the pairs, in walk order */
+  int *pe_pos, *pe_cut;
+  BiPair *pe;
+  int nce, cce;                   /* the writes the scan asks about, in walk order */
+  int *ce_pos, *ce_cut, *ce_node;
+  unsigned char *ce_kind, *ce_done;
+  const char **ce_l, **ce_r, **ce_a;
+} bi_rw;
+/* `p` resized to `cap` elements of `elt` bytes; stops on out of memory */
+static void *bi_resize(void *p, int cap, size_t elt) {
+  void *q = realloc(p, elt * (size_t)cap);
+  if (!q) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return q;
+}
+/* the next capacity at least `need`, doubling from `cap` */
+static int bi_next_cap(int cap, int need) {
+  int nc = cap ? cap : 64;
+  while (nc < need) nc *= 2;
+  return nc;
+}
+static void bi_rw_pair(int pos, int cut, const char *dst, const char *src) {
+  if (bi_rw.npe == bi_rw.cpe) {
+    int cap = bi_next_cap(bi_rw.cpe, bi_rw.npe + 1);
+    bi_rw.pe_pos = bi_resize(bi_rw.pe_pos, cap, sizeof(int));
+    bi_rw.pe_cut = bi_resize(bi_rw.pe_cut, cap, sizeof(int));
+    bi_rw.pe = bi_resize(bi_rw.pe, cap, sizeof(BiPair));
+    bi_rw.cpe = cap;
+  }
+  int k = bi_rw.npe++;
+  bi_rw.pe_pos[k] = pos; bi_rw.pe_cut[k] = cut; bi_rw.pe[k].dst = dst; bi_rw.pe[k].src = src;
+}
+static void bi_rw_cand(int pos, int cut, int node, int kind, const char *l, const char *r, const char *a) {
+  if (bi_rw.nce == bi_rw.cce) {
+    int cap = bi_next_cap(bi_rw.cce, bi_rw.nce + 1);
+    bi_rw.ce_pos = bi_resize(bi_rw.ce_pos, cap, sizeof(int));
+    bi_rw.ce_cut = bi_resize(bi_rw.ce_cut, cap, sizeof(int));
+    bi_rw.ce_node = bi_resize(bi_rw.ce_node, cap, sizeof(int));
+    bi_rw.ce_kind = bi_resize(bi_rw.ce_kind, cap, 1);
+    bi_rw.ce_done = bi_resize(bi_rw.ce_done, cap, 1);
+    bi_rw.ce_l = bi_resize(bi_rw.ce_l, cap, sizeof(const char *));
+    bi_rw.ce_r = bi_resize(bi_rw.ce_r, cap, sizeof(const char *));
+    bi_rw.ce_a = bi_resize(bi_rw.ce_a, cap, sizeof(const char *));
+    bi_rw.cce = cap;
+  }
+  int k = bi_rw.nce++;
+  bi_rw.ce_pos[k] = pos; bi_rw.ce_cut[k] = cut; bi_rw.ce_node[k] = node;
+  bi_rw.ce_kind[k] = (unsigned char)kind; bi_rw.ce_done[k] = 0;
+  bi_rw.ce_l[k] = l; bi_rw.ce_r[k] = r; bi_rw.ce_a[k] = a;
+}
+/* Numbers `id`'s subtree from bi_rw.n; `cut` is the number of the nearest
+   stop above. A subtree two parents share is numbered at each place, as the
+   scan walks it at each, and keeps the numbers of the first: its runs are
+   alike, stops included, so a loop inside reads the same from either. 0 on
+   a node inside itself, or a sharing so wide the numbers run past
+   bi_rw.limit. */
+static int bi_rw_walk(const NodeTable *nt, int id, int cut) {
+  if (id < 0) return 1;
+  if (bi_rw.open[id] || bi_rw.n >= bi_rw.limit) return 0;
+  int p = bi_rw.n++, first = bi_rw.pos[id] < 0;
+  if (first) bi_rw.pos[id] = p;
+  bi_rw.open[id] = 1;
+  const char *ty = nt_type(nt, id);
+  NodeKind k = ty ? nt_kind(nt, id) : NK_NONE;
+  int stop = !ty || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode;
+  if (!stop && k == NK_LocalVariableWriteNode) {
+    const char *dst = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    const char *src = bi_local_name(nt, v);
+    if (src && dst) bi_rw_pair(p, cut, dst, src);
+    const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+    if (dst && vty && sp_streq(vty, "CallNode")) {
+      const char *op = nt_str(nt, v, "name");
+      const char *rname = bi_local_name(nt, nt_ref(nt, v, "receiver"));
+      int args = nt_ref(nt, v, "arguments");
+      int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      const char *aname = an >= 1 ? bi_local_name(nt, argv[0]) : NULL;
+      if (op && is_mul_or_pow(op)) { if (rname || aname) bi_rw_cand(p, cut, id, BI_MUL, dst, rname, aname); }
+      else if (op && sp_streq(op, "+") && rname && aname) bi_rw_cand(p, cut, id, BI_ADD, dst, rname, aname);
+    }
+  }
+  if (!stop && k == NK_MultiWriteNode) {
+    int ln = 0, rn = 0;
+    const int *lhs = nt_arr(nt, id, "lefts", &ln);
+    int v = nt_ref(nt, id, "value");
+    const int *rhs = masgn_tuple_rhs(nt, v) ? nt_arr(nt, v, "elements", &rn) : NULL;
+    for (int q = 0; lhs && rhs && q < ln && q < rn; q++) {
+      const char *lty = nt_type(nt, lhs[q]);
+      if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
+      const char *src = bi_local_name(nt, rhs[q]);
+      const char *dst = nt_str(nt, lhs[q], "name");
+      if (src && dst) bi_rw_pair(p, cut, dst, src);
+    }
+  }
+  if (!stop && k == NK_LocalVariableOperatorWriteNode) {
+    const char *op = nt_str(nt, id, "binary_operator");
+    const char *lname = nt_str(nt, id, "name");
+    if (op && lname && is_mul_or_pow(op)) bi_rw_cand(p, cut, id, BI_OPW, lname, NULL, NULL);
+  }
+  int sub = stop ? p : cut;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (!bi_rw_walk(nt, nt_ref_at(nt, id, i), sub)) return 0;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (!bi_rw_walk(nt, ids[j], sub)) return 0;
+  }
+  if (first) bi_rw.end[id] = bi_rw.n;
+  bi_rw.open[id] = 0;
+  return 1;
+}
+/* the first index of a walk-ordered array of numbers at or past `b` */
+static int bi_rw_from(const int *pos, int n, int b) {
+  int lo = 0, hi = n;
+  while (lo < hi) { int m = (lo + hi) / 2; if (pos[m] < b) lo = m + 1; else hi = m; }
+  return lo;
+}
+/* One round by one walk; 0 when the round has to scan per loop instead. */
+static int bi_round(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  if (n > bi_rw.cap) {
+    int cap = bi_next_cap(bi_rw.cap, n);
+    bi_rw.pos = bi_resize(bi_rw.pos, cap, sizeof(int));
+    bi_rw.end = bi_resize(bi_rw.end, cap, sizeof(int));
+    bi_rw.ref = bi_resize(bi_rw.ref, cap, 1);
+    bi_rw.open = bi_resize(bi_rw.open, cap, 1);
+    bi_rw.cap = cap;
+  }
+  memset(bi_rw.ref, 0, (size_t)n);
+  memset(bi_rw.open, 0, (size_t)n);
+  bi_rw.limit = n > (INT_MAX - 1024) / 4 ? INT_MAX : 4 * n + 1024;
+  for (int id = 0; id < n; id++) {
+    bi_rw.pos[id] = -1;
+    int nr = nt_num_refs(nt, id);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0 && ch < n) bi_rw.ref[ch] = 1; }
+    int na = nt_num_arrs(nt, id);
+    for (int i = 0; i < na; i++) {
+      int m = 0;
+      const int *ids = nt_arr_at(nt, id, i, &m);
+      for (int j = 0; j < m; j++) if (ids[j] >= 0 && ids[j] < n) bi_rw.ref[ids[j]] = 1;
+    }
+  }
+  bi_rw.n = 0; bi_rw.npe = 0; bi_rw.nce = 0;
+  for (int id = 0; id < n; id++)
+    if (!bi_rw.ref[id] && !bi_rw_walk(nt, id, -1)) return 0;
+  BiPair pairs[BI_MAX_PAIRS];
+  for (int id = 0; id < n; id++) {
+    int body = bi_loop_body(nt, id);
+    if (body < 0) continue;
+    if (bi_rw.pos[body] < 0) { bi_scan_loop_body(c, body); continue; }
+    int b = bi_rw.pos[body], e = bi_rw.end[body], np = -1;
+    for (int q = bi_rw_from(bi_rw.ce_pos, bi_rw.nce, b); q < bi_rw.nce && bi_rw.ce_pos[q] < e; q++) {
+      if (bi_rw.ce_done[q] || bi_rw.ce_cut[q] >= b) continue;
+      int grows = bi_rw.ce_kind[q] == BI_OPW;
+      if (!grows) {
+        if (np < 0) {
+          np = 0;
+          for (int r = bi_rw_from(bi_rw.pe_pos, bi_rw.npe, b); r < bi_rw.npe && bi_rw.pe_pos[r] < e && np < BI_MAX_PAIRS; r++)
+            if (bi_rw.pe_cut[r] < b) pairs[np++] = bi_rw.pe[r];
+        }
+        const char *l = bi_rw.ce_l[q], *rn = bi_rw.ce_r[q], *an = bi_rw.ce_a[q];
+        if (bi_rw.ce_kind[q] == BI_MUL)
+          grows = (rn && bi_reaches(pairs, np, l, rn, 0)) || (an && bi_reaches(pairs, np, l, an, 0));
+        else
+          grows = bi_reaches(pairs, np, l, rn, 0) && bi_reaches(pairs, np, l, an, 0);
+      }
+      if (grows) { bi_promote(c, bi_rw.ce_node[q], bi_rw.ce_l[q]); bi_rw.ce_done[q] = 1; }
+    }
+  }
+  return 1;
+}
+
 void infer_bigint_loop_locals(Compiler *c) {
+  if (bi_round(c)) return;
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty) continue;
-    if (sp_streq(ty, "WhileNode")) {
-      bi_scan_loop_body(c, nt_ref(nt, id, "statements"));
-      continue;
-    }
-    /* Promote mode additionally treats block-iteration loops as growth sites:
-       `n.times { f = f * x }`, `(a..b).each { ... }`, etc. The block body is a
-       BlockNode -> statements; reuse the same self-referential-multiply scan.
-       Only in promote mode: the wrap-pinned optcarrot must not pay a
-       block-loop bigint widening, which is why the default path stays
-       `while`-only. */
-    if (g_promote_mode && sp_streq(ty, "CallNode")) {
-      const char *mname = nt_str(nt, id, "name");
-      int block = nt_ref(nt, id, "block");
-      if (mname && is_block_loop_method(mname) && block >= 0 &&
-          nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode"))
-        bi_scan_loop_body(c, nt_ref(nt, block, "body"));
-    }
+    int body = bi_loop_body(nt, id);
+    if (body >= 0) bi_scan_loop_body(c, body);
   }
 }
