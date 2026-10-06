@@ -812,6 +812,9 @@ int call_breaks(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (name && (is_instance_eval_family(name))) return 0;
   if (nt_ref(nt, id, "receiver") < 0 && call_user_yield_mi(c, id) < 0) return 0;
+  /* an inner step of a folded `h.merge(a, b) { break ... }` (analyze.c):
+     its break leaves the outer call, whose wrapper it runs inside */
+  if (nt_str(nt, id, "merge_fold_step")) return 0;
   return block_has_top_break(c, nt_ref(nt, block, "body"));
 }
 
