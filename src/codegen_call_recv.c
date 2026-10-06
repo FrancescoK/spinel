@@ -7216,11 +7216,12 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
     if (repr_of(c, argv[0]).big) {
       /* [big_arg, receiver promoted to Bignum] -- a poly pair (#2419) */
       int ta = ++g_tmp, o = ++g_tmp;
+      /* the operand is held across the pair's allocation, which can collect */
       buf_printf(b, "({ sp_Bigint *_t%d = ", ta); emit_expr(c, argv[0], b);
-      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " sp_PolyArray_push(_t%d, sp_box_bigint(_t%d));"
                     " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_new_int(%s))); _t%d; })",
-                 o, o, o, ta, o, r, o);
+                 ta, o, o, o, ta, o, r, o);
     }
     else if (a0 == TY_FLOAT) {
       int ta = ++g_tmp, o = ++g_tmp;
