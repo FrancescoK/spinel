@@ -671,7 +671,12 @@ int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
   emit_push_hash_key(kt, tr, th, ti, b);
-  if (vt == TY_POLY)
+  /* a PolyPoly table's order lists slots, not keys: the value is read at
+     the slot, as emit_hash_pairs_expr reads it (a slot index handed to
+     sp_PolyPolyHash_get as the key did not build) */
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tr, th, th, ti);
+  else if (vt == TY_POLY)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tr, hn, th, th, ti);
   else if (vt == TY_INT)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
