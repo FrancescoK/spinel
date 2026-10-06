@@ -4487,7 +4487,7 @@ static sp_RbVal sp_poly_abs2(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id =
 /* No-arg floor/ceil/round/truncate return Integer in Ruby: an int/bigint tag
    is already its own floor (returned unchanged, lossless for bigints), a
    float converts through the matching libm rounding. */
-static sp_RbVal sp_poly_floor(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(floor(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_floor_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_floor_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("floor", v); }
+static sp_RbVal sp_poly_floor(sp_RbVal v) { /* Time#floor answers a Time, as the typed path does */ if (SP_UNLIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_box_time(sp_time_round_to(*(sp_Time *)v.v.p, 0, 0)); if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(floor(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_floor_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_floor_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("floor", v); }
 /* a NULL char* carried under SP_TAG_STR is the empty string (as in
    sp_poly_to_i / sp_poly_eq): bytesize 0, ord raises CRuby's ArgumentError. */
 /* A shared String handle (#6179) answers bytesize, ord and getbyte from its
@@ -4615,13 +4615,15 @@ static sp_RbVal sp_poly_nonzero(sp_RbVal v) { if (!sp_poly_tower_p(v)) sp_raise_
 /* String#getbyte on a poly value; nil (not 0) for an out-of-range index, per
    CRuby, so the result is boxed. */
 static sp_RbVal sp_poly_getbyte(sp_RbVal v, sp_int i) { v = sp_poly_strbuf_deref(v); if (v.tag != SP_TAG_STR) sp_raise_poly_nomethod("getbyte", v); const char *s = v.v.s; if (!s) return sp_box_nil(); sp_int bl = (sp_int)sp_str_byte_len(s); if (i < 0) i += bl; if (i < 0 || i >= bl) return sp_box_nil(); return sp_box_int((sp_int)(unsigned char)s[i]); }
-static sp_RbVal sp_poly_ceil(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(ceil(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_ceil_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_ceil_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("ceil", v); }
-static sp_RbVal sp_poly_round(sp_RbVal v) { if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(round(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_round_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_round_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("round", v); }
+static sp_RbVal sp_poly_ceil(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_box_time(sp_time_round_to(*(sp_Time *)v.v.p, 0, 1)); if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(ceil(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_ceil_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_ceil_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("ceil", v); }
+static sp_RbVal sp_poly_round(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_box_time(sp_time_round_to(*(sp_Time *)v.v.p, 0, 2)); if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(round(v.v.f)); } if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT) return v; if (sp_poly_is_rational(v)) return sp_box_int(sp_rational_round_i(sp_poly_as_rational(v))); if (sp_poly_is_brat(v) && v.v.p) return sp_box_bigint(sp_brat_round_b((sp_BigRational *)v.v.p)); sp_raise_poly_nomethod("round", v); }
 /* Numeric#round(ndigits): a Float stays Float when n > 0 (rounded to n decimal
    places) and becomes Integer when n <= 0; an Integer is unchanged for n >= 0
    and rounded to a power of ten for n < 0. Mirrors the scalar Float#round(n)
    codegen path, dispatched on the runtime tag. */
 static sp_RbVal sp_poly_round_n(sp_RbVal v, sp_int n) {
+  /* Time#round(ndigits) answers a Time rounded to that many fraction digits */
+  if (SP_UNLIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_box_time(sp_time_round_to(*(sp_Time *)v.v.p, n, 2)); 
   if (v.tag == SP_TAG_FLT) {
     double x = v.v.f;
     if (n > 0) { double f = pow(10, (double)n); if (isinf(f)) return sp_box_float(x);
@@ -4658,6 +4660,8 @@ static sp_RbVal sp_poly_round_n(sp_RbVal v, sp_int n) {
 static sp_RbVal sp_poly_prec_n(sp_RbVal v, sp_int n, int op) {
   const char *nm = op == SP_PREC_FLOOR ? "floor" : op == SP_PREC_CEIL ? "ceil" : "truncate";
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && op == SP_PREC_TRUNC) return sp_poly_io_truncate(v, n);
+  if (SP_UNLIKELY(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) && op != SP_PREC_TRUNC)
+    return sp_box_time(sp_time_round_to(*(sp_Time *)v.v.p, n, op == SP_PREC_CEIL ? 1 : 0));
   if (v.tag == SP_TAG_FLT) {
     double x = v.v.f;
     if (n > 0) return sp_box_float(sp_float_prec_op(x, n, op));

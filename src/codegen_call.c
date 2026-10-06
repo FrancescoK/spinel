@@ -4858,7 +4858,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        call is typed a String (or in the dispatch's default arm), and not
        where a reopened Object or Kernel has an asctime, which answers for
        every receiver the table does not */
-    else if (sp_streq(name, "asctime") && (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm) &&
+    else if ((sp_streq(name, "asctime") || sp_streq(name, "ctime")) && (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm) &&
              !(comp_class_index(c, "Object") >= 0 &&
                comp_method_in_chain(c, comp_class_index(c, "Object"), name, NULL) >= 0) &&
              !(comp_class_index(c, "Kernel") >= 0 &&
