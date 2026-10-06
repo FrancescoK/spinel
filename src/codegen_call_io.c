@@ -124,6 +124,88 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
 static void emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc,
                                    const char *expected, Buf *b);
 
+/* The socket calls emit_io_socket_opt_call answers, at the arities it does */
+static int boxed_socket_opt(const char *name, int argc) {
+  return (sp_streq(name, "connect_nonblock") && argc >= 1 && argc <= 3) ||
+         (sp_streq(name, "setsockopt") && argc == 3) || (sp_streq(name, "getsockopt") && argc == 2);
+}
+
+/* connect_nonblock, setsockopt and getsockopt of the socket in C expression
+   r: the typed arm's, and a socket read back out of a container (a boxed
+   handle) answers the same way. Returns 1 when it emitted the call. */
+static int emit_io_socket_opt_call(Compiler *c, const NodeTable *nt, const char *name, const char *r,
+                                   int argc, const int *argv, Buf *b) {
+  if (sp_streq(name, "connect_nonblock")) {
+    const char *lty9 = argc > 0 ? nt_type(nt, argv[argc - 1]) : NULL;
+    int kwh9 = (lty9 && sp_streq(lty9, "KeywordHashNode")) ? argv[argc - 1] : -1;
+    int exc9 = kwh9 >= 0 ? kwh_lookup(nt, kwh9, "exception") : -1;
+    int no_exc = exc9 >= 0 && nt_type(nt, exc9) && sp_streq(nt_type(nt, exc9), "FalseNode");
+    int pos9 = kwh9 >= 0 ? argc - 1 : argc;
+    if (sp_streq(name, "connect_nonblock") && pos9 == 1) {
+      /* 1-arg form: a packed sockaddr String. Mirror the 2-arg
+         shape: `exception: false` swaps the IO::WaitWritable raise
+         for the :wait_writable symbol so polling loops can stay
+         non-raising. */
+      int ts = ++g_tmp;
+      if (no_exc) {
+        int tn = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", ts);
+        emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; sp_int _n%d = sp_sock_connect_nb_sa(%s, _t%d,", tn, r, ts);
+        buf_printf(b, " (sp_int)sp_str_byte_len(_t%d), 0);", ts);
+        buf_printf(b, " _n%d == SP_INT_NIL", tn);
+        buf_printf(b, " ? sp_box_sym(sp_sym_intern(\"wait_writable\"))");
+        buf_printf(b, " : sp_box_int(_n%d); })", tn);
+      }
+      else {
+        buf_printf(b, "({ const char *_t%d = ", ts);
+        emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; sp_sock_connect_nb_sa(%s, _t%d,"
+                      " (sp_int)sp_str_byte_len(_t%d), 1); })",
+                      r, ts, ts);
+      }
+      return 1;
+    }
+    if (sp_streq(name, "connect_nonblock") && pos9 == 2) {
+      if (no_exc) {
+        int tw = ++g_tmp;
+        buf_printf(b, "({ sp_int _t%d = sp_sock_connect_nb(%s, ", tw, r);
+        emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+        buf_printf(b, ", 0); _t%d == SP_INT_NIL"
+                      " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d); })", tw, tw);
+      }
+      else {
+        buf_printf(b, "sp_sock_connect_nb(%s, ", r); emit_str_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ", 1)");
+      }
+      return 1;
+    }
+  }
+  if (sp_streq(name, "setsockopt") && argc == 3) {
+    buf_printf(b, "sp_sock_setsockopt(%s, ", r);
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
+    /* the value is an Integer, true/false (1/0) or the option's packed
+       bytes, as CRuby takes it; only an Integer converts directly */
+    TyKind vty = comp_ntype(c, argv[2]);
+    if (vty == TY_INT) emit_int_expr(c, argv[2], b);
+    else {
+      buf_puts(b, "sp_sock_optval(");
+      emit_boxed(c, argv[2], b);
+      buf_puts(b, ")");
+    }
+    buf_puts(b, ")");
+    return 1;
+  }
+  if (sp_streq(name, "getsockopt") && argc == 2) {
+    buf_printf(b, "sp_sock_getsockopt(%s, ", r);
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    return 1;
+  }
+  return 0;
+}
+
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* IO instance methods on a poly-carried handle (an IO.pipe element): unbox
@@ -146,6 +228,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
+       /* a socket read back out of a container: its non-blocking connect and
+          its options, as the typed socket arms answer them */
+       (boxed_socket_opt(name, argc) && sp_feature_required("socket")) ||
        /* a socket's addresses: a connection passed into a Thread arrives
           boxed, and a server reads REMOTE_ADDR from it */
        ((is_socket_address(name)) && argc == 0 &&
@@ -276,6 +361,18 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                    tio3, trv, tio3, tn);
         buf_printf(b, "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
                    tpa, tn, tio3, tpa, tn);
+        return 1;
+      }
+      if (boxed_socket_opt(name, argc)) {
+        /* the receiver first, then the typed arm's call on the unboxed handle */
+        int trv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
+        emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+        char rsock[64];
+        snprintf(rsock, sizeof rsock, "sp_poly_as_io(_t%d, \"%s\")", trv, name);
+        emit_io_socket_opt_call(c, nt, name, rsock, argc, argv, b);
+        buf_puts(b, "; })");
         return 1;
       }
       int tio2 = ++g_tmp;
@@ -854,43 +951,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         }
         free(rb.p); return 1;
       }
-      if (sp_streq(name, "connect_nonblock") && pos9 == 1) {
-        /* 1-arg form: a packed sockaddr String. Mirror the 2-arg
-           shape: `exception: false` swaps the IO::WaitWritable raise
-           for the :wait_writable symbol so polling loops can stay
-           non-raising. */
-        int ts = ++g_tmp;
-        if (no_exc) {
-          int tn = ++g_tmp;
-          buf_printf(b, "({ const char *_t%d = ", ts);
-          emit_str_expr(c, argv[0], b);
-          buf_printf(b, "; sp_int _n%d = sp_sock_connect_nb_sa(%s, _t%d,", tn, r, ts);
-          buf_printf(b, " (sp_int)sp_str_byte_len(_t%d), 0);", ts);
-          buf_printf(b, " _n%d == SP_INT_NIL", tn);
-          buf_printf(b, " ? sp_box_sym(sp_sym_intern(\"wait_writable\"))");
-          buf_printf(b, " : sp_box_int(_n%d); })", tn);
-        }
-        else {
-          buf_printf(b, "({ const char *_t%d = ", ts);
-          emit_str_expr(c, argv[0], b);
-          buf_printf(b, "; sp_sock_connect_nb_sa(%s, _t%d,"
-                        " (sp_int)sp_str_byte_len(_t%d), 1); })",
-                        r, ts, ts);
-        }
-        free(rb.p); return 1;
-      }
-      if (sp_streq(name, "connect_nonblock") && pos9 == 2) {
-        if (no_exc) {
-          int tw = ++g_tmp;
-          buf_printf(b, "({ sp_int _t%d = sp_sock_connect_nb(%s, ", tw, r);
-          emit_str_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
-          buf_printf(b, ", 0); _t%d == SP_INT_NIL"
-                        " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d); })", tw, tw);
-        }
-        else {
-          buf_printf(b, "sp_sock_connect_nb(%s, ", r); emit_str_expr(c, argv[0], b);
-          buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ", 1)");
-        }
+      if (sp_streq(name, "connect_nonblock") && (pos9 == 1 || pos9 == 2)) {
+        emit_io_socket_opt_call(c, nt, name, r, argc, argv, b);
         free(rb.p); return 1;
       }
     }
@@ -949,26 +1011,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_sock_listen(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
         free(rb.p); return 1;
       }
-      if (sp_streq(name, "setsockopt") && argc == 3) {
-        buf_printf(b, "sp_sock_setsockopt(%s, ", r);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
-        /* the value is an Integer, true/false (1/0) or the option's packed
-           bytes, as CRuby takes it; only an Integer converts directly */
-        TyKind vty = comp_ntype(c, argv[2]);
-        if (vty == TY_INT) emit_int_expr(c, argv[2], b);
-        else {
-          buf_puts(b, "sp_sock_optval(");
-          emit_boxed(c, argv[2], b);
-          buf_puts(b, ")");
-        }
-        buf_puts(b, ")");
-        free(rb.p); return 1;
-      }
-      if (sp_streq(name, "getsockopt") && argc == 2) {
-        buf_printf(b, "sp_sock_getsockopt(%s, ", r);
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      if ((sp_streq(name, "setsockopt") && argc == 3) || (sp_streq(name, "getsockopt") && argc == 2)) {
+        emit_io_socket_opt_call(c, nt, name, r, argc, argv, b);
         free(rb.p); return 1;
       }
     }
