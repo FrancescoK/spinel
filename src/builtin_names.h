@@ -206,5 +206,10 @@ int is_message_reader(const char *n);     /* message: an exception's message Str
 int is_hash_default_writer(const char *n); /* default= */
 int is_uplus_name(const char *n);         /* +@: the receiver itself unless it is frozen */
 int is_freeze_name(const char *n);        /* freeze */
+int is_key_block_method(const char *n);   /* fetch delete: a block given the missing key */
+int is_pair_builder(const char *n);       /* zip flatten sum: Arrays built of the receiver's elements */
+int is_io_writer(const char *n);          /* write << print puts printf putc syswrite: writes into an IO's buffer */
+int is_method_object_call(const char *n); /* method public_method: a Method object of a receiver's method */
+int is_lazy_name(const char *n);          /* lazy */
 
 #endif
