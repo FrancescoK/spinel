@@ -2711,11 +2711,16 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            a container parameter reads this, through the call sites */
         elem_argv = argv; elem_an = an; elem_splat_index = 1;
       }
-      else if (name && sp_streq(name, "concat") && an == 1) {
-        /* concat(other): the other array's elements splice in */
+      else if (name && sp_streq(name, "concat") && an >= 1) {
+        /* concat(other, ...): each other array's elements splice in, so
+           every argument is evidence, as push's are; one that is no array
+           raises before anything is stored */
         is_push = 1; vt = splice_incoming_elem(c, argv[0]);
-        TyKind cat = infer_type(c, argv[0]);
-        concat_scalar = cat != TY_UNKNOWN && cat != TY_POLY && !ty_is_array(cat);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, splice_incoming_elem(c, argv[ai]));
+        for (int ai = 0; ai < an && !concat_scalar; ai++) {
+          TyKind cat = infer_type(c, argv[ai]);
+          concat_scalar = cat != TY_UNKNOWN && cat != TY_POLY && !ty_is_array(cat);
+        }
       }
       else if (name && sp_streq(name, "replace") && an == 1 && recv >= 0 &&
                ty_is_array(infer_type(c, argv[0])) &&
