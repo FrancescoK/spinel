@@ -18983,9 +18983,14 @@ int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
 
 /* The operands nil_target_operand binds: a call, a value a branch or a
    yield answers, and a local's, an ivar's or a global's write, each of
-   which answers its value */
-static int nil_target_bindable(NodeKind k) {
+   which answers its value. For a boxed receiver (poly_target_call) also an
+   interpolation, a `||`, a `&&` and a `begin`: its arms read a String
+   argument from a `const char *` slot, where the typed String arms take a
+   fresh String of their own. */
+static int nil_target_bindable(NodeKind k, int boxed) {
   switch (k) {
+  case NK_InterpolatedStringNode: case NK_OrNode: case NK_AndNode: case NK_BeginNode:
+    return boxed;
   case NK_CallNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode:
   case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode:
   case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode:
@@ -19000,32 +19005,54 @@ static int nil_target_bindable(NodeKind k) {
   }
 }
 
-/* One argument of nil_target_operands, or a part of one: bound when it
-   runs code, else walked into when it is a container literal, a splat or
-   a keyword pair, whose parts run in order and whose own construction runs
-   none. 0 when it meets a part that runs code and cannot be bound -- a
-   value with no C type, a block argument -- or the temps run out: the
+/* Does an argument of the call (its `arguments` node a) reassign the
+   variable read v reads (read_rebound_by)? */
+static int nil_target_read_rebound(Compiler *c, int v, int a) {
+  NodeKind k = nt_kind(c->nt, v);
+  if (a < 0 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode &&
+                k != NK_GlobalVariableReadNode && k != NK_ClassVariableReadNode))
+    return 0;
+  int an = 0;
+  const int *av = nt_arr(c->nt, a, "arguments", &an);
+  for (int i = 0; i < an; i++) if (read_rebound_by(c, v, av[i])) return 1;
+  return 0;
+}
+
+/* One argument of nil_target_operands (whose `arguments` node is a), or a
+   part of one: bound when it runs code, else walked into when it is a
+   container literal, a splat or a keyword pair, whose parts run in order
+   and whose own construction runs none. A variable's read that an argument
+   reassigns is bound in its turn too (`s.center(@z, gz("*"))` for a gz
+   that writes @z), as emit_operands_in_order binds it: the operands after
+   it run ahead of the call. A nil-valued part (`(log << 1; nil)`) has no
+   C slot: it runs for its effect ahead of the test, as CRuby runs it
+   before the call raises. 0 when it meets a part that runs code and
+   cannot be bound -- a value with no C type, a block argument, a shared
+   String slot's read, which binds as a copy -- or the temps run out: the
    parts after it run in the call as before. */
-static int nil_target_operand(Compiler *c, int v, int *node, TyKind *ty, int *n, int max) {
+static int nil_target_operand(Compiler *c, int v, int a, int boxed, int *node, TyKind *ty, int *n, int max) {
   const NodeTable *nt = c->nt;
-  if (v < 0 || !subtree_has_side_effect(c, v)) return 1;
+  int read = v >= 0 && nil_target_read_rebound(c, v, a);
+  char sref[192];
+  if (read && strbuf_slot_ref(c, v, sref, sizeof sref)) return 0;
+  if (v < 0 || (!read && !subtree_has_side_effect(c, v))) return 1;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
     int en = 0;
     const int *ev = nt_arr(nt, v, "elements", &en);
     for (int i = 0; i < en; i++)
-      if (!nil_target_operand(c, ev[i], node, ty, n, max)) return 0;
+      if (!nil_target_operand(c, ev[i], a, boxed, node, ty, n, max)) return 0;
     return 1;
   }
   if (k == NK_AssocNode)
-    return nil_target_operand(c, nt_ref(nt, v, "key"), node, ty, n, max) &&
-           nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
-  if (k == NK_AssocSplatNode) return nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
-  if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), node, ty, n, max);
+    return nil_target_operand(c, nt_ref(nt, v, "key"), a, boxed, node, ty, n, max) &&
+           nil_target_operand(c, nt_ref(nt, v, "value"), a, boxed, node, ty, n, max);
+  if (k == NK_AssocSplatNode) return nil_target_operand(c, nt_ref(nt, v, "value"), a, boxed, node, ty, n, max);
+  if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), a, boxed, node, ty, n, max);
   Repr tr = repr_of(c, v);
   TyKind t = tr.as_ty;
   if (*n >= max ||
-      !nil_target_bindable(k) || tr.untyped || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
+      (!read && !nil_target_bindable(k, boxed)) || tr.untyped || t == TY_VOID || comp_ty_value_obj(c, t))
     return 0;
   node[*n] = v; ty[*n] = t; (*n)++;
   return 1;
@@ -19033,31 +19060,90 @@ static int nil_target_operand(Compiler *c, int v, int *node, TyKind *ty, int *n,
 
 /* The operands the nil arm runs ahead of its test, into node[]/ty[]: the
    receiver unless it is a local's or a global's read or one the loop
-   caches, then each argument
-   that runs code, in Ruby's order (nil_target_operand). Answers the
-   count. */
-static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int max) {
+   caches (or, for a boxed receiver, an ivar's or a class variable's: a
+   mutator's arm writes back into the slot), then each argument that runs
+   code, in Ruby's order (nil_target_operand). Answers the count. */
+static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind *ty, int max) {
   const NodeTable *nt = c->nt;
   int n = 0;
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, r);
-  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r)) {
+  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
+      !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) {
     node[n] = r; ty[n] = repr_of(c, r).as_ty; n++;
   }
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   for (int i = 0; i < an; i++)
-    if (!nil_target_operand(c, av[i], node, ty, &n, max)) break;
+    if (!nil_target_operand(c, av[i], a, boxed, node, ty, &n, max)) break;
   return n;
 }
 
+/* The parts of argument v that nil_target_operands left to the call --
+   from the first one it could not bind on -- run for their effect, in
+   order, into b: on the nil path the call that runs them never runs.
+   node[0..n) are the bound ones. */
+static void emit_nil_target_rest(Compiler *c, int v, const int *node, int n, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || !subtree_has_side_effect(c, v)) return;
+  for (int i = 0; i < n; i++) if (node[i] == v) return;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
+    int en = 0;
+    const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int i = 0; i < en; i++) emit_nil_target_rest(c, ev[i], node, n, b);
+    return;
+  }
+  if (k == NK_AssocNode) {
+    emit_nil_target_rest(c, nt_ref(nt, v, "key"), node, n, b);
+    emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b);
+    return;
+  }
+  if (k == NK_AssocSplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b); return; }
+  if (k == NK_SplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "expression"), node, n, b); return; }
+  Buf ob, op;
+  render_operand(c, v, 0, &ob, &op);
+  if (op.p) buf_puts(b, op.p);
+  buf_printf(b, "(void)(%s); ", ob.p ? ob.p : "0");
+  free(ob.p); free(op.p);
+}
+
+/* A builtin on a boxed receiver dispatches on its tag, and an arm reads
+   its arguments only in the branch of the class that takes them: for a
+   boxed nil, or any value without the method, the NoMethodError branch
+   raised with them never run (`n.split((log << 1; nil))`). CRuby runs
+   them first. They are bound ahead of the dispatch as the nil arm binds
+   them, with no test of its own, as the dispatch raises; a `&.` call
+   only in its guard's non-nil arm (sn_guard_pending), as CRuby runs none
+   for nil. A name a program class answers, as an instance's or as the
+   class's own method, goes to the class dispatch, which binds its
+   arguments ahead of its switch; a receiver read in its slot that an
+   argument rebinds keeps the order emit_operands_in_order gives it. 1
+   when an argument is bound. */
+static int poly_target_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver"), a = nt_ref(nt, id, "arguments");
+  const char *nm = nt_str(nt, id, "name");
+  if (r < 0 || a < 0 || !nm || sn_guard_pending(c, id) || c->ntype[r] != TY_POLY ||
+      comp_ntype(c, r) != TY_POLY || !subtree_has_side_effect(c, a) ||
+      comp_method_index(c, nm) >= 0 || any_class_defines(c, nm) || nil_target_read_rebound(c, r, a))
+    return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return 0;
+  int node[8]; TyKind ty[8];
+  int n = nil_target_operands(c, id, 1, node, ty, 8);
+  for (int i = 0; i < n; i++) if (node[i] != r && arg_ran_first(node[i], 0)) return 0;
+  return n > 0 && node[n - 1] != r;
+}
+
 /* The temps' declarations and the test, into b, each statement after
-   `lead` (a statement prefix: an indent, or nothing inside an expression).
-   The operands are bound to the temps; the caller unbinds from *mark. */
-static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int *mark) {
+   `lead` (a statement prefix: an indent, or nothing inside an expression);
+   a boxed receiver's (poly_target_call, `test` 0) has no test. The
+   operands are bound to the temps; the caller unbinds from *mark. */
+static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int test, int *mark) {
   const NodeTable *nt = c->nt;
   int node[8]; TyKind ty[8];
-  int n = nil_target_operands(c, id, node, ty, 8);
+  int n = nil_target_operands(c, id, !test, node, ty, 8);
   int r = nt_ref(nt, id, "receiver");
   char rtext[32] = "";
   *mark = g_n_argov;
@@ -19066,9 +19152,19 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
     render_operand(c, node[i], 0, &ob, &op);
-    int t = ++g_tmp;
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
+    if (ty[i] == TY_NIL) {
+      /* nil has no C slot: the operand runs for its effect, and reads as
+         nil's C value */
+      buf_printf(b, "(void)(%s);", ob.p ? ob.p : "0");
+      buf_puts(b, *lead ? "\n" : " ");
+      free(ob.p); free(op.p);
+      view_bind(node[i], "0");
+      if (node[i] == r) snprintf(rtext, sizeof rtext, "0");
+      continue;
+    }
+    int t = ++g_tmp;
     emit_ctype(c, ty[i], b);
     buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : default_value_from_compiler(c, ty[i]));
     if (ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
@@ -19078,6 +19174,7 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     view_bind(node[i], "_t%d", t);
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
   }
+  if (!test) return;
   buf_puts(b, lead);
   /* an array the loop being emitted caches (hc_array) has a cached length
      of 0 while it is nil: that register spares the receiver's read on every
@@ -19094,10 +19191,17 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   if (rtext[0]) buf_puts(b, rtext);
   else if (strbuf_slot_ref(c, r, sref, sizeof sref)) buf_puts(b, sref);
   else emit_expr(c, r, b);
+  buf_puts(b, ") == NULL)) ");
+  Buf rb; memset(&rb, 0, sizeof rb);
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) emit_nil_target_rest(c, av[i], node, n, &rb);
+  if (rb.p) buf_printf(b, "{ %s", rb.p);
   /* inside a Ruby-defined builtin (`r.count { }` is `__enum_count(r)`), the
      walk of its own receiver is reported under that method's name */
-  buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
-             enum_walk_name(c, id, r, nt_str(nt, id, "name")));
+  buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
+             enum_walk_name(c, id, r, nt_str(nt, id, "name")), rb.p ? " }" : "");
+  free(rb.p);
   buf_puts(b, *lead ? "\n" : " ");
 }
 
@@ -19165,17 +19269,18 @@ static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
 
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
-  if (cplan_nil(c, id) != CN_RAISE) return 0;
-  if (g_plan_check) cplan_served("nil-target");
-  if (emit_nil_target_cold(c, id, b)) return 1;
+  int test = cplan_nil(c, id) == CN_RAISE;
+  if (!test && !poly_target_call(c, id)) return 0;
+  if (test && g_plan_check) cplan_served("nil-target");
+  if (test && emit_nil_target_cold(c, id, b)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark;
-  emit_nil_target_head(c, id, &hb, "", &mark);
+  emit_nil_target_head(c, id, &hb, "", test, &mark);
   size_t pre0 = g_pre ? g_pre->len : 0;
   Buf cb; memset(&cb, 0, sizeof cb);
-  int vt = view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1);
+  int vt = test ? view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1) : -1;
   emit_call_held(c, id, &cb);
-  view_pop(c, vt);
+  if (test) view_pop(c, vt);
   view_unbind(mark);
   if (g_pre && g_pre->len > pre0) {
     /* the call hoisted its work (an iterator's loop): the head goes ahead
@@ -19210,17 +19315,18 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
    statement's own prelude goes, ahead of what it hoists. 1 when it
    emitted. */
 int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
-  if (cplan_nil(c, id) != CN_RAISE) return 0;
-  if (g_plan_check) cplan_served("nil-target");
+  int test = cplan_nil(c, id) == CN_RAISE;
+  if (!test && !poly_target_call(c, id)) return 0;
+  if (test && g_plan_check) cplan_served("nil-target");
   Buf *db = g_pre ? g_pre : b;
   Buf lb; memset(&lb, 0, sizeof lb);
   emit_indent(&lb, g_pre ? g_indent : indent);
   int mark;
-  emit_nil_target_head(c, id, db, lb.p ? lb.p : " ", &mark);
+  emit_nil_target_head(c, id, db, lb.p ? lb.p : " ", test, &mark);
   free(lb.p);
-  int vt = view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1);
+  int vt = test ? view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1) : -1;
   emit_stmt_inner(c, id, b, indent);
-  view_pop(c, vt);
+  if (test) view_pop(c, vt);
   view_unbind(mark);
   return 1;
 }
