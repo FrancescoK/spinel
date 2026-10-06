@@ -542,10 +542,27 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 /* syswrite takes exactly one argument, where write takes any number: a
    longer list was written as write's, and its statement text did not
    build. CRuby evaluates the arguments, raises NoMethodError for a nil
-   handle, then ArgumentError. A splat's count is the run time's (declined). */
+   handle, then ArgumentError. A splat's count is the run time's: the
+   arguments are gathered, checked for exactly one, and that one is written
+   as a boxed operand is (it was read as one String operand, and the C did
+   not build). */
 static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, int argc, Buf *b) {
+  int splat = 0;
+  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) splat = 1;
+  if (splat) {
+    int tf = ++g_tmp, tp = ++g_tmp, tv = ++g_tmp;
+    buf_printf(b, "({ sp_File *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+               tf, r, tp, tp);
+    emit_push_arg_list(c, argv, argc, tp, b);
+    buf_printf(b, "if (!_t%d) sp_nil_recv(\"syswrite\"); sp_arity_check(_t%d->len, 1, 1, NULL); "
+                  "sp_RbVal _t%d = sp_PolyArray_get(_t%d, 0); SP_GC_ROOT_RBVAL(_t%d); "
+                  "const char *_s%d = (_t%d.tag == SP_TAG_STR) ? _t%d.v.s : sp_poly_to_s(_t%d); "
+                  "sp_int _l%d = (_t%d.tag == SP_TAG_STR) ? sp_str_byte_len(_s%d) : strlen(_s%d); "
+                  "sp_File_syswrite(_t%d, _s%d, _l%d); })",
+               tf, tp, tv, tp, tv, tv, tv, tv, tv, tv, tv, tv, tv, tf, tv, tv);
+    return 1;
+  }
   if (argc == 1) return 0;
-  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) return 0;
   int tf = ++g_tmp;
   char msg[96]; arity_message(msg, sizeof msg, argc, 1, 1, NULL);
   buf_printf(b, "({ sp_File *_t%d = %s; ", tf, r);
