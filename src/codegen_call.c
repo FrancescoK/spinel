@@ -18509,7 +18509,9 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   *mark = g_n_argov;
   for (int i = 0; i < n; i++) {
     Buf ob, op;
-    render_operand(c, node[i], &ob, &op);
+    /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
+       where its stored type is the handle */
+    render_operand(c, node[i], 0, &ob, &op);
     int t = ++g_tmp;
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
