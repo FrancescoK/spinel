@@ -748,3 +748,5 @@ int is_nil_method(const char *n) {
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
   return 0;
 }
+
+int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
