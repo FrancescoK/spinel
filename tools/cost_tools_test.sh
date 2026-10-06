@@ -3,7 +3,7 @@
 # and tools/repr_diff.sh, tools/c_costs.sh and tools/alloc_diff.sh against
 # stand-in compilers whose output is fixed here, so each summary is known.
 #
-#   tools/cost_tools_test.sh dump|repr|costs|alloc
+#   tools/cost_tools_test.sh dump|repr|costs|costs-live|alloc
 set -eu
 ROOT=$(pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/spinel-cost-tools-test.XXXXXX")
@@ -160,6 +160,31 @@ EOF
   bash "$ROOT/tools/c_costs.sh" ref.c new.c prog.rb
   printf 'one.rb ref.c new.c\ntwo.rb ref.c ref.c\nthree.rb ref.c missing.c\n' > list
   bash "$ROOT/tools/c_costs.sh" --list list | head -1
+  ;;
+costs-live)
+  # a program with a main: a runtime helper nothing calls, boxing in a
+  # loop of its own; a callback main only names, which counts; a function
+  # calling itself and two calling each other, which run once per level of
+  # the recursion, as a loop body does, and a leaf they call
+  cat > live.c <<'EOF'
+static sp_PolyArray *sp_class_ancestors(sp_Class c) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  for (sp_Class cur = c; cur.cls_id; cur = sp_class_super(cur)) sp_PolyArray_push(a, sp_box_class(cur));
+  return a;
+}
+static void sp_K__gc_scan(void *p) { sp_keep(sp_box_int(1)); }
+static sp_int sp_leaf(sp_int n) { return sp_poly_to_i(sp_box_int(n)); }
+static sp_int sp_fact(sp_int n) { return n < 2 ? sp_leaf(1) : n * sp_fact(n - 1); }
+static sp_int sp_odd(sp_int n);
+static sp_int sp_even(sp_int n) { return n == 0 ? 1 : sp_odd(sp_poly_to_i(sp_box_int(n - 1))); }
+static sp_int sp_odd(sp_int n) { return n == 0 ? 0 : sp_even(n - 1); }
+int main(int argc, char **argv) {
+  sp_K *k = SP_POOL_NEW(K, sp_K__gc_scan);
+  sp_RbVal v = sp_box_int(sp_fact(5) + sp_even(4));
+  return 0;
+}
+EOF
+  bash "$ROOT/tools/c_costs.sh" live.c
   ;;
 alloc)
   # grew.rb allocates past the threshold, same.rb does not, args.rb gets
