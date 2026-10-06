@@ -737,3 +737,11 @@ int is_message_reader(const char *n) { return sp_streq(n, "message"); }
 int is_hash_default_writer(const char *n) { return sp_streq(n, "default="); }
 int is_uplus_name(const char *n) { return sp_streq(n, "+@"); }
 int is_freeze_name(const char *n) { return sp_streq(n, "freeze"); }
+int is_key_block_method(const char *n) { return sp_streq(n, "fetch") || sp_streq(n, "delete"); }
+int is_pair_builder(const char *n) { return sp_streq(n, "zip") || sp_streq(n, "flatten") || sp_streq(n, "sum"); }
+int is_io_writer(const char *n) {
+  return sp_streq(n, "write") || sp_streq(n, "<<") || sp_streq(n, "print") || sp_streq(n, "puts") ||
+         sp_streq(n, "printf") || sp_streq(n, "putc") || sp_streq(n, "syswrite");
+}
+int is_method_object_call(const char *n) { return sp_streq(n, "method") || sp_streq(n, "public_method"); }
+int is_lazy_name(const char *n) { return sp_streq(n, "lazy"); }

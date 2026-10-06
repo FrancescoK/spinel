@@ -30378,6 +30378,248 @@ static void refuse_string_binding_copies(Compiler *c) {
   }
 }
 
+/* String keepers (#6765): a builtin (or a user Enumerable) that keeps a
+   String it is handed and hands that one String out again, which the
+   analysis copies at one of the two ends. Refused, naming the keeper, when
+   the String handed out is mutated in place while the variable it came
+   from is read, or the variable is mutated while the keeper is read. */
+enum { KP_NONE, KP_DEFAULT, KP_FILL, KP_PAIRS, KP_IO, KP_OSTRUCT, KP_ENUM, KP_USER_ENUM, KP_TO_S };
+static const char *kp_name(int kind) {
+  switch (kind) {
+    case KP_DEFAULT: return "a `Hash.new` block's value";
+    case KP_FILL: return "`Array.new(n, s)`, whose elements are one String";
+    case KP_PAIRS: return "the pairs `zip`, `flatten` or `sum` build";
+    case KP_IO: return "a C-bound object's constructor (StringIO and the like), which keeps a copy";
+    case KP_OSTRUCT: return "an OpenStruct's field";
+    case KP_ENUM: return "an `Enumerator.new` block's yielder";
+    case KP_USER_ENUM: return "an Enumerable method of a user class";
+    default: return "`String(obj)` of a user `to_s` or `to_str`";
+  }
+}
+static __attribute__((noreturn)) void kp_refuse(Compiler *c, int id, const char *route) {
+  char msg[512];
+  snprintf(msg, sizeof msg, "a String kept by %s is mutated in place, or the variable it came from is (a "
+           "String is not yet shared by reference through %s). Mutate the String through the variable it "
+           "came from.", route, route);
+  unsupported_feature(c, id, msg);
+}
+/* Does `n` reach, through the receivers of calls, a read of `h` (when
+   given) or node `u`? With `self`, `n` may be u itself. */
+static int kp_roots_at(Compiler *c, int n, const SaName *h, int u, int self) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; d < 32; d++) {
+    n = an_unparen(nt, n);
+    if (n < 0) return 0;
+    if (n == u) return self || d > 0;
+    if (h && sa_reads(c, n, h)) return d > 0;
+    if (nt_kind(nt, n) != NK_CallNode) return 0;
+    n = nt_ref(nt, n, "receiver");
+  }
+  return 0;
+}
+/* Is a String the keeper (a variable `h`, or the call `u` itself) hands
+   out mutated in place: a mutator on a call that reaches it, a local bound
+   from one, or an iterator block's parameter over it? */
+/* Can value `n` be a String (typed one, or boxed)? */
+static int kp_may_be_string(Compiler *c, int n) {
+  TyKind t = comp_ntype(c, an_unparen(c->nt, n));
+  return t == TY_STRING || t == TY_STRBUF || t == TY_POLY;
+}
+static int kp_handed_mutated(Compiler *c, const SaName *h, int u, int self) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, m) {
+    const char *mn = nt_str(nt, m, "name");
+    int r = nt_ref(nt, m, "receiver"), blk = nt_ref(nt, m, "block");
+    if (mn && r >= 0 && sp_str_mutator(mn, SP_MUT_LOCAL) && kp_may_be_string(c, r) && kp_roots_at(c, r, h, u, self))
+      return 1;
+    const char *bp = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? block_param_name(c, blk, 0) : NULL;
+    SaName p = { NK_LocalVariableReadNode, bp, comp_scope_of(c, blk), -1 };
+    LocalVar *pv = bp ? scope_local(p.scope, bp) : NULL;
+    if (bp && pv && (pv->type == TY_STRING || pv->type == TY_STRBUF || pv->type == TY_POLY) && r >= 0 &&
+        (kp_roots_at(c, r, h, u, 1) || (h && sa_reads(c, r, h))) && sa_mutated(c, &p))
+      return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    SaName t;
+    if (kp_roots_at(c, nt_ref(nt, w, "value"), h, u, self) && an_unparen(nt, nt_ref(nt, w, "value")) != u &&
+        kp_may_be_string(c, nt_ref(nt, w, "value")) && sa_name(c, w, &t) && sa_mutated(c, &t))
+      return 1;
+  }
+  return 0;
+}
+/* The variable a write of `u` binds (`h = u`), into *h: 1 if any. */
+static int kp_holder(Compiler *c, int u, SaName *h) {
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_LocalVariableWriteNode : k == 1 ? NK_InstanceVariableWriteNode
+                       : NK_GlobalVariableWriteNode, w)
+      if (an_unparen(nt, nt_ref(nt, w, "value")) == u && sa_name(c, w, h)) return 1;
+  return 0;
+}
+static int kp_string_var(Compiler *c, int v) {
+  TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+  SaName a;
+  return (vt == TY_STRING || vt == TY_STRBUF) && sa_name(c, v, &a) && !hv_may_be_frozen(c, v);
+}
+/* What a keeper call `u` keeps: its kind, and the String variable it was
+   handed into *s (or -1: a fresh String, kept all the same). */
+static int kp_keeper(Compiler *c, int u, int *s) {
+  const NodeTable *nt = c->nt;
+  const char *un = nt_str(nt, u, "name");
+  int r = an_unparen(nt, nt_ref(nt, u, "receiver")), blk = nt_ref(nt, u, "block");
+  int a = nt_ref(nt, u, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  int isblk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
+  TyKind ut = comp_ntype(c, u);
+  int cons = un && r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
+             is_hash_constructor(un);
+  *s = -1;
+  if (!un) return KP_NONE;
+  if (cons && isblk && ty_is_hash(ut)) {
+    /* `hh[k] = s` in the block: the Hash holds the String it answers */
+    const char *hp = block_param_name(c, blk, 0);
+    SaName hh = { NK_LocalVariableReadNode, hp, comp_scope_of(c, blk), -1 };
+    NT_FOREACH_KIND(nt, NK_CallNode, st)
+      if (hp && nt_str(nt, st, "name") && is_store_alias(nt_str(nt, st, "name")) &&
+          sa_reads(c, nt_ref(nt, st, "receiver"), &hh)) return KP_NONE;
+    int v = an_unparen(nt, hv_block_value(c, blk));
+    if (kp_string_var(c, v)) { *s = v; return KP_DEFAULT; }
+    return KP_NONE;
+  }
+  if (cons && an == 2 && ty_is_array(ut)) {
+    int v = an_unparen(nt, av[1]);
+    TyKind vt = comp_ntype(c, v);
+    if ((vt != TY_STRING && vt != TY_STRBUF) || nt_kind(nt, v) == NK_StringNode || hv_freeze_call(nt, v)) return KP_NONE;
+    if (kp_string_var(c, v)) *s = v;
+    else if (sa_name(c, v, &(SaName){0})) return KP_NONE;
+    return KP_FILL;
+  }
+  if (cons && an >= 1 && ty_is_object(ut) && c->classes[ty_object_class(ut)].is_native_class &&
+      kp_string_var(c, an_unparen(nt, av[0]))) {
+    *s = an_unparen(nt, av[0]); return KP_IO;
+  }
+  if (cons && ut == TY_OPENSTRUCT) {
+    int v = an >= 1 ? bw_subject_var(c, av[0], 0) : -1;
+    if (v >= 0 && kp_string_var(c, v)) *s = v;
+    return KP_OSTRUCT;
+  }
+  if (cons && ut == TY_ENUMERATOR && isblk) {
+    const char *y = block_param_name(c, blk, 0);
+    NT_FOREACH_KIND(nt, NK_CallNode, p) {
+      int pr = an_unparen(nt, nt_ref(nt, p, "receiver")), pa = nt_ref(nt, p, "arguments"), pn = 0;
+      const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;
+      if (y && pr >= 0 && nt_kind(nt, pr) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, pr, "name"), y) &&
+          comp_scope_of(c, pr) == comp_scope_of(c, blk) && pn == 1 && kp_string_var(c, an_unparen(nt, pv[0]))) {
+        *s = an_unparen(nt, pv[0]); return KP_ENUM;
+      }
+    }
+    return KP_NONE;
+  }
+  if (cons && ty_is_object(ut) && an_class_includes_enumerable(c, ty_object_class(ut))) {
+    for (int i = 0; i < an; i++)
+      if (kp_string_var(c, an_unparen(nt, av[i]))) { *s = an_unparen(nt, av[i]); return KP_USER_ENUM; }
+    return KP_NONE;
+  }
+  if (r >= 0 && is_pair_builder(un) && (ty_is_array(comp_ntype(c, r)) || ty_is_hash(comp_ntype(c, r)))) {
+    int v = bw_subject_var(c, r, 0);
+    for (int i = 0; v < 0 && i < an; i++) v = bw_subject_var(c, av[i], 0);
+    if (v >= 0 && kp_string_var(c, v)) { *s = v; return KP_PAIRS; }
+    return KP_NONE;
+  }
+  /* `String(obj)` where obj's class answers to_s or to_str with an
+     instance variable */
+  if (r < 0 && an == 1 && is_kernel_string_call(un) && ty_is_object(comp_ntype(c, av[0]))) {
+    int ci = ty_object_class(comp_ntype(c, av[0]));
+    for (int q = 0; q < 2; q++) {
+      int mi = comp_method_in_chain(c, ci, q ? "to_str" : "to_s", NULL);
+      int lv[16], n = mi > 0 ? method_value_leaves(c, mi, lv, 16) : 0;
+      for (int i = 0; i < n; i++)
+        if (nt_kind(nt, an_unparen(nt, lv[i])) == NK_InstanceVariableReadNode) return KP_TO_S;
+    }
+  }
+  return KP_NONE;
+}
+/* The method a Method object's Symbol names: the builtin a synthesized
+   wrapper (desugar_builtin_method_obj, `__bam_N`) forwards to, or the
+   Symbol itself. */
+static const char *kp_method_sym(Compiler *c, const char *sym) {
+  if (!sym) return NULL;
+  NT_FOREACH_KIND(c->nt, NK_DefNode, d)
+    if (nt_str(c->nt, d, "bam_sym") && nt_str(c->nt, d, "name") && sp_streq(nt_str(c->nt, d, "name"), sym))
+      return nt_str(c->nt, d, "bam_sym");
+  return sym;
+}
+static void refuse_string_keeper_copies(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver")), blk = nt_ref(nt, u, "block");
+    int a = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!un) continue;
+    /* `s.method(:<<).call(x)`: a String mutator as a Method object (it
+       crashed) */
+    if (r >= 0 && an == 1 && is_method_object_call(un) && nt_kind(nt, av[0]) == NK_SymbolNode &&
+        (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF) &&
+        an_str_mutator_name(kp_method_sym(c, nt_str(nt, av[0], "value"))))
+      unsupported_feature(c, u, "a String mutator taken as a Method object (`s.method(:<<)`) crashed when "
+                          "called, and its change would not reach the String (a String is not yet shared by "
+                          "reference through a Method object). Call the mutator on the String directly.");
+    /* `[s].lazy.map { |x| x << y }`: a lazy chain's block mutating its
+       element (it crashed) */
+    const char *bp = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? block_param_name(c, blk, 0) : NULL;
+    SaName p = { NK_LocalVariableReadNode, bp, blk >= 0 ? comp_scope_of(c, blk) : NULL, -1 };
+    for (int q = r; bp && q >= 0 && nt_kind(nt, q) == NK_CallNode; q = an_unparen(nt, nt_ref(nt, q, "receiver")))
+      if (nt_str(nt, q, "name") && is_lazy_name(nt_str(nt, q, "name")) && sa_mutated(c, &p))
+        unsupported_feature(c, blk, "a lazy chain's block that mutates its String element in place crashed "
+                            "(a String is not yet shared by reference through a lazy chain's element). "
+                            "Mutate the elements in an eager `each` first.");
+    /* `h.fetch(s) { |k| k << x }`, `h.delete(s) { |k| ... }`: k is s */
+    if (bp && r >= 0 && an >= 1 && is_key_block_method(un) && ty_is_hash(comp_ntype(c, r)) &&
+        kp_string_var(c, an_unparen(nt, av[0]))) {
+      SaName sk;
+      sa_name(c, an_unparen(nt, av[0]), &sk);
+      int km = sa_mutated(c, &p);
+      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+        SaName t;
+        if (sa_reads(c, nt_ref(nt, w, "value"), &p) && sa_name(c, w, &t) && sa_mutated(c, &t)) km = 1;
+      }
+      /* `r = h.fetch(s) { |k| k }`: the answer is k too */
+      SaName rr;
+      if (sa_reads(c, hv_block_value(c, blk), &p) && kp_holder(c, u, &rr) && sa_mutated(c, &rr)) km = 1;
+      if (km && sa_read_elsewhere(c, &sk, an_unparen(nt, av[0])))
+        kp_refuse(c, u, "a `fetch` or `delete` block's key");
+    }
+    int s = -1, kind = kp_keeper(c, u, &s);
+    SaName h, sv;
+    int held = kp_holder(c, u, &h);
+    /* `Hash.new { |hh, k| k << x }; h[s]`: the default block's key is s */
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && r >= 0 && is_hash_constructor(un) && ty_is_hash(comp_ntype(c, u)) &&
+        held && block_param_name(c, blk, 1)) {
+      SaName k = { NK_LocalVariableReadNode, block_param_name(c, blk, 1), comp_scope_of(c, blk), -1 };
+      if (sa_mutated(c, &k))
+        NT_FOREACH_KIND(nt, NK_CallNode, e) {
+          int ea = nt_ref(nt, e, "arguments"), en = 0;
+          const int *ev = ea >= 0 ? nt_arr(nt, ea, "arguments", &en) : NULL;
+          if (container_elem_read_p(nt, e) && sa_reads(c, nt_ref(nt, e, "receiver"), &h) && en == 1 &&
+              kp_string_var(c, an_unparen(nt, ev[0])) && sa_name(c, an_unparen(nt, ev[0]), &sv) &&
+              sa_read_elsewhere(c, &sv, an_unparen(nt, ev[0])))
+            kp_refuse(c, e, "a `Hash.new` block's key");
+        }
+    }
+    if (kind == KP_NONE) continue;
+    int mut = kp_handed_mutated(c, held ? &h : NULL, u, kind == KP_TO_S);
+    if (kind == KP_IO && held)
+      NT_FOREACH_KIND(nt, NK_CallNode, wcall)
+        if (nt_str(nt, wcall, "name") && is_io_writer(nt_str(nt, wcall, "name")) &&
+            sa_reads(c, nt_ref(nt, wcall, "receiver"), &h)) mut = 1;
+    int sname = s >= 0 && sa_name(c, s, &sv);
+    if (mut && (kind == KP_FILL || kind == KP_OSTRUCT || kind == KP_TO_S || (sname && sa_read_elsewhere(c, &sv, s))))
+      kp_refuse(c, u, kp_name(kind));
+    if (sname && held && sa_mutated(c, &sv) && sa_read_elsewhere(c, &h, -1)) kp_refuse(c, u, kp_name(kind));
+  }
+}
+
 /* Only an implicit block or the method's own block parameter forwards its
    caller's block. A literal block or an unrelated proc belongs to super. */
 int super_forwards_caller_block(Compiler *c, int id) {
@@ -34915,6 +35157,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_binding_copies(c);
+  refuse_string_keeper_copies(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
