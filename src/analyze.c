@@ -25083,7 +25083,7 @@ static int reassert_rbs_param_seeds(Compiler *c) {
 static int nullable_int_call_name(const char *nm) {
   if (!nm) return 0;
   static const char *const N[] = {
-    "index", "rindex", "byteindex", "byterindex", "delete_at", "pop", "shift",
+    "index", "rindex", "byteindex", "byterindex", "delete_at", "slice!", "pop", "shift",
     "delete", "nonzero?", "infinite?", "getbyte", "bsearch", "bsearch_index",
     /* `a <=> b` answers nil when the two are not comparable, and the poly
        helper spells that with the sentinel like every other nullable int */
@@ -25650,6 +25650,9 @@ static int elem_miss_call(Compiler *c, int v) {
     return argc == 0 && blk < 0;
   if (is_minmax_query(nm)) return argc == 0;
   if (is_find_alias(nm)) return blk >= 0;
+  /* a fold without an initial value answers nil on an empty receiver:
+     `inject(:+)` and `inject { |s, x| ... }`, not `inject(0) { ... }` */
+  if (is_reduce_alias(nm)) return argc == 0 || (argc == 1 && blk < 0);
   return 0;
 }
 
