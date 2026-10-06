@@ -158,6 +158,14 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         { *out = TY_FLOAT; return 1; }   /* an endless range counts forever: Infinity (#3668) */
       if ((is_first_or_take(name)) && argc == 1)
         { *out = TY_INT_ARRAY; return 1; }
+      /* the blockless walks CRuby pulls one member at a time: an Enumerator
+         over the range itself (sp_Enumerator_new_from walks an endless one
+         as it is read), and the search for a value walks it up to the find;
+         materialized, each raised RangeError */
+      if (nt_ref(nt, id, "block") < 0) {
+        if (argc == 0 && is_forward_each_walk(name)) { *out = TY_ENUMERATOR; return 1; }
+        if (argc == 1 && sp_streq(name, "find_index")) { *out = TY_INT; return 1; }
+      }
       /* the block forms that walk up from the bounded end rather than
          materializing: the elements are the range's own ints (#3863) */
       if (nt_ref(nt, id, "block") >= 0 && argc == 0) {

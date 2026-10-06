@@ -1458,6 +1458,14 @@ int range_enum_redispatch(Compiler *c, int id) {
       if (bt != TY_INT && bt != TY_POLY) return 0;
     }
   }
+  /* An endless range held by a local (range_lit_endless sees through the sole
+     assignment, as the literal test above does not) has no int array either:
+     its blockless walks and value search stay on the range, which pulls its
+     members one at a time (emit_endless_range_walk) */
+  if (block < 0 && range_lit_endless(c, nt_ref(nt, id, "receiver")) &&
+      ((argc == 0 && (is_prefix_quantifier(name) || is_forward_each_walk(name))) ||
+       (argc == 1 && sp_streq(name, "find_index"))))
+    return 0;
   /* Non-collecting Enumerable methods: their result does not depend on the
      block-produced element type, so materializing the range to an int array is
      transparent. The array-building collectors (chunk_while) are not typed

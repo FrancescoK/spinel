@@ -10464,6 +10464,45 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   return is_float ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
 }
 
+/* An endless Integer Range (a literal, or a local only ever assigned one)
+   has no member array to build, so the calls CRuby answers by pulling
+   members one at a time read the range itself: a blockless each, each_entry
+   or each_with_index is an Enumerator over it (sp_Enumerator_new_from walks
+   an endless one as it is read), find_index(v) searches that walk, and
+   any? / none? / one? without a block or a pattern are decided by the
+   endless run of truthy Integers. Materialized, each raised RangeError. */
+static int emit_endless_range_walk(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  if (!name || recv < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  if (argc == 0 && is_prefix_quantifier(name)) {
+    buf_printf(b, "((void)(sp_Range)("); emit_expr(c, recv, b);
+    buf_printf(b, "), (sp_bool)%d)", sp_streq(name, "any?"));
+    return 1;
+  }
+  int t = ++g_tmp;
+  if (argc == 0 && is_forward_each_walk(name) && comp_ntype(c, id) == TY_ENUMERATOR) {
+    buf_printf(b, "({ sp_Range _t%d = ", t); emit_expr(c, recv, b);
+    if (sp_streq(name, "each_with_index"))
+      buf_printf(b, "; sp_Enumerator_new_ewi(sp_box_range(_t%d), 0); })", t);
+    else
+      buf_printf(b, "; sp_Enumerator *_e%d = sp_Enumerator_new_from(sp_box_range(_t%d)); _e%d->meth = SPL(\"%s\"); _e%d; })",
+                 t, t, t, name, t);
+    return 1;
+  }
+  if (argc == 1 && sp_streq(name, "find_index") && comp_ntype(c, id) == TY_INT) {
+    buf_printf(b, "({ sp_Range _t%d = ", t); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_RbVal _v%d = ", t); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_v%d); sp_enum_find_index_val(sp_box_obj(sp_Enumerator_new_from(sp_box_range(_t%d)), SP_BUILTIN_ENUMERATOR), _v%d); })",
+               t, t, t);
+    return 1;
+  }
+  return 0;
+}
+
 int emit_range_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -10822,6 +10861,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, "(HUGE_VAL)");
           return 1;
         }
+        if (emit_endless_range_walk(c, id, b)) return 1;
         if ((is_first_or_take(name)) && argc == 1) {
           int lo9 = nt_ref(nt, rn9, "left");
           int ts9 = ++g_tmp, tn9 = ++g_tmp, ti9 = ++g_tmp, to9 = ++g_tmp;

@@ -6626,6 +6626,11 @@ int desugar_enumerable_via_to_a(Compiler *c) {
       if (rn7 >= 0 && nt_type(nt, rn7) && sp_streq(nt_type(nt, rn7), "RangeNode") &&
           nt_ref(nt, rn7, "right") < 0) continue;
     }
+    /* find_index(v) on an endless one walks it up to the value as well
+       (emit_endless_range_walk); the hop raised RangeError where CRuby
+       answers the index */
+    if (rt == TY_RANGE && sp_streq(nm, "find_index") && nt_ref(nt, id, "block") < 0 &&
+        range_lit_endless(c, recv)) continue;
     /* Only where the call found no arm at all. A form that IS wired -- a
        blockless each_slice answering an Enumerator, say -- has a type, and
        rerouting it through to_a would answer an Array instead. */
