@@ -268,6 +268,7 @@ typedef struct {
 
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
+  char *c_name;     /* optional unique C symbol for a method without changing its Ruby name */
   int def_node;     /* DefNode id; -1 for top-level */
   int body;         /* StatementsNode id (-1 if empty) */
   int class_id;     /* owning class index, or -1 for free functions */

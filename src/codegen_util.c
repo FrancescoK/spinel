@@ -4225,12 +4225,14 @@ static void shadow_tab_build(Compiler *c) {
   g_shadow_c = c; g_shadow_n = n;
 }
 int scope_is_shadowed(Compiler *c, int s) {
+  if (c->scopes[s].c_name) return 0;
   if (!g_scopes_settled) return scope_is_shadowed_scan(c, s);
   if (g_shadow_c != c || g_shadow_n != c->nscopes) shadow_tab_build(c);
   return g_shadow_tab[s];
 }
 static int scope_is_shadowed_scan(Compiler *c, int s) {
   Scope *sc = &c->scopes[s];
+  if (sc->c_name) return 0;
   if (!sc->name) return 0;
   /* a redefined top-level method: only a later `def` of the same name
      shadows it, and comp_method_index answers that one. Emitting both was
