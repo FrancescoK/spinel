@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all hooks gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test nil-check-test traits-check-test poly-cold-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
+.PHONY: all hooks gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test repr-check-test nil-check-test traits-check-test poly-cold-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -3564,6 +3564,17 @@ nil-check-test: $(SPINEL)
 
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)
+
+# The cost tools (#7501): this tree's compiler against REF_SPINEL, another
+# tree's bin/spinel, over COST_PROGS (by default the corpus and the
+# benchmarks). repr-diff compares each slot's representation, c-costs the
+# copies, boxings, out-of-line dispatches and GC roots in the C, inside
+# loops and out, and alloc-diff runs both builds and compares what they
+# allocate. Usage: make repr-diff REF_SPINEL=../base/bin/spinel
+COST_PROGS ?= $(wildcard test/*.rb benchmark/*.rb)
+repr-diff c-costs alloc-diff: $(SPINEL)
+	@[ -n "$(REF_SPINEL)" ] || { echo "usage: make $@ REF_SPINEL=<another tree>/bin/spinel [COST_PROGS='test/a.rb ...']" >&2; exit 2; }
+	@tools/$(subst -,_,$@).sh $(REF_SPINEL) $(SPINEL) $(COST_PROGS)
 
 spin-check: bin/spin
 	@tools/spin_e2e.sh bin/spin

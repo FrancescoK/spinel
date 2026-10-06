@@ -1,0 +1,12 @@
+alloc_diff: 3 of 5 programs compared, 2 skipped; 1 grew past the threshold (+20% and +1000 allocations or +65536 bytes)
+  total allocations 36 -> 2039 (+5563.9%), bytes 3096 -> 2003196 (+64602.7%)
+  GREW grew.rb: allocations 12 -> 2012 (+16666.7%), bytes 1032 -> 2001032 (+193798.4%)
+largest changes in bytes:
+  grew.rb: +2000000 bytes (1032 -> 2001032)
+  same.rb: +100 bytes (1032 -> 1132)
+largest changes in allocations:
+  grew.rb: +2000 allocations (12 -> 2012)
+  args.rb: +2 allocations (12 -> 14)
+  same.rb: +1 allocations (12 -> 13)
+  skipped clock.rb: its source can run differently each time (Time.now)
+  skipped quiet.rb: the two binaries print different output

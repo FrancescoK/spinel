@@ -1,0 +1,19 @@
+snap 3 (2 in loops)
+dup 1 (1 in loops)
+box 3 (0 in loops)
+pd 1 (0 in loops)
+root 1 (1 in loops)
+c_costs: 1 programs, 1 with changed counts
+  everywhere (in loops)                 ref              new              delta
+  handle snapshot copies              0 (0)            3 (2)            +3 (+2)
+  dup/copy helpers                    0 (0)            1 (1)            +1 (+1)
+  boxings                             2 (0)            3 (0)             +1 (0)
+  out-of-line dispatches              0 (0)            1 (0)             +1 (0)
+  GC root registrations               0 (0)            1 (1)            +1 (+1)
+a new O(len) operation (snapshot copy, dup, String/Array copy helper) inside a loop: 3
+  prog.rb: dup/copy helpers 0 -> 1 in loops in sp_run
+  prog.rb: snapshot copies 0 -> 1 in loops in sp_run
+  prog.rb: snapshot copies 0 -> 1 in loops in sp_use
+changed programs:
+  prog.rb: box +1 (0 in loops) dup +1 (+1 in loops) pd +1 (0 in loops) root +1 (+1 in loops) snap +3 (+2 in loops)
+c_costs: 2 programs, 1 with changed counts, 1 skipped

@@ -121,6 +121,11 @@ extern int g_repr_check;
 /* --repr-check: ask repr_of of a node codegen is about to emit, whose
    answer is dropped; the C must not change (repr_of changes nothing) */
 void repr_check_ask(const Compiler *c, int node);
+/* --dump-repr is on (#7501) */
+extern int g_dump_repr;
+/* --dump-repr: print each slot's representation, one sorted line per
+   slot, once the analysis is final */
+void repr_dump(const Compiler *c);
 
 /* ---- Stores (R6) ----
    The C value class of a kind, what C allows between two of them: a store
