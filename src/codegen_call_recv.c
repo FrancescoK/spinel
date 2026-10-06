@@ -1731,11 +1731,9 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (repr_of(c, recv).nil_cold) {
         /* the receiver may be nil: tested where a nil one goes, ahead of
            the index's own nil test, which a nil index also reaches */
-        int ck = nullable_int_value(c, argv[0]);
         int tk = ++g_tmp;
         buf_printf(b, "({ sp_int _t%d = ", tk);
-        if (ck) emit_scalar_operand(c, argv[0], "0", b);
-        else emit_int_expr(c, argv[0], b);
+        int ck = emit_int_index_raw(c, argv[0], b);
         buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ({ ",
                    tk, hl, hd, tk);
         emit_nil_cold_test(c, id, recv, b);
@@ -1747,11 +1745,13 @@ static int emit_kind_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         { *out = 1; return 1; }
       }
       int tk = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_%sArray_get(",
-                 tk, hl, hd, tk, k);
+      buf_printf(b, "({ sp_int _t%d = ", tk);
+      int ck = emit_int_index_raw(c, argv[0], b);
+      buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ", tk, hl, hd, tk);
+      if (ck) buf_printf(b, "({ SP_INT_NIL_ARG_CK(_t%d); ", tk);
+      buf_printf(b, "sp_%sArray_get(", k);
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d); })", tk);
+      buf_printf(b, ", _t%d)%s; })", tk, ck ? "; })" : "");
       { *out = 1; return 1; }
     }
     buf_printf(b, "sp_%sArray_get(", k);
