@@ -1482,7 +1482,7 @@ int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta);
     buf_printf(b, " sp_int _t%d = SP_INT_NIL;", tres);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, trecv, ti);
-    buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) { _t%d = _t%d; break; }",
+    buf_printf(b, " if (sp_poly_rb_equal(sp_PolyArray_get(_t%d, _t%d), _t%d)) { _t%d = _t%d; break; }",
                trecv, ti, ta, tres, ti);
     buf_printf(b, " _t%d; })", tres);
     return 1;

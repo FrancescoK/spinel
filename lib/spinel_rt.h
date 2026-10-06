@@ -3755,6 +3755,15 @@ static SP_INLINE sp_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i == b.v.i;
   return sp_poly_eq_slow(a, b);
 }
+/* CRuby's rb_equal, the equality its containers and Object#=== use: the
+   same object is equal to itself before any `==` runs, so `[k].include?(k)`
+   answers true without calling a user `==` (one that may answer false).
+   The `==` operator itself is sp_poly_eq, which calls the user method. */
+static SP_INLINE sp_bool sp_poly_rb_equal(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && a.cls_id == b.cls_id && a.v.p && a.v.p == b.v.p)
+    return TRUE;
+  return sp_poly_eq(a, b);
+}
 /* `a == b` (or `!=`) answered as a value: a program object's own == gives
    whatever it returns (Ruby's == may answer any object), `!=` its
    negation; anything else the runtime equality. */
@@ -3922,7 +3931,7 @@ static sp_bool sp_poly_hash_subset(sp_RbVal a, sp_RbVal b, int strict) {
     sp_poly_hash_pair(a, i, &k, &v);
     sp_bool found = FALSE;
     sp_RbVal bv = sp_poly_hash_get_pair_val(b, k, &found);
-    if (!found || !sp_poly_eq(v, bv)) return FALSE;
+    if (!found || !sp_poly_rb_equal(v, bv)) return FALSE;
   }
   return TRUE;
 }
@@ -4785,7 +4794,7 @@ static sp_bool sp_poly_eq_deep(sp_RbVal a, sp_RbVal b) {
     sp_int n = sp_poly_length(a);
     r = (n == sp_poly_length(b));
     for (sp_int i = 0; r && i < n; i++)
-      r = sp_poly_eq(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i));
+      r = sp_poly_rb_equal(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i));
   }
   else if (sp_poly_is_hash_kind(a.cls_id)) {
     /* The same dispatch the caller had, only guarded. Two hashes of DIFFERENT
@@ -4919,7 +4928,7 @@ static sp_int sp_poly_spaceship(sp_RbVal a, sp_RbVal b) {
     return 0;
   /* the default Object#<=> answers 0 when the operands are ==, nil otherwise
      -- so an object compared with itself is 0, not nil (#3017) */
-  if (sp_poly_eq(a, b)) return 0;
+  if (sp_poly_rb_equal(a, b)) return 0;
   return SP_INT_NIL;
 }
 /* String#<=> alone falls back to rb_invcmp: an operand that is neither a
@@ -5673,7 +5682,7 @@ static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {sp_gc_wb((void
   sp_int w = 0;
   sp_RbVal removed = sp_box_nil(); SP_GC_ROOT_RBVAL(removed);
   for (sp_int i = 0; i < a->len; i++) {
-    if (!sp_poly_eq(a->data[i], v)) { a->data[w] = a->data[i]; w++; }
+    if (!sp_poly_rb_equal(a->data[i], v)) { a->data[w] = a->data[i]; w++; }
     else removed = a->data[i];
   }
   a->len = w;
@@ -6049,7 +6058,7 @@ static sp_bool sp_case_splat_match(sp_RbVal scrut, sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);
   sp_int n = sp_poly_length(arr);
   for (sp_int i = 0; i < n; i++)
-    if (sp_poly_eq(scrut, sp_poly_arr_get(arr, i)) || sp_poly_case_eq(sp_poly_arr_get(arr, i), scrut))
+    if (sp_poly_rb_equal(scrut, sp_poly_arr_get(arr, i)) || sp_poly_case_eq(sp_poly_arr_get(arr, i), scrut))
       return TRUE;
   return FALSE;
 }
@@ -6786,7 +6795,7 @@ static sp_PtrArray *sp_PolyArray_to_obj_ptr(sp_PolyArray *a) {
    `b` aliasing the same array still terminates. */
 static sp_PolyArray *sp_PolyArray_append_all(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return a; SP_GC_ROOT(a); SP_GC_ROOT(b); sp_int bn = b->len; if (a == b) { /* self-concat: a push may realloc a->data, dangling b->data (same buffer) -- snapshot b first. */ sp_PolyArray *bc = sp_PolyArray_new(); SP_GC_ROOT(bc); for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(bc, b->data[i]); b = bc; } for (sp_int i = 0; i < bn; i++) sp_PolyArray_push(a, b->data[i]); return a; }
 /* Array#rindex(obj): index of the LAST element == obj, or -1 (arm maps to nil). */
-static sp_int sp_PolyArray_rindex(sp_PolyArray *a, sp_RbVal v) { if (!a) return -1; for (sp_int i = a->len - 1; i >= 0; i--) if (sp_poly_eq(a->data[i], v)) return i; return -1; }
+static sp_int sp_PolyArray_rindex(sp_PolyArray *a, sp_RbVal v) { if (!a) return -1; for (sp_int i = a->len - 1; i >= 0; i--) if (sp_poly_rb_equal(a->data[i], v)) return i; return -1; }
 /* Array#index / #rindex with a VALUE argument, over any array storage kind:
    the first (or last) position comparing equal, or SP_INT_NIL for none. Used
    by the poly-receiver arm, where the element kind is only known at run time. */
@@ -6796,8 +6805,8 @@ static sp_int sp_PolyArray_rindex(sp_PolyArray *a, sp_RbVal v) { if (!a) return 
 static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x);
 static sp_int sp_poly_arr_index_val(sp_RbVal a, sp_RbVal v, int rev) {
   sp_int n = sp_poly_arr_len(a);
-  if (rev) { for (sp_int i = n - 1; i >= 0; i--) if (sp_poly_eq(sp_poly_arr_get(a, i), v)) return i; }
-  else     { for (sp_int i = 0; i < n; i++)      if (sp_poly_eq(sp_poly_arr_get(a, i), v)) return i; }
+  if (rev) { for (sp_int i = n - 1; i >= 0; i--) if (sp_poly_rb_equal(sp_poly_arr_get(a, i), v)) return i; }
+  else     { for (sp_int i = 0; i < n; i++)      if (sp_poly_rb_equal(sp_poly_arr_get(a, i), v)) return i; }
   return SP_INT_NIL;
 }
 /* Membership for the set operations (-, |, &, intersect?): Ruby matches their
@@ -7360,7 +7369,7 @@ static sp_PolyArray *sp_PolyArray_assoc(sp_PolyArray *a, sp_RbVal key) {
   if (!a) return NULL;
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
-    if (sp_array_kind_len(el) >= 1 && sp_poly_eq(sp_poly_arr_get(el, 0), key))
+    if (sp_array_kind_len(el) >= 1 && sp_poly_rb_equal(sp_poly_arr_get(el, 0), key))
       return sp_pair_to_poly(el);
   }
   return NULL;
@@ -7372,7 +7381,7 @@ static sp_PolyArray *sp_PolyArray_rassoc(sp_PolyArray *a, sp_RbVal val) {
   if (!a) return NULL;
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
-    if (sp_array_kind_len(el) >= 2 && sp_poly_eq(sp_poly_arr_get(el, 1), val))
+    if (sp_array_kind_len(el) >= 2 && sp_poly_rb_equal(sp_poly_arr_get(el, 1), val))
       return sp_pair_to_poly(el);
   }
   return NULL;
@@ -8068,7 +8077,7 @@ static sp_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b) {
   if (sp_poly_recur_seen(SP_POLY_RECUR_EQ, a, b)) return TRUE;
   int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a, b);
   sp_bool r = TRUE;
-  for (sp_int i = 0; r && i < a->len; i++) r = sp_poly_eq(a->data[i], b->data[i]);
+  for (sp_int i = 0; r && i < a->len; i++) r = sp_poly_rb_equal(a->data[i], b->data[i]);
   sp_poly_recur_pop(mark);
   return r;
 }
@@ -8102,7 +8111,7 @@ static sp_bool sp_PolyArray_eq_typed(sp_PolyArray *pa, void *tp, int kind) {
 static sp_bool sp_PolyArray_include(sp_PolyArray *a, sp_RbVal v) {
   if (!a) return FALSE;
   for (sp_int i = 0; i < a->len; i++) {
-    if (sp_poly_eq(a->data[i], v)) return TRUE;
+    if (sp_poly_rb_equal(a->data[i], v)) return TRUE;
   }
   return FALSE;
 }
@@ -8135,7 +8144,7 @@ static sp_bool sp_StrPolyHash_has_key(sp_StrPolyHash*h,const char*k){if(!h)retur
 static sp_int sp_StrPolyHash_length(sp_StrPolyHash*h){return h->len;}
 static sp_StrArray*sp_StrPolyHash_keys(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);if(!h)return a;for(sp_int i=0;i<h->len;i++)sp_StrArray_push(a,h->order[i]);return a;}
 static sp_PolyArray*sp_StrPolyHash_values(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_StrPolyHash_get(h,h->order[i]));return a;}
-static sp_bool sp_StrPolyHash_has_value(sp_StrPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(sp_StrPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
+static sp_bool sp_StrPolyHash_has_value(sp_StrPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_StrPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
 static void sp_StrPolyHash_delete(sp_StrPolyHash*h,const char*k){ sp_gc_wb((void*)h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_eq(h->keys[idx],k)){h->keys[idx]=NULL;h->vals[idx]=sp_box_nil();h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]){sp_int nj=(sp_int)(sp_str_hash(h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=NULL;h->vals[j]=sp_box_nil();idx=j;}j=(j+1)&h->mask;}{sp_int oi=0;while(oi<=h->len){if(strcmp(h->order[oi],k)==0){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
 /* Hash#merge for str_poly_hash. Same shape as the
    StrIntHash / SymPolyHash siblings -- copy recv's entries into a
@@ -8145,7 +8154,7 @@ static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b||
 sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h);
 static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
 void sp_StrPolyHash_clear(sp_StrPolyHash*h);
-static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
+static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
 const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h);
 /* Convert a narrower StrStrHash to a StrPolyHash. Needed when the
@@ -8238,8 +8247,8 @@ static sp_bool sp_SymPolyHash_has_key(sp_SymPolyHash*h,sp_sym k){sp_int idx=(sp_
 static sp_int sp_SymPolyHash_length(sp_SymPolyHash*h){return h->len;}
 static sp_IntArray*sp_SymPolyHash_keys(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_IntArray*a=sp_IntArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_IntArray_push(a,(sp_int)h->order[i]);return a;}
 static sp_PolyArray*sp_SymPolyHash_values(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_SymPolyHash_get(h,h->order[i]));return a;}
-static sp_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
-static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
+static sp_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
+static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
 sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b);
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
 /* OpenStruct: a dynamic-member object (#3135). Members are named at run time
@@ -8302,7 +8311,7 @@ static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
   if(a->tbl->len!=b->tbl->len) return 0;
   for(sp_int i=0;i<a->tbl->len;i++){ sp_sym k=a->tbl->order[i];
     if(!sp_SymPolyHash_has_key(b->tbl,k)) return 0;
-    if(!sp_poly_eq(sp_SymPolyHash_get(a->tbl,k), sp_SymPolyHash_get(b->tbl,k))) return 0; }
+    if(!sp_poly_rb_equal(sp_SymPolyHash_get(a->tbl,k), sp_SymPolyHash_get(b->tbl,k))) return 0; }
   return 1;
 }
 /* OpenStruct#eql? is the member table's eql?: class-strict per member, so
@@ -8427,7 +8436,7 @@ static sp_PolyArray *sp_Object_ivars(sp_Object *o){
 }
 static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
 void sp_SymPolyHash_clear(sp_SymPolyHash*h);
-static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
+static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
    in shorthand: `{a: 1, b: "x"}` rather than `{:a => 1, :b => "x"}`. */
 const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h);
@@ -8802,7 +8811,7 @@ static void sp_PolyPolyHash_grow(sp_PolyPolyHash*h){ sp_gc_wb((void*)h);sp_RbVal
 /* miss path cold+noinline, same reason as sp_SymPolyHash_miss above. */
 static SP_NOINLINE sp_RbVal sp_PolyPolyHash_miss(sp_PolyPolyHash*h,sp_RbVal k){if(h->dproc)return h->dproc(h,k,h->dproc_self);return h->default_v;}
 static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return sp_box_nil();SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k))return h->vals[idx];idx=(idx+1)&h->mask;}return sp_PolyPolyHash_miss(h,k);}
-static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(h->vals[h->order[i]],v))return TRUE;return FALSE;}
+static sp_bool sp_PolyPolyHash_has_value(sp_PolyPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_rb_equal(h->vals[h->order[i]],v))return TRUE;return FALSE;}
 /* defined with the curry machinery below; the key-typed reads and the cold
    index path all apply a curried receiver through it */
 static sp_RbVal sp_curry_call_poly(sp_Curry *c, sp_int argc, const sp_RbVal *args);
@@ -10124,7 +10133,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
         sp_PolyArray *a = sp_PtrArray_to_poly((sp_PtrArray *)recv.v.p); SP_GC_ROOT(a);
         sp_int w = 0, found = 0;
         for (sp_int i = 0; i < a->len; i++) {
-          if (sp_poly_eq(a->data[i], key)) { found = 1; continue; }
+          if (sp_poly_rb_equal(a->data[i], key)) { found = 1; continue; }
           a->data[w++] = a->data[i];
         }
         a->len = w;
@@ -10138,7 +10147,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
     sp_PolyArray *a = sp_poly_to_poly_array(recv);
     sp_int w = 0, found = 0;
     for (sp_int i = 0; a && i < a->len; i++) {
-      if (sp_poly_eq(a->data[i], key)) { found = 1; continue; }
+      if (sp_poly_rb_equal(a->data[i], key)) { found = 1; continue; }
       a->data[w++] = a->data[i];
     }
     if (a) a->len = w;
@@ -11078,12 +11087,12 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
     sp_PolyArray *items = sp_enum_items_from(v);
     SP_GC_ROOT(items);
     sp_int cnt = 0;
-    for (sp_int i = 0; i < items->len; i++) if (sp_poly_eq(items->data[i], x)) cnt++;
+    for (sp_int i = 0; i < items->len; i++) if (sp_poly_rb_equal(items->data[i], x)) cnt++;
     return cnt;
   }
   if (!sp_poly_is_array_kind(v.cls_id)) return 0;
   sp_int n = sp_poly_length(v), cnt = 0;
-  for (sp_int i = 0; i < n; i++) if (sp_poly_eq(sp_poly_arr_get(v, i), x)) cnt++;
+  for (sp_int i = 0; i < n; i++) if (sp_poly_rb_equal(sp_poly_arr_get(v, i), x)) cnt++;
   return cnt;
 }
 static sp_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_OBJ&&v.cls_id==SP_BUILTIN_QUEUE&&v.v.p)return sp_Queue_size((sp_queue*)v.v.p);if(v.tag==SP_TAG_STR)return v.v.s?(sp_int)sp_str_byte_len(v.v.s):0;   /* the header length, so an embedded NUL counts (#3540) */if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(sp_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_PTR_ARRAY:return v.v.p?((sp_PtrArray*)v.v.p)->len:0;case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_INT_INT_HASH:return sp_IntIntHash_length((sp_IntIntHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);
@@ -11387,7 +11396,7 @@ static int sp_poly_user_include(sp_RbVal recv, sp_RbVal x) {
     return sp_enum_find_index_val(recv, x) != SP_INT_NIL;
   sp_PolyArray *ue = sp_poly_user_elems(recv);
   if (!ue) return -1;
-  for (sp_int i = 0; i < ue->len; i++) if (sp_poly_eq(ue->data[i], x)) return 1;
+  for (sp_int i = 0; i < ue->len; i++) if (sp_poly_rb_equal(ue->data[i], x)) return 1;
   return 0;
 }
 /* Enumerable#find_index(value) on a boxed Hash, Range, Enumerator or user
@@ -11406,7 +11415,7 @@ static int sp_poly_enum_find_index_val(sp_RbVal v, sp_RbVal x, sp_int *out) {
   SP_GC_ROOT(items);
   *out = SP_INT_NIL;
   for (sp_int i = 0; i < items->len; i++)
-    if (sp_poly_eq(items->data[i], x)) { *out = i; break; }
+    if (sp_poly_rb_equal(items->data[i], x)) { *out = i; break; }
   return 1;
 }
 static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);   /* fwd: the seeded fold */
@@ -12200,7 +12209,7 @@ const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h);
    and stays as a same-type round-trip. */
 static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_int(sp_StrIntHash_get(h,h->order[i])),sp_box_str(h->order[i]));return r;}
 static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
-static sp_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
+static sp_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_rb_equal(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* --- cross-variant hash equality ------------------------------------------
    Boxed key/value of the i-th insertion-ordered pair, per variant. */
 static void sp_poly_hash_pair_i(sp_RbVal h, sp_int i, sp_RbVal *k, sp_RbVal *v) {
@@ -12265,7 +12274,7 @@ static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b, sp_bool eql) {
     sp_bool found = FALSE;
     sp_RbVal vb = sp_poly_hash_probe(b, k, &found);
     if (!found) return FALSE;
-    if (!(eql ? sp_poly_eql(va, vb) : sp_poly_eq(va, vb))) return FALSE;
+    if (!(eql ? sp_poly_eql(va, vb) : sp_poly_rb_equal(va, vb))) return FALSE;
   }
   return TRUE;
 }
@@ -15345,10 +15354,10 @@ static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   }
   /* a shared-mutable string on either side behaves as its value (#3227) */
   if (sp_poly_is_strbuf(pat) || sp_poly_is_strbuf(e))
-    return sp_poly_eq(sp_poly_strbuf_deref(pat), sp_poly_strbuf_deref(e));
+    return sp_poly_rb_equal(sp_poly_strbuf_deref(pat), sp_poly_strbuf_deref(e));
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX && e.tag == SP_TAG_SYM)
     return sp_re_case_eq((mrb_regexp_pattern *)pat.v.p, e);
-  return sp_poly_eq(pat, e);
+  return sp_poly_rb_equal(pat, e);
 }
 static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
   /* The pattern is read on every element while the loop below allocates a
@@ -15676,12 +15685,12 @@ static sp_int sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) {
       if (!sp_Fiber_alive(f)) break;
       sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
       if (!sp_Fiber_alive(f)) break;
-      if (sp_poly_eq(v, x)) return i;
+      if (sp_poly_rb_equal(v, x)) return i;
     }
     return SP_INT_NIL;
   }
   for (sp_int i = 0; e->items && i < e->items->len; i++)
-    if (sp_poly_eq(e->items->data[i], x)) return i;
+    if (sp_poly_rb_equal(e->items->data[i], x)) return i;
   return SP_INT_NIL;
 }
 static sp_PolyArray *sp_enum_take_boxed(sp_RbVal v, sp_int n) {

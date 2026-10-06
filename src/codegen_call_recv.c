@@ -1045,7 +1045,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* #count is the exception: it counts elements EQUAL to its argument,
        where the predicates match a PATTERN with === (#3817) */
     if (sp_streq(name, "count"))
-      buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
+      buf_printf(b, " if (sp_poly_rb_equal(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
     else
       buf_printf(b, " if (sp_poly_case_eq(_t%d, sp_PolyArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
     if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_PolyArray_length(_t%d); })", tc, ta);
@@ -1554,7 +1554,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       if (cat == TY_NIL && elem_nil_sentinel(c, recv, rt) && !elem_nil_marked(c, recv, rt))
         buf_printf(b, " if (sp_%sArray_may_nil(_t%d))", k, ta);
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", ti, ti, k, ta, ti);
-      buf_puts(b, " if (sp_poly_eq(");
+      buf_puts(b, " if (sp_poly_rb_equal(");
       emit_elem_boxed_text(c, recv, rt, arr, el, b);
       buf_printf(b, ", _t%d)) _t%d++;", tv, tc);
     }
@@ -5330,7 +5330,7 @@ else {
           buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_bool _t%d = 0;", ta, tr);
           buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_poly_length(_t%d); _t%d++) {"
                         " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
-                        " if (sp_poly_eq(_v, _t%d)) { _t%d = 1; break; } } _t%d; })",
+                        " if (sp_poly_rb_equal(_v, _t%d)) { _t%d = 1; break; } } _t%d; })",
                      ti, ti, th, ti, th, ti, ta, tr, tr);
           return 1;
         }
