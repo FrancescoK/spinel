@@ -24,3 +24,20 @@ nil
 [:v, true, [:@mark]]
 [1, true, [:@mark]]
 1
+1
+1
+true
+[:@ok]
+NameError
+NameError
+NameError
+[]
+NameError
+NameError
+NameError
+[]
+1
+1
+true
+[:@sym]
+TypeError

@@ -10327,13 +10327,6 @@ static const void *sp_bivar_key(sp_RbVal o) {
   return NULL;
 }
 static int sp_bivar_keyed(sp_RbVal o) { return sp_bivar_key(o) != NULL; }
-/* a name given at run time: CRuby's NameError for one that is no ivar's */
-static sp_sym sp_bivar_name(sp_sym k) {
-  const char *n = sp_sym_to_s(k);
-  if (!n || n[0] != '@' || !n[1] || n[1] == '@' || (n[1] >= '0' && n[1] <= '9'))
-    sp_raise_cls("NameError", sp_sprintf("'%s' is not allowed as an instance variable name", n ? n : ""));
-  return k;
-}
 static sp_RbVal sp_bivar_get(sp_RbVal o, sp_sym k) {
   const void *key = sp_bivar_key(o);
   sp_SymPolyHash *t = key ? (sp_SymPolyHash *)sp_ivtbl_get(key) : NULL;
