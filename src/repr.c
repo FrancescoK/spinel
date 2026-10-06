@@ -359,6 +359,12 @@ int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int h
   if (slot == TY_BIGINT && from == TY_INT) return CF_INT2BIG;
   if (how == CO_CONVERT && slot == TY_FLOAT && (from == TY_BIGINT || from == TY_RATIONAL))
     return CF_CONVERT;
+  /* --share-strings: a String into a slot that is the shared handle takes
+     a handle of its own around it */
+  if (c->share_strings && slot == TY_STRBUF && from == TY_STRING) return CF_CONVERT;
+  /* ...and the handle into a String slot reads as its String, as a read
+     of the slot it came from does */
+  if (c->share_strings && slot == TY_STRING && from == TY_STRBUF) return CF_CONVERT;
   return CF_REFUSE;
 }
 
@@ -975,6 +981,9 @@ int strbuf_call_answers_handle(Compiler *c, int id) {
   /* a reader on a boxed receiver: every class the box can hold that has
      the name reads a shared ivar with it (strbuf_poly_reader_handle) */
   else if (strbuf_poly_reader_handle(c, id)) return 1;
+  /* a reader of a shared ivar on an object (an attr_reader, a Struct
+     member): its slot is the handle */
+  else if (strbuf_object_reader_handle(c, id)) return 1;
   /* a boxed receiver's dispatch can also reach a library method, whose
      String is its own and which leaves the side channel as the call found
      it: taken only where nothing before the dispatch publishes a handle (a
@@ -987,6 +996,20 @@ int strbuf_call_answers_handle(Compiler *c, int id) {
       return 0;
   }
   return strbuf_call_targets_all(c, id, 1);
+}
+/* --share-strings: is `v` a reader (an attr_reader, a Struct or Data
+   member, no def taking the name over) called without arguments on an
+   object whose class reads a shared ivar with it? Its value is that slot,
+   the handle, and reading it again has no effect. */
+int strbuf_object_reader_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 ||
+      nt_ref(nt, v, "arguments") >= 0)
+    return 0;
+  int r = nt_ref(nt, v, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!ty_is_object(rt) || comp_ty_value_obj(c, rt)) return 0;
+  return reader_reads_shared_ivar(c, ty_object_class(rt), nt_str(nt, v, "name"));
 }
 /* --share-strings: is `v` a reader called on a boxed receiver, such that
    every class with a method or reader of the name answers a shared ivar's

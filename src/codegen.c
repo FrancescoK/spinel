@@ -227,6 +227,8 @@ int emit_boxed_text_form(Compiler *c, TyKind t) {
      the kind already matches; the cast read another struct's header
      (#3998, #4424, #4486). */
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
+  /* --share-strings: a boxed Array may hold shared String handles */
+  if (repr_share_rule(c) && t == TY_STR_ARRAY) { buf_printf(b, "sp_poly_as_str_array_h(%s)", expr); return; }
   const TyTraits *tr = ty_traits_of(t);
   if (tr) { ty_traits_render(tr->unbox, expr, b); return; }
   /* an object array of this class is handed back itself; any other array
