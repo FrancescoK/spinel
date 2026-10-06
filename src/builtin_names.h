@@ -14,6 +14,7 @@ int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
 int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
+int is_member_blind_query(const char *n); /* class object_id __id__ nil? frozen? equal? respond_to? is_a? ... */
 int is_round_family(const char *n);   /* round ceil floor truncate */
 int is_push_alias(const char *n);     /* push << append */
 int is_bit_op(const char *n);         /* & | ^ */
@@ -220,5 +221,7 @@ int is_arysub_kernel_name(const char *n);        /* to_enum frozen? != ...: answ
    not take: concat (of a literal), insert and prepend. */
 enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
 int array_unseen_add_kind(const char *n);
+
+int is_scan_name(const char *n); /* scan: a String's match iterator */
 
 #endif
