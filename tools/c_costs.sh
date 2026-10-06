@@ -25,8 +25,18 @@
 # `each`, `map` and the other inlined block iterations land; a function
 # with a call site inside a loop, or inside such a function, counts as in
 # a loop too (the call graph is followed to a fixpoint, as spinel-doctor's
-# advice leg does). A block the runtime library iterates itself (a lifted
-# block passed to a library function) is not seen as a loop body.
+# advice leg does). So does a recursive function, one in a cycle of calls
+# (`visit` through its sp_pd_* dispatchers), which runs once per level as
+# a loop body runs once per iteration. A block the runtime library
+# iterates itself (a lifted block passed to a library function) is not
+# seen as a loop body.
+#
+# Only code the program can run is counted: the functions main reaches by
+# calls, from main and from any function the C names without calling it (a
+# callback). The runtime helpers emitted into every program whether or not
+# it calls them are left out until it does; sp_class_ancestors' 8 boxings,
+# in a loop of its own, were most of the in-loop boxings a corpus run
+# reported. A fragment without a main counts every function.
 #
 # The strongest signal is a new snapshot or dup inside a loop: an O(len)
 # operation per iteration. Each one is listed on its own line, with the
@@ -60,6 +70,7 @@ function flush_word(   cat, rest, k) {
         if (nloop > 0 || pend || single) lex[fn, cat]++
       }
       if (word != fn) { ne++; efrom[ne] = fn; eto[ne] = word; eloop[ne] = (nloop > 0 || pend || single) }
+      else selfc[fn] = 1
     }
     else if (paren == 0) cand = word
     if ((word == "for" || word == "while") && !pend) {
@@ -67,6 +78,9 @@ function flush_word(   cat, rest, k) {
       if (!(word == "while" && rest ~ /^[ \t]*\([ \t]*0[ \t]*\)/)) { pend = 1; pparen = paren }
     }
   }
+  # a name read rather than called (a function pointer handed to the
+  # runtime, a table entry) can run from anywhere: a root of the program
+  else if (word != fn) named[word] = 1
   if (word == "do" && nextc == "{") dobody = 1
   word = ""
 }
@@ -109,7 +123,47 @@ function flush_word(   cat, rest, k) {
   }
   if (word != "") { nextc = ""; flush_word() }
 }
+# Tarjan over the defined functions, without recursion: a function in a
+# cycle of calls (or calling itself) runs once per level of the recursion,
+# as a loop body runs once per iteration
+function scc(root,   csp, v, w, u, n, k) {
+  csp = 1; cs[1] = root; ci[1] = 0
+  tix[root] = low[root] = ++tn; ts[++tsp] = root; onst[root] = 1
+  while (csp > 0) {
+    v = cs[csp]
+    if (ci[csp] < nadj[v]) {
+      w = adj[v, ++ci[csp]]
+      if (!(w in tix)) { tix[w] = low[w] = ++tn; ts[++tsp] = w; onst[w] = 1; cs[++csp] = w; ci[csp] = 0 }
+      else if (onst[w] && tix[w] < low[v]) low[v] = tix[w]
+      continue
+    }
+    if (low[v] == tix[v]) {
+      n = 0
+      do { w = ts[tsp--]; onst[w] = 0; memb[++n] = w } while (w != v)
+      for (k = 1; k <= n; k++) if (n > 1 || selfc[memb[k]]) rec[memb[k]] = 1
+    }
+    if (--csp > 0) { u = cs[csp]; if (low[v] < low[u]) low[u] = low[v] }
+  }
+}
 END {
+  for (k = 1; k <= ne; k++)
+    if ((efrom[k] in defined) && (eto[k] in defined)) adj[efrom[k], ++nadj[efrom[k]]] = eto[k]
+  # Only code the program can run is counted: what main reaches through
+  # calls, from main and from every function named without a call (a
+  # function pointer the runtime calls back). The runtime helpers emitted
+  # into every program whether or not it calls them cost nothing until it
+  # does (sp_class_ancestors loops over a class chain, so its 8 boxings
+  # counted as in a loop in nearly every program). C without a main (a
+  # fragment) counts every function.
+  if ("main" in defined) {
+    nq = 0
+    for (f in defined) if (f == "main" || (f in named)) { live[f] = 1; q[++nq] = f }
+    for (h = 1; h <= nq; h++)
+      for (k = 1; k <= nadj[q[h]]; k++) if (!(adj[q[h], k] in live)) { live[adj[q[h], k]] = 1; q[++nq] = adj[q[h], k] }
+  }
+  else for (f in defined) live[f] = 1
+  for (f in defined) if (!(f in tix)) scc(f)
+  for (f in rec) hot[f] = 1
   # a function called from inside a loop, or from such a function, runs
   # per iteration: follow the call graph to a fixpoint
   changed = 1
@@ -121,6 +175,7 @@ END {
   nc = split(cats, cl, " ")
   for (key in all) {
     split(key, kp, SUBSEP)
+    if (!(kp[1] in live)) continue
     tot[kp[2]] += all[key]
     v = hot[kp[1]] ? all[key] : lex[key]
     if (v > 0) { inl[kp[2]] += v; print "F", kp[2], (kp[1] == "" ? "-" : kp[1]), v }
