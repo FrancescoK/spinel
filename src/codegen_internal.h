@@ -176,7 +176,12 @@ TyKind block_next_value_ntype(const Compiler *c, int node);
    holds that many past its fill (argov_reserve). */
 #define MAX_ARG_OVERRIDE 64
 extern int  *g_argov_node;
-extern char (*g_argov_text)[32];
+/* The text a bound node is written as (view_bind), per slot. A class name in it (the
+   receiver cast of a poly arm, "((sp_<Class> *)_t0.v.p)") made 32 bytes too few for a
+   name of 15 characters or more, and the vsnprintf cut the text short without a word:
+   the C did not build (#7604). view_bind checks the length now. */
+#define ARGOV_TEXT_LEN 160
+extern char (*g_argov_text)[ARGOV_TEXT_LEN];
 extern int  g_n_argov;
 /* Room for one more override whatever the fill, for a site that must run
    every argument of a call ahead of it, however many there are
