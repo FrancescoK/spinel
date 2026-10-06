@@ -4079,8 +4079,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    /* Array#equal? -- object identity is pointer identity; a non-pointer or
-       differently-shaped argument can never be the same object. */
+    /* Array#equal? -- object identity is pointer identity. A boxed argument
+       can hold this very Array (`b = [a, 1][0]`), so its payload is
+       compared; any other argument can never be the same object, but it
+       and the receiver still run. */
     if (nm0 && sp_streq(nm0, "equal?")) {
       int recv0 = nt_ref(nt0, id, "receiver");
       int args0 = nt_ref(nt0, id, "arguments");
@@ -4094,8 +4096,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                      rb.p ? rb.p : "0", ab.p ? ab.p : "0");
           free(rb.p); free(ab.p);
         }
+        else if (at0 == TY_POLY) {
+          int teq = ++g_tmp, trq = ++g_tmp;
+          buf_printf(b, "({ void *_t%d = (void *)(", trq);
+          emit_expr(c, recv0, b);
+          buf_printf(b, "); sp_RbVal _t%d = ", teq);
+          emit_boxed(c, av0[0], b);
+          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == _t%d); })", teq, teq, trq);
+        }
         else {
-          buf_puts(b, "0");
+          buf_puts(b, "((void)("); emit_expr(c, recv0, b);
+          buf_puts(b, "), (void)("); emit_expr(c, av0[0], b);
+          buf_puts(b, "), (sp_bool)0)");
         }
         return 1;
       }
@@ -6318,7 +6330,7 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_deref(", te); emit_boxed(c, argv[0], b);
       buf_printf(b, "); _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, _t%d); })", te, te, trc);
     }
-    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    else { buf_printf(b, "((void)(%s), (void)(", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
   }
   /* String#equal?(x): object identity. A String is a `const char *` whose
      literals the C compiler merges at -O2, so raw pointer equality would
@@ -6387,8 +6399,19 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_expr(c, argv[0], b);
       buf_puts(b, "))");
     }
+    else if (eqa == TY_POLY) {
+      /* a boxed operand can hold this very String: its payload is the same
+         pointer, as an element read of it is (`[s, 1][0]`) */
+      int trq = ++g_tmp, teq = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = %s; sp_RbVal _t%d = ", trq, r, teq);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR && (const void *)_t%d.v.s == (const void *)_t%d); })",
+                 teq, teq, trq);
+    }
     else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
-    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    /* another kind is another object; the receiver and the argument
+       still run */
+    else { buf_printf(b, "((void)(%s), (void)(", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
   }
   else return 0;
   return 1;
@@ -9714,8 +9737,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     }
     /* a demand-marked read through a simple hand-written reader
        (`def body = @body`) hands out the ivar HANDLE via a field access:
-       the C reader function returns the safe copy (#3227 P5) */
-    if (mi >= 0 && repr_of(c, id).handle) {
+       the C reader function returns the safe copy (#3227 P5). Either mark
+       is the demand, as for the attr reader above: strbuf_handle_demand
+       alone (an `equal?` operand, mark_reader_identity_operands) left the
+       call to the reader, which answered a copy, and `b.v.equal?(w)` was
+       false for one String. */
+    if (mi >= 0 && (repr_of(c, id).handle || repr_of(c, id).demand)) {
       int lastH = scope_body_last(c, mi);
       if (lastH >= 0 && nt_kind(nt, lastH) == NK_InstanceVariableReadNode) {
         const char *ivnH = nt_str(nt, lastH, "name");
