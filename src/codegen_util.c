@@ -2399,8 +2399,8 @@ int strbuf_boxed_elem_read(Compiler *c, int v) {
   if (!container_elem_read_p(c->nt, v)) return 0;
   int r = nt_ref(c->nt, v, "receiver");
   if (r < 0) return 0;
-  TyKind rt = comp_ntype(c, r);
-  return rt == TY_POLY || rt == TY_POLY_ARRAY || ty_is_hash(rt);
+  Repr rr = repr_of(c, r);
+  return rr.kind == RK_BOXED || rr.elem == TY_POLY || rr.key != TY_UNKNOWN;
 }
 /* A String is a const char * value, so a String mutator (`<<`, the bang
    methods, replace/insert/...) is lowered to a reassignment of its receiver:
@@ -2516,9 +2516,9 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
        emits the sp_String * itself (#3941). */
     int erecv = nt_ref(c->nt, recv, "receiver");
     const char *cnm = nt_str(c->nt, recv, "name");
-    TyKind ert = erecv >= 0 ? comp_ntype(c, erecv) : TY_UNKNOWN;
+    Repr er = repr_of(c, erecv);
     int boxed = cnm && sp_streq(cnm, "[]") &&
-                (ert == TY_POLY || ert == TY_POLY_ARRAY || ty_is_hash(ert));
+                (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN);
     int fit = rb2.p && strlen(rb2.p) + 24 <= cap;
     if (fit) snprintf(out, cap, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
     free(rb2.p);
