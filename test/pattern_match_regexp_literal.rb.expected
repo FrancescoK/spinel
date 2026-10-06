@@ -1,0 +1,14 @@
+nil in /1/          => false
+nil in /1/ | /2/    => false
+case nil in /1/     => false
+"x" in /1/        => false
+"1" in /1/        => true
+"2" in /1/ | /2/  => true
+re
+no 1
+m "b3"
+nil
+m :c3
+no 2.5
+no true
+int-no

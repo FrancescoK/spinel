@@ -3769,6 +3769,30 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     emit_pm_eq(c, t, pt, pat, b);
     return 1;
   }
+  /* a Regexp literal pattern is Regexp#===, as in `when /re/`: a String
+     matches it, nil and the other scalars do not (#7712). A scrutinee kind the
+     `when` arms do not test is left to the caller. */
+  {
+    int reidx = re_lit_index(c, pat);
+    if (reidx >= 0) {
+      if (pt == TY_STRING) {
+        buf_printf(b, "(_t%d != NULL && sp_re_match(sp_re_pat_%d, _t%d) >= 0)", t, reidx, t);
+        return 1;
+      }
+      if (pt == TY_POLY) {
+        buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, _t%d)", reidx, t);
+        return 1;
+      }
+      if (pt == TY_SYMBOL) {
+        buf_printf(b, "sp_re_case_eq(sp_re_pat_%d, sp_box_sym(_t%d))", reidx, t);
+        return 1;
+      }
+      if (pt == TY_NIL || pt == TY_INT || pt == TY_FLOAT || pt == TY_BOOL) {
+        buf_puts(b, "0");
+        return 1;
+      }
+    }
+  }
   /* nil / true / false literal patterns */
   if (sp_streq(pty, "NilNode")) {
     if (pt == TY_POLY) buf_printf(b, "(_t%d.tag == SP_TAG_NIL)", t);
