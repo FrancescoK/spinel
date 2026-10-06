@@ -351,9 +351,9 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       /* {}.sum == the init (or 0) (#2416). A nil or Boolean init has no scalar
          slot to be answered in and the call is typed poly for it, so the init
          has to be boxed there -- emitted raw, `{}.sum(nil)` answered 0. */
-      TyKind hst = comp_ntype(c, id);
-      if (argc == 0) buf_puts(b, hst == TY_POLY ? "sp_box_int(0)" : "0");
-      else if (hst == TY_POLY) emit_boxed(c, argv[0], b);
+      int hst_boxed = repr_of(c, id).kind == RK_BOXED;
+      if (argc == 0) buf_puts(b, hst_boxed ? "sp_box_int(0)" : "0");
+      else if (hst_boxed) emit_boxed(c, argv[0], b);
       else emit_expr(c, argv[0], b);
       return 1;
     }
@@ -455,7 +455,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     g_ie_nil_ivars = sv_nil;
     return 1;
   }
-  if (ie_direct && g_ie_poly_node != id && comp_ntype(c, recv) == TY_POLY && emit_ie_poly(c, id, b))
+  if (ie_direct && g_ie_poly_node != id && repr_of(c, recv).kind == RK_BOXED && emit_ie_poly(c, id, b))
     return 1;
   /* instance_eval/exec on a non-object receiver (nil, a scalar): the block runs
      with self = the receiver. The object splice below needs a cls_id/ivar
@@ -464,8 +464,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      (a self-using body dispatches through the poly runtime). (#2956) */
   if (ie_direct && recv >= 0) {
     int nblk = nt_ref(nt, id, "block");
-    TyKind nrt = comp_ntype(c, recv);
-    if (nrt == TY_POLY) nblk = resolve_forwarded_block(c, nblk);
+    Repr nrr = repr_of(c, recv);
+    TyKind nrt = nrr.as_ty;
+    if (nrr.kind == RK_BOXED) nblk = resolve_forwarded_block(c, nblk);
     if (!ty_is_object(nrt) && nblk >= 0 && nt_type(nt, nblk) &&
         sp_streq(nt_type(nt, nblk), "BlockNode")) {
       int nexec = sp_streq(name, "instance_exec");
@@ -516,8 +517,8 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         Buf bb; memset(&bb, 0, sizeof bb);
         emit_block_binds(c, nblk, niav, niac, &bb, g_indent, 0, NULL, &nal);
         if (nal.open && nbn > 0) {
-          TyKind lt = comp_ntype(c, nbb[nbn - 1]);
-          nal_vt = comp_ntype(c, id) == TY_POLY && lt != TY_POLY ? TY_POLY : lt;
+          TyKind lt = repr_of(c, nbb[nbn - 1]).as_ty;
+          nal_vt = repr_of(c, id).kind == RK_BOXED && lt != TY_POLY ? TY_POLY : lt;
           if (nal_vt != TY_VOID && nal_vt != TY_NIL && nal_vt != TY_UNKNOWN &&
               (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
             nal_tr = ++g_tmp;
@@ -542,7 +543,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (!nexec && (block_keyword_name(c, nblk, 0) || block_kwrest_name(c, nblk)))
         emit_block_kw_binds(c, nblk, -1, comp_scope_of(c, id), g_pre, g_indent, 0, NULL, NULL);
       view_unbind(sv_nargov);
-      TyKind nbt = nbn > 0 ? comp_ntype(c, nbb[nbn - 1]) : TY_NIL;
+      TyKind nbt = nbn > 0 ? repr_of(c, nbb[nbn - 1]).as_ty : TY_NIL;
       const char *sv_self = g_self, *sv_deref = g_self_deref;
       char selfb[32]; snprintf(selfb, sizeof selfb, "_t%d", tself);
       g_self = selfb; g_self_deref = ".";
@@ -555,7 +556,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_puts(b, "sp_box_nil()"); return 1;
       }
       int nscalar = is_scalar_ret(nbt) && nbt != TY_VOID && nbt != TY_NIL && nbt != TY_UNKNOWN;
-      int nbox = comp_ntype(c, id) == TY_POLY && nbt != TY_POLY;
+      int nbox = repr_of(c, id).kind == RK_BOXED && nbt != TY_POLY;
       if (nal.open) {
         Buf vb; memset(&vb, 0, sizeof vb);
         if (nal_vt == TY_POLY && nbt != TY_POLY) emit_boxed(c, nbb[nbn - 1], &vb); else emit_expr(c, nbb[nbn - 1], &vb);
@@ -631,7 +632,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           resolve_forwarded_block(c, blk) < 0 && !g_yield_proc_ref && !g_current_scope_is_lowered) {
         buf_printf(b, "(sp_raise_cls(\"%s\", \"%s\"), ", is_exec ? "LocalJumpError" : "ArgumentError",
                    is_exec ? "no block given" : "wrong number of arguments (given 0, expected 1..3)");
-        emit_ie_param_default(c, comp_ntype(c, id), b);
+        emit_ie_param_default(c, repr_of(c, id).as_ty, b);
         buf_puts(b, ")");
         return 1;
       }
@@ -643,7 +644,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int blk_body = nt_ref(nt, blk, "body");
       int ie_bn = 0; const int *ie_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &ie_bn) : NULL;
       int cls_id = ty_object_class(rtype);
-      TyKind body_ty = ie_bn > 0 ? comp_ntype(c, ie_bb[ie_bn - 1]) : TY_NIL;
+      TyKind body_ty = ie_bn > 0 ? repr_of(c, ie_bb[ie_bn - 1]).as_ty : TY_NIL;
       /* A value-carrying `next`/`break` bound to the splice can widen the
          result past the last expression's type (e.g. `next val + 1` is poly
          while the trailing `999` is int); size the temp to their union. */
@@ -770,7 +771,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                slot's own form: the `0` assigned an int to a boxed one */
             else if (pdecl) emit_ie_param_default(c, plv->type, &eb);
             else buf_puts(&eb, "0");
-            if (an >= 0 && pscalar && comp_ntype(c, an) == TY_POLY)
+            if (an >= 0 && pscalar && repr_of(c, an).kind == RK_BOXED)
               emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre);
             else buf_puts(g_pre, eb.p ? eb.p : "0");
             free(eb.p);
@@ -870,7 +871,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       emit_builtin_op_stage(c, id, recv, comp_ntype(c, recv), name, 1, b)) return 1;
   /* freeze / frozen? on an array set/read the struct's frozen flag: builtin-op
      rows of the same stage (builtin_ops.c) */
-  if (recv >= 0 && comp_ntype(c, recv) != TY_POLY) {
+  if (recv >= 0 && repr_of(c, recv).kind != RK_BOXED) {
     TyKind crt = comp_ntype(c, recv);
     TyKind ak = (crt == TY_POLY_ARRAY || array_kind(crt)) ? crt : TY_UNKNOWN;
     /* An empty array literal infers TY_UNKNOWN and emits as sp_IntArray_new(),
@@ -905,7 +906,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* frozen? on numeric/symbol scalars: always frozen in Ruby semantics.
      TY_STRING uses a runtime check because dup/String.new produce unfrozen strings. */
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
-    TyKind frt = comp_ntype(c, recv);
+    Repr frr = repr_of(c, recv);
+    TyKind frt = frr.as_ty;
     if (frt == TY_INT || frt == TY_FLOAT || frt == TY_SYMBOL || frt == TY_BOOL || frt == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
       return 1;
@@ -921,7 +923,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if (frt == TY_POLY) {
+    if (frr.kind == RK_BOXED) {
       buf_puts(b, "sp_poly_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
@@ -965,7 +967,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
     int dargs = nt_ref(nt, id, "arguments");
     int dargc = 0; const int *dargv = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dargc) : NULL;
-    TyKind drt = comp_ntype(c, recv);
+    Repr drr = repr_of(c, recv);
+    TyKind drt = drr.as_ty;
     /* clone(freeze: true/false): -1 = not given (copy the receiver's state),
        0 = false, 1 = true. Only a single `freeze:` keyword arg is accepted. */
     int freeze_mode = -1, dkw_ok = (dargc == 0);
@@ -982,7 +985,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
       }
     }
-    if (dkw_ok && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
+    if (dkw_ok && ty_is_object(drt) && drr.kind != RK_VOBJ) {
       int cid = ty_object_class(drt);
       /* native-bound classes have no generated pool/struct copy; their dup
          dispatches to a declared native_method instead */
@@ -1074,7 +1077,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          copy, and the built-in shallow copy took its place (#5450) */
       !(ty_is_object(comp_ntype(c, recv)) &&
         comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
-      !(argc == 0 && comp_ntype(c, recv) == TY_POLY && !sp_streq(name, "itself") && user_defines_or_reads(c, name))) {
+      !(argc == 0 && repr_of(c, recv).kind == RK_BOXED && !sp_streq(name, "itself") && user_defines_or_reads(c, name))) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
     /* hash, string, array, and native-bound object dup/clone require real
@@ -1202,7 +1205,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       return 1;
     }
     if (blk >= 0) {
-      TyKind rtype = comp_ntype(c, recv);
+      TyKind rtype = repr_of(c, recv).as_ty;
       const char *bp0 = block_param_name(c, blk, 0); if (bp0) bp0 = rename_local(bp0);
       int blk_body = nt_ref(nt, blk, "body");
       int then_bn = 0; const int *then_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &then_bn) : NULL;
@@ -1255,10 +1258,11 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   {
     const char *safe_op = nt_str(nt, id, "call_operator");
     if (recv >= 0 && safe_op && sp_streq(safe_op, "&.")) {
-      TyKind rrt = comp_ntype(c, recv);
+      Repr rrr = repr_of(c, recv);
+      TyKind rrt = rrr.as_ty;
       if (rrt == TY_NIL) {
         /* nil&.foo always returns nil */
-        TyKind ret = comp_ntype(c, id);
+        TyKind ret = repr_of(c, id).as_ty;
         const char *dv = default_value_from_compiler(c, ret);
         buf_puts(b, dv ? dv : "0");
         return 1;
@@ -1267,7 +1271,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          poly (it may be nil), so the value arm has to be boxed to agree with
          the nil arm -- otherwise the two ternary arms have different C types
          and the program does not build (#3899). */
-      if (rrt == TY_POLY && comp_ntype(c, id) == TY_POLY &&
+      if (rrr.kind == RK_BOXED && repr_of(c, id).kind == RK_BOXED &&
           g_sn_skip != id && nt_ref(nt, id, "block") < 0) {
         /* The call's natural type: infer_call states what the poly runtime
            answers as a raw C scalar, so this arm needs no table of its own --
@@ -1301,8 +1305,8 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           return 1;
         }
       }
-      if (rrt == TY_POLY && is_len_alias(name) &&
-          comp_ntype(c, id) == TY_POLY) {
+      if (rrr.kind == RK_BOXED && is_len_alias(name) &&
+          repr_of(c, id).kind == RK_BOXED) {
         /* poly&.length/size: the poly builtin emits an unboxed sp_int, but
            the safe-nav result is inferred poly -- box it so both ternary arms
            are sp_RbVal (#3269). */
@@ -1311,7 +1315,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(b, "; _sn_%d.tag == SP_TAG_NIL ? sp_box_nil() : sp_box_int(sp_poly_length(_sn_%d)); })", tsn, tsn);
         return 1;
       }
-      if (rrt == TY_POLY && g_sn_skip != id) {
+      if (rrr.kind == RK_BOXED && g_sn_skip != id) {
         /* poly &. method: nil-guard, then re-enter the normal call emission
            on the guarded temp so the method dispatches through the regular
            poly runtime-class switch (a hardcoded whitelist used to drop every
@@ -1322,7 +1326,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            result is inferred poly, force the call boxed; for a concretely-typed
            result, emit the natural form and default the nil arm to match. */
         int tsn = ++g_tmp;
-        TyKind ret2 = comp_ntype(c, id);
+        TyKind ret2 = repr_of(c, id).as_ty;
         Buf rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _sn%d = %s; SP_GC_ROOT_RBVAL(_sn%d);\n",
@@ -1437,7 +1441,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          normal call emission with the receiver substituted by the guarded
          temp (via the arg-override table); g_sn_skip suppresses this block
          on re-entry. */
-      int sn_obj = ty_is_object(rrt) && !comp_ty_value_obj(c, rrt);
+      int sn_obj = ty_is_object(rrt) && rrr.kind != RK_VOBJ;
       /* A specialized container answers a miss with the ELEMENT type's own C
          nil -- a NULL string, SP_INT_NIL -- so `h["zz"]&.empty?` reaches the
          guard with a concrete receiver, not a poly one. Guard those too, or
@@ -1448,7 +1452,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int sn_cont = needs_root(rrt) && rrt != TY_POLY && rrt != TY_STRING && !ty_is_object(rrt);
       if ((sn_obj || rrt == TY_STRING || sn_scalar || sn_cont) && g_sn_skip != id) {
         int tsn2 = ++g_tmp;
-        TyKind ret2 = comp_ntype(c, id);
+        TyKind ret2 = repr_of(c, id).as_ty;
         /* The temp lives in g_pre (statement scope), not an inline ({ }):
            the re-entered dispatch hoists its (substituted) receiver into
            g_pre too, which lands before the statement and must still see
@@ -1510,7 +1514,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          value arm still renders that bool: box it under its natural type or
          the slot it lands in disagrees (#4070). */
       {
-        TyKind ret3 = comp_ntype(c, id);
+        TyKind ret3 = repr_of(c, id).as_ty;
         TyKind nat3 = ret3 == TY_POLY ? infer_uncached(c, id) : ret3;
         if (ret3 == TY_POLY && g_sn_skip != id &&
             nat3 != TY_POLY && nat3 != TY_UNKNOWN && nat3 != TY_VOID) {
@@ -1540,7 +1544,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     int pa = nt_ref(nt, id, "arguments");
     int pc = 0; const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pc) : NULL;
     if (pr >= 0 && pn && sp_streq(pn, "===") && pc == 1 &&
-        (comp_ntype(c, pr) == TY_POLY || comp_ntype(c, pr) == TY_PROC) &&
+        (repr_of(c, pr).kind == RK_BOXED || comp_ntype(c, pr) == TY_PROC) &&
         !user_defines_or_reads(c, "===")) {
       /* The ANSWER is the proc's return value, not whether it was truthy:
          `->(x){ x * 2 } === 5` is 10 in Ruby, and a case/when only cares
@@ -1556,7 +1560,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
         /* Method#=== calls the method too, as its `[]` does: compared, a
            Method read out of a container answered false (#6179) */
-        if (comp_ntype(c, pr) == TY_POLY) {
+        if (repr_of(c, pr).kind == RK_BOXED) {
           buf_printf(&pb3, ") : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD && _t%d.v.p"
                            " ? sp_poly_call_aref(_t%d, ", tp3, tp3, tp3, tp3);
           buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
@@ -1568,7 +1572,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(&pb3, ") : sp_box_bool(sp_poly_case_eq(_t%d, ", tp3);
         buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()"); free(ab3.p); }
       buf_puts(&pb3, ")); })");
-      emit_unbox_text(c, comp_ntype(c, id), pb3.p ? pb3.p : "sp_box_nil()", b);
+      emit_unbox_text(c, repr_of(c, id).as_ty, pb3.p ? pb3.p : "sp_box_nil()", b);
       free(pb3.p);
       return 1;
     }
@@ -1603,7 +1607,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         /* A value-type object is passed BY VALUE (sp_X, not sp_X *): casting
            it to a pointer is not a conversion the C compiler accepts, so a
            class with ivars that defines #! did not build (#3819). */
-        int nval = comp_ty_value_obj(c, comp_ntype(c, nr2));
+        int nval = repr_of(c, nr2).kind == RK_VOBJ;
         buf_printf(b, "sp_%s_%s(", c->classes[ndef].c_name, mc(nn2));
         if (!nval) buf_printf(b, "(sp_%s *)", c->classes[ndef].c_name);
         buf_puts(b, "(");
@@ -1744,7 +1748,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(b, "({ (void)("); emit_expr(c, bsrecv, b);
         buf_printf(b, "); sp_raise_cls(\"NoMethodError\", "
                       "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])); %s; })",
-                   bsnm, bscn, default_value_from_compiler(c, comp_ntype(c, id)));
+                   bsnm, bscn, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return 1;
       }
     }
@@ -1834,7 +1838,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_printf(b, "({ (void)("); emit_expr(c, rv0, b);
           buf_printf(b, "); sp_raise_cls(\"ArgumentError\","
                         " (&(\"\\xff\" \"can't unfreeze %s\")[1])); %s; })",
-                     icn, default_value_from_compiler(c, comp_ntype(c, id)));
+                     icn, default_value_from_compiler(c, repr_of(c, id).as_ty));
           return 1;
         }
         int t1 = ++g_tmp;
@@ -1842,7 +1846,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_printf(b, "; sp_raise_cls(\"ArgumentError\", _t%d ?"
                       " (&(\"\\xff\" \"can't unfreeze TrueClass\")[1])"
                       " : (&(\"\\xff\" \"can't unfreeze FalseClass\")[1])); %s; })",
-                   t1, default_value_from_compiler(c, comp_ntype(c, id)));
+                   t1, default_value_from_compiler(c, repr_of(c, id).as_ty));
         return 1;
       }
     }
