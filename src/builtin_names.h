@@ -193,4 +193,9 @@ int is_builtin_reopen_name(const char *name);
 
 int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
 
+/* The Array adders the element store (strbuf_container_store_values) does
+   not take: concat (of a literal), insert and prepend. */
+enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
+int array_unseen_add_kind(const char *n);
+
 #endif
