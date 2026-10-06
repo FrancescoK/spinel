@@ -743,6 +743,12 @@ the String from the method and assign it, or append to it in the caller. A
 literal or any other expression passed there is not refused: nothing else
 can see its growth.
 
+The block of a lazy stage (`[s].lazy.map { |x| x << "!" }`, and `select`,
+`take_while` and the other stages up to the first `map`) is handed a boxed
+copy of the element, so a block that changes its String element in place
+is refused as well, naming the line. Drop the `.lazy` (the eager form
+shares the String), or return a new String (`x + "!"`).
+
 #### A reassigned block parameter, and `yield` inside a proc literal
 
 Assigning to a method's `&block` parameter used to be refused where it was
