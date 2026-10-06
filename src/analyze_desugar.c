@@ -9778,129 +9778,6 @@ int desugar_recursive_param_defaults(Compiler *c) {
   return changed;
 }
 
-/* How many values the builtin iterator `nm` yields to its block (0: not one
-   handled here), and the element type a single yielded value has, so the
-   caller can tell whether it is an Array. `hash_pair`: the value is a Hash's
-   [key, value] pair. */
-static int bs_yield_count(TyKind rt, const char *nm, int argc, TyKind *elem, int *hash_pair) {
-  static const char *const one[] = {
-    "each", "map", "collect", "flat_map", "collect_concat", "filter_map", "any?", "all?",
-    "none?", "one?", "count", "find", "detect", "find_index", "min_by", "max_by", "sort_by",
-    "group_by", "partition", "sum", "each_entry", "reverse_each", "take_while", "drop_while",
-    "uniq", "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!",
-    "reject!", "map!", "collect!", NULL };
-  static const char *const hash_kv[] = {
-    "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!", "reject!", NULL };
-  *hash_pair = 0;
-  *elem = TY_UNKNOWN;
-  /* tap, then and yield_self yield the receiver, whatever it is */
-  if (is_tap_alias(nm) && argc == 0) {
-    *elem = rt;
-    return rt == TY_UNKNOWN ? 0 : 1;
-  }
-  if (sp_streq(nm, "each_with_index") && argc == 0) return 2;
-  if (sp_streq(nm, "each_with_object") && argc == 1) return 2;
-  if (ty_is_hash(rt)) {
-    if (argc != 0) return 0;
-    for (int k = 0; hash_kv[k]; k++) if (sp_streq(nm, hash_kv[k])) return 2;
-    if (sp_streq(nm, "each_pair")) { *hash_pair = 1; return 1; }
-    if (sp_streq(nm, "each_key")) { *elem = ty_hash_key(rt); return 1; }
-    if (sp_streq(nm, "each_value")) { *elem = ty_hash_val(rt); return 1; }
-    if (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") || sp_streq(nm, "map!") ||
-        sp_streq(nm, "collect!")) return 0;
-    for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *hash_pair = 1; return 1; }
-    return 0;
-  }
-  /* A boxed receiver is known only at run time; the names only an Array
-     (or only a Hash) answers yield what the Array's (the Hash's) do. The
-     element walks are left alone: over an Enumerator one step may yield
-     several values. */
-  if (rt == TY_POLY) {
-    if ((sp_streq(nm, "combination") || sp_streq(nm, "repeated_combination") ||
-         sp_streq(nm, "repeated_permutation") || sp_streq(nm, "zip")) && argc == 1) {
-      *elem = TY_POLY_ARRAY; return 1;
-    }
-    if ((sp_streq(nm, "permutation") && argc <= 1) || (sp_streq(nm, "product") && argc >= 1)) {
-      *elem = TY_POLY_ARRAY; return 1;
-    }
-    if ((is_hash_key_value_each(nm)) && argc == 0) {
-      *elem = TY_POLY; return 1;
-    }
-    /* a slice or a window is one Array, of whatever a step of any receiver
-       yields, and the receivers of the in-place map (an Array, a Set) and
-       of each_index and fill (an Array) yield one value a step, the last
-       two an index. Left alone, `|*qs|` was never bound and read nil, and
-       `|a, b|` took a whole element. */
-    if ((sp_streq(nm, "each_slice") || sp_streq(nm, "each_cons")) && argc == 1) {
-      *elem = TY_POLY_ARRAY; return 1;
-    }
-    if ((sp_streq(nm, "map!") || sp_streq(nm, "collect!")) && argc == 0) {
-      *elem = TY_POLY; return 1;
-    }
-    if ((sp_streq(nm, "each_index") && argc == 0) || (sp_streq(nm, "fill") && argc <= 2)) {
-      *elem = TY_INT; return 1;
-    }
-    return 0;
-  }
-  if (rt == TY_INT) {
-    if ((sp_streq(nm, "times") && argc == 0) ||
-        ((is_bounded_int_step(nm)) && argc == 1)) { *elem = TY_INT; return 1; }
-    /* the numbers step yields are Integers or Floats; neither spreads */
-    if (sp_streq(nm, "step") && argc >= 1 && argc <= 2) { *elem = TY_INT; return 1; }
-    return 0;
-  }
-  if (rt == TY_FLOAT) {
-    if (sp_streq(nm, "step") && argc >= 1 && argc <= 2) { *elem = TY_FLOAT; return 1; }
-    return 0;
-  }
-  if (rt == TY_STRING) {
-    if ((sp_streq(nm, "each_char") || sp_streq(nm, "each_line")) && argc == 0) { *elem = TY_STRING; return 1; }
-    if (sp_streq(nm, "each_byte") && argc == 0) { *elem = TY_INT; return 1; }
-    return 0;
-  }
-  if ((rt == TY_RANGE || rt == TY_FLOAT_RANGE) && sp_streq(nm, "step") && argc == 1) {
-    *elem = rt == TY_RANGE ? TY_INT : TY_FLOAT;
-    return 1;
-  }
-  TyKind et;
-  if (ty_is_array(rt) || ty_is_obj_array(rt)) et = ty_array_elem(rt);
-  else if (rt == TY_RANGE) et = TY_INT;
-  else return 0;
-  if ((is_each_window(nm)) && argc == 1) {
-    *elem = TY_POLY_ARRAY;   /* an Array of whatever the elements are */
-    return 1;
-  }
-  if (sp_streq(nm, "sum") && argc <= 1) { *elem = et; return 1; }
-  /* inject with a seed yields the accumulator and the element (the seedless
-     form is builtins/enumerable.rb's, which yields them itself) */
-  if ((is_reduce_alias(nm)) && argc == 1) return 2;
-  if (ty_is_array(rt) || ty_is_obj_array(rt)) {
-    /* each_index and the block form of fill yield the index */
-    if ((sp_streq(nm, "each_index") && argc == 0) || (sp_streq(nm, "fill") && argc <= 2)) {
-      *elem = TY_INT;
-      return 1;
-    }
-    if (sp_streq(nm, "sort_by!") && argc == 0) { *elem = et; return 1; }
-    /* one Array per step: a tuple of the receiver's own kind, and product's
-       and zip's of boxed values */
-    if ((sp_streq(nm, "combination") || sp_streq(nm, "repeated_combination") ||
-         sp_streq(nm, "repeated_permutation")) && argc == 1) { *elem = rt; return 1; }
-    if (sp_streq(nm, "permutation") && argc <= 1) { *elem = rt; return 1; }
-    if ((sp_streq(nm, "product") && argc >= 1) || (sp_streq(nm, "zip") && argc == 1)) {
-      *elem = TY_POLY_ARRAY;
-      return 1;
-    }
-  }
-  if (argc != 0) return 0;
-  if (rt == TY_RANGE && (sp_streq(nm, "reverse_each") || sp_streq(nm, "uniq") ||
-                         sp_streq(nm, "map!") || sp_streq(nm, "collect!") ||
-                         sp_streq(nm, "delete_if") || sp_streq(nm, "keep_if") ||
-                         sp_streq(nm, "select!") || sp_streq(nm, "filter!") ||
-                         sp_streq(nm, "reject!"))) return 0;
-  for (int k = 0; one[k]; k++) if (sp_streq(nm, one[k])) { *elem = et; return 1; }
-  return 0;
-}
-
 /* Does the emitter of builtin iterator `nm` on `rt` bind a rest beside the
    leading requireds itself (`|x, *r|`, the rest empty for a value that does
    not spread)? The Array element walks and the Integer counters do
@@ -9938,7 +9815,7 @@ static int bs_spreads(const char *nm, int np) {
   return 1;
 }
 
-/* bs_yield_count for a call on an Enumerator. with_index / with_object yield
+/* iter_shape_count for a call on an Enumerator. with_index / with_object yield
    the element and the index or memo. Over one that yields two values, the
    methods that pass what `each` yields straight to the block yield both,
    and the rest yield them packed as one [element, index] Array. */
@@ -10357,7 +10234,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
     int m = bs_enum_yield_count(c, recv, nm, argc, &elem);
     int via_enum = m != 0;
     hash_pair = 0;
-    if (m == 0) m = bs_yield_count(rt, nm, argc, &elem, &hash_pair);
+    if (m == 0) m = iter_shape_count(rt, nm, argc, &elem, &hash_pair);
     /* Array.new(n) { } yields the index */
     if (m == 0 && sp_streq(nm, "new") && argc == 1 && nt_kind(nt, recv) == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
@@ -10610,7 +10487,7 @@ int sym_block_values(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   if (ty_is_hash(rt) && sp_streq(nm, "to_h") && argc == 0) return 2;
   TyKind elem; int hash_pair;
-  return recv >= 0 && bs_yield_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
+  return recv >= 0 && iter_shape_count(rt, nm, argc, &elem, &hash_pair) == 2 ? 2 : 0;
 }
 
 /* Does comparator `nm` (sort, min, max, minmax) over `recv` compare
@@ -10644,7 +10521,7 @@ static int desugar_enum_pair_op_sym(Compiler *c, int id, int recv, int blk, cons
   if (is_reduce_alias(nm)) return 0;
   if (user_block_values(c, id) != 2 &&
       (recv < 0 || (bs_enum_yield_count(c, recv, nm, argc, &elem) != 2 &&
-                    bs_yield_count(infer_type(c, recv), nm, argc, &elem, &hash_pair) != 2 &&
+                    iter_shape_count(infer_type(c, recv), nm, argc, &elem, &hash_pair) != 2 &&
                     !op_sym_comparator(c, recv, nm)))) return 0;
   char pa[48], pb[48];
   snprintf(pa, sizeof pa, "__spa_%s", comp_node_tag(c, blk));
