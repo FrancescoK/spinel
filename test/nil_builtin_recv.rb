@@ -59,8 +59,32 @@ def files(k)
   File.delete(path)
 end
 
+# An argument that is a container literal, a splat, a keyword pair or a
+# variable's write runs ahead of the NoMethodError too, in order.
+def operands(k)
+  log = []
+  s = k == 0 ? nil : +"a,b\nc"
+  a = k == 0 ? nil : [1, 2]
+  b = k == 0 ? nil : [[1]]
+  show("lines") { s.lines(chomp: (log << :l0; true)) }
+  show("split") { s.split(*[(log << :s0; ","), (log << :s1; 2)]) }
+  show("insert") { a.insert((log << :i0; 0), *[(log << :i1; 7), (log << :i2; 8)]) }
+  show("push") { b.push([(log << :b0; 2)], (log << :b1; [3]), [[(log << :b2; 4)].first]) }
+  show("log") { log }
+  w = 0
+  pad = nil
+  begin
+    puts "writes #{s.center(w += 6, pad ||= "*").inspect}"
+  rescue NoMethodError => e
+    puts "writes #{e.message}"
+  end
+  show("written") { [w, pad] }
+end
+
 strings(ARGV.size)
 strings(ARGV.size + 1)
+operands(ARGV.size)
+operands(ARGV.size + 1)
 shared(ARGV.size)
 shared(ARGV.size + 1)
 files(ARGV.size)
