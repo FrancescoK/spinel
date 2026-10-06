@@ -16104,7 +16104,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     /* a value that is no collection is the call's NoMethodError, where the
        Enumerator walked nil or a String as empty (sp_poly_enum_chk) */
     buf_printf(b, "sp_Enumerator_new_from%s(sp_poly_enum_chk(", sp_streq(name, "reverse_each") ? "_rev" : "");
-    emit_boxed(c, recv, b); buf_printf(b, ", \"%s\"))", name);
+    emit_boxed(c, recv, b); buf_printf(b, ", \"%s\"))", enum_walk_name(c, id, recv, name));
     return 1;
   }
   /* A blockless map or selecting call there is the same snapshot under its
@@ -16943,9 +16943,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     }
     if ((grt == TY_POLY || grt == TY_UNKNOWN) &&
         nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "compare_by_identity?")) {
-      buf_puts(b, "sp_poly_cbi_p(");
+      buf_puts(b, "sp_poly_cbi_p(sp_poly_hash_chk(");
       emit_boxed(c, recv, b);
-      buf_puts(b, ")");
+      buf_puts(b, ", \"compare_by_identity?\"))");
       return 1;
     }
     /* A BUILTIN class constant has a closed method table, so an unresolved
@@ -17110,6 +17110,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
          receiver+arg slots, ...) recognize the sp_raise_nomethod token and
          keep the side-effect -- see the staged groundwork notes below. */
       const char *nm = nt_str(nt, id, "name");
+      /* the messages name the method the program wrote, where a desugar
+         renamed the call (detect to find) */
+      const char *said = nt_str(nt, id, "said_name"), *mnm = said ? said : nm;
       /* A poly receiver may hold a Class at runtime, where `nm` is a class
          method (`def self.nm`) -- e.g. an untyped `model` in `model.table_name`.
          Dispatch on the class tag + cls_id before falling through to
@@ -17409,14 +17412,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           } while (0)
           if (sp_streq(dflt, "sp_box_nil()") && !ret_scalar) {
             buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg%s(\"%s\", ",
-                       gstage ? "_args" : "", nm ? nm : "?");
+                       gstage ? "_args" : "", mnm ? mnm : "?");
             emit_boxed(c, recv, b);
             if (gstage) EMIT_GATE_ARGS();
             buf_puts(b, "))");
           }
           else {
             buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg%s(\"%s\", ",
-                       gstage ? "_args" : "", nm ? nm : "?");
+                       gstage ? "_args" : "", mnm ? mnm : "?");
             emit_boxed(c, recv, b);
             if (gstage) EMIT_GATE_ARGS();
             buf_printf(b, ")), %s)", ret_scalar ? default_value_from_compiler(c, ret) : dflt);
@@ -17474,8 +17477,8 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               recv_evaluated = 1;
               const char *rv = rvb.p ? rvb.p : "0";
               char hd[96], hd2[96];
-              snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
-              snprintf(hd2, sizeof hd2, nomethod_head(nm), nm ? nm : "?");
+              snprintf(hd, sizeof hd, nomethod_head(mnm), mnm ? mnm : "?");
+              snprintf(hd2, sizeof hd2, nomethod_head(mnm), mnm ? mnm : "?");
               snprintf(gmsg, sizeof gmsg, "(%s%s%s ? \"%s nil\" : \"%s %s\")",
                        grt == TY_FLOAT ? "sp_float_is_nil(" : "(", rv,
                        grt == TY_FLOAT ? ")" : grt == TY_INT ? ") == SP_INT_NIL" : ") == NULL",
@@ -17484,7 +17487,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             }
             else {
               char hd[96];
-              snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
+              snprintf(hd, sizeof hd, nomethod_head(mnm), mnm ? mnm : "?");
               snprintf(gmsg, sizeof gmsg, "\"%s %s\"", hd, rdesc);
             }
           }
