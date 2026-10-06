@@ -2,6 +2,7 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "holder.h"
 #include <stdint.h>
 #include <limits.h>
 
@@ -8694,19 +8695,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     return ci->ivar_types[iv];
   }
   if (nk == NK_ClassVariableReadNode) {
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s->class_id;
-    if (cid < 0 && id < c->node_cap) cid = c->node_cbody[id];
-    /* a body-level read in a (reopened) class body: the body's class */
-    if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    if (cid < 0) return TY_UNKNOWN;
-    cid = comp_cvar_owner(c, cid, nm);
-    int idx = nm ? comp_cvar_index(&c->classes[cid], nm) : -1;
-    /* a class variable whose slot is an sp_String * handle reads as a String */
-    if (idx >= 0 && repr_cvar_kind(c, cid, idx) == RK_STRBUF) return TY_STRING;
-    return idx >= 0 ? c->classes[cid].cvar_types[idx] : TY_UNKNOWN;
+    /* a body-level read in a (reopened) class body: the body's class
+       (holder_of_node) */
+    HolderRef h;
+    if (!holder_of_node(c, id, &h) || h.idx < 0) return TY_UNKNOWN;
+    /* a class variable whose slot is an sp_String * handle reads as a
+       String (h.r.kind is repr_cvar_kind) */
+    if (h.r.kind == RK_STRBUF) return TY_STRING;
+    return c->classes[h.cid].cvar_types[h.idx];
   }
   if (nk == NK_ClassVariableOperatorWriteNode || nk == NK_ClassVariableWriteNode ||
       nk == NK_ClassVariableOrWriteNode || nk == NK_ClassVariableAndWriteNode) {
@@ -8715,15 +8711,9 @@ TyKind infer_uncached(Compiler *c, int id) {
        when widened under promote) -- so the expression's type is the cvar's, not
        v's. (For a non-widened cvar this equals v's type, so default mode is
        unchanged.) */
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = comp_scope_of(c, id);
-    int cid = s ? s->class_id : -1;
-    if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
-    cid = comp_cvar_owner(c, cid, nm);
-    int idx = (cid >= 0 && nm) ? comp_cvar_index(&c->classes[cid], nm) : -1;
-    if (idx >= 0 && repr_cvar_kind(c, cid, idx) == RK_STRBUF) return TY_STRING;
-    if (idx >= 0) return c->classes[cid].cvar_types[idx];
+    HolderRef h;
+    if (holder_of_node(c, id, &h) && h.idx >= 0)
+      return h.r.kind == RK_STRBUF ? TY_STRING : c->classes[h.cid].cvar_types[h.idx];
     return infer_type(c, nt_ref(nt, id, "value"));
   }
   if (nk == NK_IndexOrWriteNode || nk == NK_IndexAndWriteNode ||
