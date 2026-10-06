@@ -18662,7 +18662,7 @@ static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int m
 /* The temps' declarations and the test, into b, each statement after
    `lead` (a statement prefix: an indent, or nothing inside an expression).
    The operands are bound to the temps; the caller unbinds from *mark. */
-static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int *mark) {
+static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int *mark, Buf *test) {
   const NodeTable *nt = c->nt;
   int node[8]; TyKind ty[8];
   int n = nil_target_operands(c, id, node, ty, 8);
@@ -18685,6 +18685,16 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     free(ob.p); free(op.p);
     view_bind(node[i], "_t%d", t);
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
+  }
+  /* CN_ANSWER's caller takes the test itself, for its two arms */
+  if (test) {
+    char tref[192];
+    buf_puts(test, "(");
+    if (rtext[0]) buf_puts(test, rtext);
+    else if (strbuf_slot_ref(c, r, tref, sizeof tref)) buf_puts(test, tref);
+    else emit_expr(c, r, test);
+    buf_puts(test, ") == NULL");
+    return;
   }
   buf_puts(b, lead);
   /* an array the loop being emitted caches (hc_array) has a cached length
@@ -18771,14 +18781,109 @@ static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
   return ok;
 }
 
+/* ---- nil's own answer (CN_ANSWER) ----
+   A receiver that may be nil is NULL then, and nil answers nil's own
+   methods: `s.to_a` on a nil String is [], `o.eql?(nil)` on a nil object is
+   true, `o.dup` is nil. The class's emission read the NULL as the class's
+   value, or raised the class's NoMethodError. The nil arm is the call
+   itself with its receiver read as nil, for that one emission: a nil face
+   on the receiver (view_push and view_push_face, as a poly receiver's
+   unboxed arm re-enters the typed call), so nil's answer and its type are
+   the ones `nil.x` already has, emitter and inference alike, rather than a
+   second copy of them. Its value is coerced to the call's own type, which
+   inference joined with nil's (infer_nil_face_call). The operands are bound
+   ahead of the test, as for CN_RAISE. */
+
+/* The call under the nil face, into nb (its hoisted work into npre); the
+   type its value has there */
+static TyKind emit_nil_face_arm(Compiler *c, int id, Buf *nb, Buf *npre) {
+  int r = nt_ref(c->nt, id, "receiver");
+  int vr = view_push(c, r, TY_NIL);
+  int fv = view_push_face(r, TY_NIL);
+  TyKind nat = infer_uncached(c, id);
+  int vc = view_push(c, id, nat);
+  Buf *sv = g_pre; g_pre = npre;
+  emit_expr(c, id, nb);   /* the expression's folds too (respond_to?) */
+  g_pre = sv;
+  view_pop(c, vc);
+  view_pop(c, fv);
+  view_pop(c, vr);
+  return nat;
+}
+
+/* The call as its class answers it, the receiver seen as tested */
+static void emit_nil_tested_arm(Compiler *c, int id, Buf *cb, Buf *cpre) {
+  int vt = view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1);
+  Buf *sv = g_pre; g_pre = cpre;
+  emit_call_held(c, id, cb);
+  g_pre = sv;
+  view_pop(c, vt);
+}
+
+static int emit_nil_answer_call(Compiler *c, int id, Buf *b) {
+  if (g_plan_check) cplan_served("nil-answer");
+  TyKind ct = repr_of(c, id).as_ty;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  Buf tb; memset(&tb, 0, sizeof tb);
+  int mark;
+  emit_nil_target_head(c, id, &hb, "", &mark, &tb);
+  Buf nb, npre, cb, cpre;
+  memset(&nb, 0, sizeof nb); memset(&npre, 0, sizeof npre);
+  memset(&cb, 0, sizeof cb); memset(&cpre, 0, sizeof cpre);
+  TyKind nat = emit_nil_face_arm(c, id, &nb, &npre);
+  /* nil's own emission has no answer for the name (`nil.methods` raises
+     its NoMethodError): the call stays the class's, as before */
+  if (nb.p && text_diverges(nb.p)) {
+    view_unbind(mark);
+    free(hb.p); free(tb.p); free(nb.p); free(npre.p);
+    return 0;
+  }
+  emit_nil_tested_arm(c, id, &cb, &cpre);
+  view_unbind(mark);
+  const char *ntxt = nb.p ? nb.p : "0", *ctxt = cb.p ? cb.p : "0";
+  /* a nil value has no C slot: both arms run for their effect */
+  int has_val = ct != TY_VOID && ct != TY_UNKNOWN && ct != TY_NIL;
+  int ta = ++g_tmp;
+  buf_printf(b, "({ %s", hb.p ? hb.p : "");
+  if (has_val) { emit_ctype(c, ct, b); buf_printf(b, " _t%d = %s; ", ta, default_value_from_compiler(c, ct)); }
+  buf_printf(b, "if (SP_UNLIKELY(%s)) {\n%s", tb.p ? tb.p : "0", npre.p ? npre.p : "");
+  if (has_val) {
+    buf_printf(b, "_t%d = ", ta);
+    /* nil's `<=>` is 0 or nil, boxed; an Integer slot (String#<=>) holds
+       its nil as the sentinel */
+    if (nat == TY_POLY && (ct == TY_INT || ct == TY_FLOAT))
+      buf_printf(b, "%s(%s)", ct == TY_INT ? "sp_poly_as_int_or_nil" : "sp_poly_as_float_or_nil", ntxt);
+    /* nil's Array and Hash answers (to_a, to_h) are empty: an Array's own
+       to_a is typed by its element kind, which the empty one is built in */
+    else if (nat != ct && ty_is_array(nat) && ty_is_array(ct) && (ct == TY_POLY_ARRAY || array_kind(ct)))
+      buf_printf(b, "((void)(%s), sp_%sArray_new())", ntxt, ct == TY_POLY_ARRAY ? "Poly" : array_kind(ct));
+    else if (nat != ct && ty_is_hash(nat) && ty_is_hash(ct) && ty_hash_cname(ct))
+      buf_printf(b, "((void)(%s), sp_%sHash_new())", ntxt, ty_hash_cname(ct));
+    else emit_coerce_text(c, id, nat, ct, CO_HOLD, ntxt, "nil's answer", b);
+    buf_puts(b, ";\n}\nelse {\n");
+  }
+  else buf_printf(b, "(void)(%s);\n}\nelse {\n", ntxt);
+  buf_puts(b, cpre.p ? cpre.p : "");
+  /* the class's answer: a raise (a method the class lacks) is a statement,
+     with no value of the call's type */
+  if (has_val && !text_diverges(ctxt)) buf_printf(b, "_t%d = %s;\n}\n", ta, ctxt);
+  else buf_printf(b, "(void)(%s);\n}\n", ctxt);
+  if (has_val) buf_printf(b, "_t%d; })", ta);
+  else buf_puts(b, "})");
+  free(hb.p); free(tb.p); free(nb.p); free(npre.p); free(cb.p); free(cpre.p);
+  return 1;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
-  if (cplan_nil(c, id) != CN_RAISE) return 0;
+  int cn = cplan_nil(c, id);
+  if (cn == CN_ANSWER) return emit_nil_answer_call(c, id, b);   /* 0: as before */
+  if (cn != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
   if (emit_nil_target_cold(c, id, b)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark;
-  emit_nil_target_head(c, id, &hb, "", &mark);
+  emit_nil_target_head(c, id, &hb, "", &mark, NULL);
   size_t pre0 = g_pre ? g_pre->len : 0;
   Buf cb; memset(&cb, 0, sizeof cb);
   int vt = view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1);
@@ -18818,13 +18923,22 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
    statement's own prelude goes, ahead of what it hoists. 1 when it
    emitted. */
 int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
-  if (cplan_nil(c, id) != CN_RAISE) return 0;
+  int cn = cplan_nil(c, id);
+  if (cn == CN_ANSWER) {
+    /* the value is dropped: the two arms run as statements */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    int done = emit_nil_answer_call(c, id, &vb);
+    if (done) { emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", vb.p ? vb.p : "0"); }
+    free(vb.p);
+    return done;
+  }
+  if (cn != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
   Buf *db = g_pre ? g_pre : b;
   Buf lb; memset(&lb, 0, sizeof lb);
   emit_indent(&lb, g_pre ? g_indent : indent);
   int mark;
-  emit_nil_target_head(c, id, db, lb.p ? lb.p : " ", &mark);
+  emit_nil_target_head(c, id, db, lb.p ? lb.p : " ", &mark, NULL);
   free(lb.p);
   int vt = view_push_repr(c, nt_ref(c->nt, id, "receiver"), VR_NIL_TESTED, 1);
   emit_stmt_inner(c, id, b, indent);
@@ -20742,7 +20856,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (nt_int(c->nt, id, "node_line", 0) > 0) g_refuse_outer = id;
   refuse_string_copies(c, id);
   int grecv = -1;
-  int guard = nil_recv_guard(c, id, &grecv);
+  /* nil's own method on a receiver that may be nil answers for nil
+     (emit_nil_target_call) rather than raising */
+  int guard = cplan_nil(c, id) != CN_ANSWER && nil_recv_guard(c, id, &grecv);
   if (guard && nt_kind(c->nt, unwrap_parens(c, grecv)) == NK_CallNode) {
     /* a call's result is read once, into a rooted temp the call reads */
     int tg = ++g_tmp;
@@ -23482,7 +23598,16 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
          so it never drifts from what a real `recv.qm` would compile to. A
          poly/unknown receiver with no user protocol method falls through
          here (the builtin probe answer) rather than a possibly-wrong false. */
-      if (rt_probe_answer(c, id, &yes)) {
+      /* a receiver read as nil for one emission (a nil face, CN_ANSWER's
+         nil arm): the synthesized probes were typed for the receiver's own
+         kind, so nil's public surface answers (is_nil_method); a private
+         one asked with include_all is the runtime's question */
+      if (recv >= 0 && rt == TY_NIL && face_of(recv) == TY_NIL) {
+        if (is_nil_method(qm)) { resolved = 1; yes = 1; }
+        else if (foldable && !include_all) { resolved = 1; yes = 0; }
+        else return -1;
+      }
+      else if (rt_probe_answer(c, id, &yes)) {
         /* a class value that answers yes is the site's to emit: nil responds
            to nothing, so the answer is the value's non-nilness, not a fold */
         if (yes && rt == TY_CLASS && recv >= 0) return -1;

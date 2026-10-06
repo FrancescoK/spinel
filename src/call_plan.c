@@ -1669,6 +1669,13 @@ static int cplan_nil_family(TyKind t) {
   return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO;
 }
 
+/* A user object held as a pointer, NULL for nil: its nil answers nil's own
+   methods (CN_ANSWER). A method of its class nil lacks keeps the receiver
+   guards of #7262 (nil_recv_guard), so it is never armed CN_RAISE here. */
+static int cplan_nil_object(Compiler *c, TyKind t) {
+  return ty_is_object(t) && !comp_ty_value_obj(c, t);
+}
+
 /* Does the program give nil a method `name` of its own: on NilClass,
    Object, Kernel or BasicObject, or at the top level (a private Object
    method, which CRuby names as such)? */
@@ -1692,7 +1699,9 @@ int cplan_nil(Compiler *c, int id) {
   /* the receiver as settled, not as a view retypes it: a poly arm's
      unboxed String is never its box's nil */
   TyKind rt = c->ntype[r];
-  if (!cplan_nil_family(rt) || comp_ntype(c, r) != rt) return CN_NONE;
+  int obj = cplan_nil_object(c, rt);
+  if ((!cplan_nil_family(rt) && !obj) || comp_ntype(c, r) != rt) return CN_NONE;
+  if (obj && !is_nil_method(nm)) return CN_NONE;
   Repr rr = repr_of(c, r);
   if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
   /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);
@@ -1730,6 +1739,11 @@ int cplan_nil(Compiler *c, int id) {
     if (!rn || !sp_streq(rn, "__self")) return CN_NONE;
   }
   if (cplan_nil_user_method(c, nm)) return CN_NONE;
-  return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
+  if (!is_nil_method(nm)) return CN_RAISE;
+  /* nil's answer is the call's own on a nil receiver, emitted under a nil
+     face (emit_nil_target_call): a block or a block argument would be
+     emitted twice there */
+  if (nt_ref(nt, id, "block") >= 0) return CN_NONE;
+  return CN_ANSWER;
 }
 

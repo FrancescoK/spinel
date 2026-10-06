@@ -6082,6 +6082,27 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* nil's own method on a receiver its class leaves unanswered: `s.to_a` on
+   a String, `o.to_h` on an object whose class defines none. The class
+   raises NoMethodError; a receiver that may be nil holds NULL for it, and
+   nil answers (CN_ANSWER, emit_nil_target_call). The call is typed with
+   nil's answer, read off the call with its receiver pinned to nil (a face),
+   so it is the type `nil.x` has: either arm's value fits, the class's being
+   a raise. scalar_nil_only_call is the same rule for an Integer or a Float
+   slot, whose nil is the sentinel. A block would be the block's question,
+   and so are the receivers no pointer nil reaches. */
+static int infer_nil_face_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
+  if (recv < 0 || face_active() || !is_nil_method(name) || nt_ref(nt, id, "block") >= 0) return 0;
+  if (!(rt == TY_STRING || rt == TY_STRBUF || ty_is_array(rt) || ty_is_obj_array(rt) ||
+        ty_is_hash(rt) || rt == TY_IO || ty_is_object(rt))) return 0;
+  an_face_push(recv, TY_NIL);
+  TyKind nt_ = infer_call(c, id);
+  an_face_pop();
+  if (nt_ == TY_UNKNOWN || nt_ == TY_VOID) return 0;
+  *out = nt_;
+  return 1;
+}
+
 /* The last resorts: a safe-navigation call, a reopened Array, Numeric or Object's own methods, a boxed receiver's face (infer_call_inner's rules, in their order) */
 static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, TyKind rt, TyKind *out) {
   /* safe navigation &. with unresolved type: return poly (receiver may be nil at runtime) */
@@ -6179,6 +6200,7 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
       if (r != TY_UNKNOWN) { *out = r; return 1; }
     }
   }
+  { TyKind r; if (infer_nil_face_call(c, id, nt, name, recv, rt, &r)) { *out = r; return 1; } }
   return 0;
 }
 

@@ -308,7 +308,8 @@ void pa_report(void);
    builtin of its type, and what nil answers there. Decided from the
    settled types, the representation (repr_of) and the nil fact
    (analyze_nil.c) alone; pure. A receiver qualifies when it is a typed
-   pointer of a String, an Array, a Hash or an IO, and the fact says it may
+   pointer of a String, an Array, a Hash or an IO (or a user object, for
+   nil's own methods only), and the fact says it may
    be nil from a nil the program writes (NFW_NIL, NFW_NO_ELSE,
    NFW_SAFE_NAV, NFW_UNSET). An ivar keeps ivar_nil_recv_guard's policy;
    a local or a global qualifies when its slot holds the pointer or a
@@ -318,8 +319,8 @@ void pa_report(void);
 typedef enum {
   CN_NONE,     /* not nil here, a `&.` call, or a method the program gives nil */
   CN_RAISE,    /* nil has no such method: NoMethodError, after the operands */
-  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers. Not emitted
-                  yet: the call's type has to join NilClass's answer */
+  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers, as the
+                  call on a nil receiver would (emit_nil_target_call) */
 } CplanNil;
 int cplan_nil(Compiler *c, int id);
 
