@@ -8,6 +8,7 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
 
 /* builtin methods on a poly receiver the runtime answers by the value it holds: inject / reduce(:op), the Array reductions and slices, values_at, Fiber's resume / transfer / raise, Queue's enq / deq */
 int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
@@ -66,7 +67,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         buf_puts(&cb9, ")");
         /* the helpers answer a boxed poly array; a slot typed as the array
            itself takes the pointer out of the box */
-        emit_unbox_text(c, comp_ntype(c, id), cb9.p ? cb9.p : "sp_box_nil()", b);
+        emit_unbox_text(c, repr_of(c, id).as_ty, cb9.p ? cb9.p : "sp_box_nil()", b);
         free(cb9.p);
         return 1;
       }
@@ -111,7 +112,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       { Buf rv9; memset(&rv9, 0, sizeof rv9); emit_expr(c, recv, &rv9);
         buf_puts(&cv9, rv9.p ? rv9.p : "sp_box_nil()"); free(rv9.p); }
       buf_printf(&cv9, ", _t%d)", ti9);
-      emit_unbox_text(c, comp_ntype(c, id), cv9.p ? cv9.p : "sp_box_nil()", b);
+      emit_unbox_text(c, repr_of(c, id).as_ty, cv9.p ? cv9.p : "sp_box_nil()", b);
       free(cv9.p);
       return 1;
     }
@@ -136,7 +137,7 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         emit_fiber_pass_call(c, fn, ft, argc, argv, &fv);
       }
       buf_puts(&fv, "; })");
-      emit_unbox_text(c, comp_ntype(c, id), fv.p, b);
+      emit_unbox_text(c, repr_of(c, id).as_ty, fv.p, b);
       free(fv.p);
       return 1;
     }
@@ -167,11 +168,11 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
          reader call is hijacked (e.g. sp_poly_fiber_value on a Node). The
          general poly dispatch below emits reader arms, so it handles them. */
       if (!poly_name_user_claimed(c, name, argc)) {
-        TyKind want = comp_ntype(c, id);
+        Repr wr = repr_of(c, id);
         int is_bool = sp_streq(name, "alive?") || sp_streq(name, "blocking?");
-        if (is_bool && want == TY_POLY) buf_puts(b, "sp_box_bool(");
+        if (is_bool && wr.kind == RK_BOXED) buf_puts(b, "sp_box_bool(");
         buf_printf(b, "%s(", pm); emit_expr(c, recv, b); buf_puts(b, ")");
-        if (is_bool && want == TY_POLY) buf_puts(b, ")");
+        if (is_bool && wr.kind == RK_BOXED) buf_puts(b, ")");
         return 1;
       }
     }
@@ -201,8 +202,9 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         if (argc == 1) { buf_puts(&qv, ", "); emit_boxed(c, argv[0], &qv); }
         buf_puts(&qv, ")");
       }
-      TyKind want = comp_ntype(c, id);
-      if (want == TY_POLY) buf_puts(b, qv.p);
+      Repr wr = repr_of(c, id);
+      TyKind want = wr.as_ty;
+      if (wr.kind == RK_BOXED) buf_puts(b, qv.p);
       else emit_unbox_text(c, want, qv.p, b);
       free(qv.p);
       return 1;
