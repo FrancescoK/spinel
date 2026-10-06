@@ -40,9 +40,11 @@ typedef struct {
                              and the values as (a StrPolyHash's String and
                              box); else TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
-  unsigned may_nil:1;     /* the value can be nil in this representation;
-                             for a user object, the nil fact (analyze_nil.c,
-                             #7444): nothing reads it for one yet */
+  unsigned may_nil:1;     /* the value can be nil in this representation:
+                             a nil-sentinel scalar; a user object or a
+                             String, Array, Hash or IO the nil fact
+                             (analyze_nil.c, #7444) says may be; any other
+                             pointer whose NULL is its nil */
   unsigned handle:1;      /* a read that yields the shared String handle */
   unsigned demand:1;      /* stored as the handle without moving the type */
   unsigned read_raw:1;    /* a handle read whose consumer only reads bytes */
@@ -50,7 +52,8 @@ typedef struct {
   unsigned dyn_cls:1;     /* an object of a class with subclasses: its box
                              reads the class id from the object */
   unsigned nil_scalar:1;  /* an Integer or Float whose box tests for the nil
-                             sentinel */
+                             sentinel (with RK_SENTINEL, for a node and a
+                             slot alike) */
   unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
                              nil (VR_NIL_TESTED, a view around the call) */
   unsigned big:1;         /* an Integer held as an sp_Bigint * */
