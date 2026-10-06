@@ -26,3 +26,7 @@ readpartial 7 NoMethodError
 readpartial 7 [:r, :a0, :a1]
 readpartial1 7 NoMethodError
 readpartial1 7 [:a0]
+nil
+safe-nav nil [:r]
+" ab  "
+safe-nav "ab" [:r, :a0]
