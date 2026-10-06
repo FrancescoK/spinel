@@ -30693,6 +30693,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_builtin_ivars(c);              /* class Array; def m = @x -> self.__bivar_get(:@x) */
   desugar_object_method_builtin_overrides(c); /* Hash#m + Object#m -> Object#m branching on self */
   desugar_builtin_reopen_methods(c);     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
+  desugar_const_ivar_access(c);          /* C.instance_variable_set(:@x, v) -> C.__spinel_civset_x(v) */
   desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
   desugar_extended_module_attrs(c);
   desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
