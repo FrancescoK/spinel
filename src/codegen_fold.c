@@ -150,7 +150,9 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   /* a top-level alias resolves to the target's scope: emit ITS symbol, since
      the alias has no function of its own (#3730) */
   if (m) nd_callee(c, id, mi, -1, 0);
-  buf_printf(b, "sp_%s(", mc_top(c, m && m->name ? m->name : name));
+  buf_printf(b, "sp_%s", mc_top(c, m && m->name ? m->name : name));
+  emit_hr_suffix(c, mi, b);
+  buf_puts(b, "(");
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   /* pass &block as sp_Proc * when the callee has a blk_param and isn't inlined */
   if (m && m->blk_param && m->blk_param[0] && !m->yields) {

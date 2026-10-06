@@ -23970,6 +23970,8 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
                                           : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS) &&
       !(repr_share_rule(c) && nt_ref(c->nt, id, "receiver") >= 0 && strbuf_call_answers_handle(c, id)))
     return 0;
+  /* a method returning the handle itself: no copy, no channel */
+  if (method_hr_target(c, id) >= 0) { emit_hr_call(c, id, b); return 1; }
   if (!strbuf_call_publishes(c, id)) return 0;
   int tvD = ++g_tmp;
   buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
