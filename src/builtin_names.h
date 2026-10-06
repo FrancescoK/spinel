@@ -196,4 +196,15 @@ int is_nil_method(const char *n); /* NilClass's public methods, its own and Obje
 enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
 int array_unseen_add_kind(const char *n);
 
+/* String routes the analysis copies on (#6765 refusals) */
+int is_kernel_string_call(const char *n); /* String: Kernel#String, which answers a String argument itself */
+int is_task_answer(const char *n);        /* value resume: a Thread's or a Fiber's block value */
+int is_catch_call(const char *n);         /* catch */
+int is_throw_call(const char *n);         /* throw */
+int is_raise_call(const char *n);         /* raise fail */
+int is_message_reader(const char *n);     /* message: an exception's message String */
+int is_hash_default_writer(const char *n); /* default= */
+int is_uplus_name(const char *n);         /* +@: the receiver itself unless it is frozen */
+int is_freeze_name(const char *n);        /* freeze */
+
 #endif
