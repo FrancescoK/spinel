@@ -568,8 +568,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         free(vb.p);
         ie_body_restore(c, nsnap);
         g_self = sv_self; g_self_deref = sv_deref;
-        for (int a = 0; a < nal.n; a++)
-          if (--nal.lv[a]->inline_alias == 0) nal.lv[a]->is_cell = 0;
+        block_aliases_release(&nal);
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         if (nal_tr >= 0) buf_printf(b, "_t%d", nal_tr);
         else buf_puts(b, nbox ? "sp_box_nil()" : default_value_from_compiler(c, nbt));
@@ -851,8 +850,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         g_ie_discard_value = saved_discard;
       }
       /* the aliases end with the body, which the result temps outlive */
-      for (int a = 0; a < ie_al.n; a++)
-        if (--ie_al.lv[a]->inline_alias == 0) ie_al.lv[a]->is_cell = 0;
+      block_aliases_release(&ie_al);
       if (ie_al.open) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
       g_ie_class_id = saved_ie;
       if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }

@@ -1705,7 +1705,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
 typedef struct BiRen BiRen;
 /* A spliced block's parameter aliases (see emit_block_binds), undone by the
    caller once the body is emitted. */
-typedef struct BlockAliases { LocalVar *lv[16]; int n, open; } BlockAliases;
+typedef struct BlockAliases { Scope *s[16]; const char *nm[16]; int n, open; } BlockAliases;
+void block_alias_hold(BlockAliases *al, Scope *s, LocalVar *lv);
+void block_aliases_release(BlockAliases *al);
 void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int indent,
                          int as_expr, BiRen *bi, BlockAliases *al);
 int block_param_wants_alias(Compiler *c, int blk, int k, int n);
