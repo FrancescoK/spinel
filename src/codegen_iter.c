@@ -447,7 +447,7 @@ void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const 
 }
 int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
   /* under --share-strings a global or an ivar holding the handle is one too */
-  if (!local_is_handle(c, a) && !repr_of(c, a).share &&
+  if (!local_is_handle(c, a) && !repr_static_share(c, a) &&
       !(repr_share_rule(c) && a >= 0 && nt_kind(c->nt, a) == NK_InstanceVariableReadNode))
     return 0;
   /* a value that ran first, ahead of a later one that rebinds the local

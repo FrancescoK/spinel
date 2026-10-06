@@ -1888,7 +1888,7 @@ static int sh_bang_self_slot(const Compiler *c, int v) {
   int r = nt_ref(nt, v, "receiver");
   if (r < 0) return 0;
   if (nt_kind(nt, r) == NK_LocalVariableReadNode) return repr_of(c, r).kind == RK_STRBUF;
-  if (repr_of(c, r).share) return 1;
+  if (repr_static_share(c, r)) return 1;
   if (nt_kind(nt, r) == NK_InstanceVariableReadNode) {
     const char *nm = nt_str(nt, r, "name");
     int cid = nm ? sh_ivar_owner((Compiler *)c, r) : -1;
