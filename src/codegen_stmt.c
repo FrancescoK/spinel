@@ -1,6 +1,7 @@
 #include "codegen_internal.h"
 #include "repr.h"
 #include "builtin_ops.h"
+#include "call_plan.h"
 
 /* an object arg's #to_s as a C string expression (the puts/print arms) */
 static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
@@ -2059,7 +2060,11 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
    plain load it always was, and only the rest (out of range, or an array
    that may hold nil) takes a get that raises on a nil, as the operator's
    left (`left`) or right operand. A marked array's nils set no flag, so it
-   is not one. Answers 1 when it emitted the read. */
+   is not one. A receiver that may be nil (cplan_nil) is tested in that
+   branch too, where a nil one's cached length of 0 sends it, ahead of the
+   index's own nil test: the read is not the call its nil target arms, and
+   a nil array's read raised the operand's error, not NoMethodError. Answers
+   1 when it emitted the read. */
 int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
@@ -2072,12 +2077,22 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, Buf *b) {
       comp_ntype(c, vav[0]) != TY_INT || nullable_int_elem_array(c, vr) ||
       !hc_array_nilfree(c, vr, hd, hn, sizeof hd))
     return 0;
+  int nilr = cplan_nil(c, v) == CN_RAISE;
+  int ck = nilr && nullable_int_value(c, vav[0]);
   int tk = ++g_tmp;
-  buf_printf(b, "({ sp_int _t%d = ", tk); emit_int_expr(c, vav[0], b);
-  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : sp_FloatArray_get_%s(",
-             tk, hn, hd, tk, left ? "recv" : "operand");
+  buf_printf(b, "({ sp_int _t%d = ", tk);
+  if (ck) emit_scalar_operand(c, vav[0], "0", b);
+  else emit_int_expr(c, vav[0], b);
+  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ", tk, hn, hd, tk);
+  if (nilr) {
+    buf_puts(b, "({ ");
+    emit_nil_cold_test(c, v, vr, b);
+    if (ck) buf_printf(b, " SP_INT_NIL_ARG_CK(_t%d);", tk);
+    buf_puts(b, " ");
+  }
+  buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : "operand");
   emit_expr(c, vr, b);
-  buf_printf(b, ", _t%d, \"%s\"); })", tk, op);
+  buf_printf(b, ", _t%d, \"%s\")%s; })", tk, op, nilr ? "; })" : "");
   return 1;
 }
 
