@@ -8783,8 +8783,11 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
         if (all && di == argc && argc >= 2) {
           int t2 = ++g_tmp;
           Buf rb2 = expr_buf(c, recv);
-          buf_printf(b, "({ sp_%s *_t%d = %s; _t%d%s->iv_%s; })",
-                     sc->c_name, t2, rb2.p ? rb2.p : "", t2, path, iv_c(cur->ivars[cmi] + 1));
+          buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t2, rb2.p ? rb2.p : "");
+          char leaf[700]; snprintf(leaf, sizeof leaf, "_t%d%s->iv_%s", t2, path, iv_c(cur->ivars[cmi] + 1));
+          if (cur->ivar_types[cmi] == TY_STRBUF) emit_strbuf_node_read(c, id, leaf, b);
+          else buf_puts(b, leaf);
+          buf_puts(b, "; })");
           free(rb2.p);
           { *out = 1; return 1; }
         }
@@ -8797,7 +8800,8 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "({ sp_%s *_t%d = ", sc->c_name, t);
       if (argc == 1) { emit_expr(c, recv, b); buf_puts(b, "; "); }
       else emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
-      if (argc == 1) buf_puts(b, fld);
+      if (argc == 1 && mt == TY_STRBUF) emit_strbuf_node_read(c, id, fld, b);
+      else if (argc == 1) buf_puts(b, fld);
       else if (ty_is_hash(mt) && argc == 2) {
         const char *hn = ty_hash_cname(mt);
         buf_printf(b, "sp_%sHash_%s(%s, ", hn, ty_hash_val(mt) == TY_INT ? "get_opt" : "get", fld);
@@ -8929,7 +8933,14 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
-      buf_printf(b, "_t%d->iv_%s; })", t, iv_c(sc->ivars[mi] + 1));
+      /* a String member that is a handle reads as its ivar does: the handle
+         where the caller asks for it, else the String */
+      if (sc->ivar_types[mi] == TY_STRBUF) {
+        char sref[300]; snprintf(sref, sizeof sref, "_t%d->iv_%s", t, iv_c(sc->ivars[mi] + 1));
+        emit_strbuf_node_read(c, id, sref, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_t%d->iv_%s; })", t, iv_c(sc->ivars[mi] + 1));
       { *out = 1; return 1; }
     }
     /* general: generate chain of comparisons. Each arm has to ASSIGN into a

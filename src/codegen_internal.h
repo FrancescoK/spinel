@@ -138,6 +138,11 @@ void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const 
 void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b);
 /* The value a write hands a shared-handle String slot `lv` (codegen_stmt.c) */
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
+/* The value a Struct constructor or an attribute writer stores into a String
+   ivar slot (codegen_stmt.c) */
+void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b);
+/* A read of a shared-mutable String slot `sref` at node `id` (codegen_expr.c) */
+void emit_strbuf_node_read(Compiler *c, int id, const char *sref, Buf *b);
 int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b);
 int operand_may_allocate(Compiler *c, int id);
 /* The same shim over a READER call that hands out the handle

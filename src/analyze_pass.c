@@ -8349,6 +8349,12 @@ int infer_param_types(Compiler *c) {
          field read and arithmetic on it went through the boxed path (#3984). */
       int lci = (rty && sp_streq(rty, "LocalVariableReadNode") && sp_streq(name, "new"))
                 ? class_var_static_ci(c, recv) : -1;
+      /* So is one built inline, `Struct.new(:a).new(v)` or
+         `Data.define(:a).new(a: v)`: the anon class synthesized for that
+         call node. Left poly, a String member was a boxed copy that an
+         append through its reader never reached. */
+      if (lci < 0 && nt_kind(nt, recv) == NK_CallNode && is_struct_constructor(name) && is_struct_call(c, recv))
+        lci = class_var_static_ci(c, recv);
       if (lci >= 0 && !c->classes[lci].is_struct) lci = -1;
       if ((rty && (sp_streq(rty, "ConstantReadNode") ||
                    sp_streq(rty, "ConstantPathNode"))) || lci >= 0) {
