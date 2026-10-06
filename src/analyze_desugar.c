@@ -14871,6 +14871,22 @@ static int sce_const_unmutated(const NodeTable *nt, const char *name) {
   nt_kind_iter_close(&it);
   return reads == ro;
 }
+/* the element texts of an Array literal of Strings and Symbols (`%w(a b)`,
+   `%i[a b]`, `["a", :b]`), or -1 */
+static int sce_array_elems(const NodeTable *nt, int v, const char ***out) {
+  if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return -1;
+  int en = 0; const int *els = nt_arr(nt, v, "elements", &en);
+  const char **res = (const char **)malloc(sizeof(char *) * (size_t)(en > 0 ? en : 1));
+  if (!res) return -1;
+  for (int i = 0; i < en; i++) {
+    NodeKind k = nt_kind(nt, els[i]);
+    const char *t = k == NK_StringNode ? nt_str(nt, els[i], "content") : k == NK_SymbolNode ? nt_str(nt, els[i], "value") : NULL;
+    if (!t) { free(res); return -1; }
+    res[i] = t;
+  }
+  *out = res;
+  return en;
+}
 /* the element texts (strings or symbols) of the literal array constant
    `name` is when statement `before` of `body` runs: written exactly once in
    this body, ahead of it, and never changed after (sce_const_unmutated).
@@ -14885,19 +14901,7 @@ static int sce_const_elems(const NodeTable *nt, int body, int before, const char
       w = bb[i];
     }
   if (w < 0 || !sce_const_unmutated(nt, name)) return -1;
-  int v = nt_ref(nt, w, "value");
-  if (v < 0 || nt_kind(nt, v) != NK_ArrayNode) return -1;
-  int en = 0; const int *els = nt_arr(nt, v, "elements", &en);
-  const char **res = (const char **)malloc(sizeof(char *) * (size_t)(en > 0 ? en : 1));
-  if (!res) return -1;
-  for (int i = 0; i < en; i++) {
-    NodeKind k = nt_kind(nt, els[i]);
-    const char *t = k == NK_StringNode ? nt_str(nt, els[i], "content") : k == NK_SymbolNode ? nt_str(nt, els[i], "value") : NULL;
-    if (!t) { free(res); return -1; }
-    res[i] = t;
-  }
-  *out = res;
-  return en;
+  return sce_array_elems(nt, nt_ref(nt, w, "value"), out);
 }
 /* A program that gives class_eval / module_eval a method of its own, or
    hooks what a graft does (method_added, singleton_method_added,
@@ -15066,7 +15070,7 @@ int desugar_static_class_eval(Compiler *c) {
         if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
       }
       else if (each) {
-        /* CONST.each do |v| class_eval "..." end */
+        /* CONST.each do |v| class_eval "..." end, or %w(a b).each */
         int recv = nt_ref(nt, st, "receiver"), blk = nt_ref(nt, st, "block");
         const char *cname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
         int bbody = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
@@ -15076,7 +15080,10 @@ int desugar_static_class_eval(Compiler *c) {
         const char *var = rn == 1 && reqs ? nt_str(nt, reqs[0], "name") : NULL;
         int sn = 0; const int *ss = bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode ? nt_arr(nt, bbody, "body", &sn) : NULL;
         int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
-        const char **elems = NULL; int ne = cname ? sce_const_elems(nt, body, i, cname, &elems) : -1;
+        /* CONST.each, or the same over a literal list (`%w(a b).each`) */
+        const char **elems = NULL;
+        int ne = cname ? sce_const_elems(nt, body, i, cname, &elems)
+               : recv >= 0 ? sce_array_elems(nt, recv, &elems) : -1;
         if (var && estr >= 0 && ne >= 0) {
           ok = 1;
           for (int e = 0; e < ne && ok; e++) {
