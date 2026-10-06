@@ -9355,7 +9355,10 @@ int an_program_news_object(Compiler *c) {
 void an_ary_viewed_mark(Compiler *c, int id) {
   if (id >= c->ary_viewed_cap) {
     int cap = c->node_cap > id ? c->node_cap : id + 1;
-    c->ary_viewed = realloc(c->ary_viewed, (size_t)cap);
+    unsigned char *nv = realloc(c->ary_viewed, (size_t)cap);
+    /* a dropped mark would emit the node uncast: no recovery */
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->ary_viewed = nv;
     memset(c->ary_viewed + c->ary_viewed_cap, 0, (size_t)(cap - c->ary_viewed_cap));
     c->ary_viewed_cap = cap;
   }
