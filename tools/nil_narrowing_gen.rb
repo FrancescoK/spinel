@@ -335,7 +335,11 @@ module NilNarrowingGen
     b = ->(body) { block_of(ps, body, bp, n) }
     case op
     when "none" then s
-    when "each", "reverse_each", "each_entry", "tap", "then" then "#{s}.#{op} #{b.("q")}"
+    # `then` answers its block's value; with two parameters |q, qr| takes the
+    # yielded Array apart, so the block answers the receiver (a plain read of
+    # the same Array) to keep the holder Array-valued
+    when "then" then "#{s}.then #{b.(bp == "two" ? s : "q")}"
+    when "each", "reverse_each", "each_entry", "tap" then "#{s}.#{op} #{b.("q")}"
     when "each_with_index" then "#{s}.each_with_index #{b.("q")}"
     when "each_index" then "#{s}.each_index #{b.("j")}"
     when "map_bang", "collect_bang", "sort_by_bang" then "#{s}.#{op.sub("_bang", "!")} #{b.("q")}"

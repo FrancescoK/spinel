@@ -201,10 +201,19 @@ module ProbeCommon
       end
       return [cases, want.size, want.count { |kk, _| got.key?(kk) }] if also.size < 3 || t >= 3
       idx = also.map { |f| self::NAMES.index(f) or raise ArgumentError, "no factor #{f.inspect}" }.sort
+      # a triple is tried only when its pairs are taken, so at strength 1 the
+      # pairs of the selected factors go first
+      if t < 2
+        all2 = (0...self::FACTORS.size).to_a.combination(2).to_a
+        sel2 = idx.combination(2).map { |tu| all2.index(tu) }
+        take(cases, all2, 2, wanted(all2, 2, only, sel2), rng, tries, only, sel2)
+      end
       all = (0...self::FACTORS.size).to_a.combination(3).to_a
       sel = idx.combination(3).map { |tu| all.index(tu) }
       want3 = wanted(all, 3, only, sel)
       got3 = take(cases, all, 3, want3, rng, tries, only, sel)
+      # the cases the triples added can take requested combinations too
+      got = tuples_of(cases, t)
       [cases, want.size, want.count { |kk, _| got.key?(kk) }, want3.size, want3.count { |kk, _| got3.key?(kk) }]
     end
 
