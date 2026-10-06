@@ -4420,7 +4420,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
          so does a method the class defines itself, whose value is what its
          body answers -- `def dup = self.class.new(...)` answers boxed (#5461) */
       !(ty_is_object(rt) &&
-        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE))
+        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
+      !(rt == TY_POLY && an_user_defines_method(c, name)))
     { *out = rt; return 1; }
 
   /* bareword freeze (implicit self) returns self, so `def seal = freeze` and
@@ -7139,7 +7140,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* nil receiver: type inference for NilClass methods */
   if (recv >= 0 && sp_streq(name, "display") && argc == 0 &&
       !(ty_is_object(rt) &&
-        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) == SP_MEMBER_ATTR))
+        comp_resolve_member(c, ty_object_class(rt), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
+      !(rt == TY_POLY && an_user_defines_method(c, name)))
     return TY_NIL;
   if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
       ty_is_object(rt)) return TY_BOOL;
