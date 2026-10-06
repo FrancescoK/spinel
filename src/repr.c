@@ -90,6 +90,7 @@ int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   return r;
 }
 
+static int repr_static_share(const Compiler *c, int node);
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -98,7 +99,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   NodeKind k = nt_kind(nt, node);
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
-    if (repr_static_read_kind(k)) return repr_handle_static(c, node) ? RS_HANDLE : RS_NONE;
+    if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;
     /* a local promoted to the handle after the node types were final */
     if (k != NK_LocalVariableReadNode) return RS_NONE;
     const char *ln = nt_str(nt, node, "name");
@@ -122,7 +123,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF) return RS_HANDLE;
   }
   /* a global holding the handle (--share-strings) */
-  if ((repr_static_read_kind(k) || k == NK_GlobalVariableWriteNode) && repr_handle_static(c, node))
+  if ((repr_static_read_kind(k) || k == NK_GlobalVariableWriteNode) && repr_static_share(c, node))
     return RS_HANDLE;
   /* an ivar write's value is the slot */
   if (k == NK_InstanceVariableWriteNode) return RS_HANDLE;
@@ -227,6 +228,7 @@ Repr repr_of(const Compiler *c, int node) {
     r.may_nil = r.nil_scalar = 1;
   }
   r.strbuf_src = (unsigned char)repr_strbuf_src(c, node, kt);
+  r.share = (unsigned)repr_static_share(c, node);
   if (r.strbuf_src == RS_SLOT_POLY) r.kind = RK_BOXED;
   else if (r.strbuf_src != RS_NONE) r.kind = RK_STRBUF;
   /* a user object the nil fact says may be nil (analyze_nil.c, #7444); a
@@ -440,6 +442,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   if (nil_fact_tracked(lv->type) && lv->obj_may_nil) r.may_nil = 1;
   /* str_shared refines TY_STRBUF; it can outlive that storage type */
   if (lv->type == TY_STRBUF && lv->str_shared) r.handle = 1;
+  /* under the rule, that handle is the one it assigned */
+  r.share = r.handle && c->share_strings;
   r.elems_handle = lv->elems_shared && lv->type == TY_POLY_ARRAY;
   r.kind = (unsigned char)k;
   r.dyn_cls = repr_dyn_cls(c, lv->type);
@@ -517,21 +521,19 @@ static LocalVar *repr_static_var(const Compiler *c, int node) {
   }
   return NULL;
 }
-int repr_handle_static(const Compiler *c, int node) {
-  /* (only the rule makes a global, a constant or a class variable the
-     handle) */
+/* repr_of's `share` for a read or write node of a global, a constant or a
+   class variable: its slot's (only the rule makes one the handle) */
+static int repr_static_share(const Compiler *c, int node) {
   if (node < 0 || !c->share_strings) return 0;
   if (repr_cvar_node(nt_kind(c->nt, node))) {
     int cid, idx;
-    if (!repr_cvar_slot(c, node, &cid, &idx)) return 0;
-    const ClassInfo *ci = &c->classes[cid];
-    return ci->cvar_types[idx] == TY_STRBUF && ci->cvar_str_shared && ci->cvar_str_shared[idx];
+    return repr_cvar_slot(c, node, &cid, &idx) && repr_of_cvar(c, cid, idx).share;
   }
   LocalVar *lv = repr_static_var(c, node);
-  return lv && repr_of_slot(c, lv).kind == RK_STRBUF && lv->str_shared;
+  return lv && repr_of_slot(c, lv).share;
 }
 int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap) {
-  if (!repr_handle_static(c, node)) return 0;
+  if (!repr_of(c, node).share) return 0;
   NodeKind k = nt_kind(c->nt, node);
   if (repr_cvar_node(k)) {
     int cid, idx;
@@ -558,58 +560,53 @@ int repr_str_elems_share(const Compiler *c, int holder) {
   return e >= 0 && repr_str_class_shares(share_elem_flags(c, e), share_elem_holders(c, e));
 }
 
-/* Does holder h hold the shared handle, now that the analysis is final?
-   1 it does, 0 it holds a String some other way, -1 it holds no String
-   (a container, whose elements are asked about on their own). */
-static int repr_share_carried(Compiler *c, const ShareHolder *h) {
-  TyKind t = TY_UNKNOWN;
-  int shared = 0;
+/* The representation of share holder h's slot, now that the analysis is
+   final: a box (RK_BOXED) holds whatever is stored, the handle included;
+   `share` says the slot is the handle. A byref-out local is not (its slot
+   is the caller's), and a class variable is every class's of the name (the
+   facts key it by name alone): boxed if one is, and the handle only if
+   every String one is. ty is TY_UNKNOWN for a holder with no slot. */
+static Repr repr_of_holder(Compiler *c, const ShareHolder *h) {
+  Repr r;
+  memset(&r, 0, sizeof r);
+  r.ty = r.as_ty = TY_UNKNOWN;
   switch (h->kind) {
   case SHK_LOCAL: {
     LocalVar *lv = &c->scopes[h->scope].locals[h->local];
-    t = lv->type;
-    shared = lv->str_shared && !lv->byref_out;
+    r = repr_of_slot(c, lv);
+    if (lv->byref_out) r.share = 0;
     break;
   }
   case SHK_IVAR: {
     int iv = comp_ivar_index(&c->classes[h->cid], h->name);
-    if (iv < 0) return -1;
-    t = c->classes[h->cid].ivar_types[iv];
-    shared = c->classes[h->cid].ivar_str_shared[iv];
+    if (iv >= 0) r = repr_of_ivar(c, h->cid, iv);
     break;
   }
   case SHK_GVAR: {
     LocalVar *gv = comp_gvar(c, h->name[0] == '$' ? h->name + 1 : h->name);
-    if (!gv) return -1;
-    t = gv->type;
-    shared = gv->str_shared;
+    if (gv) r = repr_of_slot(c, gv);
     break;
   }
   case SHK_CONST: {
     LocalVar *cv = h->name ? comp_const(c, h->name) : NULL;
-    if (!cv) return -1;
-    t = cv->type;
-    shared = cv->str_shared;
+    if (cv) r = repr_of_slot(c, cv);
     break;
   }
   case SHK_CVAR:
-    /* every class with a class variable of the name (the facts key it by
-       name alone) */
     for (int k = 0; k < c->nclasses; k++) {
       int i = h->name ? comp_cvar_index(&c->classes[k], h->name) : -1;
       if (i < 0) continue;
-      TyKind ct = c->classes[k].cvar_types[i];
-      if (ct == TY_POLY) return 1;
-      if (ct == TY_STRBUF && c->classes[k].cvar_str_shared[i]) { t = ct; shared = 1; }
-      else if (ct == TY_STRING || ct == TY_STRBUF) return 0;
+      Repr ck = repr_of_cvar(c, k, i);
+      if (ck.ty == TY_POLY) { ck.kind = RK_BOXED; return ck; }
+      if (ck.share) r = ck;
+      else if (ck.ty == TY_STRING || ck.ty == TY_STRBUF) return ck;
     }
     break;
   default:
-    return -1;
+    break;
   }
-  if (t == TY_POLY) return 1;   /* the box holds what is stored, the handle included */
-  if (t == TY_STRBUF && shared) return 1;
-  return t == TY_STRING || t == TY_STRBUF ? 0 : -1;
+  if (r.ty == TY_POLY) r.kind = RK_BOXED;
+  return r;
 }
 
 /* A container holder whose elements share: are they boxed (a box holds the
@@ -657,7 +654,10 @@ static void repr_share_seal(Compiler *c) {
       n_elems++;
       if (!ec && bad < 0) { bad = h; bad_elems = 1; }
     }
-    int carried = repr_share_carried(c, sh);
+    /* does the holder hold the shared handle (a box holds what is stored,
+       the handle included)? -1 for one that holds no String */
+    Repr hr = repr_of_holder(c, sh);
+    int carried = hr.kind == RK_BOXED || hr.share ? 1 : hr.ty == TY_STRING || hr.ty == TY_STRBUF ? 0 : -1;
     if (carried < 0) continue;
     n_str++;
     int shares = repr_str_shares(c, h);
@@ -762,7 +762,7 @@ static const char *repr_kind_name(int k) {
 /* an ivar's slot: every Integer ivar reads nil until written, as
    repr_nil_scalar answers for its reads; a Float one when some write can
    leave the sentinel */
-static Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
+Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
   const ClassInfo *ci = &c->classes[cid];
   Repr r;
   memset(&r, 0, sizeof r);
@@ -775,7 +775,22 @@ static Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
   }
   if (ty_is_object(r.ty) && nil_fact_ivar(c, cid, ci->ivars[iv])) r.may_nil = 1;
   if (r.ty == TY_STRBUF && ci->ivar_str_shared[iv]) r.handle = 1;
+  r.share = r.handle && c->share_strings;
   r.dyn_cls = repr_dyn_cls(c, r.ty);
+  return r;
+}
+
+/* a class variable's slot: only the rule makes one the shared handle */
+Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
+  const ClassInfo *ci = &c->classes[cid];
+  Repr r;
+  memset(&r, 0, sizeof r);
+  r.ty = r.as_ty = ci->cvar_types[idx];
+  r.narrowed = r.elem = r.key = r.val = TY_UNKNOWN;
+  repr_layout(&r, r.ty);
+  r.kind = (unsigned char)repr_kind_of_type(c, r.ty);
+  r.share = c->share_strings && r.ty == TY_STRBUF && ci->cvar_str_shared && ci->cvar_str_shared[idx];
+  r.handle = r.share;
   return r;
 }
 

@@ -14730,7 +14730,7 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
       g = k > 0 ? st[k - 1] : -1;
     }
-    if (g >= 0 && repr_handle_static(c, g)) return 1; }
+    if (g >= 0 && repr_of(c, g).share) return 1; }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
@@ -16366,7 +16366,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       }
       if (!repr_str_shares(c, h)) continue;
       if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;   /* a box holds the handle */
-      if (lv->type == TY_STRBUF && lv->str_shared && !lv->byref_out) continue;
+      if (repr_of_slot(c, lv).share && !lv->byref_out) continue;
       if (lv->is_param && !lv->is_block_param) {
         if (lv->rbs_seeded) continue;
         if (lv->byref_out) { lv->byref_out = 0; lv->is_cell = 0; }
@@ -16401,7 +16401,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         ClassInfo *ci = &c->classes[k];
         int i = sh->name ? comp_cvar_index(ci, sh->name) : -1;
         if (i < 0 || (ci->cvar_types[i] != TY_STRING && ci->cvar_types[i] != TY_STRBUF)) continue;
-        if (ci->cvar_types[i] == TY_STRBUF && ci->cvar_str_shared[i]) continue;
+        if (repr_of_cvar(c, k, i).share) continue;
         ci->cvar_types[i] = TY_STRBUF;
         ci->cvar_str_shared[i] = 1;
         changed = 1;
@@ -16413,7 +16413,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
                                            : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
       if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;   /* a box holds the handle */
-      if (gv->type == TY_STRBUF && gv->str_shared) continue;
+      if (repr_of_slot(c, gv).share) continue;
       gv->type = TY_STRBUF;
       gv->str_shared = 1;
       changed = 1;
@@ -19645,8 +19645,8 @@ static int convert_byref_handle_params(Compiler *c,
         /* a global holding the handle (--share-strings) hands it over as an
            ivar's read does */
         else if (repr_static_read_kind(nt_kind(nt, an2)) &&
-                 repr_handle_static(c, an2) &&
-                 (pp->type == TY_POLY || (pp->type == TY_STRBUF && pp->str_shared)) && !c->strbuf_box[an2]) {
+                 repr_of(c, an2).share &&
+                 (pp->type == TY_POLY || repr_of_slot(c, pp).share) && !c->strbuf_box[an2]) {
           c->strbuf_box[an2] = 1;
           comp_sn_retype(c, an2, TY_STRBUF);
           changed = 1;
@@ -21391,7 +21391,7 @@ static int dyn_pull_arg(Compiler *c, int a, int mark_read) {
   int changed = 0;
   /* --share-strings: a block's parameter the rule made the handle hands it
      over as a handle local does: only the read is left to mark */
-  if (c->share_strings && lv->is_block_param && lv->type == TY_STRBUF && lv->str_shared) {
+  if (lv->is_block_param && repr_of_slot(c, lv).share) {
     if (!mark_read || c->strbuf_box[a]) return 0;
     c->strbuf_box[a] = 1; comp_sn_retype(c, a, TY_STRBUF);
     return 1;
@@ -22752,12 +22752,12 @@ static int promote_dyncall_string_args(Compiler *c) {
         const char *bp = block_param_name(c, blk, k);
         LocalVar *pv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
         if (!pv || (!repr_of_slot(c, pv).handle && pv->type != TY_POLY) || c->strbuf_box[av[k]]) continue;
-        int handle = repr_handle_static(c, av[k]);
+        int handle = repr_of(c, av[k]).share;
         if (!handle && nt_kind(nt, av[k]) == NK_InstanceVariableReadNode) {
           const char *ivn = nt_str(nt, av[k], "name");
           int cid = ivn ? an_ivar_owner(c, av[k]) : -1;
           int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], ivn) : -1;
-          handle = iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
+          handle = iv >= 0 && repr_of_ivar(c, cid, iv).share;
         }
         if (!handle) continue;
         c->strbuf_box[av[k]] = 1;
