@@ -12092,10 +12092,10 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     }
     /* a comparable-family receiver === nil is always false; === is value
        equality, not a method nil must define (#2584: 3 === nil is false).
-       A nullable Integer or Float receiver holding its sentinel is nil,
-       though, and nil === nil: that one is asked at run time. */
+       A nullable Integer, Float or String receiver holding its sentinel is
+       nil, though, and nil === nil: that one is asked at run time. */
     if (fr && fr != 5 && fr != 6 && a0 == TY_NIL &&
-        (rt == TY_INT || rt == TY_FLOAT) && call_returns_nullable_int(c, recv)) {
+        (rt == TY_STRING || ((rt == TY_INT || rt == TY_FLOAT) && call_returns_nullable_int(c, recv)))) {
       char ref[24];
       buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
       buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "); !");

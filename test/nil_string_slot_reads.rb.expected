@@ -1,0 +1,24 @@
+[false, true, true, false]
+[true, true, false, true, true]
+[nil, nil, 0, 0, 0]
+:nil
+:nilclass
+[true, true, true, false]
+["", true, 1, false, 0]
+:nil
+[false, ""]
+[false, true]
+[true, true, 1, 1, 1]
+[true, 1, 2, 2]
+[true, 1, 1, 1]
+[false, 0, nil]
+[nil, false, false]
+["", "value"]
+[true, false, false, 0, "value"]
+nil
+["value", ""]
+nil
+["value", ""]
+left
+right
+nil
