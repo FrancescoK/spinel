@@ -7,6 +7,7 @@
 #include "codegen_internal.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
 
 /* Rational#round / #floor / #ceil / #truncate with a digit count, a
    `half:` keyword, or both. The arm reads the shape of the arguments (a
@@ -168,8 +169,22 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else buf_printf(b, "((void)(%s), ((sp_Class){-100}))", r);  /* Integer */
       free(rs.p); return 1;
     }
-    /* coerce(n): [n, self], both boxed (#3129) */
+    /* coerce(n): [n, self], both boxed (#3129), for an Integer n. Any other
+       operand makes both Floats, as CRuby's Integer#coerce does through
+       Float(): sp_poly_coerce answers that for a boxed Integer (a String
+       parsed, nil's TypeError), where pushing the operand and the Bignum
+       unchanged answered [2.5, 1180591620717411303424]. */
     if (sp_streq(name, "coerce") && argc == 1) {
+      if (comp_ntype(c, argv[0]) != TY_INT && comp_ntype(c, argv[0]) != TY_BIGINT &&
+          !repr_of(c, argv[0]).big) {
+        int tcr = ++g_tmp, tco = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = sp_box_bigint(%s); SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ",
+                   tcr, r, tcr, tco);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_to_poly_array(sp_poly_coerce(_t%d, _t%d)); })",
+                   tco, tcr, tco);
+        free(rs.p); return 1;
+      }
       int tca = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " sp_PolyArray_push(_t%d, ", tca, tca, tca);
