@@ -213,6 +213,16 @@ def probe_origin(dirs):
 
 names = sorted({n for (_, n, _) in jobs if n != "base"})
 print("# verify\n")
+# what this run checks: a batch gate runs only pgate, a staged PR only its
+# legs, so the other mode's jobs show as skipped on the run page
+LEG_NAMES = {"pgate": "parallel gate", "gate": "gate", "cdiff": "corpus C diff", "suite": "suite",
+             "rubyspec": "rubyspec-gate", "scale": "scale-test", "extra": "new tests"}
+ran = sorted({l for (l, _, _) in jobs}, key=lambda l: list(LEG_NAMES).index(l) if l in LEG_NAMES else 99)
+if not ran:
+    print("No results: no r-* artifact was uploaded (see the jobs' logs).\n")
+else:
+    print(f"This run: {', '.join(LEG_NAMES.get(l, l) for l in ran)}. "
+          "Jobs of the checks it does not run show as skipped.\n")
 for probe in ("cb", "vf", "nn"):
     if (probe, "base", 0) in jobs:
         d = jobs[(probe, "base", 0)]

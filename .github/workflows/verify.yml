@@ -764,10 +764,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          path: res
-          pattern: r-*
+      # gh, not download-artifact: download-artifact unpacks a lone matching
+      # artifact straight into res/, and report.py finds each leg by its
+      # r-<leg>-<name>-<k> folder. gh keeps one folder per artifact.
+      - name: Download the results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} -R ${{ github.repository }} -p 'r-*' -D res || mkdir -p res
       - name: Report
         run: |
           python3 report.py res > report.md
