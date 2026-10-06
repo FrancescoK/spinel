@@ -2216,6 +2216,17 @@ void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b) {
   }
   emit_int_expr(c, recv, b);
 }
+/* the same for upto with a limit node `lim`: a boxed String raises the
+   TypeError its own upto raises for a numeric limit (sp_poly_upto_recv) */
+void emit_upto_recv(Compiler *c, int recv, int lim, Buf *b) {
+  TyKind lt = comp_ntype(c, lim);
+  if (comp_ntype(c, recv) == TY_POLY && (lt == TY_INT || lt == TY_FLOAT)) {
+    buf_puts(b, "sp_poly_upto_recv("); emit_expr(c, recv, b);
+    buf_printf(b, ", \"%s\")", lt == TY_INT ? "Integer" : "Float");
+    return;
+  }
+  emit_int_recv_named(c, recv, "upto", b);
+}
 /* Kernel#Rational's argument: as emit_rat_coerce, but a boxed nil is the
    TypeError Rational(nil) raises rather than the integer 0. */
 static void emit_rat_kernel_arg(Compiler *c, int node, Buf *b) {

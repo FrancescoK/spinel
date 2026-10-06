@@ -539,7 +539,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     if (sp_streq(name, "upto") && argc == 1) {
       /* a Float limit is not truncated: n.upto(2.5) stops at 2, i.e. floor. */
       int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
-      buf_puts(b, "(sp_Range){ .first = "); emit_int_recv_named(c, recv, name, b);
+      buf_puts(b, "(sp_Range){ .first = "); emit_upto_recv(c, recv, argv[0], b);
       buf_puts(b, ", .last = ");
       if (lf) { buf_puts(b, "(sp_int)floor("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
