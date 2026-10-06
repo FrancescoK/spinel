@@ -57,6 +57,19 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
   return 0;
 }
 
+/* Object's face of a Float or String range (tap / then, instance_variables,
+   `!`, object_id, display, ...): the universal rules type it about the range
+   itself, as they do for an Integer range. `=~` is no longer Object's, and
+   reaches the same rules to raise NoMethodError on the range. The names
+   that hand the receiver on keep their routes: to_enum / enum_for walk the
+   members through each, instance_eval / instance_exec run their block over
+   the member face, and method / public_method bind a wrapper that has no
+   slot for a by-value range. */
+int range_object_face(const char *name) {
+  if (is_object_receiver_handoff(name)) return 0;
+  return object_public_method_name(name) || is_match_operator(name);
+}
+
 /* Range receivers: the Float and String range faces, and the Integer-range
    arms that answer without materializing. The redispatch that rewrites `rt`
    to the int array stays in infer_call: it changes the receiver kind for
@@ -79,6 +92,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (rt == TY_STR_RANGE) {
     const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
     if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
+    if (range_object_face(name)) return 0;
     /* everything else is served by the element array (see the desugar) */
     { *out = TY_UNKNOWN; return 1; }
   }
@@ -123,6 +137,7 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
+    if (range_object_face(name)) return 0;
     /* A name with no row is genuinely undefined: leave it UNKNOWN. The
        respond_to? probe reads that as "not dispatchable" (false), matching
        an ordinary int range, and a real call errors like any unknown method. */

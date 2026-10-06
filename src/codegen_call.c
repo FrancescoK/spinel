@@ -17436,7 +17436,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN ||
         grt == TY_STRING || grt == TY_FLOAT || grt == TY_BOOL ||
         grt == TY_COMPLEX || grt == TY_RATIONAL || grt_builtin_cls ||
-        grt == TY_SYMBOL || grt == TY_RANGE || grt == TY_FLOAT_RANGE ||
+        grt == TY_SYMBOL || grt == TY_RANGE || grt == TY_FLOAT_RANGE || grt == TY_STR_RANGE ||
         ty_is_array(grt) || ty_is_hash(grt) || ty_is_object(grt)) {
       TyKind ret = repr_of(c, id).as_ty;
       /* An unresolved call raises NoMethodError by default, matching CRuby
@@ -17710,7 +17710,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         else if (ty_is_array(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Array");
         else if (ty_is_hash(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Hash");
         else if (grt == TY_SYMBOL) snprintf(rdesc, sizeof rdesc, "an instance of Symbol");
-        else if (grt == TY_RANGE || grt == TY_FLOAT_RANGE)
+        else if (grt == TY_RANGE || grt == TY_FLOAT_RANGE || grt == TY_STR_RANGE)
           snprintf(rdesc, sizeof rdesc, "an instance of Range");
         else snprintf(rdesc, sizeof rdesc, "%s", ty_name(grt));
         /* a class constant receiver names the class, as CRuby does ("undefined
