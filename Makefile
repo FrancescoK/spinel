@@ -1438,11 +1438,12 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
-	t=test/reject/lazy_stage_string_mutation.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lsm.c" >"$$tmp/lsm.out" 2>&1; then \
-	  echo "reject-test: FAIL (a lazy stage changing its String element compiled)"; ok=0; \
-	else grep -q "a lazy stage's block that changes its String element in place" "$$tmp/lsm.out" || \
-	  { echo "reject-test: FAIL (a lazy stage changing its String element rejected without saying why)"; sed -n 1,5p "$$tmp/lsm.out"; ok=0; }; fi; \
+	for t in test/reject/lazy_stage_string_mutation.rb test/reject/lazy_stage_string_mutation_with_index.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lsm.c" >"$$tmp/lsm.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t, a lazy stage changing its String element, compiled)"; ok=0; \
+	  else grep -q "a lazy stage's block that changes its String element in place" "$$tmp/lsm.out" || \
+	    { echo "reject-test: FAIL ($$t, a lazy stage changing its String element, rejected without saying why)"; sed -n 1,5p "$$tmp/lsm.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/string_mutator_jump_arm.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mja.c" >"$$tmp/mja.out" 2>&1; then \
 	  echo "reject-test: FAIL (a String mutator on a conditional with a returning arm compiled)"; ok=0; \
