@@ -226,14 +226,24 @@ no_gsub_enum:
       buf_puts(b, ")");
       buf_printf(b, "; const char *_s%d = _t%d.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)_t%d.v.i) : _t%d.v.s;",
                  tv, tv, tv, tv);
+      /* the position runs before the receiver is judged, whatever it is */
+      int tq = 0;
+      if (argc == 2) {
+        tq = ++g_tmp;
+        buf_printf(b, " sp_RbVal _t%d = ", tq); emit_boxed(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tq);
+      }
       buf_printf(b, " (sp_bool)((_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM) ? ", tv, tv);
       if (argc == 1) buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _s%d)", are, tv);
-      else {
-        buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _s%d, ", are, tv);
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      buf_printf(b, " : (sp_raise_nomethod(sp_sprintf(\"undefined method 'match?' for an instance of %%s\","
-                    " sp_poly_class_name(_t%d))), 0)); })", tv);
+      else buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _s%d, sp_poly_arg_int_chk(_t%d))", are, tv, tq);
+      /* any other receiver raises as CRuby does (sp_poly_match_check): a
+         Regexp's TypeError for the pattern, anything else's NoMethodError
+         (nil reads as itself) with the pattern and the position as its
+         args */
+      buf_printf(b, " : (sp_poly_match_check(_t%d, \"match?\", %d, (sp_RbVal[]){", tv, argc);
+      emit_boxed(c, argv[0], b);
+      if (argc == 2) buf_printf(b, ", _t%d", tq);
+      buf_puts(b, "}), 0)); })");
       return 1;
     }
     if (are >= 0 && sp_streq(name, "match?")) {
