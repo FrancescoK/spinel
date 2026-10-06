@@ -1,0 +1,36 @@
+undefined method 'count' for nil [1]
+undefined method 'sum' for nil [10]
+undefined method 'sum' for nil []
+undefined method 'sum' for nil [3]
+undefined method 'count' for an instance of Integer [1]
+undefined method 'sum' for an instance of Integer [10]
+undefined method 'sum' for an instance of Integer []
+undefined method 'sum' for an instance of Integer [3]
+undefined method 'count' for an instance of Float [1]
+undefined method 'sum' for an instance of Float [10]
+undefined method 'sum' for an instance of Float []
+undefined method 'sum' for an instance of Float [3]
+undefined method 'count' for true [1]
+undefined method 'sum' for true [10]
+undefined method 'sum' for true []
+undefined method 'sum' for true [3]
+undefined method 'count' for an instance of Symbol [1]
+undefined method 'sum' for an instance of Symbol [10]
+undefined method 'sum' for an instance of Symbol []
+undefined method 'sum' for an instance of Symbol [3]
+undefined method 'sum' for nil [0]
+[:init]
+2
+4
+3
+7
+0
+1
+3
+1
+10
+4
+9
+2
+391
+135
