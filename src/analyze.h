@@ -57,6 +57,9 @@ enum {
   NFW_SAFE_NAV,  /* a `&.` call */
   NFW_UNSET,     /* a local's read that can run before any write (the
                     definite-assignment walk, a `||=` slot) */
+  NFW_ELEM_NIL,  /* an element of an Array the program stores nil into or
+                    leaves a gap in (a block parameter an iteration over it
+                    binds, an element read or pick out of it) */
   NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash,
                     String) */
   NFW_GLOBAL,    /* a global, or the main object's ivar, read where no write
@@ -70,6 +73,10 @@ enum {
   NFW_GUARDED    /* (nil_fact_why only) not nil: a guard narrowed the read */
 };
 int nil_fact_why(const Compiler *c, int node);
+/* Can an element of Array node `node`'s value be nil: one whose elements
+   are pointers that the program stores nil into or leaves a gap in
+   (NFW_ELEM_NIL's Arrays)? */
+int nil_elem_fact_node(const Compiler *c, int node);
 const char *nil_fact_why_name(int why);
 /* Does the fact track a value of type t: an object, or a builtin held as a
    pointer that is NULL for nil (a String, an Array, a Hash, an IO)? */

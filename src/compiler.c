@@ -259,6 +259,7 @@ void comp_free(Compiler *c) {
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
   free(c->nil_fact);
+  free(c->nil_elem_fact);
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);
   free(c->bi_base_key); free(c->bi_base_cnt);
@@ -281,6 +282,7 @@ void comp_free(Compiler *c) {
     free(c->classes[i].ivars);
     free(c->classes[i].ivar_types);
     free(c->classes[i].ivar_obj_may_nil);
+    free(c->classes[i].ivar_elem_may_nil);
     for (int j = 0; j < c->classes[i].n_rbs_pin_ivars; j++) free(c->classes[i].rbs_pin_ivars[j]);
     free(c->classes[i].rbs_pin_ivars);
     for (int j = 0; j < c->classes[i].nreaders; j++) free(c->classes[i].readers[j]);
