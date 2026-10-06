@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "share.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,6 +97,7 @@ Compiler *comp_new(const NodeTable *nt) {
   c->bop_inf = calloc((size_t)n, sizeof *c->bop_inf);
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
+  c->share_strings = getenv("SPINEL_SHARE_STRINGS") != NULL;
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;
   return c;
@@ -240,6 +242,7 @@ void comp_grow_node_arrays(Compiler *c) {
 
 void comp_free(Compiler *c) {
   if (!c) return;
+  share_facts_free(c);
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);

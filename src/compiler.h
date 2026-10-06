@@ -923,6 +923,12 @@ typedef struct {
      nil, is reachable only from such a program in practice, so the check on
      a store into one (int_slot_store_needs_ck) is emitted only for it. */
   int big_int_src;
+  /* --share-strings (SPINEL_SHARE_STRINGS): a mutable String is the shared
+     handle unless the analysis proves it local (repr_str_shares, #6765),
+     and the share classes that rule reads (share.h), rebuilt as the
+     analysis goes. Off, nothing builds them and the C is unchanged. */
+  int share_strings;
+  struct ShareFacts *share;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

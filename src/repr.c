@@ -5,6 +5,7 @@
 #include <string.h>
 #include "repr.h"
 #include "codegen_internal.h"
+#include "share.h"
 
 static int repr_sealed_flag;
 
@@ -416,6 +417,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   return r;
 }
 
+static void repr_share_seal(Compiler *c);
+
 /* Method and constructor signatures pass a kept &block as sp_Proc *.
    Check the slot as well as expression boxing: a read can infer Proc even
    when a copied parameter's local was left untyped and widened to POLY. */
@@ -434,7 +437,144 @@ static void repr_check_block_params(Compiler *c) {
 
 void repr_seal(Compiler *c) {
   if (g_repr_check) repr_check_block_params(c);
+  if (c->share_strings) repr_share_seal(c);
   repr_sealed_flag = 1;
 }
 
 int repr_sealed(void) { return repr_sealed_flag; }
+
+/* ---- --share-strings (#6765) ---- */
+
+int repr_str_class_shares(unsigned flags, int holders) {
+  if (!(flags & SHF_MUT)) return 0;
+  return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT)) != 0;
+}
+
+int repr_str_shares(const Compiler *c, int holder) {
+  if (!c->share_strings || !c->share || holder < 0) return 0;
+  return repr_str_class_shares(share_class_flags(c, holder), share_class_holders(c, holder));
+}
+
+int repr_str_elems_share(const Compiler *c, int holder) {
+  if (!c->share_strings || !c->share || holder < 0) return 0;
+  int e = share_elem_holder(c, holder);
+  return e >= 0 && repr_str_class_shares(share_elem_flags(c, e), share_elem_holders(c, e));
+}
+
+/* Does holder h hold the shared handle, now that the analysis is final?
+   1 it does, 0 it holds a String some other way, -1 it holds no String
+   (a container, whose elements are asked about on their own). */
+static int repr_share_carried(Compiler *c, const ShareHolder *h) {
+  TyKind t = TY_UNKNOWN;
+  int shared = 0;
+  switch (h->kind) {
+  case SHK_LOCAL: {
+    LocalVar *lv = &c->scopes[h->scope].locals[h->local];
+    t = lv->type;
+    shared = lv->str_shared && !lv->byref_out;
+    break;
+  }
+  case SHK_IVAR: {
+    int iv = comp_ivar_index(&c->classes[h->cid], h->name);
+    if (iv < 0) return -1;
+    t = c->classes[h->cid].ivar_types[iv];
+    shared = c->classes[h->cid].ivar_str_shared[iv];
+    break;
+  }
+  case SHK_GVAR: {
+    LocalVar *gv = comp_gvar(c, h->name[0] == '$' ? h->name + 1 : h->name);
+    if (!gv) return -1;
+    t = gv->type;
+    shared = gv->str_shared;
+    break;
+  }
+  case SHK_CVAR: case SHK_CONST:
+    t = h->node >= 0 ? c->ntype[h->node] : TY_UNKNOWN;
+    break;
+  default:
+    return -1;
+  }
+  if (t == TY_POLY) return 1;   /* the box holds what is stored, the handle included */
+  if (t == TY_STRBUF && shared) return 1;
+  return t == TY_STRING || t == TY_STRBUF ? 0 : -1;
+}
+
+/* A container holder whose elements share: are they boxed (a box holds the
+   handle), or typed Strings (`const char *` elements)? 1, 0, or -1 for a
+   holder that is no container. */
+static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
+  TyKind t = TY_UNKNOWN;
+  if (h->kind == SHK_LOCAL) t = c->scopes[h->scope].locals[h->local].type;
+  else if (h->kind == SHK_IVAR) {
+    int iv = comp_ivar_index(&c->classes[h->cid], h->name);
+    if (iv < 0) return -1;
+    t = c->classes[h->cid].ivar_types[iv];
+  }
+  if (!ty_is_array(t) && !ty_is_hash(t)) return -1;
+  return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH ? 0 : 1;
+}
+
+static const char *repr_share_kind_name(int kind) {
+  switch (kind) {
+  case SHK_LOCAL: return "variable";
+  case SHK_IVAR:  return "instance variable";
+  case SHK_GVAR:  return "global variable";
+  case SHK_CVAR:  return "class variable";
+  case SHK_CONST: return "constant";
+  default:        return "value";
+  }
+}
+
+/* The analysis is final: build the facts over its answers. Nothing reads
+   them for the C yet. SPINEL_SHARE_STATS=1 reports what the rule decides
+   (=2 also each holder with its class's facts, =3 the mutations that reach
+   what the walk does not follow). */
+static void repr_share_seal(Compiler *c) {
+  share_facts_build(c);
+  int nh = share_holder_count(c);
+  int n_str = 0, n_shared = 0, n_kind[SHK_UNKNOWN + 1] = {0}, n_param = 0, n_elems = 0;
+  int n_route_only = 0, n_unknown = 0;
+  const char *stats = getenv("SPINEL_SHARE_STATS");
+  struct ShareFacts *closed = stats ? share_facts_build_closed(c) : NULL;
+  for (int h = 0; h < nh; h++) {
+    const ShareHolder *sh = share_holder(c, h);
+    int ec = repr_share_elems_carried(c, sh);
+    if (ec >= 0 && repr_str_elems_share(c, h)) n_elems++;
+    int carried = repr_share_carried(c, sh);
+    if (carried < 0) continue;
+    n_str++;
+    int shares = repr_str_shares(c, h);
+    if (!shares) {
+      /* a handle a route rule made that the rule does not ask for */
+      if (carried && sh->kind != SHK_CVAR && sh->kind != SHK_CONST &&
+          !(sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].type == TY_POLY) &&
+          !(sh->kind == SHK_IVAR && c->classes[sh->cid].ivar_types[comp_ivar_index(&c->classes[sh->cid], sh->name)] == TY_POLY) &&
+          !(sh->kind == SHK_GVAR && carried == 1 && comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name)->type == TY_POLY))
+        n_route_only++;
+      continue;
+    }
+    n_shared++;
+    n_kind[sh->kind]++;
+    if (sh->kind == SHK_LOCAL && c->scopes[sh->scope].locals[sh->local].is_param) n_param++;
+    if (closed && !share_closed_shares(closed, sh)) n_unknown++;
+  }
+  if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
+  if (stats && stats[0] == '2')
+    for (int h = 0; h < nh; h++) {
+      const ShareHolder *sh = share_holder(c, h);
+      const char *nm = sh->kind == SHK_LOCAL ? c->scopes[sh->scope].locals[sh->local].name : sh->name;
+      fprintf(stderr, "share-holder: %s %s%s%s flags=%u holders=%d shares=%d elems-share=%d\n",
+              repr_share_kind_name(sh->kind), nm ? nm : "?",
+              sh->kind == SHK_LOCAL ? " in " : "",
+              sh->kind == SHK_LOCAL ? (c->scopes[sh->scope].name ? c->scopes[sh->scope].name : "<top>") : "",
+              share_class_flags(c, h), share_class_holders(c, h), repr_str_shares(c, h),
+              repr_str_elems_share(c, h));
+    }
+  if (stats) {
+    fprintf(stderr, "share-stats: string-holders=%d shared=%d local=%d (param=%d) ivar=%d gvar=%d "
+            "cvar=%d const=%d containers=%d via-unknown=%d route-only=%d\n",
+            n_str, n_shared, n_kind[SHK_LOCAL], n_param, n_kind[SHK_IVAR], n_kind[SHK_GVAR],
+            n_kind[SHK_CVAR], n_kind[SHK_CONST], n_elems, n_unknown, n_route_only);
+    share_facts_drop(closed);
+  }
+}

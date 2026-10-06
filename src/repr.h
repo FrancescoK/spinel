@@ -159,4 +159,16 @@ int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_o
 int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how);
 const char *repr_coerce_form_name(int form);
 
+/* ---- --share-strings (#6765) ----
+   The one rule: under the flag, a String holder (share.h) is the shared
+   handle unless the analysis proves it local. Proven local: no in-place
+   mutation reaches its class, or the class has this one holder and every
+   mutation goes through it, so the new pointer can be written back into
+   that slot. */
+int repr_str_shares(const Compiler *c, int holder);
+/* the same rule for the elements of holder h's containers */
+int repr_str_elems_share(const Compiler *c, int holder);
+/* the rule over a class's facts (SHF_*, the count of its holders) */
+int repr_str_class_shares(unsigned flags, int holders);
+
 #endif
