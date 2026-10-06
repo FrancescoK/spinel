@@ -1374,6 +1374,18 @@ const char *ty_box_nil_fn(TyKind t) {
   return tr ? tr->box_nil : NULL;
 }
 
+/* --share-strings: a write in value position whose slot holds the handle
+   (`x ||= (o = +"o")`, `a << (@s = +"s")`, repr_write_share) is that slot:
+   box its handle (emit_strbuf_write_handle). 0 for any other node. */
+static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
+  if (!repr_write_share(c, node)) return 0;
+  buf_puts(b, "sp_box_nullable_obj(");
+  emit_strbuf_write_handle(c, node, b);
+  buf_puts(b, ", SP_BUILTIN_STRBUF)");
+  RC(RF_STRBUF_HANDLE, RW_NONE);
+  return 1;
+}
+
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
@@ -1394,6 +1406,8 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       RC(RF_STRBUF_HANDLE, RW_RAN_FIRST);
       return;
     }
+    /* a write whose slot holds the rule's handle: that handle */
+    if (emit_boxed_write_handle(c, node, b)) return;
     strbuf_slot_ref(c, node, srefS, sizeof srefS);
     buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", srefS);
     RC(RF_STRBUF_HANDLE, RW_NONE);
@@ -1445,6 +1459,9 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     RC(RF_STRBUF_HANDLE, RW_NONE);
     return;
   }
+  /* any other write whose slot holds the rule's handle, typed as the
+     handle (a value a handle is demanded of), as the String-typed one */
+  if (rp->strbuf_src == RS_HANDLE && emit_boxed_write_handle(c, node, b)) return;
   /* an element read is ALREADY a boxed handle when the container holds
      one: pass it through (as a handle box either way) so the alias keeps
      the container's own string rather than a fresh copy of it (#3941) */
