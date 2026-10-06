@@ -173,7 +173,8 @@ def finish(a):
         status, rc = "CONFLICT", int(meta.get("exit_status", 1) or 1)
         summary = read(os.path.join(prep, "gate-summary.txt")).splitlines()
         write()
-        return 0
+        # a branch that does not merge with master has no gate: the run must fail, not read as green
+        return rc or 1
     if pstatus != "PREPARED":
         log.append(f"[pgate] the prep job did not finish (status {pstatus or 'missing'}); no part ran")
         rc = int(meta.get("exit_status", 1) or 1) or 1
