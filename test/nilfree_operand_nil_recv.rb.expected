@@ -1,0 +1,10 @@
+op-assign nil NoMethodError: undefined method '[]' for nil
+right nil NoMethodError: undefined method '[]' for nil
+left nil NoMethodError: undefined method '[]' for nil
+nil, no pass 0.0
+nil, nil index NoMethodError: undefined method '[]' for nil
+filled [2.0, 2.0, 1.0]
+past the end TypeError: nil can't be coerced into Float
+past the end, left NoMethodError: undefined method '-' for nil
+nil index TypeError: no implicit conversion from nil to integer
+index 3.0

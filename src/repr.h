@@ -33,8 +33,16 @@ typedef struct {
                              the handle under a strbuf mark or demand) */
   TyKind narrowed;        /* a read narrowed past a nil guard: its non-nil
                              type, or TY_UNKNOWN */
+  TyKind elem;            /* an Array: the type its C container holds each
+                             element as (an IntArray's Integer, a PolyArray's
+                             box, an object array's class); else TY_UNKNOWN */
+  TyKind key, val;        /* a Hash: the types its C table holds the keys
+                             and the values as (a StrPolyHash's String and
+                             box); else TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
-  unsigned may_nil:1;     /* the value can be nil in this representation */
+  unsigned may_nil:1;     /* the value can be nil in this representation;
+                             for a user object, the nil fact (analyze_nil.c,
+                             #7444): nothing reads it for one yet */
   unsigned handle:1;      /* a read that yields the shared String handle */
   unsigned demand:1;      /* stored as the handle without moving the type */
   unsigned read_raw:1;    /* a handle read whose consumer only reads bytes */
@@ -43,6 +51,14 @@ typedef struct {
                              reads the class id from the object */
   unsigned nil_scalar:1;  /* an Integer or Float whose box tests for the nil
                              sentinel */
+  unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
+                             nil (VR_NIL_TESTED, a view around the call) */
+  unsigned nil_cold:1;    /* ... in the out-of-range branch of a cached
+                             array read, which writes the test
+                             (VR_NIL_TESTED 2) */
+  unsigned big:1;         /* an Integer held as an sp_Bigint * */
+  unsigned elems_handle:1; /* a container slot whose String elements are
+                              boxed shared handles (--share-strings) */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
@@ -63,6 +79,8 @@ typedef enum {
 Repr repr_of(const Compiler *c, int node);
 /* The representation of a local variable's slot. */
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv);
+/* Is r a Hash that holds its keys as `key` and its values as `val`? */
+int repr_hash_is(Repr r, TyKind key, TyKind val);
 /* Called once the analysis is final (the end of analyze_program): from here
    on the flags repr_of reads no longer change. */
 void repr_seal(Compiler *c);
@@ -79,6 +97,10 @@ int repr_box_nullable_arg(Compiler *c, int v);
 int repr_local_nullable_int(Compiler *c, int node);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
+/* Does the share rule decide which Strings are the shared handle
+   (--share-strings, #6765)? Codegen asks this, not the flag: where it is
+   0, every emitter takes master's form. */
+int repr_share_rule(const Compiler *c);
 
 /* R1 (--repr-check): the form a boxer gave a value, recorded at each of
    emit_boxed's and emit_boxed_text's returns, and the form repr_of predicts
@@ -114,6 +136,14 @@ ReprForm repr_box_form(const Compiler *c, Repr r);
 const char *repr_form_name(int form);
 /* --repr-check is on */
 extern int g_repr_check;
+/* --repr-check: ask repr_of of a node codegen is about to emit, whose
+   answer is dropped; the C must not change (repr_of changes nothing) */
+void repr_check_ask(const Compiler *c, int node);
+/* --dump-repr is on (#7501) */
+extern int g_dump_repr;
+/* --dump-repr: each slot's representation, one sorted line per slot, as
+   the final analysis gives it (malloc'd text) */
+char *repr_dump(const Compiler *c);
 
 /* ---- Stores (R6) ----
    The C value class of a kind, what C allows between two of them: a store
@@ -151,5 +181,27 @@ int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_o
 /* the form emit_coerce_text stores an already-rendered `from` value in */
 int repr_coerce_text_form(Compiler *c, int node, TyKind from, TyKind slot, int how);
 const char *repr_coerce_form_name(int form);
+
+/* ---- --share-strings (#6765) ----
+   The one rule: under the flag, a String holder (share.h) is the shared
+   handle unless the analysis proves it local. Proven local: no in-place
+   mutation reaches its class, or the class has this one holder and every
+   mutation goes through it, so the new pointer can be written back into
+   that slot. The analysis applies the answer to the flags repr_of reads
+   (share_default_apply); codegen follows repr_of. */
+int repr_str_shares(const Compiler *c, int holder);
+/* the same rule for the elements of holder h's containers */
+int repr_str_elems_share(const Compiler *c, int holder);
+/* the rule over a class's facts (SHF_*, the count of its holders) */
+int repr_str_class_shares(unsigned flags, int holders);
+/* Does a read or write node name a global, a constant or a class variable
+   holding the shared handle (TY_STRBUF + str_shared, under the flag)?
+   repr_handle_static_ref writes its C slot (gv_<name>, cst_<name>,
+   cvar_<owner>_<name>). */
+int repr_handle_static(const Compiler *c, int node);
+/* a read such a slot can be: a global's, a constant's (bare or `A::B`), a
+   class variable's */
+int repr_static_read_kind(NodeKind k);
+int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap);
 
 #endif

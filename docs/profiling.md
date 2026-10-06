@@ -172,3 +172,57 @@ Reach for `SPINEL_ALLOC_REPORT` when the profile points at the collector
 (`sp_gc_collect`, `sp_gc_mark_all`) or at `malloc` -- then the question is not
 which code is slow but which code allocates, and the counters answer that
 exactly rather than statistically.
+
+## Compiler phase timing
+
+`--timing` (or `SP_TIMING=1` in the environment) makes the compiler report how
+long its own phases took. It is about the compiler, not the compiled program
+(`--profile` above is the program's). The compiled output is the same with
+and without it; with it off nothing is measured.
+
+Each phase is one line on stderr, `key=value` fields after the name:
+
+```
+spinel-timing: phase=frontend ms=4.4
+spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
+```
+
+`ms` is wall time on a monotonic clock. Phases, in the order they finish:
+
+| phase | covers |
+|---|---|
+| `frontend` | parse, require resolution, loading the AST |
+| `analysis_fixpoint` | the inference fixpoint (`rounds=N`, plus `capped=1` if it hit the cap) |
+| `analysis` | all of `analyze_program`; includes `analysis_fixpoint` |
+| `codegen_program` | analysis and C generation; includes `analysis` |
+| `write_c` | writing the C file |
+| `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit): the preprocess and the split into parts |
+| `cc_compile` | a split build: the wall span of the parallel object compiles (`jobs=N`), not the sum of the workers |
+| `cc_link` | a split build: the link |
+| `cc_total` | the whole native step, single unit or split |
+
+A phase nested in another is counted in both, so the lines do not add up to the
+total. A phase that did not run (a `-c` build has no `cc_*`) or failed prints
+nothing, so a failed build is not a sample. Record the compiler, the input,
+the flags, the host and the cache state beside the lines; they are not in them.
+
+## Source positions of a generated .rb
+
+A Ruby file that a tool generated (a template compiler, a transpiler) can say
+where its lines came from. A whole line
+
+```ruby
+#<SPINEL_SOURCE>greeting.html.erb:12
+```
+
+makes the lines after it report as `greeting.html.erb`, line 12, in `#line`
+directives, `-g` / `--debug` stepping, `perf` / `addr2line`, `--warn-widen` and
+`--check-stores`. The position is held (every following line reports line 12,
+not 13, 14, ...) until the next marker or the end of the file it is in. The
+text after `>` splits at its last colon, so the path may hold one; a line with
+no `:<positive number>` is an ordinary comment. CRuby treats the marker as a
+comment too.
+
+Only the reported position moves. `__FILE__`, `__dir__`, `__LINE__` and
+`require_relative` still answer from the `.rb` the code is in, and a syntax
+error is reported at the generated file.

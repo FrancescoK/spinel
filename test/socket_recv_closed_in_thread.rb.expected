@@ -1,0 +1,3 @@
+"hi"
+closed in another thread: IOError: stream closed in another thread
+closed: IOError: closed stream

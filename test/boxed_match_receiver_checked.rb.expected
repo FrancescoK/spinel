@@ -1,0 +1,84 @@
+undefined method 'match?' for nil ["a"]
+undefined method 'match?' for nil [/a/]
+undefined method 'match?' for nil ["a", 1]
+undefined method 'match' for nil ["a"]
+pos
+undefined method 'match?' for nil [/a/, 1]
+undefined method 'match?' for an instance of Integer ["a"]
+undefined method 'match?' for an instance of Integer [/a/]
+undefined method 'match?' for an instance of Integer ["a", 1]
+undefined method 'match' for an instance of Integer ["a"]
+pos
+undefined method 'match?' for an instance of Integer [/a/, 1]
+undefined method 'match?' for an instance of Array ["a"]
+undefined method 'match?' for an instance of Array [/a/]
+undefined method 'match?' for an instance of Array ["a", 1]
+undefined method 'match' for an instance of Array ["a"]
+pos
+undefined method 'match?' for an instance of Array [/a/, 1]
+false
+false
+false
+nil
+pos
+false
+true
+true
+true
+#<MatchData "a">
+pos
+true
+undefined method 'match?' for an instance of Float ["a"]
+undefined method 'match?' for an instance of Float [/a/]
+undefined method 'match?' for an instance of Float ["a", 1]
+undefined method 'match' for an instance of Float ["a"]
+pos
+undefined method 'match?' for an instance of Float [/a/, 1]
+undefined method 'match?' for an instance of Hash ["a"]
+undefined method 'match?' for an instance of Hash [/a/]
+undefined method 'match?' for an instance of Hash ["a", 1]
+undefined method 'match' for an instance of Hash ["a"]
+pos
+undefined method 'match?' for an instance of Hash [/a/, 1]
+false
+true
+TypeError: no implicit conversion of Integer into String
+nil
+false
+false
+TypeError: no implicit conversion of Regexp into String
+TypeError: wrong argument type nil (expected Regexp)
+TypeError: wrong argument type Symbol (expected Regexp)
+TypeError: wrong argument type Integer (expected Regexp)
+TypeError: wrong argument type nil (expected Regexp)
+true
+false
+true
+TypeError: wrong argument type nil (expected Regexp)
+TypeError: wrong argument type Symbol (expected Regexp)
+TypeError: wrong argument type Integer (expected Regexp)
+TypeError: wrong argument type nil (expected Regexp)
+true
+false
+true
+undefined method 'match?' for nil [nil]
+undefined method 'match?' for nil [:a]
+undefined method 'match?' for nil [1]
+undefined method 'match' for nil [nil]
+undefined method 'match?' for nil ["a", 1]
+undefined method 'match?' for nil ["a", 2]
+undefined method 'match?' for nil [/a/, 1]
+true
+false
+false
+false
+true
+false
+true
+"needle"
+true
+"needle"
+true
+"needle"
+ArgumentError: wrong number of arguments (given 3, expected 1..2)
+undefined method 'match?' for nil [/b/, 0, 1]

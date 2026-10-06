@@ -85,9 +85,10 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"slice!", PF_STRING | PF_MUT, 1, 2, 0}, {"slice!", PF_ARRAY | PF_MUT, 1, 2, 0},
   /* The Hash mutators, on a Hash at run time; a typed variant takes the
      result back from the general copy it was normalized to, and the value is
-     the box, since the copy is detached once written back. */
-  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
-  {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 1, -1, 0},
+     the box, since the copy is detached once written back. Their arguments
+     are Hashes. */
+  {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"merge!", PF_HASH | PF_MUT | PF_VAL_SELF | PF_ARGS_OWN, 1, -1, 0},
+  {"update", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, -1}, {"update", PF_HASH | PF_MUT | PF_VAL_SELF | PF_ARGS_OWN, 1, -1, 0},
   /* The names Array and Hash share: the receiver's run-time kind picks the
      arm. The in-place filters take their block; of the blockless names,
      assoc, rassoc and fetch_values keep their last-resort Hash rows below, so
@@ -304,6 +305,9 @@ int ty_is_array(TyKind t) {
   return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY ||
          t == TY_STR_ARRAY || t == TY_POLY_ARRAY || t == TY_INT_ARRAY_ARRAY ||
          t == TY_FLOAT_ARRAY_ARRAY;
+}
+int array_new_copies(TyKind t) {
+  return t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY || t == TY_POLY_ARRAY;
 }
 TyKind ty_array_of(TyKind elem) {
   switch (elem) {
@@ -564,7 +568,7 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
         sp_streq(name, "each_grapheme_cluster") || sp_streq(name, "upto") ||
         sp_streq(name, "gsub") || sp_streq(name, "sub") ||
-        sp_streq(name, "gsub!") || sp_streq(name, "sub!")) {
+        sp_streq(name, "gsub!") || sp_streq(name, "sub!") || sp_streq(name, "split")) {
       BY_PUT(0, TY_STRING); return 1;
     }
     if (sp_streq(name, "each_byte")) {
@@ -656,8 +660,15 @@ const TyTraits ty_traits[TY_TRAITS_N] = {
 };
 
 /* A builtin value's type, which lays out no instance variables: a String,
-   a number, true, false, nil, a Symbol, a Range, an Array or a Hash. */
+   a number, true, false, nil, a Symbol, a Range, a Random, an Array or a
+   Hash. */
 int ty_builtin_ivar_less(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_NIL ||
-         t == TY_SYMBOL || t == TY_BIGINT || t == TY_RANGE || ty_is_array(t) || ty_is_hash(t);
+         t == TY_SYMBOL || t == TY_BIGINT || t == TY_RANGE || t == TY_RANDOM || ty_is_array(t) || ty_is_hash(t);
+}
+
+/* Of those, the values whose identity Spinel keeps, so the runtime's map can
+   hold their ivars (sp_bivar_*): an Array, a Hash, a Random. */
+int ty_bivar_keyed(TyKind t) {
+  return t == TY_RANDOM || ty_is_array(t) || ty_is_hash(t);
 }

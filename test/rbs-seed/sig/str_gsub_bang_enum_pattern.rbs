@@ -1,0 +1,3 @@
+class Object
+  def gsub_bang_recv: (String?) -> String?
+end

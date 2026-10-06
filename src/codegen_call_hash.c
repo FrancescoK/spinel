@@ -38,7 +38,7 @@ int emit_op_hash_pattern(Compiler *c, const BopCtx *x, Buf *b) {
   else
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
                   " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
-                  " if (sp_poly_eq(_t%d, _t%d)) _t%d++; }",
+                  " if (sp_poly_rb_equal(_t%d, _t%d)) _t%d++; }",
                ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
   if (sp_streq(name, "any?"))       buf_printf(b, " _t%d > 0; })", tc2);
   else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc2);
@@ -68,7 +68,7 @@ int emit_op_hash_pattern_all(Compiler *c, const BopCtx *x, Buf *b) {
   if (comp_ntype(c, argv[0]) == TY_CLASS)
     buf_printf(b, " if (sp_poly_is_a(_t%d->data[_t%d], (sp_Class){(sp_int)_t%d.v.i, NULL})) _t%d++;", tp, ti, tpat, tc);
   else
-    buf_printf(b, " if (sp_poly_eq(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
+    buf_printf(b, " if (sp_poly_rb_equal(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
   buf_printf(b, " _t%d == _t%d->len; })", tc, tp);
   return 1;
 }
@@ -245,7 +245,7 @@ int emit_op_hash_key(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; sp_RbVal _t%d = sp_box_nil();", tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, tp, ti);
   buf_printf(b, " sp_PolyArray *_pr = (sp_PolyArray *)_t%d->data[_t%d].v.p;", tp, ti);
-  buf_printf(b, " if (sp_poly_eq(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
+  buf_printf(b, " if (sp_poly_rb_equal(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
   buf_printf(b, " _t%d; })", tr);
   return 1;
 }
@@ -417,35 +417,42 @@ int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b) {
 
 /* replace(other). An argument of the receiver's own variant is copied in
    place. Replace with a DIFFERENT hash variant: the receiver slot has
-   widened to the universal PolyPoly hash (see infer), so clear it and
-   re-fill from the boxed other's [k, v] pairs -- never the raw-pointer
-   mispatch that used to hang inspect (#2374). Any other argument is left
-   to the arms after the lookup. */
+   widened to the universal PolyPoly hash (see infer), so it takes the boxed
+   other's entries (sp_poly_hash_replace) -- never the raw-pointer mispatch
+   that used to hang inspect (#2374). Either way the other's default value
+   and default proc come with its entries, as in CRuby
+   (`Hash.new(1).replace(b: 2).default` is nil); they stayed the receiver's.
+   A lowered bang transform keeps the receiver's defaults instead.
+   Any other argument is left to the arms after the lookup. */
 int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   TyKind rt = x->rt;
   const char *hn = ty_hash_cname(rt);
+  int keep_default = nt_str(c->nt, x->id, "bang_splice") != NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   if (comp_ntype(c, argv[0]) == rt) {
-    int trp = ++g_tmp;
+    int trp = ++g_tmp, to = ++g_tmp;
     buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
     buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
-    buf_printf(b, " sp_%sHash_replace(_t%d, ", hn, trp); emit_expr(c, argv[0], b);
-    buf_printf(b, "); _t%d; })", trp);
+    buf_printf(b, " SP_GC_ROOT(_t%d); %s _t%d = ", trp, c_type_name(rt), to); emit_expr(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash_replace(_t%d, _t%d);", to, hn, trp, to);
+    if (!keep_default) {
+      buf_printf(b, " if (_t%d && _t%d) { sp_gc_wb((void *)_t%d); _t%d->default_v = _t%d->default_v;",
+                 trp, to, trp, trp, to);
+      if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)   /* the dproc variants */
+        buf_printf(b, " _t%d->dproc = _t%d->dproc; _t%d->dproc_self = _t%d->dproc_self;", trp, to, trp, to);
+      buf_puts(b, " }");
+    }
+    buf_printf(b, " _t%d; })", trp);
     return 1;
   }
   if (rt == TY_POLY_POLY_HASH && ty_is_hash(comp_ntype(c, argv[0]))) {
-    int th = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+    int th = ++g_tmp;
     buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", th); emit_expr(c, recv, b);
-    buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", th, th, hash_box_cls(rt));   /* (#3001) */
-    buf_printf(b, " SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyPolyHash_clear(_t%d);", to, th);
-    buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, to);
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
-                  " sp_RbVal _k, _v; sp_poly_hash_pair(_t%d, _t%d, &_k, &_v);"
-                  " sp_PolyPolyHash_set(_t%d, _k, _v); } _t%d; })",
-               ti, ti, tn, ti, to, ti, th, th);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); (void)sp_poly_hash_replace(sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH), ", th, th);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %d); _t%d; })", keep_default, th);
     return 1;
   }
   return 0;
@@ -478,15 +485,25 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
     if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
     buf_puts(b, ";");
   }
+  /* The typed variants keep the default in the values' slot: a value that
+     does not fit goes through the store coercion an element store takes
+     (a boxed one unboxed, another class refused), where it was assigned as
+     it was -- a Float truncated, a Symbol read as its id. The inference
+     takes the default as value evidence (infer_write_container_usage), so
+     a Hash it can widen has boxed values by now. */
   else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
     /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-    if (is_nil) buf_puts(b, "SP_INT_NIL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    if (is_nil) buf_puts(b, "SP_INT_NIL");
+    else if (held) emit_coerce_text(c, argv[0], at, TY_INT, CO_HOLD, av, "a Hash default", b);
+    else emit_coerce(c, argv[0], TY_INT, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-    if (is_nil) buf_puts(b, "NULL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    if (is_nil) buf_puts(b, "NULL");
+    else if (held) emit_coerce_text(c, argv[0], at, TY_STRING, CO_HOLD, av, "a Hash default", b);
+    else emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
   }
   buf_puts(b, " ");
@@ -559,9 +576,8 @@ int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b) {
 }
 
 /* delete(key): the deleted value (or nil on a miss), then the key is
-   removed. A block literal, whose value stands in for a missing key, and a
-   block with a key of a kind the table cannot hold are left to the arm
-   after the lookup. */
+   removed. The block form, whose value stands in for a missing key, has a
+   row of its own, left to the arm after the lookup. */
 int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
@@ -569,10 +585,6 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
-  int blk = nt_ref(nt, x->id, "block");
-  if (blk >= 0 && (hash_key_misses(c, argv[0], ty_hash_key(rt)) ||
-                   (nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))))
-    return 0;
   TyKind vt = ty_hash_val(rt);
   int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
   buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
@@ -664,7 +676,12 @@ int emit_op_hash_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
   emit_push_hash_key(kt, tr, th, ti, b);
-  if (vt == TY_POLY)
+  /* a PolyPoly table's order lists slots, not keys: the value is read at
+     the slot, as emit_hash_pairs_expr reads it (a slot index handed to
+     sp_PolyPolyHash_get as the key did not build) */
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tr, th, th, ti);
+  else if (vt == TY_POLY)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tr, hn, th, th, ti);
   else if (vt == TY_INT)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tr, hn, th, th, ti);
@@ -789,7 +806,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
     if (vt == TY_POLY) buf_printf(b, "%s;", vget);
     else if (vt == TY_INT) buf_printf(b, "sp_box_int(%s);", vget);
     else buf_printf(b, "sp_box_str(%s);", vget);
-    buf_printf(b, " if (sp_poly_eq(_rv%d, _t%d)) {", ti, ta);
+    buf_printf(b, " if (sp_poly_rb_equal(_rv%d, _t%d)) {", ti, ta);
   }
   /* build pair */
   buf_printf(b, " _t%d = sp_PolyArray_new();", tr);

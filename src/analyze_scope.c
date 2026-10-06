@@ -2183,6 +2183,21 @@ static void class_note_included_mod(Compiler *c, int ci, int mod_ci) {
   cif->included_mods[cif->nincluded_mods++] = mod_ci;
 }
 
+/* A copied &block has the same Proc-or-NULL ABI as the original. It is
+   outside pnames, so copying the positional/keyword locals does not register
+   it. Seed it before inference; otherwise the body walk leaves an ordinary
+   UNKNOWN local which late widening turns into POLY. Reassignments already
+   use a separate local from desugar_blk_param_writes. */
+static void scope_copy_block_param(Scope *dst, const Scope *src) {
+  if (!src->blk_param) return;
+  dst->blk_param = strdup(src->blk_param);
+  if (dst->blk_param[0]) {
+    LocalVar *lv = scope_local_intern(dst, dst->blk_param);
+    lv->is_param = 1;
+    lv->type = TY_PROC;
+  }
+}
+
 /* Copy module `mod_ci`'s instance methods onto subclass `newci` (obj.extend). */
 static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
   const NodeTable *nt = c->nt;
@@ -2223,7 +2238,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     dst->kwrest_idx = src->kwrest_idx;
     src->is_transplanted_source = 1;   /* the module original is copied away */
     dst->origin_module_ci = mod_ci + 1;  /* #owner names the module (#3662) */
-    if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+    scope_copy_block_param(dst, src);
     dst->nparams = src->nparams;
     if (src->nparams > 0) {
       dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
@@ -5051,7 +5066,8 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     int anode = nt_ref(nt, s, "arguments");
     int an = 0;
     const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    for (int j = 0; j < an; j++) {
+    /* `include A, B` includes B first, so A ends up in front (as extend) */
+    for (int j = an - 1; j >= 0; j--) {
       const char *aty = nt_type(nt, args[j]);
       const char *mname = (aty && (sp_streq(aty, "ConstantReadNode") || sp_streq(aty, "ConstantPathNode"))) ? nt_str(nt, args[j], "name") : NULL;
       int mod_id = mname ? comp_class_index(c, mname) : -1;
@@ -5238,7 +5254,7 @@ else {
         dst->nrequired = src->nrequired;
         dst->rest_idx = src->rest_idx;
         dst->kwrest_idx = src->kwrest_idx;
-        if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+        scope_copy_block_param(dst, src);
         /* ...but a module_function original keeps its module-side spelling:
            `Rt.peek` is a real call whoever also includes Rt, so the source is
            not copied AWAY, only copied FROM. */
@@ -5646,6 +5662,106 @@ static int body_extends_module(Compiler *c, int cn, int mod_id) {
   return 0;
 }
 
+/* The modules a module prepends in its bodies, front first, as the
+   module's ancestors list them: `prepend A, B` puts A before B, and a later
+   `prepend C` goes in front of both. At most `max`; returns the count. */
+static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
+  const NodeTable *nt = c->nt;
+  if (mod_id < 0 || !comp_class_is_module(c, &c->classes[mod_id])) return 0;
+  int n = 0;
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb; b++) {
+    if (bci[b] != mod_id) continue;
+    int sn = 0;
+    const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      const char *nm = nt_kind(nt, s) == NK_CallNode ? nt_str(nt, s, "name") : NULL;
+      if (!nm || !sp_streq(nm, "prepend") || nt_ref(nt, s, "receiver") >= 0) continue;
+      int anode = nt_ref(nt, s, "arguments");
+      int an = 0;
+      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      int add[64], na = 0;
+      for (int j = 0; j < an && na < 64; j++) {
+        NodeKind ak = nt_kind(nt, args[j]);
+        const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, args[j], "name") : NULL;
+        int pm = mn ? comp_class_index(c, mn) : -1;
+        if (pm >= 0 && pm != mod_id) add[na++] = pm;
+      }
+      if (n + na > max) na = max - n;
+      memmove(out + na, out, sizeof(int) * (size_t)n);
+      memcpy(out, add, sizeof(int) * (size_t)na);
+      n += na;
+    }
+  }
+  free(bci); free(bnode);
+  return n;
+}
+
+/* A module that prepends another is mixed in with the prepended one in
+   front of it: `include M` where M prepends P is `include P, M` (the same
+   ancestors, [P, M]), and so is `extend M`. Written as that, the includes
+   and extends copy P's methods ahead of M's, and P's `super` reaches M's.
+   Left to register_prepends, which runs after both, the prepend reached
+   only M's own methods, after they had been copied: an includer compiled a
+   `super` into a body it never got, and an extender, Class reopened with a
+   prepend among them, ran without the prepended method. */
+void desugar_module_prepends(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any = 0;
+  for (int m = 0; m < c->nclasses && !any; m++) {
+    int one;
+    any = module_prepend_list(c, m, &one, 1) > 0;
+  }
+  if (!any) return;
+  int count = nt->count;
+  for (int s = 0; s < count; s++) {
+    if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, s, "name");
+    if (!nm || (!sp_streq(nm, "include") && !sp_streq(nm, "extend"))) continue;
+    int anode = nt_ref(nt, s, "arguments");
+    int an = 0;
+    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    if (an == 0) continue;
+    int cap = an + 64, nn = 0, changed = 0;
+    int *nargs = malloc(sizeof(int) * (size_t)cap);
+    if (!nargs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int j = 0; j < an; j++) {
+      int a = args[j];
+      NodeKind ak = nt_kind(nt, a);
+      const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, a, "name") : NULL;
+      int pre[64];
+      int np = module_prepend_list(c, mn ? comp_class_index(c, mn) : -1, pre, 64);
+      if (nn + np + 1 > cap) {
+        cap = nn + np + 1 + an;
+        nargs = realloc(nargs, sizeof(int) * (size_t)cap);
+        if (!nargs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      for (int q = 0; q < np; q++) {
+        /* the prepended module, named as a constant the include's own
+           scope reads */
+        int base = nt->count;
+        int cr = nt_new_node(nt, "ConstantReadNode");
+        nt_node_set_str(nt, cr, "name", c->classes[pre[q]].name);
+        nt_node_set_int(nt, cr, "node_line", nt_int(nt, a, "node_line", 0));
+        nt_node_set_int(nt, cr, "node_file", nt_int(nt, a, "node_file", 0));
+        nt_node_set_int(nt, cr, "node_col", nt_int(nt, a, "node_col", 0));
+        comp_grow_node_arrays(c);
+        for (int x = base; x < nt->count; x++) {
+          c->nscope[x] = c->nscope[a];
+          c->node_cbody[x] = c->node_cbody[a];
+        }
+        nargs[nn++] = cr;
+        changed = 1;
+      }
+      nargs[nn++] = a;
+    }
+    if (changed) nt_node_set_arr(nt, anode, "arguments", nargs, nn);
+    free(nargs);
+  }
+}
+
 void register_extends(Compiler *c) {
   const NodeTable *nt = c->nt;
   int did_clone = 0;
@@ -5732,8 +5848,14 @@ void register_extends(Compiler *c) {
       }
     }
    }
-   if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci)))
+   if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci))) {
      did_clone |= extend_class_with(c, ci, cls_mod, 0);
+     /* `class Class; prepend P; end`: P in front of the reopening, as an
+        `extend` of it would put it (see desugar_module_prepends) */
+     int pre[64];
+     int np = module_prepend_list(c, cls_mod, pre, 64);
+     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0);
+   }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
      before this pass: a local first assigned in the clone had no slot, so
@@ -5940,7 +6062,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
     dst->ret = ty_object(ci);
     dst->ret_specialized = 1;
   }
-  if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+  scope_copy_block_param(dst, src);
   scope_copy_params(dst, src);
   scope_own_defaults(c, dst_idx);
   src = &c->scopes[mi]; dst = &c->scopes[dst_idx];
@@ -6237,6 +6359,9 @@ void specialize_inherited_cls_new(Compiler *c) {
    diagnostic recommends (#4200). */
 static void process_prepend_body(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
+  /* a module's prepend goes wherever the module is mixed in, which
+     desugar_module_prepends has written out already */
+  if (comp_class_is_module(c, &c->classes[ci])) return;
   {
     int n = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
@@ -6326,7 +6451,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
             dst->rest_idx = sc->rest_idx;
             dst->kwrest_idx = sc->kwrest_idx;
             dst->ret = sc->ret;
-            if (sc->blk_param) dst->blk_param = strdup(sc->blk_param);
+            scope_copy_block_param(dst, sc);
             /* register_locals has already run, so the parameters have to be
                copied across by hand and their locals re-interned -- exactly
                what the include clone does, and the half my first attempt at
@@ -6600,7 +6725,7 @@ static int is_cvar_write_kind(NodeKind k) {
    and unifies the stored type into its slot. An op-write stores the RHS type
    unless the slot holds an object (the operator method's return) or an array
    the operator combines with its own kind. */
-static int cvar_note_write(Compiler *c, int cid, int id) {
+static int cvar_note_write(Compiler *c, int cid, int id, int nil_only) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   if (!nm) return 0;
@@ -6610,6 +6735,7 @@ static int cvar_note_write(Compiler *c, int cid, int id) {
   int changed = ci->ncvars != old_n;
   int vnode = nt_ref(nt, id, "value");
   TyKind cur = ci->cvar_types[idx];
+  if (nil_only && cur != TY_BOOL && cur != TY_SYMBOL) return changed;
   TyKind vt;
   if (nt_kind(nt, id) == NK_ClassVariableOperatorWriteNode) {
     vt = infer_type(c, vnode);
@@ -6638,8 +6764,9 @@ static int cvar_note_write(Compiler *c, int cid, int id) {
 }
 
 /* Register each class variable (@@x) in its owning class and infer its type
-   from the write sites' RHS. */
-int infer_cvar_types(Compiler *c) {
+   from the write sites' RHS. The late nil_only re-run widens only Bool and
+   Symbol slots, which have no nil representation. */
+int infer_cvar_types(Compiler *c, int nil_only) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   /* Pass 1: class body-level writes (comp_scope_of returns scope 0, class_id=-1,
@@ -6653,7 +6780,7 @@ int infer_cvar_types(Compiler *c) {
       const char *sty = nt_type(nt, s);
       if (!sty) continue;
       if (is_cvar_write_kind(nt_kind(nt, s))) {
-        if (cvar_note_write(c, ci, s)) changed = 1;
+        if (cvar_note_write(c, ci, s, nil_only)) changed = 1;
       }
       else if (sp_streq(sty, "MultiWriteNode")) {
         int mln = 0;
@@ -6668,6 +6795,8 @@ int infer_cvar_types(Compiler *c) {
           if (!cnm) continue;
           ClassInfo *mcl = &c->classes[comp_cvar_owner(c, ci, cnm)];
           int midx = comp_cvar_intern(mcl, cnm);
+          if (nil_only && mcl->cvar_types[midx] != TY_BOOL &&
+              mcl->cvar_types[midx] != TY_SYMBOL) continue;
           TyKind mvt2 = (mels && mi < men) ? infer_type(c, mels[mi]) : TY_UNKNOWN;
           if (mvt2 == TY_NIL || mvt2 == TY_UNKNOWN) continue;
           TyKind mmerged = ty_unify(mcl->cvar_types[midx], mvt2);
@@ -6686,7 +6815,7 @@ int infer_cvar_types(Compiler *c) {
     int wcid = s->class_id;
     if (wcid < 0 && c->node_cbody && id < c->node_cap) wcid = c->node_cbody[id];
     if (wcid < 0) continue;
-    if (cvar_note_write(c, wcid, id)) changed = 1;
+    if (cvar_note_write(c, wcid, id, nil_only)) changed = 1;
   }
   /* A multiple-assignment target (`@@a, *@@r = ...`), in a method or a class
      body and on either side of a splat, declares its cvar too; the elements'
@@ -6708,7 +6837,7 @@ int infer_cvar_types(Compiler *c) {
     if (!is_cvar_write_kind(nt_kind(nt, id))) continue;
     Scope *s = comp_scope_of(c, id);
     if (s->class_id >= 0 || id >= c->node_cap || c->node_cbody[id] < 0) continue;
-    if (cvar_note_write(c, c->node_cbody[id], id)) changed = 1;
+    if (cvar_note_write(c, c->node_cbody[id], id, nil_only)) changed = 1;
   }
   /* Pass 2.5: `Klass.class_variable_set(:@@name, v)` with a literal name
      DECLARES the cvar when the class has no such write -- CRuby creates it on
@@ -6729,6 +6858,8 @@ int infer_cvar_types(Compiler *c) {
     if (!cvn || cvn[0] != '@' || cvn[1] != '@') continue;
     ClassInfo *scl = &c->classes[comp_cvar_owner(c, cci, cvn)];
     int idx = comp_cvar_intern(scl, cvn);
+    if (nil_only && scl->cvar_types[idx] != TY_BOOL &&
+        scl->cvar_types[idx] != TY_SYMBOL) continue;
     TyKind vt = infer_type(c, av[1]);
     if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
     TyKind merged = ty_unify(scl->cvar_types[idx], vt);
@@ -6743,7 +6874,7 @@ int infer_cvar_types(Compiler *c) {
     if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
     int tl_idx = comp_class_index(c, "Toplevel");
     if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
-    if (cvar_note_write(c, tl_idx, id)) changed = 1;
+    if (cvar_note_write(c, tl_idx, id, nil_only)) changed = 1;
   }
   /* Pass 4: a subclass can have interned a name before its superclass
      declared it, when a write in the subclass was reached first (the passes

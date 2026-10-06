@@ -1,0 +1,10 @@
+ArgumentError: comparison of Float with 1 failed
+ArgumentError: comparison of Float with 2 failed
+ArgumentError: comparison of Float with 1 failed
+ArgumentError: comparison of Float with 1.0 failed
+ArgumentError: comparison of Float with 2.5 failed
+ArgumentError: comparison of Float with 1 failed
+1.5
+2.0
+0.5
+2

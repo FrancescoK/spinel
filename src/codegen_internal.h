@@ -132,6 +132,17 @@ extern const char *g_sb_iv_name;   /* "@bt" while a shim is open, else NULL */
 extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
+int strbuf_bang_self_local(const Compiler *c, int v);
+void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const char *src, Buf *b);
+/* `REF ||= v` / `REF &&= v` on a shared-handle String slot (codegen_expr.c) */
+void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b);
+/* The value a write hands a shared-handle String slot `lv` (codegen_stmt.c) */
+void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
+/* The value a Struct constructor or an attribute writer stores into a String
+   ivar slot (codegen_stmt.c) */
+void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b);
+/* A read of a shared-mutable String slot `sref` at node `id` (codegen_expr.c) */
+void emit_strbuf_node_read(Compiler *c, int id, const char *sref, Buf *b);
 int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b);
 int operand_may_allocate(Compiler *c, int id);
 /* The same shim over a READER call that hands out the handle
@@ -176,7 +187,12 @@ TyKind block_next_value_ntype(const Compiler *c, int node);
    holds that many past its fill (argov_reserve). */
 #define MAX_ARG_OVERRIDE 64
 extern int  *g_argov_node;
-extern char (*g_argov_text)[32];
+/* The text a bound node is written as (view_bind), per slot. A class name in it (the
+   receiver cast of a poly arm, "((sp_<Class> *)_t0.v.p)") made 32 bytes too few for a
+   name of 15 characters or more, and the vsnprintf cut the text short without a word:
+   the C did not build (#7604). view_bind checks the length now. */
+#define ARGOV_TEXT_LEN 160
+extern char (*g_argov_text)[ARGOV_TEXT_LEN];
 extern int  g_n_argov;
 /* Room for one more override whatever the fill, for a site that must run
    every argument of a call ahead of it, however many there are
@@ -222,9 +238,17 @@ int hc_index_in_range(Compiler *c, int recv, int idx);
 extern int g_loop_polls_in_cond;   /* the next emit_loop_body leaves its polls to the loop's condition */
 int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
 /* hc_array for a Float array whose in-range elements the reader needs to
-   be no nil: *n names a length that is 0 while the array may hold one. */
-int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap);
+   be no nil: *n names a length that is 0 while the array may hold one, or
+   while `guard` (a Float local the loop does not assign; -1 for none) is
+   nil. Answers 2 when it took the guard. */
+int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t cap);
 const char *hc_mark(void);
+/* recv is read in the loop being emitted the way hc_array caches it: no
+   code runs between two of its reads in one pass, so they agree */
+int hc_recv_cached(Compiler *c, int recv);
+/* the nil test a cached array read writes in its out-of-range branch for
+   a receiver seen as Repr.nil_cold (emit_nil_target_cold, codegen_call.c) */
+void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */
@@ -920,6 +944,11 @@ void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add);
    them with inference's (codegen_util.c) */
 void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add);
 void ucall_report(Compiler *c);
+/* --nil-check (#7444): the calls nil_recv_guard decided, and the
+   end-of-compile report holding the analysis's nil fact against the codegen
+   helpers' answers there (codegen_call.c) */
+void nil_check_seen(int id);
+void nil_check_report(Compiler *c);
 /* --plan-check: codegen emitted the call node id (whatever it bound) */
 void ucall_emitted(int id);
 /* --plan-check: codegen emitted the visibility refusal for node id */
@@ -1038,6 +1067,9 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
+/* a statement-position call on a builtin receiver that may be nil, behind
+   its nil arm (cplan_nil, #7444); 0 when it has none */
+int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent);
 const char *local_init_value(Compiler *c, LocalVar *lv);
 int local_nil_test(Compiler *c, LocalVar *lv, const char *ref, Buf *out);
 /* Append the C type name for `t` to `b` (objects need the class name). */
@@ -1073,10 +1105,10 @@ int emit_poly_rhs_coerced(Compiler *c, TyKind slot, int v, Buf *b);
 /* An empty `[]` / `{}` into a typed slot builds at the slot's representation
    rather than the literal's default (#4054). Returns 1 when it emitted. */
 int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b);
-int emit_frozen_literal_open(Buf *b, size_t raw_len);
-int emit_frozen_literal_open_a(Buf *b, size_t raw_len, int ascii7);
-int bytes_are_ascii7(const char *s, size_t n);
-void emit_frozen_literal_close(Buf *b, int id);
+/* A frozen literal from its C-escaped bytes: a reference to the one file-scope
+   object for that content, whose definition fzl_emit_defs writes. */
+void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len);
+void fzl_emit_defs(const char *t, Buf *out);
 /* Emit a Ruby string literal. len is the true byte count (may exceed strlen
    when the string contains embedded NUL bytes). */
 /* What a `round`-family call's trailing keyword hash says, as far as it can
@@ -1168,8 +1200,6 @@ int bare_call_class_owned(Compiler *c, int id);
    unchanged. Lets a forwarded block be materialized by emit_proc_literal. */
 int resolve_forwarded_block(Compiler *c, int block);
 int emit_hash_collect_expr(Compiler *c, int id, Buf *b);
-int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty, int *ids_out, TyKind *ty_out, int cap);
-int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new_ty, int min_id, int **saved_ids, TyKind **saved_tys);
 int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int block_tail_is_unresolved(Compiler *c, int node);
 int emit_iter_value_expr(Compiler *c, int id, Buf *b);
@@ -1232,7 +1262,10 @@ void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
 int declare_default_locals(Compiler *c, Scope *m, int dnode);
 int arg_wants_root(Compiler *c, TyKind pt, int provided);
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b);
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
+int arg_read_converts(Compiler *c, TyKind pt, int provided);
+void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out);
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc);
 /* 1 when a parameter default reads an earlier parameter: it must be evaluated
    with that parameter bound (see emit_args_filled). */
@@ -1481,7 +1514,7 @@ int view_bind(int node, const char *fmt, ...) __attribute__((format(printf, 2, 3
 void view_unbind(int n);
 /* One representation flag of node id seen as v for one nested emission,
    restored by view_pop (or view_unwind on a refusal) like a type view. */
-enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW };
+enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW, VR_NIL_TESTED };
 int view_push_repr(Compiler *c, int id, int flag, int v);
 /* bumped by every view push, pop and unwind: a per-node memo of a decision
    that reads the flags or the type keys on it */
@@ -1640,6 +1673,7 @@ const char *array_index_bad_class(Compiler *c, int id);
 int  poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max);
 int  poly_redispatch_kind(Compiler *c, int id, const char *name, int argc);
 int  face_arg_misfit(Compiler *c, unsigned kind, int arg);
+int  face_args_misfit(Compiler *c, int id, unsigned kind);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc);
 /* Does CRuby take argc arguments to cls#name, by the instance arity table
    (sp_builtin_arity_spec_tbl)? 1 for a name the table has no row for. */
@@ -1767,6 +1801,9 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 TyKind yield_site_type(Compiler *c, int node);
 void emit_int_expr(Compiler *c, int node, Buf *b);
+/* an index ahead of a cached bounds compare: raw when it may be nil, 1 when
+   the caller owes its nil test where the compare sends it (codegen.c) */
+int emit_int_index_raw(Compiler *c, int node, Buf *b);
 void emit_str_expr(Compiler *c, int node, Buf *b);
 void emit_path_expr(Compiler *c, int node, Buf *b);
 void emit_to_s_expr(Compiler *c, int node, Buf *b);
@@ -1805,6 +1842,11 @@ void emit_scalar_operand(Compiler *c, int node, const char *zero, Buf *b);
    before the argument's value: left in g_pre, the setup (an array literal's
    pushes) runs ahead of the whole expression, and so ahead of the receiver
    Ruby evaluates first. */
+void emit_rooted_key_call(Compiler *c, const char *fn, const char *recv,
+                          const int *argv, int argc, Buf *b);
+int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
+                         const char *ctype, const char *root,
+                         void (*emit)(Compiler *, int, Buf *), Buf *b);
 void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *), Buf *pre, Buf *val);
 void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol);
 void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, int vol);

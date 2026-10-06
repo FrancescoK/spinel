@@ -109,8 +109,11 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by
    the handle in front of it, which only sp_mark_string reaches, and the
    object walk skips the payload. The slot's C type is the one thing every
-   emitter agrees on, so the choice is made here rather than at each site. */
-#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, default: (uintptr_t)0)
+   emitter agrees on, so the choice is made here rather than at each site.
+   A local a rescue can write is `const char * volatile`, the one other
+   spelling of a String slot the compiler emits, and is a String all the
+   same. */
+#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, const char *volatile *: (uintptr_t)2, default: (uintptr_t)0)
 #define SP_GC_ROOT(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | _SP_GC_SLOT_TAG(v)))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
    walker routes it through sp_mark_rbval (the object pointer sits in a union at
@@ -542,6 +545,15 @@ void sp_fin_run_pending(void);
 #define SP_FIN_POLL() \
   do { if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending(); } while (0)
 void sp_oom_die(void);
+/* The instance variables of a builtin value (an Array, a Hash, a Random):
+   a map from the object to its ivar table, a GC object the TU makes
+   (sp_bivar_set in spinel_rt.h). The map does not keep the object alive;
+   the collector marks a table only while its object lives, and drops the
+   entry of an object it frees (lib/sp_gc.c). */
+void *sp_ivtbl_get(const void *obj);
+void sp_ivtbl_put(const void *obj, void *tbl);
+/* the TU's rendering of an ivar table, for Random#inspect (set with the first table) */
+extern const char *(*sp_ivtbl_inspect_fn)(void *tbl);
 
 /* ---- Embedder callbacks supplied by the generated TU ----
  * The collector cannot own the program's roots or string heap (they are

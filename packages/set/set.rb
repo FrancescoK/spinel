@@ -60,9 +60,23 @@ class Set
     raise FrozenError, "can't modify frozen Set: #{inspect}" if frozen?
   end
 
+  # An unfrozen String joins as a frozen copy, as CRuby's Set (and a Hash, for
+  # its keys) takes it: changing the String afterwards changes neither the
+  # member nor whether the Set holds it, and the member itself is frozen. A
+  # frozen String joins as itself. add, add? and map! push through here. The
+  # test reads the member back from @data, whose elements are boxed: asked of
+  # x, where x is a user object's own type, frozen? would mark that class as
+  # one whose instances can be frozen, and guard every store to its ivars.
+  def push_member(x)
+    @data.push(x)
+    e = @data[-1]
+    @data[-1] = -e if e.is_a?(String) && !e.frozen?
+  end
+  private :push_member
+
   def add(x)
     check_frozen
-    @data.push(x) unless include?(x)
+    push_member(x) unless include?(x)
     self
   end
 
@@ -74,7 +88,7 @@ class Set
   def add?(x)
     check_frozen
     return nil if include?(x)
-    @data.push(x)
+    push_member(x)
     self
   end
 
@@ -154,7 +168,8 @@ class Set
       v = yield(x); r.push(v) unless r.any? { |e| e.eql?(v) }
       _i += 1
     end
-    @data = r
+    @data = []
+    r.each { |v| push_member(v) }
     self
   end
   alias collect! map!

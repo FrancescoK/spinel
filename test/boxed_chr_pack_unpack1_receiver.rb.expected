@@ -1,0 +1,45 @@
+undefined method 'chr' for nil []
+fmt
+undefined method 'pack' for nil ["C*"]
+fmt
+undefined method 'unpack1' for nil ["C"]
+"A"
+fmt
+undefined method 'pack' for an instance of Integer ["C*"]
+fmt
+undefined method 'unpack1' for an instance of Integer ["C"]
+undefined method 'chr' for an instance of Symbol []
+fmt
+undefined method 'pack' for an instance of Symbol ["C*"]
+fmt
+undefined method 'unpack1' for an instance of Symbol ["C"]
+"s"
+fmt
+undefined method 'pack' for an instance of String ["C*"]
+fmt
+115
+undefined method 'chr' for an instance of Float []
+fmt
+undefined method 'pack' for an instance of Float ["C*"]
+fmt
+undefined method 'unpack1' for an instance of Float ["C"]
+undefined method 'chr' for an instance of Array []
+fmt
+"AB"
+fmt
+undefined method 'unpack1' for an instance of Array ["C"]
+undefined method 'chr' for an instance of Hash []
+fmt
+undefined method 'pack' for an instance of Hash ["C*"]
+fmt
+undefined method 'unpack1' for an instance of Hash ["C"]
+RangeError: 300 out of char range
+fmt
+undefined method 'pack' for an instance of Integer ["C*"]
+fmt
+undefined method 'unpack1' for an instance of Integer ["C"]
+undefined method 'chr' for an instance of Array []
+fmt
+TypeError: no implicit conversion of Symbol into Integer
+fmt
+undefined method 'unpack1' for an instance of Array ["C"]

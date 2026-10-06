@@ -29,6 +29,52 @@ extern int g_promote_mode;
    choose. Off in every normal build. */
 extern int g_plan_check;
 
+/* Set by main.c from --nil-check (#7444): the nil fact the analysis decides
+   (analyze_nil.c) is held against the answers the helpers that decide it
+   today give, at each place they answer, and every disagreement reported on
+   stderr. Off in every normal build; the C is the same either way. */
+extern int g_nil_check;
+
+/* The nil fact (analyze_nil.c, #7444): whether an object-typed value, or a
+   builtin one held as a pointer (nil_fact_tracked), may be nil, decided once
+   by the analysis for every node and every slot (a local,
+   a parameter, a block parameter, a global, a constant, an ivar, a method's
+   value). an_phase_value_types computes it, ahead of the value-type
+   selection. nil_fact_node answers for a node, nil_fact_ivar for ivar `ivn`
+   (with its '@') of class cid; the slots carry LocalVar.obj_may_nil and
+   Scope.ret_obj_may_nil. repr_of and repr_of_slot read them into may_nil. */
+enum { NF_UNKNOWN, NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED /* not nil past a guard */ };
+void an_nil_facts(Compiler *c);
+int nil_fact_node(const Compiler *c, int node);
+int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
+/* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.
+   A value with several sources is reported with the first in this order:
+   the nils the program writes, then the ones the analysis cannot bound. */
+enum {
+  NFW_NONE,      /* not nil */
+  NFW_NIL,       /* a nil written: a literal, an empty body, a bare return */
+  NFW_NO_ELSE,   /* an if, unless or case with no branch for the other case */
+  NFW_SAFE_NAV,  /* a `&.` call */
+  NFW_UNSET,     /* a local's read that can run before any write (the
+                    definite-assignment walk, a `||=` slot) */
+  NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash,
+                    String) */
+  NFW_GLOBAL,    /* a global, or the main object's ivar, read where no write
+                    can be shown to run first (a method's read of one) */
+  NFW_IVAR,      /* an ivar some class's initialize does not set first, or one
+                    of a class or a module */
+  NFW_CALLER,    /* a parameter a caller the analysis does not see binds (a
+                    send, a method(:m), a proc or a lambda, a callback) */
+  NFW_OPAQUE,    /* a value the analysis does not model: a builtin's answer, a
+                    splat's element, a pattern's binding, a yield's value */
+  NFW_GUARDED    /* (nil_fact_why only) not nil: a guard narrowed the read */
+};
+int nil_fact_why(const Compiler *c, int node);
+const char *nil_fact_why_name(int why);
+/* Does the fact track a value of type t: an object, or a builtin held as a
+   pointer that is NULL for nil (a String, an Array, a Hash, an IO)? */
+int nil_fact_tracked(TyKind t);
+
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
 extern int g_final_bind_pass;
@@ -111,6 +157,15 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* A pure read of the settled analysis (repr_of) asks its questions between
+   an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
+   records nothing it derives: not the node-type cache, a poly call's
+   builtin answer, --plan-check's call records, a block parameter's pinned
+   type, the narrowing memo or a call's alias resolution (its name and
+   builtin_only, kept for the inference asking). So asking cannot change
+   what codegen reads next. They nest. */
+void an_pure_read_begin(void);
+void an_pure_read_end(void);
 
 /* String#lines' argument shapes besides none: (sep), (chomp: ...) and
    (sep, chomp: ...), sep a String -- what a boxed receiver takes the
@@ -171,6 +226,7 @@ TyKind block_next_value_ty(Compiler *c, int node);
 int range_enum_redispatch(Compiler *c, int id);
 int hash_enum_redispatch(Compiler *c, int id);
 int range_lit_float_end(Compiler *c, int recv);   /* (1..5.5): the Float end node, else -1 */
+int range_lit_endless(Compiler *c, int recv);     /* (1..): an endless literal with a begin */
 int reduce_tail_from_acc(Compiler *c, int tail, const char *accp);
 
 /* True if `node` (a block body / statements subtree) contains a top-level
@@ -271,6 +327,7 @@ void ie_body_restore(Compiler *c, int *snap);
    -1), and the value node bound to a keyword name within it (or -1). */
 int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const char *name);
+size_t reassigned_param_written_len(const char *name);
 int block_param_is_renamed(const char *name);
 void block_param_invent_name(Compiler *c, char *buf, size_t n,
                              const char *written, int blk);

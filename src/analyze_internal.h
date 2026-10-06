@@ -27,6 +27,8 @@ const char *ffi_arg_str(const NodeTable *nt, int nid);
 int ffi_arg_int(const NodeTable *nt, int nid);
 TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
+/* `Fiber.new { }`'s block, or -1 */
+int an_fiber_new_block(Compiler *c, int v);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
 int ffi_find_writer(Compiler *c, const char *mod, const char *name);
@@ -64,6 +66,15 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out);
 int local_sole_range_node(Compiler *c, int recv);
 int const_array_elems_all_int_array(Compiler *c, const char *cname);
 int *an_parent_map(const NodeTable *nt);
+/* The definite-assignment walk (analyze.c), shared with the nil facts
+   (analyze_nil.c): the program's parent map, each statement's place in its
+   list (filled one list at a time, -1 for a node not in its parent's list),
+   whether a read of local `nm` can run before any write of it, and the
+   per-list memo the walk keeps, freed once a pass is done with it. */
+typedef struct { int *pos; char *done; } DUPos;
+int *du_parent_map(const NodeTable *nt);
+int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm);
+void du_memo_free(void);
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name);
@@ -86,6 +97,7 @@ int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
 int builtin_method_names(const char *cls, const char **out, int cap);
 int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi);
+int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi);
 int builtin_arity_violation(Compiler *c, int id);
 int is_handler_proc_block(Compiler *c, int id);
 int builtin_class_id(const char *name);
@@ -141,6 +153,8 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
 int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
+int block_given_tail_then_last(Compiler *c, int last);
+int super_forwards_caller_block(Compiler *c, int id);
 /* 1 if `node` is `<&block-param>.call(...)` / .() / [] for method mi -- the
    explicit-call equivalent of `yield`, inlined the same way. */
 int is_blk_param_call(Compiler *c, int node, int mi);
@@ -158,6 +172,9 @@ TyKind yield_value_type(Compiler *c, int mi);
 int yield_block_tails(Compiler *c, int mi, int *out, int max);
 /* The block value reaching `mi` from a child's `super` (see analyze_util.c). */
 TyKind yield_value_type_via_super(Compiler *c, int mi);
+/* Whether a block-passing call hands on its enclosing method's own block
+   (`...`, `&` of the block parameter) rather than a proc value of its own. */
+int call_forwards_own_block(Compiler *c, int cid);
 int yield_value_diverges(Compiler *c, int mi);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
@@ -249,6 +266,7 @@ int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max);
 void resolve_parents(Compiler *c);
 void resolve_inherited_aliases(Compiler *c);
 void process_include_body(Compiler *c, int ci, int body_node);
+void desugar_module_prepends(Compiler *c);
 void register_includes(Compiler *c);
 void register_include_attrs(Compiler *c);
 void rewrite_attr_supers(Compiler *c);
@@ -260,7 +278,7 @@ void specialize_inherited_cls_new(Compiler *c);
 void register_prepends(Compiler *c);
 void inherit_members(Compiler *c);
 int infer_inherited_ivars(Compiler *c);
-int infer_cvar_types(Compiler *c);
+int infer_cvar_types(Compiler *c, int nil_only);
 int infer_ivar_types(Compiler *c);
 /* 1 if `name` (incl '@') is an ivar pinned by an --rbs seed in class `ci`;
    the ivar inference write sites consult this to avoid widening a pinned slot. */
@@ -277,7 +295,7 @@ int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
 int reconcile_locals_reading_ivars(Compiler *c);
-int widen_object_locals_from_poly_writes(Compiler *c);
+int widen_locals_from_poly_writes(Compiler *c);
 int widen_arrays_from_map_bang(Compiler *c);
 void intern_block_params(Compiler *c);
 int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
@@ -436,6 +454,7 @@ int desugar_method_curry(Compiler *c);
 int desugar_curry_arity_to_int(Compiler *c);
 int desugar_int_enum_with_index(Compiler *c);
 int desugar_hash_iter_with_index(Compiler *c);
+int desugar_array_op_to_ary(Compiler *c);
 int widen_shared_cmp_params(Compiler *c);
 int desugar_reduce_proc_arg(Compiler *c);
 int desugar_block_capture_wrap(Compiler *c);
@@ -481,6 +500,7 @@ int desugar_builtin_reopen_self_calls(Compiler *c);
 int desugar_builtin_reopen_methods(Compiler *c);
 int desugar_object_method_builtin_overrides(Compiler *c);
 int desugar_body_ivars(Compiler *c);
+int desugar_builtin_ivars(Compiler *c);
 void mark_match_ranges(Compiler *c);
 int desugar_duplicate_underscore_params(Compiler *c);
 int desugar_encoding_queries(Compiler *c);

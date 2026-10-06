@@ -1,0 +1,24 @@
+TypeError: no implicit conversion of nil into Hash
+TypeError: no implicit conversion of Rational into Hash
+TypeError: no implicit conversion of nil into Hash
+TypeError: no implicit conversion of Float into Hash
+TypeError: no implicit conversion of Symbol into Hash
+NoMethodError: undefined method 'update' for nil
+NoMethodError: undefined method 'merge!' for an instance of Symbol
+{1 => 2, 3 => 4}
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into Array
+TypeError: no implicit conversion of Symbol into Array
+[:r, :a0, :a1, :r2, :a2, :a3]
+TypeError: no implicit conversion of nil into Array
+TypeError: no implicit conversion of Integer into Array
+TypeError: no implicit conversion of Hash into Array
+TypeError: no implicit conversion of Hash into Array
+TypeError: no implicit conversion of nil into Array
+TypeError: no implicit conversion of nil into Hash
+TypeError: no implicit conversion of Integer into Hash
+TypeError: no implicit conversion of Float into Hash
+FrozenError: can't modify frozen Hash: {"a" => 1}
+["no implicit conversion of Integer into Hash", {1 => 2, 3 => 4}]
+TypeError: no implicit conversion of Symbol into Hash
+[:r, :a0, :a1, :r2, :a2, :a3]

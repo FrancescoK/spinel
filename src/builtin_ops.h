@@ -169,6 +169,53 @@ typedef struct BuiltinOp {
    check: emit_poly_builtin_method emits these names unboxed, so inference
    types the call with the row's result (bop_find_boxed). */
 #define BOPF_BOXED 1
+/* The call answers its receiver: the same object, not a copy, and so an
+   instance of a subclass answers that instance (<<, push, concat, replace,
+   clear, sort!, freeze, to_ary, each with a block, ...). A fact about
+   CRuby's method, whatever the row's result kind says about the value's
+   representation (BOPR_SELF is the receiver's kind, which a copy has too).
+   A conversion that answers the receiver only when its class is exactly
+   the builtin is BOPF_SELF_EXACT instead. */
+#define BOPF_SELF 2
+/* The call answers its receiver when it changed it, and nil when it changed
+   nothing: the bang methods with a no-change contract (uniq!, compact!,
+   select!, sub!, strip!, ...). Never set together with BOPF_SELF; a bang
+   that answers the receiver either way (sort!, reverse!, succ!) is
+   BOPF_SELF. */
+#define BOPF_SELF_OR_NIL 4
+/* The call answers an object of the receiver's class: the receiver itself
+   or a copy of it, depending on whether it is frozen (String#+@ answers
+   the receiver when it is not frozen, a copy when it is; -@ and dedup the
+   receiver when it is frozen, a frozen copy when it is not). A subclass
+   instance answers an instance of that subclass. */
+#define BOPF_SELF_CLASS 8
+/* The call answers its receiver when its class is exactly the builtin, and
+   a new object of the plain builtin for a subclass instance, without the
+   instance's ivars: Array#to_a, Hash#to_h without a block (the new Hash
+   keeps the default and the default proc), String#to_s and #to_str. */
+#define BOPF_SELF_EXACT 16
+/* The call answers a new object of the receiver's class, never the
+   receiver: a copy carrying its instance variables, and a Hash's default
+   and default proc, with the pairs or elements the method leaves (dup and
+   clone, Hash#merge and #compact). clone carries the frozen state too, the
+   others answer an unfrozen copy. String#encode, which answers an
+   instance of the receiver's class without its ivars, carries no flag. */
+#define BOPF_COPY_CLASS 32
+/* The call combines, compares or copies its arguments of the receiver's
+   builtin class as that builtin: a subclass instance among them is read
+   for its elements, pairs or bytes, and none of its own methods (each,
+   to_ary, to_hash, to_str, ==, <=>, ...) runs. Array#+ - & | <=> == eql?
+   concat replace union difference intersection intersect? product zip;
+   Hash#merge merge! update replace == eql? < <= > >=; String#+ concat <<
+   prepend insert replace == === eql? <=> < <= > >= between?. A method that
+   stores an argument as an element, key or value (push, <<, insert and []=
+   on an Array, store and []= on a Hash) or takes it as a pattern or
+   separator (String#include?, #sub, #split) is not flagged; for those the
+   flag's absence says nothing about how the argument is read. The rows'
+   argument kinds (arg0/arg1) cannot say this: they guard which row fits a
+   call, a guarded row is not found by a lookup without the arguments'
+   kinds, and they cover only the first two arguments. */
+#define BOPF_ARGS_BUILTIN 64
 
 /* A row's recv may name a family of kinds rather than one; a caller looks
    the family up with the family's value. Not a TyKind any value has. */
@@ -237,5 +284,84 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt);
 
 /* The BOPF_BOXED row of kind rt for `name`, or NULL. */
 const BuiltinOp *bop_find_boxed(TyKind rt, const char *name, int argc, int has_block);
+
+/* Whether the builtin `name` called with argc arguments (and a block when
+   has_block) on a receiver of kind rt answers that receiver, a copy of it,
+   or the plain builtin: BOPF_SELF, BOPF_SELF_OR_NIL, BOPF_SELF_CLASS,
+   BOPF_SELF_EXACT or BOPF_COPY_CLASS, or 0 when it answers another value
+   or no row has the call. An Array or Hash kind reads its family's rows
+   (BOP_ANY_ARRAY, BOP_ANY_HASH), a String buffer the String rows. The
+   flags sit on the unguarded rows, the ones a lookup without the
+   arguments' kinds finds. */
+int bop_answers_self(TyKind rt, const char *name, int argc, int has_block);
+/* Whether that call reads its arguments of the receiver's builtin class as
+   that builtin (BOPF_ARGS_BUILTIN), looked up as bop_answers_self does. */
+int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
+
+/* ---- What a builtin call does with the Strings it is handed (#6765) ----
+   The facts --share-strings reads (analyze_share.c): which of the call's
+   values the answer can be, and where the arguments can end up. One row per
+   receiver family and name. A name with no row on a family that has a
+   default row ("*") takes the default; one on a family without a default
+   is not followed (the analysis treats it as unknown). */
+#define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
+#define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
+#define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
+
+typedef enum {
+  BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
+                     (a block a container's runs is handed its elements) */
+  BSH_FROZEN,     /* answers its receiver frozen (or a frozen copy): nothing
+                     can change that String in place any more */
+  BSH_RECV,       /* answers its receiver */
+  BSH_ELEM,       /* answers an element of the receiver (with a count: a SUB) */
+  BSH_SUB,        /* answers a container of the receiver's elements */
+  BSH_STORE_LAST, /* stores its last argument among the receiver's elements */
+  BSH_STORE_ALL,  /* stores every argument among them */
+  BSH_STORE_TAIL, /* stores every argument but the first (insert, fill) */
+  BSH_MERGE,      /* stores the elements of its container arguments; answers
+                     the receiver or a container of both */
+  BSH_ARGS,       /* answers its one argument, or an Array of several (p) */
+  BSH_ARRAY_OF,   /* answers its Array argument, or an Array holding it (Array()) */
+  BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
+  BSH_ITER,       /* block parameters bind elements; answers the receiver (each) */
+  BSH_ITER_SEL,   /* block parameters bind elements; answers a container of
+                     some of them (select, sort_by) */
+  BSH_ITER_MAP,   /* block parameters bind elements; answers a new container
+                     of the block's values (map) */
+  BSH_ITER_MAP_BANG, /* the same, keeping the values in the receiver (map!) */
+  BSH_ITER_SUB,   /* block parameters bind containers of elements (each_slice,
+                     group_by's groups); answers containers of them */
+  BSH_ITER_FIND,  /* block parameters bind elements; answers one of them */
+  BSH_ITER_FRESH, /* block parameters bind fresh values (each_char, each_line) */
+  BSH_ITER_FRESH_RECV, /* the same, answering the receiver (gsub!, sub!) */
+  BSH_ITER_MEMO0, /* inject/reduce: parameter 0 the memo (argument 0), the
+                     others elements; answers the memo or the block's value */
+  BSH_ITER_MEMO1, /* each_with_object: parameter 1 the memo (argument 0) */
+  BSH_ITER_SELF,  /* tap: parameter 0 the receiver; answers the receiver */
+  BSH_ITER_THEN,  /* then: parameter 0 the receiver; answers the block's value */
+  BSH_FETCH,      /* answers an element, or its last argument (fetch's default) */
+  BSH_ELEM_N,     /* answers an element, or with a count a container of them
+                     (first, last, pop, shift, sample) */
+  BSH_CALL,       /* calls a proc or a Method with its arguments */
+  BSH_METHOD_REF, /* makes a Method (or defines one) of the method its first
+                     argument names: that method is called from anywhere */
+  BSH_IVAR_GET,   /* answers the ivar its first argument names */
+  BSH_IVAR_SET,   /* stores its second argument in the ivar its first names */
+  BSH_EXEC,       /* runs its block with its arguments (instance_exec) and
+                     answers the block's value */
+  BSH_NEW         /* constructs: its arguments go to initialize */
+} BopShare;
+
+/* The BSH_* of `name` on receiver family fam (TY_STRING, BOP_ANY_ARRAY,
+   BOP_ANY_HASH, TY_IO, BOP_KERNEL, BOP_ANY_RECV, or a scalar kind), the
+   family's default row's when the name has none, or 0 when the family has
+   no default either. */
+int bop_share(TyKind fam, const char *name);
+/* the name's own row only, without the family's default */
+int bop_share_named(TyKind fam, const char *name);
+/* a String bang method answering its receiver, or nil when it changed
+   nothing (`strip!`, `gsub!`, `scrub!`) */
+int bop_share_bang_self(const char *name);
 
 #endif

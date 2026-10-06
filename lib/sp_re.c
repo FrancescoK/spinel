@@ -362,9 +362,10 @@ sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   sp_StrArray *r = sp_StrArray_new();
   SP_GC_ROOT(r);
   if (ms < 0) {
-    sp_StrArray_push(r, SPL(""));
-    sp_StrArray_push(r, SPL(""));
-    sp_StrArray_push(r, str);
+    /* new Strings, as CRuby's: not the receiver, nor one shared "" */
+    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
+    sp_StrArray_push(r, sp_str_dup(sp_str_empty));
+    sp_StrArray_push(r, sp_str_dup(str));
     return r;
   }
   char *before = sp_str_alloc_raw(ms + 1);
@@ -464,6 +465,13 @@ sp_bool sp_poly_match_p(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_
   mrb_regexp_pattern *p; const char *s;
   if (!sp_poly_match_pair(a, b, &p, &s)) return FALSE;
   return sp_re_match_p(p, s);
+}
+/* match?(pattern, pos) with a boxed operand: the same pair, from character
+   position pos of the subject */
+sp_bool sp_poly_match_p_at(sp_RbVal a, sp_RbVal b, sp_int pos) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
+  mrb_regexp_pattern *p; const char *s;
+  if (!sp_poly_match_pair(a, b, &p, &s)) return FALSE;
+  return sp_str_re_match_p_at(p, s, pos);
 }
 sp_MatchData *sp_poly_match_data(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
   mrb_regexp_pattern *p; const char *s;
@@ -637,7 +645,8 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   int64_t slen = (int64_t)sp_str_byte_len(str); size_t rlen = sp_str_byte_len(rep);
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64, sp_str_is_binary(str));
-  if (n <= 0 || caps[0] < 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
+  /* no match: a new String all the same, as CRuby's sub and as gsub here */
+  if (n <= 0 || caps[0] < 0) { if (sp_re_track_last) sp_re_clear_last_match(); return sp_str_dup(str); }
   sp_re_sub_matched = 1;
   /* Issue #855: expand `\1`..`\9` / `\&` from rep against caps. */
   size_t cap = caps[0] + (rlen * 4) + (slen - caps[1]) + 64;

@@ -1,0 +1,18 @@
+repr_diff (--dump-repr): 2 slots became String buffers (strbuf), 1 became boxed, 1 left a by-value layout, 2 other changes, in 3 of 5 programs
+became String buffers (strbuf):
+  a.rb: ivar Holder @buf: ptr ty=string -> strbuf ty=strbuf handle
+  d/e.rb: local <main> t: ptr ty=string -> strbuf ty=strbuf
+became boxed:
+  a.rb: local Holder#run v: scalar ty=int -> boxed ty=poly
+left a by-value layout:
+  a.rb: local <main> r: struct ty=range -> ptr ty=poly_array
+other changes:
+  a.rb: local Holder#run t: - -> scalar ty=int
+  c.rb: local <main> z: - -> scalar ty=int
+repr_diff (C slot declarations): 1 slots became String buffers (strbuf), 1 became boxed, 1 left a by-value layout, 0 other changes, in 1 of 1 programs
+became String buffers (strbuf):
+  a.rb: ivar Holder @buf: c=const char * -> c=sp_String *
+became boxed:
+  a.rb: param sp_Holder_s_use i: c=sp_int -> c=sp_RbVal
+left a by-value layout:
+  a.rb: local sp_Holder_s_use r: c=sp_Range -> c=sp_Range *

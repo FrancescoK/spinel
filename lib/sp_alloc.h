@@ -371,7 +371,12 @@ static inline char *sp_str_alloc_nogc(size_t len) {
 /* Copy a message onto the string heap so it can be held by a string root.
    The source is a bare literal (every raise the runtime and the generated
    code issue passes one) or an unrooted heap string; neither can be rooted
-   across an allocation, so the copy runs with no collection in between. */
+   across an allocation, so the copy runs with no collection in between.
+   The length is strlen's, not sp_str_byte_len's: a bare literal or a static
+   buffer (Process.spawn's sp_err_buf) has no header, and sp_str_byte_len reads
+   the byte before it for one, which for some neighbouring byte looks like a
+   header's marker and answers a made-up length (#7556 did, and a copied
+   message gained NUL bytes in some builds). */
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
   size_t n = strlen(m);

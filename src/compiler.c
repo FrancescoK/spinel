@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "share.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +82,7 @@ Compiler *comp_new(const NodeTable *nt) {
   c->strbuf_handle_demand = calloc((size_t)n, 1);
   c->strbuf_read_raw = calloc((size_t)n, 1);
   c->poly_strbuf_lift = calloc((size_t)n, 1);
+  c->nil_tested = calloc((size_t)n, 1);
   c->nscope = calloc((size_t)n, sizeof(int));   /* default scope 0 */
   c->node_cbody = malloc((size_t)n * sizeof(int));   /* enclosing class-body, -1 = none */
   for (int i = 0; i < n; i++) c->node_cbody[i] = -1;
@@ -95,6 +97,11 @@ Compiler *comp_new(const NodeTable *nt) {
   c->bop_inf = calloc((size_t)n, sizeof *c->bop_inf);
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
+  /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
+     reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
+     are. An environment that exports the variable as "0" or "" means off. */
+  { const char *e = getenv("SPINEL_SHARE_STRINGS");
+    c->share_strings = e && *e && strcmp(e, "0") != 0; }
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;
   return c;
@@ -218,6 +225,7 @@ void comp_grow_node_arrays(Compiler *c) {
   c->strbuf_handle_demand = realloc(c->strbuf_handle_demand, (size_t)n);
   c->strbuf_read_raw = realloc(c->strbuf_read_raw, (size_t)n);
   c->poly_strbuf_lift = realloc(c->poly_strbuf_lift, (size_t)n);
+  c->nil_tested = realloc(c->nil_tested, (size_t)n);
   c->nscope = realloc(c->nscope, sizeof(int) * (size_t)n);
   c->node_cbody = realloc(c->node_cbody, sizeof(int) * (size_t)n);
   c->empty_arr_recv = realloc(c->empty_arr_recv, (size_t)n);
@@ -232,15 +240,18 @@ void comp_grow_node_arrays(Compiler *c) {
   for (int i = c->node_cap; i < n; i++) c->bop_inf[i] = NULL;
   c->ucall_inf = realloc(c->ucall_inf, sizeof *c->ucall_inf * (size_t)n);
   memset(c->ucall_inf + c->node_cap, 0, sizeof *c->ucall_inf * (size_t)(n - c->node_cap));
-  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->norigin[i] = -1; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; c->empty_hash_recv[i] = 0; c->empty_hash_arg[i] = 0; c->store_misfit_arg[i] = 0; c->ivar_widen_src[i] = 0; c->hash_want[i] = TY_UNKNOWN; c->arr_want[i] = TY_UNKNOWN; c->poly_builtin_ty[i] = TY_UNKNOWN; c->strbuf_box[i] = 0; c->strbuf_handle_demand[i] = 0; c->strbuf_read_raw[i] = 0; c->poly_strbuf_lift[i] = 0; }
+  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->norigin[i] = -1; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; c->empty_hash_recv[i] = 0; c->empty_hash_arg[i] = 0; c->store_misfit_arg[i] = 0; c->ivar_widen_src[i] = 0; c->hash_want[i] = TY_UNKNOWN; c->arr_want[i] = TY_UNKNOWN; c->poly_builtin_ty[i] = TY_UNKNOWN; c->strbuf_box[i] = 0; c->strbuf_handle_demand[i] = 0; c->strbuf_read_raw[i] = 0; c->poly_strbuf_lift[i] = 0; c->nil_tested[i] = 0; }
   c->node_cap = n;
 }
 
 void comp_free(Compiler *c) {
   if (!c) return;
+  share_facts_free(c);
+  share_routes_free(c);
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
+  free(c->nil_fact);
   free(c->node_ord); free(c->node_base);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);
   free(c->bi_base_key); free(c->bi_base_cnt);
@@ -262,6 +273,7 @@ void comp_free(Compiler *c) {
     for (int j = 0; j < c->classes[i].nivars; j++) free(c->classes[i].ivars[j]);
     free(c->classes[i].ivars);
     free(c->classes[i].ivar_types);
+    free(c->classes[i].ivar_obj_may_nil);
     for (int j = 0; j < c->classes[i].n_rbs_pin_ivars; j++) free(c->classes[i].rbs_pin_ivars[j]);
     free(c->classes[i].rbs_pin_ivars);
     for (int j = 0; j < c->classes[i].nreaders; j++) free(c->classes[i].readers[j]);
@@ -649,10 +661,12 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
     ci->cvars = realloc(ci->cvars, sizeof(char *) * (size_t)ci->ccvars);
     ci->cvar_types = realloc(ci->cvar_types, sizeof(TyKind) * (size_t)ci->ccvars);
     ci->cvar_nullable_int = realloc(ci->cvar_nullable_int, (size_t)ci->ccvars);
+    ci->cvar_str_shared = realloc(ci->cvar_str_shared, (size_t)ci->ccvars);
   }
   ci->cvars[ci->ncvars] = strdup(name);
   ci->cvar_types[ci->ncvars] = TY_UNKNOWN;
   ci->cvar_nullable_int[ci->ncvars] = 0;
+  ci->cvar_str_shared[ci->ncvars] = 0;
   return ci->ncvars++;
 }
 
@@ -1252,15 +1266,22 @@ int comp_defined_guard_true(Compiler *c, int pred) {
   return 0;
 }
 
-/* A literal ArrayNode whose elements are all integer literals (or empty). */
+/* A literal ArrayNode that is built as an sp_IntArray: one element at least,
+   each an integer literal that fits an sp_int. The folds over a nested
+   literal read every row through that pointer type without a test, so a row
+   built as anything else is not one: an empty `[]` (a poly array, having no
+   element to take a kind from) or a row holding a literal past int64 (a
+   Bignum, boxed). Each read as an sp_IntArray answered a length of 8 and
+   the poly array's storage as its elements. */
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
   if (!ty || !sp_streq(ty, "ArrayNode")) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
+  if (en == 0) return 0;
   for (int i = 0; i < en; i++) {
     const char *et = nt_type(nt, els[i]);
-    if (!et || !sp_streq(et, "IntegerNode")) return 0;
+    if (!et || !sp_streq(et, "IntegerNode") || nt_str(nt, els[i], "bigval")) return 0;
   }
   return 1;
 }
@@ -2128,7 +2149,16 @@ static int bare_gets_scan(const NodeTable *nt) {
       for (int k = 0; k < ac; k++)
         if (nt_kind(nt, av[k]) != NK_SplatNode) splats_only = 0;
       if (cn && sp_streq(cn, "print") && splats_only) return 0;
-      if (cn && sp_streq(cn, "~") && ac == 0) return 0;
+      /* `~re` is Regexp#~, a match against $_. `~5`, `~x` and `~self` are
+         Integer#~ (builtins/integer.rb spells the last in bit_length, so any
+         program that requires securerandom has one), and a bare gets beside
+         them is still ARGF's. Syntax only: a regexp literal, interpolated or
+         not, is the match; a Regexp held in a variable is not seen. */
+      if (cn && sp_streq(cn, "~") && ac == 0) {
+        int rcv = nt_ref(nt, i, "receiver");
+        if (rcv < 0 || nt_kind(nt, rcv) == NK_RegularExpressionNode ||
+            nt_kind(nt, rcv) == NK_InterpolatedRegularExpressionNode) return 0;
+      }
     }
     if (v && (sp_streq(v, "gets") || sp_streq(v, "print"))) return 0;
   }

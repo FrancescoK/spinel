@@ -18,6 +18,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>   /* sp_sprintf */
 #include <unistd.h>
 #include "sp_alloc.h"   /* sp_str_alloc / sp_str_set_len / sp_raise_cls */
 #include "sp_array.h"   /* sp_StrArray for Dir.glob */
@@ -54,6 +55,11 @@ extern int sp_gc_rem_peak;   /* lib/sp_gc.c: high-water mark of the remembered s
 #elif defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)
 #  define HAVE_EXECINFO_H 1
 #endif
+
+/* printf into a fresh heap string: the error-message and interpolation
+   formatter every runtime TU and the generated program call. */
+const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;char*b=sp_str_alloc((size_t)_sp_n);if(_sp_n<(int)sizeof(_sp_tmp)){memcpy(b,_sp_tmp,(size_t)_sp_n);}
+else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc gives _sp_n bytes + NUL) so long string interpolations aren't truncated. re-arm the va_list rather than va_copy so the common fast path pays nothing */va_start(ap,fmt);vsnprintf(b,(size_t)_sp_n+1,fmt,ap);va_end(ap);}return b;}
 
 /* Integer#% / Kernel#format "%b"/"%B"/"%o"/"%x"/"%X": non-decimal formatting
    with Ruby's flag, width, precision, and two's-complement-for-negative rules.
@@ -1579,6 +1585,7 @@ sp_PolyArray *sp_str_chars_poly(const char *s) {SP_GC_ROOT_STR(s);
 #endif
 int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
 const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
+const char *const *sp_bt_files = 0;
 static int sp_bt_is_runtime(const char *n) {
   static const char *pfx[] = {
     "int_", "str_", "float_", "sym_", "gc_", "bigint", "sprintf", "raise",
@@ -1606,7 +1613,7 @@ static int sp_bt_is_runtime(const char *n) {
      - macOS:       "<idx> <image> <addr> <symbol> + <off>".
    Returns NULL if it isn't a keepable user frame. Detect Linux by the '('
    that delimits the symbol (the macOS format has none). */
-static const char *sp_bt_symbol(const char *line) {
+static const char *sp_bt_symbol(const char *line, char *raw, size_t rawcap) {
   char sym[256];
   const char *lp = strchr(line, '(');
   if (lp) {                                       /* glibc/Linux paren form */
@@ -1631,6 +1638,7 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
     if (len == 0 || len > 250) return 0;
     memcpy(sym, p, len); sym[len] = 0;
   }
+  if (raw && rawcap) snprintf(raw, rawcap, "%s", sym);
   /* The top level runs in the emitted body function, which the compiler
      hands to sp_main_stack_run (see lib/sp_fiber.c). That frame IS `<main>`;
      the C `main` beside it is the trampoline, on the other stack, and an
@@ -1686,9 +1694,15 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
   if (!syms) return a;
   const char *src = (sp_bt_srcfile && sp_bt_srcfile[0]) ? sp_bt_srcfile : "(spinel)";
   for (int i = 0; i < n; i++) {
-    char *name = (char *)sp_bt_symbol(syms[i]);  /* always strdup'd; free after use */
+    char raw[256]; raw[0] = 0;
+    char *name = (char *)sp_bt_symbol(syms[i], raw, sizeof raw);  /* always strdup'd; free after use */
     if (!name) continue;
-    sp_StrArray_push(a, sp_sprintf("%s:in `%s'", src, name));
+    /* a method of a required file names that file, not the entry script */
+    const char *file = src;
+    if (sp_bt_files)
+      for (const char *const *f = sp_bt_files; f[0]; f += 2)
+        if (strcmp(f[0], raw) == 0) { file = f[1]; break; }
+    sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
     free(name);
   }
   free(syms);
@@ -3466,13 +3480,18 @@ sp_bool sp_range_include(sp_Range *r, sp_int x){SP_GC_ROOT(r);
 /* A Float is compared against the bounds as a Float, never truncated: 2.5 is
    not in 1..2. The sentinels leave their side open, as in sp_range_include. */
 sp_bool sp_range_cover_f(sp_Range *r, sp_float x){
-  if (r->fe) return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->fe==2?x<r->fend:x<=r->fend);
-  return (r->first==INTPTR_MIN||x>=(sp_float)r->first)&&(r->last==INTPTR_MAX||(r->excl?x<(sp_float)r->last:x<=(sp_float)r->last));}
+  if (x != x) return 0;   /* NaN is in no range */
+  /* an Integer bound against x exactly (#7505): a double past 2^53 rounds */
+  if (r->first!=INTPTR_MIN && sp_int_flt_cmp(r->first, x) > 0) return 0;
+  if (r->fe) return r->fe==2?x<r->fend:x<=r->fend;
+  if (r->last==INTPTR_MAX) return 1;
+  int c = sp_int_flt_cmp(r->last, x);
+  return r->excl ? c > 0 : c >= 0;}
 sp_Range sp_range_new_fend(sp_int f, sp_float e, sp_int x) {
   sp_Range r = sp_range_new(f, 0, 0);
   r.fend = e; r.fe = x ? 2 : 1;
   sp_float fl = floor(e);
-  if (e != e) { r.last = f - 1; return r; }             /* NaN: nothing compares */
+  if (e != e) sp_raise_cls("ArgumentError", "bad value for range");   /* NaN compares with nothing */
   if (fl >= 9.2e18) { r.last = INTPTR_MAX; return r; }  /* past sp_int: no end to walk to */
   if (fl <= -9.2e18) { r.last = f - 1; return r; }
   r.last = (sp_int)fl;
@@ -3591,7 +3610,13 @@ else{while(u>0){sp_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;i
    form). Two wrappers keep call-site emit local. */
 const char *sp_int_opt_inspect(sp_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
 const char *sp_int_opt_to_s(sp_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
+SP_NORETURN void sp_raise_nil_int_op(sp_int a, sp_int b, const char *op);
 sp_int sp_int_pow(sp_int base, sp_int exp) {
+  /* A nil operand (the SP_INT_NIL sentinel, INTPTR_MIN) raises as it does for
+     the other operators (SP_INT_NIL_CK, which sp_idiv and sp_imod run): ahead
+     of the exponent's sign, since the sentinel is negative, so `3 ** nil`
+     answered RangeError "negative exponent" and `nil ** 2` an overflow. */
+  if (SP_UNLIKELY(base == SP_INT_NIL || exp == SP_INT_NIL)) sp_raise_nil_int_op(base, exp, "**");
   if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
   /* Exact square-and-multiply (the old pow(double) round-trip lost precision
      above 2^53 and saturated on overflow). Overflow follows the +/-/* mode:
@@ -3699,16 +3724,34 @@ sp_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
 
 /* Float range (1.0..3.0). Endpoints stay sp_float, so cover?/include?/begin/end
    are exact. -HUGE_VAL / +HUGE_VAL are the beginless / endless sentinels. */
+/* A NaN bound compares with nothing, so CRuby refuses a range that has one
+   and another bound to compare it with; a beginless or endless one is kept. */
+static void sp_frange_check(sp_float f, sp_float l, sp_int om) {
+  if (!(om & SP_FRANGE_NO_BEGIN) && !(om & SP_FRANGE_NO_END) && (f != f || l != l))
+    sp_raise_cls("ArgumentError", "bad value for range");
+}
 sp_FloatRange sp_frange_new(sp_float f, sp_float l, sp_int e) {
+  sp_frange_check(f, l, 0);
   sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = 0; r.unfrozen = 0; return r;
 }
 /* Same, recording which bound was written as absent rather than infinite. */
 sp_FloatRange sp_frange_new_o(sp_float f, sp_float l, sp_int e, sp_int om) {
+  sp_frange_check(f, l, om);
   sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = om; r.unfrozen = 0; return r;
 }
 sp_bool sp_frange_cover(sp_FloatRange r, sp_float x) {
   if (r.first != -HUGE_VAL && x < r.first) return 0;
   if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
+  return 1;
+}
+/* ...and an Integer x, compared with the bounds exactly (#7505): converted to
+   a double first, an Integer past 2^53 rounded onto a bound */
+sp_bool sp_frange_cover_i(sp_FloatRange r, sp_int x) {
+  if (r.first != -HUGE_VAL && sp_int_flt_cmp(x, r.first) < 0) return 0;
+  if (r.last != HUGE_VAL) {
+    int c = sp_int_flt_cmp(x, r.last);
+    if (r.excl ? c >= 0 : c > 0) return 0;
+  }
   return 1;
 }
 sp_bool sp_frange_eq(sp_FloatRange a, sp_FloatRange b) {
@@ -4012,9 +4055,11 @@ sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cp
   if (cpos < 0) cpos += cl;
   if (cpos < 0 || cpos > cl) return FALSE;
   size_t boff = sp_utf8_byte_offset(str, cpos);
-  int64_t slen = (int64_t)strlen(str);
+  /* the subject's own length and mode, as sp_re_match_p reads them: strlen
+     stopped at an embedded NUL, and a binary subject matched as UTF-8 */
+  int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[2];
-  return re_exec(pat, str, slen, (sp_int)boff, caps, 2, 0) > 0;
+  return re_exec(pat, str, slen, (sp_int)boff, caps, 2, sp_str_is_binary(str)) > 0;
 }
 /* Issue #910: sub(string, hash) -- literal-substring pattern
    with a hash replacement. Replaces only the first match. */
@@ -4926,12 +4971,13 @@ const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
   if (!s) sp_nil_recv("encode");
   int from = sp_enc_kind(src, sp_str_is_binary(s) ? 2 : 1);
   int to = sp_enc_kind(dst, 1);
-  if (!from || !to) return s;
+  /* encode answers a new String even where nothing changes, as CRuby's */
+  if (!from || !to) return sp_str_dup(s);
   const char *repl = (replace.tag == SP_TAG_STR && replace.v.s) ? replace.v.s : NULL;
   SP_GC_ROOT_STR(repl);
   if (from == to) {
     if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub(s, repl);
-    return s;
+    return sp_str_dup(s);
   }
   /* binary <-> UTF-8: the ASCII bytes carry over, nothing else does */
   size_t bl = sp_str_byte_len(s);

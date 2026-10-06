@@ -69,6 +69,11 @@ typedef struct {
 } CallPlan;
 
 const CallPlan *cplan_user(Compiler *c, int id);
+/* The same plan resolved afresh and never kept, for a reader that runs in
+   the analysis, before the memo is codegen's to fill (the nil facts,
+   analyze_nil.c): it answers from the types as they stand. The answer
+   lasts until the next call. */
+const CallPlan *cplan_user_fresh(Compiler *c, int id);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, const char *name);
 
@@ -128,6 +133,7 @@ typedef enum {
   PA_NATIVE,      /* a native class's C binding */
   PA_ARITY,       /* the call's count is refused: ArgumentError */
   PA_SYNTH_ENUM,  /* a Struct's synthesized each/each_pair: an Enumerator */
+  PA_STRUCT_SET,  /* a Struct's builtin member write */
   PA_BUILTIN,     /* a builtin value's arm (key PA_KEY_BUILTIN + its PolyFamily) */
   PA_TRIAL        /* an arm only an emission can decide: the call re-entered as the
                      builtin it is, kept unless it raises (key PA_KEY_TRIAL + its
@@ -258,6 +264,7 @@ const PolyPlan *cplan_poly(Compiler *c, int id);
    receiver form). Cheaper: the builtin families and trials, which only the
    --plan-check shadow compares, are left out. */
 const PolyPlan *cplan_poly_arms(Compiler *c, int id);
+int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc);
 /* A plan the caller keeps across emissions that may resolve others (a
    resolve outside the memo reuses one buffer); cplan_poly_free drops it. */
 PolyPlan *cplan_poly_copy(const PolyPlan *p);
@@ -295,5 +302,25 @@ void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
 void pa_observe_at(int id, int kind, int key, int mi, TyKind vty, int conv);
 void pa_end(Compiler *c, int frame, const PolyPlan *p);
 void pa_report(void);
+
+/* ---- CN_*: a call's nil target (#7444) ----
+   Whether call id's receiver may be nil where the call is emitted for a
+   builtin of its type, and what nil answers there. Decided from the
+   settled types, the representation (repr_of) and the nil fact
+   (analyze_nil.c) alone; pure. A receiver qualifies when it is a typed
+   pointer of a String, an Array, a Hash or an IO, and the fact says it may
+   be nil from a nil the program writes (NFW_NIL, NFW_NO_ELSE,
+   NFW_SAFE_NAV, NFW_UNSET). An ivar keeps ivar_nil_recv_guard's policy;
+   a local or a global qualifies when its slot holds the pointer or a
+   shared String's handle, where the test reads it. Inside the call's own
+   emission the receiver is seen as tested (Repr.nil_tested, a view), so
+   the call is armed once. */
+typedef enum {
+  CN_NONE,     /* not nil here, a `&.` call, or a method the program gives nil */
+  CN_RAISE,    /* nil has no such method: NoMethodError, after the operands */
+  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers. Not emitted
+                  yet: the call's type has to join NilClass's answer */
+} CplanNil;
+int cplan_nil(Compiler *c, int id);
 
 #endif

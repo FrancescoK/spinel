@@ -8,6 +8,55 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
+
+/* readlines(sep, limit) and readlines(arg) with anything but a String
+   separator: the arm passed any argument as the separator, and a limit, a
+   nil or a boxed one did not build. CRuby takes a lone argument as the
+   separator when it is nil or a String and as the limit otherwise; given
+   both, the separator is nil or converts to a String and the limit is nil
+   or converts to an Integer. A limit of 0 is ArgumentError, a negative one
+   none. The arguments are held boxed and read at run time, in that order,
+   after a nil handle's NoMethodError, and the lines are read as gets reads
+   them (sp_File_gets_sep). */
+static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, int np, const char *chomp, Buf *b) {
+  int tf = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp, tc = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp;
+  buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); ", tf, r, tf);
+  for (int k = 0; k < np; k++) {
+    buf_printf(b, "sp_RbVal _t%d = ", k ? tb : ta); emit_boxed(c, pos[k], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", k ? tb : ta);
+  }
+  /* nil answers Kernel#readlines, which is private */
+  buf_printf(b, "sp_bool _t%d = %s; if (!_t%d) sp_raise_cls(\"NoMethodError\", "
+                "\"private method 'readlines' called for nil\"); const char *_t%d = \"\\n\"; sp_int _t%d = 0; ",
+             tc, chomp, tf, ts, tl);
+  if (np == 1)
+    buf_printf(b, "if (sp_poly_nil_p(_t%d)) _t%d = NULL;\n"
+                  "else if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) _t%d = sp_poly_arg_str_chk(_t%d);\n"
+                  "else if ((_t%d = sp_poly_arg_int_chk(_t%d)) == 0) "
+                  "sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for readlines\"); ",
+               ta, ts, ta, ta, ts, ta, tl, ta);
+  else
+    buf_printf(b, "_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d); "
+                  "if (!sp_poly_nil_p(_t%d) && (_t%d = sp_poly_arg_int_chk(_t%d)) == 0) "
+                  "sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for readlines\"); ",
+               ts, ta, ta, tb, tl, tb);
+  buf_printf(b, "SP_GC_ROOT_STR(_t%d); sp_StrArray *_t%d = sp_StrArray_new(); SP_GC_ROOT(_t%d); const char *_t%d; "
+                "while ((_t%d = sp_File_gets_sep(_t%d, _t%d, _t%d < 0 ? 0 : _t%d, _t%d)) != NULL) "
+                "sp_StrArray_push(_t%d, _t%d); _t%d; })",
+             ts, tr, tr, tn, tn, tf, ts, tl, tl, tc, tr, tn, tr);
+}
+
+/* A line loop's block parameter `pn` of call `id`, declared in the loop and
+   bound to the fresh line in _t<lt>: a parameter that is the shared handle
+   (--share-strings) wraps it in a handle of its own. */
+static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Buf *b) {
+  Scope *s = comp_scope_of(c, id);
+  LocalVar *lv = s ? scope_local(s, pn) : NULL;
+  if (repr_of_slot(c, lv).kind == RK_STRBUF)
+    buf_printf(b, " sp_String *lv_%s = sp_String_new_shared(_t%d); SP_GC_ROOT(lv_%s);", pn, lt, pn);
+  else buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", pn, lt, pn);
+}
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -147,6 +196,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
       int tio2 = ++g_tmp;
+      char tio[32]; snprintf(tio, sizeof tio, "_t%d", tio2);
       /* pos=, sysseek, flock, fcntl and advise, answering what the typed
          arms answer: the offset pos= set, sysseek's and fcntl's integers,
          flock's status, nil from advise. The receiver and then the
@@ -313,6 +363,25 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       else if (is_path_reader(name))
         buf_printf(b, "sp_File_path(_t%d); })", tio2);
+      /* the limit and separator as the typed arm reads them, where they
+         were dropped and the whole stream read by lines */
+      else if (sp_streq(name, "readlines") && argc > 0 && !io_line_args_spread(nt, argv, argc)) {
+        int pos[2], np = 0;
+        Buf kc; memset(&kc, 0, sizeof kc);
+        for (int k = 0; k < argc; k++) {
+          if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) emit_kw_flag(c, struct_kwarg_value(c, argv[k], "chomp"), &kc);
+          else if (np++ < 2) pos[np - 1] = argv[k];
+        }
+        if (np > 2) {
+          for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+          buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected 0..2)\"); "
+                        "(sp_StrArray *)0", np);
+        }
+        else if (np) emit_io_readlines_args(c, tio, pos, np, kc.p ? kc.p : "0", b);
+        else buf_printf(b, "sp_File_readlines_sep(_t%d, \"\\n\", %s)", tio2, kc.p ? kc.p : "0");
+        buf_puts(b, "; })");
+        free(kc.p);
+      }
       else if (sp_streq(name, "readlines")) buf_printf(b, "sp_File_readlines(_t%d); })", tio2);
       else if (sp_streq(name, "rewind")) buf_printf(b, "sp_File_rewind(_t%d); })", tio2);
       /* a stat's predicates, answered as the TY_IO arms answer them, for a
@@ -468,6 +537,22 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     }
   }
   return 0;
+}
+
+/* syswrite takes exactly one argument, where write takes any number: a
+   longer list was written as write's, and its statement text did not
+   build. CRuby evaluates the arguments, raises NoMethodError for a nil
+   handle, then ArgumentError. A splat's count is the run time's (declined). */
+static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, int argc, Buf *b) {
+  if (argc == 1) return 0;
+  for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) return 0;
+  int tf = ++g_tmp;
+  char msg[96]; arity_message(msg, sizeof msg, argc, 1, 1, NULL);
+  buf_printf(b, "({ sp_File *_t%d = %s; ", tf, r);
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
+  buf_printf(b, "if (!_t%d) sp_nil_recv(\"syswrite\"); sp_raise_cls(\"ArgumentError\", \"%s\"); (sp_int)0; })",
+             tf, msg);
+  return 1;
 }
 
 /* the instance methods of an IO / File handle (TY_IO) */
@@ -901,13 +986,19 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         }
         else rsep = argv[k];
       }
-      if (rsep < 0 && (!rchomp.p || sp_streq(rchomp.p, "0"))) buf_printf(b, "sp_File_readlines(%s)", r);
+      int pos[2], np = 0;
+      for (int k = 0; k < argc; k++)
+        if (nt_kind(nt, argv[k]) != NK_KeywordHashNode && np < 2) pos[np++] = argv[k];
+      TyKind st = np == 1 ? comp_ntype(c, pos[0]) : TY_UNKNOWN;
+      if (np == 2 || (np == 1 && ((st != TY_STRING && st != TY_STRBUF) || repr_of(c, pos[0]).kind == RK_BOXED)))
+        emit_io_readlines_args(c, r, pos, np, rchomp.p ? rchomp.p : "0", b);
+      else if (rsep < 0 && (!rchomp.p || sp_streq(rchomp.p, "0"))) buf_printf(b, "sp_File_readlines(%s)", r);
       else {
         buf_printf(b, "sp_File_readlines_sep(%s, ", r);
         if (rsep >= 0) emit_expr(c, rsep, b); else buf_puts(b, "\"\\n\"");
         buf_printf(b, ", %s)", rchomp.p ? rchomp.p : "0");
       }
-      free(rb.p); return 1;
+      free(rchomp.p); free(rb.p); return 1;
     }
     if (is_io_write(name)) {
       /* every argument writes in order; the return is the total byte count (#2814) */
@@ -919,6 +1010,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
          sp_File_syswrite (which writes straight to the descriptor) rather
          than through the stdio-backed write entries. */
       int is_sw = sp_streq(name, "syswrite");
+      if (is_sw && emit_io_syswrite_count(c, r, argv, argc, b)) { free(rb.p); return 1; }
       /* write(*parts): a splat contributes its elements, each converted and
          written in turn, as the boxed receiver's arm does. The arms below
          read a splat as one operand and wrote the Array's inspect (#7313). */
@@ -1224,7 +1316,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
                  lt, lt, lt, rf, ls, ll, lc);
       if (bpn && file_block_param_poly(c, id, bpn))
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn, lt, bpn);
-      else if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
+      else if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);
       return 1;
@@ -1272,7 +1364,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          way IO#each_line below does */
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_argf_gets()) != NULL) {", lt, lt, lt);
-      if (bpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", bpn, lt, bpn);
+      if (bpn) emit_line_param_decl(c, id, bpn, lt, b);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_puts(b, " } (&sp_argf_obj); })");
       return 1;
@@ -1343,7 +1435,7 @@ int emit_call_handle_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (skip_dots)
         buf_printf(b, " if (sp_str_eq(_t%d, (&(\"\\xff\" \".\")[1])) ||"
                       " sp_str_eq(_t%d, (&(\"\\xff\" \"..\")[1]))) continue;", tdn, tdn);
-      if (dbpn) buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", dbpn, tdn, dbpn);
+      if (dbpn) emit_line_param_decl(c, id, dbpn, tdn, b);
       for (int k = 0; k < dbbn; k++) emit_stmt(c, dbbb[k], b, 0);
       buf_printf(b, " } (sp_Dir *)_t%d; })", tdh);
       return 1;

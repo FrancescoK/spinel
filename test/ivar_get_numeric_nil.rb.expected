@@ -1,0 +1,43 @@
+1
+""
+""
+NoMethodError
+true
+NilClass
+nil
+""
+""
+NilClass
+NoMethodError
+[nil, nil]
+2
+"2"
+true
+1.5
+""
+""
+NoMethodError
+true
+NilClass
+nil
+""
+""
+NilClass
+NoMethodError
+[nil, nil]
+2.5
+"2.5"
+true
+false
+true
+""
+NoMethodError
+""
+NoMethodError
+[nil, nil]
+[nil, nil]
+true
+true
+""
+NilClass
+NoMethodError

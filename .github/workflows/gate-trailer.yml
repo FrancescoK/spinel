@@ -1,0 +1,82 @@
+name: Gate trailer
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+
+permissions: {}
+
+concurrency:
+  group: gate-trailer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Verify the head commit's Gate trailer
+        id: verify
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+        run: |
+          # GitHub creates refs/pull/N/head shortly after the pull request opens, and
+          # this job can start before it exists. Retry it, then fetch the head commit
+          # from the pull request's own repository.
+          for wait in 0 5 10 20; do
+            sleep "$wait"
+            git fetch --no-tags --quiet origin "refs/pull/$PR/head" && break
+          done
+          if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            git fetch --no-tags --quiet "$HEAD_REPO" "$HEAD_SHA"
+          fi
+          set +e
+          out=$(ruby tools/gate.rb verify "$HEAD_SHA" 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          printf '### Gate trailer\n\n~~~\n%s\n~~~\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+          case $rc in
+            0) label="gate: verified" ;;
+            1) label="gate: mismatch" ;;
+            2) label="gate: no trailer" ;;
+            *) label="gate: unknown master" ;;
+          esac
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+
+      - name: Label the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABEL: ${{ steps.verify.outputs.label }}
+        run: |
+          while IFS='|' read -r name color desc; do
+            gh label create "$name" --color "$color" --description "$desc" --force
+            if [ "$name" != "$LABEL" ]; then
+              gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$name" '$l|@uri')" >/dev/null 2>&1 || true
+            fi
+          done <<'EOF'
+          gate: verified|0e8a16|The head commit's Gate trailer names the tree its merge with master gives
+          gate: mismatch|d73a4a|The head commit's Gate trailer names a tree its merge with master does not give
+          gate: no trailer|cfd3d7|The head commit carries no Gate trailer
+          gate: unknown master|fbca04|The Gate trailer names a master commit this repository does not have
+          EOF
+          gh api -X POST "repos/$GH_REPO/issues/$PR/labels" -f "labels[]=$LABEL" >/dev/null

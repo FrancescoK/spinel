@@ -4,10 +4,46 @@
    (codegen_call_arms.h). */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "repr.h"
 #include "codegen_call_arms.h"
+
+/* File.join's scalar and flattened routes keep their operands alive
+   across every later argument, including argument setup emitted in g_pre. */
+static void emit_file_join_args(Compiler *c, const int *argv, int argc, int boxed, Buf *b) {
+  int literals = !boxed;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(c->nt, argv[i]) != NK_StringNode) literals = 0;
+  if (literals) {
+    buf_puts(b, "sp_file_join((const char*[]){");
+    for (int i = 0; i < argc; i++) { if (i) buf_puts(b, ", "); emit_path_expr(c, argv[i], b); }
+    if (!argc) buf_puts(b, "(const char*)0");
+    buf_printf(b, "}, %d)", argc);
+    return;
+  }
+  buf_puts(b, "({ ");
+  int first = emit_rooted_arg_list(c, argv, argc,
+                                 boxed ? "sp_RbVal" : "const char *",
+                                 boxed ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT_STR",
+                                 boxed ? emit_boxed : emit_path_expr, b);
+  buf_printf(b, "%s((%s[]){", boxed ? "sp_file_join_vals" : "sp_file_join",
+             boxed ? "sp_RbVal" : "const char *");
+  for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", first + i);
+  if (!argc) buf_puts(b, "(const char *)0");
+  buf_printf(b, "}, %d); })", argc);
+}
+
+/* realdirpath takes (path, base), while join consumes (base, path).
+   Hold the values in Ruby's order before reversing the slots. */
+static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
+  buf_puts(b, "({ ");
+  int first = emit_rooted_arg_list(c, argv, 2, "const char *", "SP_GC_ROOT_STR", emit_path_expr, b);
+  buf_printf(b, "sp_file_realdirpath(sp_file_join((const char *[]){_t%d, _t%d}, 2)); })",
+             first + 1, first);
+}
 
 /* the class methods of File / FileTest, Dir and Time */
 int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -79,14 +115,13 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_realpath("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
     if (sp_streq(name, "realdirpath") && (argc == 1 || argc == 2)) {
-      buf_puts(b, "sp_file_realdirpath(");
-      /* the two-argument form resolves a relative name against a base dir */
-      if (argc == 2) buf_puts(b, "sp_file_join((const char *[]){");
-      if (argc == 2) { emit_path_expr(c, argv[1], b); buf_puts(b, ", "); }
-      emit_path_expr(c, argv[0], b);
-      if (argc == 2) buf_puts(b, "}, 2)");
-      buf_puts(b, ")"); return 1;
+      if (argc == 2) emit_file_realdirpath2(c, argv, b);
+      else {
+        buf_puts(b, "sp_file_realdirpath("); emit_path_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      return 1;
     }
+
     if (sp_streq(name, "stat") && argc == 1) {
       buf_puts(b, "sp_file_stat_handle("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
@@ -310,25 +345,14 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "join")) {
       int has_dyn = 0;
       for (int k = 0; k < argc; k++) {
-        TyKind jt = comp_ntype(c, argv[k]);
-        if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jt == TY_POLY) has_dyn = 1;
+        Repr jr = repr_of(c, argv[k]);
+        TyKind jt = jr.as_ty;
+        if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jr.kind == RK_BOXED) has_dyn = 1;
       }
-      if (has_dyn) {
-        /* an Array component flattens into the path (#2786); box everything
-           and let the runtime walk it */
-        buf_printf(b, "sp_file_join_vals((sp_RbVal[]){");
-        for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_boxed(c, argv[k], b); }
-        if (argc == 0) buf_puts(b, "sp_box_nil()");
-        buf_printf(b, "}, %d)", argc); return 1;
-      }
-      /* each component initializes a `const char *` slot, so a poly arg (e.g.
-         doom's `File.join(Dir.tmpdir, ...)` where the first component stays
-         poly) must be unboxed via sp_poly_to_s, not land its sp_RbVal raw. */
-      buf_printf(b, "sp_file_join((const char*[]){");
-      for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_path_expr(c, argv[k], b); }
-      if (argc == 0) buf_puts(b, "(const char*)0");
-      buf_printf(b, "}, %d)", argc); return 1;
+      emit_file_join_args(c, argv, argc, has_dyn, b);
+      return 1;
     }
+
     if (sp_streq(name, "readlines") && argc >= 1) {
       /* File.readlines(path[, sep][, chomp: true]) (#2820) */
       int csep = -1;
@@ -389,7 +413,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          a mode string -- assumed, `File.open(path, h[:mode])` reached
          sp_poly_arg_str_chk and raised "no implicit conversion of Integer
          into String" for the flag word CRuby accepts (#4596). */
-      int poly_mode = mnode >= 0 && !int_mode && comp_ntype(c, mnode) == TY_POLY;
+      int poly_mode = mnode >= 0 && !int_mode && repr_of(c, mnode).kind == RK_BOXED;
       #define EMIT_FILE_OPEN() do { \
         if (poly_mode) { \
           buf_puts(b, "sp_File_open_val("); \
@@ -428,7 +452,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *frn = fp ? rename_local(fp) : NULL;
       int bbody = nt_ref(nt, block, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-      TyKind res = comp_ntype(c, id);
+      TyKind res = repr_of(c, id).as_ty;
       int rv = ++g_tmp, tf = ++g_tmp;
       int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
       buf_puts(b, "({ ");
@@ -446,7 +470,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
       if (bn > 0) {
-        TyKind lty = comp_ntype(c, bb[bn-1]);
+        TyKind lty = repr_of(c, bb[bn-1]).as_ty;
         /* Emit last stmt as expression when it has a usable non-void value.
            For void/nil/unknown side-effecting calls (e.g. f.print), emit_stmt
            handles g_pre correctly; then synthesize a return value. */
@@ -524,7 +548,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       const char *dpn = dp0 ? rename_local(dp0) : NULL;
       int dbody = nt_ref(nt, dblk, "body");
       int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
-      TyKind dres = comp_ntype(c, id);
+      TyKind dres = repr_of(c, id).as_ty;
       int dscalar = is_scalar_ret(dres) && dres != TY_VOID && dres != TY_NIL && dres != TY_UNKNOWN;
       int td = ++g_tmp, tdv = ++g_tmp;
       buf_puts(b, "({ ");
@@ -534,7 +558,7 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
       if (dbn > 0 && dscalar) {
         emit_ctype(c, dres, b); buf_printf(b, " _t%d = ", tdv);
-        if (dres == TY_POLY && comp_ntype(c, dbb[dbn - 1]) != TY_POLY) emit_boxed(c, dbb[dbn - 1], b);
+        if (dres == TY_POLY && repr_of(c, dbb[dbn - 1]).kind != RK_BOXED) emit_boxed(c, dbb[dbn - 1], b);
         else emit_expr(c, dbb[dbn - 1], b);
         buf_puts(b, "; ");
       }
@@ -1268,7 +1292,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
            (PR #4209's observation). argv[1] may also BE the keyword hash. */
         if (argc >= 2 && argv[1] != kwh && comp_ntype(c, argv[1]) == TY_STRING)
           emit_expr(c, argv[1], b);
-        else if (argc >= 2 && argv[1] != kwh && comp_ntype(c, argv[1]) == TY_POLY) {
+        else if (argc >= 2 && argv[1] != kwh && repr_of(c, argv[1]).kind == RK_BOXED) {
           buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[1], b); buf_puts(b, ")");
         }
         /* no mode: the runtime derives it from the fd's own access mode
@@ -1305,38 +1329,45 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
            strings keep the filename copy. */
         int a0_sio = node_is_stringio(c, argv[0]), a0_io = comp_ntype(c, argv[0]) == TY_IO;
         int a1_sio = node_is_stringio(c, argv[1]), a1_io = comp_ntype(c, argv[1]) == TY_IO;
-        int a0_poly = comp_ntype(c, argv[0]) == TY_POLY;
-        int a1_poly = comp_ntype(c, argv[1]) == TY_POLY;
-        /* a poly endpoint (a param unioning StringIO and IO, #3257) holds a
-           boxed stream object: dispatch read/write on its runtime class */
-        if ((a0_sio || a0_io || a0_poly) && (a1_sio || a1_io || a1_poly) &&
-            (a0_poly || a1_poly)) {
+        int a0_poly = repr_of(c, argv[0]).kind == RK_BOXED;
+        int a1_poly = repr_of(c, argv[1]).kind == RK_BOXED;
+        /* A boxed endpoint may hold a path, including a shared String handle,
+           or a stream. Check its kind before reading the payload as sp_File. */
+        if (a0_poly || a1_poly) {
           int sio_cid = comp_class_index(c, "StringIO");
           int td = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = ", td);
           if (a0_poly) {
             int ts = ++g_tmp;
             buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, argv[0], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_read(sp_poly_unbox_s(_t%d)) : ", ts, ts, ts, ts);
             if (sio_cid >= 0)
-              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_read((sp_StringIO *)_t%d.v.p)"
-                            " : sp_File_read((sp_File *)_t%d.v.p); })", ts, sio_cid, ts, ts);
-            else
-              buf_printf(b, "; sp_File_read((sp_File *)_t%d.v.p); })", ts);
+              buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
+                            " ? sp_StringIO_read((sp_StringIO *)_t%d.v.p) : ", ts, ts, sio_cid, ts);
+            buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                          " ? sp_File_read((sp_File *)_t%d.v.p)"
+                          " : (sp_raise_nomethod(sp_nomethod_msg(\"read\", _t%d)), (const char *)0); })", ts, ts, ts, ts);
           }
           else if (a0_sio) { buf_puts(b, "sp_StringIO_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else { buf_puts(b, "sp_File_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          else if (a0_io) { buf_puts(b, "sp_File_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          else { buf_puts(b, "sp_file_read("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); }
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", td);
           if (a1_poly) {
             int tdd = ++g_tmp;
             buf_printf(b, "sp_RbVal _t%d = ", tdd); emit_expr(c, argv[1], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_write(sp_poly_unbox_s(_t%d), _t%d) : ", tdd, tdd, tdd, tdd, td);
             if (sio_cid >= 0)
-              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d)"
-                            " : sp_File_write_bin((sp_File *)_t%d.v.p, _t%d); })", tdd, sio_cid, tdd, td, tdd, td);
-            else
-              buf_printf(b, "; sp_File_write_bin((sp_File *)_t%d.v.p, _t%d); })", tdd, td);
+              buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
+                            " ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d) : ", tdd, tdd, sio_cid, tdd, td);
+            buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                          " ? sp_File_write_bin((sp_File *)_t%d.v.p, _t%d)"
+                          " : (sp_raise_nomethod(sp_nomethod_msg(\"write\", _t%d)), (sp_int)0); })", tdd, tdd, tdd, td, tdd);
           }
           else if (a1_sio) { buf_puts(b, "sp_StringIO_write("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
-          else { buf_puts(b, "sp_File_write_bin("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          else if (a1_io) { buf_puts(b, "sp_File_write_bin("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          else { buf_puts(b, "sp_file_write("); emit_path_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
           return 1;
         }
         if ((a0_sio || a0_io) && (a1_sio || a1_io)) {
@@ -1703,7 +1734,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_expr(c, recv, b);
       buf_puts(b, ", SP_BUILTIN_ENUMERATOR), ");
       emit_boxed(c, argv[0], b);
-      if (comp_ntype(c, id) == TY_INT) buf_printf(b, "); _t%d; })", t);
+      if (repr_of(c, id).as_ty == TY_INT) buf_printf(b, "); _t%d; })", t);
       else buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", t, t);
       return 1;
     }
@@ -1748,10 +1779,10 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       /* a Range of either kind, or a boxed argument, draws as Random#rand
          does (sp_rand_poly), answered in the call's own type */
       else if (argc >= 1 && (comp_ntype(c, argv[0]) == TY_RANGE || comp_ntype(c, argv[0]) == TY_FLOAT_RANGE ||
-                             comp_ntype(c, argv[0]) == TY_POLY)) {
+                             repr_of(c, argv[0]).kind == RK_BOXED)) {
         Buf rv; memset(&rv, 0, sizeof rv);
         buf_puts(&rv, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, argv[0], &rv); buf_puts(&rv, ", 0)");
-        TyKind rk = comp_ntype(c, id);
+        TyKind rk = repr_of(c, id).as_ty;
         if (rk == TY_POLY || rk == TY_UNKNOWN) buf_puts(b, rv.p);
         else emit_unbox_text(c, rk, rv.p, b);
         free(rv.p);
@@ -1864,7 +1895,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
       }
-      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_POLY) {
+      else if (argc >= 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
         /* a boxed argument draws by its run-time kind (sp_rand_poly): a Range
            in a mixed slot was converted to an Integer bound and raised */
         buf_puts(b, "sp_rand_poly("); emit_expr(c, recv, b); buf_puts(b, ", ");

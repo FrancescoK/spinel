@@ -14,7 +14,7 @@
 
    view_push_repr does the same for one of the representation flags beside
    the type (repr.h): a String-handle mark or demand, a poly-to-handle lift,
-   a read's nil narrowing. The emitters that re-enter with a flag lifted or
+   a read's nil narrowing, a receiver whose nil a call's nil arm tested. The emitters that re-enter with a flag lifted or
    forced push it as a view, so a refusal's view_unwind puts it back with
    the rest. repr_of reads the flags live and memoizes nothing.
 
@@ -55,9 +55,9 @@ ArmCtx g_arm = { -1, -1, 0, -1 };
    name when it reaches the overridden node. Twice MAX_ARG_OVERRIDE to start
    with, so only a call of more arguments than that grows it. */
 static int  argov_node0[2 * MAX_ARG_OVERRIDE];
-static char argov_text0[2 * MAX_ARG_OVERRIDE][32];
+static char argov_text0[2 * MAX_ARG_OVERRIDE][ARGOV_TEXT_LEN];
 int  *g_argov_node = argov_node0;
-char (*g_argov_text)[32] = argov_text0;
+char (*g_argov_text)[ARGOV_TEXT_LEN] = argov_text0;
 static int g_argov_cap = 2 * MAX_ARG_OVERRIDE;
 int  g_n_argov = 0;
 /* See codegen_internal.h. */
@@ -65,7 +65,7 @@ void argov_reserve(void) {
   if (g_n_argov + 1 + MAX_ARG_OVERRIDE <= g_argov_cap) return;
   int cap = 2 * (g_n_argov + 1 + MAX_ARG_OVERRIDE);
   int *nodes = malloc(sizeof *nodes * (size_t)cap);
-  char (*texts)[32] = malloc(sizeof *texts * (size_t)cap);
+  char (*texts)[ARGOV_TEXT_LEN] = malloc(sizeof *texts * (size_t)cap);
   if (!nodes || !texts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(nodes, g_argov_node, sizeof *nodes * (size_t)g_n_argov);
   memcpy(texts, g_argov_text, sizeof *texts * (size_t)g_n_argov);
@@ -78,8 +78,13 @@ int view_bind(int node, const char *fmt, ...) {
   int slot = g_n_argov++;
   g_argov_node[slot] = node;
   va_list ap; va_start(ap, fmt);
-  vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
+  int n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
   va_end(ap);
+  if (n < 0 || (size_t)n >= sizeof g_argov_text[0]) {
+    fprintf(stderr, "spinel: internal error: a bound node's text is %d bytes, over the %d a slot holds (ARGOV_TEXT_LEN): %.40s...\n",
+            n, ARGOV_TEXT_LEN - 1, g_argov_text[slot]);
+    abort();
+  }
   return slot;
 }
 
@@ -94,6 +99,7 @@ static int view_read(Compiler *c, int kind, int id) {
   case VR_STRBUF_BOX:    return c->strbuf_box[id];
   case VR_HANDLE_DEMAND: return c->strbuf_handle_demand[id];
   case VR_POLY_LIFT:     return c->poly_strbuf_lift[id];
+  case VR_NIL_TESTED:    return c->nil_tested[id];
   default:               return (int)c->nilnarrow[id];
   }
 }
@@ -103,6 +109,7 @@ static void view_write(Compiler *c, int kind, int id, int v) {
   case VR_STRBUF_BOX:    c->strbuf_box[id] = (unsigned char)v; break;
   case VR_HANDLE_DEMAND: c->strbuf_handle_demand[id] = (unsigned char)v; break;
   case VR_POLY_LIFT:     c->poly_strbuf_lift[id] = (unsigned char)v; break;
+  case VR_NIL_TESTED:    c->nil_tested[id] = (unsigned char)v; break;
   default:               c->nilnarrow[id] = (TyKind)v; break;
   }
 }

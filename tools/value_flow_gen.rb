@@ -5,8 +5,9 @@
 #
 # A case is one row of FACTORS: where a value that may be nil comes from, what
 # carries it to the read, the operation that reads it, whether the slot it
-# travels in is an Integer or a Float one, whether the case runs at the top
-# level or in a method, and the mode the program is compiled in.
+# travels in holds an Integer, a Float, a Bool, a String or a Symbol, whether
+# the object a carrier writes it into is frozen first, whether the case runs
+# at the top level or in a method, and the mode the program is compiled in.
 #
 # Spinel keeps an Integer or a Float that may be nil in the slot's own type:
 # the slot holds a sentinel for nil (SP_INT_NIL, a NaN payload for a Float),
@@ -18,6 +19,14 @@
 # type test as an Integer. These were fixed a read or a carrier at a time
 # (#6026, #6112, #6138, #6140, #6142), each found by hand, so the probe crosses
 # the three.
+#
+# A value also travels where no typed slot is: in an ivar only reflection
+# writes, in a Struct's member (which is no ivar), in an object a splice or
+# a fetch's block brings into an Array of other classes, or through a handle
+# that may be another class (`[s, 0][0]`) into a setter of an object that may
+# be frozen. Each of these took a bool, an object or a frozen check the
+# wrong way in review (#6800, #6909), so the carriers take them too, and the
+# Bool, String and Symbol types beside Integer and Float.
 #
 # Every carrier takes a present value of the slot's type first, which types
 # the slot, then the source's value, so the nil lands in a typed slot. Each
@@ -54,14 +63,27 @@ module ValueFlowGen
     # attr_reader into an ivar's array (#6138's reader mutation); poly_or and
     # poly_cond read an element through a handle that is an Array or a String
     # (`s || arr`, `c ? arr : "s"`); captured is a local a lambda reads.
+    # data a Data member; reflective_get and reflective_reader read, by
+    # instance_variable_get or an attr_reader, an ivar instance_variable_set
+    # wrote; struct_reflect asks instance_variable_get of a Struct, whose
+    # member is no ivar, beside an object with that ivar; arr_splice,
+    # arr_fetch and hash_fetch write an ivar of an object `a[0, 1] = [b]` or
+    # a fetch's block brought in; setter, send_setter (`o.send(:x=, v)`),
+    # struct_aset (`o[:x] = v`), ivset and ivset_struct
+    # (instance_variable_set of a class's object or a Struct's) write
+    # through a handle that may be another class.
     [:carrier, %w[local ivar global cvar block_param proc_param lambda_param method_obj method_param method_ret
                   reader alias_reader struct hash arr_push arr_lit arr_aset arr_gap arr_reader poly_or
-                  poly_cond captured each_with_index map each_slice]],
+                  poly_cond captured each_with_index map each_slice data reflective_get reflective_reader
+                  struct_reflect arr_splice arr_fetch hash_fetch setter ivset ivset_struct struct_aset send_setter]],
     [:read, %w[value p inspect interp to_s nil_p eq_nil class_eqq is_a class case_nil case_class case_zero
                hash_key hash_aset hash_val include index count join sum max minmax sort cmp arr_cmp arr_cmp_nil
                pack to_a to_i and plus rplus gt or_asgn truthy array_conv string_conv number_conv splat_lit
                format zip product splat_call compact delete then]],
-    [:type, %w[int float]],
+    [:type, %w[int float bool string symbol]],
+    # frozen: the object a writing carrier writes into is frozen first, and
+    # the write raises FrozenError
+    [:frozen, %w[mutable frozen]],
     [:scope, %w[top method]],
     # promote: compiled with --int-overflow=promote, which boxes an Integer
     # slot another way
@@ -71,6 +93,16 @@ module ValueFlowGen
   # The first level of each factor is its simplest; reducing a case walks
   # factors toward it.
   SIMPLEST = FACTORS.to_h { |f, l| [f, l[0]] }.freeze
+  # A type's present value, and the class a type test asks for. A Bool's is
+  # false, the value a nil can pass for.
+  VALUES = { "int" => "1", "float" => "1.5", "bool" => "false", "string" => '"value"',
+             "symbol" => ":value" }.freeze
+  CLASSES = { "int" => "Integer", "float" => "Float", "bool" => "FalseClass", "string" => "String",
+              "symbol" => "Symbol" }.freeze
+  # Carriers that write the value into an object, which can be frozen
+  # first; elsewhere `frozen` realizes mutable. Those that write a Struct.
+  WRITERS = %w[setter send_setter struct_aset ivset ivset_struct].freeze
+  STRUCT_WRITERS = %w[send_setter struct_aset ivset_struct].freeze
   # Carriers whose value binds to a parameter a call can leave out (a nil
   # default) or a splat can leave short.
   OPTIONAL = %w[block_param proc_param lambda_param method_obj method_param reader alias_reader struct].freeze
@@ -97,7 +129,7 @@ module ValueFlowGen
   # case `n`: an expression, or nil for `p`, which prints its own line. An
   # Array read reads `arr` when given, else `[v, x]`.
   def read_src(r, x, t, v, n, arr = nil)
-    k = t == "int" ? "Integer" : "Float"
+    k = CLASSES.fetch(t)
     a = arr || "[#{v}, #{x}]"
     case r
     when "value" then x
@@ -139,7 +171,7 @@ module ValueFlowGen
     when "truthy" then "(#{x} ? :t : :f)"
     when "array_conv" then "Array(#{x})"
     when "string_conv" then "String(#{x})"
-    when "number_conv" then "#{k}(#{x})"
+    when "number_conv" then "#{t == "float" ? "Float" : "Integer"}(#{x})"
     when "splat_lit" then "[*#{x}]"
     when "format" then "format(\"%p\", #{x})"
     when "zip" then "[#{v}, #{v}, #{v}].zip(#{a})"
@@ -169,8 +201,9 @@ module ValueFlowGen
   def build(n, row)
     real = row.dup
     t = row[:type]
-    v = t == "int" ? "1" : "1.5"
+    v = VALUES.fetch(t)
     car = row[:carrier]
+    real[:frozen] = "mutable" unless WRITERS.include?(car)
     src = row[:source]
     defs = +""
     # the present value and the source's, as expressions
@@ -239,6 +272,59 @@ module ValueFlowGen
     when "struct"
       defs << "S#{n} = Struct.new(:x)\n"
       uses << rep.call("S#{n}.new(#{pv}).x") << rep.call("S#{n}.new(#{own_opt ? "" : sv}).x")
+    when "data"
+      defs << "D#{n} = Data.define(:x)\n"
+      uses << rep.call("D#{n}.new(#{pv}).x") << rep.call("D#{n}.new(#{sv}).x")
+    when "reflective_get", "reflective_reader"
+      # an object whose ivar only instance_variable_set writes
+      defs << "class A#{n}\n  attr_reader :x#{n}\nend\n"
+      uses << "o#{n} = A#{n}.new\n"
+      [pv, sv].each do |x|
+        uses << "o#{n}.instance_variable_set(:@x#{n}, #{x})\n" <<
+          rep.call(car == "reflective_get" ? "o#{n}.instance_variable_get(:@x#{n})" : "o#{n}.x#{n}")
+      end
+    when "struct_reflect"
+      # a Struct's member is no ivar, though an element beside it has one
+      # of that name, always the present value
+      defs << "S#{n} = Struct.new(:x#{n})\nclass K#{n}\n  def initialize(x) = (@x#{n} = x)\nend\n"
+      [pv, sv].each do |x|
+        uses << "[S#{n}.new(#{x}), K#{n}.new(#{pv})].each do |o#{n}|\n" \
+                "#{indent(rep.call("o#{n}.instance_variable_get(:@x#{n})"), "  ")}end\n"
+      end
+    when "arr_splice", "arr_fetch", "hash_fetch"
+      # an object of a class the receiver's elements did not have, which a
+      # splice or a fetch's block brings in, takes the value in an ivar
+      defs << "class A#{n}; end\nclass B#{n}; end\n"
+      [pv, sv].each do |x|
+        uses << case car
+                when "arr_splice" then "a#{n} = [A#{n}.new, 0]\na#{n}[0, 1] = [B#{n}.new]\no#{n} = a#{n}[0]\n"
+                when "arr_fetch" then "o#{n} = [A#{n}.new, 0].fetch(ARGV.size + 9) { B#{n}.new }\n"
+                else "o#{n} = { a: A#{n}.new, b: 0 }.fetch(:c) { B#{n}.new }\n"
+                end
+        uses << "o#{n}.instance_variable_set(:@x#{n}, #{x})\n" << rep.call("o#{n}.instance_variable_get(:@x#{n})")
+      end
+    when *WRITERS
+      # a write through a handle that may be another class (`[s, 0][0]`),
+      # to an object frozen first or not; a write that raises prints the
+      # class of what it raised
+      defs << if STRUCT_WRITERS.include?(car)
+                "S#{n} = Struct.new(:x#{n})\n"
+              else
+                "class S#{n}\n  attr_accessor :x#{n}\n\n  def initialize(x) = (@x#{n} = x)\nend\n"
+              end
+      write = case car
+              when "setter" then ->(x) { "o#{n}.x#{n} = #{x}" }
+              when "send_setter" then ->(x) { "o#{n}.send(:x#{n}=, #{x})" }
+              when "struct_aset" then ->(x) { "o#{n}[:x#{n}] = #{x}" }
+              else ->(x) { "o#{n}.instance_variable_set(:@z#{n}, #{x})" }
+              end
+      read = car.start_with?("ivset") ? "o#{n}.instance_variable_get(:@z#{n})" : "o#{n}.x#{n}"
+      [pv, sv].each do |x|
+        uses << "s#{n} = S#{n}.new(#{pv})\no#{n} = [s#{n}, 0][0]\n"
+        uses << "s#{n}.freeze\n" if real[:frozen] == "frozen"
+        uses << "begin\n  #{write.call(x)}\n#{indent(rep.call(read), "  ")}rescue => w#{n}\n" \
+                "  puts \"#{n} \" + w#{n}.class.to_s\nend\n"
+      end
     when "hash"
       uses << "h#{n} = { a: #{pv} }\nh#{n}[:b] = #{sv}\n" << rep.call("h#{n}[:a]") << rep.call("h#{n}[:b]")
     when "arr_push", "arr_lit", "arr_aset", "arr_gap", "arr_reader", "poly_or", "poly_cond"
@@ -315,8 +401,10 @@ module ValueFlowGen
   # The values a case's lines read, in the order it prints them: the
   # present one, the source's, a nil the carrier makes of its own (an
   # Array's gap, the element of the answer map builds, a short each_slice
-  # row), and an Array carrier's whole Array under an Array read.
+  # row), and an Array carrier's whole Array under an Array read; for
+  # struct_reflect, a Struct's and an object's, each value in turn.
   def roles(real)
+    return %w[member ivar source_member source_ivar] if real[:carrier] == "struct_reflect"
     own = { "arr_gap" => "gap", "map" => "mapped", "each_slice" => "short" }[real[:carrier]]
     whole = ARRAYS.include?(real[:carrier]) && ARRAY_READS.include?(real[:read]) ? "array" : nil
     ["present", "source", own, whole].compact

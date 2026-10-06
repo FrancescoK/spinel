@@ -1,0 +1,4 @@
+module KwPaths
+  def self.show: (?show_read: String?) -> String
+  def self.feed: (?feed_id: Integer?) -> String
+end

@@ -22,6 +22,8 @@ int is_add_sub_mul(const char *n);    /* + - * */
 int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operators */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
+int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
+int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
 int is_tap_alias(const char *n);      /* tap then yield_self */
 int is_quantifier(const char *n);     /* all? any? none? one? */
@@ -39,6 +41,8 @@ int is_count_alias(const char *n);    /* length size count */
 int is_class_eval_family(const char *n);  /* class_eval module_eval class_exec module_exec */
 int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec */
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
+int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
+int is_receiver_conversion(const char *n); /* to_s to_str itself: conversions a String answers with itself */
 int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */
 int is_each_walk_or_with_index(const char *n); /* each each_entry reverse_each each_with_index */
 int is_call_or_yield(const char *n);  /* call () [] yield: is_call_alias's names and yield */
@@ -76,6 +80,7 @@ int is_then_alias(const char *n); /* then yield_self */
 int is_intersection_alias(const char *n); /* & intersection */
 int is_add_sub(const char *n); /* + - */
 int is_store_alias(const char *n); /* []= store */
+int is_hash_default_setter(const char *n); /* default= */
 int is_pop_shift(const char *n); /* pop shift */
 int is_prepend_alias(const char *n); /* prepend unshift */
 int is_text_print(const char *n); /* print puts */
@@ -86,6 +91,7 @@ int is_bounded_int_step(const char *n); /* downto upto */
 
 int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
+int is_match_p_name(const char *n);   /* match? */
 int is_string_index(const char *n); /* index rindex */
 int is_modulo_alias(const char *n); /* % modulo */
 int is_append_concat(const char *n); /* << concat */
@@ -95,6 +101,12 @@ int is_take_drop(const char *n); /* drop take */
 int is_byte_codepoint_each(const char *n); /* each_byte each_codepoint */
 int is_with_index_alias(const char *n); /* each_with_index with_index */
 int is_freeze_family(const char *n); /* freeze frozen? */
+int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
+int is_object_copy(const char *n);   /* dup clone */
+int is_ivar_set_name(const char *n); /* instance_variable_set */
+int is_bivar_keyed_class(const char *n);  /* Array Hash Random */
+int is_string_class_name(const char *n);   /* String */
+int is_frozen_value_class(const char *n); /* Integer Float Symbol NilClass TrueClass FalseClass Range */
 int is_nonblock_io(const char *n); /* read_nonblock write_nonblock */
 
 int is_mul_or_pow(const char *n); /* * ** */
@@ -125,6 +137,7 @@ int is_element_access(const char *n); /* [] []= */
 
 int is_current_method(const char *n); /* __callee__ __method__ */
 int is_hash_constructor(const char *n); /* __hash_new_default new */
+int is_struct_constructor(const char *n); /* new [] */
 int is_attr_reader_family(const char *n); /* attr_accessor attr_reader */
 int is_range_bound_reader(const char *n); /* begin end */
 int is_directory_entries(const char *n); /* children entries */
@@ -175,6 +188,8 @@ int is_array_hash_or_object_class(const char *n); /* Array Hash Object */
 int is_integer_class_name(const char *n); /* Fixnum Integer */
 
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
+int is_plus_op(const char *n);       /* +: the operator `+=` writes through */
+int is_ivar_set(const char *n);      /* instance_variable_set */
 
 int is_string_append_or_prepend(const char *n); /* << concat prepend */
 
@@ -188,5 +203,7 @@ int is_gated_exception_accessor(const char *n); /* accessors owned by specific e
 int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
 
 int is_builtin_reopen_name(const char *name);
+
+int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
 
 #endif

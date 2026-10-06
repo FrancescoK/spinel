@@ -6,6 +6,7 @@
 #include "codegen_poly.h"
 #include "analyze_internal.h"
 #include "call_plan.h"
+#include "repr.h"
 
 static CallPlan *g_cp_memo = NULL;
 static unsigned char *g_cp_have = NULL;
@@ -442,6 +443,14 @@ const CallPlan *cplan_user(Compiler *c, int id) {
   return &g_cp_memo[id];
 }
 
+const CallPlan *cplan_user_fresh(Compiler *c, int id) {
+  static CallPlan fresh;
+  cplan_set(&fresh, -1, -1, UC_NONE, CP_NONE);
+  if (id < 0 || id >= c->node_cap) return &fresh;
+  cplan_resolve(c, id, &fresh);
+  return &fresh;
+}
+
 /* ---- CP_REFUSE ---- */
 
 /* The positional-argument count of a CallNode (0 when it has none). */
@@ -463,6 +472,26 @@ static int cplan_argc(const NodeTable *nt, int id) {
    receiver chain is the one to report (diagnose_unsupported_call), and 1
    when the node itself settles it. The message may be a static buffer the
    next call reuses. #2652 / #2667 / #2668 */
+/* `s.method(:<<)`, `s.method(:upcase!)`: a Method bound to a String's in-place
+   mutator. The synthesized wrapper (`def __bam_N(__bam_r, ...) =
+   __bam_r << ...`) appends to its receiver parameter, which is the shared
+   handle, while the Method is bound to the String's plain value: a call
+   read the value as the handle and crashed, and with the handle it would
+   change a copy. The mutators are an_str_mutator_name's: the builtin rows'
+   (bop_name_mutates) and the bang methods. */
+static int cplan_str_method_mutator(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !is_method_obj_call(c, id)) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  /* the `__bam_` wrapper a `.method(:sym)` was retargeted at names its builtin */
+  int mi = method_obj_target_mi(c, id);
+  int dn = mi >= 0 ? c->scopes[mi].def_node : -1;
+  const char *sym = dn >= 0 ? nt_str(nt, dn, "bam_sym") : NULL;
+  return sym && an_str_mutator_name(sym);
+}
+
 const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   *stop = 1;
   const NodeTable *nt = c->nt;
@@ -547,6 +576,12 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
   const char *why = hit >= 0 ? tbl[hit].why : NULL;
+  if (!why && cplan_str_method_mutator(c, id))
+    why = "String#method is not supported for a method that changes the String in place "
+          "(`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's "
+          "value, not to the String, so calling it could not change the String it came "
+          "from. Call the method on the String directly, or wrap it in a block "
+          "(`->(x) { s << x }`) (see docs/limitations.md)";
 
   if (!why && rcn && comp_class_index(c, rcn) < 0) {
     /* Namespaces that exist only in an interpreter. Keyed on the receiver, so
@@ -856,7 +891,7 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
    its method to a class outside them. Into ks (sized nclasses). */
 static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
   int n = 0;
-  if (any_exc_reopen(c)) {
+  if (any_exc_reopen(c) || (is_element_access(name) && is_store_alias(name))) {
     for (int k = 0; k < c->nclasses; k++) ks[n++] = k;
     return n;
   }
@@ -864,6 +899,14 @@ static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
   const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
   for (int i = 0; i < npc; i++) ks[n++] = pcs[i].cls;
   return n;
+}
+
+/* Struct's builtin writer has no method scope, but still owns an arm. */
+int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
+  ClassInfo *k = &c->classes[cid];
+  return argc == 2 && (is_element_access(name) && is_store_alias(name)) && k->instantiated &&
+         k->is_struct && !k->is_data && !k->is_native_class &&
+         comp_resolve_member(c, cid, name, 0, NULL, NULL) == SP_MEMBER_NONE;
 }
 
 /* The arms emit_poly_user_arms0 writes, class by class, in its order. */
@@ -1148,6 +1191,10 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   int nks = cpoly_arm_classes(c, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
+    if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) {
+      cpoly_add(p, &cap, PA_STRUCT_SET, k, -1, ret, PC_SAME);
+      continue;
+    }
     if (c->classes[k].is_native_class) {
       if (kw_pos && has_splat_arg && argc == 1 && splat_a == 0 && kwh < 0 && c->classes[k].instantiated) {
         const NativeMethod *rm = NULL;
@@ -1583,7 +1630,7 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int argc = 0;
-  const int *argv = call_args(nt, id, &argc);
+  call_args(nt, id, &argc);
   int has_blk = nt_ref(nt, id, "block") >= 0, plain = nt_call_args_plain(nt, id);
   if (!name) return &fp;
   unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
@@ -1592,13 +1639,8 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id) {
   if (own & PF_STR_BANG) { cpoly_family(&fp, &cap, PB_FACE_STR_BANG); return &fp; }
   for (unsigned kind = 1; kind & PF_OWNERS; kind <<= 1) {
     if (!(kinds & kind)) continue;
-    /* several owners: an argument of another kind is the owner's TypeError */
-    int misfit = 0;
-    if (kinds & (kinds - 1)) {
-      unsigned fl = ty_poly_face_owner_flags(name, argc, has_blk, plain, kind);
-      if ((fl & PF_ARGS_OWN) && plain)
-        for (int i = 0; i < argc && !misfit; i++) misfit = face_arg_misfit(c, kind, argv[i]);
-    }
+    /* an argument of another kind is the owner's TypeError */
+    int misfit = face_args_misfit(c, id, kind);
     cpoly_add(&fp, &cap, misfit ? PA_BUILTIN : PA_TRIAL, PA_KEY_FACE + face_kind_index(kind), -1, TY_UNKNOWN,
               PC_SAME);
   }
@@ -1618,3 +1660,76 @@ void cplan_poly_free(PolyPlan *p) {
   free(p->arm);
   free(p);
 }
+
+/* ---- CN_*: a call's nil target (#7444) ---- */
+
+/* the builtin receivers whose nil target the plan decides: a typed pointer
+   whose NULL is nil */
+static int cplan_nil_family(TyKind t) {
+  return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO;
+}
+
+/* Does the program give nil a method `name` of its own: on NilClass,
+   Object, Kernel or BasicObject, or at the top level (a private Object
+   method, which CRuby names as such)? */
+static int cplan_nil_user_method(Compiler *c, const char *name) {
+  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  if (comp_method_index(c, name) >= 0) return 1;
+  for (int i = 0; owners[i]; i++) {
+    int k = comp_class_index(c, owners[i]);
+    if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  }
+  return 0;
+}
+
+int cplan_nil(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
+  int r = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  const char *op = nt_str(nt, id, "call_operator");
+  if (r < 0 || !nm || (op && sp_streq(op, "&."))) return CN_NONE;
+  /* the receiver as settled, not as a view retypes it: a poly arm's
+     unboxed String is never its box's nil */
+  TyKind rt = c->ntype[r];
+  if (!cplan_nil_family(rt) || comp_ntype(c, r) != rt) return CN_NONE;
+  Repr rr = repr_of(c, r);
+  if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
+  /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);
+     a class variable's arms write back into it */
+  NodeKind rk = nt_kind(nt, r);
+  if (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode) return CN_NONE;
+  /* a local or a global is tested in its slot, where a mutator writes
+     back: a slot that holds the pointer, or a shared String's handle; one
+     held another way (a box a read unboxes) is left as it is */
+  if (rk == NK_LocalVariableReadNode || rk == NK_GlobalVariableReadNode) {
+    const char *sn = nt_str(nt, r, "name");
+    LocalVar *lv = NULL;
+    if (sn && rk == NK_LocalVariableReadNode) {
+      Scope *sc = comp_scope_of(c, r);
+      lv = sc ? scope_local(sc, sn) : NULL;
+    }
+    else if (sn && sn[0] == '$') lv = comp_gvar(c, comp_resolve_gvar(c, sn + 1));
+    Repr sr = repr_of_slot(c, lv);
+    if (!lv || !(sr.kind == RK_STRBUF || (sr.kind == RK_PTR && sr.as_ty == rt))) return CN_NONE;
+  }
+  /* a shared String's handle a call renders is not bound like a value */
+  else if (rr.kind == RK_STRBUF) return CN_NONE;
+  /* a nil the program writes; not one the fact cannot bound (an element
+     read, a global, an ivar, a caller not seen, a builtin's answer), which
+     a hot loop over a receiver that is never nil would pay for */
+  int why = nil_fact_why(c, r);
+  if (why != NFW_NIL && why != NFW_NO_ELSE && why != NFW_SAFE_NAV && why != NFW_UNSET) return CN_NONE;
+  /* the definite-assignment walk over a temp the compiler wrote itself (a
+     desugared splat's receiver) is not the program's nil */
+  if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;
+  /* in a Ruby-defined builtin (builtins/enumerable.rb), only its receiver
+     is the program's value: its own locals are never nil */
+  if (enum_builtin_node(c, id)) {
+    const char *rn = nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+    if (!rn || !sp_streq(rn, "__self")) return CN_NONE;
+  }
+  if (cplan_nil_user_method(c, nm)) return CN_NONE;
+  return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
+}
+

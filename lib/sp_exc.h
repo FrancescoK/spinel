@@ -15,7 +15,7 @@
  *
  * sp_exc_sym_slot/sp_exc_recover_named (need sp_sym_intern, a REAL
  * program-generated function whose body differs per compiled program --
- * not a hook) and sp_exc_is_a (poly value-dispatch) stay in spinel_rt.h,
+ * not a hook) stay in spinel_rt.h,
  * along with sp_exc_reason_acc/sp_exc_tag_acc (the two accessors that
  * call sp_exc_sym_slot) and the raise/longjmp control flow
  * (sp_raise_exc/sp_raise_cls and friends), which threads through the
@@ -145,5 +145,9 @@ static inline void sp_arity_check(sp_int given, sp_int min, sp_int max, const ch
    "missing" or "unknown", naming the `count` keywords in `names`, each
    already inspected and joined by ", ". */
 SP_NORETURN void sp_raise_kw_error(const char *kind, sp_int count, const char *names);
+/* Exception#is_a?(ClassName), modules and the user hierarchy included. */
+sp_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn);
+/* A fixed-depth handler stack overflowed: CRuby's words on stderr, then exit. */
+SP_NORETURN SP_COLD void sp_stack_too_deep(void);
 
 #endif
