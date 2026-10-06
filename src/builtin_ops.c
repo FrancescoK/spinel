@@ -379,7 +379,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_pow($r, (sp_int)($e0))", BOP_K(TY_INT) },
   { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_pow_c($r, $c0)", BOP_K(TY_FLOAT) | BOP_K(TY_COMPLEX) },
   { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, "sp_complex_pow_rational($r, $e0)", BOP_K(TY_RATIONAL) },
-  { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_NONE, NULL, BOP_K(TY_POLY) },
+  /* a boxed exponent: sp_poly_pow picks the form by its class at run time
+     and answers a boxed Complex for a Complex base, which the row's
+     Complex result unboxes (the boxed answer went into sp_box_complex) */
+  { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE,
+    "({ sp_Complex _t$t = $r; sp_RbVal _t$u = $b0; SP_GC_ROOT_RBVAL(_t$u); sp_poly_as_complex(sp_poly_pow(sp_box_complex(_t$t), _t$u)); })",
+    BOP_K(TY_POLY) },
   { TY_COMPLEX, "**",  1, 1, BF_ANY, TY_COMPLEX, BOPE_TEMPLATE, CX_TYPEERROR },
   { TY_COMPLEX, "**",  0, 127, BF_ANY, TY_COMPLEX, BOPE_NONE },
   /* Complex has no modulo: NoMethodError, not a compile abort (#2618) */
