@@ -540,8 +540,9 @@ static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, i
   for (int k = 0; k < argc; k++) if (nt_kind(c->nt, argv[k]) == NK_SplatNode) splat = 1;
   if (splat) {
     int tf = ++g_tmp, tp = ++g_tmp, tv = ++g_tmp;
-    buf_printf(b, "({ sp_File *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
-               tf, r, tp, tp);
+    /* the receiver is rooted before the gathered arguments allocate and run */
+    buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
+               tf, r, tf, tp, tp);
     emit_push_arg_list(c, argv, argc, tp, b);
     buf_printf(b, "if (!_t%d) sp_nil_recv(\"syswrite\"); sp_arity_check(_t%d->len, 1, 1, NULL); "
                   "sp_RbVal _t%d = sp_PolyArray_get(_t%d, 0); SP_GC_ROOT_RBVAL(_t%d); "
