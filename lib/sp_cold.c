@@ -3764,6 +3764,23 @@ sp_bool sp_srange_cover(sp_StrRange r, const char *x) {
   if (r.last) { int d = strcmp(x, r.last); if (r.excl ? d >= 0 : d > 0) return 0; }
   return 1;
 }
+/* #cover?(range) for two String ranges, as CRuby's r_cover_range_p: b has an
+   end and a begin wherever a has, b is not empty, a covers b's begin, and b's
+   end lies within a's -- past an excluded end of a only when b excludes it
+   too. A String range b excluding an end past a's has no greatest member to
+   fall back on (Range#max raises TypeError there, which CRuby rescues to
+   false). NULL is an omitted endpoint. */
+sp_bool sp_srange_cover_srng(sp_StrRange a, sp_StrRange b) {
+  if (a.last && !b.last) return 0;
+  if (a.first && !b.first) return 0;
+  if (b.first && b.last) { int d = strcmp(b.first, b.last); if (d > 0 || (d == 0 && b.excl)) return 0; }
+  if (b.first && !sp_srange_cover(a, b.first)) return 0;
+  if (!a.last) return 1;
+  int c = strcmp(b.last, a.last);
+  if (a.excl == b.excl) return c <= 0;
+  if (a.excl) return c < 0;
+  return c <= 0;
+}
 /* #min / #max with no block, as CRuby's range_min / range_max: an open
    side raises, an empty range (the begin past the end, or at it with the
    end excluded) is nil, and an excluded end walks the members for the

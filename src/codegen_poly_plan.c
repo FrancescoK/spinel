@@ -2637,7 +2637,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  ret == TY_POLY ? ")" : "");
     /* ...and a boxed one, which sp_range_cover_poly (include?'s too) does
        not read as a Range */
-    else if (atmp_ty[0] == TY_POLY)
+    else if (atmp_ty[0] == TY_POLY) {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
                     " { _t%d = %s(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
                     " ? sp_range_cover_rng(*(sp_Range *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
@@ -2645,6 +2645,13 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "",
                  atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0],
                  ret == TY_POLY ? ")" : "");
+      /* a String Range: a boxed String Range by its ends, a String by
+         string comparison */
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE && _t%d.v.p)"
+                    " { _t%d = %ssp_srange_cover_arg(*(sp_StrRange *)_t%d.v.p, _t%d)%s; }\nelse ",
+                 tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0],
+                 ret == TY_POLY ? ")" : "");
+    }
     /* an argument of another class (a String, an Array, nil) compares
        boxed, as a boxed one does: it went into sp_range_include's sp_int
        slot raw, and did not build */
@@ -2655,10 +2662,16 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                     " { _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, %s)%s; }\nelse ",
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
                  ret == TY_POLY ? ")" : "");
-      /* a String Range covers by string comparison, as its === does */
+      /* a String Range covers a String by string comparison, as its ===
+         does, and a String Range by its ends; a Float Range a Range by its
+         ends too */
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE)"
-                    " { _t%d = %ssp_poly_case_eq(_t%d, %s)%s; }\nelse ",
+                    " { _t%d = %ssp_srange_cover_arg(*(sp_StrRange *)_t%d.v.p, %s)%s; }\nelse ",
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
+                 ret == TY_POLY ? ")" : "");
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FLOAT_RANGE && _t%d.v.p)"
+                    " { _t%d = %ssp_frange_cover_arg(*(sp_FloatRange *)_t%d.v.p, %s)%s; }\nelse ",
+                 tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
                  ret == TY_POLY ? ")" : "");
       free(ab7.p);
     }
@@ -2679,10 +2692,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                     " { _t%d = %s", tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "");
       /* a boxed Range argument is covered by its ends, not as a scalar */
       if (atmp_ty[0] == TY_POLY)
-        buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
-                      " ? sp_frange_cover_rng(*(sp_FloatRange *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
-                      " : sp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, _t%d))",
-                   atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0]);
+        buf_printf(b, "sp_frange_cover_arg(*(sp_FloatRange *)_t%d.v.p, _t%d)", tv, atmp[0]);
       /* an Integer against the Float bounds exactly (#7505) */
       else if (atmp_ty[0] == TY_INT) buf_printf(b, "sp_frange_cover_i(*(sp_FloatRange *)_t%d.v.p, _t%d)", tv, atmp[0]);
       else buf_printf(b, "sp_frange_cover(*(sp_FloatRange *)_t%d.v.p, (sp_float)_t%d)", tv, atmp[0]);

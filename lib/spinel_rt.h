@@ -3458,6 +3458,48 @@ static SP_UNUSED sp_bool sp_frange_cover_rng(sp_FloatRange a, sp_Range b) {
   if (b.fe) return 0;
   return (sp_float)(b.last - 1) <= a.last;
 }
+/* Range#cover?(range) for a Float Range a and an Integer Range b, with b's
+   Integer ends compared exactly against a's Float ones (#7505): an Integer
+   past 2^53 does not round onto a's bound. */
+static SP_UNUSED sp_bool sp_frange_cover_irng(sp_FloatRange a, sp_Range b) {
+  int abn = (a.omitted & SP_FRANGE_NO_BEGIN) != 0, aen = (a.omitted & SP_FRANGE_NO_END) != 0;
+  int bbn = b.first == INTPTR_MIN, ben = !b.fe && b.last == INTPTR_MAX;
+  int bex = sp_range_excl_end(b);
+  if (!aen && ben) return 0;
+  if (!abn && bbn) return 0;
+  if (!bbn && !ben) {
+    int d = b.fe ? sp_int_flt_cmp(b.first, b.fend) : (b.first > b.last) - (b.first < b.last);
+    if (d > 0 || (d == 0 && bex)) return 0;
+  }
+  if (!abn && sp_int_flt_cmp(b.first, a.first) < 0) return 0;
+  if (aen) return 1;
+  int c = b.fe ? (b.fend > a.last) - (b.fend < a.last) : sp_int_flt_cmp(b.last, a.last);
+  if (a.excl == bex) return c <= 0;
+  if (a.excl) return c < 0;
+  if (c <= 0) return 1;
+  /* b excludes an end past a's: its greatest member decides; a Float
+     excluded end has none (CRuby's rescued TypeError) */
+  if (b.fe) return 0;
+  return sp_int_flt_cmp(b.last - 1, a.last) <= 0;
+}
+/* Range#cover?(range) for two Float Ranges, the same decision as
+   sp_frange_cover_rng: b has an end and a begin wherever a has, b is not
+   empty, its begin is not below a's, and its end lies within a's. A Float b
+   excluding an end past a's has no greatest member (CRuby's rescued
+   TypeError), so it is not covered. */
+static SP_UNUSED sp_bool sp_frange_cover_frng(sp_FloatRange a, sp_FloatRange b) {
+  int abn = (a.omitted & SP_FRANGE_NO_BEGIN) != 0, aen = (a.omitted & SP_FRANGE_NO_END) != 0;
+  int bbn = (b.omitted & SP_FRANGE_NO_BEGIN) != 0, ben = (b.omitted & SP_FRANGE_NO_END) != 0;
+  if (!aen && ben) return 0;
+  if (!abn && bbn) return 0;
+  if (!bbn && !ben && (b.first > b.last || (b.first == b.last && b.excl))) return 0;
+  if (!abn && b.first < a.first) return 0;
+  if (!bbn && !aen && (a.excl ? b.first >= a.last : b.first > a.last)) return 0;
+  if (aen) return 1;
+  if (a.excl == b.excl) return b.last <= a.last;
+  if (a.excl) return b.last < a.last;
+  return b.last <= a.last;
+}
 /* Float#clamp(int_range): below the begin answers the begin, past the end
    the end -- the Float written for (1..2.5), where it answered the walk's 2 --
    and an exclusive end with a value cannot clamp */
@@ -15231,6 +15273,23 @@ static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) {
    dispatches through the generated class machinery (installed as a hook by
    sp_tu_init when the program carries it); Regexp matches a String; a Range
    covers numerics; everything else is value equality. */
+/* Range#cover? of a Float or a String Range whose argument is boxed: a Range
+   argument is covered by its ends (r_cover_range_p), any other value as a
+   member. Only cover? takes a Range argument this way; ===, include? and
+   member? read it as a value. */
+static SP_UNUSED sp_bool sp_frange_cover_arg(sp_FloatRange a, sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_RANGE)
+    return sp_frange_cover_irng(a, *(sp_Range *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_FLOAT_RANGE)
+    return sp_frange_cover_frng(a, *(sp_FloatRange *)v.v.p);
+  return sp_frange_cover_poly(a, v);
+}
+static SP_UNUSED sp_bool sp_srange_cover_arg(sp_StrRange a, sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_STR_RANGE)
+    return sp_srange_cover_srng(a, *(sp_StrRange *)v.v.p);
+  sp_RbVal d = sp_poly_strbuf_deref(v);
+  return d.tag == SP_TAG_STR && sp_srange_cover(a, d.v.s ? d.v.s : sp_str_empty);
+}
 static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_CLASS)
     return sp_poly_is_a_hook ? (sp_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;

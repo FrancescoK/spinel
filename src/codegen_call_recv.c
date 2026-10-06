@@ -10344,11 +10344,22 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; %s(_t%d, ", fn, tr); emit_str_expr(c, argv[0], b);
         buf_puts(b, "); })"); return 1;
       }
+      /* cover?(range) compares the endpoints (CRuby's r_cover_range_p) */
+      if (a0 == TY_STR_RANGE && sp_streq(name, "cover?")) {
+        buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_StrRange _a%d = ", tr); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_srange_cover_srng(_t%d, _a%d); })", tr, tr);
+        return 1;
+      }
       if (a0 == TY_POLY) {
         buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _a%d = ", tr); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
-                      " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
+        /* cover? takes a boxed String Range by its ends */
+        if (sp_streq(name, "cover?"))
+          buf_printf(b, "; sp_srange_cover_arg(_t%d, _a%d); })", tr, tr);
+        else
+          buf_printf(b, "; (sp_bool)(_a%d.tag == SP_TAG_STR &&"
+                        " %s(_t%d, _a%d.v.s)); })", tr, fn, tr, tr);
         return 1;
       }
       buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); return 1;
