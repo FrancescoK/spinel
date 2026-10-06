@@ -4490,8 +4490,19 @@ static sp_Bigint *sp_poly_int_operand(sp_RbVal v, const char *m) {
   sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Integer", sp_convert_src_name(v)));
   (void)m; return NULL;
 }
+/* Integer#pow(e) on a boxed receiver: only an Integer has pow (a Float
+   has `**` alone), so any other value is CRuby's NoMethodError, with the
+   exponent as its args, where sp_poly_pow took it for a number to raise */
+static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b);   /* defined below */
+static SP_UNUSED sp_RbVal sp_poly_int_pow(sp_RbVal v, sp_RbVal e) {
+  if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_nomethod(sp_nomethod_msg_args("pow", v, 1, &e));
+  return sp_poly_pow(v, e);
+}
 static sp_RbVal sp_poly_int_powmod(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
-  if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("pow", v);
+  if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) {
+    sp_RbVal pa[2] = { e, m };   /* the call's arguments, as NoMethodError#args */
+    sp_raise_nomethod(sp_nomethod_msg_args("pow", v, 2, pa));
+  }
   if (v.tag == SP_TAG_INT && e.tag == SP_TAG_INT && m.tag == SP_TAG_INT) return sp_box_int(sp_powmod(v.v.i, e.v.i, m.v.i));
   sp_int ei = sp_poly_to_i(e);
   if (ei < 0) sp_raise_cls("RangeError", "Integer#pow() 1st argument cannot be negative when 2nd argument specified");
@@ -5499,6 +5510,9 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a) || sp_poly_is_user_obj(b)) return sp_poly_binop_bad("**", a, b);
   if (SP_UNLIKELY(sp_poly_is_strbuf(a) || sp_poly_is_strbuf(b)))
     return sp_poly_pow(sp_poly_strbuf_deref(a), sp_poly_strbuf_deref(b));
+  /* a receiver that is no number has no `**`: nil, a String or a Symbol was
+     converted to a Float, raising TypeError or ArgumentError */
+  if (SP_UNLIKELY(!sp_poly_tower_p(a))) return sp_poly_binop_bad("**", a, b);
   if (SP_UNLIKELY(sp_poly_tower_mismatch(a, b))) return sp_poly_binop_bad("**", a, b);
   /* An exact receiver keeps its class through `**`, as it does on the typed
      path: a Rational raised to an integer is a Rational, and a Complex is a
