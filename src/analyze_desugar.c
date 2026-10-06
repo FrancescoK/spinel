@@ -9023,6 +9023,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* an empty `[]` / `{}` receiver has no type until its use decides one,
        and this is that use */
     else if (rt == TY_UNKNOWN && (nt_kind(nt, recv) == NK_ArrayNode || nt_kind(nt, recv) == NK_HashNode)) ok = 1;
+    /* ...and so has a local every write of which is an empty `[]`, which
+       the post-fixpoint backstop only then types as the boxed Array: left
+       here, `a = []; a.filter_map { }` reached the NoMethodError gate */
+    else if (rt == TY_UNKNOWN && nt_kind(nt, recv) == NK_LocalVariableReadNode &&
+             local_all_writes_empty_array(c, comp_scope_of(c, recv), nt_str(nt, recv, "name"))) ok = 1;
     else if (ty_is_object(rt)) {
       int ci = ty_object_class(rt);
       /* an Array subclass is Enumerable through Array (#7449) */

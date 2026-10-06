@@ -362,13 +362,21 @@ int emit_op_hash_to_s(Compiler *c, const BopCtx *x, Buf *b) {
 }
 
 /* compact!: drop nil-valued pairs in place; self when changed, nil when a
-   no-op. Only the poly-valued variants can hold nil; the others are left
-   to the arms after the lookup. */
+   no-op. Only the poly-valued variants can hold nil. A typed-value one
+   holds none, so it is a no-op -- nil, after the frozen check CRuby makes
+   first -- as compact is its dup (emit_op_hash_compact). It was left to
+   arms after the lookup that no variant has, and raised NoMethodError. */
 int emit_op_hash_compact_bang(Compiler *c, const BopCtx *x, Buf *b) {
   int recv = x->recv;
   TyKind rt = x->rt;
-  if (!(rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) return 0;
   const char *hnc = ty_hash_cname(rt);
+  if (!(rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, tn); emit_expr(c, recv, b);
+    buf_printf(b, "; if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); sp_box_nil(); })",
+               tn, tn, tn, hash_box_cls(rt));
+    return 1;
+  }
   /* PolyPoly's order[] holds slot indexes, not keys; the other variants
      store the key itself in order[] (#2430) */
   int ppk = rt == TY_POLY_POLY_HASH;
