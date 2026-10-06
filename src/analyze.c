@@ -30501,7 +30501,10 @@ static void refuse_string_alias_copies(Compiler *c) {
         /* --share-strings: a global the rule shares holds the handle */
         ShareRoute q = share_route(w, v, 0);
         q.to = w;
+        /* `$m = (b = a)` hands over a's String: the write in value position
+           answers its value, so the value it carries is a */
         q.carry = v;
+        while (nt_kind(nt, q.carry) == NK_LocalVariableWriteNode) q.carry = an_unparen(nt, nt_ref(nt, q.carry, "value"));
         if (!share_route_defer(c, &q, sa_msg(0))) sa_refuse(c, w, 0);
       }
       /* `t = id(s)` */
