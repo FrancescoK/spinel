@@ -1322,6 +1322,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
+  /* ENV and a library class are no String: ENV's `[]=`, replace and the
+     rest copy what they are handed (the ENV rows of the call plan) */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
+      is_lib_receiver_name(nt_str(nt, recv, "name")))
+    maybe_str = 0;
 
   /* a proc's or a Method's to_proc is the same callable */
   if (recv >= 0 && is_proc_conversion(name) && argc == 0 && sh_may_call(rt) && rv >= 0) return rv;
@@ -1541,9 +1546,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
   }
-  /* a library class's class method, or a C-bound class's method */
-  if ((rt == TY_CLASS && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
-       nt_str(nt, recv, "name") && is_lib_class_name(nt_str(nt, recv, "name"))) ||
+  /* a library class's class method, ENV's method, or a C-bound class's
+     method */
+  if (((rt == TY_CLASS || nt_kind(nt, recv) == NK_ConstantReadNode) &&
+       (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
+       nt_str(nt, recv, "name") &&
+       is_lib_receiver_name(nt_str(nt, recv, "name"))) ||
       (ty_is_object(rt) && c->classes[ty_object_class(rt)].is_native_class))
     return sh_builtin(F, c, n, bop_share(BOP_LIB, name), rv, blk, 0);
   TyKind fam = sh_family(rt);
