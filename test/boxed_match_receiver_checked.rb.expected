@@ -68,3 +68,17 @@ undefined method 'match' for nil [nil]
 undefined method 'match?' for nil ["a", 1]
 undefined method 'match?' for nil ["a", 2]
 undefined method 'match?' for nil [/a/, 1]
+true
+false
+false
+false
+true
+false
+true
+"needle"
+true
+"needle"
+true
+"needle"
+ArgumentError: wrong number of arguments (given 3, expected 1..2)
+undefined method 'match?' for nil [/b/, 0, 1]
