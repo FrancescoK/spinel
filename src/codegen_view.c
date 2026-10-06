@@ -14,7 +14,7 @@
 
    view_push_repr does the same for one of the representation flags beside
    the type (repr.h): a String-handle mark or demand, a poly-to-handle lift,
-   a read's nil narrowing. The emitters that re-enter with a flag lifted or
+   a read's nil narrowing, a receiver whose nil a call's nil arm tested. The emitters that re-enter with a flag lifted or
    forced push it as a view, so a refusal's view_unwind puts it back with
    the rest. repr_of reads the flags live and memoizes nothing.
 
@@ -94,6 +94,7 @@ static int view_read(Compiler *c, int kind, int id) {
   case VR_STRBUF_BOX:    return c->strbuf_box[id];
   case VR_HANDLE_DEMAND: return c->strbuf_handle_demand[id];
   case VR_POLY_LIFT:     return c->poly_strbuf_lift[id];
+  case VR_NIL_TESTED:    return c->nil_tested[id];
   default:               return (int)c->nilnarrow[id];
   }
 }
@@ -103,6 +104,7 @@ static void view_write(Compiler *c, int kind, int id, int v) {
   case VR_STRBUF_BOX:    c->strbuf_box[id] = (unsigned char)v; break;
   case VR_HANDLE_DEMAND: c->strbuf_handle_demand[id] = (unsigned char)v; break;
   case VR_POLY_LIFT:     c->poly_strbuf_lift[id] = (unsigned char)v; break;
+  case VR_NIL_TESTED:    c->nil_tested[id] = (unsigned char)v; break;
   default:               c->nilnarrow[id] = (TyKind)v; break;
   }
 }

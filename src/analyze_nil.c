@@ -1,6 +1,8 @@
 /* analyze_nil.c -- whether an object-typed value may be nil (#7444).
 
-   One fact, decided once by the analysis: for every node, and for every
+   The fact covers an object and a builtin held as a pointer that is NULL
+   for nil (a String, an Array, a Hash, an IO: nil_fact_tracked). One fact,
+   decided once by the analysis: for every node, and for every
    slot a value is read back from (a local, a parameter, a block parameter,
    a global, a constant, an ivar, a method's value), whether the value may
    be nil. Today the question is asked again where each answer is needed --
@@ -16,11 +18,14 @@
    it does not model answers, a parameter a call it cannot see binds (a
    method named in a send or a method(:m), a method the runtime calls back),
    a block a proc or a define_method takes, a splat's element, a pattern's
-   binding, a class-level ivar. Two shapes are taken as not nil without
+   binding, a class-level ivar. Three shapes are taken as not nil without
    proof, listed here so a later step can model them: an element a builtin
-   iteration binds to a block parameter (`boxes.each { |b| }` over an Array
-   that holds nil), and a container call other than the element reads and
-   picks that can miss (an Array's or a Hash's own methods).
+   iteration, or a Ruby-defined builtin's yield, binds to a block parameter
+   (`boxes.each { |b| }` over an Array that holds nil); a container call
+   other than the element reads and picks that can miss (an Array's or a
+   Hash's own methods); and a builtin value a builtin call answers other
+   than those picks and a String's slice (`gets` at the end of its input, a
+   bang method that changed nothing).
 
    Flow: the slots are flow-insensitive (a slot one write leaves nil may be
    nil at every read), except that a read of a local inside a truthiness
@@ -31,11 +36,14 @@
 
    The slots, the method values and the parameters a call binds feed one
    another, so they are settled by a fixpoint: every round recomputes the
-   node facts from the slots and only ever sets a slot's flag, so the rounds
-   are bounded by the number of flags.
+   node facts from the slots and only ever moves a slot's flag ahead in
+   NFW_*'s order, so the rounds are bounded by the number of flags times
+   the number of sources.
 
-   Each may-be-nil answer carries where its nil comes from (NFW_*, the first
-   source found), which --nil-check reports beside a disagreement. */
+   Each may-be-nil answer carries where its nil comes from (NFW_*: of
+   several sources, the first in that enum's order, a nil the program
+   writes before one the analysis cannot bound), which --nil-check reports
+   beside a disagreement and the call plan's nil target reads (cplan_nil). */
 
 #include "analyze_internal.h"
 #include "call_plan.h"
@@ -109,11 +117,18 @@ static NFIvar *nf_ivar_slot(NF *f, int cls, const char *name) {
 }
 
 /* A slot's flag holds the source of its nil (NFW_*), 0 when it cannot be
-   nil: set it for a nil from source `why` (none when 0). */
+   nil: set it for a nil from source `why` (none when 0). Of two sources it
+   keeps the one ahead in NFW_*'s order -- a nil the program writes before
+   one the analysis cannot bound -- so a flag only ever moves down that
+   order, and the rounds still stop. */
 static void nf_set(NF *f, int *flag, int why) {
-  if (!why || *flag) return;
+  if (!why || (*flag && *flag <= why)) return;
   *flag = why;
   f->changed = 1;
+}
+/* can a flag still take a source ahead of its own? */
+static int nf_open(int flag) {
+  return flag != NFW_NIL;
 }
 static int nf_slot_why(NF *f, const int *flag) {
   (void)f;
@@ -372,7 +387,8 @@ static int nf_is_read_of(const NodeTable *nt, int n, const char *nm) {
 static int nf_falsy_implies(Compiler *c, int p, const char *nm);
 /* p truthy => local nm is not nil */
 /* `x.is_a?(K)` (kind_of?, instance_of?) is true only for a non-nil x when nil
-   is no instance of K: K names a program class, not a module (a module may be
+   is no instance of K: K names a program class, or a builtin class the
+   program does not reopen (String, Hash), not a module (a module may be
    mixed into Object), and not NilClass, Object or BasicObject. Any other
    argument proves nothing, so the read stays may-be-nil. */
 static int nf_class_excludes_nil(Compiler *c, int p) {
@@ -384,7 +400,11 @@ static int nf_class_excludes_nil(Compiler *c, int p) {
   if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) return 0;
   const char *k = nt_str(nt, av[0], "name");
   if (!k || sp_streq(k, "NilClass") || sp_streq(k, "Object") || sp_streq(k, "BasicObject") ||
-      sp_streq(k, "Kernel") || comp_class_index(c, k) < 0) return 0;
+      sp_streq(k, "Kernel")) return 0;
+  /* a builtin class the program does not reopen (String, Hash, Integer):
+     nil is no instance of one, but it is of a builtin module */
+  if (comp_class_index(c, k) < 0)
+    return ak == NK_ConstantReadNode && is_builtin_class_name(k) && !is_builtin_module_name(k);
   NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
     int cp = nt_ref(nt, m, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
@@ -575,8 +595,8 @@ static int nf_list(NF *f, int st) {
   int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
   return n == 0 ? NFW_NIL : nf_expr(f, b[n - 1]);
 }
-/* the first source of two */
-static int nf_or(int a, int b) { return a ? a : b; }
+/* the source of two that goes first (nf_set's order) */
+static int nf_or(int a, int b) { return !a ? b : !b ? a : a < b ? a : b; }
 
 static Compiler *nf_sort_c;
 static int nf_byname_cmp(const void *a, const void *b) {
@@ -600,14 +620,14 @@ static int nf_byname_first(NF *f, const char *name) {
 static int nf_method_value(NF *f, int mi, int owner, int dispatch, const char *name) {
   Compiler *c = f->c;
   if (mi < 0 || mi >= c->nscopes) return NFW_OPAQUE;
-  if (c->scopes[mi].ret_obj_may_nil) return nf_slot_why(f, &c->scopes[mi].ret_obj_may_nil);
+  int r = nf_slot_why(f, &c->scopes[mi].ret_obj_may_nil);
   if ((dispatch == CP_SWITCH || dispatch == CP_PER_ARM) && name && owner >= 0)
     for (int j = nf_byname_first(f, name); j < f->nbyname; j++) {
       Scope *s = &c->scopes[f->byname[j]];
       if (!sp_streq(s->name, name)) break;
-      if (nf_class_reaches(c, s->class_id, owner) && s->ret_obj_may_nil) return nf_slot_why(f, &s->ret_obj_may_nil);
+      if (nf_class_reaches(c, s->class_id, owner)) r = nf_or(r, nf_slot_why(f, &s->ret_obj_may_nil));
     }
-  return NFW_NONE;
+  return r;
 }
 
 /* the receiver's class an element read misses on (Array, Hash) */
@@ -620,8 +640,8 @@ static int nf_call(NF *f, int v) {
   const NodeTable *nt = f->nt;
   const char *nm = nt_str(nt, v, "name");
   const char *op = nt_str(nt, v, "call_operator");
-  /* only an object's nil is tracked: the slots it can reach are objects */
-  if (!ty_is_object(c->ntype[v])) return NFW_NONE;
+  /* only a tracked value's nil: the slots it can reach are tracked */
+  if (!nil_fact_tracked(c->ntype[v])) return NFW_NONE;
   if (op && sp_streq(op, "&.")) return NFW_SAFE_NAV;
   if (!nm) return NFW_OPAQUE;
   int r = nt_ref(nt, v, "receiver");
@@ -657,9 +677,14 @@ static int nf_call(NF *f, int v) {
     for (int i = 0; picks[i]; i++) if (sp_streq(nm, picks[i])) return NFW_ELEM;
     return NFW_NONE;
   }
+  /* a String's slice past its end */
+  if (r >= 0 && (rt == TY_STRING || rt == TY_STRBUF) &&
+      (sp_streq(nm, "[]") || sp_streq(nm, "slice") || sp_streq(nm, "slice!") || sp_streq(nm, "byteslice")))
+    return NFW_ELEM;
   /* the builtin surface: an object-typed answer of a call it does not model
      (send, instance_variable_get, a Method's or a Proc's call, a yield's
-     value through then) may be nil */
+     value through then) may be nil; a builtin-typed one is taken as not nil
+     (see the header) */
   (void)an; (void)av;
   return ty_is_object(c->ntype[v]) ? NFW_OPAQUE : NFW_NONE;
 }
@@ -744,7 +769,7 @@ static int nf_expr_uncached(NF *f, int v) {
     /* the main object's ivar: nil until a top-level statement above writes it */
     if (s == &c->scopes[0] && ivn) {
       int w = nf_ivar_slot(f, NF_TOP_IVAR, ivn)->wr;
-      return w ? w : nf_written_before(f, v, NK_InstanceVariableWriteNode, ivn) ? NFW_NONE : NFW_UNSET;
+      return w ? w : nf_written_before(f, v, NK_InstanceVariableWriteNode, ivn) ? NFW_NONE : NFW_GLOBAL;
     }
     if (!s || s->is_cmethod || s->class_id < 0) return NFW_IVAR;   /* a class-level ivar */
     return nf_ivar(f, s->class_id, ivn);
@@ -764,7 +789,7 @@ static int nf_expr_uncached(NF *f, int v) {
     return g ? nf_slot_why(f, &g->obj_may_nil) : NFW_OPAQUE;
   }
   case NK_ConstantReadNode: {
-    if (!ty_is_object(c->ntype[v])) return NFW_NONE;
+    if (!nil_fact_tracked(c->ntype[v])) return NFW_NONE;
     LocalVar *k = comp_const(c, nt_str(nt, v, "name"));
     return k ? nf_slot_why(f, &k->obj_may_nil) : NFW_OPAQUE;
   }
@@ -778,8 +803,8 @@ static int nf_expr_uncached(NF *f, int v) {
   }
   default:
     /* a pattern's binding, a loop's value, an operator write's: may be nil
-       where it is an object */
-    return ty_is_object(c->ntype[v]) ? NFW_OPAQUE : NFW_NONE;
+       where it is tracked */
+    return nil_fact_tracked(c->ntype[v]) ? NFW_OPAQUE : NFW_NONE;
   }
 }
 
@@ -862,15 +887,15 @@ static void nf_writes(NF *f) {
   for (int q = 0; q < 3; q++)
     NT_FOREACH_KIND(nt, lw[q], w) {
       LocalVar *lv = nf_local_of(f, w, nt_str(nt, w, "name"));
-      if (lv && !lv->obj_may_nil) nf_set(f, &lv->obj_may_nil, nf_expr(f, nt_ref(nt, w, "value")));
+      if (lv && nf_open(lv->obj_may_nil)) nf_set(f, &lv->obj_may_nil, nf_expr(f, nt_ref(nt, w, "value")));
     }
   NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, w) {
     LocalVar *lv = nf_local_of(f, w, nt_str(nt, w, "name"));
-    if (lv && !lv->obj_may_nil && ty_is_object(lv->type)) nf_set(f, &lv->obj_may_nil, nf_target_nil(f, w));
+    if (lv && nf_open(lv->obj_may_nil) && nil_fact_tracked(lv->type)) nf_set(f, &lv->obj_may_nil, nf_target_nil(f, w));
   }
   NT_FOREACH_KIND(nt, NK_LocalVariableOperatorWriteNode, w) {
     LocalVar *lv = nf_local_of(f, w, nt_str(nt, w, "name"));
-    if (lv && !lv->obj_may_nil && ty_is_object(lv->type)) nf_set(f, &lv->obj_may_nil, NFW_OPAQUE);
+    if (lv && nf_open(lv->obj_may_nil) && nil_fact_tracked(lv->type)) nf_set(f, &lv->obj_may_nil, NFW_OPAQUE);
   }
   static const NodeKind iw[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
                                  NK_InstanceVariableAndWriteNode };
@@ -880,7 +905,7 @@ static void nf_writes(NF *f) {
   NT_FOREACH_KIND(nt, NK_InstanceVariableTargetNode, w)
     nf_ivar_write(f, nf_ivar_owner(f, w), nt_str(nt, w, "name"), nf_target_nil(f, w));
   NT_FOREACH_KIND(nt, NK_InstanceVariableOperatorWriteNode, w)
-    nf_ivar_write(f, nf_ivar_owner(f, w), nt_str(nt, w, "name"), ty_is_object(c->ntype[w]) ? NFW_OPAQUE : 0);
+    nf_ivar_write(f, nf_ivar_owner(f, w), nt_str(nt, w, "name"), nil_fact_tracked(c->ntype[w]) ? NFW_OPAQUE : 0);
   static const NodeKind cw[] = { NK_ClassVariableWriteNode, NK_ClassVariableOrWriteNode,
                                  NK_ClassVariableAndWriteNode };
   for (int q = 0; q < 3; q++)
@@ -889,7 +914,7 @@ static void nf_writes(NF *f) {
   NT_FOREACH_KIND(nt, NK_ClassVariableTargetNode, w)
     nf_ivar_write(f, NF_CVAR, nt_str(nt, w, "name"), nf_target_nil(f, w));
   NT_FOREACH_KIND(nt, NK_ClassVariableOperatorWriteNode, w)
-    nf_ivar_write(f, NF_CVAR, nt_str(nt, w, "name"), ty_is_object(c->ntype[w]) ? NFW_OPAQUE : 0);
+    nf_ivar_write(f, NF_CVAR, nt_str(nt, w, "name"), nil_fact_tracked(c->ntype[w]) ? NFW_OPAQUE : 0);
   static const NodeKind gw[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOrWriteNode,
                                  NK_GlobalVariableAndWriteNode, NK_GlobalVariableTargetNode,
                                  NK_GlobalVariableOperatorWriteNode };
@@ -897,8 +922,8 @@ static void nf_writes(NF *f) {
     NT_FOREACH_KIND(nt, gw[q], w) {
       const char *gn = nt_str(nt, w, "name");
       LocalVar *g = gn && gn[0] == '$' ? comp_gvar(c, comp_resolve_gvar(c, gn + 1)) : NULL;
-      if (!g || g->obj_may_nil) continue;
-      int why = q == 3 ? nf_target_nil(f, w) : q == 4 ? (ty_is_object(g->type) ? NFW_OPAQUE : 0)
+      if (!g || !nf_open(g->obj_may_nil)) continue;
+      int why = q == 3 ? nf_target_nil(f, w) : q == 4 ? (nil_fact_tracked(g->type) ? NFW_OPAQUE : 0)
               : nf_expr(f, nt_ref(nt, w, "value"));
       nf_set(f, &g->obj_may_nil, why);
     }
@@ -906,7 +931,7 @@ static void nf_writes(NF *f) {
   for (int q = 0; q < 3; q++)
     NT_FOREACH_KIND(nt, kw[q], w) {
       LocalVar *k = comp_const(c, nt_str(nt, w, "name"));
-      if (k && !k->obj_may_nil) nf_set(f, &k->obj_may_nil, nf_expr(f, nt_ref(nt, w, "value")));
+      if (k && nf_open(k->obj_may_nil)) nf_set(f, &k->obj_may_nil, nf_expr(f, nt_ref(nt, w, "value")));
     }
 }
 
@@ -932,7 +957,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   int open = 0;
   for (int k = 0; k < m->nparams && !open; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    open = p && !p->obj_may_nil && ty_is_object(p->type);
+    open = p && nf_open(p->obj_may_nil) && nil_fact_tracked(p->type);
   }
   if (!open) return;
   ArgLayout L;
@@ -940,7 +965,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   int kwh = an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode ? av[an - 1] : -1;
   for (int k = 0; k < m->nparams; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    if (!p || p->obj_may_nil || !ty_is_object(p->type)) continue;
+    if (!p || !nf_open(p->obj_may_nil) || !nil_fact_tracked(p->type)) continue;
     int why;
     ArgFrom from = k < L.n ? L.from[k] : ARG_DEFAULT;
     int dflt = m->pdefault && m->pdefault[k] >= 0 ? m->pdefault[k] : -1;
@@ -968,6 +993,10 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
   const NodeTable *nt = f->nt;
   const char *cn = nt_str(nt, id, "name");
   int all = 0, from_recv = 0, acc = -1;
+  /* a Ruby-defined builtin (builtins/enumerable.rb's `__enum_minmax`)
+     yields its receiver's elements, as a builtin iteration does: its own
+     `min = nil` before the first element is not what the block sees */
+  if (mi >= 0 && c->scopes[mi].name && !strncmp(c->scopes[mi].name, "__enum_", 7)) return;
   if (mi >= 0) {
     if (!c->scopes[mi].yields) all = 1;
   }
@@ -993,7 +1022,7 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
         int n = 0; const int *ps = nt_arr(nt, pn, other[o], &n);
         for (int i = 0; i < n; i++) {
           LocalVar *lv = nf_local_of(f, ps[i], nt_str(nt, ps[i], "name"));
-          if (lv && !lv->obj_may_nil && ty_is_object(lv->type)) nf_set(f, &lv->obj_may_nil, NFW_OPAQUE);
+          if (lv && nf_open(lv->obj_may_nil) && nil_fact_tracked(lv->type)) nf_set(f, &lv->obj_may_nil, NFW_OPAQUE);
         }
       }
     }
@@ -1004,20 +1033,20 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
     int body = nt_ref(nt, blk, "body");
     LocalVar *lv = nf_local_of(f, body >= 0 ? body : blk, pn);
     if (!lv) lv = nf_local_of(f, blk, pn);
-    if (!lv || lv->obj_may_nil || !ty_is_object(lv->type)) continue;
+    if (!lv || !nf_open(lv->obj_may_nil) || !nil_fact_tracked(lv->type)) continue;
     int why = NFW_NONE;
     if (all) why = NFW_CALLER;
     else if (from_recv) why = i > 0 ? NFW_NIL : nf_expr(f, nt_ref(nt, id, "receiver"));
     else if (acc >= 0) why = i == 0 ? nf_expr(f, acc) : NFW_NONE;
     else {
       /* every yield of the method: argument i, or nil past its arguments */
-      for (int y = 0; y < nyields[mi] && !why; y++) {
+      for (int y = 0; y < nyields[mi] && why != NFW_NIL; y++) {
         int ya = nt_ref(nt, yields[mi][y], "arguments"), yn = 0;
         const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn) : NULL;
         int splat = 0;
         for (int j = 0; j < yn; j++) if (nt_kind(nt, yv[j]) == NK_SplatNode) splat = 1;
-        if (splat || (yn == 1 && block_param_name(c, blk, 1))) why = NFW_OPAQUE;   /* spread */
-        else why = i >= yn ? NFW_NIL : nf_expr(f, yv[i]);
+        if (splat || (yn == 1 && block_param_name(c, blk, 1))) why = nf_or(why, NFW_OPAQUE);   /* spread */
+        else why = nf_or(why, i >= yn ? NFW_NIL : nf_expr(f, yv[i]));
       }
       if (nyields[mi] == 0) why = NFW_CALLER;
     }
@@ -1058,7 +1087,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     for (int k = 0; m->pdefault && k < m->nparams; k++) {
       if (m->pdefault[k] < 0 || !m->pnames[k]) continue;
       LocalVar *p = scope_local(m, m->pnames[k]);
-      if (p && !p->obj_may_nil && ty_is_object(p->type)) nf_set(f, &p->obj_may_nil, nf_expr(f, m->pdefault[k]));
+      if (p && nf_open(p->obj_may_nil) && nil_fact_tracked(p->type)) nf_set(f, &p->obj_may_nil, nf_expr(f, m->pdefault[k]));
     }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -1109,7 +1138,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     }
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) nf_bind_block(f, id, blk, mi, yields, nyields);
     /* what the method's yields answer: the block's value, or a `next`'s */
-    if (mi >= 0 && !f->yield_nil[mi] && blk >= 0)
+    if (mi >= 0 && nf_open(f->yield_nil[mi]) && blk >= 0)
       nf_set(f, &f->yield_nil[mi], nt_kind(nt, blk) != NK_BlockNode ? NFW_CALLER
              : nf_or(nf_list(f, nt_ref(nt, blk, "body")), nf_next_nil(f, nt_ref(nt, blk, "body"), 0)));
   }
@@ -1132,7 +1161,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     for (int k = 0; k < m->nparams; k++) {
       LocalVar *pp = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
       LocalVar *own = k < s->nparams && s->pnames[k] ? scope_local(s, s->pnames[k]) : NULL;
-      if (pp && !pp->obj_may_nil && ty_is_object(pp->type))
+      if (pp && nf_open(pp->obj_may_nil) && nil_fact_tracked(pp->type))
         nf_set(f, &pp->obj_may_nil, own ? nf_slot_why(f, &own->obj_may_nil) : NFW_OPAQUE);
     }
   }
@@ -1145,12 +1174,12 @@ static void nf_returns(NF *f, int **rets, int *nrets) {
   for (int mi = 1; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     /* `new` drops initialize's value */
-    if (m->ret_obj_may_nil || m->def_node < 0 || (m->name && sp_streq(m->name, "initialize"))) continue;
+    if (!nf_open(m->ret_obj_may_nil) || m->def_node < 0 || (m->name && sp_streq(m->name, "initialize"))) continue;
     int why = m->body < 0 ? NFW_NIL : nf_list(f, m->body);
-    for (int k = 0; k < nrets[mi] && !why; k++) {
+    for (int k = 0; k < nrets[mi] && why != NFW_NIL; k++) {
       int ra = nt_ref(nt, rets[mi][k], "arguments"), rn = 0;
       const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-      why = rn == 0 ? NFW_NIL : rn == 1 ? nf_expr(f, rv[0]) : NFW_NONE;
+      why = nf_or(why, rn == 0 ? NFW_NIL : rn == 1 ? nf_expr(f, rv[0]) : NFW_NONE);
     }
     nf_set(f, &m->ret_obj_may_nil, why);
   }
@@ -1269,7 +1298,7 @@ void an_nil_facts(Compiler *c) {
     for (int k = 0; k < m->nlocals; k++) m->locals[k].obj_may_nil = 0;
     for (int k = 0; k < m->nlocals; k++) {
       LocalVar *lv = &m->locals[k];
-      if (!ty_is_object(lv->type)) continue;
+      if (!nil_fact_tracked(lv->type)) continue;
       if (lv->is_param && lv->obj_nilable) nf_set(&f, &lv->obj_may_nil, NFW_NIL);
       if (lv->is_param && unseen) nf_set(&f, &lv->obj_may_nil, NFW_CALLER);
       if (lv->or_written && !lv->is_param && !lv->is_block_param) nf_set(&f, &lv->obj_may_nil, NFW_UNSET);
@@ -1289,7 +1318,7 @@ void an_nil_facts(Compiler *c) {
       NT_FOREACH_KIND(nt, rk[q], r) {
         const char *nm = nt_str(nt, r, "name");
         LocalVar *lv = nf_local_of(&f, r, nm);
-        if (!lv || lv->is_param || lv->is_block_param || lv->obj_may_nil || !ty_is_object(lv->type)) continue;
+        if (!lv || lv->is_param || lv->is_block_param || !nf_open(lv->obj_may_nil) || !nil_fact_tracked(lv->type)) continue;
         if (du_read_maybe_unset(nt, f.par, &f.dp, r, nm)) nf_set(&f, &lv->obj_may_nil, NFW_UNSET);
       }
     du_memo_free();
@@ -1300,8 +1329,8 @@ void an_nil_facts(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_GlobalVariableReadNode, r) {
     const char *gn = nt_str(nt, r, "name");
     LocalVar *g = gn && gn[0] == '$' ? comp_gvar(c, comp_resolve_gvar(c, gn + 1)) : NULL;
-    if (!g || g->obj_may_nil || !ty_is_object(g->type)) continue;
-    if (!nf_written_before(&f, r, NK_GlobalVariableWriteNode, gn)) nf_set(&f, &g->obj_may_nil, NFW_UNSET);
+    if (!g || !nf_open(g->obj_may_nil) || !nil_fact_tracked(g->type)) continue;
+    if (!nf_written_before(&f, r, NK_GlobalVariableWriteNode, gn)) nf_set(&f, &g->obj_may_nil, NFW_GLOBAL);
   }
   int **yields, *nyields, **rets, *nrets;
   nf_collect(&f, NK_YieldNode, &yields, &nyields);
@@ -1332,7 +1361,7 @@ void an_nil_facts(Compiler *c) {
     ci->ivar_obj_may_nil = calloc((size_t)ci->nivars + 1, 1);
     ci->n_ivar_obj_may_nil = ci->nivars;
     for (int i = 0; i < ci->nivars; i++)
-      ci->ivar_obj_may_nil[i] = (unsigned char)(ty_is_object(ci->ivar_types[i]) && nf_ivar(&f, k, ci->ivars[i]) != NFW_NONE);
+      ci->ivar_obj_may_nil[i] = (unsigned char)(nil_fact_tracked(ci->ivar_types[i]) && nf_ivar(&f, k, ci->ivars[i]) != NFW_NONE);
   }
   nf_free_lists(c, yields, nyields);
   nf_free_lists(c, rets, nrets);
@@ -1342,9 +1371,14 @@ void an_nil_facts(Compiler *c) {
   free(f.kid_head); free(f.kid_next); free(f.kid_to); free(f.dfs); free(f.seen);
 }
 
+int nil_fact_tracked(TyKind t) {
+  return ty_is_object(t) || t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) ||
+         ty_is_hash(t) || t == TY_IO;
+}
+
 int nil_fact_node(const Compiler *c, int node) {
   if (node < 0) return 0;
-  if (!c->nil_fact || node >= c->nil_fact_n) return ty_is_object(c->ntype[node]);
+  if (!c->nil_fact || node >= c->nil_fact_n) return nil_fact_tracked(c->ntype[node]);
   return (c->nil_fact[node] & 3) == NF_MAY_NIL;
 }
 
@@ -1355,8 +1389,8 @@ int nil_fact_why(const Compiler *c, int node) {
 }
 
 const char *nil_fact_why_name(int why) {
-  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "elem", "unset",
-    "ivar", "caller", "opaque", "guarded" };
+  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem",
+    "global", "ivar", "caller", "opaque", "guarded" };
   return why >= 0 && why < (int)(sizeof names / sizeof *names) ? names[why] : "?";
 }
 

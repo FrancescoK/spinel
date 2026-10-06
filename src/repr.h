@@ -45,6 +45,8 @@ typedef struct {
                              reads the class id from the object */
   unsigned nil_scalar:1;  /* an Integer or Float whose box tests for the nil
                              sentinel */
+  unsigned nil_tested:1;  /* a call's nil arm has tested this receiver for
+                             nil (VR_NIL_TESTED, a view around the call) */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;

@@ -190,6 +190,7 @@ Repr repr_of(const Compiler *c, int node) {
   r.demand = c->strbuf_handle_demand[node] != 0;
   r.read_raw = c->strbuf_read_raw ? c->strbuf_read_raw[node] != 0 : 0;
   r.poly_lift = c->poly_strbuf_lift ? c->poly_strbuf_lift[node] != 0 : 0;
+  r.nil_tested = c->nil_tested ? c->nil_tested[node] != 0 : 0;
   /* a node is boxed as the type it is stored as; a nil-guard narrowing is
      read where the value is used, not where it is boxed */
   TyKind kt = r.as_ty;
@@ -203,8 +204,11 @@ Repr repr_of(const Compiler *c, int node) {
   if (r.strbuf_src == RS_SLOT_POLY) r.kind = RK_BOXED;
   else if (r.strbuf_src != RS_NONE) r.kind = RK_STRBUF;
   /* a user object the nil fact says may be nil (analyze_nil.c, #7444); a
-     by-value one too, whose layout has no nil to hold it in */
-  if ((r.kind == RK_PTR || r.kind == RK_VOBJ) && ty_is_object(kt) && nil_fact_node(c, node))
+     by-value one too, whose layout has no nil to hold it in; a builtin
+     pointer (a String, an Array, a Hash, an IO) whose NULL is its nil, and
+     a shared String's handle */
+  if ((r.kind == RK_PTR || r.kind == RK_VOBJ || r.kind == RK_STRBUF) && nil_fact_tracked(kt) &&
+      nil_fact_node(c, node))
     r.may_nil = 1;
   return r;
 }
@@ -403,8 +407,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   }
   /* a `||=` can read the slot before any write: nil until then */
   if (lv->or_written) r.may_nil = 1;
-  /* an object slot the nil fact says may hold nil */
-  if (ty_is_object(lv->type) && lv->obj_may_nil) r.may_nil = 1;
+  /* an object slot, or a builtin pointer's, the nil fact says may hold nil */
+  if (nil_fact_tracked(lv->type) && lv->obj_may_nil) r.may_nil = 1;
   /* str_shared refines TY_STRBUF; it can outlive that storage type */
   if (lv->type == TY_STRBUF && lv->str_shared) r.handle = 1;
   r.kind = (unsigned char)k;
