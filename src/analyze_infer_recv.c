@@ -563,7 +563,9 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        declared r holding a PolyPoly pointer made inspect walk garbage). */
     if (sp_streq(name, "replace") && argc == 1) {
       TyKind ot = infer_type(c, argv[0]);
-      if (ty_is_hash(ot) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
+      /* a boxed other holds whichever variant the value really is (#3975's
+         rule for merge) */
+      if ((ty_is_hash(ot) || ot == TY_POLY) && ot != rt) { *out = TY_POLY_POLY_HASH; return 1; }
       { *out = rt; return 1; }
     }
     if (sp_streq(name, "merge")) { *out = rt; return 1; }
@@ -1873,8 +1875,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && argc == 3 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) && sp_streq(name, "bytesplice"))
     { *out = TY_POLY; return 1; }
-  /* String#replace/prepend/concat on a poly value: self, boxed */
-  if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
+  /* String#replace/prepend/concat on a poly value: self, boxed. replace
+     ignores a block, as the Array and Hash ones do, and its dispatch emits
+     the call the same with one. */
+  if (recv >= 0 && rt == TY_POLY && (nt_ref(nt, id, "block") < 0 || sp_streq(name, "replace")) &&
       !an_user_recv_defines_method(c, name) && argc >= 1 &&
       (sp_streq(name, "replace") || sp_streq(name, "prepend") ||
        sp_streq(name, "concat")))
