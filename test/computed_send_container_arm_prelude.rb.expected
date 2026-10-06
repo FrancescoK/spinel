@@ -1,0 +1,7 @@
+"blk x"
+"deleted none"
+"path gone"
+2
+1
+[Array, ArgumentError, "wrong number of arguments (given 0, expected 1)"]
+[Hash, ArgumentError, "wrong number of arguments (given 0, expected 1)"]
