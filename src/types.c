@@ -58,8 +58,7 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"minmax", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, -1},
   /* The Enumerable names a boxed receiver shares with Array: its elements
      (a hash's [key, value] pairs) materialize into a poly array once. */
-  {"minmax", PF_ENUM, 0, -1, -1}, {"tally", PF_ENUM, 0, -1, -1}, {"product", PF_ENUM, 0, -1, -1},
-  {"combination", PF_ENUM, 0, -1, -1}, {"permutation", PF_ENUM, 0, -1, -1},
+  {"minmax", PF_ENUM, 0, -1, -1}, {"tally", PF_ENUM, 0, -1, -1},
   {"group_by", PF_ENUM, 0, -1, 1}, {"partition", PF_ENUM, 0, -1, 1},
   {"each_with_object", PF_ENUM, 0, -1, 1}, {"chunk_while", PF_ENUM, 0, -1, 1},
   {"slice_when", PF_ENUM, 0, -1, 1},
@@ -71,6 +70,9 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"flatten!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 1, 0}, {"fill", PF_ARRAY | PF_MUT | PF_VAL_SELF, 1, 3, 0},
   {"fill", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 2, 1},
   {"to_ary", PF_ARRAY, 0, 0, 0}, {"transpose", PF_ARRAY, 0, 0, 0},
+  /* Array's own, which Enumerable does not have: a Hash or a Range raises
+     NoMethodError, where read as its elements it answered */
+  {"product", PF_ARRAY, 0, -1, -1}, {"combination", PF_ARRAY, 0, -1, -1}, {"permutation", PF_ARRAY, 0, -1, -1},
   /* and the Enumerable names that had no arm at all */
   {"grep", PF_ENUM, 1, 1, -1}, {"minmax_by", PF_ENUM, 0, 0, 1},
   /* The String mutators String alone owns. */

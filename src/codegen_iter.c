@@ -3427,8 +3427,8 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
       int tw = ++g_tmp, ti2 = ++g_tmp;
       emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
       emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
-                 tw, trecv, tw);
+      buf_printf(&sw, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
+                 tw, trecv, name, tw);
       /* The block can collect between stores, so each store needs the
          runtime setter's barrier, not a single barrier before the loop. */
       emit_indent(&sw, indent + 1);

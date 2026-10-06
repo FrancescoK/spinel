@@ -6427,6 +6427,12 @@ static sp_PolyArray *sp_poly_arr_recv(sp_RbVal v, const char *m) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p &&
       m[0] && m[strlen(m) - 1] != '!' && strcmp(m, "each_index") != 0)
     return sp_enum_to_a_boxed(v);
+  /* ...nor are they a Range's or a Hash's (map! and each_index walked a
+     Hash's pairs and a Range's members, and answered) */
+  if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE ||
+                              sp_poly_is_hash_kind(v.cls_id)) &&
+      m[0] && (m[strlen(m) - 1] == '!' || strcmp(m, "each_index") == 0))
+    sp_raise_nomethod(sp_nomethod_msg_args(m, v, 0, NULL));
   /* an Integer or String Range enumerates its members: select / filter /
      reject on a boxed one raised NoMethodError naming Range (#4837) */
   if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
