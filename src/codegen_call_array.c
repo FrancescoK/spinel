@@ -1047,7 +1047,7 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
          here would reach chain sites that read the array directly */
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); %s(_t%d, ", ta, combfn, ta);
-      if (argc == 1) emit_expr(c, argv[0], b);
+      if (argc == 1) emit_int_expr(c, argv[0], b);
       else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
       buf_puts(b, "); })");
       return 1;
@@ -1093,7 +1093,7 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "({ sp_RbVal _t%d = ", ts);
     emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = ", ts, ta, ts, ta, tn);
-    if (argc == 1) emit_expr(c, argv[0], b);
+    if (argc == 1) emit_int_expr(c, argv[0], b);
     else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
     buf_printf(b, "; sp_Enumerator *_t%d = ", te);
     buf_puts(b, "sp_Enumerator_new_from(sp_box_poly_array(");
