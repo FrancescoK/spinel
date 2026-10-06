@@ -6057,9 +6057,11 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
       if (bty && sp_streq(bty, "BlockArgumentNode")) {
         /* `instance_exec(args, &b)` forwards the enclosing method's block; the
            value it produces is that method's own forwarded-block value across
-           call sites (the method inlines per site, splicing the literal). */
+           call sites (the method inlines per site, splicing the literal). A
+           proc of the call's own (`&lp`) is not that block, and is typed
+           poly below. */
         Scope *encl = comp_scope_of(c, id);
-        int emi = encl ? (int)(encl - c->scopes) : -1;
+        int emi = encl && call_forwards_own_block(c, id) ? (int)(encl - c->scopes) : -1;
         if (emi >= 0) {
           TyKind ft = yield_value_type(c, emi);
           if (ft != TY_UNKNOWN && ft != TY_VOID) { *out = ft; return 1; }
