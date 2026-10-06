@@ -1,0 +1,13 @@
+0.pow(-1) => ZeroDivisionError: divided by 0
+z.pow(-1) => ZeroDivisionError: divided by 0
+z.pow(-4) => ZeroDivisionError: divided by 0
+(z * 5).pow(-2) => ZeroDivisionError: divided by 0
+Integer.sqrt(0).pow(-2) => ZeroDivisionError: divided by 0
+a[1].pow(-1) => ZeroDivisionError: divided by 0
+0 ** -1 => ZeroDivisionError: divided by 0
+z ** -3 => ZeroDivisionError: divided by 0
+2.pow(-2) => (1/4)
+(-2).pow(-3) => (-1/8)
+a[0].pow(-2) => (1/9)
+z.pow(2) => 0
+0.pow(0) => 1
