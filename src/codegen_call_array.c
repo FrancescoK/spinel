@@ -337,6 +337,62 @@ int emit_op_array_plus(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
+/* the poly runtime's name for a named set operator */
+static const char *fn_of_named_setop(const char *name) {
+  return is_intersection_alias(name) ? "intersect" : is_union_alias(name) ? "union" : "difference";
+}
+
+/* The poly-array form of a set-op operand of kind `t` held in `v`: a poly
+   array as it is, a typed one converted, a boxed value coerced (an Array, or
+   CRuby's TypeError), an empty literal NULL. 0 for a kind it cannot take. */
+static int setop_poly_operand(TyKind t, const char *v, Buf *b) {
+  if (t == TY_POLY_ARRAY) buf_puts(b, v);
+  else if (t == TY_INT_ARRAY) buf_printf(b, "sp_IntArray_to_poly(%s)", v);
+  else if (t == TY_STR_ARRAY) buf_printf(b, "sp_StrArray_to_poly_fmt(%s)", v);
+  else if (t == TY_FLOAT_ARRAY) buf_printf(b, "sp_FloatArray_to_poly(%s)", v);
+  else if (t == TY_POLY) buf_printf(b, "sp_poly_set_operand(%s)", v);
+  else if (t == TY_UNKNOWN) buf_puts(b, "NULL");
+  else return 0;
+  return 1;
+}
+
+/* union / intersection / difference(*others) whose operands are not all of
+   the receiver's kind (`[1].union(["a"], [2])`, or a boxed element under
+   --int-overflow=promote): every operand evaluated in order into a rooted
+   temp, then the poly op folded over them from the receiver as a poly
+   array. 0 when an operand's kind has no poly form. */
+static int emit_setop_fold_poly(Compiler *c, int id, int recv, TyKind rt, const char *fn, Buf *b) {
+  int argc; const int *argv = call_args(c->nt, id, &argc);
+  Buf chk; memset(&chk, 0, sizeof chk);
+  int ok = setop_poly_operand(rt, "", &chk);
+  for (int j = 0; j < argc && ok; j++) ok = setop_poly_operand(comp_ntype(c, argv[j]), "", &chk);
+  free(chk.p);
+  if (!ok || rt == TY_POLY || rt == TY_UNKNOWN) return 0;
+  int t = ++g_tmp, t0 = g_tmp + 1;
+  g_tmp += argc;
+  buf_puts(b, "({ ");
+  for (int j = -1; j < argc; j++) {
+    int n = j < 0 ? recv : argv[j];
+    TyKind at = j < 0 ? rt : comp_ntype(c, n);
+    if (at == TY_UNKNOWN) continue;
+    char v[24]; snprintf(v, sizeof v, "_t%d", j < 0 ? t : t0 + j);
+    emit_ctype(c, at, b); buf_printf(b, " %s = ", v); emit_expr(c, n, b);
+    buf_printf(b, at == TY_POLY ? "; SP_GC_ROOT_RBVAL(%s); " : "; SP_GC_ROOT(%s); ", v);
+  }
+  int ta = ++g_tmp;
+  char v[24]; snprintf(v, sizeof v, "_t%d", t);
+  buf_printf(b, "sp_PolyArray *_t%d = ", ta); setop_poly_operand(rt, v, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d);", ta);
+  for (int j = 0; j < argc; j++) {
+    snprintf(v, sizeof v, "_t%d", t0 + j);
+    buf_printf(b, " _t%d = sp_PolyArray_%s(_t%d, ", ta, fn, ta);
+    setop_poly_operand(comp_ntype(c, argv[j]), v, b);
+    buf_puts(b, ");");
+  }
+  buf_printf(b, " _t%d; })", ta);
+  return 1;
+}
+
 /* Array#& / #| / #- and intersection / union / difference with operands: the
    same kind runs the typed set op; another kind, or a boxed operand, the poly one */
 int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
@@ -399,6 +455,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
         buf_printf(b, " _t%d; })", t);
         return 1;
       }
+      return emit_setop_fold_poly(c, id, recv, rt, fn_of_named_setop(name), b);
     }
     return 0;
   }
@@ -466,6 +523,7 @@ int emit_op_array_setop(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, " _t%d; })", t);
       return 1;
     }
+    return emit_setop_fold_poly(c, id, recv, rt, fn_of_named_setop(name), b);
   }
   return 0;
 }
