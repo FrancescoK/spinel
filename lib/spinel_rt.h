@@ -7504,6 +7504,36 @@ static SP_NORETURN void sp_scan_bad_pattern(sp_RbVal pat) {
                 : sp_poly_class_name(pat);
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Regexp)", n));
 }
+/* match? / match on a boxed operand, ahead of the poly match helpers,
+   which answered no match whatever the operands were. The call's n
+   arguments are at args, the pattern first: a receiver other than a
+   String, a Symbol or a Regexp has no such method (CRuby's NoMethodError,
+   the arguments as its args); a String's or a Symbol's pattern is a String
+   or a Regexp (TypeError otherwise); a Regexp's subject is a String, a
+   Symbol or nil (TypeError otherwise). An object with a #to_str is
+   converted first, as CRuby converts it, and args[0] takes the String the
+   helpers then match. */
+static void sp_poly_match_check(sp_RbVal a, const char *m, sp_int n, sp_RbVal *args) SP_UNUSED;
+static void sp_poly_match_check(sp_RbVal a, const char *m, sp_int n, sp_RbVal *args) {
+  sp_RbVal b = args[0];
+  if (b.tag == SP_TAG_OBJ && b.cls_id >= 0 &&
+      (a.tag == SP_TAG_STR || a.tag == SP_TAG_SYM ||
+       (a.tag == SP_TAG_OBJ && (a.cls_id == SP_BUILTIN_STRBUF || a.cls_id == SP_BUILTIN_REGEX)))) {
+    const char *s = sp_poly_check_str(b);
+    if (s) args[0] = b = sp_box_str(s);
+  }
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_REGEX) {
+    if (!(b.tag == SP_TAG_NIL || b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM ||
+          (b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_STRBUF)))
+      sp_raise_no_str_conversion(b);
+    return;
+  }
+  if (!(a.tag == SP_TAG_STR || a.tag == SP_TAG_SYM || (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_STRBUF)))
+    sp_raise_nomethod(sp_nomethod_msg_args(m, a, n, args));
+  if (!(b.tag == SP_TAG_STR ||
+        (b.tag == SP_TAG_OBJ && (b.cls_id == SP_BUILTIN_STRBUF || b.cls_id == SP_BUILTIN_REGEX))))
+    sp_scan_bad_pattern(b);
+}
 static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) SP_UNUSED;
 static sp_StrArray *sp_scan_boxed(const char *s, sp_RbVal pat) {
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)

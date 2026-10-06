@@ -219,21 +219,37 @@ no_gsub_enum:
     /* ...unless a program class answers match? itself: the boxed dispatch
        has its arm, and the String one beside it */
     if (are >= 0 && sp_streq(name, "match?") && rpoly && poly_name_user_claimed(c, name, argc)) return 0;
+    /* match?(pattern) or match?(pattern, pos): another count is the
+       boxed dispatch's, which raises the arity error */
+    if (are >= 0 && sp_streq(name, "match?") && rpoly && argc > 2) return 0;
     if (are >= 0 && sp_streq(name, "match?") && rpoly) {
-      int tv = ++g_tmp;
-      /* a shared-string handle is a String (#4279) */
-      buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, recv, b);
-      buf_puts(b, ")");
-      buf_printf(b, "; const char *_s%d = _t%d.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)_t%d.v.i) : _t%d.v.s;",
+      int tv = ++g_tmp, tr = ++g_tmp;
+      /* The receiver is held, rooted, while the position runs, which may
+         allocate; the String it reads is taken after. A shared-string handle
+         is a String (#4279), its bytes kept by the held handle. */
+      buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tr);
+      /* the position runs before the receiver is judged, whatever it is */
+      int tq = 0;
+      if (argc == 2) {
+        tq = ++g_tmp;
+        buf_printf(b, " sp_RbVal _t%d = ", tq); emit_boxed(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tq);
+      }
+      buf_printf(b, " sp_RbVal _t%d = sp_poly_strbuf_deref(_t%d);", tv, tr);
+      buf_printf(b, " const char *_s%d = _t%d.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)_t%d.v.i) : _t%d.v.s;",
                  tv, tv, tv, tv);
       buf_printf(b, " (sp_bool)((_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM) ? ", tv, tv);
       if (argc == 1) buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _s%d)", are, tv);
-      else {
-        buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _s%d, ", are, tv);
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      buf_printf(b, " : (sp_raise_nomethod(sp_sprintf(\"undefined method 'match?' for an instance of %%s\","
-                    " sp_poly_class_name(_t%d))), 0)); })", tv);
+      else buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, _s%d, sp_poly_arg_int_chk(_t%d))", are, tv, tq);
+      /* any other receiver raises as CRuby does (sp_poly_match_check): a
+         Regexp's TypeError for the pattern, anything else's NoMethodError
+         (nil reads as itself) with the pattern and the position as its
+         args */
+      buf_printf(b, " : (sp_poly_match_check(_t%d, \"match?\", %d, (sp_RbVal[]){", tv, argc);
+      emit_boxed(c, argv[0], b);
+      if (argc == 2) buf_printf(b, ", _t%d", tq);
+      buf_puts(b, "}), 0)); })");
       return 1;
     }
     if (are >= 0 && sp_streq(name, "match?")) {

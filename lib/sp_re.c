@@ -466,6 +466,13 @@ sp_bool sp_poly_match_p(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_
   if (!sp_poly_match_pair(a, b, &p, &s)) return FALSE;
   return sp_re_match_p(p, s);
 }
+/* match?(pattern, pos) with a boxed operand: the same pair, from character
+   position pos of the subject */
+sp_bool sp_poly_match_p_at(sp_RbVal a, sp_RbVal b, sp_int pos) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
+  mrb_regexp_pattern *p; const char *s;
+  if (!sp_poly_match_pair(a, b, &p, &s)) return FALSE;
+  return sp_str_re_match_p_at(p, s, pos);
+}
 sp_MatchData *sp_poly_match_data(sp_RbVal a, sp_RbVal b) {SP_GC_ROOT_RBVAL(a);SP_GC_ROOT_RBVAL(b);
   mrb_regexp_pattern *p; const char *s;
   if (!sp_poly_match_pair(a, b, &p, &s)) return NULL;

@@ -91,6 +91,7 @@ int is_bounded_int_step(const char *n); /* downto upto */
 
 int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
+int is_match_p_name(const char *n);   /* match? */
 int is_string_index(const char *n); /* index rindex */
 int is_modulo_alias(const char *n); /* % modulo */
 int is_append_concat(const char *n); /* << concat */
