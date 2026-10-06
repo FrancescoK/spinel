@@ -38,3 +38,14 @@ def array_keys(a, **) = a.take(11, **)
 p named_keys(a, **{ "forwarded" => 12 })
 p array_keys(a, **{ "forwarded" => 13 })
 p kw
+
+# A String local written in the receiver and appended to later is a String
+# buffer; its call still reaches the String reopening.
+class String
+  def pair(a, **kw) = [a, kw]
+end
+def key_hash(k) = { k => 1 }
+buf = +"b"
+p((buf = +"c").pair(key_hash("arg"), **key_hash("kw")))
+3.times { |i| buf << i.to_s }
+p buf
