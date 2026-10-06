@@ -14096,6 +14096,16 @@ int infer_block_params(Compiler *c) {
 
     { int r = infer_block_params_container_arms(c, nt, id, block, name, recv, rt, p0, pt); changed |= r & 1; if (r & 2) continue; }
 
+    /* A stage of a lazy chain (`[s].lazy.map { |x| }`) binds each element
+       boxed, as the pipeline reads it out of sp_enum_items_from. Left
+       untyped, the usage pass typed the parameter from its body instead:
+       `x << "!"` made it an Array, the String element was read as one, and
+       the program crashed. A stage with several parameters destructures
+       boxed elements already. */
+    if (pt == TY_UNKNOWN && rt == TY_UNKNOWN && recv >= 0 && p0 &&
+        !block_param_name(c, block, 1) && chain_is_lazy_valued(c, recv))
+      pt = TY_POLY;
+
     if (pt == TY_UNKNOWN) continue;
     Scope *s = comp_scope_of(c, block);
     /* When iterating a poly receiver (TY_POLY) with 2+ block params, all params

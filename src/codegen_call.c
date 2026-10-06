@@ -2601,6 +2601,54 @@ int emit_lazy_class_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Does code under `node` change local `pn` in place with a String mutator
+   (an_str_mutator_name: the builtin rows' mutators and the bang names)? A
+   nested block's use counts: it closes over the same parameter. */
+static int lazy_block_mutates_param(Compiler *c, int node, const char *pn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 64) return 0;
+  if (nt_kind(nt, node) == NK_CallNode) {
+    int r = nt_ref(nt, node, "receiver");
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+    if (rn && sp_streq(rn, pn) && an_str_mutator_name(nt_str(nt, node, "name"))) return 1;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (lazy_block_mutates_param(c, nt_ref_at(nt, node, i), pn, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++)
+      if (lazy_block_mutates_param(c, ids[k], pn, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* May the lazy source `src` hold a String? A String Array does; an Array
+   literal (or a local whose one write is one) does when an element is a
+   String or may be one; any other boxed source may. */
+static int lazy_src_may_hold_string(Compiler *c, int src) {
+  const NodeTable *nt = c->nt;
+  if (comp_ntype(c, src) == TY_STR_ARRAY) return 1;
+  int lit = src;
+  if (nt_kind(nt, src) == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, src, "name");
+    Scope *vs = comp_scope_of(c, src);
+    lit = -1;
+    for (int w = vn ? comp_lvw_first(c, vn) : -1; w >= 0; w = comp_lvw_next(c, w)) {
+      if (comp_scope_of(c, w) != vs) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || lit >= 0) return 1;
+      lit = nt_ref(nt, w, "value");
+    }
+  }
+  if (lit < 0 || nt_kind(nt, lit) != NK_ArrayNode) return 1;
+  int en = 0; const int *el = nt_arr(nt, lit, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    TyKind t = nt_kind(nt, el[e]) == NK_SplatNode ? TY_UNKNOWN : comp_ntype(c, el[e]);
+    if (t == TY_STRING || t == TY_STRBUF || t == TY_POLY || t == TY_UNKNOWN) return 1;
+  }
+  return 0;
+}
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *tname = nt_str(nt, id, "name");
@@ -2729,6 +2777,25 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
                     (st == TY_UNKNOWN && nt_type(nt, lazy_src) &&
                      sp_streq(nt_type(nt, lazy_src), "ArrayNode")));
   if (!src_is_range && !src_is_intarr && !src_is_enum && !src_is_arr) return 0;
+  /* A stage block that changes the source's String element in place
+     (`[s].lazy.map { |x| x << "!" }`) changes a copy: the pipeline boxes
+     each element, and the String the source holds is not the shared
+     handle. Refused, naming the line, rather than compiled with the change
+     lost. The stages from the source up to the first one that replaces the
+     element (map, filter_map, flat_map, a window or an index) see it. */
+  if (!src_is_range && !src_is_intarr && st != TY_FLOAT_ARRAY && lazy_src_may_hold_string(c, lazy_src))
+    for (int oi = nops - 1; oi >= 0; oi--) {
+      int k = ops[oi].kind;
+      const char *pn = ops[oi].block >= 0 ? block_param_name(c, ops[oi].block, 0) : NULL;
+      if (pn && lazy_block_mutates_param(c, nt_ref(nt, ops[oi].block, "body"), pn, 0))
+        unsupported_feature(c, ops[oi].block,
+            "a lazy stage's block that changes its String element in place (`<<`, `concat`, "
+            "a `!` method) is not supported: the lazy pipeline hands the block a copy of the "
+            "element, so the String the source holds would not change. Use the eager form "
+            "(drop `.lazy`), or return a new String (`x + \"!\"`) (see docs/limitations.md)");
+      if (k == OP_MAP || k == OP_FILTERMAP || k == OP_FLATMAP || k == OP_EACHSLICE ||
+          k == OP_EACHCONS || k == OP_WITHINDEX) break;
+    }
 
   int excl = 0, endless = 0, right = -1, left_n = -1;
   int src_range_literal = 0, trange = -1;
