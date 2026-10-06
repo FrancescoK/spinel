@@ -1,1 +1,1 @@
-FILE_CONTENT_FROM:/tmp/spinel-push/PUSH_builtin_ops_c.json
+{{FILE:/tmp/spinel-push/CONTENT_builtin_ops.c}}
