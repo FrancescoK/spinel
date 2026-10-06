@@ -385,8 +385,13 @@ static inline char *sp_str_alloc_nogc(size_t len) {
    (#7556 did, and a copied message gained NUL bytes in some builds). */
 extern SP_TLS const char *sp_msg_hint_p;
 extern SP_TLS size_t sp_msg_hint_n;
+/* The pointer outlives the String it named: once that exception is
+   collected, a later message can be built at the same address, and the
+   recorded length cut it (or over-read it). Whatever lives there now is a
+   heap String, so its own header answers the length it has. */
+static inline size_t sp_str_byte_len(const char *s);
 static inline size_t sp_msg_len(const char *m) {
-  return (m && m == sp_msg_hint_p) ? sp_msg_hint_n : strlen(m);
+  return (m && m == sp_msg_hint_p) ? sp_str_byte_len(m) : strlen(m);
 }
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
