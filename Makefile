@@ -1398,11 +1398,12 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
-	t=test/reject/string_method_object_mutator.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/smm.c" >"$$tmp/smm.out" 2>&1; then \
-	  echo "reject-test: FAIL (a Method bound to a String mutator compiled)"; ok=0; \
-	else grep -q "String#method is not supported for a method that changes the String in place" "$$tmp/smm.out" || \
-	  { echo "reject-test: FAIL (a Method bound to a String mutator rejected without saying why)"; sed -n 1,5p "$$tmp/smm.out"; ok=0; }; fi; \
+	for t in test/reject/string_method_object_mutator.rb test/reject/string_method_object_mutator_user_method.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/smm.c" >"$$tmp/smm.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t, a Method bound to a String mutator, compiled)"; ok=0; \
+	  else grep -q "String#method is not supported for a method that changes the String in place" "$$tmp/smm.out" || \
+	    { echo "reject-test: FAIL ($$t, a Method bound to a String mutator, rejected without saying why)"; sed -n 1,5p "$$tmp/smm.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/builtin_value_ivar_set.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bvi.c" >"$$tmp/bvi.out" 2>&1; then \
 	  echo "reject-test: FAIL (instance_variable_set on a String compiled)"; ok=0; \
