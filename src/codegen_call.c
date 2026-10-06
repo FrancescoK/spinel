@@ -18027,6 +18027,89 @@ static int operand_local_rebound_by(Compiler *c, int x, int after) {
   return 0;
 }
 
+/* Is `node` a value no operand can change: a number, a Symbol, a plain
+   String, nil, true or false, or an Array or Hash literal of them? */
+static int operand_is_constant(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, node)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode: case NK_StringNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    case NK_ArrayNode: case NK_HashNode: {
+      int n = 0;
+      const int *el = nt_arr(nt, node, "elements", &n);
+      for (int i = 0; i < n; i++) {
+        int e = el[i];
+        if (nt_kind(nt, e) == NK_AssocNode) {
+          if (!operand_is_constant(c, nt_ref(nt, e, "key")) ||
+              !operand_is_constant(c, nt_ref(nt, e, "value"))) return 0;
+        }
+        else if (!operand_is_constant(c, e)) return 0;
+      }
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+
+/* Does `node` hold an Array or Hash literal outside a block? */
+static int subtree_has_container_literal(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ArrayNode || k == NK_HashNode) return 1;
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  for (int i = 0; i < nt_num_refs(nt, node); i++)
+    if (subtree_has_container_literal(c, nt_ref_at(nt, node, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, node); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (subtree_has_container_literal(c, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* Does operand `node` build into g_pre, ahead of the whole call, something
+   an operand to its left can change? An Array or Hash literal builds there,
+   so one that reads a value (`[log.size]`) read it ahead of them; and a
+   parenthesized operand whose value builds one there puts its statements
+   there with it (`(log << :a; [1].size)`, see emit_expr). A block's body
+   runs where it is called. */
+static int operand_builds_ahead(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+  if ((k == NK_ArrayNode || k == NK_HashNode) && operand_is_constant(c, node)) return 0;
+  if (k == NK_ArrayNode || k == NK_HashNode) return 1;
+  if (k == NK_ParenthesesNode) {
+    int body = nt_ref(nt, node, "body"), n = 0;
+    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n > 1 && subtree_has_container_literal(c, bd[n - 1])) return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, node); i++)
+    if (operand_builds_ahead(c, nt_ref_at(nt, node, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, node); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (operand_builds_ahead(c, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* See codegen_internal.h. */
+int call_operand_builds_ahead(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  int effect = recv >= 0 && subtree_has_side_effect(c, recv);
+  for (int i = 0; i < argc; i++) {
+    if (effect && operand_builds_ahead(c, argv[i])) return 1;
+    if (subtree_has_side_effect(c, argv[i])) effect = 1;
+  }
+  return 0;
+}
+
 /* An operand emit_operands_in_order cannot bind, the `u`th, renders where
    its arm puts it. An Array or Hash literal builds into g_pre, ahead of the
    whole call, so a local read anywhere in an operand to its left read what
@@ -18046,7 +18129,8 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
                                         int first_arg, int u, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind uk = nt_kind(nt, operand[u]);
-  int literal = uk == NK_ArrayNode || uk == NK_HashNode;
+  int ahead = operand_builds_ahead(c, operand[u]);
+  int literal = uk == NK_ArrayNode || uk == NK_HashNode || ahead;
   /* a user method or a boxed receiver's dispatch binds its arguments in
      order already (emit_args_before_binding); only a builtin's arm of plain
      values passes them to C as they stand */
@@ -18054,6 +18138,8 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
   int last = -1;
   for (int i = literal ? 0 : first_arg; i < u; i++) {
     if (!literal && nt_kind(nt, operand[i]) != NK_LocalVariableReadNode) continue;
+    /* an effect to the left of what builds ahead runs before it */
+    if (ahead && subtree_has_side_effect(c, operand[i])) { last = i; continue; }
     for (int j = u; j < nop && last < i; j++)
       if (operand_local_rebound_by(c, operand[i], operand[j])) last = i;
   }
@@ -18153,6 +18239,15 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       int v = nt_ref(nt, els[k], "value");
       if (v >= 0) operand[nop++] = v;
     }
+  }
+  /* An operand that builds ahead of the call (operand_builds_ahead) ran
+     ahead of every effect to its left: `a.push((log << :a; 1), [log.size])`
+     read the size first. The effects to the left of the last such operand
+     run first, in order. */
+  for (int u = nop - 1; u > 0; u--) {
+    if (!operand_builds_ahead(c, operand[u])) continue;
+    if (emit_operands_before_unbound(c, id, operand, nop, recv >= 0, u, b)) return 1;
+    break;
   }
   /* A bare read of an ivar, class variable or global is no effect of its own,
      but a sibling that runs code can reassign it: `@data[swap(i)]`, with
