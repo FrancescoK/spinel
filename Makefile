@@ -1716,8 +1716,7 @@ reject-test: $(SPINEL)
 	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO" \
 	            "subclass_array_class_new_call:Class.new(Array) without a block is not supported yet" \
 	            "subclass_array_reopened:class Stack < Array: subclassing Array in a program that also reopens Array" \
-	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest" \
-	            "subclass_array_marshal:Marshal.dump of an Array subclass instance is not supported yet"; do \
+	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest"; do \
 	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sb.c" >"$$tmp/sb.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a subclass of a builtin has none of its parent's methods)"; ok=0; \
