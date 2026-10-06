@@ -1046,3 +1046,78 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (emit_or_take_back(c, id, b, emit_hash_call)) return 1;
   return 0;
 }
+
+/* `h.merge(a, b, ...)` / `merge!`, which analysis folds into
+   `h.merge(a).merge(b)...` (merge_fold_n on the outer call), on a boxed
+   receiver. CRuby evaluates the receiver and every argument, then raises
+   NoMethodError with all of them for a receiver that is no Hash; the fold
+   raised at its first link, before the later arguments ran and with only
+   the first as its args. The receiver and the arguments are held in temps
+   in order, the receiver is tested, and the fold is emitted reading the
+   temps. A typed receiver keeps the fold as it is. */
+int emit_merge_fold_held(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int n = (int)nt_int(nt, id, "merge_fold_n", 0);
+  if (n < 2 || n > 64) return 0;
+  int args[64], cur = id;
+  for (int j = n - 1; j >= 0; j--) {
+    int an = 0;
+    const int *av = call_args(nt, cur, &an);
+    if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_BlockArgumentNode) return 0;
+    args[j] = av[0];
+    if (j > 0) cur = nt_ref(nt, cur, "receiver");
+    if (cur < 0 || nt_kind(nt, cur) != NK_CallNode) return 0;
+  }
+  int recv = nt_ref(nt, cur, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  /* the re-entry below, with the receiver already held */
+  for (int i = 0; i < g_n_argov; i++) if (g_argov_node[i] == recv) return 0;
+  if (g_n_argov + n + 1 > MAX_ARG_OVERRIDE) return 0;
+  int tr = ++g_tmp;
+  int ta[64];
+  TyKind aty[64];
+  buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tr);
+  for (int j = 0; j < n; j++) {
+    aty[j] = comp_ntype(c, args[j]);
+    if (aty[j] == TY_UNKNOWN || aty[j] == TY_VOID || aty[j] == TY_NIL) aty[j] = TY_POLY;
+    ta[j] = ++g_tmp;
+    Buf pre, v; memset(&pre, 0, sizeof pre); memset(&v, 0, sizeof v);
+    Buf *sv = g_pre; g_pre = &pre;
+    if (aty[j] == TY_POLY) emit_boxed(c, args[j], &v); else emit_expr(c, args[j], &v);
+    g_pre = sv;
+    if (pre.p) buf_puts(b, pre.p);
+    emit_ctype(c, aty[j], b);
+    buf_printf(b, " _t%d = %s; ", ta[j], v.p ? v.p : "sp_box_nil()");
+    emit_gc_root_tmp_refs(c, aty[j], ta[j], b);
+    buf_puts(b, " ");
+    free(pre.p); free(v.p);
+  }
+  buf_printf(b, "if (SP_UNLIKELY(!(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && sp_poly_is_hash_kind(_t%d.cls_id)))) "
+                "{ sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, %d, (sp_RbVal[]){",
+             tr, tr, tr, nt_str(nt, id, "name"), tr, n);
+  for (int j = 0; j < n; j++) {
+    char tn[24]; snprintf(tn, sizeof tn, "_t%d", ta[j]);
+    if (j) buf_puts(b, ", ");
+    emit_boxed_text(c, aty[j], tn, b);
+  }
+  buf_puts(b, "})); } ");
+  int slot = view_bind(recv, "_t%d", tr);
+  int tok[65], nv = 0;
+  for (int j = 0; j < n; j++) {
+    view_bind(args[j], "_t%d", ta[j]);
+    tok[nv++] = view_push(c, args[j], aty[j]);
+  }
+  /* the fold's own prelude runs here, after the test, not ahead of the
+     statement where the temps are not yet held */
+  Buf fpre, fv; memset(&fpre, 0, sizeof fpre); memset(&fv, 0, sizeof fv);
+  Buf *sv = g_pre; g_pre = &fpre;
+  emit_expr(c, id, &fv);
+  g_pre = sv;
+  while (nv > 0) view_pop(c, tok[--nv]);
+  view_unbind(slot);
+  buf_printf(b, "%s%s; })", fpre.p ? fpre.p : "", fv.p ? fv.p : "sp_box_nil()");
+  free(fpre.p); free(fv.p);
+  return 1;
+}

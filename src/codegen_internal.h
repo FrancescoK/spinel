@@ -1624,6 +1624,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b);
 int emit_builtin_arity_guard(Compiler *c, int id, Buf *b);
 int emit_hash_new_arg_guard(Compiler *c, int id, Buf *b);
 int emit_hash_new_capacity_wrap(Compiler *c, int id, Buf *b, int boxed);
+int emit_merge_fold_held(Compiler *c, int id, Buf *b);  /* codegen_call_hash.c */
 void emit_hash_new_capacity_check(Compiler *c, int cap, Buf *b);
 extern int g_hash_cap_inner;
 int emit_blockless_enumerator(Compiler *c, int id, Buf *b);

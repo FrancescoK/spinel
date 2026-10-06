@@ -4769,6 +4769,18 @@ static void emit_blk_value_as(Compiler *c, int blk, TyKind vt, Buf *b) {
   buf_puts(b, "; })");
 }
 
+/* A boxed receiver of merge with a block, held in _t<ta> with its argument
+   in _t<tb>: a receiver that is no Hash (nil included) is CRuby's
+   NoMethodError, with the argument as its args, once both have run. The
+   copy below took nil and any other value as an empty Hash. A typed
+   receiver writes nothing. */
+static void emit_merge_recv_check(Compiler *c, int id, int recv, int ta, int tb, Buf *b) {
+  if (comp_ntype(c, recv) != TY_POLY) return;
+  buf_printf(b, " if (SP_UNLIKELY(!(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && sp_poly_is_hash_kind(_t%d.cls_id))))"
+                " sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, 1, &_t%d));",
+             ta, ta, ta, nt_str(c->nt, id, "name"), ta, tb);
+}
+
 /* Hash#merge(other) { |key, old, new| } built as the general boxed hash:
    walk the other hash's pairs into a boxed copy of the receiver, consulting
    the block on a collision. Answers 0 for an empty block. */
@@ -4796,6 +4808,7 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, int mb
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tb); emit_boxed(c, arg, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tb);
+    emit_merge_recv_check(c, id, recv, ta, tb, b);
     buf_printf(b, " sp_PolyPolyHash *_t%d = sp_poly_hash_merge(_t%d, sp_box_nil()); SP_GC_ROOT(_t%d);",
                tr, ta, tr);
     buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_a_arr(_t%d); SP_GC_ROOT(_t%d);", tp, tb, tp);
@@ -4852,17 +4865,31 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
       Buf pb; memset(&pb, 0, sizeof pb);
       if (rb >= 0) emit_forwarded_proc_arg(c, mblk, &pb);
       else if (g_yield_proc_ref) buf_puts(&pb, g_yield_proc_ref);
+      /* a boxed receiver that is no Hash raises (sp_poly_hash_merge_m) */
+      int mchk = comp_ntype(c, recv) == TY_POLY;
       if (!pb.p || sp_streq(pb.p, "NULL")) {
-        buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
+        buf_puts(b, mchk ? "sp_poly_hash_merge_m(" : "sp_poly_hash_merge("); emit_boxed(c, recv, b);
         buf_puts(b, ", "); emit_boxed(c, arg, b); buf_puts(b, ")");
         free(pb.p);
         return 1;
       }
-      /* a copy of the receiver, merged through the proc */
+      /* a copy of the receiver, merged through the proc; a boxed receiver
+         is tested once the argument has run */
       int th = ++g_tmp, to = ++g_tmp, tp = ++g_tmp;
-      buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_poly_hash_merge(", th); emit_boxed(c, recv, b);
-      buf_printf(b, ", sp_box_nil()); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, arg, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); ", to, tp, pb.p, tp);
+      if (mchk) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, to); emit_boxed(c, arg, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", to);
+        emit_merge_recv_check(c, id, recv, tv, to, b);
+        buf_printf(b, " sp_PolyPolyHash *_t%d = sp_poly_hash_merge(_t%d, sp_box_nil()); SP_GC_ROOT(_t%d); ", th, tv, th);
+      }
+      else {
+        buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_poly_hash_merge(", th); emit_boxed(c, recv, b);
+        buf_printf(b, ", sp_box_nil()); SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", th, to); emit_boxed(c, arg, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", to);
+      }
+      buf_printf(b, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); ", tp, pb.p, tp);
       buf_printf(b, "sp_poly_hash_merge_blk(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_POLY_POLY_HASH), _t%d, _t%d, \"merge\"); _t%d; })",
                  th, to, tp, th);
       free(pb.p);

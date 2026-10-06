@@ -20752,6 +20752,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
+  if (emit_merge_fold_held(c, id, b)) return;
   /* a copy of a value whose ivars live in the runtime's map */
   if (emit_bivar_copy_wrap(c, id, b)) return;
   emit_call_unwrapped(c, id, b);

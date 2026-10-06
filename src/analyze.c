@@ -5481,6 +5481,9 @@ static void desugar_enum_chain_shapes(Compiler *c) {
             nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
             nt_node_set_ref(nt, id, "receiver", cur);
             nt_node_set_ref(nt, id, "arguments", last);
+            /* the count the call had, for a receiver that must be tested
+               after every argument has run (emit_merge_fold_held) */
+            nt_node_set_int(nt, id, "merge_fold_n", an);
             comp_grow_node_arrays(c);
           }
         }
