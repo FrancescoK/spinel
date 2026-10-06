@@ -8,6 +8,7 @@
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
+#include "repr.h"
 #include "codegen_call_arms.h"
 
 /* File.join's scalar and flattened routes keep their operands alive
@@ -1330,36 +1331,43 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         int a1_sio = node_is_stringio(c, argv[1]), a1_io = comp_ntype(c, argv[1]) == TY_IO;
         int a0_poly = repr_of(c, argv[0]).kind == RK_BOXED;
         int a1_poly = repr_of(c, argv[1]).kind == RK_BOXED;
-        /* a poly endpoint (a param unioning StringIO and IO, #3257) holds a
-           boxed stream object: dispatch read/write on its runtime class */
-        if ((a0_sio || a0_io || a0_poly) && (a1_sio || a1_io || a1_poly) &&
-            (a0_poly || a1_poly)) {
+        /* A boxed endpoint may hold a path, including a shared String handle,
+           or a stream. Check its kind before reading the payload as sp_File. */
+        if (a0_poly || a1_poly) {
           int sio_cid = comp_class_index(c, "StringIO");
           int td = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = ", td);
           if (a0_poly) {
             int ts = ++g_tmp;
             buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, argv[0], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_read(sp_poly_unbox_s(_t%d)) : ", ts, ts, ts, ts);
             if (sio_cid >= 0)
-              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_read((sp_StringIO *)_t%d.v.p)"
-                            " : sp_File_read((sp_File *)_t%d.v.p); })", ts, sio_cid, ts, ts);
-            else
-              buf_printf(b, "; sp_File_read((sp_File *)_t%d.v.p); })", ts);
+              buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
+                            " ? sp_StringIO_read((sp_StringIO *)_t%d.v.p) : ", ts, ts, sio_cid, ts);
+            buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                          " ? sp_File_read((sp_File *)_t%d.v.p)"
+                          " : (sp_raise_nomethod(sp_nomethod_msg(\"read\", _t%d)), (const char *)0); })", ts, ts, ts, ts);
           }
           else if (a0_sio) { buf_puts(b, "sp_StringIO_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else { buf_puts(b, "sp_File_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          else if (a0_io) { buf_puts(b, "sp_File_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          else { buf_puts(b, "sp_file_read("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); }
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", td);
           if (a1_poly) {
             int tdd = ++g_tmp;
             buf_printf(b, "sp_RbVal _t%d = ", tdd); emit_expr(c, argv[1], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_write(sp_poly_unbox_s(_t%d), _t%d) : ", tdd, tdd, tdd, tdd, td);
             if (sio_cid >= 0)
-              buf_printf(b, "; _t%d.cls_id == %d ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d)"
-                            " : sp_File_write_bin((sp_File *)_t%d.v.p, _t%d); })", tdd, sio_cid, tdd, td, tdd, td);
-            else
-              buf_printf(b, "; sp_File_write_bin((sp_File *)_t%d.v.p, _t%d); })", tdd, td);
+              buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
+                            " ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d) : ", tdd, tdd, sio_cid, tdd, td);
+            buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO"
+                          " ? sp_File_write_bin((sp_File *)_t%d.v.p, _t%d)"
+                          " : (sp_raise_nomethod(sp_nomethod_msg(\"write\", _t%d)), (sp_int)0); })", tdd, tdd, tdd, td, tdd);
           }
           else if (a1_sio) { buf_puts(b, "sp_StringIO_write("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
-          else { buf_puts(b, "sp_File_write_bin("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          else if (a1_io) { buf_puts(b, "sp_File_write_bin("); emit_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
+          else { buf_puts(b, "sp_file_write("); emit_path_expr(c, argv[1], b); buf_printf(b, ", _t%d); })", td); }
           return 1;
         }
         if ((a0_sio || a0_io) && (a1_sio || a1_io)) {
