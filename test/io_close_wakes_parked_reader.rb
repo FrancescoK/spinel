@@ -80,9 +80,14 @@ p t2.value
 r2.close
 
 # connection churn with two pumps per connection and a cross-thread close
-# of both sockets, the shape that crashed
-N   = 8
-DUR = 2.0
+# of both sockets, the shape that crashed. ITERS caps the connections as
+# well as the time: uncapped, a fast machine opened several thousand in
+# DUR, and when the kernel dropped a SYN (a full conntrack table) each
+# such connect waited out the 1s, 2s, 4s retransmit steps, which is what
+# timed the test out, not the close or the wakeups
+N     = 8
+DUR   = 2.0
+ITERS = 200
 
 srv = TCPServer.new('127.0.0.1', 0)
 port = srv.addr[1]
@@ -127,8 +132,10 @@ end
 live = []
 blob = 'z' * 4096
 deadline = Time.now + DUR
+iters = 0
 
-while Time.now < deadline
+while Time.now < deadline && iters < ITERS
+  iters += 1
   while live.size < N
     wc, wp = pair(srv, port)
     gp, gg = pair(srv, port)

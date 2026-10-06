@@ -1,0 +1,18 @@
+index
+value
+FrozenError: can't modify frozen String: "hello"
+FrozenError: can't modify frozen String: "hello"
+FrozenError: can't modify frozen String: "hello"
+FrozenError: can't modify frozen String: "hello"
+FrozenError: can't modify frozen String: "hello"
+index
+value
+FrozenError: can't modify frozen String: "hello"
+value
+FrozenError: can't modify frozen String: "hello"
+value
+FrozenError: can't modify frozen String: "hello"
+value
+FrozenError: can't modify frozen String: "hello"
+value
+FrozenError: can't modify frozen String: "hello"

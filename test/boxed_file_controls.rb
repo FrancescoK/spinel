@@ -1,7 +1,7 @@
 # pos=, sysseek, flock, fcntl and advise on an IO handle read out of a
 # container answer as on a typed File: pos= and sysseek reposition,
 # flock locks, fcntl answers the descriptor's flags, advise answers nil.
-path = "/tmp/sp_boxed_file_controls.txt"
+path = "/tmp/sp_boxed_file_controls_#{Process.pid}.txt"
 File.write(path, "abcdef")
 def fresh(path) = [File.open(path, "r+"), 0][0]
 def seek1(f) = f.sysseek(1)

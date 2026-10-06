@@ -1,0 +1,7 @@
+[TypeError, "no implicit conversion of Range into Integer"]
+[1, 9, 9]
+[1, 9, 3]
+[9, 9, 3]
+[1, 9, 9]
+[TypeError, "no implicit conversion of String into Integer"]
+[1, 9, 9]

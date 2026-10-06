@@ -210,10 +210,20 @@ static pthread_mutex_t sp_slab_lock = PTHREAD_MUTEX_INITIALIZER;
    threaded nothing runs beside the program, and a locked instruction per
    allocation and per death was a fifth of an allocation-bound benchmark. */
 #ifdef SP_THREADS
-static inline uint64_t bm_or(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_OR(p, v, __ATOMIC_ACQ_REL); }
-static inline uint64_t bm_and(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_AND(p, v, __ATOMIC_ACQ_REL); }
-static inline uint64_t bm_load(const uint64_t *p) { return SP_ATOMIC_LOAD(p, __ATOMIC_ACQUIRE); }
-static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE(p, v, __ATOMIC_RELEASE); }
+/* A bitmap word as the atomics see it: 8-aligned. On 32-bit x86 the ABI
+   aligns a uint64_t in a struct to 4, and clang then turns a 64-bit atomic
+   into a libatomic call (__atomic_load_8), which nothing links; gcc inlines
+   it either way. The words are 8-aligned in fact: the bitmaps sit in a page-
+   aligned arena, in 448-byte records of nothing but uint64_t. */
+#if SP_ATOMICS_BUILTIN
+typedef uint64_t sp_bm_aword __attribute__((aligned(8)));
+#else
+typedef uint64_t sp_bm_aword;
+#endif
+static inline uint64_t bm_or(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_OR((sp_bm_aword *)p, v, __ATOMIC_ACQ_REL); }
+static inline uint64_t bm_and(uint64_t *p, uint64_t v) { return SP_ATOMIC_FETCH_AND((sp_bm_aword *)p, v, __ATOMIC_ACQ_REL); }
+static inline uint64_t bm_load(const uint64_t *p) { return SP_ATOMIC_LOAD((const sp_bm_aword *)p, __ATOMIC_ACQUIRE); }
+static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE((sp_bm_aword *)p, v, __ATOMIC_RELEASE); }
 #endif
 /* The claim of an object slot writes the current epoch's young word, which
    has one writer: the chunk's owner, on its own thread. Nothing else sets or
@@ -228,7 +238,7 @@ static inline void bm_store(uint64_t *p, uint64_t v) { SP_ATOMIC_STORE(p, v, __A
    two sides atomic; with one writer the read-modify-write loses nothing.
    Aging's carry into the current epoch would be a second writer, which is
    one more reason it stays off with the slab on. */
-static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = SP_ATOMIC_LOAD(p, __ATOMIC_RELAXED); SP_ATOMIC_STORE(p, o | v, __ATOMIC_RELEASE); return o; }
+static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = SP_ATOMIC_LOAD((sp_bm_aword *)p, __ATOMIC_RELAXED); SP_ATOMIC_STORE((sp_bm_aword *)p, o | v, __ATOMIC_RELEASE); return o; }
 #else
 static inline uint64_t bm_or_owned(uint64_t *p, uint64_t v) { uint64_t o = *p; *p = o | v; return o; }
 #endif
@@ -336,6 +346,13 @@ static void sp_slab_init(void) {
   for (unsigned i = 0; i <= SP_SLAB_MAX / 16; i++) {
     while (c < SP_SLAB_NCLS - 1 && sp_slab_csize[c] < i * 16) c++;
     sp_slab_cls_of[i] = (uint8_t)c;
+  }
+  /* sp_gc_alloc_sized (sp_alloc.h) and the fronts it picks take a block of
+     256 bytes or less to be in the class of its size rounded up to 16, the
+     first of them 32: the table has to say the same */
+  for (unsigned i = 0; i <= 16; i++) {
+    unsigned k = i <= 2 ? 0 : i - 2;
+    if (sp_slab_cls_of[i] != k || sp_slab_csize[k] != 32 + 16 * k) { fputs("spinel: the slab's size classes moved; sp_gc_alloc_sized follows them by arithmetic\n", stderr); abort(); }
   }
   for (int k = 0; k < SP_SLAB_NCLS; k++) {
     unsigned cs = sp_slab_csize[k];
@@ -694,6 +711,41 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_bytes_add(need);
   return p + sizeof(sp_gc_hdr);
 }
+/* The lean front once more, for a caller that knows the size at compile time
+   and has no finalizer, which a constructor does: sizeof its class. One
+   function per size class (sp_gc_alloc_sized, sp_alloc.h, picks it), so the
+   class and the slot size are constants where sp_gc_alloc reads two tables,
+   the finalizer test goes, and the zeroing is that many stores with no jump
+   into them. Whatever sp_gc_alloc hands to the full form, this does too. */
+static SP_INLINE void *sp_gc_alloc_lean(size_t need, void (*scn)(void *), unsigned csize) {
+  int cls = (int)(csize - 32) >> 4;
+  if (SP_EXPECT(!sp_gc_alloc_fast_ok, 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
+  if (SP_EXPECT(SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold), 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
+  sp_slab_worker *wk = &sp_slab_wk[SP_SLAB_WID()];
+  char *p = wk->rnext[0][cls];
+  if (SP_EXPECT(p == wk->rend[0][cls], 0)) return sp_gc_alloc_full(need - sizeof(sp_gc_hdr), NULL, scn);
+  wk->rnext[0][cls] = p + csize;
+  sp_slab_zero_small(p, csize);
+  sp_gc_hdr *h = (sp_gc_hdr *)p;
+  h->scan = scn; h->size = need;
+  sp_gc_bytes_add(need);
+  return p + sizeof(sp_gc_hdr);
+}
+void *sp_gc_alloc_32(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 32); }
+void *sp_gc_alloc_48(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 48); }
+void *sp_gc_alloc_64(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 64); }
+void *sp_gc_alloc_80(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 80); }
+void *sp_gc_alloc_96(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 96); }
+void *sp_gc_alloc_112(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 112); }
+void *sp_gc_alloc_128(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 128); }
+void *sp_gc_alloc_144(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 144); }
+void *sp_gc_alloc_160(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 160); }
+void *sp_gc_alloc_176(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 176); }
+void *sp_gc_alloc_192(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 192); }
+void *sp_gc_alloc_208(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 208); }
+void *sp_gc_alloc_224(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 224); }
+void *sp_gc_alloc_240(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 240); }
+void *sp_gc_alloc_256(size_t need, void (*scn)(void *)) { return sp_gc_alloc_lean(need, scn, 256); }
 static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
 #ifdef SP_THREADS
   /* Lock-free fast path: the list push is a CAS (SP_GC_HEAP_PUSH) and the live-
@@ -802,6 +854,64 @@ void sp_slab_relive(void *h) {
   bm_and(&l.bm->pin[l.w], ~l.bit);
   if (sp_slab_verify_on) sp_slab_note(h, 5 + 10 * (int)(sp_slab_epoch & 1));
 }
+/* ---- SPINEL_GC_STRESS=2: the quarantine ----
+   A slot a sweep frees is the next slot its class hands out, and until then
+   it keeps the dead object's bytes: the sweep reads the bitmaps and never
+   the slot. So a reference the collector was never told about reads the
+   object it lost, intact, or a live object of the same size in its place,
+   and the program answers right by luck. Here a freed slot is filled with
+   0xdb and kept out of reuse: pinned, so no sweep and no allocation touches
+   it, and named in a bitmap of its own, which is what tells it from a
+   payload. An object keeps its header, and a string its header, marker byte
+   and length, so a report can say what the slot was; the bytes after are
+   poison. sp_slab_is_live answers no for such a slot, so the verifier's
+   membership test (sp_gc_mark) stops a mark that reaches one and names the
+   root or the holder, and a read by the program gets 0xdb: an Integer field
+   is -2604246222170760229, a pointer field faults, a string is its own
+   length of \xDB.
+   The quarantine holds SP_SLAB_QUAR_MAX bytes and is then let go whole, at
+   the next barrier: every chunk with a slot in it is one more for each
+   sweep to walk, and with a collection at every allocation that walk is the
+   run's cost. A slot let go keeps its poison until a claim zeroes it.
+   Blocks past the largest class are malloc's, as before. */
+int sp_slab_quar_on = 0;                 /* asked for, before main (lib/sp_gc.c) */
+static uint64_t *sp_slab_quar = NULL;    /* SP_SLAB_NW words a chunk, over the reservation; mapped at the first barrier */
+static size_t sp_slab_quar_bytes = 0;
+#ifndef SP_SLAB_QUAR_MAX
+#define SP_SLAB_QUAR_MAX ((size_t)1 << 20)
+#endif
+#define SP_SLAB_POISON 0xdb
+static inline uint64_t *sp_slab_quar_of(sp_slab_chunk *ch) {
+  return sp_slab_quar + ((uintptr_t)sp_slab_chunk_base(ch) - sp_slab_base) / SP_SLAB_CHUNK * SP_SLAB_NW;
+}
+/* the slots of one bitmap word a sweep found dead (`strs`: which of them are
+   strings), or the one slot of an explicit free (`whole`: no header to keep) */
+static SP_NOINLINE void sp_slab_quarantine(sp_slab_chunk *ch, sp_slab_bm *bm, unsigned w, uint64_t dead, uint64_t strs, int whole) {
+  unsigned csize = sp_slab_csize[ch->cls];
+  bm_or(&bm->pin[w], dead);
+  bm_or(&sp_slab_quar_of(ch)[w], dead);
+  for (uint64_t v = dead; v; v &= v - 1) {
+    unsigned b = (unsigned)SP_CTZ64(v);
+    char *slot = sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize;
+    if (whole) memset(slot, SP_SLAB_POISON, csize);
+    else if ((strs >> b) & 1) {
+      size_t room = csize - sizeof(sp_str_hdr) - 2, len = ((sp_str_hdr *)slot)->len;
+      memset(slot + sizeof(sp_str_hdr) + 1, SP_SLAB_POISON, len < room ? len : room);
+    }
+    else memset(slot + sizeof(sp_gc_hdr), SP_SLAB_POISON, csize - sizeof(sp_gc_hdr));
+  }
+#ifdef SP_THREADS
+  SP_ATOMIC_FETCH_ADD(&sp_slab_quar_bytes, (size_t)SP_POPCOUNT64(dead) * csize, __ATOMIC_RELAXED);
+#else
+  sp_slab_quar_bytes += (size_t)SP_POPCOUNT64(dead) * csize;
+#endif
+}
+int sp_slab_is_quarantined(const void *p) {
+  if (!sp_slab_quar || !sp_slab_owns(p)) return 0;
+  sp_slab_loc l; sp_slab_locate(p, &l);
+  return (bm_load(&sp_slab_quar_of(l.ch)[l.w]) & l.bit) != 0;
+}
+
 int sp_slab_is_str(const void *p) {
   sp_slab_loc l; sp_slab_locate(p, &l);
   return (l.bm->str[l.w] & l.bit) != 0;
@@ -888,6 +998,7 @@ void sp_slab_verify_all(void) {
 int sp_slab_is_live(const void *p) {
   if (sp_slab_on <= 0 || !sp_slab_owns(p)) return 0;
   sp_slab_loc l; sp_slab_locate(p, &l);
+  if (SP_EXPECT(sp_slab_quar != NULL, 0) && (sp_slab_quar_of(l.ch)[l.w] & l.bit)) return 0;   /* pinned, and freed */
   return ((l.bm->young[0][l.w] | l.bm->young[1][l.w] | l.bm->old[l.w] | l.bm->pin[l.w]) & l.bit) != 0;
 }
 int sp_slab_is_old(const void *p) {
@@ -938,6 +1049,7 @@ void sp_slab_free(void *p) {
   SP_SLAB_CLEAR(l.bm->str[l.w]);
   SP_SLAB_CLEAR(l.bm->mark[l.w]);
   SP_SLAB_CLEAR(l.bm->old[l.w]);
+  if (SP_EXPECT(sp_slab_quar != NULL, 0)) { sp_slab_frees++; if (sp_slab_verify_on) sp_slab_note(p, 6); sp_slab_quarantine(l.ch, l.bm, l.w, l.bit, 0, 1); return; }
   SP_SLAB_CLEAR(l.bm->pin[l.w]);
 #undef SP_SLAB_CLEAR
   sp_slab_frees++;
@@ -1019,6 +1131,33 @@ void sp_slab_runs_release(void) {
       wk->wmask[c] = 0;
     }
   }
+}
+/* Under the barrier, at the start of a collection, before any sweep or free
+   can race it: the map is made at the first one, and a quarantine past its
+   size is let go whole. */
+void sp_slab_quarantine_trim(void) {
+  if (!sp_slab_quar) {
+    if (!sp_slab_quar_on || sp_slab_on <= 0) return;
+    void *m = mmap(NULL, sp_slab_cap / SP_SLAB_CHUNK * SP_SLAB_NW * sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (m == MAP_FAILED) { sp_slab_quar_on = 0; return; }
+    sp_slab_quar = (uint64_t *)m;
+  }
+  if (sp_slab_quar_bytes <= SP_SLAB_QUAR_MAX) return;
+  for (uintptr_t a = sp_slab_base; a < sp_slab_brk; a += SP_SLAB_ARENA) {
+    sp_slab_arena *ar = (sp_slab_arena *)a;
+    for (int i = SP_SLAB_FIRST; i < (int)SP_SLAB_NCHUNK; i++) {
+      sp_slab_chunk *ch = &ar->ch[i];
+      if (!ch->in_use) continue;
+      sp_slab_bm *bm = sp_slab_bm_of(ch);
+      uint64_t *q = sp_slab_quar_of(ch), any = 0;
+      for (unsigned w = 0; w < (ch->nslots + 63u) >> 6; w++) {
+        if (!q[w]) continue;
+        bm_and(&bm->pin[w], ~q[w]); any |= q[w]; q[w] = 0;
+      }
+      if (any) sp_slab_avail_push(ch);
+    }
+  }
+  sp_slab_quar_bytes = 0;
 }
 void sp_slab_epoch_flip(void) {
   sp_slab_runs_release();
@@ -1107,6 +1246,7 @@ void sp_slab_sweep_worker(int wid, int full, int aging, int (*die)(void *hdr), s
         if (full && (ov & dead)) bm_and(&bm->old[w], ~dead);
         freed += (size_t)SP_POPCOUNT64(dead);
         if (sp_slab_verify_on) { uint64_t v = dead; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 7); } }
+        if (SP_EXPECT(sp_slab_quar != NULL, 0)) sp_slab_quarantine(ch, bm, w, dead, sd, 0);
       }
       /* the epoch's word is spent: dead, promoted or carried, every bit is
          accounted for. So are the marks: the next cycle starts clean. */

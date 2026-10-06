@@ -1,0 +1,10 @@
+ArgumentError: bad value for range
+ArgumentError: bad value for range
+ArgumentError: bad value for range
+ArgumentError: bad value for range
+ArgumentError: bad value for range
+..NaN
+NaN..
+ArgumentError: bad value for range
+ArgumentError: bad value for range
+1.0..2.0

@@ -1157,6 +1157,12 @@ class Project
     # being built -- and a process has one allocator, which is not a decision
     # a library makes for its dependents.
     @allocator = toml.get("package", "allocator")
+    # It reaches the link line as -l<name> and the pkg-config lookup as an
+    # argument, both through the shell, so it has to be a library name.
+    if @allocator != "" && @allocator != "system" && !library_name?(@allocator)
+      $stderr.puts "spin: [package] allocator \"#{@allocator}\" is not a library name (letters, digits and _ . + -)"
+      exit 1
+    end
     # per-dependency feature enablement from THIS manifest's [dependencies]
     # inline specs (dep = { ..., features = ["cuda"] }); root-level only --
     # transitive feature unification is out of scope
@@ -1281,6 +1287,8 @@ end
 
 # --- staleness (newest input mtime vs output mtime) --------------------------
 
+# Return the newest source/configuration mtime, excluding generated, vendored,
+# and hidden directories from the recursive project scan.
 def newest_mtime(dir, newest)
   Dir.children(dir).each do |e|
     next if e.start_with?(".")   # .git and friends
@@ -1296,11 +1304,35 @@ def newest_mtime(dir, newest)
   newest
 end
 
+# Resolve the compiler and available runtime archives in driver search order.
+# These are shared prerequisites for cached outputs and external build systems.
+def toolchain_deps
+  sb = spinel_bin
+  found = which(sb)
+  sb = File.realpath(found) if found != ""
+  deps = [sb]
+  # Match the compiler driver's installed and checkout layouts, in that
+  # order: <compiler-dir>/lib, then <compiler-dir>/../lib.
+  dir = File.expand_path("..", sb)
+  rt = File.join(dir, "lib")
+  rt = File.expand_path("../lib", dir) unless File.file?(File.join(rt, "libspinel_rt.a"))
+  ["libspinel_rt.a", "libspinel_rt_mt.a"].each do |name|
+    path = File.join(rt, name)
+    deps << path if File.file?(path)
+  end
+  deps
+end
+
+# Return the newest project, dependency, compiler, or runtime archive mtime
+# so build and test caches invalidate after runtime-only toolchain updates.
 def inputs_mtime(prj)
   newest = newest_mtime(prj.root, 0)
   prj.dep_paths.each { |d| newest = newest_mtime(d, newest) }
-  sb = spinel_bin
-  newest = File.mtime(sb).to_i if File.exist?(sb) && File.mtime(sb).to_i > newest
+  # Runtime-only changes relink the archives without changing the compiler.
+  # Use the same prerequisites we hand external builds through flags --deps.
+  toolchain_deps.each do |path|
+    newest = File.mtime(path).to_i if File.file?(path) && File.mtime(path).to_i > newest
+  end
   newest
 end
 
@@ -1357,7 +1389,92 @@ def compile_cmd(prj, entry, out, extra)
   # spin (it always compiles release).
   cmd += " --debug" if ENV["SPIN_DEBUG"].to_s != ""
   cmd += " -o #{out}"
-  cmd
+  allocator_library_path(prj) + cmd
+end
+
+# The allocator links as a bare -l<name> (spin_flags), which the linker looks
+# for only in its default directories -- and a package manager's are not
+# always among them: Homebrew on Apple Silicon installs jemalloc under
+# /opt/homebrew/lib, which Apple's ld does not search, so a manifest naming a
+# library that IS installed failed with "library 'jemalloc' not found".
+# pkg-config knows where it is; its -L directories go on LIBRARY_PATH, which
+# gcc and clang both read, for the compile. "" when the manifest names no
+# allocator, pkg-config is not installed, or it does not know the library --
+# the link then fails as before, which is still the intended answer for an
+# allocator that is genuinely missing. Only the build's own link sees it:
+# `spin pack` writes no host path into what it packs.
+def allocator_library_path(prj)
+  lib = prj.allocator
+  return "" if lib == "" || lib == "system"
+  return "" if which("pkg-config") == ""
+  tmp = ENV["TMPDIR"].to_s
+  tmp = "/tmp" if tmp == ""
+  out = File.join(tmp, "spin-pkg-config-#{Process.pid}.out")
+  # An argument vector, no shell: neither the name nor $TMPDIR is parsed.
+  pid = Process.spawn("pkg-config", "--libs-only-L", lib, out: out, err: File::NULL)
+  _, status = Process.waitpid2(pid)
+  flags = File.exist?(out) ? File.read(out) : ""
+  File.unlink(out) if File.exist?(out)
+  return "" unless status.success?
+  dirs = []
+  pkg_config_words(flags).each { |f| dirs.push(f[2, f.length - 2]) if f.start_with?("-L") && f.length > 2 }
+  return "" if dirs.empty?
+  prev = ENV["LIBRARY_PATH"].to_s
+  dirs.push(prev) if prev != ""
+  "LIBRARY_PATH=" + sh_single_quote(dirs.join(":")) + " "
+end
+
+# A name -l takes: letters, digits and _ . + -. Anything else in
+# `[package] allocator` would reach the shell as syntax rather than a name.
+def library_name?(s)
+  return false if s == ""
+  s.each_char do |c|
+    ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") ||
+         c == "_" || c == "." || c == "+" || c == "-"
+    return false unless ok
+  end
+  true
+end
+
+# pkg-config's output split the way it writes it: a space inside a path is
+# escaped as "\ ", so a backslash takes the next character literally and only
+# unescaped whitespace separates words. A plain split(" ") cut
+# -L/opt/custom\ libs in two, and the allocator then failed to link.
+def pkg_config_words(s)
+  words = []
+  cur = String.new   # appended below; a "" literal is frozen under spinel
+  esc = false
+  s.each_char do |c|
+    if esc
+      cur << c
+      esc = false
+    elsif c == "\\"
+      esc = true
+    elsif c == " " || c == "\t" || c == "\n"
+      words.push(cur) if cur != ""
+      cur = String.new
+    else
+      cur << c
+    end
+  end
+  words.push(cur) if cur != ""
+  words
+end
+
+# One shell word whatever s holds: single-quoted, with each ' written as '\''.
+# An inherited LIBRARY_PATH such as /opt/John's libs closed the quote early.
+def sh_single_quote(s)
+  q = String.new
+  q << "'"
+  s.each_char do |c|
+    if c == "'"
+      q << "'\\''"
+    else
+      q << c
+    end
+  end
+  q << "'"
+  q
 end
 
 # The hint belongs to ONE failure -- a require nothing provides, which
@@ -2532,13 +2649,7 @@ when "flags"
   root = find_root(Dir.pwd)
   spin_die("no spin.toml found") if root == ""
   if rest.include?("--deps")
-    out = spinel_bin
-    dir = File.expand_path("..", File.expand_path("..", spinel_bin))
-    ["lib/libspinel_rt.a", "lib/libspinel_rt_mt.a"].each do |rel|
-      p2 = File.join(dir, rel)
-      out += " " + p2 if File.exist?(p2)
-    end
-    puts out
+    puts toolchain_deps.join(" ")
   else
     puts spin_flags(Project.new(root))
   end

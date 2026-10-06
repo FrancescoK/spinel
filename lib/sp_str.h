@@ -72,6 +72,7 @@ sp_bool sp_str_valid_encoding(const char*s);
 const char*sp_str_field(const char*s,const char*sep,sp_int n);
 sp_int sp_str_field_count(const char*s,const char*sep);
 const char*sp_str_concat(const char*a,const char*b);
+const char*sp_str_append_bytes(const char*a,const char*b);
 const char*sp_str_concat3(const char*a,const char*b,const char*c);
 const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d);
 const char*sp_str_concat_arr(const char *const *parts,int n);
@@ -113,6 +114,12 @@ const char*sp_str_byteslice1(const char*s,sp_int i);
 const char*sp_str_byteslice_range(const char*s,sp_int lo,sp_int hi,int excl,int lo_none,int hi_none);
 const char*sp_str_bytesplice(const char*s,sp_int start,sp_int len,const char*val);
 int sp_str_ascii_only(const char*s);
+int sp_str_enc_step(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin);
+/* the common step inline: a part in the encoding so far keeps it */
+static inline int sp_str_enc_step_i(int state, const char *acc, size_t acc_len, const char *part, size_t part_len, int part_bin) {
+  if (state == part_bin) return state;
+  return sp_str_enc_step(state, acc, acc_len, part, part_len, part_bin);
+}
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a);
 const char*sp_str_sub(const char*s,const char*pat,const char*rep);
 const char*sp_str_remove_first(const char*s,const char*pat);
@@ -149,6 +156,7 @@ void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep);
 const char*sp_str_undump(const char*s);
 const char*sp_str_succ_impl(const char*s);
 const char*sp_str_succ(const char*s);
+const char*sp_str_succ_n(const char*s,sp_int n);
 sp_StrArray*sp_str_split(const char*s,const char*sep);
 sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep);
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,sp_int n);

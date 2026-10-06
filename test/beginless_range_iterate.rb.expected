@@ -1,0 +1,9 @@
+literal each: TypeError: can't iterate from NilClass
+var each: TypeError: can't iterate from NilClass
+run-time each: TypeError: can't iterate from NilClass
+var for: TypeError: can't iterate from NilClass
+var to_a: TypeError: can't iterate from NilClass
+run-time map: TypeError: can't iterate from NilClass
+run-time sum: TypeError: can't iterate from NilClass
+include?: true
+bounded: [1, 2, 3]

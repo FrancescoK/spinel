@@ -1,0 +1,35 @@
+(-3+9i)
+(-5+5i)
+(3+6i)
+(3+4i)
+(1.5+2.5i)
+(-5.0+7.0i)
+(1.0+5.0i)
+(1.0+2.0i)
+(-0.5+1i)
+(1+0i)
+[TypeError, "not a real"]
+[TypeError, "not a real"]
+(1+2i)
+(1.0+2i)
+2
+[TypeError, "not a real"]
+[TypeError, "not a real"]
+(2+0.0i)
+(1/1)
+[RangeError, "can't convert 1+2i into Rational"]
+(3/2)
+(5/2)
+(3/2)
+(1/2)
+(1/2)
+[RangeError, "can't convert 1+2i into Rational"]
+(3/1)
+(8778.834117647059-2194.7085294117646i)
+(0.75+0.0i)
+(1.0-1.0i)
+[RangeError, "can't convert 1+2i into Float"]
+[RangeError, "can't convert 1+0.0i into Float"]
+1.5
+[RangeError, "can't convert 1+2i into Rational"]
+(1/1)

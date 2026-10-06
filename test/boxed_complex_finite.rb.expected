@@ -1,0 +1,11 @@
+true
+nil
+false
+1
+1
+false
+nil
+true
+true
+-1
+undefined method 'finite?' for an instance of Symbol

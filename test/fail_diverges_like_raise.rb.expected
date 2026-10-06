@@ -1,0 +1,14 @@
+tail: ArgumentError tail
+if: ArgumentError if
+case: ArgumentError case
+message: RuntimeError runtime
+x
+y
+a
+z
+case_all: ArgumentError other
+a
+block: ArgumentError block
+[10]
+F20
+["skip", "P70"]

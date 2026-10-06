@@ -1,0 +1,2 @@
+:sym
+[[:formatter=, :direct], [:formatter=, 42], [:formatter=, :sym], [:level=, "warn"]]

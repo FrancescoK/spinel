@@ -1,0 +1,3 @@
+[:read, "A"]
+[:recv, "BCDEF"]
+[:recv_at_eof, nil]

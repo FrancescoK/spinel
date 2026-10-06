@@ -1,0 +1,15 @@
+[nil, 2]
+[3, 4]
+[nil, 1]
+[nil, 5]
+[nil, 6]
+[1, 2, nil, [], :block]
+[1, 2, 3, [4], nil]
+no keywords accepted
+no keywords accepted
+[7, 8, {k: 9}]
+[10, 11, {k: 12}]
+[7, 13, {}]
+[nil, 14]
+[nil, 15]
+[16, 17]

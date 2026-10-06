@@ -1,0 +1,54 @@
+to_sym NoMethodError: undefined method 'to_sym' for nil
+chomp! NoMethodError: undefined method 'chomp!' for nil
+start_with? NoMethodError: undefined method 'start_with?' for nil
+casecmp? NoMethodError: undefined method 'casecmp?' for nil
+center NoMethodError: undefined method 'center' for nil
+log [:r, :a0, :a1]
+call NoMethodError: undefined method 'to_sym' for nil
+param NoMethodError: undefined method 'upcase' for nil
+to_s ["", true, "nil", true]
+unset NoMethodError: undefined method 'upcase' for nil
+safe-nav NoMethodError: undefined method 'size' for nil
+stmt NoMethodError: undefined method '<<' for nil
+each_char NoMethodError: undefined method 'each_char' for nil
+scan NoMethodError: undefined method 'scan' for nil
+to_sym :ab
+chomp! "a"
+start_with? TypeError: no implicit conversion of nil into String
+casecmp? ArgumentError: wrong number of arguments (given 0, expected 1)
+center "**a**"
+log [:r, :a0, :a1]
+call :ab
+param "A"
+to_s ["a", false, "\"a\"", false]
+unset "CD"
+safe-nav 1
+stmt "ax"
+each_char 2
+scan 2
+lines NoMethodError: undefined method 'lines' for nil
+split NoMethodError: undefined method 'split' for nil
+insert NoMethodError: undefined method 'insert' for nil
+push NoMethodError: undefined method 'push' for nil
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+writes undefined method 'center' for nil
+written [6, "*"]
+lines ["a,b", "c"]
+split ["a", "b\nc"]
+insert [7, 8, 1, 2]
+push [[1], [2], [3], [4]]
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+writes "a,b\nc*"
+written [6, "*"]
+shared NoMethodError: undefined method '<<' for nil
+shared "abyz"
+puts NoMethodError: private method 'puts' called for nil
+write NoMethodError: undefined method 'write' for nil
+log [:a0]
+path NoMethodError: undefined method 'path' for nil
+print NoMethodError: private method 'print' called for nil
+puts nil
+write 1
+log [:a0]
+path true
+print :printed

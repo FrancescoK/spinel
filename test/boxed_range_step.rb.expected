@@ -1,0 +1,9 @@
+[1, 4, 7, 10]
+[1, 4, 7]
+[1.0, 1.5, 2.0]
+[2, 8, 14, 20]
+[5, 8]
+[2.5, 5.5, 8.5]
+ArgumentError: step can't be 0
+[]
+NoMethodError: undefined method 'step' for an instance of Symbol

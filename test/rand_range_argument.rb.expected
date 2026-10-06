@@ -1,0 +1,58 @@
+-- parameters
+roll: [Integer, true]
+roll2: [Integer, true]
+Random#rand: [Integer, true]
+Random.rand: [Integer, true]
+empty: nil
+Random#rand empty: ArgumentError: invalid argument - 5..1
+srand: 5
+xputc: "x"
+-- variables
+var: [Integer, true]
+open: Errno::EDOM: Numerical argument out of domain
+Random#rand open: Errno::EDOM: Numerical argument out of domain
+float end: [Float, true]
+literal float end: [Float, true]
+-- boxed
+K 1..10: Integer
+R 1..10: Integer
+RC 1..10: Integer
+K 5..1: nil
+R 5..1: ArgumentError: invalid argument - 5..1
+RC 5..1: ArgumentError: invalid argument - 5..1
+K 1...1: nil
+R 1...1: ArgumentError: invalid argument - 1...1
+RC 1...1: ArgumentError: invalid argument - 1...1
+K 1..: Errno::EDOM: Numerical argument out of domain
+R 1..: Errno::EDOM: Numerical argument out of domain
+RC 1..: Errno::EDOM: Numerical argument out of domain
+K ..5: Errno::EDOM: Numerical argument out of domain
+R ..5: Errno::EDOM: Numerical argument out of domain
+RC ..5: Errno::EDOM: Numerical argument out of domain
+K 1.0..2.0: Float
+R 1.0..2.0: Float
+RC 1.0..2.0: Float
+K 1..2.5: Float
+R 1..2.5: Float
+RC 1..2.5: Float
+K 3: Integer
+R 3: Integer
+RC 3: Integer
+K 0: Float
+R 0: ArgumentError: invalid argument - 0
+RC 0: ArgumentError: invalid argument - 0
+K -4: Integer
+R -4: ArgumentError: invalid argument - -4
+RC -4: ArgumentError: invalid argument - -4
+K 2.5: Integer
+R 2.5: Float
+RC 2.5: Float
+K nil: Float
+R nil: ArgumentError: invalid argument - 
+RC nil: ArgumentError: invalid argument - 
+K "x": TypeError: no implicit conversion of String into Integer
+R "x": TypeError: no implicit conversion of String into Integer
+RC "x": TypeError: no implicit conversion of String into Integer
+K 1180591620717411303424: Integer
+R 1180591620717411303424: Integer
+RC 1180591620717411303424: Integer

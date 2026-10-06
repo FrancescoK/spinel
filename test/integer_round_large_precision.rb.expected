@@ -1,0 +1,6 @@
+RangeError
+[:keyword, RangeError]
+[:boxed, RangeError]
+[:boxed_keyword, RangeError]
+[:bignum, RangeError]
+42

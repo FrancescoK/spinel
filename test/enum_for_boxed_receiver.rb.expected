@@ -1,0 +1,14 @@
+[1, 2]
+[:a, :b]
+[[:k, 1]]
+[1, 2, 3]
+["aa", "bb"]
+1
+2
+[3, 4]
+[1, 2]
+[1, 2]
+"undefined method 'each' fo"
+"undefined method 'each' fo"
+"undefined method 'each' fo"
+"undefined method 'each' fo"

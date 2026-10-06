@@ -1,0 +1,3 @@
+class DynArmSeedReport
+  def read_file: (String path) -> Integer
+end

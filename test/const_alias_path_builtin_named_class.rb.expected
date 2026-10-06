@@ -1,0 +1,7 @@
+Web::Status::EOFError
+StandardError
+false
+StandardError
+[Web::Status::EOFError, "mine"]
+[Web::Status::EOFError, "inner"]
+false

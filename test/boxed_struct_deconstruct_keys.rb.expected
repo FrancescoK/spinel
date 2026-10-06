@@ -1,0 +1,15 @@
+{a: 1}
+{a: 1, b: 2}
+{b: 2, a: 1}
+{a: 1}
+{}
+{}
+{"a" => 1}
+{-1 => 2, 0 => 1}
+TypeError: wrong argument type Integer (expected Array or nil)
+{y: 2}
+{x: 1, y: 2}
+TypeError: 0 is not a symbol nor a string
+{a: 1}
+{b: 2}
+{a: 1}

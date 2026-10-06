@@ -545,7 +545,8 @@ const char *sp_io_kind_name(sp_File *f) {
 /* The builtin superclass chain for a handle's class, mirroring the one the
    generated TU carries for class VALUES (sp_builtin_superclass). A handle
    answers #is_a? from its kind, which is a runtime property, so the walk lives
-   here rather than in the emitted switch. */
+   here rather than in the emitted switch. io_super_name (src/analyze_util.c)
+   is the compiler's copy; keep the two the same. */
 static const char *sp_io_super_of(const char *k) {
   if (strcmp(k, "TCPServer") == 0)   return SPL("TCPSocket");
   if (strcmp(k, "TCPSocket") == 0)   return SPL("IPSocket");
@@ -566,6 +567,14 @@ sp_bool sp_io_is_a(sp_File *f, const char *cls) {SP_GC_ROOT(f);
   for (const char *k = sp_io_kind_name(f); k; k = sp_io_super_of(k))
     if (strcmp(k, cls) == 0) return 1;
   return 0;
+}
+int sp_io_pick_class(sp_File *f, const char *const *names, const int *idx) {SP_GC_ROOT(f);
+  if (!f) return 0x7fffffff;
+  if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0)) return 0x7fffffff;
+  for (const char *k = sp_io_kind_name(f); k; k = sp_io_super_of(k))
+    for (int i = 0; names[i]; i++)
+      if (strcmp(k, names[i]) == 0) return idx[i];
+  return 0x7fffffff;
 }
 sp_bool sp_io_instance_of(sp_File *f, const char *cls) {SP_GC_ROOT(f);
   return cls && strcmp(sp_io_kind_name(f), cls) == 0;
@@ -863,16 +872,40 @@ sp_int sp_sock_send(sp_File *f, const char *data, sp_int len, const char *host, 
   if (n < 0) sp_file_raise_errno("send", host ? host : "");
   return (sp_int)n;
 }
+static long sp_io_buffered(sp_File *f);
 /* #recv reads one datagram (or up to `len` stream bytes) as a String;
    #recvfrom pairs it with the sender's address, CRuby's 4-element form. */
 const char *sp_sock_recv(sp_File *f, sp_int len) {SP_GC_ROOT(f);
   extern int sp_net_udp_recv_from(int fd, char *buf, int cap, char *ipbuf, int ipcap, int *port_out);
   sp_sock_require(f, "recv");
   if (len <= 0) return sp_str_from_bytes("", 0);
+  /* bytes a read on the stream already pulled into stdio's buffer are the
+     peer's next ones: served first, as readpartial does, or recv stepped
+     over them (#7195) */
+  long pend = sp_io_buffered(f);
+  if (pend > 0) {
+    size_t want = (size_t)len < (size_t)pend ? (size_t)len : (size_t)pend;
+    char *r = sp_str_alloc(want);
+    size_t got = fread(r, 1, want, f->fp);
+    r[got] = 0;
+    sp_str_set_len(r, got);
+    return r;
+  }
+  /* park until the peer writes, as readpartial does: a close from another
+     thread then wakes this one with CRuby's IOError, where a recv(2) already
+     blocked in the kernel answered EBADF, or read a descriptor that was by
+     then someone else's (#7555) */
+  sp_io_wait_readable(f);
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recv");
   int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, NULL, 0, NULL);
   if (n < 0) { free(buf); sp_file_raise_errno("recv", ""); }
+  /* a stream socket at EOF answers nil (Ruby 3.3 and later); an empty
+     datagram is still "" */
+  if (n == 0) {
+    int st = 0; socklen_t sl = sizeof st;
+    if (getsockopt(fileno(f->fp), SOL_SOCKET, SO_TYPE, &st, &sl) == 0 && st == SOCK_STREAM) { free(buf); return NULL; }
+  }
   const char *s = sp_str_from_bytes(buf, (size_t)n);
   free(buf);
   return s;
@@ -884,6 +917,7 @@ const char *sp_sock_recvfrom(sp_File *f, sp_int len, const char **ip_out, sp_int
   char ipbuf[64];
   int port = 0;
   if (len <= 0) { *ip_out = sp_str_from_bytes("", 0); *port_out = 0; return sp_str_from_bytes("", 0); }
+  sp_io_wait_readable(f);   /* as sp_sock_recv (#7555) */
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "recvfrom");
   int n = sp_net_udp_recv_from(fileno(f->fp), buf, (int)len, ipbuf, (int)sizeof ipbuf, &port);
@@ -1047,10 +1081,11 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
   if (n == 0) {
     free(buf);
     if (eof) *eof = 1;
-    /* recv_nonblock answers "" at EOF in BOTH forms -- it does not raise
-       EOFError and it does not answer nil. read_nonblock is the one that
-       tells them apart: nil for `exception: false`, EOFError otherwise. */
-    if (is_recv) return sp_str_from_bytes("", 0);
+    /* recv_nonblock answers nil at EOF in BOTH forms (Ruby 3.3 and later;
+       it was "" before) -- it does not raise EOFError. read_nonblock is the
+       one that tells them apart: nil for `exception: false`, EOFError
+       otherwise. */
+    if (is_recv) return NULL;
     if (!exc) return NULL;                     /* CRuby: nil at EOF */
     sp_raise_cls("EOFError", "end of file reached");
   }
@@ -1390,10 +1425,11 @@ void sp_File_ungetbyte(sp_File *f, sp_int byte) {
   SP_IO_OPEN(f);
   ungetc((int)(unsigned char)byte, f->fp);
 }
-/* IO#binmode?: true after #binmode, or for a handle opened in binary mode. */
+/* IO#binmode?: true after #binmode, or for a handle opened in binary mode.
+   A socket is binary too, as CRuby's is (its encoding is BINARY). */
 sp_bool sp_File_binmode_p(sp_File *f) {
   SP_IO_OPEN(f);
-  if (f->bin_flag) return 1;
+  if (f->bin_flag || f->is_sock) return 1;
   return f->mode && strchr(f->mode, 'b') != NULL;
 }
 void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; }

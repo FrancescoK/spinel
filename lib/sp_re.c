@@ -829,10 +829,13 @@ sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_
    sp_re_match / sp_re_match_poly). NULL (nil) when the last match failed, the
    name is unknown, or the group did not participate. Used by `/(?<n>..)/ =~ s`
    named-capture local binding (MatchWriteNode). */
+/* A name the pattern has no group for is CRuby's IndexError; the callers
+   ask only once the pattern matched, so a failed match stays nil. */
 const char *sp_re_named_capture(const mrb_regexp_pattern *pat, const char *name) {
   if (!pat || !name || !sp_re_last_str) return NULL;
   int g = re_named_group(pat, name);
-  if (g < 0 || (g * 2) + 1 >= 64) return NULL;
+  if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
+  if ((g * 2) + 1 >= 64) return NULL;
   int b = sp_re_caps[g * 2], e = sp_re_caps[(g * 2) + 1];
   /* e < b also covers e < 0 once b >= 0; guards against a malformed register
      state yielding a negative len that would cast to a huge size_t. */
@@ -907,6 +910,11 @@ else {
    options survive. An empty array yields the never-matching /(?!)/. */
 mrb_regexp_pattern *sp_re_union_array(sp_PolyArray *a) {
   if (!a || a->len == 0) return re_compile("(?!)", 4, 0);
+  /* a lone Regexp is the answer itself, its source and flags as they are */
+  if (a->len == 1) {
+    sp_RbVal v0 = sp_PolyArray_get(a, 0);
+    if (v0.tag == SP_TAG_OBJ && v0.cls_id == SP_BUILTIN_REGEX && v0.v.p) return (mrb_regexp_pattern *)v0.v.p;
+  }
   const char *joined = NULL;
   for (sp_int i = 0; i < a->len; i++) {
     sp_RbVal v = sp_PolyArray_get(a, i);
@@ -1303,28 +1311,20 @@ sp_int sp_MatchData_byteend_name(sp_MatchData *m, const char *name) {SP_GC_ROOT(
 sp_IntArray *sp_MatchData_byteoffset_name(sp_MatchData *m, const char *name) {SP_GC_ROOT(m);SP_GC_ROOT_STR(name); return sp_MatchData_byteoffset(m, sp_md_group_by_name(m, name)); }
 /* whole-match string (group 0) -- also MatchData#to_s */
 const char *sp_MatchData_to_s(sp_MatchData *m) {SP_GC_ROOT(m); const char *r = sp_MatchData_aref(m, 0); return r ? r : sp_str_empty; }
+static sp_PolyArray *sp_md_groups_from(sp_MatchData *m, sp_int from) {SP_GC_ROOT(m);
+  sp_PolyArray *r = sp_PolyArray_new();
+  if (!m) return r;
+  SP_GC_ROOT(r);
+  for (sp_int i = from; i < m->ncap; i++) {
+    const char *g = sp_MatchData_aref(m, i);
+    sp_PolyArray_push(r, g ? sp_box_str(g) : sp_box_nil());
+  }
+  return r;
+}
 /* captures: groups 1..n-1 as a poly array (nil for non-participating) */
-sp_PolyArray *sp_MatchData_captures(sp_MatchData *m) {SP_GC_ROOT(m);
-  sp_PolyArray *r = sp_PolyArray_new();
-  if (!m) return r;
-  SP_GC_ROOT(r);
-  for (sp_int i = 1; i < m->ncap; i++) {
-    const char *g = sp_MatchData_aref(m, i);
-    sp_PolyArray_push(r, g ? sp_box_str(g) : sp_box_nil());
-  }
-  return r;
-}
+sp_PolyArray *sp_MatchData_captures(sp_MatchData *m) { return sp_md_groups_from(m, 1); }
 /* to_a: group 0 + captures */
-sp_PolyArray *sp_MatchData_to_a(sp_MatchData *m) {SP_GC_ROOT(m);
-  sp_PolyArray *r = sp_PolyArray_new();
-  if (!m) return r;
-  SP_GC_ROOT(r);
-  for (sp_int i = 0; i < m->ncap; i++) {
-    const char *g = sp_MatchData_aref(m, i);
-    sp_PolyArray_push(r, g ? sp_box_str(g) : sp_box_nil());
-  }
-  return r;
-}
+sp_PolyArray *sp_MatchData_to_a(sp_MatchData *m) { return sp_md_groups_from(m, 0); }
 const char *sp_MatchData_pre_match(sp_MatchData *m) {SP_GC_ROOT(m);
   if (!m) return sp_str_empty;
   int e = m->caps[0];

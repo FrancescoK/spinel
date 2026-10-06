@@ -21,7 +21,9 @@
 #include "spinel_rev.h"
 #include "codegen.h"
 #include "analyze.h"
+#include "repr.h"
 #include "csplit.h"
+#include "decide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,11 +35,18 @@
 #endif
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include "timing.h"
 
 extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
 extern int g_require_gate_cli;
+/* RUBY_DESCRIPTION for the compiled program, in the `ruby -v` shape:
+   "spinel <RUBY_VERSION> (<release> revision <rev>)" (codegen appends the
+   platform). The version word is the one RUBY_VERSION and
+   RUBY_ENGINE_VERSION report, so a script that reads the version out of the
+   description gets the same answer; release and revision tell builds apart. */
+extern const char *g_ruby_description;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
 extern const char *g_ext_init_name;
@@ -231,11 +240,31 @@ static int refuse_overwrite(const char *path) {
   return 1;
 }
 
-static int write_text_file(const char *path, const char *text) {
-  FILE *f = fopen(path, "wb");
-  if (!f) { fprintf(stderr, "spinel: cannot write '%s'\n", path); return 0; }
-  fputs(text, f);
-  fclose(f);
+/* The decisions log is emptied before the source is read, so the same care
+   comes first there: `spinel --decisions-log=app.rb app.rb` would leave
+   nothing to compile. A log is lines of `kind@site` (src/decide.c), a kind
+   being lowercase words joined by hyphens (nn-read, root-frame); a file
+   that opens with anything else is not replaced.
+
+   Only a regular file is looked into. A pipe, a FIFO or /dev/stdout has
+   nothing to lose, and opening one to read it would wait for a writer that
+   is this process. */
+static int refuse_log_overwrite(const char *path) {
+  if (g_force_overwrite || !path || !*path) return 0;
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0) return 0;
+  /* one that cannot be read cannot be shown to be a log */
+  char head[64];
+  size_t n = 0;
+  FILE *f = fopen(path, "rb");
+  if (f) { n = fread(head, 1, sizeof head - 1, f); fclose(f); }
+  head[n] = 0;
+  size_t k = strspn(head, "abcdefghijklmnopqrstuvwxyz-");
+  if (k > 2 && head[k] == '@' && head[0] != '-' && head[k - 1] != '-' && memchr(head, '-', k)) return 0;
+  fprintf(stderr,
+          "spinel: refusing to overwrite '%s': it is not a decisions log.\n"
+          "spinel:   Choose another --decisions-log path, or pass --force if\n"
+          "spinel:   you mean to replace it.\n", path);
   return 1;
 }
 
@@ -267,11 +296,16 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
   size_t cl = strlen(flags) + strlen(c_path) + strlen(pre) + 64;
   char *c1 = malloc(cl);
   snprintf(c1, cl, "%s -E -P '%s' -o '%s'", flags, c_path, pre);
+  double tm_pre = sp_timing_now();
   int rc = system(c1);
   free(c1);
+  sp_timing_end(tm_pre, "cc_preprocess", "");
+  double tm_split = sp_timing_now();
   char (*parts)[4096] = malloc(sizeof(*parts) * (size_t)jobs);
   char hdr[4200];
   if (rc == 0 && c_split(pre, dir, jobs, parts, hdr, sizeof hdr) != jobs) rc = -1;
+  sp_timing_end(tm_split, "cc_split", "");
+  double tm_cc = sp_timing_now();
   pid_t *pids = calloc((size_t)jobs, sizeof(pid_t));
   for (int k = 0; rc == 0 && k < jobs; k++) {
     size_t ql = strlen(flags) + 2 * strlen(parts[k]) + 64;
@@ -289,6 +323,8 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
     if (waitpid(pids[k], &st, 0) < 0 || !WIFEXITED(st) || WEXITSTATUS(st) != 0) rc = -1;
   }
   free(pids);
+  { char ex[32]; snprintf(ex, sizeof ex, " jobs=%d", jobs); sp_timing_end(tm_cc, "cc_compile", ex); }
+  double tm_lk = sp_timing_now();
   if (rc == 0) {
     size_t ll = strlen(cmd) + (size_t)jobs * 4200 + 16;
     char *lk = malloc(ll);
@@ -299,6 +335,7 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
     rc = system(lk);
     free(lk);
   }
+  sp_timing_end(tm_lk, "cc_link", "");
   /* the pieces are scratch either way */
   char rmq[4200]; snprintf(rmq, sizeof rmq, "rm -rf '%s'", dir);
   if (!getenv("SPINEL_KEEP_SPLIT")) { int rr = system(rmq); (void)rr; }
@@ -335,30 +372,43 @@ static void usage(void) {
     "Options:\n"
     "  -o FILE     Output file\n"
     "  --link ARG  Extra link input (object/archive/-lLIB); repeatable\n"
-    "  --version   Print the compiler build revision\n"
+    "  -v, --version  Print the compiler version and build revision\n"
     "  -c          C source only (don't compile)\n"
-    "  --force     with -c, overwrite an -o path spinel did not write\n"
+    "  --force     overwrite an -o path (with -c) or a --decisions-log path\n"
+    "              that spinel did not write\n"
     "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
     "  --require-gate  Refuse an unresolvable require instead of warning\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
     "  --emit-types Dump per-position inferred types + diagnostics as JSON\n"
     "  --warn-widen  Warn, at the slot, for each parameter or return that\n"
     "              widened to untyped (the boxed slow path)\n"
+    "  --check-stores  Warn, at the store, for each value written raw into a\n"
+    "              C slot of another C type (a compiler self-check)\n"
     "  --emit-symbol-map  Dump emitted-symbol -> Ruby-name map as JSON, no binary\n"
     "  -S          Print C to stdout\n"
     "  -E          Run the compiled binary; leftover args become its ARGV\n"
     "  -O LEVEL    Optimization level (default: 2)\n"
-    "  -g          Add debug info (-g) + #line, leaving -O as-is\n"
+    "  -g          Add debug info (-g) + #line, leaving -O as-is (at -O2 an inlined\n"
+    "              method has no frame in Exception#backtrace; --debug keeps them)\n"
     "  --profile   Profiling build: -O2 -g -fno-omit-frame-pointer, unstripped,\n"
     "              and writes <out>.symbols.json (perf record -g ready)\n"
     "  --debug     Debug build: step through the .rb in gdb/lldb (#line, -g -O0)\n"
     "  --no-line-map  Suppress #line directives\n"
+    "  --defer-refusals  Build anyway: a refused method raises NotImplementedError\n"
+    "               when called, a refused top-level or class-body statement\n"
+    "               when reached\n"
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext cruby        Also generate the CRuby extension shim (<out>_ext.c)\n"
+    "  --share-strings  Prototype (#6765): a mutable String is shared by\n"
+    "              reference unless the analysis proves it local\n"
     "  --no-inline-hot  Do not force small leaf methods inline (default: do).\n"
     "                 Forcing is worth a sixth of optcarrot's frame rate and\n"
     "                 costs up to twice the C compile time\n"
+    "  --decisions-log=FILE  Write the key of each optimization decision that\n"
+    "              would be a miscompile if its check were wrong, one per line\n"
+    "  --decisions=FILE  Take only the decisions FILE lists (an empty file:\n"
+    "              none); `spinel bisect` searches the list for a wrong answer\n"
     "  --cc=CMD    C compiler (default: cc)\n"
     "  --jobs=N    compile the generated C as N units in parallel\n"
     "              (default: split only a unit of 4 MB or more; --jobs=1 never)\n"
@@ -379,14 +429,15 @@ int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
 #endif
-  /* `spinel diff FILE.rb ...`: the companion tool beside the compiler runs
-     it (tools/diff.rb, built to bin/spinel-diff); the arguments pass through
+  /* `spinel diff FILE.rb ...`, `spinel bisect FILE.rb ...`: the companion
+     tool beside the compiler runs it (tools/diff.rb, built to
+     bin/spinel-diff; tools/bisect.rb likewise); the arguments pass through
      untouched, its exit status is the answer. */
-  if (argc >= 2 && sp_streq(argv[1], "diff")) {
+  if (argc >= 2 && (sp_streq(argv[1], "diff") || sp_streq(argv[1], "bisect"))) {
     char dir[4096];
     exe_dir(argv[0], dir, sizeof dir);
     char tool[4200];
-    snprintf(tool, sizeof tool, "%s/spinel-diff", dir);
+    snprintf(tool, sizeof tool, "%s/spinel-%s", dir, argv[1]);
     char self[4200];
     snprintf(self, sizeof self, "%s/spinel", dir);
     setenv("SPINEL", self, 0);
@@ -415,12 +466,14 @@ int main(int argc, char **argv) {
   int print_build = 0;   /* --print-build: emit the build ingredients, run nothing */
   int cc_jobs = 0;       /* --jobs=N: compile the C as N units in parallel (#4847); 0 = auto */
   int emit_rbs = 0, emit_types = 0, emit_symbol_map = 0;
-  int debug = 0, line_map = 1, want_g = 0, profile = 0, warn_widen = 0;
+  int debug = 0, line_map = 1, want_g = 0, profile = 0, warn_widen = 0, check_stores = 0;
   /* Accumulated -e source and the program ARGV after the -E boundary. */
   Str eval_src = {0};
   int eval_used = 0;
   char **run_args = NULL;
   int n_run_args = 0;
+
+  g_ruby_description = "spinel " SP_RUBY_VERSION " (" SPINEL_RELEASE " revision " SPINEL_BUILD_REV ")";
 
   for (int i = 1; i < argc; ) {
     const char *a = argv[i];
@@ -461,7 +514,10 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
+    else if (sp_streq(a, "--defer-refusals")) { set_env("SPINEL_DEFER_REFUSALS", "1"); i++; }
+    else if (sp_streq(a, "--share-strings")) { set_env("SPINEL_SHARE_STRINGS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
+    else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -474,6 +530,19 @@ int main(int argc, char **argv) {
        and a faster C compile, at the cost of a call per hot-loop method. */
     else if (sp_streq(a, "--no-inline-hot")) { g_inline_hot = 0; i++; }
     else if (sp_streq(a, "--no-write-barrier")) { g_no_write_barrier = 1; i++; }
+    /* The same bisecting hatch, one decision at a time (src/decide.c): take
+       only the listed decisions, or write down the ones taken. They travel
+       in the environment so that a compile some other tool starts, `spinel
+       diff` or an oracle script, is restricted the same way. */
+    else if (!strncmp(a, "--decisions=", 12) || !strncmp(a, "--decisions-log=", 16)) {
+      int log = a[11] == '-';
+      const char *path = a + (log ? 16 : 12);
+      /* no name is not no restriction: it would compile unrestricted and
+         be read as the answer under the list */
+      if (!*path) { fprintf(stderr, "spinel: %s needs a file\n", log ? "--decisions-log=" : "--decisions="); return 1; }
+      set_env(log ? "SPINEL_DECISIONS_LOG" : "SPINEL_DECISIONS", path);
+      i++;
+    }
     /* Library emission for host extensions (docs/internals/ext-design.md):
        --ext-init names the host-callable init function (emitted in place of
        main), --ext-entry designates the exported methods. */
@@ -487,6 +556,7 @@ int main(int argc, char **argv) {
        gate to a caller driving the compiler itself (#4105). */
     else if (sp_streq(a, "--require-gate")) { g_require_gate_cli = 1; i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
+    else if (sp_streq(a, "--timing"))      { set_env("SP_TIMING", "1"); i++; }
     else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
     else if (!strncmp(a, "-I", 2) && a[2]) { sp_add_feature_root(a + 2); i++; }
     else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
@@ -494,6 +564,13 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "-E"))            { run_mode = 1; i++; }
     else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }
     else if (sp_streq(a, "--emit-types"))  { emit_types = 1; i++; }
+    else if (sp_streq(a, "--plan-check"))  { g_plan_check = 1; i++; }
+    else if (sp_streq(a, "--repr-check"))  { g_repr_check = 1; i++; }
+    else if (sp_streq(a, "--dump-repr"))   { g_dump_repr = 1; i++; }
+    else if (sp_streq(a, "--nil-check"))   { g_nil_check = 1; i++; }
+    else if (sp_streq(a, "--check-traits")) { g_check_traits = 1; i++; }
+    else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
+    else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
     else if (sp_streq(a, "--dump-ast"))    { dump_ast = 1; i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
@@ -502,7 +579,10 @@ int main(int argc, char **argv) {
        missing the other half. Reports whatever `--cc=` selected, when that
        flag came first; a compiler that cannot be run leaves the line as it
        was rather than saying anything about it. */
-    else if (sp_streq(a, "--version")) {
+    /* `-v` is the `ruby -v` spelling, so a tool that asks every Ruby it
+       drives for its version the same way (ruby/ruby-bench does) gets
+       an answer instead of the usage text. */
+    else if (sp_streq(a, "--version") || sp_streq(a, "-v")) {
       char ccv[512] = {0};
       char ccq[1024];
       /* Ask the preprocessor what the compiler is rather than `--version`,
@@ -674,15 +754,24 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Source mapping: the parser stamps node positions and codegen emits #line
-     when SPINEL_DEBUG / SPINEL_LINE_MAP is set. --debug/-g use the fuller
-     debug path; otherwise line-map (on by default) just adds #line. The emit
-     modes that need positions force SPINEL_DEBUG below. */
+  /* Source mapping: codegen emits #line when SPINEL_DEBUG / SPINEL_LINE_MAP
+     is set. --debug/-g use the fuller debug path; otherwise line-map (on by
+     default) just adds #line. The parser stamps node positions in every
+     compile (SPINEL_POSITIONS): the analysis reads them, and a node a rewrite
+     made has none (cplan_nil's unset temp), so --no-line-map suppresses only
+     the #line directives and decides what the default compile decides. The
+     emit modes that need positions force SPINEL_DEBUG below. */
   if (debug) set_env("SPINEL_DEBUG", "1");
   else if (line_map) set_env("SPINEL_LINE_MAP", "1");
+  set_env("SPINEL_POSITIONS", "1");
   /* --warn-widen places each warning at its slot, which needs the parser's
      positions: forced past --no-line-map, as --emit-types forces them. */
   if (warn_widen) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_WARN_WIDEN", "1"); }
+  /* --check-stores reports each store at its Ruby line, so it needs them too */
+  if (check_stores) { set_env("SPINEL_LINE_MAP", "1"); set_env("SPINEL_CHECK_STORES", "1"); }
+  /* A decision key names its site by position: forced the same way. */
+  if (refuse_log_overwrite(getenv("SPINEL_DECISIONS_LOG"))) return 1;
+  if (decide_setup()) set_env("SPINEL_LINE_MAP", "1");
 
   /* Analyze-only emit modes write their artifact from inside codegen_program
      and produce an empty translation unit; route the output path via env. */
@@ -771,6 +860,7 @@ int main(int argc, char **argv) {
 #if defined(__i386__)
   else target_i386 = 1;
 #endif
+  double tm_front = sp_timing_now();
   char *text = sp_parse_file_to_text(source, argv[0]);
   if (eval_path[0]) remove(eval_path);
   if (!text) { fprintf(stderr, "spinel: parse failed for '%s'\n", source); if (seed_path[0]) remove(seed_path); return 1; }
@@ -779,6 +869,7 @@ int main(int argc, char **argv) {
 
   NodeTable *nt = nt_load_text(text);
   free(text);
+  sp_timing_end(tm_front, "frontend", "");
   if (!nt) { fprintf(stderr, "spinel: failed to load AST\n"); if (seed_path[0]) remove(seed_path); return 1; }
 
   /* the CRuby shim's feature name (Init_<feature>, the require name) derives
@@ -795,8 +886,11 @@ int main(int argc, char **argv) {
     ext_feat[fl] = 0;
     if (fl) g_ext_feature = ext_feat;
   }
+  double tm_cg = sp_timing_now();
   char *csrc = codegen_program(nt);
+  sp_timing_end(tm_cg, "codegen_program", "");
   nt_free(nt);
+  decide_write_log();
   if (seed_path[0]) remove(seed_path);
   if (!csrc) { fprintf(stderr, "spinel: codegen failed\n"); return 1; }
 
@@ -843,7 +937,9 @@ int main(int argc, char **argv) {
     c_is_temp = 1;
   }
   if (c_only && refuse_overwrite(c_path)) { free(csrc); return 1; }
+  double tm_wr = sp_timing_now();
   if (!write_text_file(c_path, csrc)) { free(csrc); return 1; }
+  sp_timing_end(tm_wr, "write_c", "");
 
   if (c_only) {
     /* With --print-build as well, the C is written and the ingredient report
@@ -894,6 +990,7 @@ int main(int argc, char **argv) {
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
   int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
+  int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
   const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
   free(csrc);
   /* wasm has no threads without SharedArrayBuffer and no stack switching
@@ -1040,6 +1137,15 @@ int main(int argc, char **argv) {
   }
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   bi_put_toks(&bi, "cflag", ffi_cflags.p);
+  /* Every flag that changes how the generated C compiles goes before the
+     source: a split build (cc_split_build) compiles its parts with the flags
+     in front of the source only, and one placed after it reached the link
+     alone. The overflow mode there left each part with the runtime header's
+     raise-mode Integer arithmetic, so an --int-overflow=promote program of a
+     few MB raised RangeError where it should have made a Bignum. */
+  s_add(&cmd, ov_define); s_add(&cmd, " ");
+  if (want_g) s_add(&cmd, "-g ");
+  if (profile) s_add(&cmd, "-fno-omit-frame-pointer ");
   size_t cc_src_at = cmd.p ? strlen(cmd.p) : 0;   /* the flags before the source */
   s_add_arg(&cmd, c_path);
   size_t cc_src_end = cmd.p ? strlen(cmd.p) : 0;
@@ -1142,8 +1248,11 @@ int main(int argc, char **argv) {
     for (size_t wi = 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
   }
 #if !defined(__APPLE__)
-  else {
-    s_add(&cmd, "-lcrypt ");  /* String#crypt = libc crypt(3); --as-needed drops it when unused */
+  /* String#crypt = libc crypt(3), linked only when the program calls it:
+     a linker without a default --as-needed (Fedora's) otherwise made
+     libcrypt a dependency of every binary (#6674) */
+  else if (uses_crypt) {
+    s_add(&cmd, "-lcrypt ");
     bi_put(&bi, "lib", "-lcrypt");
   }
 #endif
@@ -1153,10 +1262,7 @@ int main(int argc, char **argv) {
       bi_put(&bi, "lib", link_extra[li]);
     }
   if (uses_threads) { s_add(&cmd, "-lpthread "); bi_put(&bi, "lib", "-lpthread"); }
-  s_add(&cmd, ov_define); s_add(&cmd, " ");
   bi_put(&bi, "define", ov_define);
-  if (want_g) s_add(&cmd, "-g ");
-  if (profile) s_add(&cmd, "-fno-omit-frame-pointer ");
 #if !defined(__APPLE__)
   if (debug && !target_wasi) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
 #endif
@@ -1166,6 +1272,21 @@ int main(int argc, char **argv) {
      exists in the build cache. A --link basename lib<name>.(a|so) counts as
      providing -l<name>, so one package source serves both worlds -- the
      Makefile's -L via ffi_cflags and spin's absolute --link paths. */
+  /* The OpenSSL library directory the build probed on a host whose
+     OpenSSL is keg-only (Homebrew): the package's -lssl/-lcrypto resolve
+     there, and an ELF binary finds it again at run time (#7191). */
+  if (ffi_links.p && SPINEL_OPENSSL_LIBDIR[0] &&
+      (strstr(ffi_links.p, "-lssl") || strstr(ffi_links.p, "-lcrypto"))) {
+    char ld[1100];
+    snprintf(ld, sizeof ld, "-L%s", SPINEL_OPENSSL_LIBDIR);
+    s_add_arg(&cmd, ld); s_add(&cmd, " "); bi_put(&bi, "lib", ld);
+#if !defined(__APPLE__)
+    if (!target_wasi) {
+      snprintf(ld, sizeof ld, "-Wl,-rpath,%s", SPINEL_OPENSSL_LIBDIR);
+      s_add_arg(&cmd, ld); s_add(&cmd, " "); bi_put(&bi, "lib", ld);
+    }
+#endif
+  }
   if (ffi_links.p) {
     char *ltoks = strdup(ffi_links.p);
     for (char *t = strtok(ltoks, " "); t; t = strtok(NULL, " ")) {
@@ -1213,6 +1334,7 @@ int main(int argc, char **argv) {
   }
   free(bi.p);
   int cc_rc = -1;
+  double tm_ccall = sp_timing_now();
   /* Unasked, only a large unit is split: a part cannot inline what another
      part defines, which cost optcarrot's 0.6 MB unit ~10% of its speed, and
      run time comes before build time. A unit this large is where cc's one
@@ -1231,6 +1353,7 @@ int main(int argc, char **argv) {
      split itself); otherwise the single unit is the fallback */
   if (cc_rc != 0 && !(cc_jobs > 1 && getenv("SPINEL_SPLIT_STRICT")))
     cc_rc = system(cmd.p);   /* the single unit, or the fallback */
+  sp_timing_end(tm_ccall, "cc_total", "");
   free(cmd.p);
   if (cc_rc != 0) {
     /* Keep the generated C and say where: cc's diagnostic points into that

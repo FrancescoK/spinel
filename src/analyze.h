@@ -12,12 +12,68 @@
 
 #define SP_RUBY_VERSION "4.0.7"
 
+/* Whether a boxed ivar setter's receiver can hold class k; an unproved
+   receiver conservatively reaches every class. Shared by layout/emission. */
+int poly_ivar_set_reaches(Compiler *c, int call, int k);
+
 /* Set by main.c from --int-overflow=promote. In promote mode the analyzer is
    free to widen accumulating int locals to bigint more aggressively (e.g. block
    iteration loops, not just `while`), since the overflow-raising int macros are
    exactly what promote mode is asking us to avoid. Off (0) for raise/wrap, so
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
+
+/* Set by main.c from --plan-check (#7100): inference records, per call node,
+   the builtin-op row it answered the call with (c->bop_inf), and codegen
+   reports on stderr every call it emitted through a row inference did not
+   choose. Off in every normal build. */
+extern int g_plan_check;
+
+/* Set by main.c from --nil-check (#7444): the nil fact the analysis decides
+   (analyze_nil.c) is held against the answers the helpers that decide it
+   today give, at each place they answer, and every disagreement reported on
+   stderr. Off in every normal build; the C is the same either way. */
+extern int g_nil_check;
+
+/* The nil fact (analyze_nil.c, #7444): whether an object-typed value, or a
+   builtin one held as a pointer (nil_fact_tracked), may be nil, decided once
+   by the analysis for every node and every slot (a local,
+   a parameter, a block parameter, a global, a constant, an ivar, a method's
+   value). an_phase_value_types computes it, ahead of the value-type
+   selection. nil_fact_node answers for a node, nil_fact_ivar for ivar `ivn`
+   (with its '@') of class cid; the slots carry LocalVar.obj_may_nil and
+   Scope.ret_obj_may_nil. repr_of and repr_of_slot read them into may_nil. */
+enum { NF_UNKNOWN, NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED /* not nil past a guard */ };
+void an_nil_facts(Compiler *c);
+int nil_fact_node(const Compiler *c, int node);
+int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
+/* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.
+   A value with several sources is reported with the first in this order:
+   the nils the program writes, then the ones the analysis cannot bound. */
+enum {
+  NFW_NONE,      /* not nil */
+  NFW_NIL,       /* a nil written: a literal, an empty body, a bare return */
+  NFW_NO_ELSE,   /* an if, unless or case with no branch for the other case */
+  NFW_SAFE_NAV,  /* a `&.` call */
+  NFW_UNSET,     /* a local's read that can run before any write (the
+                    definite-assignment walk, a `||=` slot) */
+  NFW_ELEM,      /* an element read or a pick that can miss (Array, Hash,
+                    String) */
+  NFW_GLOBAL,    /* a global, or the main object's ivar, read where no write
+                    can be shown to run first (a method's read of one) */
+  NFW_IVAR,      /* an ivar some class's initialize does not set first, or one
+                    of a class or a module */
+  NFW_CALLER,    /* a parameter a caller the analysis does not see binds (a
+                    send, a method(:m), a proc or a lambda, a callback) */
+  NFW_OPAQUE,    /* a value the analysis does not model: a builtin's answer, a
+                    splat's element, a pattern's binding, a yield's value */
+  NFW_GUARDED    /* (nil_fact_why only) not nil: a guard narrowed the read */
+};
+int nil_fact_why(const Compiler *c, int node);
+const char *nil_fact_why_name(int why);
+/* Does the fact track a value of type t: an object, or a builtin held as a
+   pointer that is NULL for nil (a String, an Array, a Hash, an IO)? */
+int nil_fact_tracked(TyKind t);
 
 /* One post-convergence bind pass fills UNKNOWN params from empty
    array-literal args (fst([]) with def fst(a) = a.first). */
@@ -37,6 +93,8 @@ void analyze_program(Compiler *c);
    nested arrays for capturing patterns, which the str_array path can't model. */
 int an_re_has_captures(const char *src);
 int an_send_name_is_computed(Compiler *c, int arg);
+/* Is scope si an iterator synth_struct_each generated, not a def? */
+int scope_is_struct_synth(Compiler *c, int si);
 int an_str_mutator_name(const char *nm);
 /* A String handed to a proc, a lambda or a Method (#6179): what the targets
    a `.call` / `.()` / `[]` / `.yield` / `===` on a Proc or Method value can
@@ -49,6 +107,7 @@ typedef struct {
   const char *unlifted;  /* a target reached through a path not shared yet ("bind", "curry") */
   const char *pname;     /* a parameter it binds, for a diagnostic */
   const char *mname;     /* the method it binds, when the target is one */
+  int argc1;             /* the call's count of plain positional arguments, plus one; 0 if not known */
 } DynReach;
 /* The keyword arm (`f.call(k1: s)`): what the targets do with keyword `key`. */
 void dyn_call_kw_reach(Compiler *c, int n, const char *key, DynReach *r);
@@ -69,6 +128,17 @@ void dyn_open_reach(Compiler *c, int n, int k, DynReach *r);
 int dyn_method_appends(Compiler *c, int mi, int j);
 int an_local_array_changed_x(Compiler *c, const char *xn, Scope *xs);
 int an_local_array_stores_unshared(Compiler *c, const char *xn, Scope *xs);
+/* 1 appends, 0 does not, -1 cannot tell (refused as appending) */
+int fwd_rest_elem_appends(Compiler *c, int mi, int i);
+int fwd_poly_param_appends(Compiler *c, int mi, int j);
+/* A boxed parameter's argument a literal block appends to through a yield
+   (yield_splice_handles): a String variable there must be the handle. */
+int yield_poly_arg_wants_handle(Compiler *c, int a);
+/* A literal block a splat into a yield or instance_exec reaches, whose every
+   parameter it appends to takes the handle the gathered Array holds
+   (block_splat_pull_args). */
+int block_splat_shares(Compiler *c, int blk);
+int fwd_param_appends_at(Compiler *c, int mi, int j);
 int dyn_block_appends(Compiler *c, int blk, int k);
 /* `new` and `raise C, s` into an initialize that appends to a String
    parameter (#6179): the initialize methods a call reaches, the argument
@@ -87,10 +157,28 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v);
 /* Infer (and cache) the type of node `id`. Used during analysis; codegen
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
+/* A pure read of the settled analysis (repr_of) asks its questions between
+   an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
+   records nothing it derives: not the node-type cache, a poly call's
+   builtin answer, --plan-check's call records, a block parameter's pinned
+   type, the narrowing memo or a call's alias resolution (its name and
+   builtin_only, kept for the inference asking). So asking cannot change
+   what codegen reads next. They nest. */
+void an_pure_read_begin(void);
+void an_pure_read_end(void);
+
+/* String#lines' argument shapes besides none: (sep), (chomp: ...) and
+   (sep, chomp: ...), sep a String -- what a boxed receiver takes the
+   typed String path for. */
+int poly_lines_args(Compiler *c, int argc, const int *argv);
 
 /* `recv` is a blockless call making an Enumerator that yields two values per
    element: each_with_index, with_index, each_with_object, with_object. */
 int enum_pair_source_call(const NodeTable *nt, int recv);
+
+/* map and the selecting Enumerables, which a boxed Array answers a blockless
+   call of with an Enumerator, as it does each (analyze_infer_recv.c) */
+int poly_blockless_enum_name(const char *name);
 
 /* True when node `id`'s value, held in an unboxed scalar slot, can be the
    reserved nil sentinel (SP_INT_NIL / the float twin). The slot type alone
@@ -138,6 +226,7 @@ TyKind block_next_value_ty(Compiler *c, int node);
 int range_enum_redispatch(Compiler *c, int id);
 int hash_enum_redispatch(Compiler *c, int id);
 int range_lit_float_end(Compiler *c, int recv);   /* (1..5.5): the Float end node, else -1 */
+int range_lit_endless(Compiler *c, int recv);     /* (1..): an endless literal with a begin */
 int reduce_tail_from_acc(Compiler *c, int tail, const char *accp);
 
 /* True if `node` (a block body / statements subtree) contains a top-level
@@ -161,12 +250,21 @@ extern int g_ret_no_new_poly;
 /* Recompute a node's type without consulting the cache (used by the break
    wrapper with g_infer_ignore_brk set to recover the normal result type). */
 TyKind infer_uncached(Compiler *c, int id);
+/* infer_type answered node id as an Array subclass instance's Array (#7449) */
+void an_ary_viewed_mark(Compiler *c, int id);
+int an_ary_viewed(Compiler *c, int id);
 /* Pin/read the receiver node the inference should answer as `kind` while
    codegen re-enters a typed emitter for a boxed receiver (the face table in
    types.h). Node -1 clears the pin. */
-void an_set_face_node(int node, TyKind kind);
-int  an_face_node(void);
-TyKind an_face_kind(void);
+/* The face kind node is pinned to (the face table, types.h): the innermost
+   pin, codegen's on the view stack (view_push_face) or inference's own
+   (an_face_push / an_face_pop), answers for its node; TY_UNKNOWN for any
+   other node, or when none is pinned. face_active() says whether one is. */
+TyKind face_of(int node);
+int face_active(void);
+void an_face_push(int node, TyKind kind);
+void an_face_pop(void);
+int view_face_top(int *node, TyKind *kind);   /* codegen_view.c */
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 /* The name of a numbered block parameter (`_1`..`_9`) on this parameters node.
@@ -176,6 +274,8 @@ const char *numbered_param_name(Compiler *c, int params_node, int idx);
 /* Name of a block's trailing rest parameter (`|*a|`), or NULL. */
 const char *block_rest_name(Compiler *c, int block);
 const char *block_opt_name(Compiler *c, int block, int idx);
+const char *block_param_at(Compiler *c, int block, int idx, int n);
+int call_plain_argc(Compiler *c, int call);
 const char *block_post_name(Compiler *c, int block, int idx);
 int block_lone_rest(Compiler *c, int block);
 int block_rest_marker(Compiler *c, int block);
@@ -196,6 +296,9 @@ int block_keyword_default(Compiler *c, int block, int idx);
    block from a nested proc/lambda literal. */
 int is_proc_constant(const NodeTable *nt, int n);
 int is_proc_literal(Compiler *c, int id);
+/* A `Hash.new { }` default block lowered to a real proc (analyze_util.c);
+   codegen emits it that way. */
+int hash_new_block_is_proc(Compiler *c, int id);
 
 /* Element type an `each_with_object([])` accumulator is filled with, inferred
    from how the memo param is pushed to (following a forwarded callable's body).
@@ -208,9 +311,11 @@ int curry_apply_info(Compiler *c, int node, int *out_complete, TyKind *out_ret);
 int curry_count_max(Compiler *c, int recv);
 int an_program_builds_methods(Compiler *c);   /* the program builds Method objects at all */
 int an_zero_arg_builtin_shadowed(Compiler *c, const char *name, int argc);
+int an_user_recv_defines_method(Compiler *c, const char *name);
 /* obj.methods / public_methods / singleton_methods on an instance of `cid`
    fold to a static symbol list */
 int an_object_methods_listable(Compiler *c, int cid, const char *name);
+int an_object_methods_all_arg(Compiler *c, int cid, int argc, const int *argv);
 int an_class_singleton_methods_listable(Compiler *c, int cid);
 int ewo_memo_passed_to_callable_at(Compiler *c, int callid, int pidx);
 
@@ -225,8 +330,9 @@ void ie_body_restore(Compiler *c, int *snap);
    -1), and the value node bound to a keyword name within it (or -1). */
 int ie_call_kwhash(Compiler *c, int id);
 size_t block_param_written_len(const char *name);
+size_t reassigned_param_written_len(const char *name);
 int block_param_is_renamed(const char *name);
-void block_param_invent_name(const NodeTable *nt, char *buf, size_t n,
+void block_param_invent_name(Compiler *c, char *buf, size_t n,
                              const char *written, int blk);
 int ie_kwhash_value(Compiler *c, int kwhash, const char *name);
 TyKind ie_kwhash_computed_type(Compiler *c, int kwhash);
@@ -348,4 +454,6 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
    parameter, no `**kwrest`, no `**nil`) and `s` declares one: CRuby
    passes them as keywords, which such a method takes positionally. */
 int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
+int an_thread_arg_block(Compiler *c, int n);
+int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp);
 #endif

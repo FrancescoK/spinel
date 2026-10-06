@@ -1,0 +1,15 @@
+["l", "l"]
+"l"
+["l", "l"]
+"l"
+["(l)"]
+["h", "e", "l", "l", "o"]
+["h", "e", "l", "l", "o"]
+["l", "l"]
+["l", "l"]
+[["e", "l"]]
+["l", "l"]
+["l", "l"]
+"wrong argument type nil (expected Regexp)"
+"wrong argument type Symbol (expected Regexp)"
+"wrong argument type Float (expected Regexp)"

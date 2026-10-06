@@ -1,0 +1,7 @@
+"attempt to resume a transferring fiber"
+"attempt to resume a transferring fiber"
+"fiber called across threads"
+"fiber called across threads"
+"fiber called across threads"
+1
+:done

@@ -1,0 +1,5 @@
+"no implicit conversion of Array into String"
+"no implicit conversion of Hash into String"
+"no implicit conversion of Array into String"
+"Array can't be coerced into Float"
+"Hash can't be coerced into Integer"

@@ -1,0 +1,91 @@
+0 a[]: [20, 30]
+0 a.slice: [20, 30]
+0 a.values_at: [20, 30]
+0 s[]: "bc"
+0 s.slice: "bc"
+0 byteslice: "bc"
+0 a[]=: [10, 0, 40, 50]
+0 s[]=: "aZdef"
+0 fill: [10, 0, 0, 40, 50]
+0 slice!: [[20, 30], [10, 40, 50]]
+0 s.slice!: ["bc", "adef"]
+0 int[]: 3
+0 md[]: ["a", "b"]
+1 a[]: [20]
+1 a.slice: [20]
+1 a.values_at: [20]
+1 s[]: "b"
+1 s.slice: "b"
+1 byteslice: "b"
+1 a[]=: [10, 0, 30, 40, 50]
+1 s[]=: "aZcdef"
+1 fill: [10, 0, 30, 40, 50]
+1 slice!: [[20], [10, 30, 40, 50]]
+1 s.slice!: ["b", "acdef"]
+1 int[]: 1
+1 md[]: ["a"]
+2 a[]: [20, 30]
+2 a.slice: [20, 30]
+2 a.values_at: [20, 30]
+2 s[]: "bc"
+2 s.slice: "bc"
+2 byteslice: "bc"
+2 a[]=: [10, 0, 40, 50]
+2 s[]=: "aZdef"
+2 fill: [10, 0, 0, 40, 50]
+2 slice!: [[20, 30], [10, 40, 50]]
+2 s.slice!: ["bc", "adef"]
+2 int[]: 3
+2 md[]: ["a", "b"]
+3 a[]: [10, 20, 30, 40]
+3 a.slice: [10, 20, 30, 40]
+3 a.values_at: [10, 20, 30, 40]
+3 s[]: "abcde"
+3 s.slice: "abcde"
+3 byteslice: "abcde"
+3 a[]=: [0, 50]
+3 s[]=: "Zf"
+3 fill: [0, 0, 0, 0, 50]
+3 slice!: [[10, 20, 30, 40], [50]]
+3 s.slice!: ["abcde", "f"]
+3 int[]: 255
+3 md[]: ["abcd", "a", "b", "c"]
+4 a[]: [10, 20, 30]
+4 a.slice: [10, 20, 30]
+4 a.values_at: [10, 20, 30]
+4 s[]: "abcd"
+4 s.slice: "abcd"
+4 byteslice: "abcd"
+4 a[]=: [0, 40, 50]
+4 s[]=: "Zef"
+4 fill: [0, 0, 0, 40, 50]
+4 slice!: [[10, 20, 30], [40, 50]]
+4 s.slice!: ["abcd", "ef"]
+4 int[]: 255
+4 md[]: ["abcd", "a", "b"]
+5 a[]: [20, 30, 40]
+5 a.slice: [20, 30, 40]
+5 a.values_at: [20, 30, 40]
+5 s[]: "bcd"
+5 s.slice: "bcd"
+5 byteslice: "bcd"
+5 a[]=: [10, 0, 50]
+5 s[]=: "aZef"
+5 fill: [10, 0, 0, 0, 50]
+5 slice!: [[20, 30, 40], [10, 50]]
+5 s.slice!: ["bcd", "aef"]
+5 int[]: 7
+5 md[]: ["a", "b", "c"]
+-- boxed
+0 arr[]: [20, 30]
+0 str[]: "bc"
+0 sym[]: "ym"
+0 int[]: 3
+1 arr[]: [20]
+1 str[]: "b"
+1 sym[]: "y"
+1 int[]: 1
+2 arr[]: [10, 20, 30, 40]
+2 str[]: "abcde"
+2 sym[]: "symbo"
+2 int[]: 255

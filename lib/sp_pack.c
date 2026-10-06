@@ -314,6 +314,7 @@ static int64_t pk_poly_to_int(sp_RbVal v) {
          bridge); one without the method falls through to CRuby's TypeError */
       if (v.cls_id >= 0 && v.v.p && sp_obj_to_int_fn) {
         int ok = 0;
+        SP_GC_ROOT_RBVAL(v);   /* across the user #to_int */
         int64_t r = sp_obj_to_int_fn((int)v.cls_id, v.v.p, &ok);
         if (ok) return r;
       }
@@ -335,12 +336,15 @@ static double pk_poly_to_flt(sp_RbVal v) {
   }
 }
 
-static const char *pk_poly_to_str(sp_RbVal v) {
-  switch (v.tag) {
-    case SP_TAG_STR: return v.v.s ? v.v.s : "";
-    case SP_TAG_NIL: return "";
-    default:         return "";
-  }
+/* A string element's bytes and their length. The length comes from
+   sp_str_byte_len, as the m/M directives read theirs, so a String carrying a
+   NUL (packed bytes, a binary key) keeps every byte; strlen stopped at the
+   first one. Only a String has the header sp_str_byte_len reads, so anything
+   else answers the empty literal with length 0. */
+static const char *pk_poly_to_str(sp_RbVal v, size_t *n) {
+  if (v.tag == SP_TAG_STR && v.v.s) { *n = sp_str_byte_len(v.v.s); return v.v.s; }
+  *n = 0;
+  return "";
 }
 
 /* ---------- Base64 (`m`) and quoted-printable (`M`) encoders ---------- */
@@ -639,9 +643,9 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
       continue;
     }
     if (spec == 'a' || spec == 'A' || spec == 'Z') {
-      const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx]) : "";
+      size_t sl = 0;
+      const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx], &sl) : "";
       idx++;
-      size_t sl = strlen(s);
       size_t want = (count < 0) ? sl : (size_t)count;
       if (spec == 'Z' && count < 0) want = sl + 1;
       size_t take = sl < want ? sl : want;
@@ -664,8 +668,9 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
     }
     /* H/h (hex), B/b (bit), u (uuencode): consume one string element. */
     if (spec == 'H' || spec == 'h' || spec == 'B' || spec == 'b' || spec == 'u') {
-      const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx]) : ""; idx++;
-      pk_str_bytes_directive(spec, count, s, strlen(s), &buf, &len, &cap);
+      size_t sl = 0;
+      const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx], &sl) : ""; idx++;
+      pk_str_bytes_directive(spec, count, s, sl, &buf, &len, &cap);
       continue;
     }
     /* w: BER-compressed integers (base-128, high bit = continuation). */
@@ -841,6 +846,82 @@ static char *uk_qp_decode(const char *src, size_t n) {
   return out;
 }
 
+/* An unpack format byte that is no directive: ArgumentError, as CRuby's
+   unknown_directive words it. The directive shows as itself when printable,
+   else as \xNN; the format as an escaped string (\0, \e, \n, ..., \xNN for
+   a byte, \uNNNN for a UTF-8 character or, in a String that is not binary,
+   another control character). It was skipped, so a typo read on with the
+   directives after it, and a NUL byte ended the format. */
+static SP_NORETURN void uk_unknown_directive(char type, const char *fmt, size_t flen) {
+  size_t cap = flen * 10 + 64, o = 0;
+  char *msg = (char *)malloc(cap);
+  if (!msg) sp_raise_cls("ArgumentError", "unknown unpack directive");
+  unsigned char t = (unsigned char)type;
+  int bin = sp_str_is_binary(fmt);
+  if (t >= 0x20 && t < 0x7f) o += (size_t)snprintf(msg + o, cap - o, "unknown unpack directive '%c' in '", type);
+  else o += (size_t)snprintf(msg + o, cap - o, "unknown unpack directive '\\x%02x' in '", t);
+  /* A format every character of which is printable is shown as it is, as
+     CRuby's rb_str_quote_unprintable leaves it ('Cé'); only one holding an
+     unprintable character is escaped as a whole. */
+  int printable = 1;
+  for (size_t i = 0; i < flen && printable; i++) {
+    unsigned char ch = (unsigned char)fmt[i];
+    if (ch < 0x20 || ch == 0x7f) printable = 0;
+    else if (ch >= 0x80) {
+      int len = bin ? 0 : ch >= 0xC2 && ch < 0xE0 ? 2 : ch >= 0xE0 && ch < 0xF0 ? 3 : ch >= 0xF0 && ch < 0xF5 ? 4 : 0;
+      if (!len || i + (size_t)len > flen) { printable = 0; break; }
+      for (int j = 1; j < len; j++)
+        if (((unsigned char)fmt[i + j] & 0xC0) != 0x80) { printable = 0; break; }
+      i += (size_t)len - 1;
+    }
+  }
+  if (printable) { memcpy(msg + o, fmt, flen); o += flen; }
+  for (size_t i = 0; i < flen && !printable; i++) {
+    unsigned char ch = (unsigned char)fmt[i];
+    const char *esc = NULL;
+    switch (ch) {
+      case 0: esc = "\\0"; break;
+      case '\n': esc = "\\n"; break;
+      case '\t': esc = "\\t"; break;
+      case '\r': esc = "\\r"; break;
+      case '\f': esc = "\\f"; break;
+      case '\v': esc = "\\v"; break;
+      case '\b': esc = "\\b"; break;
+      case '\a': esc = "\\a"; break;
+      case 0x1b: esc = "\\e"; break;
+      case 0x7f: esc = "\\c?"; break;
+      default: break;
+    }
+    if (esc) { o += (size_t)snprintf(msg + o, cap - o, "%s", esc); continue; }
+    if (ch >= 0x20 && ch < 0x7f) { msg[o++] = (char)ch; continue; }
+    /* another control character is a codepoint in a UTF-8 String */
+    if (ch < 0x20 && !bin) { o += (size_t)snprintf(msg + o, cap - o, "\\u%04X", ch); continue; }
+    /* a whole UTF-8 character: \uNNNN (\u{N} past the BMP) */
+    int len = bin ? 0 : ch >= 0xC2 && ch < 0xE0 ? 2 : ch >= 0xE0 && ch < 0xF0 ? 3 : ch >= 0xF0 && ch < 0xF5 ? 4 : 0;
+    if (len && i + (size_t)len <= flen) {
+      uint32_t cp = ch & (0x7F >> len);
+      int ok = 1;
+      for (int j = 1; j < len && ok; j++) {
+        unsigned char cb = (unsigned char)fmt[i + j];
+        if ((cb & 0xC0) != 0x80) ok = 0;
+        else cp = (cp << 6) | (cb & 0x3F);
+      }
+      if (ok) {
+        o += (size_t)snprintf(msg + o, cap - o, cp > 0xFFFF ? "\\u{%X}" : "\\u%04X", (unsigned)cp);
+        i += (size_t)len - 1;
+        continue;
+      }
+    }
+    o += (size_t)snprintf(msg + o, cap - o, "\\x%02X", ch);
+  }
+  msg[o++] = '\'';
+  msg[o] = 0;
+  char *m = sp_str_alloc(o);
+  memcpy(m, msg, o + 1);
+  sp_str_set_len(m, o);
+  free(msg);
+  sp_raise_cls("ArgumentError", m);
+}
 sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff);
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {SP_GC_ROOT_STR(str);SP_GC_ROOT_STR(fmt); return sp_str_unpack_off(str, fmt, 0); }
 
@@ -868,9 +949,15 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
   if ((size_t)byteoff > slen) sp_raise_cls("ArgumentError", "offset outside of string");
   size_t off = (size_t)byteoff;
   const char *p = fmt;
-  while (*p) {
+  /* the format's own length: a NUL byte in it is an unknown directive, not
+     its end */
+  size_t flen = sp_str_byte_len(fmt);
+  const char *pend = fmt + flen;
+  while (p < pend) {
     char spec = *p++;
-    if (spec == ' ' || spec == '\t' || spec == '\n') continue;
+    if (spec == ' ' || spec == '\t' || spec == '\n' || spec == '\v' || spec == '\f' || spec == '\r') continue;
+    /* `#` comments to the end of the line */
+    if (spec == '#') { while (p < pend && *p != '\n') p++; continue; }
     /* `%` prefixes a checksum request, which CRuby 4 no longer accepts (#3553) */
     if (spec == '%') sp_raise_cls("ArgumentError", "% is not supported");
     int big = 0;
@@ -878,7 +965,8 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
     /* X moves the read position back, @ moves it to an absolute offset; both
        were dropped, so every following directive read from the wrong place */
     if (spec == 'X') {
-      size_t back = count < 0 ? off : (size_t)count;
+      /* `X*` backs up by what remains past the position, as CRuby counts it */
+      size_t back = count < 0 ? slen - off : (size_t)count;
       if (back > off) sp_raise_cls("ArgumentError", "X outside of string");
       off -= back;
       continue;
@@ -897,6 +985,9 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
       case 'f': case 'F': case 'e': case 'g': fsize = 4; break;
       case 'q': case 'Q': fsize = 8; break;
       case 'd': case 'D': case 'E': case 'G': fsize = 8; break;
+      /* the native int, intptr and pointer sizes (LP64) */
+      case 'i': case 'I': fsize = 4; break;
+      case 'j': case 'J': case 'p': case 'P': fsize = 8; break;
       default: fsize = 0; break;
     }
     if (spec == 'a' || spec == 'A' || spec == 'Z') {
@@ -1048,14 +1139,15 @@ else if (spec == 'Z') {
       }
       continue;
     }
-    if (fsize == 0) continue;
+    if (fsize == 0) uk_unknown_directive(spec, fmt, flen);
     /* `*` count is exactly what remains; an explicit count that runs off the end
        pads the remaining slots with nil (MRI: "a".unpack("CC") == [97, nil]). */
     int star = count < 0;
     if (star) count = (slen - off) / fsize;
     for (int64_t k = 0; k < count; k++) {
       if (off + fsize > slen) {
-        if (spec != 'x') sp_PolyArray_push(out, sp_box_nil());
+        if (spec == 'x') sp_raise_cls("ArgumentError", "x outside of string");
+        sp_PolyArray_push(out, sp_box_nil());
         continue;
       }
       const unsigned char *u = (const unsigned char *)(str + off);
@@ -1077,7 +1169,18 @@ else if (spec == 'Z') {
         case 'l': v = (int32_t)pk_get_int(u, 4, big); break;
         case 'L': v = (uint32_t)pk_get_int(u, 4, big); break;
         case 'q': v = (int64_t)pk_get_int(u, 8, big); break;
+        case 'i': v = (int32_t)pk_get_int(u, 4, big); break;
+        case 'I': v = (uint32_t)pk_get_int(u, 4, big); break;
+        case 'j': v = (int64_t)pk_get_int(u, 8, big); break;
+        /* a pointer CRuby's own pack did not make: nil for NULL, else it has
+           no object to answer */
+        case 'p': case 'P':
+          if (pk_get_int(u, 8, 0)) sp_raise_cls("ArgumentError", "no associated pointer");
+          off += fsize;
+          sp_PolyArray_push(out, sp_box_nil());
+          continue;
         /* unsigned, so it does not share the signed boxing below */
+        case 'J':
         case 'Q': {
           uint64_t uv = pk_get_int(u, 8, big);
           off += fsize;

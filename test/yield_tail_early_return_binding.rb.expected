@@ -1,0 +1,18 @@
+[1, :early]
+:tail
+"string"
+7
+[4, [5], 6, 7, {extra: 8}, :tail]
+:tail
+[nil, 9, {"extra" => 10}]
+"string"
+[[], 1, {extra: 2}]
+"proc"
+[1, :early]
+:forward
+[nil, 1, {}]
+:send
+[1, :early]
+:send
+wrong number of arguments (given 2, expected 1)
+unknown keyword: :unknown

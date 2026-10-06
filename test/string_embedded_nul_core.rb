@@ -17,7 +17,7 @@ e = t[0, 3]
 puts e.bytes.inspect
 puts e.length
 puts s[2]
-f = "/tmp/spinel_nul_core_t.bin"
+f = "/tmp/spinel_nul_core_t_#{Process.pid}.bin"
 File.write(f, s)
 r = File.read(f)
 puts r.bytes.inspect

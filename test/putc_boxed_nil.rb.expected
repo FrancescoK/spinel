@@ -1,0 +1,9 @@
+A
+int: 65
+nil: TypeError: no implicit conversion from nil to integer
+B
+str: "Bc"
+B
+float: 66.7
+true: TypeError: no implicit conversion of true into Integer
+kernel nil: TypeError: no implicit conversion from nil to integer

@@ -1,0 +1,14 @@
+touched 1
+after
+notify: NoMethodError: undefined method 'touch' for nil
+touched 1
+branch done
+poke 1 1 2
+branch done
+branch: NoMethodError: undefined method 'poke' for nil
+poke 1 0 0
+poke 1 1 1
+loop done
+loop: NoMethodError: undefined method 'poke' for nil
+touched 1
+top: NoMethodError: undefined method 'touch' for nil

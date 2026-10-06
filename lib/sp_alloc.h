@@ -123,6 +123,23 @@ extern const char sp_str_empty_data[];
 extern const char *const sp_str_frozen_empty;
 extern const char *const sp_str_frozen_true;
 extern const char *const sp_str_frozen_false;
+/* A chilled String is what CRuby's Symbol#to_s answers: not frozen (frozen?
+   is false, and a mutation goes through), but +@ copies it as it copies a
+   frozen one. Spinel keeps one per symbol (sp_sym_to_s_chilled): static
+   storage with a header, the 0xfb marker, whose `next` link names
+   sp_str_chilled_tag. A static string is on no sweep list, so the link is
+   free to carry the mark, and no marker test -- the collector's included --
+   has to learn a new byte. The symbol rides ahead of the header, so a String
+   handle made from one can name it (sp_String.chilled). */
+extern const sp_str_hdr sp_str_chilled_tag;
+typedef struct { sp_int sym; sp_str_hdr h; unsigned char m; char d[]; } sp_str_chilled_obj;
+static inline int sp_str_is_chilled(const char *s) {
+  return s && ((const unsigned char *)s)[-1] == 0xfb &&
+         (((const sp_str_hdr *)(s - 1)) - 1)->next == &sp_str_chilled_tag;
+}
+static inline sp_int sp_str_chilled_sym(const char *s) {
+  return ((const sp_str_chilled_obj *)(s - offsetof(sp_str_chilled_obj, d)))->sym;
+}
 /* a nullable string (NULL) as the empty string, the standard C spelling of
    GNU's `s ?: sp_str_empty` */
 static inline const char *sp_str_or_empty(const char *s) { return s ? s : sp_str_empty; }
@@ -354,7 +371,12 @@ static inline char *sp_str_alloc_nogc(size_t len) {
 /* Copy a message onto the string heap so it can be held by a string root.
    The source is a bare literal (every raise the runtime and the generated
    code issue passes one) or an unrooted heap string; neither can be rooted
-   across an allocation, so the copy runs with no collection in between. */
+   across an allocation, so the copy runs with no collection in between.
+   The length is strlen's, not sp_str_byte_len's: a bare literal or a static
+   buffer (Process.spawn's sp_err_buf) has no header, and sp_str_byte_len reads
+   the byte before it for one, which for some neighbouring byte looks like a
+   header's marker and answers a made-up length (#7556 did, and a copied
+   message gained NUL bytes in some builds). */
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
   size_t n = strlen(m);
@@ -662,6 +684,10 @@ void *sp_pl_realloc(void *p, size_t newn);   /* lib/sp_slab.c: a slab block know
                                            that asserts every id is distinct will
                                            flag any future collision at compile
                                            time. */
+#define SP_BUILTIN_RANDOM        (-50)  /* Random (sp_Random *): boxed so a
+                                           generator in an Array or a poly slot
+                                           keeps its identity; it read as nil */
+/* SP_BUILTIN_ARGF (-51) is in sp_gc.h: the collector must not trace it */
 #define SP_BUILTIN_YIELDER       (-49)  /* Enumerator::Yielder: the generator's
                                           block parameter as a VALUE, for a
                                           proc inside the body that captures
@@ -675,6 +701,10 @@ static inline sp_RbVal sp_box_int(sp_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;
    carries SP_TAG_STR and fails tag-keyed comparisons -- `defined?(x).should
    == nil` compared STR(NULL) against NIL and answered false. */
 static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; } r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
+/* A String mutator's value from a poly arm, which answers the box or the
+   unboxed String by mutator: boxed either way (a NULL String is nil). */
+static inline sp_RbVal sp_box_same(sp_RbVal v){ return v; }
+#define SP_BOX_STR_OR_POLY(x) _Generic((x), sp_RbVal: sp_box_same, default: sp_box_str)(x)
 static inline sp_RbVal sp_box_float(sp_float v){ sp_RbVal r; r.tag = SP_TAG_FLT;  r.cls_id = 0; r.v.f = v; return r; }
 /* Write the full union word, not just the narrow `b` member: hash keys and
    poly equality compare bool values through `v.i`, so bytes left
@@ -716,6 +746,45 @@ extern size_t sp_gc_threshold;
 extern size_t sp_gc_threshold_init;
 extern int sp_gc_stress_checked;
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+/* sp_gc_alloc(sz, NULL, scn) for a size that is a constant where it is
+   called: the switch folds to one call, of the front lib/sp_slab.c keeps for
+   that size class (16 bytes apart from 32 to 256, the header included). */
+void *sp_gc_alloc_32(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_48(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_64(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_80(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_96(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_112(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_128(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_144(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_160(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_176(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_192(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_208(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_224(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_240(size_t need, void (*scn)(void *));
+void *sp_gc_alloc_256(size_t need, void (*scn)(void *));
+static inline void *sp_gc_alloc_sized(size_t sz, void (*scn)(void *)) {
+  size_t need = sizeof(sp_gc_hdr) + sz;
+  switch (need <= 32 ? 0 : need > 256 ? -1 : (int)((need + 15) >> 4) - 2) {
+  case 0: return sp_gc_alloc_32(need, scn);
+  case 1: return sp_gc_alloc_48(need, scn);
+  case 2: return sp_gc_alloc_64(need, scn);
+  case 3: return sp_gc_alloc_80(need, scn);
+  case 4: return sp_gc_alloc_96(need, scn);
+  case 5: return sp_gc_alloc_112(need, scn);
+  case 6: return sp_gc_alloc_128(need, scn);
+  case 7: return sp_gc_alloc_144(need, scn);
+  case 8: return sp_gc_alloc_160(need, scn);
+  case 9: return sp_gc_alloc_176(need, scn);
+  case 10: return sp_gc_alloc_192(need, scn);
+  case 11: return sp_gc_alloc_208(need, scn);
+  case 12: return sp_gc_alloc_224(need, scn);
+  case 13: return sp_gc_alloc_240(need, scn);
+  case 14: return sp_gc_alloc_256(need, scn);
+  default: return sp_gc_alloc(sz, NULL, scn);
+  }
+}
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 
 SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
@@ -768,6 +837,12 @@ static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *
 extern SP_TLS sp_gc_hdr *sp_polyarr_pool_head;
 extern SP_TLS long sp_polyarr_pool_count;
 void sp_PolyArray_pool_recycle(sp_gc_hdr *h);
+/* An Array subclass instance's embedded Array (#7449, see
+   sp_IntArray_init_embedded): its elements start inline, and the first growth
+   installs the finalizer that frees the payload, as an unpooled one's does. */
+static inline void sp_PolyArray_init_embedded(sp_PolyArray *a) {
+  a->data = a->inl; a->cap = SP_POLYARR_INLINE; a->len = 0;
+}
 static inline sp_PolyArray *sp_PolyArray_new(void) {
   if (sp_slab_on > 0) {
     sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), NULL, sp_PolyArray_scan);
@@ -953,7 +1028,9 @@ static inline sp_RbVal sp_box_range(sp_Range v) {
   return sp_box_obj(p, SP_BUILTIN_RANGE);
 }
 static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
-static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
+/* Encoding#inspect: the binary encoding reads "BINARY (ASCII-8BIT)" since Ruby 3.4 */
+static inline const char*sp_encoding_inspect_name(const char*n){return !strcmp(n,"ASCII-8BIT")?sp_sprintf("#<Encoding:BINARY (ASCII-8BIT)>"):sp_sprintf("#<Encoding:%s>",n);}
+static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_encoding_inspect_name(sp_encoding_name(e));}
 static inline sp_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
 
 /* ---- Box helper prototypes (0 optcarrot uses; bodies in lib/sp_cold.c). ---- */

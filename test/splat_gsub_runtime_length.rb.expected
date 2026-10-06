@@ -1,0 +1,22 @@
+"aXcX"
+["b", "b"]
+["b", "b"]
+"aBcB"
+"aB!cB!"
+"aXcX"
+"a<b>cb"
+"aXcb"
+"aYcY"
+"abbbcb"
+"aXcX"
+"wrong number of arguments (given 0, expected 1..2)"
+"wrong number of arguments (given 3, expected 1..2)"
+"wrong number of arguments (given 1, expected 2)"
+"aBcB"
+"aBcb"
+["b", "b"]
+"abCb"
+"abCb"
+["c"]
+#<Enumerator: "abcb":gsub!(/b/)>
+["b", "b"]

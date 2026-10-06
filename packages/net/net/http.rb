@@ -71,8 +71,19 @@ module Net
       nil
     end
 
+    # The media type alone, as CRuby answers it: `text/html; charset=utf-8`
+    # reads `text/html`. The whole header made a type check written against
+    # CRuby (`res.content_type == "text/html"`) fail for nearly every real
+    # server, which sends the charset. Case is kept, as CRuby keeps it, and
+    # so is CRuby's main_type/sub_type split: a third `/` part is dropped and
+    # an empty subtype leaves the main type alone (`text/` reads `text`).
     def content_type
-      @headers["content-type"]
+      v = @headers["content-type"]
+      return nil if v.nil?
+      parts = v.split(";", 2)[0].to_s.split("/")
+      main = parts[0].to_s.strip
+      return main if parts.length < 2
+      main + "/" + parts[1].to_s.strip
     end
   end
 
@@ -153,6 +164,13 @@ module Net
     # used to do, sending both and leaving the server to pick.
     def []=(name, value)
       k = name.to_s.downcase
+      # nil removes the header, as CRuby's Net::HTTPHeader#[]= does: a Host
+      # set to nil lets the default one go out again instead of an empty one.
+      if value.nil?
+        @headers.delete(k)
+        @header_names.delete(k)
+        return nil
+      end
       # An Array joins with ", ", the way CRuby serves a multi-valued header:
       # `req["Accept"] = %w[a b]` reads back "a, b" and goes out as one line.
       # `to_s` on an Array is its INSPECT form, so without this the wire got
@@ -183,6 +201,13 @@ module Net
 
     def key?(name)
       @headers.key?(name.to_s.downcase)
+    end
+
+    # Whether this kind of request carries a body, CRuby's REQUEST_HAS_BODY.
+    # Decided by the method rather than per class, since `Net::HTTP#post` and
+    # `Net::HTTP.post_form` build a plain HTTPRequest with the method name.
+    def request_body_permitted?
+      @method == "POST" || @method == "PUT"
     end
 
     # Yields the spelling the caller wrote, not the downcased key: for a
@@ -525,17 +550,23 @@ module Net
     def write_request(req)
       out = String.new
       out << "#{req.method} #{req.path} HTTP/1.1\r\n"
-      # The port belongs in Host unless it is the scheme's default, which is
-      # what a virtual host on a non-standard port depends on.
-      default = @use_ssl ? 443 : 80
-      out << (@port == default ? "Host: #{@address}\r\n" : "Host: #{@address}:#{@port}\r\n")
+      # The default Host goes out only when the request carries none, as
+      # CRuby's `req['host'] ||= addr_port`. The port belongs in it unless it
+      # is the scheme's default, which is what a virtual host on a
+      # non-standard port depends on.
+      unless req.key?("host")
+        default = @use_ssl ? 443 : 80
+        out << (@port == default ? "Host: #{@address}\r\n" : "Host: #{@address}:#{@port}\r\n")
+      end
       have_len = false
       req.each_header do |k, v|
         have_len = true if k.downcase == "content-length"
         out << "#{k}: #{v}\r\n"
       end
       body = req.body.to_s
-      out << "Content-Length: #{body.bytesize}\r\n" if !have_len && !body.empty?
+      # A request that carries a body states its length even when it is
+      # zero, as CRuby's does; some servers answer 411 without it.
+      out << "Content-Length: #{body.bytesize}\r\n" if !have_len && (req.request_body_permitted? || !body.empty?)
       out << "Connection: close\r\n"
       out << "\r\n"
       out << body

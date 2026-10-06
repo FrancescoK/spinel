@@ -33,10 +33,11 @@ rescue EOFError
   p "EOFError"
 end
 
-# 4. recv_nonblock is NOT read_nonblock at EOF: CRuby answers "" for it in
-#    BOTH forms -- it neither answers nil nor raises EOFError. It reaches a
-#    different emitter (a TY_IO receiver), which is why it takes a socket
-#    made this way rather than one from Socket.pair.
+# 4. recv_nonblock, like recv, answers nil at EOF in BOTH forms (Ruby 3.3
+#    and later; it was "" before) -- it does not raise EOFError as
+#    read_nonblock does. It reaches a different emitter (a TY_IO receiver),
+#    which is why it takes a socket made this way rather than one from
+#    Socket.pair.
 srv = TCPServer.new("127.0.0.1", 0)
 port = srv.addr[1]
 t = Thread.new do
@@ -47,8 +48,9 @@ end
 s1 = srv.accept
 sleep 0.2
 p s1.recv_nonblock(64, exception: false)     #=> "y"
-p s1.recv_nonblock(64, exception: false)     #=> "" (not nil, not :wait_readable)
-p s1.recv_nonblock(64)                       #=> "" (the raising form does not raise here)
+p s1.recv_nonblock(64, exception: false)     #=> nil (not :wait_readable)
+p s1.recv_nonblock(64)                       #=> nil (the raising form does not raise here)
+p s1.recv(64)                                #=> nil
 t.join
 s1.close
 srv.close

@@ -21,14 +21,17 @@ bad each type: ArgumentError: Invalid type name!
 locked ret: => [true, true]
 after: => false
 nested: IO::Buffer::LockedError: Buffer already locked!
-write in: IO::Buffer::LockedError: Buffer already locked!
-read in: IO::Buffer::LockedError: Buffer already locked!
-get_string in: IO::Buffer::LockedError: Buffer already locked!
-slice in: IO::Buffer::LockedError: Buffer already locked!
-dup in: IO::Buffer::LockedError: Buffer already locked!
-resize in: IO::Buffer::LockedError: Buffer already locked!
-transfer in: IO::Buffer::LockedError: Buffer already locked!
-free in: IO::Buffer::LockedError: Buffer already locked!
-hexdump in: IO::Buffer::LockedError: Buffer already locked!
-clear in: IO::Buffer::LockedError: Buffer already locked!
+write in: => 1
+read in: => 1
+get_string in: => "\x01\x00\x00\x00"
+slice in: => #<IO::Buffer 0xX+2 SLICE>
+0xX  01 00                                           ..
+dup in: => #<IO::Buffer 0xX+4 INTERNAL>
+0xX  01 00 00 00                                     ....
+resize in: IO::Buffer::LockedError: Cannot resize locked buffer!
+transfer in: IO::Buffer::LockedError: Cannot transfer ownership of locked buffer!
+free in: IO::Buffer::LockedError: Buffer is locked!
+hexdump in: => "0xX  01 00 00 00                                     ...."
+clear in: => #<IO::Buffer 0xX+4 INTERNAL>
+0xX  00 00 00 00                                     ....
 value after: => 3

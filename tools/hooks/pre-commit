@@ -1,0 +1,6 @@
+#!/bin/sh
+# Installed by `make hooks`. tools/gate.rb picks the Ruby that judges a new
+# test's .expected (tools/gate-ruby); without any Ruby the checks are skipped.
+r=${GATE_RUBY:-ruby}
+command -v "$r" >/dev/null 2>&1 || { echo "gate: no ruby; pre-commit checks skipped" >&2; exit 0; }
+exec "$r" tools/gate.rb check

@@ -1,0 +1,14 @@
+[:ww, :zz]
+[:a, :ww, :zz]
+[:ww, :zz]
+[:ww, :zz]
+[:ww, :zz]
+[]
+[:a]
+[]
+[:ww, :zz]
+[:a, :ww, :zz]
+[:ww, :zz]
+true
+true
+[:ww, :zz]

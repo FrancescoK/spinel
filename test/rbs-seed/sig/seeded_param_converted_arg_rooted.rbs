@@ -1,0 +1,5 @@
+class ConvArgHolder
+  @col: Array[Float]
+  @other: Array[Float]
+  def initialize: (Array[Float] col, Array[Float] other) -> void
+end

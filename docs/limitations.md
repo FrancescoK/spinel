@@ -42,6 +42,9 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | Refinements (`refine` / `using`) | no-op / unresolved | scope-keyed dispatch is incompatible with direct C calls |
 | `callcc` / `Continuation` | unsupported | multi-shot full-stack capture has no flat-C analogue |
 | `Class.new(parent) { ... }` (runtime class) | unsupported | the class graph is baked at compile time |
+| An instance variable of a String (`@x = v` in a method added to String, `s.instance_variable_set(:@x, v)`) | refused at compile time, until Strings are shared rather than copied (#6765); one reached through an untyped value raises NotImplementedError when it runs, as does one on a Time | a String is copied between its representations and across calls, so it has no one identity yet; under #6765's share-by-default model it keeps one and takes the same map as an Array. A Time is copied by value. An Array, a Hash, a Random, a Proc, an exception and a class value keep their instance variables, in a table keyed by the object (as CRuby's); a class value's own class-level slots stay where its class methods read them, and its `instance_variables` lists those only its class methods wrote after the reflective sets. An Integer, a Float, a Symbol, nil, true, false and a Range read nil and raise FrozenError on a write, as in CRuby. An ivar of a builtin value as a multiple-assignment target (`@a, @b = x, y` in an Array method) is refused: assign each on its own |
+| A subclass of a builtin value class: `class Registry < Hash`, `class Name < String`, and likewise Range, Proc, Method, UnboundMethod, Integer, Float, Symbol, Rational, Complex, NilClass, TrueClass, FalseClass, Regexp, MatchData, Time, Random, Enumerator, IO, File, Dir, Thread, Fiber, Mutex, Queue, SizedQueue, ConditionVariable, OpenStruct, or a class a package binds to C (StringIO); also `Thread::Queue` and `Class.new(Hash)` | refused at compile time, naming the class | the subclass would be built as a plain object: none of the parent's methods reach it, its constructor takes none of the parent's arguments, and `p`, `to_s`, `==` and `respond_to?` answer as for an Object. Supporting it needs an instance that IS a Hash (String, ...) with the subclass's methods dispatched on it, as an Array subclass's is (below); until then, keep the value in an instance variable of a class of your own. A subclass of Object, BasicObject, an exception, Struct / Data, Numeric, or a package class written in Ruby (Set, Date, BigDecimal) works, as does a class of the program's own that shares a builtin's name under a namespace (`Jobs::Queue`) |
+| A subclass of Array (`class Page < Array`, `::Array`, `Class.new(Array) do ... end`) | supported (#7449), except the shapes in the next column, which are refused at compile time | its instance IS its Array: the struct starts with the Array, so Array's methods run on it, a boxed one is an Array to the runtime, and its class is read back off its own GC scan function. Refused: `Class.new(Array)` without a block (no class of the program's own stands for it; write `class Name < Array`), a program that also reopens `Array`, and a bare `super` into Array from a method with keyword, post-rest or destructured parameters (pass the arguments explicitly). `Marshal.dump` writes an instance as CRuby does (`C` with the class, the elements, and its ivars under `I`), and `Marshal.load` reads that back as an instance of the class, whether Spinel or CRuby wrote it |
 | Singleton methods (`def obj.m`, `class << obj; def m; end; end`, `obj.define_singleton_method(:m) { }`, `obj.extend(Mod)`) on a receiver whose creation site is **not** visible | unsupported | these DO work when the receiver is a constant or a local whose only write is `<UserClass>.new(...)`: the object gets a synthesized anonymous subclass carrying the methods, which is the AOT form of CRuby's hidden singleton class. What is left out is a receiver spinel cannot trace to one `.new` (a factory return, a loop, a conditional), and one whose class has no subclassable layout: `Object.new` / `BasicObject`, a builtin (String, Array), a Struct or Data, an exception. Those are refused at compile time, naming the Ruby line, when the body needs a `self` (its own `@ivar`, or `self`); a body that needs neither compiles as an ordinary function and is simply never reached as a method |
 | `Object#singleton_class` as an OBJECT (and `Class#attached_object`) | unsupported | the singleton class above is synthesized, not reified: there is no runtime class object to hand back. `class << obj` as a *definition* form works -- see the row above. `singleton_class.prepend(Mod)` / `singleton_class.include(Mod)` as a statement of a class or module body (activesupport's const_missing hook on Enumerable) is read as `extend Mod`, the precedence between Mod and the class's own singleton methods aside |
 | Runtime structural mutation of a class through an explicit receiver (`Klass.include(M)`, `Klass.attr_accessor(...)`, `Klass.define_method(...)` outside the class body) | unsupported | the class graph, ancestor chain, and method/ivar layout are baked at compile time; the same declarations *inside* a `class` body work |
@@ -65,11 +68,15 @@ URI::FTP or the scheme registry behind it. An https request needs the
 **TLS / `openssl`.** The `openssl` package binds the system libssl and
 provides `OpenSSL::SSL` only: `SSLContext`, `SSLSocket`, `SSLError` and the
 `VERIFY_*` constants, which is what an outbound HTTPS client reaches.
-`OpenSSL::Digest::SHA256` / `SHA1` / `MD5` and `OpenSSL::HMAC.hexdigest` are
-there, over the runtime's own crypto rather than libssl -- class-method forms
-only, and no HMAC-MD5. `Cipher`, `PKey`,
-most of `X509`, and the incremental digest object API are not there, and a
-program that names them fails to compile rather than at run time. Spinel
+`OpenSSL::Digest` (`SHA256` / `SHA1` / `MD5`, the class-method forms and the
+object: `OpenSSL::Digest.new("SHA256")`, `update` / `<<`, `digest`,
+`hexdigest`, `digest_length`), `OpenSSL::HMAC`, `OpenSSL::KDF.hkdf` /
+`pbkdf2_hmac` and `OpenSSL::PKCS5.pbkdf2_hmac` are there, over the runtime's
+own crypto rather than libssl, and no HMAC-MD5; the digest object buffers its
+input and hashes it whole. `Cipher` (aes-gcm) and `PKey::EC` are subsets,
+each described in its file under `packages/openssl/openssl/`. Most of `X509`
+is not there: a call to a method the package does not define compiles into
+CRuby's NoMethodError, raised when it is reached. Spinel
 implements no TLS and bundles no trust anchors: the chain is validated against
 the operating system's store, so a CA it stops trusting stops being trusted
 here on an OS update. The package exists only where libssl's headers were
@@ -111,7 +118,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 
 | Feature | Today | Path to relax |
 |---|---|---|
-| `Exception#backtrace` / `Kernel#caller` | return `[]` (class + message work) | populate frames from a compile-time call-site→source side-table (the `--line-map` map already exists) |
+| `Exception#backtrace` / `Kernel#caller` | return `[]` in a release build (class + message work). A `--debug` build, or `-g` with `-O0` / `-O1`, names each frame `file:in 'Class#method'` with the file the method was written in, but no line. `-g` at the default `-O2` drops the frames the C compiler inlined (a method called from one place usually is), so use `--debug` for a backtrace | the line within a frame, from the debug info's address-to-line table (#7658); a release build would need a pc→line table in every binary |
 | `class Thread` / `class Fiber` reopenings, `Thread.attr_accessor :x` / `Fiber.attr_accessor :x` (activesupport's IsolatedExecutionState) | supported | a reopening's instance methods take the runtime handle as self, and `Thread.current` / `Fiber.current` reach them (also through a class value or a class held in a poly slot). A thread's attribute lives in its thread-local table under a private key; a fiber's in a table of the fiber's own that a new fiber does not inherit (an attribute on a fresh fiber is nil). `thread_variable_get` / `_set` / `?` share the store `Thread#[]` / `[]=` / `key?` keep: one table per thread for both, where CRuby's `[]` is fiber-local |
 | `Thread` real parallelism | implemented as a true M:N runtime (no GVL): N OS workers (`min(online cores, SPINEL_WORKERS)`) run green threads in parallel over a stop-the-world GC, with real `Mutex`/`Queue`/`SizedQueue`/`ConditionVariable`. A monitor thread timeslices CPU-bound threads (~10ms quantum) so a thread looping without yielding cannot starve its siblings (it signals the worker with `SIGURG`, overridable via `SPINEL_PREEMPT_SIGNAL`). The single-threaded archive is unchanged (a non-`Thread` program is byte-identical) | the N workers run per-worker run queues with work stealing, and `Kernel#sleep` and blocking I/O are scheduler-aware (a sleeping / I/O-blocked thread frees its OS worker). preemption is taken at safepoint polls (loop back-edges), so a thread spending a long time inside a single runtime call with no poll yields only when that call returns; concurrent allocation is thread-safe (heap-lock-protected allocators, atomic heap byte counters, per-worker object pools) but every allocation still crosses one global heap lock; remaining work: fully async (signal-interrupted) preemption of such regions, and per-worker allocation buffers (TLAB) to make allocation-heavy parallel code scale. See [docs/thread.md](thread.md) |
 | `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex's components are float-only, so they round-trip as Floats |
@@ -119,14 +126,16 @@ Limited today, but additively fixable; listed roughly easiest-first.
 | Methods added to `Class` (`class Class; include M; end`, `Class.class_eval { include M }`, a `def` in either) | a class method of every class: `Klass.m`, `String.m`, and a bare `m` in any class body. Refused at compile time, naming the line: `Class.class_eval` anywhere but a top-level statement, and `class Class < ...`. On a builtin class a class-level `@ivar` of such a method is one slot shared by every builtin class | a nested or conditional addition would need the methods to exist only once it has run; a builtin class has no class-ivar storage of its own |
 | External `Enumerator` -- `.each` with no block is only an Enumerator on `Array` / `Range`, not on an arbitrary user method | mostly supported | `Array#each` / `Range#each` with no block return a working external Enumerator (`#next` / `#peek` / `#rewind` / `#size`, `loop` stops on `StopIteration`). `Enumerator.new { \|y\| ... }` is a fiber-backed generator (`y << v`, `y.yield(v)`, and the bare `y.yield v` without parentheses, plus `#next` / `#peek` / `#rewind` / `#take` / `#first`, infinite generators work). `Enumerator::Lazy` over an int range (incl. endless) or int array fuses map/select/reject/filter/take_while chains terminated by `first(n)` / `to_a` / `force`. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) also work. |
 | `Enumerable#each_entry` on a user class whose `#each` yields MULTIPLE values | yields them spread, as `#each` does, rather than packed into an array | on every builtin enumerable (Array/Hash/Range/Enumerator/Dir) `#each` yields one value per element, so `each_entry` is compiled as `each` and matches CRuby exactly. The difference only shows for a user `#each` that does `yield a, b`, where CRuby's `each_entry` hands the block `[a, b]`. Packing needs the yield arity of the user's `#each`, which is a static property of its body |
+| `redo` in the block of an iterator whose emitter walks the body itself (a lazy pipeline's stages, `chunk_while`, `transform_values`, `Array.new`, ...) | refused at compile time, naming the line | `redo` re-runs the body in place, which needs a label after the block's setup. `each`, `times`, `upto`, `map`, `select`, `reject`, `find`, `flat_map`, `sum`, `inject`, `sort_by`, `uniq`, a comparator for `sort`, `min` or `max`, `bsearch`, `gsub`, `map.with_index`, the in-place filters, `map!`, `fill`, `product`, `tap`, `each_char`, `each_index`, a user `yield` and the other iterators that go through the shared body emitters place one; each remaining emitter would need the same. Compiled as a `continue`, it used to leave the block as `next` does |
 | `StringIO#each_line` / `#each` / `#each_char` / `#each_byte` with NO block | `LocalJumpError`, where CRuby answers an `Enumerator` | the block forms are exact. Answering an Enumerator instead would make the method return either that or `self`, a union with no C slot. `io.readlines.each`, `io.read.each_char`, and `io.read.bytes` say the same thing and do have one |
 | `StringIO#readpartial` / `#sysread` / `#read_nonblock` with a buffer argument | the data comes back as the result, but the caller's own buffer variable is not changed | the methods are plain Ruby in the stringio package, and a String parameter a package class's method changes is not yet passed by reference the way a user class's is. Through a value that may be a File or a StringIO (`def rd(io) = io.readpartial(n)` called with both) the three methods raise NoMethodError: that receiver takes the built-in IO arms, which don't see a package's plain-Ruby methods |
 | `IO::Buffer` | the full in-memory API, CRuby-faithful: `new` (INTERNAL/MAPPED flags), `get_value`/`set_value`/`get_values`/`set_values` over all 18 type symbols (little/big-endian, `u64` round-trips Bignums under `--int-overflow=promote`), `get_string`/`set_string` (NUL-safe binary), `resize`/`clear`/`copy`/`size`, `slice` (live views, safe across a source `resize`), `transfer`/`free`/`dup`, `<=>`/`==`, `hexdump`/`inspect`/`to_s`, the predicates, the tiling bitwise family (`&` `\|` `^` `~` and `and!`/`or!`/`xor!`/`not!`), `locked`, `IO::Buffer.for(string)`/.string/.size_of, the CRuby exception classes (`IO::Buffer::AccessError` etc.), and the IO integration: `#read`/`#write`/`#pread`/`#pwrite` against an IO (one syscall each, answering the count, 0 at EOF or -errno; a blocking read on a socket or pipe parks the green thread, and the buffer is locked for the duration) and `IO::Buffer.map(file, size, offset, flags)` as an mmap view (READONLY / SHARED / PRIVATE; munmap'd by the finalizer; `resize` refused as for EXTERNAL). Passed to an `ffi_func` pointer argument, a buffer hands C its base address for the call ([FFI.md](FFI.md)). No `require` needed, as in CRuby. A literal type symbol compiles to a direct typed accessor (the wasm-runtime / binary-protocol hot path) | `#read` serves the bytes the IO's own stream already buffered before reading the descriptor (a `getc` followed by a `read` sees the next bytes); CRuby's reads the descriptor directly and can skip what its buffer holds. Three more deliberate divergences: `IO::Buffer.for(string)` copies (Spinel strings are immutable, so unobservable) and its write-through BLOCK form raises `NotImplementedError`; `each`/`each_byte`/`values` are block-form only (no Enumerator, as with StringIO); `get_string`'s third (encoding) argument is not accepted |
+| The value of `super` in `initialize` (`c = super`, `super.frozen?`, `c = if f then super else [] end`) when the parent's `initialize` is the program's own | refused at compile time, naming the line | an `initialize` is compiled to return nothing, since `new` drops its value; one whose value a subclass's `super` asks for would return its last value instead |
 | `Array#hash` (and arrays as hash keys) | unsupported | a builtin is additive, but array *keys* need the fundamental key-dispatch above |
+| `IO.popen` | refused at compile time, naming it | the bundled `open3` package's `Open3.capture2` / `capture3` (with `stdin_data:`) and `Process.spawn` with pipes cover what it is used for; the method itself is a stream held open over a child, which the open3 package does not model yet |
 | Sockets | TCP / UDP / UNIX-domain, as IO handles -- see below | additive: each missing class and method is its own runtime binding |
 | Passing data through a named pipe (FIFO) between two threads, **on macOS** | the reader gets nothing and the program hangs; Linux answers what CRuby answers | not the open, which is what #4394 was about, and not any change since: a reader and a writer exchanging three lines through one `mkfifo` path fails on macOS against a tree with no runtime change at all (#4406), so it is the readiness path a FIFO descriptor reaches once both ends exist. A pipe (`IO.pipe`) or a UNIX-domain socket carries the same traffic and works on both. Opening a FIFO no longer stalls the other green threads on either platform |
 | `class LoadError` / `class NameError` / `class Exception` … reopenings of a builtin exception class (activesupport's `core_ext/load_error.rb`, `core_ext/name_error.rb`, `Exception#as_json`) | supported | the class stays the runtime's: `raise LoadError, msg`, `LoadError.new(msg)`, `rescue LoadError => e`, `is_a?` and `e.class` behave as before the reopening (they used to build a shadowing user class, so `raise LoadError, msg` was a TypeError). The added methods take the runtime exception as self and are reached on a rescued or constructed exception and on a user subclass's instances; a bare `message` / `key` / `name` / `path` inside one is the exception's own. When several reopenings define one name (`Exception#brief` and `KeyError#brief`), a base-typed receiver is told apart by its runtime class, most-derived first in declaration order; a poly (run-time-typed) receiver does not see these methods yet |
-| `p` / `#inspect` on a `Thread::SizedQueue` | prints as `#<Thread::Queue:0x...>` | A SizedQueue and a Queue share one slot type here, so the name a handle prints is the slot's rather than the object's. Mutex, Queue, ConditionVariable, Fiber and Thread print what CRuby prints for them (a Fiber or Thread with its creation site, which is `file:0` when compiled with `--no-line-map`) |
 | `Fiber.new(storage: hash)` / `Fiber#storage=` with a Hash that has a default | the default is dropped: `Fiber[:missing]` reads nil | the fiber keeps the Hash's entries, not the Hash itself, so its `default` / `default_proc` don't come along; CRuby keeps the Hash |
 | A fiber scheduler (`Fiber.set_scheduler`, `Fiber.schedule`, the `Fiber::Scheduler` hooks) | not supported: `Fiber.scheduler` and `Fiber.current_scheduler` are always nil | blocking IO, `sleep` and the thread primitives park the green thread on Spinel's own scheduler instead (see [thread.md](thread.md)); nothing routes them to a Ruby scheduler object yet. `Fiber#blocking?`, `Fiber.blocking?`, `Fiber.blocking { }` and `Fiber.new(blocking:)` work, and answer what CRuby answers with no scheduler set |
 | `k.new(x)` where `k` is a Class VALUE and the constructor parameter is typed by its DEFAULT | `NoMethodError` where CRuby constructs | `initialize(a = 1)` types `a` Integer. A statically known `Klass.new("x")` widens that parameter, because the inference can see the call site and which class it names; a class-value call site names no class, so it seeds nothing and the parameter keeps the type its default gave it. The dispatch then has no arm for a String argument and raises. Passing an argument of the parameter's own type works, as does any constructor whose parameters are typed by their uses rather than by a default. Before this raise existed the arm was selected anyway and the argument's bits were read as the parameter's type, so the raise is the fix rather than the limitation |
@@ -685,10 +694,27 @@ values too.
 
 Not yet shared:
 
-- a `yield` by keyword (`yield(k: s)` into `{ |k:| k << x }`) of a String
-  that a proc or a `Method` shares too;
-- by keyword, through an UnboundMethod, a curried proc, a proc or `Method`
-  read out of a slot that holds other values too, and `instance_exec`;
+- a String variable in a splatted Hash literal (`**{ k: v }`) at a dynamic call or yield whose key binds an appending keyword parameter;
+
+- a String variable in an Array literal feeding an appended nested multiple-assignment target;
+
+- a bare instance-variable argument written from a local, handed to an appending parameter through a call or `super`, unless the instance variable is already a shared handle;
+
+- a repeated keyword whose later value is a String variable bound to an appending parameter, unless the value is already passed as a shared handle;
+
+- through `Thread.new` or `Fiber#resume`, a String variable handed to a block parameter that appends to it, unless its read already hands over the shared handle or the local is read only as that argument;
+- through a Hash's value block (`each_value`, `each`, `each_pair`, or an element iterator over `values`, `values_at` or `fetch_values`), a stored String variable when the value parameter appends to it;
+- through a Hash's `[key, value]` pairs (`h.to_a`, `h.first`, `h.min_by { }`, `k, v = h.first`, an iterator over them), a String value that is then mutated;
+- through `yield` into a capture-wrapper block, a String variable whose captured parameter appends to it without already being the shared handle, including a splatted yield;
+- through an Array's chained index into an appending block;
+
+- through a retained `scrub!` result that is appended to; `scrub!` with a block is also refused because the block would be ignored;
+- through a container element, a String a boxed local holds (`s = [+"xy", 1][k]`) stored into an Array, a Hash, an instance variable's or a global's Array and mutated in place through an element read or an iterator's block parameter (`[s][0].prepend(x)`, `[s].each { |e| e << x }`);
+- through a literal's element, a local bound from an element read of an Array or Hash literal holding a String variable (`t = [s][0]`, `t = [s].first`), when the local is mutated in place and the variable is read again;
+
+- through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
+
+- by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
   (`o.instance_exec(s, *rest) { |t, *r| t << "!" }`), and one held by a
   block parameter, by a variable a proc captures, or by a global or class
@@ -703,12 +729,34 @@ Not yet shared:
   curried proc, a method `define_method` defines, `new` or `raise`, a
   String held by a block parameter, by a variable a block or proc captures,
   or by a global or class variable, and through a proc, a `Method` or a
-  class value's `new`, one held by an instance variable.
+  class value's `new`, one held by an instance variable;
+- through a `Method` bound to one of the String's own in-place mutators
+  (`s.method(:<<)`, `s.method(:concat)`, `s.method(:upcase!)`, their
+  `to_proc` and `&s.method(:<<)`): the Method is bound to the String's
+  value, so `.method` itself is refused, naming the line. Call the
+  mutator on the String, or wrap it in a block (`->(x) { s << x }`).
+
+A String is shared as well through a rest a method forwards (`def w(*a) =
+m(*a)`, `def w(*) = m(*)`, `def w(...) = m(...)`, `def m(*) = super`) and
+through a parameter a method hands on to `super` or a call after a `**h`
+call typed it POLY; through those, one held by a block parameter, a
+variable a proc captures, an instance variable that is no shared String,
+or a global or class variable is refused. A String variable in or past a
+splat into `super` or `yield` (`super(*s)`, `yield(*e, v)`, a rest yielded
+as `yield(*r)`), bound to a parameter that appends, is refused as well, and
+so is any String forwarded to the 17th position or past it, or handed on
+through more POLY parameters than the analysis follows.
 
 Each is lifted in turn, and this list shrinks with it. Until then, return
 the String from the method and assign it, or append to it in the caller. A
 literal or any other expression passed there is not refused: nothing else
 can see its growth.
+
+The block of a lazy stage (`[s].lazy.map { |x| x << "!" }`, and `select`,
+`take_while` and the other stages up to the first `map`) is handed a boxed
+copy of the element, so a block that changes its String element in place
+is refused as well, naming the line. Drop the `.lazy` (the eager form
+shares the String), or return a new String (`x + "!"`).
 
 #### A reassigned block parameter, and `yield` inside a proc literal
 
@@ -971,16 +1019,31 @@ whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
 
-A note on identity: what `frozen_string_literal` specifies is frozenness,
-not object identity, so the identity of frozen literals is
-implementation-dependent. CRuby happens to intern equal-content literals
-(`"abc".equal?("abc")` is `true` there); Spinel compiles each literal
-OCCURRENCE to its own static object, so the same comparison answers
-`false`, while re-evaluating one occurrence (a literal in a loop) yields
-the same object where plain CRuby would allocate per evaluation. Programs
-should not depend on either arrangement -- `equal?`/`object_id` on frozen
-literals is exactly the implementation-defined corner. Value semantics
-(`==`, hashing, matching) are unaffected.
+A note on identity: equal frozen literals are one object, as in CRuby
+with frozen string literals. `"abc".equal?("abc")` is `true`, the same
+text in two methods (or in two parts of a `--jobs=N` split build) is the
+same object, an adjacent-literal fold (`"ab" "c"`) is the object the plain
+`"abc"` is, and a literal in a loop yields one object on every pass. An
+interpolated string (`"#{x}"`) is built anew each time, in CRuby too.
+
+What still differs is the run-time intern table behind `String#-@` /
+`dedup`. CRuby puts every frozen literal in it when the code is loaded, so
+`-("ab" + "c")` returns the literal `"abc"` itself. Spinel's table holds
+only what `-@` / `dedup` has been called on: two run-time strings dedup to
+one object, and `-"abc"` returns the literal when the literal is the first
+of its content to be deduped, but a run-time string deduped before that is
+not the literal (`(-("ab" + "c")).equal?("abc")` is `false`), and the
+literal's own `-@` then returns that earlier object. `str.dup.freeze` is
+never deduplicated, in CRuby either.
+
+`Symbol#to_s` and `#id2name` answer a new String on every call in CRuby, so
+`:abc.to_s.equal?(:abc.to_s)` is `false`. Spinel keeps one chilled String per
+symbol and answers it each time, so that is `true`. The value is the same,
+and so is every mutation: the String is chilled, so `s = :abc.to_s; t = +s`
+copies, and `s << "x"` makes `s` its own String and leaves the next `to_s`
+alone (`:abc.to_s` is still `"abc"`). Only the identity of two `to_s` results
+differs; a new String per call would cost an allocation at every symbol read,
+which programs that build names from symbols do in loops.
 
 **Aliased in-place mutation is observed.** A mutable string (from
 `String.new`, `+"lit"`, interpolation, or `dup`) that is both aliased and mutated in
@@ -1205,15 +1268,14 @@ an explicit unique key (an Integer id, a Symbol) instead.
 
 #### `String#equal?` and literal identity
 
-`equal?` on strings is pointer identity. Each literal OCCURRENCE compiles
-to its own frozen static object (see the identity note under the
-frozen-string-literal section): `"x".equal?("x")` is `false`, and
-re-evaluating one occurrence (a literal in a loop) yields the same object.
-Both facets are implementation-defined under `frozen_string_literal`
-semantics and programs should not depend on them. Everything else about
-identity is truthful: `s.freeze.equal?(s)` is `true` (freeze marks in
-place), aliasing compares equal, `-lit` dedups interned content to one
-object, and distinct-valued strings compare `false`.
+`equal?` on strings is pointer identity. Equal frozen literals are one
+object, as in CRuby (see the identity note under the frozen-string-literal
+section): `"x".equal?("x")` is `true`, and re-evaluating a literal (one in
+a loop) yields the same object. Everything else about identity is
+truthful: `s.freeze.equal?(s)` is `true` (freeze marks in place), aliasing
+compares equal, `-str` dedups interned content to one object (but not
+always to the literal of that content, as noted there), and
+distinct-valued strings compare `false`.
 
 #### `defined?`
 

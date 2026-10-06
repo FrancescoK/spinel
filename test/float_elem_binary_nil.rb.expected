@@ -1,0 +1,13 @@
+5.0
+NoMethodError: undefined method '+' for nil
+2.0
+TypeError: nil can't be coerced into Float
+0.0
+NoMethodError: undefined method '-' for nil
+2.1333333333333333
+TypeError: nil can't be coerced into Integer
+[1.75, 2.25]
+4.0
+NoMethodError: undefined method '+' for nil
+TypeError: nil can't be coerced into Float
+TypeError: nil can't be coerced into Integer

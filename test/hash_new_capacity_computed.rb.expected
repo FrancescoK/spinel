@@ -1,0 +1,35 @@
+nil
+{a: 1}
+nil
+7
+nil
+nil
+{1 => 1}
+{2 => 2}
+"abab"
+cap 1
+{a: 1}
+nil
+cap 2
+nil
+dflt
+cap 3
+0
+cap 4
+"abab"
+cap 5
+{}
+cap 6
+{1 => 2}
+cap 7
+{"s" => 1.5}
+cap 8.5
+nil
+cap 9
+cap nil
+"no implicit conversion from nil to integer"
+cap "x"
+"no implicit conversion of String into Integer"
+cap :s
+"no implicit conversion of Symbol into Integer"
+12

@@ -25,8 +25,8 @@ p w.string
 StringIO.new("añ€").each_char { |c| p c }
 
 def first_char(io) = io.getc
-File.write("/tmp/spinel_stringio_multibyte_chars.txt", "é!")
-File.open("/tmp/spinel_stringio_multibyte_chars.txt") { |f| p first_char(f) }
+File.write("/tmp/spinel_stringio_multibyte_chars_#{Process.pid}.txt", "é!")
+File.open("/tmp/spinel_stringio_multibyte_chars_#{Process.pid}.txt") { |f| p first_char(f) }
 p first_char(StringIO.new("ü?"))
 
 # invalid UTF-8 (overlong, surrogate, past U+10FFFF) is read a byte at a time

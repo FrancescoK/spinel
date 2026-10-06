@@ -1,0 +1,3 @@
+["a", nil]
+["c", "first"]
+[ArgumentError, "circular causes", nil, nil]

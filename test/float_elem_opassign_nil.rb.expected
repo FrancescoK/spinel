@@ -1,0 +1,23 @@
+[3.5, 4.5]
+[4.5, 5.5]
+NoMethodError: +
+NoMethodError: +
+NoMethodError: *
+NoMethodError: %
+NoMethodError: **
+NoMethodError: /
+NoMethodError: +
+NoMethodError: +
+NoMethodError: +
+NoMethodError: +
+NoMethodError: +
+[0, 1, 2]
+[1.5, 3.5]
+[2.5, 3.5]
+NoMethodError: +
+[3.0, 5.0]
+NoMethodError: *
+[0.5, 1.5]
+NoMethodError: -
+NoMethodError: +
+FrozenError

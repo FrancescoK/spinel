@@ -6,8 +6,9 @@
 #    concat dropped the tail silently. (b) The src-array length
 #    was queried inside the push loop; when an arg aliased the
 #    receiver (`a.concat(a)`) every push grew the source and
-#    the loop never terminated. Fix: snapshot each arg's length
-#    before its inner loop, then iterate every arg.
+#    the loop never terminated. Fix: snapshot every arg's length
+#    before any is appended, then iterate every arg (CRuby
+#    appends the arguments as they were: [1,2] + [1,2] + [1,2]).
 #
 # 2. `/\#{re}/` -- regex compiler entered an infinite loop. The
 #    sequence `\#` lowered to literal `#`, then `{re}` arrived
@@ -42,7 +43,7 @@
 # Repro 1: self-concat with self twice.
 a = [1, 2]
 a.concat(a, a)
-puts a.length      # 8 -- [1,2] + [1,2] + [1,2,1,2]
+puts a.length      # 6 -- [1,2] + [1,2] + [1,2]
 
 # Repro 2: regex with literal `\#{re}` characters.
 re = /foo|bar/

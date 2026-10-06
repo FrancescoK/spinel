@@ -1,0 +1,11 @@
+1970
+D3%Y
+S9
+1971-01
+D1%Y-%m
+S2
+["01", "D1%m", "S2"]
+1970
+D5%Y
+NoMethodError: undefined method 'strftime' for nil
+NoMethodError: undefined method 'strftime' for an instance of Integer

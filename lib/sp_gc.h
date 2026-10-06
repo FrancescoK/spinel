@@ -36,6 +36,8 @@
 /* a compiled Regexp: malloc-owned (never GC heap), so like FOREIGN_PTR the
    collector must not trace it */
 #define SP_BUILTIN_REGEX       (-33)
+/* ARGF: the one static sp_argf_obj, never GC heap, so it is not traced */
+#define SP_BUILTIN_ARGF        (-51)
 /* Wide value types (heap-copied crossing into a poly slot). Shared here so
    lib/sp_marshal.c can recognize them by cls_id. */
 #define SP_BUILTIN_COMPLEX  (-26)
@@ -107,8 +109,11 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by
    the handle in front of it, which only sp_mark_string reaches, and the
    object walk skips the payload. The slot's C type is the one thing every
-   emitter agrees on, so the choice is made here rather than at each site. */
-#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, default: (uintptr_t)0)
+   emitter agrees on, so the choice is made here rather than at each site.
+   A local a rescue can write is `const char * volatile`, the one other
+   spelling of a String slot the compiler emits, and is a String all the
+   same. */
+#define _SP_GC_SLOT_TAG(v) _Generic(&(v), const char **: (uintptr_t)2, const char *volatile *: (uintptr_t)2, default: (uintptr_t)0)
 #define SP_GC_ROOT(v) int SP_CLEANUP(_sp_gc_root_pop) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | _SP_GC_SLOT_TAG(v)))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
    walker routes it through sp_mark_rbval (the object pointer sits in a union at
@@ -420,6 +425,10 @@ extern SP_TLS unsigned long sp_slab_frees;   /* this thread's explicit frees, co
 void  sp_slab_epoch_flip(void);          /* under the barrier: new allocations go to the other parity */
 void  sp_slab_runs_release(void);
 void  sp_slab_history(const void *p);    /* SPINEL_GC_VERIFY: print a slot's recorded events */
+/* SPINEL_GC_STRESS=2 (lib/sp_slab.c): what dies is poisoned and kept out of reuse */
+extern int sp_slab_quar_on;
+int   sp_slab_is_quarantined(const void *p);
+void  sp_slab_quarantine_trim(void);     /* under the barrier: a quarantine past its size is let go */
 extern int sp_gc_alloc_fast_ok;         /* sp_gc_alloc's lean front may run: drop to 0 to route every allocation through the full form */        /* under the barrier: the workers' claimed-not-allocated runs are unclaimed */
 typedef struct { size_t freed_obj, freed_str, freed_slots, slots, swept, kept_young, parked; } sp_slab_sweep_stats;   /* swept: finalizers run; parked: bytes of headers held by their pools */
 /* one worker's chunks: frees what the closed epoch holds unmarked (and,
@@ -536,6 +545,15 @@ void sp_fin_run_pending(void);
 #define SP_FIN_POLL() \
   do { if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending(); } while (0)
 void sp_oom_die(void);
+/* The instance variables of a builtin value (an Array, a Hash, a Random):
+   a map from the object to its ivar table, a GC object the TU makes
+   (sp_bivar_set in spinel_rt.h). The map does not keep the object alive;
+   the collector marks a table only while its object lives, and drops the
+   entry of an object it frees (lib/sp_gc.c). */
+void *sp_ivtbl_get(const void *obj);
+void sp_ivtbl_put(const void *obj, void *tbl);
+/* the TU's rendering of an ivar table, for Random#inspect (set with the first table) */
+extern const char *(*sp_ivtbl_inspect_fn)(void *tbl);
 
 /* ---- Embedder callbacks supplied by the generated TU ----
  * The collector cannot own the program's roots or string heap (they are
@@ -628,6 +646,11 @@ extern int (*sp_obj_conv_fn)(int cls_id, void *p, int which, sp_RbVal *out);
 /* Ruby class name for a user cls_id (the generated id->name table), so a
    runtime TU can word a TypeError the way CRuby does. */
 extern const char *(*sp_obj_cls_name_fn)(int cls_id);
+/* The user class of a builtin subclass instance boxed as its builtin (an
+   Array subclass instance boxed as its Array, #7449): the program's own
+   scan-function table names it, -1 for a plain one. NULL in a program with
+   no such class. */
+extern int (*sp_bsub_cls_fn)(sp_RbVal v);
 /* Is user class `sub` the class `super` or a descendant of it? The generated
    class bank installs it; NULL means only an exact id can be trusted. A
    pointer array of one class checks a stored object against it (#4486). */
@@ -675,7 +698,7 @@ static inline void sp_mark_rbval(sp_RbVal v) {
      strings and mark as nothing. */
   else if (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME) sp_mark_string(v.v.s);
   else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
-           v.cls_id != SP_BUILTIN_REGEX) sp_gc_mark(v.v.p);
+           v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) sp_gc_mark(v.v.p);
   else if (v.tag == SP_TAG_BIGINT) sp_gc_mark(v.v.p);
 }
 /* A scratch root: the proc calling convention's side channel keeps its last
@@ -687,7 +710,7 @@ static inline void sp_mark_rbval(sp_RbVal v) {
 static inline void sp_mark_rbval_scratch(sp_RbVal v) {
   const void *h = NULL;
   if (v.tag == SP_TAG_STR || (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME)) { if (v.v.s && ((unsigned char)v.v.s[-1] | 0x04) == 0xfe) h = ((const sp_str_hdr *)(v.v.s - 1)) - 1; }
-  else if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_REGEX) || v.tag == SP_TAG_BIGINT) { if (v.v.p) h = (const char *)v.v.p - sizeof(sp_gc_hdr); }
+  else if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) || v.tag == SP_TAG_BIGINT) { if (v.v.p) h = (const char *)v.v.p - sizeof(sp_gc_hdr); }
   if (h && sp_slab_owns(h) && !sp_slab_is_live(h)) return;
   sp_mark_rbval(v);
 }
@@ -697,6 +720,13 @@ static inline void sp_mark_rbval_scratch(sp_RbVal v) {
 static inline void sp_cell_scan_str(void *p) { sp_mark_string(*(const char **)p); }
 static inline void sp_cell_scan_ptr(void *p) { sp_gc_mark(*(void **)p); }
 static inline void sp_cell_scan_rbval(void *p) { sp_mark_rbval(*(sp_RbVal *)p); }
+/* A captured String range rides a cell of its own struct: both endpoints are
+   strings to mark (sp_box_srange's scan, for the cell). */
+static inline void sp_cell_scan_srange(void *p) {
+  sp_StrRange *r = (sp_StrRange *)p;
+  if (r->first) sp_mark_string(r->first);
+  if (r->last) sp_mark_string(r->last);
+}
 /* A captured Proc rides in an sp_int cell as (sp_int)(uintptr_t)ptr -- the cell
    is an integer slot, but what it holds is a collectable object, and without a
    scan the capture kept the CELL alive and nothing kept the proc. A nested

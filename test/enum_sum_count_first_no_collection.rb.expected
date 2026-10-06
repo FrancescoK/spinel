@@ -1,0 +1,40 @@
+-- Array
+sum: 6
+count: 3
+first: 3
+-- Hash
+sum: :skip
+count: 1
+first: [:a, 1]
+-- Range
+sum: 6
+count: 3
+first: 1
+-- Pt
+sum: 11
+count: 2
+first: 5
+-- Bag
+sum: 6
+count: 3
+first: 3
+-- Enumerator
+sum: 9
+count: 2
+first: 4
+-- Symbol
+sum: undefined method 'sum' for an instance of Symbol
+count: undefined method 'count' for an instance of Symbol
+first: undefined method 'first' for an instance of Symbol
+-- Nope
+sum: undefined method 'sum' for an instance of Nope
+count: undefined method 'count' for an instance of Nope
+first: undefined method 'first' for an instance of Nope
+-- NilClass
+sum: undefined method 'sum' for nil
+count: undefined method 'count' for nil
+first: undefined method 'first' for nil
+-- Integer
+sum: undefined method 'sum' for an instance of Integer
+count: undefined method 'count' for an instance of Integer
+first: undefined method 'first' for an instance of Integer

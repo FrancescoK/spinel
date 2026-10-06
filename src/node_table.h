@@ -295,6 +295,7 @@ void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val);
 void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val);
 void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child);
 void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n);
+int  nt_new_int(NodeTable *nt, long long v);                     /* a new IntegerNode */
 
 /* Accessors. id must be in [0, nt->count). Out-of-range ids return the
    given defaults so callers can walk freely without bounds checks. */
@@ -355,7 +356,6 @@ static inline const int *nt_arr(const NodeTable *nt, int id, const char *key, in
   return NULL;
 }
 const char *nt_content(const NodeTable *nt, int id);
-void nt_node_set_content(NodeTable *nt, int id, const char *val);       /* NULL */
 
 /* Generic child iteration (for structural walks that don't know field
    names). Ref fields and array-field elements are the node's children. */

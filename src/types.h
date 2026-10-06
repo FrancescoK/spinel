@@ -64,18 +64,22 @@ enum {
   PF_HASH   = 1 << 3,  /* TY_POLY_POLY_HASH */
   PF_INT    = 1 << 4,  /* TY_INT */
   PF_FLOAT  = 1 << 5,  /* TY_FLOAT: an owner beside Integer for the names both have (step) */
-  PF_OWNERS = 0x3f,
-  PF_MUT      = 1 << 8,  /* mutates the receiver: the result is written back through the box */
-  PF_STR_BANG = 1 << 9,  /* String value-form bang: re-enter the plain name, nil when unchanged */
-  PF_STR_SELF = 1 << 10, /* ... but a bang that answers self (succ!/next!): never nil */
-  PF_ARGS_OWN = 1 << 11, /* the arguments must be of the owner's own kind (concat) */
-  PF_VAL_SELF = 1 << 12, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
-  PF_SAME_OK  = 1 << 14, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
-  PF_LAST     = 1 << 13  /* answers only once no poly-receiver emitter of its own has claimed the name */
+  PF_RANGE  = 1 << 6,  /* TY_RANGE: an Integer Range (step / bsearch with a block) */
+  PF_FRANGE = 1 << 7,  /* TY_FLOAT_RANGE */
+  PF_SRANGE = 1 << 8,  /* TY_STR_RANGE */
+  PF_RANDOM = 1 << 9,  /* TY_RANDOM */
+  PF_OWNERS = 0x3ff,
+  PF_MUT      = 1 << 10,  /* mutates the receiver: the result is written back through the box */
+  PF_STR_BANG = 1 << 11, /* String value-form bang: re-enter the plain name, nil when unchanged */
+  PF_STR_SELF = 1 << 12, /* ... but a bang that answers self (succ!/next!): never nil */
+  PF_ARGS_OWN = 1 << 13, /* the arguments must be of the owner's own kind (concat) */
+  PF_VAL_SELF = 1 << 14, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
+  PF_SAME_OK  = 1 << 16, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
+  PF_LAST     = 1 << 15  /* answers only once no poly-receiver emitter of its own has claimed the name */
 };
 typedef struct {
   const char *name;
-  unsigned short flags;
+  unsigned flags;
   signed char argc_min, argc_max;  /* argc_max -1: any count */
   signed char blk;                 /* 1 block required, 0 none, -1 either */
 } PolyFace;
@@ -94,6 +98,14 @@ unsigned ty_poly_face_owner_flags(const char *name, int argc, int has_blk, int p
 /* Does the read-only Hash face answer `name` in some form? The face sites
    ask by name alone, before the call's shape is known. */
 int ty_poly_hash_face_name(const char *nm);
+/* A String value-form bang -- a PF_STR_BANG row of the face table, the one
+   list of them: its PF_STR_BANG and PF_STR_SELF flags, or 0 for any other
+   name. Its plain name is the bang without the '!' (str_bang_plain). */
+unsigned ty_str_bang_flags(const char *name);
+/* ty_str_bang_flags for a receiver known to be a String, which reverse!
+   joins */
+unsigned ty_str_typed_bang_flags(const char *name);
+void str_bang_plain(const char *bang, char *out, int n);
 
 typedef enum {
   TY_UNKNOWN = 0,  /* not yet inferred, or an unsupported construct */
@@ -174,11 +186,17 @@ static inline TyKind ty_poly_face_kind(unsigned owner) {
     case PF_HASH:   return TY_POLY_POLY_HASH;
     case PF_INT:    return TY_INT;
     case PF_FLOAT:  return TY_FLOAT;
+    case PF_RANGE:  return TY_RANGE;
+    case PF_FRANGE: return TY_FLOAT_RANGE;
+    case PF_SRANGE: return TY_STR_RANGE;
+    case PF_RANDOM: return TY_RANDOM;
   }
   return TY_UNKNOWN;
 }
 
 const char *ty_name(TyKind t);         /* legacy string tag, for diagnostics */
+int ty_builtin_ivar_less(TyKind t);    /* a builtin value that lays out no ivars */
+int ty_bivar_keyed(TyKind t);          /* ...whose ivars the runtime's map can hold */
 int ty_is_numeric(TyKind t);           /* INT or FLOAT */
 int ty_never_callable(TyKind t);       /* kind can never answer #call */
 TyKind ty_promote_numeric(TyKind a, TyKind b); /* fold-accumulator numeric promotion */
@@ -198,6 +216,10 @@ int fold_seed_typed(TyKind seed, TyKind elem);
    rule itself is written once and they cannot answer differently. */
 TyKind fold_seed_kind(TyKind resolved, const char *node_type);
 int ty_is_array(TyKind t);
+/* Array.new(x) copies x when x is an Array of one of these kinds, which have
+   a copy constructor of their own (sp_<K>Array_dup); any other argument is
+   the size form. Read by the inference and the emitter alike (#7449). */
+int array_new_copies(TyKind t);
 /* Set while the type fixpoint iterates; defined in analyze.c. Declared here
    because ty_array_of consults it -- see the TY_UNKNOWN case. */
 extern int g_infer_optimistic;
@@ -215,6 +237,12 @@ extern int g_fixpoint_rounds;
 
 TyKind ty_array_of(TyKind elem);       /* element type -> array kind */
 TyKind ty_array_elem(TyKind arr);      /* array kind -> element type */
+/* The type a builtin call answers on a receiver of kind `recv`, for the
+   builtins whose result follows the receiver (yield.first, yield.dup, ...);
+   0 when the pair is not one of them. The analyzer widens a diverging yield
+   only where every site's kind is answered here, and codegen types each
+   site's call from it, so the two sides read one table (see types.c). */
+int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind recv, TyKind *out);
 int ty_is_hash(TyKind t);
 /* Object's identity protocol on the native kinds (=== == != equal? eql?
    frozen? freeze, and on the IO family to_s and <=> as well), answered by
@@ -316,6 +344,44 @@ static inline const char *ty_ptr_array_elem_ctype(TyKind t) {
   if (t == TY_INT_ARRAY_ARRAY)   return "sp_IntArray";
   if (t == TY_FLOAT_ARRAY_ARRAY) return "sp_FloatArray";
   return 0;   /* types.h has no stddef.h; NULL is not in scope here */
+}
+
+/* ---- ty_traits: a builtin kind's spellings (R7, #7100) ----
+   One row per builtin TyKind, one column per spelling the compiler writes
+   for a value of that kind, each read off one existing function (named
+   beside it); where two functions spell the same thing differently, each
+   has its own column. A user object's kind (TY_OBJECT_BASE + class) has no
+   row: its spellings depend on its class. ty_traits_check.c compares every
+   cell with its function (spinel --check-traits). In the renderings, $e is
+   the expression and $t the first temp the form takes. */
+typedef struct {
+  const char *ctype;          /* c_type_name */
+  const char *zero;           /* default_value */
+  const char *zero_tail;      /* raise_tail_value: an untyped slot's dead value */
+  const char *nil;            /* nil_value */
+  const char *box;            /* ty_box_fn: emit_boxed, a value that is never nil */
+  const char *box_nil;        /* ty_box_nil_fn: emit_boxed, a slot that holds nil */
+  const char *box_text;       /* emit_boxed_text's rendering, or NULL: no box */
+  const char *box_id;         /* ty_nullable_builtin_id */
+  const char *hash_id;        /* hash_box_cls */
+  const char *unbox;          /* emit_unbox_text's rendering */
+  const char *unbox_nil;      /* emit_unbox_nilable_text's rendering */
+  const char *unbox_rhs;      /* poly_rhs_unbox_fn: emit_poly_rhs_coerced */
+  const char *unbox_sink;     /* poly_sink_unbox_fn: emit_typed_sink_text */
+  const char *unbox_token;    /* token_unbox_fmt: emit_unresolved_coerced */
+  const char *nil_test_local; /* local_nil_test for a slot with no flags, or NULL */
+  unsigned char null_is_nil;  /* ty_null_is_nil */
+  unsigned char needs_root;   /* needs_root */
+  unsigned char struct_valued;/* ty_is_struct_valued */
+  unsigned char scalar_ret;   /* is_scalar_ret */
+  unsigned char store_class;  /* repr_store_class (SC_*) */
+  unsigned char box_form;     /* the form --repr-check records for box_text (RF_*) */
+} TyTraits;
+#define TY_TRAITS_N ((int)TY_FLOAT_ARRAY_ARRAY + 1)
+extern const TyTraits ty_traits[TY_TRAITS_N];
+/* the row of builtin kind t, or NULL (a user object's kind) */
+static inline const TyTraits *ty_traits_of(TyKind t) {
+  return (int)t >= 0 && (int)t < TY_TRAITS_N ? &ty_traits[t] : (const TyTraits *)0;
 }
 
 #endif

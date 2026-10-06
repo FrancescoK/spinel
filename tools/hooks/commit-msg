@@ -1,0 +1,6 @@
+#!/bin/sh
+# Installed by `make hooks`. Adds the Gate: trailer when the stamp matches the
+# committed tree; a missing Ruby or a failure here never blocks the commit.
+r=${GATE_RUBY:-ruby}
+command -v "$r" >/dev/null 2>&1 || exit 0
+"$r" tools/gate.rb trailer "$1" || true

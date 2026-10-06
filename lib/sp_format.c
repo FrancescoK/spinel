@@ -1,12 +1,13 @@
 /* sp_format.c -- cold value-type display helpers (see sp_format.h).
    Self-contained: the shared value types (sp_types.h) + string allocator
-   (sp_alloc.h) + libc formatting only. */
+   (sp_alloc.h) + libc formatting, and sp_time.c's Time renderer. */
 #include "sp_format.h"
 #include "sp_alloc.h"   /* sp_str_alloc_raw, sp_raise_cls, <math.h> for cos/sin/sqrt */
 #include "sp_dtoa.h"    /* sp_format_float (locale-independent %g) */
 #include <stdio.h>
 #include <string.h>
-#include <time.h>       /* gmtime / strftime for sp_Time_inspect */
+#include "sp_time.h"   /* sp_time_inspect_v / sp_time_to_s_v */
+#include "sp_range.h"  /* sp_range_inspect */
 
 /* Format a non-negative Complex-component magnitude the way MRI does: infinite
    and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a
@@ -79,36 +80,18 @@ const char *sp_rational_to_s(sp_Rational r) {
   return o;
 }
 
-const char *sp_Range_inspect(sp_Range *r) {SP_GC_ROOT(r);
-  /* "first..last" / "first...last" form. Buffer sized for two int64s + dots. */
-  char *buf = sp_str_alloc_raw(48);
-  snprintf(buf, 48, r->excl ? "%lld...%lld" : "%lld..%lld", (long long)r->first, (long long)r->last);
-  return buf;
+/* A boxed Range renders as the typed one does: an open side is left out
+   ("..3", "1.."), where the sentinel printed as -9223372036854775808. */
+const char *sp_Range_inspect(sp_Range *r) {
+  return sp_range_inspect(*r);
 }
 
-/* "YYYY-MM-DD HH:MM:SS UTC" via gmtime: the spinel runtime keeps Time
-   timezone-naive, so UTC is the unambiguous choice that needs no tzdata. */
-static const char *sp_Time_fmt(sp_Time *t, int frac) {SP_GC_ROOT(t);
-  char *buf = sp_str_alloc_raw(48);
-  time_t sec = (time_t)t->tv_sec;
-  struct tm *tm_ = gmtime(&sec);
-  if (tm_) {
-    size_t n = strftime(buf, 48, "%Y-%m-%d %H:%M:%S", tm_);
-    if (frac && t->tv_nsec != 0) {
-      /* fractional seconds, trailing zeros trimmed (matches sp_time_inspect_v) */
-      n += (size_t)snprintf(buf + n, 48 - n, ".%09d", (int)t->tv_nsec);
-      while (buf[n - 1] == '0') buf[--n] = 0;
-    }
-    snprintf(buf + n, 48 - n, " UTC");
-  }
-  else {
-    snprintf(buf, 48, "Time(%lld)", (long long)t->tv_sec);
-  }
-  return buf;
-}
-/* Time#inspect renders fractional seconds; Time#to_s does not. */
-const char *sp_Time_inspect(sp_Time *t) {SP_GC_ROOT(t); return sp_Time_fmt(t, 1); }
-const char *sp_Time_to_s(sp_Time *t)    {SP_GC_ROOT(t); return sp_Time_fmt(t, 0); }
+/* A boxed Time renders as an unboxed one does (lib/sp_time.c): its own
+   zone kind and offset, the year in Ruby's form. A gmtime + strftime
+   rendering here called every Time UTC, and C's %Y left a year below 1000
+   unpadded on glibc. */
+const char *sp_Time_inspect(sp_Time *t) {SP_GC_ROOT(t); return sp_time_inspect_v(*t); }
+const char *sp_Time_to_s(sp_Time *t)    {SP_GC_ROOT(t); return sp_time_to_s_v(*t); }
 
 /* ---- Complex arithmetic ---- */
 /* Component-class (fl) propagation mirrors CRuby's numeric tower: add/sub act

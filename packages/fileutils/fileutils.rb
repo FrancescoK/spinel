@@ -199,6 +199,21 @@ module FileUtils
     nil
   end
 
+  # copy_file copies one file's contents to dest, which takes the source's
+  # mode when it is created; preserve also copies the times and the mode.
+  # Symbolic links are always followed.
+  def copy_file(src, dest, preserve = false, dereference = true)
+    st = File.stat(src.to_s)
+    File.open(src.to_s, "rb") do |s|
+      File.open(dest.to_s, "wb", st.mode) { |f| IO.copy_stream(s, f) }
+    end
+    if preserve
+      File.utime(st.atime, st.mtime, dest.to_s)
+      File.chmod(st.mode & 0o7777, dest.to_s)
+    end
+    nil
+  end
+
   def fu_dest_path(src, dest)
     Dir.exist?(dest) ? "#{dest}/#{File.basename(src)}" : dest
   end

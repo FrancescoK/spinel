@@ -1,0 +1,2 @@
+shim exec ["kubectl logs -f"]
+LOUD

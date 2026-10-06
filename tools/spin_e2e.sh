@@ -28,6 +28,49 @@ cd app
 
 expect "scaffold run" "Hello from app" "$("$SPIN" run 2>&1 | tail -1)"
 
+# --- the allocator is found where pkg-config says it is -------------------------
+# `[package] allocator` links as a bare -l<name>, which the linker looks for
+# only in its default directories; Homebrew's jemalloc on Apple Silicon lives
+# in /opt/homebrew/lib, outside them, and failed to link although installed.
+# spin puts pkg-config's -L directories on LIBRARY_PATH for the compile. A
+# stand-in library in a directory no linker searches, and a stand-in
+# pkg-config that knows it, make the case portable. The directory has a space
+# in its name, which pkg-config writes escaped ("lib\ dir"), and the build
+# inherits a LIBRARY_PATH with an apostrophe in it; neither may break the
+# lookup or the command it ends up in.
+mkdir -p "$WORK/alloc/lib dir" "$WORK/alloc/bin"
+printf 'int spin_e2e_fake_allocator;\n' > "$WORK/alloc/fake.c"
+${CC:-cc} -c "$WORK/alloc/fake.c" -o "$WORK/alloc/fake.o"
+ar rcs "$WORK/alloc/lib dir/libspine2efakealloc.a" "$WORK/alloc/fake.o"
+cat > "$WORK/alloc/bin/pkg-config" <<EOF
+#!/bin/sh
+[ "\$1 \$2" = "--libs-only-L spine2efakealloc" ] && { echo "-L$WORK/alloc/lib\\\\ dir"; exit 0; }
+exit 1
+EOF
+chmod +x "$WORK/alloc/bin/pkg-config"
+"$WORK/alloc/bin/pkg-config" --libs-only-L spine2efakealloc | grep -q 'lib\\ dir$' ||
+  fail "allocator: stand-in pkg-config does not escape the space"
+cp spin.toml spin.toml.orig
+printf '\n[package]\nallocator = "spine2efakealloc"\n' >> spin.toml
+"$SPIN" clean >/dev/null
+if env -u LIBRARY_PATH "$SPIN" build >/dev/null 2>&1; then
+  fail "allocator: linked a library nothing says where to find"
+fi
+PATH="$WORK/alloc/bin:$PATH" LIBRARY_PATH="$WORK/alloc/it's elsewhere" "$SPIN" build >/dev/null 2>&1 ||
+  fail "allocator: not found in the directory pkg-config reports"
+expect "allocator run" "Hello from app" "$(./build/bin/app 2>&1 | tail -1)"
+# Not a library name: refused before anything reaches a shell.
+mv spin.toml.orig spin.toml
+cp spin.toml spin.toml.orig
+printf '\n[package]\nallocator = "x; touch %s/alloc/ran #"\n' "$WORK" >> spin.toml
+if PATH="$WORK/alloc/bin:$PATH" "$SPIN" build >"$WORK/alloc/bad.out" 2>&1; then
+  fail "allocator: built with an allocator that is not a library name"
+fi
+grep -q 'is not a library name' "$WORK/alloc/bad.out" || fail "allocator: no message for a non-name allocator"
+[ ! -e "$WORK/alloc/ran" ] || fail "allocator: a non-name allocator reached a shell"
+mv spin.toml.orig spin.toml
+"$SPIN" clean >/dev/null
+
 # --- `--` with no target ahead of it names every target, not `--` itself --------
 # `spin build -- --profile` passes a compiler flag and names no target. The
 # flag has to reach the compiler and every bin has to build; naming `--` as the
@@ -160,6 +203,46 @@ case "$OUT" in
 esac
 expect "test via an empty PATH component" "1/1 passed" "$(echo "$OUT" | tail -1)"
 cd "$WORK/app"; rm -rf "$WORK/stale" "$WORK/decoy"
+
+# A runtime archive can change while bin/spinel and every Ruby input stay
+# untouched. Use a private toolchain copy: changing a shared install's mtimes
+# would race with the other gate legs. Only the selected archive is newer
+# than each backdated application/test binary.
+for layout in checkout installed; do
+cd "$WORK"
+"$SPIN" new runtime_stale >/dev/null
+cd runtime_stale
+printf 'puts "runtime test"\n' > test/runtime_test.rb
+DEPS=$("$SPIN" flags --deps)
+COMPILER=${DEPS%% *}
+TOOLCHAIN=$(dirname "$COMPILER")
+[ -f "$TOOLCHAIN/lib/libspinel_rt.a" ] || TOOLCHAIN=$(dirname "$TOOLCHAIN")
+PRIVATE_BIN="$WORK/runtime-toolchain"
+[ "$layout" = installed ] || PRIVATE_BIN="$PRIVATE_BIN/bin"
+mkdir -p "$PRIVATE_BIN"
+cp "$SPIN" "$PRIVATE_BIN/spin"
+cp "$COMPILER" "$PRIVATE_BIN/spinel"
+cp -R "$TOOLCHAIN/lib" "$WORK/runtime-toolchain/lib"
+cp -R "$TOOLCHAIN/builtins" "$WORK/runtime-toolchain/builtins"
+ISOLATED="$PRIVATE_BIN/spin"
+find "$WORK/runtime-toolchain" -type f -exec touch -t 200001010000 {} +
+"$ISOLATED" build >/dev/null 2>&1 || fail "runtime freshness: initial build"
+"$ISOLATED" test --regen >/dev/null 2>&1 || fail "runtime freshness: initial test"
+find . -path ./build -prune -o -type f -exec touch -t 200001010000 {} +
+for archive in libspinel_rt.a libspinel_rt_mt.a; do
+  touch -t 200001010000 "$WORK/runtime-toolchain/lib/"libspinel_rt*.a
+  touch -t 200001010001 build/bin/runtime_stale
+  touch -t 200001010002 "$WORK/runtime-toolchain/lib/$archive"
+  OUT=$("$ISOLATED" build 2>&1) || fail "runtime freshness: build after $archive"
+  case "$OUT" in *"(up to date)"*) fail "build reused a binary older than $archive" ;; esac
+  expect "runtime freshness: rebuilt answer" "Hello from runtime_stale" "$(build/bin/runtime_stale)"
+  find build/test -type f ! -name '*.expected' -exec touch -t 200001010001 {} +
+  OUT=$("$ISOLATED" test 2>&1) || fail "runtime freshness: test after $archive"
+  case "$OUT" in *"(cached)"*) fail "test reused a binary older than $archive" ;; esac
+done
+cd "$WORK/app"
+rm -rf "$WORK/runtime_stale" "$WORK/runtime-toolchain"
+done
 
 # a build that FAILS must not be reported ok by the run phase: a failed compile
 # leaves the previous binary where it was, and File.exist? read that as "it

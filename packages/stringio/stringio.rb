@@ -49,6 +49,7 @@ module StringIOPackage
   native_method :flush,    [], :self,    "sp_StringIO_flush"
   native_method :read,     [], :string,  "sp_StringIO_read"
   native_method :read,     [:int], :string, "sp_StringIO_read_n"
+  native_method :read,     [:rest], :string, "sp_StringIO_read_va"
   native_method :gets,     [], :string?, "sp_StringIO_gets"
   native_method :gets,     [:string], :string?, "sp_StringIO_gets_sep"
   # the separator, the limit and `chomp:` (a keyword Hash boxes as the last

@@ -5,7 +5,7 @@
 # as a File, and one that is an IO -- a standard stream, IO.for_fd, a pipe
 # end -- raises CRuby's NoMethodError, whatever path it carries. The typed
 # receiver and the other owners of the names keep their emitters.
-path = "/tmp/sp_file_poly_size_truncate.txt"
+path = "/tmp/sp_file_poly_size_truncate_#{Process.pid}.txt"
 File.write(path, "hello world")
 
 # typed

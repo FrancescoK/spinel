@@ -1,0 +1,17 @@
+"ab\nc"
+"d\nef"
+"ab"
+"cd"
+"ef"
+"ab\ncd\nef"
+"ab"
+"cd"
+"ef"
+["ab", "\ncd\nef"]
+["ab", "cd", "ef"]
+["ab\nc", "\nef"]
+8
+["ab\n", "cd\n", "ef"]
+undefined method 'each_line' for an instance of Integer
+["ab\n", "cd\n", "ef"]
+["ab\nc", "d\nef"]

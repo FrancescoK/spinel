@@ -73,6 +73,9 @@ extern SP_TLS sp_Fiber *sp_fiber_current;
    the single-threaded build the root is a shared static and these are inert. */
 void      sp_fiber_worker_init(void);
 sp_Fiber *sp_fiber_worker_root(void);
+/* Switch from a green thread back to the fiber that ran it, without the
+   checks Fiber#transfer makes (that fiber may be one the main thread resumed). */
+void      sp_fiber_sched_switch(sp_Fiber *f);
 /* Publish the running worker's shadow-stack roots into its current green thread
    (for a stop-the-world collector to mark while the worker is parked). */
 void      sp_fiber_publish_current_roots(void);
@@ -87,12 +90,17 @@ sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
 sp_RbVal sp_Fiber_yield(sp_RbVal val);
 unsigned sp_thread_owner_id(void);   /* lib/sp_sched.c */
 sp_Fiber *sp_thread_main_fiber(void);   /* lib/sp_sched.c */
+/* The fiber a green thread switches back to: the one that ran it on this
+   worker, else the worker's root. */
+sp_Fiber *sp_sched_home_fiber(void);   /* lib/sp_sched.c */
 sp_RbVal sp_Fiber_resume_n(sp_Fiber *f, sp_RbVal val, int argc);
 sp_RbVal sp_Fiber_transfer_n(sp_Fiber *f, sp_RbVal val, int argc);
 sp_RbVal sp_Fiber_transfer(sp_Fiber *f, sp_RbVal val);
 /* Like sp_Fiber_transfer, but captures f's unhandled termination exception into
-   the out-params (for the thread scheduler) instead of re-raising it. */
-sp_RbVal sp_Fiber_transfer_catch(sp_Fiber *f, sp_RbVal val, int *out_raised,
+   the out-params (for the thread scheduler) instead of re-raising it. When
+   f's thread stopped inside a Fiber it resumed, `at` is that fiber and the
+   switch goes there (NULL: to f). */
+sp_RbVal sp_Fiber_transfer_catch(sp_Fiber *f, sp_Fiber *at, sp_RbVal val, int *out_raised,
                                  const char **out_cls, const char **out_msg, void **out_obj);
 /* Fiber#raise: inject an exception at the fiber's suspension point (or at entry
    for an unstarted fiber). cls/msg describe a class+message; obj, when non-NULL,

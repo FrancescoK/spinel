@@ -1,0 +1,10 @@
+1
+"cannot store String into @x, which Spinel typed Integer"
+"cannot store Float into @x, which Spinel typed Integer"
+"cannot store Symbol into @x, which Spinel typed Integer"
+nil
+nil
+2.5
+"cannot store Integer into @f, which Spinel typed Float"
+"s"
+"cannot store Symbol into @s, which Spinel typed String"

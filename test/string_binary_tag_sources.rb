@@ -10,15 +10,15 @@
 # `Random.bytes(8).length` was under 8 whenever the draw happened to be valid
 # UTF-8 -- about three times in a thousand.
 
-File.write("/tmp/_sp_enc_test.bin", "abc")
+File.write("/tmp/_sp_enc_test_#{Process.pid}.bin", "abc")
 
 # the ones that ask for bytes
 puts [65].pack("C").encoding.to_s
 puts "abc".b.encoding.to_s
 puts Marshal.dump(1).encoding.to_s
 puts Random.bytes(4).encoding.to_s
-puts File.binread("/tmp/_sp_enc_test.bin").encoding.to_s
-puts IO.binread("/tmp/_sp_enc_test.bin").encoding.to_s
+puts File.binread("/tmp/_sp_enc_test_#{Process.pid}.bin").encoding.to_s
+puts IO.binread("/tmp/_sp_enc_test_#{Process.pid}.bin").encoding.to_s
 puts "abc".unpack("a*")[0].encoding.to_s
 puts "abc".unpack("A*")[0].encoding.to_s
 puts "abc".unpack("Z*")[0].encoding.to_s
@@ -27,7 +27,7 @@ puts "abc".dup.force_encoding(Encoding::BINARY).encoding.to_s
 puts "abc".dup.force_encoding(Encoding::ASCII_8BIT).encoding.to_s
 
 # the ones that do not
-puts File.read("/tmp/_sp_enc_test.bin").encoding.to_s
+puts File.read("/tmp/_sp_enc_test_#{Process.pid}.bin").encoding.to_s
 puts "abc".encoding.to_s
 puts "abc".upcase.encoding.to_s
 puts [65].pack("C").dup.force_encoding("UTF-8").encoding.to_s
@@ -43,7 +43,7 @@ bad = 0
 p bad
 m = Marshal.dump([1, 2, 3])
 p m.length == m.bytesize
-b = File.binread("/tmp/_sp_enc_test.bin")
+b = File.binread("/tmp/_sp_enc_test_#{Process.pid}.bin")
 p b.length
 
 # a String reached through a poly array answers #encoding: the poly dispatch

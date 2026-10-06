@@ -1,0 +1,5 @@
+#<TypeError: no implicit conversion of nil into Hash>
+#<TypeError: no implicit conversion of true into Hash>
+#<TypeError: no implicit conversion of false into Hash>
+#<TypeError: no implicit conversion of Integer into Hash>
+#<TypeError: no implicit conversion of String into Hash>

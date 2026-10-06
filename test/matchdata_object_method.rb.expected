@@ -1,0 +1,13 @@
+nil
+"<nil>"
+#<MatchData "b" 1:"b">
+"b"
+[#<MatchData "b" 1:"b">, 1]
+"<#<MatchData \"b\" 1:\"b\">>"
+#<MatchData "y">
+MatchData
+[#<MatchData "y">, :k]
+#<MatchData "1">
+"<#<MatchData \"1\">>"
+#<MatchData "7">
+nil

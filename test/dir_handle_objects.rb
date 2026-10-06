@@ -1,6 +1,10 @@
 # Dir.new/Dir.open handles: #read/#each/#each_child/#children/#entries/
 # #path/#rewind/#close, the block form, and Errno::ENOENT on a missing path.
-dir = "/tmp/sp_dirh"
+# made in a scratch directory of this process's own, named relative to it
+scratch = "/tmp/sp_dirh_#{Process.pid}"
+Dir.mkdir(scratch) unless Dir.exist?(scratch)
+Dir.chdir(scratch)
+dir = "sp_dirh"
 Dir.mkdir(dir) unless Dir.exist?(dir)
 File.write("#{dir}/x", "")
 File.write("#{dir}/y", "")
@@ -25,4 +29,6 @@ p d2.entries.sort
 d2.close
 File.delete("#{dir}/x", "#{dir}/y")
 Dir.rmdir(dir)
+Dir.chdir("/")
+Dir.rmdir(scratch)
 puts "done"

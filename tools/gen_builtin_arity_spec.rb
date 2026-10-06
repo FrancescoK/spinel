@@ -1,12 +1,17 @@
 #!/usr/bin/env ruby
 
-# Generate the positional-arity spec tables in src/codegen_call.c
-# (sp_builtin_arity_spec_tbl and sp_builtin_cmeth_arity_spec_tbl) by probing
-# the local CRuby:
+# Generate shared builtin arity facts in src/builtin_arity.inc from local
+# CRuby. Method#arity is read directly; positional counts are probed.
+# codegen_call.c projects the two independent facts into its three tables.
 #
-#   ruby tools/gen_builtin_arity_spec.rb            # print both tables
-#   ruby tools/gen_builtin_arity_spec.rb --write    # splice them into
-#                                                   # src/codegen_call.c
+#   ruby tools/gen_builtin_arity_spec.rb            # print the shared rows
+#   ruby tools/gen_builtin_arity_spec.rb --write    # regenerate the rows
+#   ruby tools/gen_builtin_arity_spec.rb --check    # fail when the source
+#                                                   # differs (make arity-spec-check)
+#
+# The builtin-op rows' argc_min/argc_max (builtin_ops.c) are checked against
+# the instance spec table, and the Method#arity table against it too, by
+# `spinel --check-bop-arity` (make bop-arity-check-test, in the gate).
 #
 # Probing technique, per (class, method):
 #
@@ -48,9 +53,11 @@ require "strscan"
 require "pathname"
 
 Warning[:deprecated] = false  # probing deprecated arg shapes is the point
+$VERBOSE = nil                # and unused blocks, superseded defaults (warn is
+                              # silent from here: report with $stderr.puts)
 
 ROOT = File.expand_path("..", __dir__)
-SOURCE = File.join(ROOT, "src/codegen_call.c")
+SOURCE = File.join(ROOT, "src/builtin_arity.inc")
 
 # Non-empty receivers (see note above), built FRESH per probe: a shared
 # receiver is mutated by the probes themselves (StringIO#reopen left every
@@ -119,7 +126,9 @@ INSTANCE_METHOD_SKIP = %w[
 # each segfault CRuby 4.0.6 itself when probed; both stay off the surface.
 # A class's own reader of its in-memory stream is safe to probe, though the
 # names are skipped everywhere else (Kernel#gets reads stdin).
-PROBE_ANYWAY = { "StringIO" => %w[gets readline] }
+PROBE_ANYWAY = { "StringIO" => %w[gets readline], "Mutex" => %w[sleep] }
+# (Mutex#sleep on the unlocked probe mutex raises ThreadError before it
+# waits, for every count it accepts.)
 
 # Class/module methods: the constructors and module functions whose emitters
 # index argv[] unconditionally (File.open with no arguments crashed the
@@ -152,7 +161,7 @@ CLASS_TARGETS = {
   "Math"    => %w[sqrt cbrt sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh
                   atanh log log2 log10 exp hypot ldexp frexp erf erfc gamma lgamma],
   "Process" => %w[getpriority setpriority getsid kill clock_gettime clock_getres pid ppid
-                  uid gid euid egid setproctitle times spawn waitpid2],
+                  uid gid euid egid setproctitle times spawn waitpid2 wait2 wait waitpid],
   "Regexp"  => %w[new escape quote union],
   "Random"  => %w[new rand srand],
   "ENV"     => %w[fetch key? has_key? include? member? assoc rassoc values_at],
@@ -255,19 +264,6 @@ def full_spec_of(recv, m)
   [*(bare || NO_SPEC), *(blk || NO_SPEC)]
 end
 
-def render_table(name, header, entries)
-  out = +""
-  header.each_line { |l| out << l }
-  out << "static const SpAritySpec\n#{name}[] = {\n"
-  entries.each do |c, m, mn, mx, lo, hi, bmn, bmx, blo, bhi|
-    q = ->(s) { s ? "\"#{s}\"" : "NULL" }
-    out << %Q[  {"#{c}","#{m}",#{mn},#{mx},#{q.(lo)},#{q.(hi)},#{bmn},#{bmx},#{q.(blo)},#{q.(bhi)}},\n]
-  end
-  out << "  {NULL, NULL, 0, 0, NULL, NULL, 0, 0, NULL, NULL}\n};\n"
-  out
-end
-
-src = File.read(SOURCE)
 ver = RUBY_DESCRIPTION.split(" (").first
 
 # Probe inside a throwaway directory: the Pathname receiver is the relative
@@ -296,22 +292,27 @@ INSTANCE_RECEIVERS.each do |cls, thunk|
   end
   FORWARDING.fetch(cls, []).each { |m| inst << [cls, m, *NO_SPEC, *NO_SPEC] }
 end
-# one TyKind stands for Queue and SizedQueue both: keep the rows they agree on
-sized = inst.select { |r| r[0] == "SizedQueue" }.map { |r| r[1..] }
-inst.reject! { |r| r[0] == "SizedQueue" || (r[0] == "Queue" && !sized.include?(r[1..])) }
-
-inst_hdr = <<~C
-  /* Positional-arity spec for the builtin instance surface, probed from
-     #{ver} by tools/gen_builtin_arity_spec.rb (see there for the
-     technique; rerun it with --write to regenerate both tables). max -1 =
-     no upper bound; a NULL exp = that side is never violated. The first
-     quartet describes the bare call, the blk_ quartet the block-carrying
-     call (several counts change under a block: Array#fill 1..3 vs 0..2,
-     Integer#step); a quartet the probe could not prove, or a name whose
-     counts are its target's (Proc#call, Enumerator#each), is
-     -1,-1,NULL,NULL and never fires. */
-C
-inst_out = render_table("sp_builtin_arity_spec_tbl", inst_hdr, inst)
+# one TyKind stands for Queue and SizedQueue both: keep the rows they agree
+# on, and where SizedQueue's counts take in Queue's (push's non_block flag:
+# 1 against 1..2), SizedQueue's row, which fires only for a count neither
+# class takes
+def spec_covers(wide, narrow)
+  [0, 4].all? do |o|
+    wmin, wmax, nmin, nmax = wide[o], wide[o + 1], narrow[o], narrow[o + 1]
+    next wmin < 0 if nmin < 0
+    wmin >= 0 && wmin <= nmin && (wmax < 0 || (nmax >= 0 && nmax <= wmax))
+  end
+end
+sized = inst.select { |r| r[0] == "SizedQueue" }.to_h { |r| [r[1], r[2..]] }
+inst.reject! { |r| r[0] == "SizedQueue" }
+inst.map! do |r|
+  next r unless r[0] == "Queue"
+  s = sized[r[1]]
+  next nil unless s
+  next r if s == r[2..]
+  spec_covers(s, r[2..]) ? ["Queue", r[1], *s] : nil
+end
+inst.compact!
 
 CLASS_CONSTANTS = {
   "StructClass" => Struct.new(:a), "DataClass" => Data.define(:a),
@@ -325,40 +326,65 @@ CLASS_TARGETS.each do |cls, meths|
     cm << [cls, m, *s] if s
   end
 end
-cm_hdr = <<~C
-  /* Class/module-method positional arity, probed from #{ver} the same
-     way as the instance table above (tools/gen_builtin_arity_spec.rb): the
-     constructors and module functions whose emitters index argv[]
-     unconditionally (File.open with no arguments was a compile-time
-     SIGSEGV), the surface of the constants a program names bare -- GC,
-     Fiber, Thread, a class Struct.new or Data.define answered, keyed
-     StructClass and DataClass -- and the Kernel functions a bare call
-     reaches. */
-C
-cm_out = render_table("sp_builtin_cmeth_arity_spec_tbl", cm_hdr, cm)
+# Method#arity of each class's OWN public instance methods, read straight off
+# CRuby rather than probed (a C method that counts its own arguments reads
+# -1 here; the spec tables above hold what it accepts), plus the Kernel
+# functions the receiverless `method(:name)` wrapper binds under "Kernel".
+ARITY_CLASSES = %w[String Integer Float Array Hash Symbol Range Time]
+ARITY_KERNEL = %w[String Integer Float Array Rational Complex puts print p pp]
 
-Dir.chdir("/")   # leave the probe dir so it can be removed
-FileUtils.remove_entry(PROBE_DIR) rescue nil
-
-if ARGV.include?("--write")
-  wrote = []
-  { "instance" => [/\/\* Positional-arity spec for the builtin instance surface.*?\nsp_builtin_arity_spec_tbl\[\] = \{.*?\n\};\n/m, inst_out, inst.length],
-    "class-method" => [/\/\* Class\/module-method positional arity.*?\nsp_builtin_cmeth_arity_spec_tbl\[\] = \{.*?\n\};\n/m, cm_out, cm.length],
-  }.each do |label, (pat, replacement, count)|
-    old = src[pat]
-    if old
-      src = src.sub(old, replacement)
-      wrote << "#{count} #{label}"
-    else
-      warn "note: no existing #{label} spec table in #{SOURCE}; skipped"
-    end
+# read in a fresh interpreter with no gems: the libraries this probe loads
+# add methods of their own (csv's String#parse_csv, time's Time#httpdate)
+require "rbconfig"
+arity_src = <<~RUBY
+  #{ARITY_CLASSES.inspect}.each do |cls|
+    k = Object.const_get(cls)
+    k.public_instance_methods(false).sort.each { |m| puts [cls, m, k.instance_method(m).arity].join("\\t") }
   end
-  abort "no spec tables found in #{SOURCE}" if wrote.empty?
-  File.write(SOURCE, src)
-  warn "wrote #{wrote.join(" + ")} entries into #{SOURCE}"
+  #{ARITY_KERNEL.inspect}.each { |m| puts ["Kernel", m, Kernel.instance_method(m).arity].join("\\t") }
+RUBY
+arity_all = IO.popen([RbConfig.ruby, "--disable-gems", "-e", arity_src], &:read)
+                .lines.map { |l| c, m, a = l.chomp.split("\t"); [c, m, a.to_i] }
+abort "Method#arity dump failed" unless $?.success? && !arity_all.empty?
+kernel_arity, arity = arity_all.partition { |r| r[0] == "Kernel" }
+# Keep both facts where available; introspection is not an acceptance rule.
+# Retain Method#arity order, including the receiverless Kernel wrappers.
+counts = inst.to_h { |r| [r[0, 2], r[2..]] }
+out = <<~C
+  /* Builtin arity facts generated by tools/gen_builtin_arity_spec.rb from #{ver}.
+     Method#arity and accepted positional counts are independent facts.
+     BAI carries both, BAM only Method#arity, BAS only instance counts,
+     and BAC class/module counts. -1 maxima are unbounded; NULL messages
+     and unproved -1 minima never reject a call. Block counts are separate.
+     Kernel Method#arity describes receiverless method(:name) wrappers. */
+C
+render = ->(tag, values) do
+  fields = values.map { |v| v.nil? ? "NULL" : v.is_a?(String) ? v.dump : v.to_s }
+  out << "#{tag}(#{fields.join(",")})\n"
+end
+(arity + kernel_arity).each do |r|
+  spec = counts.delete(r[0, 2])
+  render.(spec ? "BAI" : "BAM", spec ? r + spec : r)
+end
+inst.each { |r| render.("BAS", r) if counts.key?(r[0, 2]) }
+cm.each { |r| render.("BAC", r) }
+summary = "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
+if ARGV.include?("--check")
+  if File.read(SOURCE) == out
+    $stderr.puts "arity facts match #{ver}: #{summary}"
+    exit 0
+  end
+  require "tempfile"
+  Tempfile.create("arity") do |f|
+    f.write(out)
+    f.flush
+    system("diff", "-u", "--label", "src/builtin_arity.inc", "--label", "regenerated", SOURCE, f.path)
+  end
+  abort "arity facts drifted from #{ver}: rerun tools/gen_builtin_arity_spec.rb --write"
+elsif ARGV.include?("--write")
+  File.write(SOURCE, out)
+  $stderr.puts "wrote #{summary} into #{SOURCE}"
 else
-  puts inst_out
-  puts
-  puts cm_out
-  warn "#{inst.length} instance + #{cm.length} class-method entries"
+  puts out
+  $stderr.puts summary
 end

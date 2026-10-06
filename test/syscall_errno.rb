@@ -7,11 +7,13 @@
 
 require "pathname"
 
+# The scratch paths carry the process id, so that two runs at once do not
+# share them; the lines printed name them without it.
 def try(label)
   r = yield
-  puts "#{label} => #{r.inspect}"
+  puts "#{label} => #{r.inspect.gsub("_#{Process.pid}", "")}"
 rescue SystemCallError, TypeError => e
-  puts "#{label}: #{e.class}: #{e.message}"
+  puts "#{label}: #{e.class}: #{e.message.gsub("_#{Process.pid}", "")}"
 end
 
 def second_path(base)
@@ -19,7 +21,7 @@ def second_path(base)
   "#{base}/also-missing"
 end
 
-base = "/tmp/sp_syscall_errno"
+base = "/tmp/sp_syscall_errno_#{Process.pid}"
 # a previous run that died midway leaves its files behind: clear them first
 Pathname.new(base).rmtree if Dir.exist?(base)
 Dir.mkdir(base)
@@ -98,7 +100,7 @@ puts "--- rescue shapes"
 begin
   Dir.rmdir(missing)
 rescue Errno::ENOENT => e
-  puts "Errno::ENOENT caught: #{e.message}"
+  puts "Errno::ENOENT caught: #{e.message.gsub("_#{Process.pid}", "")}"
 end
 begin
   File.delete(missing)

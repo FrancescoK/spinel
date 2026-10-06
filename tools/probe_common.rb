@@ -5,11 +5,12 @@
 #
 # A generator is a module answering FACTORS ([name, levels] pairs, the first
 # level of each its simplest), NAMES, SIMPLEST, GeneratorError, render(id, row) (a Case of the levels it realized, which render
-# back to the same program), covering_cases(t, seed, tries, only), cases(rows),
-# pinned_cases(rows, only), pins(spec),
+# back to the same program), covering_cases(t, seed, tries, only, also), cases(rows),
+# pinned_cases(rows, only), pins(spec), factor_list(spec),
 # random_rows(n, seed), program(cases) (each case's lines under a heading
 # `# case <id>:`), flags(cases) and shape(case), and
-# optionally diff_kind(want, got, case). A probe names, beside it, the lines CRuby
+# optionally diff_kind(want, got, case) and FIXED (factors a reduction never
+# steps). A probe names, beside it, the lines CRuby
 # prints when a generated program reads a name it does not define. Covering gives a generator all but render,
 # program, flags and shape from its FACTORS.
 #
@@ -21,8 +22,10 @@
 # which loses no buffered lines). When they show the failure, the others are
 # split in halves without them; else, and when no case is named, the program
 # is split in halves. A difference seen in a program is confirmed on
-# its case alone. A failure no single case carries (two cases that only fail
-# together) is kept as an `interaction`, with the program that showed it.
+# its case alone (unless --no-confirm takes it as the case's own: a run in
+# which many cases differ spends most of its time confirming them). A
+# failure no single case carries (two cases that only fail together) is
+# kept as an `interaction`, with the program that showed it.
 #
 # Each finding is then reduced: one factor at a time steps toward its
 # simplest level for as long as the case alone still makes the same kind of
@@ -141,11 +144,13 @@ module ProbeCommon
       rows.map { |r| self::NAMES.each_with_index.to_h { |f, i| [f, self::FACTORS[i][1][r[i]]] } }
     end
 
-    # Every `t`-way combination of levels, as the keys covering_array uses.
-    def all_tuples(t)
+    # Every `t`-way combination of levels, as the keys covering_array uses;
+    # with `sel`, only those of the factor tuples it numbers.
+    def all_tuples(t, sel = nil)
       sizes = self::FACTORS.map { |_, l| l.size }
       h = {}
       (0...self::FACTORS.size).to_a.combination(t).each_with_index do |tu, i|
+        next if sel && !sel.include?(i)
         tu.map { |f| (0...sizes[f]).to_a }.reduce([[]]) { |acc, ls| acc.product(ls).map { |a, l| a + [l] } }.each do |ls|
           h[key(i, ls)] = true
         end
@@ -153,14 +158,16 @@ module ProbeCommon
       h
     end
 
-    # The `t`-way combinations the realized levels of `cases` take.
-    def tuples_of(cases, t)
+    # The `t`-way combinations the realized levels of `cases` take; with
+    # `sel`, only those of the factor tuples it numbers.
+    def tuples_of(cases, t, sel = nil)
       idx = self::FACTORS.map { |_, l| l.each_with_index.to_h }
-      combos = (0...self::FACTORS.size).to_a.combination(t).to_a
+      combos = (0...self::FACTORS.size).to_a.combination(t).each_with_index.to_a
+      combos.select! { |_, i| sel.include?(i) } if sel
       h = {}
       cases.each do |c|
         lv = self::NAMES.each_with_index.map { |f, i| idx[i][c.realized[f]] }
-        combos.each_with_index { |tu, i| h[key(i, tu.map { |f| lv[f] })] = true }
+        combos.each { |tu, i| h[key(i, tu.map { |f| lv[f] })] = true }
       end
       h
     end
@@ -176,52 +183,95 @@ module ProbeCommon
     #
     # With `only`, every case takes its levels (see pinned_cases), and the
     # combinations are those that agree with them.
-    def covering_cases(t, seed, tries = 100, only = {})
+    #
+    # `also` names factors whose 3-way combinations some bugs need and pairs
+    # do not promise (a call that fails only on a receiver held one way and
+    # read back another): at a strength below 3, the combinations of every
+    # three of them are then added the same way, on top of the covering
+    # array, without asking every factor for them. The answer then also
+    # counts those: [cases, want, got, want3, got3].
+    def covering_cases(t, seed, tries = 100, only = {}, also = [])
       cases = pinned_cases(covering_array(t, seed), only)
       rng = Random.new(seed)
       want = got = nil
       (1..t).each do |s|
         combos = (0...self::FACTORS.size).to_a.combination(s).to_a
-        want = all_tuples(s)
-        unless only.empty?
-          want.reject! do |kk, _|
-            ti, ls = unkey(kk, s)
-            combos[ti].each_with_index.any? do |f, x|
-              only.key?(self::NAMES[f]) && self::FACTORS[f][1][ls[x]] != only[self::NAMES[f]]
-            end
-          end
-        end
-        got = tuples_of(cases, s)
-        parts = s > 1 ? tuples_of(cases, s - 1) : {}
-        part_index = (0...self::FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
-        want.each_key do |kk|
-          next if got.key?(kk)
-          ti, ls = unkey(kk, s)
-          fs = combos[ti]
-          next if s > 1 && (0...s).any? do |x|
-            parts[key(part_index[fs[0...x] + fs[(x + 1)..]], ls[0...x] + ls[(x + 1)..])].nil?
-          end
-          fixed = fs.each_with_index.to_h { |f, x| [self::NAMES[f], self::FACTORS[f][1][ls[x]]] }
-          from = nil
-          tries.times do |n|
-            if n.odd?
-              from ||= begin
-                near = cases.group_by { |c| fixed.count { |f, l| c.realized[f] == l } }
-                near.delete(0)
-                near.empty? ? [] : near[near.keys.max]
-              end
-            end
-            base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
-            c = render(cases.last.id + 1, base.merge(fixed).merge(only))
-            next unless fixed.merge(only).all? { |f, l| c.realized[f] == l }
-            cases << c
-            got.merge!(tuples_of([c], s))
-            parts.merge!(tuples_of([c], s - 1)) if s > 1
-            break
-          end
+        want = wanted(combos, s, only)
+        got = take(cases, combos, s, want, rng, tries, only)
+      end
+      return [cases, want.size, want.count { |kk, _| got.key?(kk) }] if also.size < 3 || t >= 3
+      idx = also.map { |f| self::NAMES.index(f) or raise ArgumentError, "no factor #{f.inspect}" }.sort
+      # a triple is tried only when its pairs are taken, so at strength 1 the
+      # pairs of the selected factors go first
+      if t < 2
+        all2 = (0...self::FACTORS.size).to_a.combination(2).to_a
+        sel2 = idx.combination(2).map { |tu| all2.index(tu) }
+        take(cases, all2, 2, wanted(all2, 2, only, sel2), rng, tries, only, sel2)
+      end
+      all = (0...self::FACTORS.size).to_a.combination(3).to_a
+      sel = idx.combination(3).map { |tu| all.index(tu) }
+      want3 = wanted(all, 3, only, sel)
+      got3 = take(cases, all, 3, want3, rng, tries, only, sel)
+      # the cases the triples added can take requested combinations too
+      got = tuples_of(cases, t)
+      [cases, want.size, want.count { |kk, _| got.key?(kk) }, want3.size, want3.count { |kk, _| got3.key?(kk) }]
+    end
+
+    # The `s`-way combinations of levels (of the factor tuples `combos`,
+    # those `sel` numbers when given) that agree with `only`.
+    def wanted(combos, s, only, sel = nil)
+      want = all_tuples(s, sel)
+      return want if only.empty?
+      want.reject do |kk, _|
+        ti, ls = unkey(kk, s)
+        combos[ti].each_with_index.any? do |f, x|
+          only.key?(self::NAMES[f]) && self::FACTORS[f][1][ls[x]] != only[self::NAMES[f]]
         end
       end
-      [cases, want.size, want.count { |kk, _| got.key?(kk) }]
+    end
+
+    # Adds to `cases` a case for each combination of `want` no case takes
+    # yet (covering_cases), and answers the combinations the cases take (of
+    # the factor tuples `sel` numbers, when given).
+    def take(cases, combos, s, want, rng, tries, only, sel = nil)
+      got = tuples_of(cases, s, sel)
+      parts = s > 1 ? tuples_of(cases, s - 1) : {}
+      part_index = (0...self::FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
+      want.each_key do |kk|
+        next if got.key?(kk)
+        ti, ls = unkey(kk, s)
+        fs = combos[ti]
+        next if s > 1 && (0...s).any? do |x|
+          parts[key(part_index[fs[0...x] + fs[(x + 1)..]], ls[0...x] + ls[(x + 1)..])].nil?
+        end
+        fixed = fs.each_with_index.to_h { |f, x| [self::NAMES[f], self::FACTORS[f][1][ls[x]]] }
+        from = nil
+        tries.times do |n|
+          if n.odd?
+            from ||= begin
+              near = cases.group_by { |c| fixed.count { |f, l| c.realized[f] == l } }
+              near.delete(0)
+              near.empty? ? [] : near[near.keys.max]
+            end
+          end
+          base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
+          c = render(cases.last.id + 1, base.merge(fixed).merge(only))
+          next unless fixed.merge(only).all? { |f, l| c.realized[f] == l }
+          cases << c
+          got.merge!(tuples_of([c], s, sel))
+          parts.merge!(tuples_of([c], s - 1)) if s > 1
+          break
+        end
+      end
+      got
+    end
+
+    # The factors a spec such as "alias_op,alias_way,recv" names (none for
+    # an empty one).
+    def factor_list(spec)
+      spec.split(",").map do |f|
+        self::NAMES.find { |n| n.to_s == f } or raise ArgumentError, "no factor #{f.inspect}"
+      end
     end
 
     # The levels a spec such as "name_clash=sibling,seed=poly" pins.
@@ -291,13 +341,14 @@ module ProbeCommon
   # answers true. Answers [status, timed out]; a stopped run raises Stopped.
   # A run that does not end is killed with what it started: it runs in a
   # process group of its own, since spinel runs the C compiler through a
-  # shell, and killing spinel alone left the compiler running.
-  def run_timed(argv, timeout, out_path, err_path, stop = nil)
+  # shell, and killing spinel alone left the compiler running. It reads
+  # `input`, nothing unless a file is named.
+  def run_timed(argv, timeout, out_path, err_path, stop = nil, input: File::NULL)
     raise Stopped if stop&.call
     # one path for both streams is opened once: two opens keep two offsets,
     # and each stream writes over the other's lines
     redirect = out_path == err_path ? { [:out, :err] => out_path } : { out: out_path, err: err_path }
-    pid = Process.spawn(*argv, in: File::NULL, pgroup: true, **redirect)
+    pid = Process.spawn(*argv, in: input, pgroup: true, **redirect)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     loop do
       got, status = Process.waitpid2(pid, Process::WNOHANG)
@@ -452,15 +503,20 @@ module ProbeCommon
     #   { doc: "limitations.md, \"<section>\": <what it says>",
     #     when: ->(r) { <the case's realized levels> }, answer: /<spinel's line>/ }
     # `undefined`: CRuby's line for a name the generator's programs read and
-    # do not define, which makes the program wrong, not spinel.
-    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined)
+    # do not define, which makes the program wrong, not spinel. `keep`: the
+    # work dir is kept, binaries included. `confirm`: a difference in a
+    # program that ran to its end is confirmed on its case alone; without it
+    # the difference is taken as the case's own (--no-confirm).
+    def initialize(gen, spinel, ruby, timeout, dir, documented, undefined, keep = false, confirm = true)
       @gen = gen
+      @confirm = confirm
       @spinel = spinel
       @ruby = ruby
       @timeout = timeout
       @dir = dir
       @documented = documented
       @undefined = undefined
+      @keep = keep
       @findings = []
       @lock = Mutex.new
       @seq = 0
@@ -533,6 +589,14 @@ module ProbeCommon
     # refuses, or whose C has an error, fails as the full build does.
     def spinel(cases, check_only = false)
       base = scratch("sp")
+      spinel_run(cases, check_only, base)
+    ensure
+      # A run builds thousands of programs, and a binary is a few MB: each
+      # goes as soon as it has run, unless --keep asked for the work dir
+      FileUtils.rm_f(base + ".bin") if base && !@keep
+    end
+
+    def spinel_run(cases, check_only, base)
       src = @gen.program(cases)
       File.write(base + ".rb", src)
       argv = [@spinel, *@gen.flags(cases), *(check_only ? ["--cc=cc -fsyntax-only"] : []), base + ".rb", "-o",
@@ -542,8 +606,10 @@ module ProbeCommon
       unless !timed_out && status.success?
         # C that does not build first: its diagnostics can quote generated C
         # that says "unsupported". A refusal is the compiler's own line naming
-        # the construct at a Ruby line, or its tally of them.
-        refusal = /^spinel: (?:\S+\.rb:\d+: )?unsupported /
+        # the construct at a Ruby line, or its tally of them. Two say "<the
+        # construct> is not supported" instead (a block's splat parameter
+        # where a lowering takes none, a Struct::Name constant path).
+        refusal = /^spinel: (?:(?:\S+\.rb:\d+: )?unsupported |\S+\.rb:\d+: .* is not supported)/
         tally = /\d+ refusals?, nothing written/
         label = if !timed_out && status.signaled? then "compiler-failure"
                 elsif build.include?("C compilation failed") then "link-error"
@@ -653,6 +719,11 @@ module ProbeCommon
       stopped = o.label == "ran" && (!o.status.zero? || cases.any? { |c| o.lines[c.id].empty? && !want[c.id].empty? })
       if o.label == "ran" && !stopped
         cases.reject { |c| ProbeCommon.same_answers?(want[c.id], o.lines[c.id]) }.map do |c|
+          unless @confirm
+            next record(Finding.new(c, "output-diff", "", want[c.id], o.lines[c.id],
+                                    diff_kind(want[c.id], o.lines[c.id], c), nil, []))
+          end
+
           l, k, w, g, det = judge(c)
           record(if l == "ran"
                    interaction(cases, "case #{c.id} differs only beside the other cases of its program",
@@ -712,10 +783,12 @@ module ProbeCommon
 
     # The cases one step simpler than `c`: a factor at its simplest level, or
     # a count one less. A step the case cannot take renders `c` again and is
-    # no step.
+    # no step. A generator's FIXED factors (the builtin-row probe's op) are
+    # what a case is about, and never step.
     def simpler(c)
+      fixed = @gen.const_defined?(:FIXED) ? @gen::FIXED : []
       @gen::NAMES.flat_map do |f|
-        next [] if c.realized[f] == @gen::SIMPLEST[f]
+        next [] if c.realized[f] == @gen::SIMPLEST[f] || fixed.include?(f)
         steps = [@gen::SIMPLEST[f]]
         steps.unshift(c.realized[f] - 1) if c.realized[f].is_a?(Integer) && c.realized[f] > 1
         steps.uniq.map { |l| @gen.render(c.id, c.realized.merge(f => l)) }.reject { |s| s.realized == c.realized }
@@ -881,11 +954,13 @@ module ProbeCommon
   end
 
   # A probe's command line: `name` the tool's (tools/<name>.rb), `out` its
-  # default --out, `strength` its default --strength; `documented` and
-  # `undefined` as Probe takes them. Answers the exit status.
-  def main(gen, name, argv, out:, strength:, undefined:, documented: [])
-    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--seed S] [--only F=L,..] " \
-            "[--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce]"
+  # default --out, `strength` its default --strength, `also` its default
+  # --strength3 (the factors whose 3-way combinations are added on top of a
+  # pairwise array; covering_cases); `documented` and `undefined` as Probe
+  # takes them. Answers the exit status.
+  def main(gen, name, argv, out:, strength:, undefined:, documented: [], also: [])
+    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--strength3 F,F,F..] [--seed S] " \
+            "[--only F=L,..] [--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce] [--no-confirm]"
     random = nil
     seed = 1
     only = {}
@@ -894,11 +969,13 @@ module ProbeCommon
     timeout = 30
     keep = false
     reduce = true
+    confirm = true
     args = argv.dup
     begin
       until args.empty?
         case args.shift
         when "--strength" then strength = Integer(args.shift)
+        when "--strength3" then also = gen.factor_list(args.shift.to_s)
         when "--random" then random = Integer(args.shift)
         when "--seed" then seed = Integer(args.shift)
         when "--only" then only.merge!(gen.pins(args.shift.to_s))
@@ -908,10 +985,11 @@ module ProbeCommon
         when "--timeout" then timeout = Integer(args.shift)
         when "--keep" then keep = true
         when "--no-reduce" then reduce = false
+        when "--no-confirm" then confirm = false
         else raise ArgumentError
         end
       end
-      raise ArgumentError unless (1..gen::FACTORS.size).cover?(strength) &&
+      raise ArgumentError unless (1..gen::FACTORS.size).cover?(strength) && (also.empty? || also.size >= 3) &&
                                  [batch, jobs, timeout].all?(&:positive?) && (random.nil? || random.positive?)
     rescue ArgumentError, TypeError => e
       warn "#{name}: #{e.message}" unless e.message == "ArgumentError"
@@ -945,6 +1023,7 @@ module ProbeCommon
     end
 
     work = nil
+    tmpdir = ENV["TMPDIR"]
     probe = nil
     coverage = nil
     Thread.report_on_exception = false # a worker's failure is reported once, below
@@ -953,16 +1032,24 @@ module ProbeCommon
         cases = gen.pinned_cases(gen.random_rows(random, seed), only)
         coverage = "#{random} random rows (seed #{seed})"
       else
-        cases, want, got = gen.covering_cases(strength, seed, 100, only)
+        # a generator with its own covering (builtin_row_gen) takes no 3-way factors
+        cases, want, got, want3, got3 = also.empty? ? gen.covering_cases(strength, seed, 100, only)
+                                                    : gen.covering_cases(strength, seed, 100, only, also)
         coverage = "#{strength}-way covering array (seed #{seed}): the cases take #{got} of the #{want} " \
                    "#{strength}-way combinations of levels; #{want - got} were not taken"
+        if want3
+          coverage += "; and #{got3} of the #{want3} 3-way combinations of #{also.join(", ")}"
+        end
       end
       coverage += "; pinned: #{only.map { |f, l| "#{f}=#{l}" }.join(" ")}" unless only.empty?
       (LABELS + %w[work summary.txt]).each { |p| FileUtils.rm_rf(File.join(out, p)) }
       File.write(File.join(out, "summary.txt"), "run in progress\n")
       work = keep ? File.join(out, "work") : Dir.mktmpdir(name.tr("_", "-"))
       FileUtils.mkdir_p(work)
-      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined)
+      probe = Probe.new(gen, spinel, RbConfig.ruby, timeout, work, documented, undefined, keep, confirm)
+      # the C spinel keeps of a program that does not build, and the C
+      # compiler's own temporary files, go to the work dir and with it
+      ENV["TMPDIR"] = work
       queue = Queue.new
       # one mode to a program
       cases.group_by { |c| gen.flags([c]) }.each_value { |cs| cs.each_slice(batch) { |b| queue << b } }
@@ -1014,6 +1101,7 @@ module ProbeCommon
       end
       4
     ensure
+      ENV["TMPDIR"] = tmpdir if work
       FileUtils.rm_rf(work) if work && !keep
       dir_lock.close
     end

@@ -1,0 +1,11 @@
+[1, 9]
+["a", 2.5, 9]
+[1, 2]
+[1, 9]
+[9]
+[1, 9]
+TypeError: no implicit conversion of N into Array
+TypeError: no implicit conversion of N into Array
+TypeError: can't convert B to Array (B#to_ary gives Integer)
+TypeError: can't convert B to Array (B#to_ary gives Integer)
+[1, 2]

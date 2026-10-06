@@ -1,0 +1,12 @@
+"attempt to resume the current fiber"
+"attempt to resume a resuming fiber"
+"attempt to resume a resuming fiber"
+"attempt to resume a transferring fiber"
+"attempt to resume a resumed fiber (double resume)"
+"attempt to resume a resumed fiber (double resume)"
+"attempt to resume a resuming fiber"
+"attempt to resume the current fiber"
+"attempt to resume a resuming fiber"
+:second
+false
+:done

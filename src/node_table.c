@@ -131,15 +131,18 @@ static int split_line(const char *line, size_t len, Tok parts[3], const char **v
   return np;
 }
 
+/* The digits gather unsigned: the smallest Integer's are one past what a
+   long long holds until its sign is applied. */
 static long long parse_ll(const char *s, size_t len) {
-  long long sign = 1, v = 0;
+  int neg = 0;
+  unsigned long long v = 0;
   size_t i = 0;
-  if (i < len && (s[i] == '-' || s[i] == '+')) { if (s[i] == '-') sign = -1; i++; }
+  if (i < len && (s[i] == '-' || s[i] == '+')) { neg = s[i] == '-'; i++; }
   for (; i < len; i++) {
     if (s[i] < '0' || s[i] > '9') break;
-    v = (v * 10) + (s[i] - '0');
+    v = (v * 10) + (unsigned long long)(s[i] - '0');
   }
-  return v * sign;
+  return (long long)(neg ? 0ULL - v : v);
 }
 
 /* Parse a comma-separated id list into a malloc'd int array. */
@@ -389,6 +392,11 @@ int nt_new_node(NodeTable *nt, const char *type) {
   if (type) node_set_type(nd, type, strlen(type));
   return id;
 }
+int nt_new_int(NodeTable *nt, long long v) {
+  int n = nt_new_node(nt, "IntegerNode");
+  nt_node_set_int(nt, n, "value", v);
+  return n;
+}
 
 /* Turn an existing node INTO a node of another type, dropping every field it
    carried. A desugar that rewrites one construct as another needs the result
@@ -409,14 +417,6 @@ void nt_node_reset(NodeTable *nt, int id, const char *type) {
   nd->ns = nd->ni = nd->nr = nd->na = 0;
   nd->kind = 0;
   if (type) node_set_type(nd, type, strlen(type));
-}
-
-void nt_node_set_content(NodeTable *nt, int id, const char *val) {
-  SpNode *nd = (SpNode *)node_at(nt, id);
-  if (!nd) return;
-  nt->version++;
-  free(nd->content);
-  nd->content = dup_n(val, strlen(val));
 }
 
 void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {

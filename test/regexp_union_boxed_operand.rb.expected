@@ -1,0 +1,80 @@
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into String
+TypeError: no implicit conversion of nil into String
+/s\.t/
+/s\.t/
+/s\.t/
+TypeError: no implicit conversion of Symbol into String
+TypeError: no implicit conversion of Symbol into String
+"s\\.t"
+/a\.b/
+/a\.b/
+/a\.b/
+/a\.b|c/
+/c|a\.b/
+"a\\.b"
+/x.y/i
+/x.y/i
+/x.y/i
+/(?i-mx:x.y)|c/
+/c|(?i-mx:x.y)/
+TypeError: no implicit conversion of Regexp into String
+/p\.q/
+/p\.q/
+/p\.q/
+/p\.q|c/
+/c|p\.q/
+"p\\.q"
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of true into String
+TypeError: no implicit conversion of true into String
+TypeError: no implicit conversion of true into String
+TypeError: no implicit conversion of true into String
+TypeError: no implicit conversion of true into String
+TypeError: no implicit conversion of true into String
+/a\.b|(?m-ix:x)/
+TypeError: no implicit conversion of Array into String
+/a\.b|(?m-ix:x)/
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+/r/i
+TypeError: no implicit conversion of Array into String
+/r/i
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+/(?!)/
+TypeError: no implicit conversion of Array into String
+/(?!)/
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+TypeError: no implicit conversion of Array into String
+/h\.k|c/
+/h\.k/
