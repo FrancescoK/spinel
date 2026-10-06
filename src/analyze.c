@@ -3118,6 +3118,24 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
   if ((sp_streq(ty, "ModuleNode") || sp_streq(ty, "ClassNode")) && depth < QC_MAXDEPTH) {
     int cp = nt_ref(nt, node, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    /* `class ::Array` inside a module names the top-level constant: it is a
+       definition at the root, and its body's lexical path starts there --
+       taken as nested, it was qualified to Outer::Array, a new class, and
+       the reopening reached nothing. Its own path buffer: the caller's is
+       still in use for the siblings. */
+    if (mn && nt_kind(nt, cp) == NK_ConstantPathNode && nt_ref(nt, cp, "parent") < 0) {
+      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
+      QCWrite *w = &(*ws)[(*n)++];
+      w->node = cp; w->depth = 0;
+      snprintf(w->name, sizeof w->name, "%s", mn);
+      char root[QC_MAXDEPTH][64];
+      snprintf(root[0], 64, "%s", mn);
+      int nr = nt_num_refs(nt, node);
+      for (int i = 0; i < nr; i++) qc_collect_class_writes(c, nt_ref_at(nt, node, i), root, 1, ws, n, cap);
+      int na = nt_num_arrs(nt, node);
+      for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int k = 0; k < m; k++) qc_collect_class_writes(c, ids[k], root, 1, ws, n, cap); }
+      return;
+    }
     if (mn) {
       /* record this class/module definition as a "write" at the current
          (pre-push) depth -- ws[i].node is the constant_path node whose name
