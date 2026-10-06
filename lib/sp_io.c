@@ -1066,7 +1066,8 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
   if (eof) *eof = 0;
   if (is_recv) sp_sock_nb_prepare(f, "recv_nonblock");
   else SP_IO_OPEN(f);
-  if (len <= 0) return sp_str_from_bytes("", 0);
+  /* the bytes read are BINARY, as CRuby's read_nonblock and recv answer them */
+  if (len <= 0) { char *e = (char *)sp_str_from_bytes("", 0); sp_str_mark_binary(e); return e; }
   char *buf = (char *)malloc((size_t)len);
   if (!buf) sp_raise_cls("NoMemoryError", "read_nonblock");
   ssize_t n;
@@ -1082,7 +1083,7 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
     sp_io_nb_end(f, saved);
     errno = e;
   }
-  if (n > 0) { const char *s = sp_str_from_bytes(buf, (size_t)n); free(buf); return s; }
+  if (n > 0) { char *s = (char *)sp_str_from_bytes(buf, (size_t)n); free(buf); sp_str_mark_binary(s); return s; }
   if (n == 0) {
     free(buf);
     if (eof) *eof = 1;
